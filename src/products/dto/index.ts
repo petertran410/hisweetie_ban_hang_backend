@@ -5,6 +5,7 @@ import {
   IsOptional,
   Min,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateProductDto {
   @IsString()
@@ -26,30 +27,37 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
   categoryId?: number;
 
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
   variantId?: number;
 
   @IsNumber()
   @Min(0)
+  @Type(() => Number)
   purchasePrice: number;
 
   @IsNumber()
   @Min(0)
+  @Type(() => Number)
   retailPrice: number;
 
   @IsNumber()
   @Min(0)
+  @Type(() => Number)
   collaboratorPrice: number;
 
   @IsNumber()
   @Min(0)
+  @Type(() => Number)
   stockQuantity: number;
 
   @IsNumber()
   @Min(0)
+  @Type(() => Number)
   minStockAlert: number;
 
   @IsOptional()
@@ -57,15 +65,81 @@ export class CreateProductDto {
   isActive?: boolean;
 }
 
-export class UpdateProductDto extends CreateProductDto {}
+export class UpdateProductDto {
+  @IsOptional()
+  @IsString()
+  code?: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  slug?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  image?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  categoryId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  variantId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  purchasePrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  retailPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  collaboratorPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  stockQuantity?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  minStockAlert?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
 
 export class ProductQueryDto {
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
   page?: number;
 
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
   limit?: number;
 
   @IsOptional()
@@ -74,9 +148,11 @@ export class ProductQueryDto {
 
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
   categoryId?: number;
 
   @IsOptional()
   @IsBoolean()
+  @Type(() => Boolean)
   isActive?: boolean;
 }

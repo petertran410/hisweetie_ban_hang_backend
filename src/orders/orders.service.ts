@@ -160,4 +160,103 @@ export class OrdersService {
       },
     });
   }
+
+  async update(id: number, dto: UpdateOrderDto) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.update({
+        where: { id },
+        data: {
+          customerId: dto.customerId,
+          orderDate: dto.orderDate,
+          discountAmount: dto.discountAmount,
+          depositAmount: dto.depositAmount,
+          orderStatus: dto.orderStatus,
+          notes: dto.notes,
+        },
+      });
+
+      await this.calculateTotals(id, tx);
+
+      if (order.customerId) {
+        await this.updateCustomerTotals(order.customerId, tx);
+      }
+
+      return tx.order.findUnique({
+        where: { id },
+        include: {
+          customer: true,
+          items: { include: { product: true } },
+          payments: true,
+        },
+      });
+    });
+  }
+
+  async remove(id: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({ where: { id } });
+
+      if (order.orderStatus === 'completed') {
+        const items = await tx.orderItem.findMany({ where: { orderId: id } });
+        for (const item of items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
+
+      await tx.order.delete({ where: { id } });
+
+      if (order.customerId) {
+        await this.updateCustomerTotals(order.customerId, tx);
+      }
+    });
+  }
+
+  async completeOrder(id: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.update({
+        where: { id },
+        data: { orderStatus: 'completed' },
+      });
+
+      await this.updateProductStock(id, tx);
+
+      return tx.order.findUnique({
+        where: { id },
+        include: { customer: true, items: { include: { product: true } } },
+      });
+    });
+  }
+
+  async cancelOrder(id: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({ where: { id } });
+
+      if (order.orderStatus === 'completed') {
+        const items = await tx.orderItem.findMany({ where: { orderId: id } });
+        for (const item of items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stockQuantity: { increment: item.quantity } },
+          });
+        }
+      }
+
+      const cancelledOrder = await tx.order.update({
+        where: { id },
+        data: { orderStatus: 'cancelled' },
+      });
+
+      if (order.customerId) {
+        await this.updateCustomerTotals(order.customerId, tx);
+      }
+
+      return tx.order.findUnique({
+        where: { id },
+        include: { customer: true, items: { include: { product: true } } },
+      });
+    });
+  }
 }
