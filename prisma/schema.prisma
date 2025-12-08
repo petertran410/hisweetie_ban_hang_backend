@@ -1,0 +1,234 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String
+  phone     String?
+  avatar    String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  createdOrders         Order[]          @relation("OrderCreator")
+  createdPayments       OrderPayment[]   @relation("PaymentCreator")
+  createdPurchaseOrders PurchaseOrder[]  @relation("PurchaseOrderCreator")
+  
+  @@map("users")
+}
+
+model Category {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  products Product[]
+  
+  @@map("categories")
+}
+
+model ProductVariant {
+  id          Int       @id @default(autoincrement())
+  name        String
+  code        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  products Product[]
+  
+  @@map("product_variants")
+}
+
+model Product {
+  id                 Int       @id @default(autoincrement())
+  code               String    @unique
+  name               String
+  slug               String    @unique
+  description        String?
+  image              String?
+  categoryId         Int?
+  variantId          Int?
+  purchasePrice      Int       @default(0)
+  retailPrice        Int       @default(0)
+  collaboratorPrice  Int       @default(0)
+  stockQuantity      Int       @default(0)
+  minStockAlert      Int       @default(0)
+  isActive           Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  
+  category          Category?        @relation(fields: [categoryId], references: [id])
+  variant           ProductVariant?  @relation(fields: [variantId], references: [id])
+  orderItems        OrderItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  
+  @@map("products")
+}
+
+model CustomerType {
+  id          Int       @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  customers Customer[]
+  
+  @@map("customer_types")
+}
+
+model Customer {
+  id              Int      @id @default(autoincrement())
+  code            String?  @unique
+  name            String
+  phone           String?
+  facebook        String?
+  zalo            String?
+  address         String?
+  notes           String?
+  customerTypeId  Int?
+  totalPurchased  Int      @default(0)
+  totalDebt       Int      @default(0)
+  isWalkIn        Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  customerType CustomerType? @relation(fields: [customerTypeId], references: [id])
+  orders       Order[]
+  
+  @@map("customers")
+}
+
+model Supplier {
+  id            Int      @id @default(autoincrement())
+  code          String?  @unique
+  name          String
+  phone         String?
+  email         String?
+  address       String?
+  contactPerson String?
+  notes         String?
+  totalDebt     Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  purchaseOrders PurchaseOrder[]
+  
+  @@map("suppliers")
+}
+
+model Order {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  customerId     Int?
+  orderDate      DateTime @default(now())
+  totalAmount    Int      @default(0)
+  discountAmount Int      @default(0)
+  grandTotal     Int      @default(0)
+  paidAmount     Int      @default(0)
+  debtAmount     Int      @default(0)
+  depositAmount  Int      @default(0)
+  paymentStatus  String   @default("unpaid")
+  orderStatus    String   @default("pending")
+  notes          String?
+  createdBy      Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  customer Customer?      @relation(fields: [customerId], references: [id])
+  creator  User           @relation("OrderCreator", fields: [createdBy], references: [id])
+  items    OrderItem[]
+  payments OrderPayment[]
+  
+  @@map("orders")
+}
+
+model OrderItem {
+  id         Int      @id @default(autoincrement())
+  orderId    Int
+  productId  Int
+  quantity   Int
+  unitPrice  Int
+  totalPrice Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+  
+  @@map("order_items")
+}
+
+model OrderPayment {
+  id            Int      @id @default(autoincrement())
+  orderId       Int
+  paymentDate   DateTime @default(now())
+  amount        Int
+  paymentMethod String   @default("cash")
+  notes         String?
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  creator User  @relation("PaymentCreator", fields: [createdBy], references: [id])
+  
+  @@map("order_payments")
+}
+
+model PurchaseOrder {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  supplierId     Int
+  purchaseDate   DateTime
+  totalAmount    Int      @default(0)
+  shippingFee    Int      @default(0)
+  otherFees      Int      @default(0)
+  grandTotal     Int      @default(0)
+  paidAmount     Int      @default(0)
+  debtAmount     Int      @default(0)
+  paymentStatus  String   @default("unpaid")
+  notes          String?
+  createdBy      Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  supplier Supplier             @relation(fields: [supplierId], references: [id])
+  creator  User                 @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
+  items    PurchaseOrderItem[]
+  
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              Int      @id @default(autoincrement())
+  purchaseOrderId Int
+  productId       Int
+  quantity        Int
+  unitPrice       Int
+  totalPrice      Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+  
+  @@map("purchase_order_items")
+}
