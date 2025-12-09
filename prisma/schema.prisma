@@ -8,23 +8,26 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  name      String
-  email     String   @unique
-  password  String
-  phone     String?
-  avatar    String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          Int      @id @default(autoincrement())
+  name        String
+  email       String   @unique
+  password    String?
+  phone       String?
+  avatar      String?
+  googleId    String?  @unique
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
   
   createdOrders         Order[]          @relation("OrderCreator")
   createdPayments       OrderPayment[]   @relation("PaymentCreator")
   createdPurchaseOrders PurchaseOrder[]  @relation("PurchaseOrderCreator")
   posts                 Post[]           @relation("PostAuthor")
+  userRoles             UserRole[]
   
   @@map("users")
 }
+
 
 model Category {
   id          Int       @id @default(autoincrement())
@@ -292,4 +295,58 @@ model PostTag {
   
   @@id([postId, tagId])
   @@map("post_tags")
+}
+
+model Role {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  userRoles        UserRole[]
+  rolePermissions  RolePermission[]
+  
+  @@map("roles")
+}
+
+model Permission {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  slug        String   @unique
+  resource    String
+  action      String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  rolePermissions RolePermission[]
+  
+  @@unique([resource, action])
+  @@map("permissions")
+}
+
+model UserRole {
+  userId    Int
+  roleId    Int
+  createdAt DateTime @default(now())
+  
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       Int
+  permissionId Int
+  createdAt    DateTime @default(now())
+  
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
 }

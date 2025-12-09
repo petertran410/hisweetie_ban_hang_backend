@@ -13,10 +13,27 @@ export class AuthService {
   async login(email: string, password: string) {
     const user = await this.prisma.user.findUnique({
       where: { email },
+      include: {
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: { permission: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.password) {
+      throw new UnauthorizedException('Please login with Google');
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
@@ -28,7 +45,18 @@ export class AuthService {
       throw new UnauthorizedException('Account is inactive');
     }
 
-    const payload = { sub: user.id, email: user.email, name: user.name };
+    const roles = user.userRoles.map((ur) => ur.role.slug);
+    const permissions = user.userRoles.flatMap((ur) =>
+      ur.role.rolePermissions.map((rp) => rp.permission.slug),
+    );
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      name: user.name,
+      roles,
+      permissions,
+    };
     const accessToken = this.jwtService.sign(payload);
 
     return {
@@ -39,6 +67,111 @@ export class AuthService {
         email: user.email,
         phone: user.phone,
         avatar: user.avatar,
+        roles,
+        permissions,
+      },
+    };
+  }
+
+  async googleLogin(googleUser: {
+    googleId: string;
+    email: string;
+    name: string;
+    avatar: string;
+  }) {
+    let user = await this.prisma.user.findUnique({
+      where: { email: googleUser.email },
+      include: {
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: { permission: true },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      user = await this.prisma.user.create({
+        data: {
+          googleId: googleUser.googleId,
+          email: googleUser.email,
+          name: googleUser.name,
+          avatar: googleUser.avatar,
+          isActive: true,
+        },
+        include: {
+          userRoles: {
+            include: {
+              role: {
+                include: {
+                  rolePermissions: {
+                    include: { permission: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+
+      const defaultRole = await this.prisma.role.findUnique({
+        where: { slug: 'user' },
+      });
+      if (defaultRole) {
+        await this.prisma.userRole.create({
+          data: { userId: user.id, roleId: defaultRole.id },
+        });
+      }
+    } else if (!user.googleId) {
+      user = await this.prisma.user.update({
+        where: { id: user.id },
+        data: { googleId: googleUser.googleId, avatar: googleUser.avatar },
+        include: {
+          userRoles: {
+            include: {
+              role: {
+                include: {
+                  rolePermissions: {
+                    include: { permission: true },
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+    }
+
+    const roles = user.userRoles.map((ur) => ur.role.slug);
+    const permissions = user.userRoles.flatMap((ur) =>
+      ur.role.rolePermissions.map((rp) => rp.permission.slug),
+    );
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      name: user.name,
+      roles,
+      permissions,
+    };
+    const accessToken = this.jwtService.sign(payload);
+
+    return {
+      accessToken,
+      user: {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        avatar: user.avatar,
+        roles,
+        permissions,
       },
     };
   }
@@ -73,12 +206,31 @@ export class AuthService {
       },
     });
 
-    const payload = { sub: user.id, email: user.email, name: user.name };
+    const defaultRole = await this.prisma.role.findUnique({
+      where: { slug: 'user' },
+    });
+    if (defaultRole) {
+      await this.prisma.userRole.create({
+        data: { userId: user.id, roleId: defaultRole.id },
+      });
+    }
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      name: user.name,
+      roles: ['user'],
+      permissions: [],
+    };
     const accessToken = this.jwtService.sign(payload);
 
     return {
       accessToken,
-      user,
+      user: {
+        ...user,
+        roles: ['user'],
+        permissions: [],
+      },
     };
   }
 
@@ -113,6 +265,17 @@ export class AuthService {
         avatar: true,
         createdAt: true,
         updatedAt: true,
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: { permission: true },
+                },
+              },
+            },
+          },
+        },
       },
     });
   }
@@ -145,6 +308,12 @@ export class AuthService {
 
     if (!user) {
       throw new UnauthorizedException('User not found');
+    }
+
+    if (!user.password) {
+      throw new UnauthorizedException(
+        'Cannot change password for Google account',
+      );
     }
 
     const isPasswordValid = await bcrypt.compare(oldPassword, user.password);
