@@ -6,18 +6,21 @@ import {
   Delete,
   Body,
   Param,
-  Query,
 } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
-import { CreateCategoryDto, UpdateCategoryDto, CategoryQueryDto } from './dto';
 
 @Controller('categories')
 export class CategoriesController {
   constructor(private categoriesService: CategoriesService) {}
 
   @Get()
-  findAll(@Query() query: CategoryQueryDto) {
-    return this.categoriesService.findAll(query);
+  findAll() {
+    return this.categoriesService.findAll();
+  }
+
+  @Get('roots')
+  findRoots() {
+    return this.categoriesService.findRoots();
   }
 
   @Get(':id')
@@ -25,14 +28,30 @@ export class CategoriesController {
     return this.categoriesService.findOne(+id);
   }
 
+  @Get(':id/children')
+  findChildren(@Param('id') id: string) {
+    return this.categoriesService.findChildren(+id);
+  }
+
   @Post()
-  create(@Body() dto: CreateCategoryDto) {
-    return this.categoriesService.create(dto);
+  create(
+    @Body() data: { name: string; description?: string; parentId?: number },
+  ) {
+    return this.categoriesService.create(data);
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateCategoryDto) {
-    return this.categoriesService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body()
+    data: {
+      name?: string;
+      description?: string;
+      parentId?: number;
+      isActive?: boolean;
+    },
+  ) {
+    return this.categoriesService.update(+id, data);
   }
 
   @Delete(':id')

@@ -17,6 +17,9 @@ import { UploadModule } from './upload/upload.module';
 import { ExportModule } from './export/export.module';
 import { PdfModule } from './pdf/pdf.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PostsModule } from './posts/posts.module';
+import { TagsModule } from './tags/tags.module';
+import { PostMetaModule } from './post-meta/post-meta.module';
 
 @Module({
   imports: [
@@ -40,6 +43,9 @@ import { AnalyticsModule } from './analytics/analytics.module';
     ExportModule,
     PdfModule,
     AnalyticsModule,
+    PostsModule,
+    TagsModule,
+    PostMetaModule,
   ],
 })
 export class AppModule {}

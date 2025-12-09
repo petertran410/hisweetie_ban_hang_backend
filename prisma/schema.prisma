@@ -21,6 +21,7 @@ model User {
   createdOrders         Order[]          @relation("OrderCreator")
   createdPayments       OrderPayment[]   @relation("PaymentCreator")
   createdPurchaseOrders PurchaseOrder[]  @relation("PurchaseOrderCreator")
+  posts                 Post[]           @relation("PostAuthor")
   
   @@map("users")
 }
@@ -29,10 +30,13 @@ model Category {
   id          Int       @id @default(autoincrement())
   name        String
   description String?
+  parentId    Int? 
   isActive    Boolean   @default(true)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   
+  parent   Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryToCategory")
   products Product[]
   
   @@map("categories")
@@ -229,4 +233,63 @@ model PurchaseOrderItem {
   product       Product       @relation(fields: [productId], references: [id])
   
   @@map("purchase_order_items")
+}
+
+model Post {
+  id            Int       @id @default(autoincrement())
+  title         String
+  slug          String    @unique
+  content       String?
+  excerpt       String?
+  featuredImage String?
+  status        String    @default("draft")
+  publishedAt   DateTime?
+  authorId      Int
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  author   User       @relation("PostAuthor", fields: [authorId], references: [id])
+  postMeta PostMeta[]
+  tags     PostTag[]
+  
+  @@map("posts")
+}
+
+model PostMeta {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  metaKey   String
+  metaValue String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  
+  @@unique([postId, metaKey])
+  @@map("post_meta")
+}
+
+model Tag {
+  id          Int       @id @default(autoincrement())
+  name        String    @unique
+  slug        String    @unique
+  description String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  posts PostTag[]
+  
+  @@map("tags")
+}
+
+model PostTag {
+  postId    Int
+  tagId     Int
+  createdAt DateTime @default(now())
+  
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  @@id([postId, tagId])
+  @@map("post_tags")
 }
