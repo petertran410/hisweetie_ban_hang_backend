@@ -53,82 +53,16 @@ export class OrdersService {
     });
   }
 
-  async calculateTotals(orderId: number, tx: any) {
-    const items = await tx.orderItem.findMany({ where: { orderId } });
-    const totalAmount = items.reduce((sum, item) => sum + item.totalPrice, 0);
-
-    const order = await tx.order.findUnique({ where: { id: orderId } });
-    const grandTotal = totalAmount - order.discountAmount;
-
-    const payments = await tx.orderPayment.findMany({ where: { orderId } });
-    const paidAmount = payments.reduce((sum, p) => sum + p.amount, 0);
-    const debtAmount = grandTotal - paidAmount;
-
-    let paymentStatus = 'unpaid';
-    if (paidAmount === 0) paymentStatus = 'unpaid';
-    else if (paidAmount >= grandTotal) paymentStatus = 'paid';
-    else paymentStatus = 'partial';
-
-    return tx.order.update({
-      where: { id: orderId },
-      data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
-    });
-  }
-
-  async updateProductStock(orderId: number, tx: any) {
-    const items = await tx.orderItem.findMany({ where: { orderId } });
-    for (const item of items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { stockQuantity: { decrement: item.quantity } },
-      });
-    }
-  }
-
-  async updateCustomerTotals(customerId: number, tx: any) {
-    const orders = await tx.order.findMany({
-      where: { customerId, orderStatus: { not: 'cancelled' } },
-    });
-
-    const totalPurchased = orders.reduce((sum, o) => sum + o.grandTotal, 0);
-    const totalDebt = orders.reduce((sum, o) => sum + o.debtAmount, 0);
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalPurchased, totalDebt },
-    });
-  }
-
-  private async generateCode(): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await this.prisma.order.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-          lt: new Date(today.setHours(23, 59, 59, 999)),
-        },
-      },
-    });
-    return `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
-  }
-
   async findAll(query: OrderQueryDto) {
-    const {
-      page = 1,
-      limit = 10,
-      search,
-      customerId,
-      orderStatus,
-      paymentStatus,
-    } = query;
+    const { page = 1, limit = 10, search, status, customerId } = query;
     const skip = (page - 1) * limit;
 
     const where: any = {};
-    if (search) where.code = { contains: search, mode: 'insensitive' };
+    if (search) {
+      where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
+    }
+    if (status) where.orderStatus = status;
     if (customerId) where.customerId = customerId;
-    if (orderStatus) where.orderStatus = orderStatus;
-    if (paymentStatus) where.paymentStatus = paymentStatus;
 
     const [data, total] = await Promise.all([
       this.prisma.order.findMany({
@@ -139,9 +73,8 @@ export class OrdersService {
           customer: true,
           items: { include: { product: true } },
           payments: true,
-          creator: { select: { id: true, name: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { orderDate: 'desc' },
       }),
       this.prisma.order.count({ where }),
     ]);
@@ -154,30 +87,63 @@ export class OrdersService {
       where: { id },
       include: {
         customer: true,
-        items: { include: { product: true } },
-        payments: { include: { creator: { select: { name: true } } } },
         creator: { select: { id: true, name: true } },
+        items: { include: { product: true } },
+        payments: {
+          include: { creator: { select: { id: true, name: true } } },
+        },
       },
     });
   }
 
   async update(id: number, dto: UpdateOrderDto) {
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.update({
+      const existingOrder = await tx.order.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+
+      if (!existingOrder) {
+        throw new Error('Order not found');
+      }
+
+      if (existingOrder.orderStatus === 'completed') {
+        await this.restoreProductStock(id, tx);
+      }
+
+      if (dto.items) {
+        await tx.orderItem.deleteMany({ where: { orderId: id } });
+        await tx.orderItem.createMany({
+          data: dto.items.map((item) => ({
+            orderId: id,
+            productId: item.productId,
+            quantity: item.quantity,
+            unitPrice: item.unitPrice,
+            totalPrice: item.quantity * item.unitPrice,
+          })),
+        });
+      }
+
+      await tx.order.update({
         where: { id },
         data: {
           customerId: dto.customerId,
           orderDate: dto.orderDate,
           discountAmount: dto.discountAmount,
           depositAmount: dto.depositAmount,
-          orderStatus: dto.orderStatus,
           notes: dto.notes,
+          orderStatus: dto.orderStatus,
         },
       });
 
       await this.calculateTotals(id, tx);
 
-      if (order.customerId) {
+      const order = await tx.order.findUnique({ where: { id } });
+      if (order && order.orderStatus === 'completed') {
+        await this.updateProductStock(id, tx);
+      }
+
+      if (order && order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
       }
 
@@ -194,16 +160,17 @@ export class OrdersService {
 
   async remove(id: number) {
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({ where: { id } });
+      const order = await tx.order.findUnique({
+        where: { id },
+        include: { items: true },
+      });
+
+      if (!order) {
+        throw new Error('Order not found');
+      }
 
       if (order.orderStatus === 'completed') {
-        const items = await tx.orderItem.findMany({ where: { orderId: id } });
-        for (const item of items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stockQuantity: { increment: item.quantity } },
-          });
-        }
+        await this.restoreProductStock(id, tx);
       }
 
       await tx.order.delete({ where: { id } });
@@ -214,49 +181,117 @@ export class OrdersService {
     });
   }
 
-  async completeOrder(id: number) {
+  async complete(id: number) {
     return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.update({
+      await this.updateProductStock(id, tx);
+      return tx.order.update({
         where: { id },
         data: { orderStatus: 'completed' },
-      });
-
-      await this.updateProductStock(id, tx);
-
-      return tx.order.findUnique({
-        where: { id },
-        include: { customer: true, items: { include: { product: true } } },
       });
     });
   }
 
-  async cancelOrder(id: number) {
+  async cancel(id: number) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id } });
-
-      if (order.orderStatus === 'completed') {
-        const items = await tx.orderItem.findMany({ where: { orderId: id } });
-        for (const item of items) {
-          await tx.product.update({
-            where: { id: item.productId },
-            data: { stockQuantity: { increment: item.quantity } },
-          });
-        }
+      if (order && order.orderStatus === 'completed') {
+        await this.restoreProductStock(id, tx);
       }
 
-      const cancelledOrder = await tx.order.update({
+      const updated = await tx.order.update({
         where: { id },
         data: { orderStatus: 'cancelled' },
       });
 
-      if (order.customerId) {
+      if (order && order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
       }
 
-      return tx.order.findUnique({
-        where: { id },
-        include: { customer: true, items: { include: { product: true } } },
+      return updated;
+    });
+  }
+
+  private async generateCode(): Promise<string> {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const count = await this.prisma.order.count({
+      where: {
+        createdAt: {
+          gte: new Date(today.setHours(0, 0, 0, 0)),
+        },
+      },
+    });
+    return `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+  }
+
+  private async calculateTotals(orderId: number, tx: any) {
+    const items = await tx.orderItem.findMany({ where: { orderId } });
+    const totalAmount = items.reduce(
+      (sum: number, item: any) => sum + item.totalPrice,
+      0,
+    );
+
+    const order = await tx.order.findUnique({ where: { id: orderId } });
+    if (!order) return;
+
+    const grandTotal = totalAmount - order.discountAmount;
+    const payments = await tx.orderPayment.findMany({ where: { orderId } });
+    const paidAmount = payments.reduce(
+      (sum: number, p: any) => sum + p.amount,
+      0,
+    );
+    const debtAmount = grandTotal - paidAmount;
+
+    let paymentStatus = 'unpaid';
+    if (paidAmount >= grandTotal) paymentStatus = 'paid';
+    else if (paidAmount > 0) paymentStatus = 'partial';
+
+    await tx.order.update({
+      where: { id: orderId },
+      data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
+    });
+  }
+
+  private async updateProductStock(orderId: number, tx: any) {
+    const items = await tx.orderItem.findMany({ where: { orderId } });
+    for (const item of items) {
+      await tx.product.update({
+        where: { id: item.productId },
+        data: { stockQuantity: { decrement: item.quantity } },
       });
+    }
+  }
+
+  private async restoreProductStock(orderId: number, tx: any) {
+    const items = await tx.orderItem.findMany({ where: { orderId } });
+    for (const item of items) {
+      await tx.product.update({
+        where: { id: item.productId },
+        data: { stockQuantity: { increment: item.quantity } },
+      });
+    }
+  }
+
+  private async updateCustomerTotals(customerId: number, tx: any) {
+    const orders = await tx.order.findMany({
+      where: {
+        customerId,
+        orderStatus: { not: 'cancelled' },
+      },
+    });
+
+    const totalPurchased = orders.reduce(
+      (sum: number, o: any) => sum + o.grandTotal,
+      0,
+    );
+    const totalDebt = orders.reduce(
+      (sum: number, o: any) => sum + o.debtAmount,
+      0,
+    );
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { totalPurchased, totalDebt },
     });
   }
 }

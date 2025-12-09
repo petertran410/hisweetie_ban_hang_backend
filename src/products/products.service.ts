@@ -68,11 +68,11 @@ export class ProductsService {
   }
 
   async checkLowStock() {
-    return this.prisma.product.findMany({
-      where: {
-        isActive: true,
-        stockQuantity: { lte: this.prisma.product.fields.minStockAlert },
-      },
-    });
+    return this.prisma.$queryRaw`
+      SELECT * FROM products 
+      WHERE is_active = true 
+      AND stock_quantity <= min_stock_alert
+      ORDER BY stock_quantity ASC
+    `;
   }
 }

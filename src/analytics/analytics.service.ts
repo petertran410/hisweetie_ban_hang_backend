@@ -6,8 +6,8 @@ export class AnalyticsService {
   constructor(private prisma: PrismaService) {}
 
   async getRevenueChart(months: number = 12) {
-    const data = [];
-    const labels = [];
+    const data: number[] = [];
+    const labels: string[] = [];
 
     for (let i = months - 1; i >= 0; i--) {
       const date = new Date();
@@ -65,7 +65,11 @@ export class AnalyticsService {
       where: {
         isActive: true,
         OR: [
-          { stockQuantity: { lte: this.prisma.product.fields.minStockAlert } },
+          {
+            stockQuantity: {
+              lte: this.prisma.$queryRaw`min_stock_alert`,
+            },
+          },
           { stockQuantity: 0 },
         ],
       },
@@ -105,43 +109,58 @@ export class AnalyticsService {
     };
   }
 
-  async getRecentActivities() {
-    const [recentOrders, recentPayments] = await Promise.all([
-      this.prisma.order.findMany({
-        take: 10,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          customer: true,
-          creator: true,
+  async getDashboardStats() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [
+      todayRevenue,
+      monthRevenue,
+      totalCustomers,
+      totalProducts,
+      lowStockCount,
+      pendingOrders,
+    ] = await Promise.all([
+      this.prisma.order.aggregate({
+        where: {
+          orderDate: { gte: today },
+          orderStatus: { not: 'cancelled' },
         },
+        _sum: { grandTotal: true },
       }),
-      this.prisma.orderPayment.findMany({
-        take: 10,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          order: true,
-          creator: true,
+      this.prisma.order.aggregate({
+        where: {
+          orderDate: {
+            gte: new Date(today.getFullYear(), today.getMonth(), 1),
+          },
+          orderStatus: { not: 'cancelled' },
         },
+        _sum: { grandTotal: true },
+      }),
+      this.prisma.customer.count({
+        where: { isActive: true, isWalkIn: false },
+      }),
+      this.prisma.product.count({
+        where: { isActive: true },
+      }),
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) as count 
+        FROM products 
+        WHERE is_active = true 
+        AND stock_quantity <= min_stock_alert
+      `,
+      this.prisma.order.count({
+        where: { orderStatus: 'pending' },
       }),
     ]);
 
-    const activities = [
-      ...recentOrders.map((order) => ({
-        type: 'order',
-        description: `Đơn hàng ${order.code} - ${order.customer?.name || 'Khách vãng lai'}`,
-        amount: order.grandTotal,
-        user: order.creator?.name,
-        createdAt: order.createdAt,
-      })),
-      ...recentPayments.map((payment) => ({
-        type: 'payment',
-        description: `Thanh toán ${payment.order.code}`,
-        amount: payment.amount,
-        user: payment.creator?.name,
-        createdAt: payment.createdAt,
-      })),
-    ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-    return activities.slice(0, 20);
+    return {
+      todayRevenue: todayRevenue._sum.grandTotal || 0,
+      monthRevenue: monthRevenue._sum.grandTotal || 0,
+      totalCustomers,
+      totalProducts,
+      lowStockCount: Number(lowStockCount[0].count),
+      pendingOrders,
+    };
   }
 }
