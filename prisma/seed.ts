@@ -85,12 +85,12 @@ async function main() {
   }
 
   const adminUser = await prisma.user.upsert({
-    where: { email: 'admin@hisweetie.com' },
+    where: { email: 'dieptra.sg@gmail.com' },
     update: {},
     create: {
       name: 'Admin',
-      email: 'admin@hisweetie.com',
-      password: await bcrypt.hash('admin123', 10),
+      email: 'dieptra.sg@gmail.com',
+      password: await bcrypt.hash('Dieptra@123', 10),
       isActive: true,
     },
   });
@@ -110,6 +110,64 @@ async function main() {
   });
 
   console.log('Seed completed successfully');
+
+  const additionalPermissions = [
+    { resource: 'roles', action: 'view' },
+    { resource: 'roles', action: 'create' },
+    { resource: 'roles', action: 'update' },
+    { resource: 'roles', action: 'delete' },
+    { resource: 'permissions', action: 'view' },
+    { resource: 'permissions', action: 'create' },
+    { resource: 'permissions', action: 'update' },
+    { resource: 'permissions', action: 'delete' },
+    { resource: 'suppliers', action: 'view' },
+    { resource: 'suppliers', action: 'create' },
+    { resource: 'suppliers', action: 'update' },
+    { resource: 'suppliers', action: 'delete' },
+    { resource: 'purchase_orders', action: 'view' },
+    { resource: 'purchase_orders', action: 'create' },
+    { resource: 'purchase_orders', action: 'update' },
+    { resource: 'purchase_orders', action: 'delete' },
+    { resource: 'posts', action: 'view' },
+    { resource: 'posts', action: 'create' },
+    { resource: 'posts', action: 'update' },
+    { resource: 'posts', action: 'delete' },
+    { resource: 'dashboard', action: 'view' },
+    { resource: 'analytics', action: 'view' },
+  ];
+
+  for (const perm of additionalPermissions) {
+    await prisma.permission.upsert({
+      where: {
+        resource_action: { resource: perm.resource, action: perm.action },
+      },
+      update: {},
+      create: {
+        name: `${perm.resource}.${perm.action}`,
+        slug: `${perm.resource}.${perm.action}`,
+        resource: perm.resource,
+        action: perm.action,
+        description: `Can ${perm.action} ${perm.resource}`,
+      },
+    });
+  }
+
+  const allNewPermissions = await prisma.permission.findMany();
+  for (const perm of allNewPermissions) {
+    await prisma.rolePermission.upsert({
+      where: {
+        roleId_permissionId: {
+          roleId: adminRole.id,
+          permissionId: perm.id,
+        },
+      },
+      update: {},
+      create: {
+        roleId: adminRole.id,
+        permissionId: perm.id,
+      },
+    });
+  }
 }
 
 main()

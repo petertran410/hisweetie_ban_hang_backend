@@ -6,6 +6,8 @@ import { join } from 'path';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { RolesModule } from './roles/roles.module';
+import { PermissionsModule } from './permissions/permissions.module';
 import { ProductsModule } from './products/products.module';
 import { ProductVariantsModule } from './product-variants/product-variants.module';
 import { CategoriesModule } from './categories/categories.module';
@@ -17,8 +19,10 @@ import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { ReportsModule } from './reports/reports.module';
 import { UploadModule } from './upload/upload.module';
 import { ExportModule } from './export/export.module';
+import { ImportModule } from './import/import.module';
 import { PdfModule } from './pdf/pdf.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { PostsModule } from './posts/posts.module';
 import { TagsModule } from './tags/tags.module';
 import { PostMetaModule } from './post-meta/post-meta.module';
@@ -42,6 +46,8 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     PrismaModule,
     AuthModule,
     UsersModule,
+    RolesModule,
+    PermissionsModule,
     ProductsModule,
     ProductVariantsModule,
     CategoriesModule,
@@ -53,8 +59,10 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     ReportsModule,
     UploadModule,
     ExportModule,
+    ImportModule,
     PdfModule,
     AnalyticsModule,
+    DashboardModule,
     PostsModule,
     TagsModule,
     PostMetaModule,
