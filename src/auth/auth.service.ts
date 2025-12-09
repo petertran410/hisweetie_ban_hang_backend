@@ -83,8 +83,8 @@ export class AuthService {
   }
 
   async validateUser(userId: number) {
-    return this.prisma.user.findUnique({
-      where: { id: userId, isActive: true },
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
       select: {
         id: true,
         name: true,
@@ -94,6 +94,12 @@ export class AuthService {
         isActive: true,
       },
     });
+
+    if (!user || !user.isActive) {
+      return null;
+    }
+
+    return user;
   }
 
   async getProfile(userId: number) {
@@ -136,6 +142,10 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
     });
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
 
     const isPasswordValid = await bcrypt.compare(oldPassword, user.password);
     if (!isPasswordValid) {
