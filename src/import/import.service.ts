@@ -8,7 +8,7 @@ export class ImportService {
 
   async importProducts(file: Express.Multer.File) {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(file.buffer);
+    await workbook.xlsx.load(file.buffer as any);
 
     const worksheet = workbook.worksheets[0];
     if (!worksheet) {
@@ -22,34 +22,54 @@ export class ImportService {
       if (rowNumber === 1) return;
 
       try {
+        const codeValue = row.getCell(1).value;
+        const nameValue = row.getCell(2).value;
+        const descriptionValue = row.getCell(3).value;
+        const categoryIdValue = row.getCell(4).value;
+        const variantIdValue = row.getCell(5).value;
+        const purchasePriceValue = row.getCell(6).value;
+        const retailPriceValue = row.getCell(7).value;
+        const collaboratorPriceValue = row.getCell(8).value;
+        const stockQuantityValue = row.getCell(9).value;
+        const minStockAlertValue = row.getCell(10).value;
+        const isActiveValue = row.getCell(11).value;
+
         const product = {
-          code: row.getCell(1).value?.toString() || '',
-          name: row.getCell(2).value?.toString() || '',
-          description: row.getCell(3).value?.toString() || null,
-          categoryId: row.getCell(4).value
-            ? parseInt(row.getCell(4).value.toString())
-            : null,
-          variantId: row.getCell(5).value
-            ? parseInt(row.getCell(5).value.toString())
-            : null,
-          purchasePrice: row.getCell(6).value
-            ? parseInt(row.getCell(6).value.toString())
-            : 0,
-          retailPrice: row.getCell(7).value
-            ? parseInt(row.getCell(7).value.toString())
-            : 0,
-          collaboratorPrice: row.getCell(8).value
-            ? parseInt(row.getCell(8).value.toString())
-            : 0,
-          stockQuantity: row.getCell(9).value
-            ? parseInt(row.getCell(9).value.toString())
-            : 0,
-          minStockAlert: row.getCell(10).value
-            ? parseInt(row.getCell(10).value.toString())
-            : 0,
-          isActive: row.getCell(11).value
-            ? row.getCell(11).value.toString().toLowerCase() === 'true'
-            : true,
+          code: codeValue?.toString() || '',
+          name: nameValue?.toString() || '',
+          description: descriptionValue?.toString() || null,
+          categoryId:
+            categoryIdValue && categoryIdValue.toString()
+              ? parseInt(categoryIdValue.toString())
+              : null,
+          variantId:
+            variantIdValue && variantIdValue.toString()
+              ? parseInt(variantIdValue.toString())
+              : null,
+          purchasePrice:
+            purchasePriceValue && purchasePriceValue.toString()
+              ? parseInt(purchasePriceValue.toString())
+              : 0,
+          retailPrice:
+            retailPriceValue && retailPriceValue.toString()
+              ? parseInt(retailPriceValue.toString())
+              : 0,
+          collaboratorPrice:
+            collaboratorPriceValue && collaboratorPriceValue.toString()
+              ? parseInt(collaboratorPriceValue.toString())
+              : 0,
+          stockQuantity:
+            stockQuantityValue && stockQuantityValue.toString()
+              ? parseInt(stockQuantityValue.toString())
+              : 0,
+          minStockAlert:
+            minStockAlertValue && minStockAlertValue.toString()
+              ? parseInt(minStockAlertValue.toString())
+              : 0,
+          isActive:
+            isActiveValue && isActiveValue.toString()
+              ? isActiveValue.toString().toLowerCase() === 'true'
+              : true,
         };
 
         if (!product.code || !product.name) {
@@ -97,7 +117,7 @@ export class ImportService {
 
   async importCustomers(file: Express.Multer.File) {
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(file.buffer);
+    await workbook.xlsx.load(file.buffer as any);
 
     const worksheet = workbook.worksheets[0];
     if (!worksheet) {
@@ -111,20 +131,32 @@ export class ImportService {
       if (rowNumber === 1) return;
 
       try {
+        const codeValue = row.getCell(1).value;
+        const nameValue = row.getCell(2).value;
+        const phoneValue = row.getCell(3).value;
+        const facebookValue = row.getCell(4).value;
+        const zaloValue = row.getCell(5).value;
+        const addressValue = row.getCell(6).value;
+        const notesValue = row.getCell(7).value;
+        const customerTypeIdValue = row.getCell(8).value;
+        const isActiveValue = row.getCell(9).value;
+
         const customer = {
-          code: row.getCell(1).value?.toString() || null,
-          name: row.getCell(2).value?.toString() || '',
-          phone: row.getCell(3).value?.toString() || null,
-          facebook: row.getCell(4).value?.toString() || null,
-          zalo: row.getCell(5).value?.toString() || null,
-          address: row.getCell(6).value?.toString() || null,
-          notes: row.getCell(7).value?.toString() || null,
-          customerTypeId: row.getCell(8).value
-            ? parseInt(row.getCell(8).value.toString())
-            : null,
-          isActive: row.getCell(9).value
-            ? row.getCell(9).value.toString().toLowerCase() === 'true'
-            : true,
+          code: codeValue?.toString() || null,
+          name: nameValue?.toString() || '',
+          phone: phoneValue?.toString() || null,
+          facebook: facebookValue?.toString() || null,
+          zalo: zaloValue?.toString() || null,
+          address: addressValue?.toString() || null,
+          notes: notesValue?.toString() || null,
+          customerTypeId:
+            customerTypeIdValue && customerTypeIdValue.toString()
+              ? parseInt(customerTypeIdValue.toString())
+              : null,
+          isActive:
+            isActiveValue && isActiveValue.toString()
+              ? isActiveValue.toString().toLowerCase() === 'true'
+              : true,
         };
 
         if (!customer.name) {
@@ -163,7 +195,7 @@ export class ImportService {
 
     return {
       total: customers.length,
-      imported: imported.length,
+      imported: customers.length,
       failed: failed.length,
       errors: [...errors, ...failed],
     };
