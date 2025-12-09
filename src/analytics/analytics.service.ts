@@ -61,26 +61,14 @@ export class AnalyticsService {
   }
 
   async getLowStockProducts() {
-    return this.prisma.product.findMany({
-      where: {
-        isActive: true,
-        OR: [
-          {
-            stockQuantity: {
-              lte: this.prisma.$queryRaw`min_stock_alert`,
-            },
-          },
-          { stockQuantity: 0 },
-        ],
-      },
-      include: {
-        category: true,
-        variant: true,
-      },
-      orderBy: {
-        stockQuantity: 'asc',
-      },
-    });
+    const lowStock = await this.prisma.$queryRaw<any[]>`
+      SELECT * FROM products 
+      WHERE is_active = true 
+      AND stock_quantity <= min_stock_alert
+      ORDER BY stock_quantity ASC
+    `;
+
+    return lowStock;
   }
 
   async getDebtSummary() {
@@ -162,5 +150,49 @@ export class AnalyticsService {
       lowStockCount: Number(lowStockCount[0].count),
       pendingOrders,
     };
+  }
+
+  async getRecentActivities() {
+    const [recentOrders, recentPurchaseOrders] = await Promise.all([
+      this.prisma.order.findMany({
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          customer: { select: { name: true } },
+          creator: { select: { name: true } },
+        },
+      }),
+      this.prisma.purchaseOrder.findMany({
+        take: 10,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { name: true } },
+          creator: { select: { name: true } },
+        },
+      }),
+    ]);
+
+    const activities = [
+      ...recentOrders.map((order) => ({
+        type: 'order',
+        id: order.id,
+        code: order.code,
+        description: `Đơn hàng ${order.code} - ${order.customer?.name || 'Khách vãng lai'}`,
+        amount: order.grandTotal,
+        createdBy: order.creator?.name,
+        createdAt: order.createdAt,
+      })),
+      ...recentPurchaseOrders.map((po) => ({
+        type: 'purchase',
+        id: po.id,
+        code: po.code,
+        description: `Phiếu nhập ${po.code} - ${po.supplier.name}`,
+        amount: po.grandTotal,
+        createdBy: po.creator?.name,
+        createdAt: po.createdAt,
+      })),
+    ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+    return activities.slice(0, 20);
   }
 }

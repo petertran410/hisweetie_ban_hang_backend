@@ -1,122 +1,96 @@
 import {
-  IsNumber,
   IsString,
   IsOptional,
-  IsDate,
+  IsInt,
+  IsDateString,
   IsArray,
   ValidateNested,
-  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class CreatePurchaseOrderItemDto {
-  @IsNumber()
-  @Type(() => Number)
+export class PurchaseOrderItemDto {
+  @IsInt()
   productId: number;
 
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
+  @IsInt()
   quantity: number;
 
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
+  @IsInt()
   unitPrice: number;
 }
 
 export class CreatePurchaseOrderDto {
-  @IsNumber()
-  @Type(() => Number)
+  @IsInt()
   supplierId: number;
 
-  @IsDate()
-  @Type(() => Date)
-  purchaseDate: Date;
-
+  @IsDateString()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
+  purchaseDate?: string;
+
+  @IsInt()
+  @IsOptional()
   shippingFee?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   otherFees?: number;
 
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  paidAmount?: number;
-
-  @IsOptional()
   @IsString()
+  @IsOptional()
   notes?: string;
 
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreatePurchaseOrderItemDto)
-  items: CreatePurchaseOrderItemDto[];
+  @Type(() => PurchaseOrderItemDto)
+  items: PurchaseOrderItemDto[];
 }
 
 export class UpdatePurchaseOrderDto {
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   supplierId?: number;
 
+  @IsDateString()
   @IsOptional()
-  @IsDate()
-  @Type(() => Date)
-  purchaseDate?: Date;
+  purchaseDate?: string;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   shippingFee?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   otherFees?: number;
 
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  paidAmount?: number;
-
-  @IsOptional()
   @IsString()
+  @IsOptional()
   notes?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PurchaseOrderItemDto)
+  @IsOptional()
+  items?: PurchaseOrderItemDto[];
 }
 
 export class PurchaseOrderQueryDto {
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   page?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   limit?: number;
 
-  @IsOptional()
   @IsString()
+  @IsOptional()
   search?: string;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   supplierId?: number;
 
-  @IsOptional()
   @IsString()
-  paymentStatus?: string;
+  @IsOptional()
+  status?: string;
 }

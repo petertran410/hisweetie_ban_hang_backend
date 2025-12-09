@@ -1,40 +1,63 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { ReportsService } from './reports.service';
-import { Type } from 'class-transformer';
-import { IsDate } from 'class-validator';
-
-class ReportQueryDto {
-  @IsDate()
-  @Type(() => Date)
-  dateFrom: Date;
-
-  @IsDate()
-  @Type(() => Date)
-  dateTo: Date;
-}
 
 @Controller('reports')
 export class ReportsController {
   constructor(private reportsService: ReportsService) {}
 
   @Get('sales')
-  getSalesReport(@Query() query: ReportQueryDto) {
-    return this.reportsService.getSalesReport(query.dateFrom, query.dateTo);
-  }
-
-  @Get('customers')
-  getCustomerReport(@Query() query: ReportQueryDto) {
-    return this.reportsService.getCustomerReport(query.dateFrom, query.dateTo);
+  getSalesReport(
+    @Query('dateFrom') dateFrom: string,
+    @Query('dateTo') dateTo: string,
+  ) {
+    return this.reportsService.getSalesReport(
+      new Date(dateFrom),
+      new Date(dateTo),
+    );
   }
 
   @Get('products')
-  getProductReport(@Query() query: ReportQueryDto) {
-    return this.reportsService.getProductReport(query.dateFrom, query.dateTo);
+  getProductReport(
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    if (dateFrom && dateTo) {
+      return this.reportsService.getProductReport(
+        new Date(dateFrom),
+        new Date(dateTo),
+      );
+    }
+    return this.reportsService.getProductReport();
+  }
+
+  @Get('customers')
+  getCustomerReport(
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+  ) {
+    if (dateFrom && dateTo) {
+      return this.reportsService.getCustomerReport(
+        new Date(dateFrom),
+        new Date(dateTo),
+      );
+    }
+    return this.reportsService.getCustomerReport();
   }
 
   @Get('inventory')
   getInventoryReport() {
     return this.reportsService.getInventoryReport();
+  }
+
+  @Get('financial')
+  getFinancialReport(
+    @Query('dateFrom') dateFrom: string,
+    @Query('dateTo') dateTo: string,
+  ) {
+    return this.reportsService.getFinancialReport(
+      new Date(dateFrom),
+      new Date(dateTo),
+    );
   }
 
   @Get('dashboard')

@@ -42,13 +42,13 @@ export class OrdersController {
     return this.ordersService.remove(+id);
   }
 
-  @Put(':id/complete')
+  @Post(':id/complete')
   complete(@Param('id') id: string) {
-    return this.ordersService.completeOrder(+id);
+    return this.ordersService.complete(+id);
   }
 
-  @Put(':id/cancel')
+  @Post(':id/cancel')
   cancel(@Param('id') id: string) {
-    return this.ordersService.cancelOrder(+id);
+    return this.ordersService.cancel(+id);
   }
 }

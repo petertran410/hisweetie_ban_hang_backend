@@ -1,148 +1,125 @@
 import {
-  IsNumber,
   IsString,
   IsOptional,
-  IsDate,
+  IsInt,
+  IsDateString,
   IsArray,
   ValidateNested,
-  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class CreateOrderItemDto {
-  @IsNumber()
-  @Type(() => Number)
+export class OrderItemDto {
+  @IsInt()
   productId: number;
 
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
+  @IsInt()
   quantity: number;
 
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
+  @IsInt()
   unitPrice: number;
 }
 
 export class CreateOrderDto {
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   customerId?: number;
 
+  @IsDateString()
   @IsOptional()
-  @IsDate()
-  @Type(() => Date)
-  orderDate?: Date;
+  orderDate?: string;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   discountAmount?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   depositAmount?: number;
 
-  @IsOptional()
   @IsString()
-  orderStatus?: string;
-
   @IsOptional()
-  @IsString()
   notes?: string;
+
+  @IsString()
+  @IsOptional()
+  orderStatus?: string;
 
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreateOrderItemDto)
-  items: CreateOrderItemDto[];
+  @Type(() => OrderItemDto)
+  items: OrderItemDto[];
 }
 
 export class UpdateOrderDto {
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   customerId?: number;
 
+  @IsDateString()
   @IsOptional()
-  @IsDate()
-  @Type(() => Date)
-  orderDate?: Date;
+  orderDate?: string;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   discountAmount?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   depositAmount?: number;
 
-  @IsOptional()
   @IsString()
+  @IsOptional()
+  notes?: string;
+
+  @IsString()
+  @IsOptional()
   orderStatus?: string;
 
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => OrderItemDto)
   @IsOptional()
-  @IsString()
-  notes?: string;
+  items?: OrderItemDto[];
 }
 
 export class OrderQueryDto {
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   page?: number;
 
+  @IsInt()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
   limit?: number;
 
-  @IsOptional()
   @IsString()
+  @IsOptional()
   search?: string;
 
+  @IsString()
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
+  status?: string;
+
+  @IsInt()
+  @IsOptional()
   customerId?: number;
-
-  @IsOptional()
-  @IsString()
-  orderStatus?: string;
-
-  @IsOptional()
-  @IsString()
-  paymentStatus?: string;
 }
 
 export class CreateOrderPaymentDto {
-  @IsNumber()
-  @Type(() => Number)
+  @IsInt()
   orderId: number;
 
+  @IsDateString()
   @IsOptional()
-  @IsDate()
-  @Type(() => Date)
-  paymentDate?: Date;
+  paymentDate?: string;
 
-  @IsNumber()
-  @Min(1)
-  @Type(() => Number)
+  @IsInt()
   amount: number;
 
-  @IsOptional()
   @IsString()
+  @IsOptional()
   paymentMethod?: string;
 
-  @IsOptional()
   @IsString()
+  @IsOptional()
   notes?: string;
 }

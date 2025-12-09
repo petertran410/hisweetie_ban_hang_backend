@@ -44,7 +44,7 @@ export class ReportsService {
     };
   }
 
-  async getProductReport() {
+  async getProductReport(dateFrom?: Date, dateTo?: Date) {
     const products = await this.prisma.product.findMany({
       where: { isActive: true },
       include: {
@@ -61,6 +61,27 @@ export class ReportsService {
 
     const outOfStockProducts = products.filter((p) => p.stockQuantity === 0);
 
+    let soldProducts: any[] = [];
+    if (dateFrom && dateTo) {
+      soldProducts = await this.prisma.$queryRaw<any[]>`
+        SELECT 
+          p.id,
+          p.code,
+          p.name,
+          SUM(oi.quantity) as total_sold,
+          SUM(oi.total_price) as total_revenue
+        FROM products p
+        INNER JOIN order_items oi ON p.id = oi.product_id
+        INNER JOIN orders o ON oi.order_id = o.id
+        WHERE o.order_date >= ${dateFrom}
+        AND o.order_date <= ${dateTo}
+        AND o.order_status != 'cancelled'
+        GROUP BY p.id, p.code, p.name
+        ORDER BY total_sold DESC
+        LIMIT 20
+      `;
+    }
+
     return {
       totalProducts: products.length,
       lowStockCount: lowStockProducts.length,
@@ -68,10 +89,11 @@ export class ReportsService {
       products,
       lowStockProducts,
       outOfStockProducts,
+      soldProducts,
     };
   }
 
-  async getCustomerReport() {
+  async getCustomerReport(dateFrom?: Date, dateTo?: Date) {
     const customers = await this.prisma.customer.findMany({
       where: { isActive: true, isWalkIn: false },
       include: {
@@ -88,11 +110,29 @@ export class ReportsService {
 
     const customersWithDebt = customers.filter((c) => c.totalDebt > 0);
 
+    let newCustomers: any[] = [];
+    if (dateFrom && dateTo) {
+      newCustomers = await this.prisma.customer.findMany({
+        where: {
+          isActive: true,
+          isWalkIn: false,
+          createdAt: {
+            gte: dateFrom,
+            lte: dateTo,
+          },
+        },
+        include: {
+          customerType: true,
+        },
+      });
+    }
+
     return {
       totalCustomers: customers.length,
-      customersWithDebt: customersWithDebt.length,
+      totalCustomersWithDebt: customersWithDebt.length,
       topCustomers,
       customersWithDebt,
+      newCustomers,
     };
   }
 
@@ -162,6 +202,61 @@ export class ReportsService {
       customerDebt,
       supplierDebt,
       netDebt: customerDebt - supplierDebt,
+    };
+  }
+
+  async getDashboardStats() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [
+      todayRevenue,
+      monthRevenue,
+      totalCustomers,
+      totalProducts,
+      lowStockCount,
+      pendingOrders,
+    ] = await Promise.all([
+      this.prisma.order.aggregate({
+        where: {
+          orderDate: { gte: today },
+          orderStatus: { not: 'cancelled' },
+        },
+        _sum: { grandTotal: true },
+      }),
+      this.prisma.order.aggregate({
+        where: {
+          orderDate: {
+            gte: new Date(today.getFullYear(), today.getMonth(), 1),
+          },
+          orderStatus: { not: 'cancelled' },
+        },
+        _sum: { grandTotal: true },
+      }),
+      this.prisma.customer.count({
+        where: { isActive: true, isWalkIn: false },
+      }),
+      this.prisma.product.count({
+        where: { isActive: true },
+      }),
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) as count 
+        FROM products 
+        WHERE is_active = true 
+        AND stock_quantity <= min_stock_alert
+      `,
+      this.prisma.order.count({
+        where: { orderStatus: 'pending' },
+      }),
+    ]);
+
+    return {
+      todayRevenue: todayRevenue._sum.grandTotal || 0,
+      monthRevenue: monthRevenue._sum.grandTotal || 0,
+      totalCustomers,
+      totalProducts,
+      lowStockCount: Number(lowStockCount[0].count),
+      pendingOrders,
     };
   }
 }
