@@ -7,11 +7,17 @@ import {
   Body,
   Param,
   Query,
-  Req,
+  UseGuards,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
+@ApiTags('Orders')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
 @Controller('orders')
 export class OrdersController {
   constructor(private ordersService: OrdersService) {}
@@ -27,9 +33,8 @@ export class OrdersController {
   }
 
   @Post()
-  create(@Body() dto: CreateOrderDto, @Req() req: any) {
-    const userId = req.user?.id || 1;
-    return this.ordersService.create(dto, userId);
+  create(@Body() dto: CreateOrderDto, @CurrentUser() user: any) {
+    return this.ordersService.create(dto, user.id);
   }
 
   @Put(':id')
@@ -40,15 +45,5 @@ export class OrdersController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.ordersService.remove(+id);
-  }
-
-  @Post(':id/complete')
-  complete(@Param('id') id: string) {
-    return this.ordersService.complete(+id);
-  }
-
-  @Post(':id/cancel')
-  cancel(@Param('id') id: string) {
-    return this.ordersService.cancel(+id);
   }
 }
