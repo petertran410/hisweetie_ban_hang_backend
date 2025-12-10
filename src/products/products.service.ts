@@ -70,7 +70,7 @@ export class ProductsService {
   async checkLowStock() {
     return this.prisma.$queryRaw`
       SELECT * FROM products 
-      WHERE is_active = true 
+      WHERE isActive = true 
       AND stock_quantity <= min_stock_alert
       ORDER BY stock_quantity ASC
     `;
