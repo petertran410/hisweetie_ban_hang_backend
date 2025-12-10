@@ -58,32 +58,32 @@ export class ReportsService {
     });
 
     const lowStockProducts = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM products 
-      WHERE "isActive" = true 
-      AND stock_quantity <= min_stock_alert
-    `;
+    SELECT * FROM products 
+    WHERE "isActive" = true 
+    AND "stockQuantity" <= "minStockAlert"
+  `;
 
     const outOfStockProducts = products.filter((p) => p.stockQuantity === 0);
 
     let soldProducts: any[] = [];
     if (dateFrom && dateTo) {
       soldProducts = await this.prisma.$queryRaw<any[]>`
-        SELECT 
-          p.id,
-          p.code,
-          p.name,
-          SUM(oi.quantity) as total_sold,
-          SUM(oi.total_price) as total_revenue
-        FROM products p
-        INNER JOIN order_items oi ON p.id = oi.product_id
-        INNER JOIN orders o ON oi.order_id = o.id
-        WHERE o.order_date >= ${dateFrom}
-        AND o.order_date <= ${dateTo}
-        AND o.order_status != 'cancelled'
-        GROUP BY p.id, p.code, p.name
-        ORDER BY total_sold DESC
-        LIMIT 20
-      `;
+      SELECT 
+        p.id,
+        p.code,
+        p.name,
+        SUM(oi.quantity) as total_sold,
+        SUM(oi.total_price) as total_revenue
+      FROM products p
+      INNER JOIN order_items oi ON p.id = oi.product_id
+      INNER JOIN orders o ON oi.order_id = o.id
+      WHERE o.order_date >= ${dateFrom}
+      AND o.order_date <= ${dateTo}
+      AND o.order_status != 'cancelled'
+      GROUP BY p.id, p.code, p.name
+      ORDER BY total_sold DESC
+      LIMIT 20
+    `;
     }
 
     return {
@@ -155,10 +155,10 @@ export class ReportsService {
     );
 
     const lowStockProducts = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM products 
-      WHERE "isActive" = true 
-      AND stock_quantity <= min_stock_alert
-    `;
+    SELECT * FROM products 
+    WHERE "isActive" = true 
+    AND "stockQuantity" <= "minStockAlert"
+  `;
 
     return {
       totalProducts: products.length,
@@ -247,11 +247,11 @@ export class ReportsService {
         where: { isActive: true },
       }),
       this.prisma.$queryRaw<[{ count: bigint }]>`
-        SELECT COUNT(*) as count 
-        FROM products 
-        WHERE "isActive" = true 
-        AND stock_quantity <= min_stock_alert
-      `,
+      SELECT COUNT(*) as count 
+      FROM products 
+      WHERE "isActive" = true 
+      AND "stockQuantity" <= "minStockAlert"
+    `,
       this.prisma.order.count({
         where: { orderStatus: 'pending' },
       }),

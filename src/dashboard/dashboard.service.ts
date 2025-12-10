@@ -49,12 +49,12 @@ export class DashboardService {
           _sum: { totalDebt: true },
         }),
         this.prisma.$queryRaw<[{ count: string }]>`
-          SELECT COUNT(*) as count 
-          FROM products 
-          WHERE "isActive" = true 
-          AND stock_quantity > 0 
-          AND stock_quantity <= min_stock_alert
-        `,
+        SELECT COUNT(*) as count 
+        FROM products 
+        WHERE "isActive" = true 
+        AND "stockQuantity" > 0 
+        AND "stockQuantity" <= "minStockAlert"
+      `,
         this.prisma.product.count({
           where: { isActive: true, stockQuantity: 0 },
         }),
@@ -163,12 +163,12 @@ export class DashboardService {
 
   async getLowStockProducts(limit: number = 20) {
     const products = await this.prisma.$queryRaw<any[]>`
-      SELECT * FROM products 
-      WHERE "isActive" = true 
-      AND stock_quantity <= min_stock_alert
-      ORDER BY stock_quantity ASC
-      LIMIT ${limit}
-    `;
+    SELECT * FROM products 
+    WHERE "isActive" = true 
+    AND "stockQuantity" <= "minStockAlert"
+    ORDER BY "stockQuantity" ASC
+    LIMIT ${limit}
+  `;
 
     return products;
   }
