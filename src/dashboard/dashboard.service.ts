@@ -51,7 +51,7 @@ export class DashboardService {
         this.prisma.$queryRaw<[{ count: string }]>`
           SELECT COUNT(*) as count 
           FROM products 
-          WHERE isActive = true 
+          WHERE "isActive" = true 
           AND stock_quantity > 0 
           AND stock_quantity <= min_stock_alert
         `,
@@ -164,7 +164,7 @@ export class DashboardService {
   async getLowStockProducts(limit: number = 20) {
     const products = await this.prisma.$queryRaw<any[]>`
       SELECT * FROM products 
-      WHERE isActive = true 
+      WHERE "isActive" = true 
       AND stock_quantity <= min_stock_alert
       ORDER BY stock_quantity ASC
       LIMIT ${limit}

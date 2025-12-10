@@ -63,7 +63,7 @@ export class AnalyticsService {
   async getLowStockProducts() {
     const lowStock = await this.prisma.$queryRaw<any[]>`
       SELECT * FROM products 
-      WHERE isActive = true 
+      WHERE "isActive" = true 
       AND stock_quantity <= min_stock_alert
       ORDER BY stock_quantity ASC
     `;
@@ -134,7 +134,7 @@ export class AnalyticsService {
       this.prisma.$queryRaw<[{ count: bigint }]>`
         SELECT COUNT(*) as count 
         FROM products 
-        WHERE isActive = true 
+        WHERE "isActive" = true 
         AND stock_quantity <= min_stock_alert
       `,
       this.prisma.order.count({
