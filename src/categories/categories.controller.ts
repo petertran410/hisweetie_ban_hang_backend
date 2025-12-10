@@ -48,7 +48,6 @@ export class CategoriesController {
       name?: string;
       description?: string;
       parentId?: number;
-      isActive?: boolean;
     },
   ) {
     return this.categoriesService.update(+id, data);

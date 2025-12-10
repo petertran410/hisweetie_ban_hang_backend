@@ -7,7 +7,6 @@ export class CategoriesService {
 
   async findAll() {
     return this.prisma.category.findMany({
-      where: { isActive: true },
       include: {
         parent: true,
         children: true,
@@ -21,10 +20,9 @@ export class CategoriesService {
 
   async findRoots() {
     return this.prisma.category.findMany({
-      where: { isActive: true, parentId: null },
+      where: { parentId: null },
       include: {
         children: {
-          where: { isActive: true },
           include: {
             _count: {
               select: { products: true },
@@ -44,11 +42,7 @@ export class CategoriesService {
       where: { id },
       include: {
         parent: true,
-        children: {
-          where: { isActive: true },
-        },
         products: {
-          where: { isActive: true },
           select: { id: true, code: true, name: true, retailPrice: true },
         },
         _count: {
@@ -97,7 +91,6 @@ export class CategoriesService {
       name?: string;
       description?: string;
       parentId?: number;
-      isActive?: boolean;
     },
   ) {
     const existing = await this.prisma.category.findUnique({
@@ -113,7 +106,6 @@ export class CategoriesService {
     if (data.description !== undefined)
       updateData.description = data.description;
     if (data.parentId !== undefined) updateData.parentId = data.parentId;
-    if (data.isActive !== undefined) updateData.isActive = data.isActive;
 
     const updated = await this.prisma.category.update({
       where: { id },
@@ -184,7 +176,7 @@ export class CategoriesService {
 
   async findChildren(parentId: number) {
     return this.prisma.category.findMany({
-      where: { parentId, isActive: true },
+      where: { parentId },
       include: {
         _count: {
           select: { products: true },
