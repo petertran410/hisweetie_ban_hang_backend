@@ -7,294 +7,34 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ==================== USER & AUTHENTICATION ====================
+
 model User {
-  id          Int      @id @default(autoincrement())
-  name        String
-  email       String   @unique
-  password    String?
-  phone       String?
-  avatar      String?
-  googleId    String?  @unique
-  isActive    Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  createdOrders         Order[]          @relation("OrderCreator")
-  createdPayments       OrderPayment[]   @relation("PaymentCreator")
-  createdPurchaseOrders PurchaseOrder[]  @relation("PurchaseOrderCreator")
-  posts                 Post[]           @relation("PostAuthor")
-  userRoles             UserRole[]
-  
-  @@map("users")
-}
-
-
-model Category {
-  id          Int       @id @default(autoincrement())
-  name        String
-  description String?
-  parentId    Int? 
-  isActive    Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  parent   Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
-  children Category[] @relation("CategoryToCategory")
-  products Product[]
-  
-  @@map("categories")
-}
-
-model ProductVariant {
-  id          Int       @id @default(autoincrement())
-  name        String
-  code        String    @unique
-  description String?
-  isActive    Boolean   @default(true)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  products Product[]
-  
-  @@map("product_variants")
-}
-
-model Product {
-  id                 Int       @id @default(autoincrement())
-  code               String    @unique
-  name               String
-  slug               String    @unique
-  description        String?
-  image              String?
-  categoryId         Int?
-  variantId          Int?
-  purchasePrice      Int       @default(0)
-  retailPrice        Int       @default(0)
-  collaboratorPrice  Int       @default(0)
-  stockQuantity      Int       @default(0)
-  minStockAlert      Int       @default(0)
-  isActive           Boolean   @default(true)
-  createdAt          DateTime  @default(now())
-  updatedAt          DateTime  @updatedAt
-  
-  category          Category?        @relation(fields: [categoryId], references: [id])
-  variant           ProductVariant?  @relation(fields: [variantId], references: [id])
-  orderItems        OrderItem[]
-  purchaseOrderItems PurchaseOrderItem[]
-  
-  @@map("products")
-}
-
-model CustomerType {
-  id          Int       @id @default(autoincrement())
-  name        String
-  description String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  customers Customer[]
-  
-  @@map("customer_types")
-}
-
-model Customer {
-  id              Int      @id @default(autoincrement())
-  code            String?  @unique
-  name            String
-  phone           String?
-  facebook        String?
-  zalo            String?
-  address         String?
-  notes           String?
-  customerTypeId  Int?
-  totalPurchased  Int      @default(0)
-  totalDebt       Int      @default(0)
-  isWalkIn        Boolean  @default(false)
-  isActive        Boolean  @default(true)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
-  customerType CustomerType? @relation(fields: [customerTypeId], references: [id])
-  orders       Order[]
-  
-  @@map("customers")
-}
-
-model Supplier {
-  id            Int      @id @default(autoincrement())
-  code          String?  @unique
-  name          String
-  phone         String?
-  email         String?
-  address       String?
-  contactPerson String?
-  notes         String?
-  totalDebt     Int      @default(0)
-  isActive      Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
-  purchaseOrders PurchaseOrder[]
-  
-  @@map("suppliers")
-}
-
-model Order {
-  id             Int      @id @default(autoincrement())
-  code           String   @unique
-  customerId     Int?
-  orderDate      DateTime @default(now())
-  totalAmount    Int      @default(0)
-  discountAmount Int      @default(0)
-  grandTotal     Int      @default(0)
-  paidAmount     Int      @default(0)
-  debtAmount     Int      @default(0)
-  depositAmount  Int      @default(0)
-  paymentStatus  String   @default("unpaid")
-  orderStatus    String   @default("pending")
-  notes          String?
-  createdBy      Int
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  
-  customer Customer?      @relation(fields: [customerId], references: [id])
-  creator  User           @relation("OrderCreator", fields: [createdBy], references: [id])
-  items    OrderItem[]
-  payments OrderPayment[]
-  
-  @@map("orders")
-}
-
-model OrderItem {
-  id         Int      @id @default(autoincrement())
-  orderId    Int
-  productId  Int
-  quantity   Int
-  unitPrice  Int
-  totalPrice Int
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
-  
-  @@map("order_items")
-}
-
-model OrderPayment {
-  id            Int      @id @default(autoincrement())
-  orderId       Int
-  paymentDate   DateTime @default(now())
-  amount        Int
-  paymentMethod String   @default("cash")
-  notes         String?
-  createdBy     Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
-  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  creator User  @relation("PaymentCreator", fields: [createdBy], references: [id])
-  
-  @@map("order_payments")
-}
-
-model PurchaseOrder {
-  id             Int      @id @default(autoincrement())
-  code           String   @unique
-  supplierId     Int
-  purchaseDate   DateTime
-  totalAmount    Int      @default(0)
-  shippingFee    Int      @default(0)
-  otherFees      Int      @default(0)
-  grandTotal     Int      @default(0)
-  paidAmount     Int      @default(0)
-  debtAmount     Int      @default(0)
-  paymentStatus  String   @default("unpaid")
-  notes          String?
-  createdBy      Int
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  
-  supplier Supplier             @relation(fields: [supplierId], references: [id])
-  creator  User                 @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
-  items    PurchaseOrderItem[]
-  
-  @@map("purchase_orders")
-}
-
-model PurchaseOrderItem {
-  id              Int      @id @default(autoincrement())
-  purchaseOrderId Int
-  productId       Int
-  quantity        Int
-  unitPrice       Int
-  totalPrice      Int
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
-  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  product       Product       @relation(fields: [productId], references: [id])
-  
-  @@map("purchase_order_items")
-}
-
-model Post {
-  id            Int       @id @default(autoincrement())
-  title         String
-  slug          String    @unique
-  content       String?
-  excerpt       String?
-  featuredImage String?
-  status        String    @default("draft")
-  publishedAt   DateTime?
-  authorId      Int
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  
-  author   User       @relation("PostAuthor", fields: [authorId], references: [id])
-  postMeta PostMeta[]
-  tags     PostTag[]
-  
-  @@map("posts")
-}
-
-model PostMeta {
   id        Int      @id @default(autoincrement())
-  postId    Int
-  metaKey   String
-  metaValue String?
+  name      String
+  email     String   @unique
+  password  String?
+  phone     String?
+  avatar    String?
+  googleId  String?  @unique
+  branchId  Int?
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  branch                Branch?           @relation(fields: [branchId], references: [id])
+  userRoles             UserRole[]
+  createdOrders         Order[]           @relation("OrderCreator")
+  soldOrders            Order[]           @relation("OrderSeller")
+  createdInvoices       Invoice[]         @relation("InvoiceCreator")
+  soldInvoices          Invoice[]         @relation("InvoiceSeller")
+  createdPayments       OrderPayment[]    @relation("PaymentCreator")
+  createdPurchaseOrders PurchaseOrder[]   @relation("PurchaseOrderCreator")
+  purchaseOrders        PurchaseOrder[]   @relation("PurchaseOrderBuyer")
+  posts                 Post[]            @relation("PostAuthor")
+  priceBookUsers        PriceBookUser[]
   
-  @@unique([postId, metaKey])
-  @@map("post_meta")
-}
-
-model Tag {
-  id          Int       @id @default(autoincrement())
-  name        String    @unique
-  slug        String    @unique
-  description String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  posts PostTag[]
-  
-  @@map("tags")
-}
-
-model PostTag {
-  postId    Int
-  tagId     Int
-  createdAt DateTime @default(now())
-  
-  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
-  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
-  
-  @@id([postId, tagId])
-  @@map("post_tags")
+  @@map("users")
 }
 
 model Role {
@@ -305,8 +45,8 @@ model Role {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   
-  userRoles        UserRole[]
-  rolePermissions  RolePermission[]
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
   
   @@map("roles")
 }
@@ -349,4 +89,850 @@ model RolePermission {
   
   @@id([roleId, permissionId])
   @@map("role_permissions")
+}
+
+// ==================== BRANCH & LOCATION ====================
+
+model Branch {
+  id                Int      @id @default(autoincrement())
+  name              String
+  contactNumber     String?
+  subContactNumber  String?
+  address           String?
+  locationId        Int?
+  wardName          String?
+  retailerId        Int?
+  isActive          Boolean  @default(true)
+  isLock            Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  location         Location?          @relation(fields: [locationId], references: [id])
+  users            User[]
+  orders           Order[]
+  invoices         Invoice[]
+  purchaseOrders   PurchaseOrder[]
+  inventories      Inventory[]
+  priceBookBranches PriceBookBranch[]
+  
+  @@map("branches")
+}
+
+model Location {
+  id          Int      @id @default(autoincrement())
+  name        String
+  normalName  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  branches       Branch[]
+  orderDeliveries OrderDelivery[]
+  invoiceDeliveries InvoiceDelivery[]
+  
+  @@map("locations")
+}
+
+// ==================== CUSTOMER ====================
+
+model CustomerType {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  customers Customer[]
+  
+  @@map("customer_types")
+}
+
+model CustomerGroup {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  customerGroupDetails     CustomerGroupDetail[]
+  priceBookCustomerGroups  PriceBookCustomerGroup[]
+  
+  @@map("customer_groups")
+}
+
+model Customer {
+  id              Int       @id @default(autoincrement())
+  code            String?   @unique
+  name            String
+  gender          Boolean?
+  birthDate       DateTime?
+  contactNumber   String?
+  phone           String?
+  facebook        String?
+  zalo            String?
+  address         String?
+  locationName    String?
+  wardName        String?
+  email           String?
+  type            Int       @default(0)
+  organization    String?
+  taxCode         String?
+  comments        String?
+  customerTypeId  Int?
+  retailerId      Int?
+  totalPurchased  Int       @default(0)
+  totalDebt       Int       @default(0)
+  rewardPoint     Int       @default(0)
+  psidFacebook    String?
+  isWalkIn        Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
+  customerGroupDetails CustomerGroupDetail[]
+  orders               Order[]
+  invoices             Invoice[]
+  
+  @@map("customers")
+}
+
+model CustomerGroupDetail {
+  id             Int      @id @default(autoincrement())
+  customerId     Int
+  customerGroupId Int
+  createdAt      DateTime @default(now())
+  
+  customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerGroup CustomerGroup @relation(fields: [customerGroupId], references: [id], onDelete: Cascade)
+  
+  @@unique([customerId, customerGroupId])
+  @@map("customer_group_details")
+}
+
+// ==================== SUPPLIER ====================
+
+model Supplier {
+  id            Int      @id @default(autoincrement())
+  code          String?  @unique
+  name          String
+  contactNumber String?
+  phone         String?
+  email         String?
+  address       String?
+  contactPerson String?
+  comments      String?
+  retailerId    Int?
+  totalDebt     Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  purchaseOrders PurchaseOrder[]
+  
+  @@map("suppliers")
+}
+
+// ==================== PRODUCT ====================
+
+model TradeMark {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  products Product[]
+  
+  @@map("trade_marks")
+}
+
+model Category {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  parentId    Int?
+  retailerId  Int?
+  hasChild    Boolean  @default(false)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  parent   Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryToCategory")
+  products Product[]
+  
+  @@map("categories")
+}
+
+model ProductVariant {
+  id          Int      @id @default(autoincrement())
+  name        String
+  code        String   @unique
+  description String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  products Product[]
+  
+  @@map("product_variants")
+}
+
+model Product {
+  id                Int       @id @default(autoincrement())
+  code              String    @unique
+  barCode           String?
+  name              String
+  fullName          String?
+  slug              String    @unique
+  description       String?
+  categoryId        Int?
+  tradeMarkId       Int?
+  variantId         Int?
+  masterProductId   Int?
+  masterUnitId      Int?
+  type              Int       @default(2)
+  allowsSale        Boolean   @default(true)
+  hasVariants       Boolean   @default(false)
+  basePrice         Decimal   @default(0) @db.Decimal(18, 2)
+  purchasePrice     Decimal   @default(0) @db.Decimal(18, 2)
+  retailPrice       Decimal   @default(0) @db.Decimal(18, 2)
+  collaboratorPrice Decimal   @default(0) @db.Decimal(18, 2)
+  unit              String?
+  conversionValue   Decimal   @default(1) @db.Decimal(18, 4)
+  weight            Decimal?  @db.Decimal(18, 4)
+  stockQuantity     Int       @default(0)
+  minStockAlert     Int       @default(0)
+  retailerId        Int?
+  isRewardPoint     Boolean   @default(true)
+  isActive          Boolean   @default(true)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  
+  category           Category?          @relation(fields: [categoryId], references: [id])
+  tradeMark          TradeMark?         @relation(fields: [tradeMarkId], references: [id])
+  variant            ProductVariant?    @relation(fields: [variantId], references: [id])
+  masterProduct      Product?           @relation("ProductUnits", fields: [masterProductId], references: [id])
+  productUnits       Product[]          @relation("ProductUnits")
+  attributes         ProductAttribute[]
+  images             ProductImage[]
+  inventories        Inventory[]
+  priceBookDetails   PriceBookDetail[]
+  orderItems         OrderItem[]
+  invoiceDetails     InvoiceDetail[]
+  purchaseOrderItems PurchaseOrderItem[]
+  
+  @@map("products")
+}
+
+model ProductAttribute {
+  id             Int      @id @default(autoincrement())
+  productId      Int
+  attributeName  String
+  attributeValue String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@map("product_attributes")
+}
+
+model ProductImage {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  image     String
+  createdAt DateTime @default(now())
+  
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@map("product_images")
+}
+
+model Inventory {
+  id           Int     @id @default(autoincrement())
+  productId    Int
+  productCode  String
+  productName  String
+  branchId     Int
+  branchName   String
+  cost         Decimal @default(0) @db.Decimal(18, 2)
+  onHand       Decimal @default(0) @db.Decimal(18, 4)
+  reserved     Decimal @default(0) @db.Decimal(18, 4)
+  onOrder      Decimal @default(0) @db.Decimal(18, 4)
+  minQuality   Decimal @default(0) @db.Decimal(18, 4)
+  maxQuality   Decimal @default(0) @db.Decimal(18, 4)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  
+  @@unique([productId, branchId])
+  @@map("inventories")
+}
+
+// ==================== PRICE BOOK ====================
+
+model PriceBook {
+  id              Int       @id @default(autoincrement())
+  name            String
+  isActive        Boolean   @default(true)
+  isGlobal        Boolean   @default(false)
+  startDate       DateTime?
+  endDate         DateTime?
+  forAllCusGroup  Boolean   @default(false)
+  forAllUser      Boolean   @default(false)
+  retailerId      Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  priceBookDetails        PriceBookDetail[]
+  priceBookBranches       PriceBookBranch[]
+  priceBookCustomerGroups PriceBookCustomerGroup[]
+  priceBookUsers          PriceBookUser[]
+  
+  @@map("price_books")
+}
+
+model PriceBookDetail {
+  id          Int       @id @default(autoincrement())
+  priceBookId Int
+  productId   Int
+  price       Decimal   @db.Decimal(18, 2)
+  isActive    Boolean   @default(true)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@unique([priceBookId, productId])
+  @@map("price_book_details")
+}
+
+model PriceBookBranch {
+  id          Int      @id @default(autoincrement())
+  priceBookId Int
+  branchId    Int
+  branchName  String
+  createdAt   DateTime @default(now())
+  
+  priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  
+  @@unique([priceBookId, branchId])
+  @@map("price_book_branches")
+}
+
+model PriceBookCustomerGroup {
+  id                Int      @id @default(autoincrement())
+  priceBookId       Int
+  customerGroupId   Int
+  customerGroupName String
+  createdAt         DateTime @default(now())
+  
+  priceBook     PriceBook     @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  customerGroup CustomerGroup @relation(fields: [customerGroupId], references: [id], onDelete: Cascade)
+  
+  @@unique([priceBookId, customerGroupId])
+  @@map("price_book_customer_groups")
+}
+
+model PriceBookUser {
+  id          Int      @id @default(autoincrement())
+  priceBookId Int
+  userId      Int
+  userName    String
+  createdAt   DateTime @default(now())
+  
+  priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([priceBookId, userId])
+  @@map("price_book_users")
+}
+
+// ==================== SALE CHANNEL ====================
+
+model SaleChannel {
+  id          Int      @id @default(autoincrement())
+  name        String
+  position    Int      @default(0)
+  isActivate  Boolean  @default(true)
+  retailerId  Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  orders   Order[]
+  invoices Invoice[]
+  
+  @@map("sale_channels")
+}
+
+// ==================== SURCHARGE ====================
+
+model Surcharge {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  name           String
+  valueRatio     Decimal? @db.Decimal(18, 4)
+  value          Decimal? @db.Decimal(18, 2)
+  retailerId     Int?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  orderSurcharges         OrderSurcharge[]
+  invoiceSurcharges       InvoiceSurcharge[]
+  purchaseOrderSurcharges PurchaseOrderSurcharge[]
+  
+  @@map("surcharges")
+}
+
+// ==================== BANK ACCOUNT ====================
+
+model BankAccount {
+  id            Int      @id @default(autoincrement())
+  bankName      String
+  accountNumber String
+  description   String?
+  retailerId    Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  orderPayments         OrderPayment[]
+  invoicePayments       InvoicePayment[]
+  purchaseOrderPayments PurchaseOrderPayment[]
+  
+  @@map("bank_accounts")
+}
+
+// ==================== PARTNER DELIVERY ====================
+
+model PartnerDelivery {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  name          String
+  address       String?
+  contactNumber String?
+  email         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  orderDeliveries   OrderDelivery[]
+  invoiceDeliveries InvoiceDelivery[]
+  
+  @@map("partner_deliveries")
+}
+
+// ==================== ORDER (ĐẶT HÀNG) ====================
+
+model Order {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  customerId      Int?
+  branchId        Int?
+  soldById        Int?
+  saleChannelId   Int?
+  orderDate       DateTime @default(now())
+  totalAmount     Decimal  @default(0) @db.Decimal(18, 2)
+  discount        Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio   Decimal  @default(0) @db.Decimal(18, 4)
+  grandTotal      Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount      Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount      Decimal  @default(0) @db.Decimal(18, 2)
+  depositAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  paymentStatus   String   @default("unpaid")
+  orderStatus     String   @default("pending")
+  usingCod        Boolean  @default(false)
+  description     String?
+  createdBy       Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  customer      Customer?       @relation(fields: [customerId], references: [id])
+  branch        Branch?         @relation(fields: [branchId], references: [id])
+  soldBy        User?           @relation("OrderSeller", fields: [soldById], references: [id])
+  saleChannel   SaleChannel?    @relation(fields: [saleChannelId], references: [id])
+  creator       User            @relation("OrderCreator", fields: [createdBy], references: [id])
+  items         OrderItem[]
+  payments      OrderPayment[]
+  surcharges    OrderSurcharge[]
+  delivery      OrderDelivery?
+  
+  @@map("orders")
+}
+
+model OrderItem {
+  id            Int      @id @default(autoincrement())
+  orderId       Int
+  productId     Int
+  productCode   String
+  productName   String
+  quantity      Decimal  @db.Decimal(18, 4)
+  price         Decimal  @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice    Decimal  @db.Decimal(18, 2)
+  note          String?
+  serialNumbers String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+  
+  @@map("order_items")
+}
+
+model OrderPayment {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique
+  orderId       Int
+  amount        Decimal   @db.Decimal(18, 2)
+  paymentDate   DateTime  @default(now())
+  paymentMethod String    @default("cash")
+  accountId     Int?
+  bankAccount   String?
+  description   String?
+  status        Int       @default(1)
+  statusValue   String?
+  createdBy     Int
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  account     BankAccount? @relation(fields: [accountId], references: [id])
+  creator     User         @relation("PaymentCreator", fields: [createdBy], references: [id])
+  
+  @@map("order_payments")
+}
+
+model OrderSurcharge {
+  id            Int      @id @default(autoincrement())
+  orderId       Int
+  surchargeId   Int?
+  surchargeName String
+  surValue      Decimal? @db.Decimal(18, 4)
+  price         Decimal? @db.Decimal(18, 2)
+  createdAt     DateTime @default(now())
+  
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  surcharge Surcharge? @relation(fields: [surchargeId], references: [id])
+  
+  @@map("order_surcharges")
+}
+
+model OrderDelivery {
+  id                  Int      @id @default(autoincrement())
+  orderId             Int      @unique
+  deliveryCode        String?
+  type                Int?
+  status              Int      @default(1)
+  statusValue         String?
+  price               Decimal? @db.Decimal(18, 2)
+  receiver            String
+  contactNumber       String
+  address             String
+  locationId          Int?
+  locationName        String?
+  wardName            String?
+  weight              Decimal? @db.Decimal(18, 4)
+  length              Decimal? @db.Decimal(18, 4)
+  width               Decimal? @db.Decimal(18, 4)
+  height              Decimal? @db.Decimal(18, 4)
+  partnerDeliveryId   Int?
+  expectedDelivery    DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  location        Location?        @relation(fields: [locationId], references: [id])
+  partnerDelivery PartnerDelivery? @relation(fields: [partnerDeliveryId], references: [id])
+  
+  @@map("order_deliveries")
+}
+
+// ==================== INVOICE (HÓA ĐƠN) ====================
+
+model Invoice {
+  id                Int      @id @default(autoincrement())
+  code              String   @unique
+  customerId        Int?
+  branchId          Int?
+  soldById          Int?
+  saleChannelId     Int?
+  purchaseDate      DateTime @default(now())
+  totalAmount       Decimal  @default(0) @db.Decimal(18, 2)
+  discount          Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio     Decimal  @default(0) @db.Decimal(18, 4)
+  grandTotal        Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount        Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount        Decimal  @default(0) @db.Decimal(18, 2)
+  status            Int      @default(1)
+  statusValue       String?
+  usingCod          Boolean  @default(false)
+  description       String?
+  createdBy         Int
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  customer      Customer?          @relation(fields: [customerId], references: [id])
+  branch        Branch?            @relation(fields: [branchId], references: [id])
+  soldBy        User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
+  saleChannel   SaleChannel?       @relation(fields: [saleChannelId], references: [id])
+  creator       User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  details       InvoiceDetail[]
+  payments      InvoicePayment[]
+  surcharges    InvoiceSurcharge[]
+  delivery      InvoiceDelivery?
+  
+  @@map("invoices")
+}
+
+model InvoiceDetail {
+  id            Int      @id @default(autoincrement())
+  invoiceId     Int
+  productId     Int
+  productCode   String
+  productName   String
+  quantity      Decimal  @db.Decimal(18, 4)
+  price         Decimal  @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice    Decimal  @db.Decimal(18, 2)
+  note          String?
+  serialNumbers String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+  
+  @@map("invoice_details")
+}
+
+model InvoicePayment {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  invoiceId     Int
+  amount        Decimal  @db.Decimal(18, 2)
+  paymentDate   DateTime @default(now())
+  paymentMethod String   @default("cash")
+  accountId     Int?
+  bankAccount   String?
+  description   String?
+  status        Int      @default(1)
+  statusValue   String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  invoice Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  account BankAccount? @relation(fields: [accountId], references: [id])
+  
+  @@map("invoice_payments")
+}
+
+model InvoiceSurcharge {
+  id            Int      @id @default(autoincrement())
+  invoiceId     Int
+  surchargeId   Int?
+  surchargeName String
+  surValue      Decimal? @db.Decimal(18, 4)
+  price         Decimal? @db.Decimal(18, 2)
+  createdAt     DateTime @default(now())
+  
+  invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  surcharge Surcharge? @relation(fields: [surchargeId], references: [id])
+  
+  @@map("invoice_surcharges")
+}
+
+model InvoiceDelivery {
+  id                Int      @id @default(autoincrement())
+  invoiceId         Int      @unique
+  deliveryCode      String?
+  type              Int?
+  status            Int      @default(1)
+  statusValue       String?
+  price             Decimal? @db.Decimal(18, 2)
+  receiver          String
+  contactNumber     String
+  address           String
+  locationId        Int?
+  locationName      String?
+  wardName          String?
+  weight            Decimal? @db.Decimal(18, 4)
+  length            Decimal? @db.Decimal(18, 4)
+  width             Decimal? @db.Decimal(18, 4)
+  height            Decimal? @db.Decimal(18, 4)
+  partnerDeliveryId Int?
+  usingPriceCod     Boolean  @default(false)
+  priceCodPayment   Decimal? @db.Decimal(18, 2)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  location        Location?        @relation(fields: [locationId], references: [id])
+  partnerDelivery PartnerDelivery? @relation(fields: [partnerDeliveryId], references: [id])
+  
+  @@map("invoice_deliveries")
+}
+
+// ==================== PURCHASE ORDER (NHẬP HÀNG) ====================
+
+model PurchaseOrder {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  supplierId     Int
+  branchId       Int?
+  purchaseDate   DateTime
+  totalAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  discount       Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio  Decimal  @default(0) @db.Decimal(18, 4)
+  shippingFee    Decimal  @default(0) @db.Decimal(18, 2)
+  otherFees      Decimal  @default(0) @db.Decimal(18, 2)
+  grandTotal     Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount     Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount     Decimal  @default(0) @db.Decimal(18, 2)
+  paymentStatus  String   @default("unpaid")
+  partnerType    String?
+  isDraft        Boolean  @default(false)
+  description    String?
+  purchaseById   Int?
+  createdBy      Int
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  supplier   Supplier                   @relation(fields: [supplierId], references: [id])
+  branch     Branch?                    @relation(fields: [branchId], references: [id])
+  purchaseBy User?                      @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
+  creator    User                       @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
+  items      PurchaseOrderItem[]
+  payments   PurchaseOrderPayment[]
+  surcharges PurchaseOrderSurcharge[]
+  
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              Int      @id @default(autoincrement())
+  purchaseOrderId Int
+  productId       Int
+  productCode     String
+  productName     String
+  quantity        Decimal  @db.Decimal(18, 4)
+  price           Decimal  @db.Decimal(18, 2)
+  discount        Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio   Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice      Decimal  @db.Decimal(18, 2)
+  description     String?
+  serialNumbers   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+  
+  @@map("purchase_order_items")
+}
+
+model PurchaseOrderPayment {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  purchaseOrderId Int
+  amount          Decimal  @db.Decimal(18, 2)
+  paymentDate     DateTime @default(now())
+  paymentMethod   String   @default("cash")
+  accountId       Int?
+  description     String?
+  status          Int      @default(1)
+  statusValue     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  account       BankAccount?  @relation(fields: [accountId], references: [id])
+  
+  @@map("purchase_order_payments")
+}
+
+model PurchaseOrderSurcharge {
+  id                Int      @id @default(autoincrement())
+  purchaseOrderId   Int
+  surchargeCode     String
+  surchargeName     String
+  value             Decimal? @db.Decimal(18, 2)
+  valueRatio        Decimal? @db.Decimal(18, 4)
+  isSupplierExpense Boolean  @default(false)
+  type              Int      @default(0)
+  createdAt         DateTime @default(now())
+  
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  surcharge     Surcharge?    @relation(fields: [surchargeCode], references: [code])
+  
+  @@map("purchase_order_surcharges")
+}
+
+// ==================== POST & BLOG ====================
+
+model Post {
+  id            Int       @id @default(autoincrement())
+  title         String
+  slug          String    @unique
+  content       String?
+  excerpt       String?
+  featuredImage String?
+  status        String    @default("draft")
+  publishedAt   DateTime?
+  authorId      Int
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  author   User       @relation("PostAuthor", fields: [authorId], references: [id])
+  postMeta PostMeta[]
+  tags     PostTag[]
+  
+  @@map("posts")
+}
+
+model PostMeta {
+  id        Int      @id @default(autoincrement())
+  postId    Int
+  metaKey   String
+  metaValue String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  
+  @@unique([postId, metaKey])
+  @@map("post_meta")
+}
+
+model Tag {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  posts PostTag[]
+  
+  @@map("tags")
+}
+
+model PostTag {
+  postId    Int
+  tagId     Int
+  createdAt DateTime @default(now())
+  
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  @@id([postId, tagId])
+  @@map("post_tags")
 }

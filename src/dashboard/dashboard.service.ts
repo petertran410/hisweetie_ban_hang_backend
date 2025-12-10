@@ -110,7 +110,6 @@ export class DashboardService {
       };
     } catch (error) {
       console.error('Dashboard stats error:', error);
-      // Trả về dữ liệu mặc định nếu có lỗi
       return {
         currentMonthRevenue: 0,
         lastMonthRevenue: 0,
