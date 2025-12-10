@@ -10,23 +10,36 @@ export class OrdersService {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode();
 
+      const itemsData = await Promise.all(
+        dto.items.map(async (item) => {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+          });
+          if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          return {
+            productId: item.productId,
+            productCode: product.code,
+            productName: product.name,
+            quantity: item.quantity,
+            price: item.unitPrice,
+            totalPrice: item.quantity * item.unitPrice,
+          };
+        }),
+      );
+
       const order = await tx.order.create({
         data: {
           code,
           customerId: dto.customerId,
           orderDate: dto.orderDate || new Date(),
-          discountAmount: dto.discountAmount || 0,
+          discount: dto.discountAmount || 0,
           depositAmount: dto.depositAmount || 0,
-          notes: dto.notes,
+          description: dto.notes,
           orderStatus: dto.orderStatus || 'pending',
           createdBy: userId,
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              unitPrice: item.unitPrice,
-              totalPrice: item.quantity * item.unitPrice,
-            })),
+            create: itemsData,
           },
         },
         include: { items: true },
@@ -113,14 +126,29 @@ export class OrdersService {
 
       if (dto.items) {
         await tx.orderItem.deleteMany({ where: { orderId: id } });
+
+        const itemsData = await Promise.all(
+          dto.items.map(async (item) => {
+            const product = await tx.product.findUnique({
+              where: { id: item.productId },
+            });
+            if (!product)
+              throw new Error(`Product ${item.productId} not found`);
+
+            return {
+              orderId: id,
+              productId: item.productId,
+              productCode: product.code,
+              productName: product.name,
+              quantity: item.quantity,
+              price: item.unitPrice,
+              totalPrice: item.quantity * item.unitPrice,
+            };
+          }),
+        );
+
         await tx.orderItem.createMany({
-          data: dto.items.map((item) => ({
-            orderId: id,
-            productId: item.productId,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            totalPrice: item.quantity * item.unitPrice,
-          })),
+          data: itemsData,
         });
       }
 
@@ -129,9 +157,9 @@ export class OrdersService {
         data: {
           customerId: dto.customerId,
           orderDate: dto.orderDate,
-          discountAmount: dto.discountAmount,
+          discount: dto.discountAmount,
           depositAmount: dto.depositAmount,
-          notes: dto.notes,
+          description: dto.notes,
           orderStatus: dto.orderStatus,
         },
       });
@@ -181,36 +209,6 @@ export class OrdersService {
     });
   }
 
-  async complete(id: number) {
-    return this.prisma.$transaction(async (tx) => {
-      await this.updateProductStock(id, tx);
-      return tx.order.update({
-        where: { id },
-        data: { orderStatus: 'completed' },
-      });
-    });
-  }
-
-  async cancel(id: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({ where: { id } });
-      if (order && order.orderStatus === 'completed') {
-        await this.restoreProductStock(id, tx);
-      }
-
-      const updated = await tx.order.update({
-        where: { id },
-        data: { orderStatus: 'cancelled' },
-      });
-
-      if (order && order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
-      }
-
-      return updated;
-    });
-  }
-
   private async generateCode(): Promise<string> {
     const today = new Date();
     const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
@@ -221,23 +219,23 @@ export class OrdersService {
         },
       },
     });
-    return `ORD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+    return `HD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
   private async calculateTotals(orderId: number, tx: any) {
     const items = await tx.orderItem.findMany({ where: { orderId } });
     const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + item.totalPrice,
+      (sum: number, item: any) => sum + Number(item.totalPrice),
       0,
     );
 
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    const grandTotal = totalAmount - order.discountAmount;
+    const grandTotal = totalAmount - Number(order.discount);
     const payments = await tx.orderPayment.findMany({ where: { orderId } });
     const paidAmount = payments.reduce(
-      (sum: number, p: any) => sum + p.amount,
+      (sum: number, p: any) => sum + Number(p.amount),
       0,
     );
     const debtAmount = grandTotal - paidAmount;
@@ -257,7 +255,7 @@ export class OrdersService {
     for (const item of items) {
       await tx.product.update({
         where: { id: item.productId },
-        data: { stockQuantity: { decrement: item.quantity } },
+        data: { stockQuantity: { decrement: Number(item.quantity) } },
       });
     }
   }
@@ -267,7 +265,7 @@ export class OrdersService {
     for (const item of items) {
       await tx.product.update({
         where: { id: item.productId },
-        data: { stockQuantity: { increment: item.quantity } },
+        data: { stockQuantity: { increment: Number(item.quantity) } },
       });
     }
   }
@@ -281,11 +279,11 @@ export class OrdersService {
     });
 
     const totalPurchased = orders.reduce(
-      (sum: number, o: any) => sum + o.grandTotal,
+      (sum: number, o: any) => sum + Number(o.grandTotal),
       0,
     );
     const totalDebt = orders.reduce(
-      (sum: number, o: any) => sum + o.debtAmount,
+      (sum: number, o: any) => sum + Number(o.debtAmount),
       0,
     );
 

@@ -26,7 +26,7 @@ export class AnalyticsService {
         },
       });
 
-      data.push(revenue._sum.grandTotal || 0);
+      data.push(Number(revenue._sum.grandTotal || 0));
       labels.push(
         date.toLocaleDateString('vi-VN', { month: 'short', year: 'numeric' }),
       );
@@ -92,7 +92,7 @@ export class AnalyticsService {
 
     return {
       customerDebt: customerDebt._sum.totalDebt || 0,
-      supplierDebt: supplierDebt._sum.debtAmount || 0,
+      supplierDebt: Number(supplierDebt._sum.debtAmount || 0),
       overdueOrders,
     };
   }
@@ -143,8 +143,8 @@ export class AnalyticsService {
     ]);
 
     return {
-      todayRevenue: todayRevenue._sum.grandTotal || 0,
-      monthRevenue: monthRevenue._sum.grandTotal || 0,
+      todayRevenue: Number(todayRevenue._sum.grandTotal || 0),
+      monthRevenue: Number(monthRevenue._sum.grandTotal || 0),
       totalCustomers,
       totalProducts,
       lowStockCount: Number(lowStockCount[0].count),
@@ -153,46 +153,20 @@ export class AnalyticsService {
   }
 
   async getRecentActivities() {
-    const [recentOrders, recentPurchaseOrders] = await Promise.all([
-      this.prisma.order.findMany({
-        take: 10,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          customer: { select: { name: true } },
-          creator: { select: { name: true } },
-        },
-      }),
-      this.prisma.purchaseOrder.findMany({
-        take: 10,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          supplier: { select: { name: true } },
-          creator: { select: { name: true } },
-        },
-      }),
-    ]);
+    const recentOrders = await this.prisma.order.findMany({
+      take: 10,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        customer: { select: { name: true } },
+      },
+    });
 
-    const activities = [
-      ...recentOrders.map((order) => ({
-        type: 'order',
-        id: order.id,
-        code: order.code,
-        description: `Đơn hàng ${order.code} - ${order.customer?.name || 'Khách vãng lai'}`,
-        amount: order.grandTotal,
-        createdBy: order.creator?.name,
-        createdAt: order.createdAt,
-      })),
-      ...recentPurchaseOrders.map((po) => ({
-        type: 'purchase',
-        id: po.id,
-        code: po.code,
-        description: `Phiếu nhập ${po.code} - ${po.supplier.name}`,
-        amount: po.grandTotal,
-        createdBy: po.creator?.name,
-        createdAt: po.createdAt,
-      })),
-    ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-
-    return activities.slice(0, 20);
+    return recentOrders.map((order) => ({
+      id: order.id,
+      type: 'order',
+      description: `Đơn hàng ${order.code} - ${order.customer?.name || 'Khách vãng lai'}`,
+      amount: Number(order.grandTotal),
+      createdAt: order.createdAt,
+    }));
   }
 }

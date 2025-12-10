@@ -34,8 +34,8 @@ export class ExportService {
         name: product.name,
         category: product.category?.name || '',
         variant: product.variant?.name || '',
-        purchasePrice: product.purchasePrice,
-        retailPrice: product.retailPrice,
+        purchasePrice: Number(product.purchasePrice),
+        retailPrice: Number(product.retailPrice),
         stock: product.stockQuantity,
         status: product.isActive ? 'Đang bán' : 'Ngừng bán',
       });
@@ -82,11 +82,11 @@ export class ExportService {
         code: order.code,
         orderDate: order.orderDate,
         customer: order.customer?.name || 'Khách vãng lai',
-        total: order.totalAmount,
-        discount: order.discountAmount,
-        grand: order.grandTotal,
-        paid: order.paidAmount,
-        debt: order.debtAmount,
+        total: Number(order.totalAmount),
+        discount: Number(order.discount),
+        grand: Number(order.grandTotal),
+        paid: Number(order.paidAmount),
+        debt: Number(order.debtAmount),
         status: this.getOrderStatus(order.orderStatus),
       });
     });

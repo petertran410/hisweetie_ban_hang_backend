@@ -8,99 +8,68 @@ export class DashboardService {
   async getStatsOverview() {
     try {
       const now = new Date();
-      const currentMonth = now.getMonth();
-      const currentYear = now.getFullYear();
-      const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-      const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+      const currentMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
 
       const [
-        currentMonthRevenue,
-        lastMonthRevenue,
+        currentRevenue,
+        lastRevenue,
         currentMonthOrders,
         totalCustomerDebt,
         totalSupplierDebt,
         lowStockProducts,
         outOfStockProducts,
       ] = await Promise.all([
-        this.prisma.order
-          .aggregate({
-            where: {
-              orderDate: {
-                gte: new Date(currentYear, currentMonth, 1),
-                lt: new Date(currentYear, currentMonth + 1, 1),
-              },
-              orderStatus: { not: 'cancelled' },
-            },
-            _sum: { grandTotal: true },
-          })
-          .catch(() => ({ _sum: { grandTotal: 0 } })),
-
-        this.prisma.order
-          .aggregate({
-            where: {
-              orderDate: {
-                gte: new Date(lastMonthYear, lastMonth, 1),
-                lt: new Date(lastMonthYear, lastMonth + 1, 1),
-              },
-              orderStatus: { not: 'cancelled' },
-            },
-            _sum: { grandTotal: true },
-          })
-          .catch(() => ({ _sum: { grandTotal: 0 } })),
-
-        this.prisma.order
-          .count({
-            where: {
-              orderDate: {
-                gte: new Date(currentYear, currentMonth, 1),
-                lt: new Date(currentYear, currentMonth + 1, 1),
-              },
-            },
-          })
-          .catch(() => 0),
-
-        this.prisma.customer
-          .aggregate({
-            where: { isActive: true },
-            _sum: { totalDebt: true },
-          })
-          .catch(() => ({ _sum: { totalDebt: 0 } })),
-
-        this.prisma.supplier
-          .aggregate({
-            where: { isActive: true },
-            _sum: { totalDebt: true },
-          })
-          .catch(() => ({ _sum: { totalDebt: 0 } })),
-
-        this.prisma.$queryRaw<any[]>`
+        this.prisma.order.aggregate({
+          where: {
+            orderDate: { gte: currentMonthStart },
+            orderStatus: { not: 'cancelled' },
+          },
+          _sum: { grandTotal: true },
+        }),
+        this.prisma.order.aggregate({
+          where: {
+            orderDate: { gte: lastMonthStart, lt: currentMonthStart },
+            orderStatus: { not: 'cancelled' },
+          },
+          _sum: { grandTotal: true },
+        }),
+        this.prisma.order.count({
+          where: {
+            orderDate: { gte: currentMonthStart },
+            orderStatus: { not: 'cancelled' },
+          },
+        }),
+        this.prisma.customer.aggregate({
+          where: { isActive: true },
+          _sum: { totalDebt: true },
+        }),
+        this.prisma.supplier.aggregate({
+          where: { isActive: true },
+          _sum: { totalDebt: true },
+        }),
+        this.prisma.$queryRaw<[{ count: string }]>`
           SELECT COUNT(*) as count 
           FROM products 
           WHERE is_active = true 
-          AND stock_quantity <= min_stock_alert 
-          AND stock_quantity > 0
-        `.catch(() => [{ count: '0' }]),
-
-        this.prisma.product
-          .count({
-            where: {
-              isActive: true,
-              stockQuantity: 0,
-            },
-          })
-          .catch(() => 0),
+          AND stock_quantity > 0 
+          AND stock_quantity <= min_stock_alert
+        `,
+        this.prisma.product.count({
+          where: { isActive: true, stockQuantity: 0 },
+        }),
       ]);
 
-      const currentRevenue = currentMonthRevenue._sum.grandTotal || 0;
-      const lastRevenue = lastMonthRevenue._sum.grandTotal || 0;
+      const currentRevenueNum = Number(currentRevenue._sum.grandTotal || 0);
+      const lastRevenueNum = Number(lastRevenue._sum.grandTotal || 0);
       const revenueChange =
-        lastRevenue > 0
-          ? ((currentRevenue - lastRevenue) / lastRevenue) * 100
+        lastRevenueNum > 0
+          ? ((currentRevenueNum - lastRevenueNum) / lastRevenueNum) * 100
           : 0;
 
       return {
-        currentMonthRevenue: currentRevenue,
-        lastMonthRevenue: lastRevenue,
+        currentMonthRevenue: currentRevenueNum,
+        lastMonthRevenue: lastRevenueNum,
         revenueChange,
         currentMonthOrders,
         totalCustomerDebt: totalCustomerDebt._sum.totalDebt || 0,
@@ -153,7 +122,7 @@ export class DashboardService {
           month: '2-digit',
           year: 'numeric',
         }),
-        revenue: revenue._sum.grandTotal || 0,
+        revenue: Number(revenue._sum.grandTotal || 0),
       });
     }
 
@@ -187,44 +156,41 @@ export class DashboardService {
       phone: customer.phone,
       totalPurchased: customer.totalPurchased,
       totalDebt: customer.totalDebt,
-      ordersCount: customer._count.orders,
-      customerType: customer.customerType?.name || null,
+      orderCount: customer._count.orders,
+      customerType: customer.customerType?.name,
     }));
   }
 
   async getLowStockProducts(limit: number = 20) {
     const products = await this.prisma.$queryRaw<any[]>`
-      SELECT p.id, p.code, p.name, p.stock_quantity, p.min_stock_alert,
-             c.name as category_name, v.name as variant_name
-      FROM products p
-      LEFT JOIN categories c ON p.category_id = c.id
-      LEFT JOIN product_variants v ON p.variant_id = v.id
-      WHERE p.is_active = true 
-      AND p.stock_quantity <= p.min_stock_alert
-      ORDER BY p.stock_quantity ASC
+      SELECT * FROM products 
+      WHERE is_active = true 
+      AND stock_quantity <= min_stock_alert
+      ORDER BY stock_quantity ASC
       LIMIT ${limit}
-    `.catch(() => []);
+    `;
 
     return products;
   }
 
   async getRecentOrders(limit: number = 10) {
-    return this.prisma.order
-      .findMany({
-        take: limit,
-        orderBy: { orderDate: 'desc' },
-        include: {
-          customer: {
-            select: { id: true, name: true, phone: true },
-          },
-          creator: {
-            select: { id: true, name: true },
-          },
-          _count: {
-            select: { items: true },
-          },
-        },
-      })
-      .catch(() => []);
+    const orders = await this.prisma.order.findMany({
+      where: { orderStatus: { not: 'cancelled' } },
+      take: limit,
+      orderBy: { orderDate: 'desc' },
+      include: {
+        customer: { select: { name: true, code: true } },
+      },
+    });
+
+    return orders.map((order) => ({
+      id: order.id,
+      code: order.code,
+      customerName: order.customer?.name || 'Khách vãng lai',
+      orderDate: order.orderDate,
+      grandTotal: Number(order.grandTotal),
+      orderStatus: order.orderStatus,
+      paymentStatus: order.paymentStatus,
+    }));
   }
 }

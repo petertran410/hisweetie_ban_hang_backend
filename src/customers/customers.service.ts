@@ -88,8 +88,11 @@ export class CustomersService {
       },
     });
 
-    const totalPurchased = orders.reduce((sum, o) => sum + o.grandTotal, 0);
-    const totalDebt = orders.reduce((sum, o) => sum + o.debtAmount, 0);
+    const totalPurchased = orders.reduce(
+      (sum, o) => sum + Number(o.grandTotal),
+      0,
+    );
+    const totalDebt = orders.reduce((sum, o) => sum + Number(o.debtAmount), 0);
 
     return this.prisma.customer.update({
       where: { id: customerId },

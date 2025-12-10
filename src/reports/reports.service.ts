@@ -24,11 +24,15 @@ export class ReportsService {
       },
     });
 
-    const totalRevenue = orders.reduce((sum, o) => sum + o.grandTotal, 0);
+    const totalRevenue = orders.reduce(
+      (sum, o) => sum + Number(o.grandTotal),
+      0,
+    );
     const totalProfit = orders.reduce((sum, o) => {
       const profit = o.items.reduce((itemSum, item) => {
         const productProfit =
-          (item.unitPrice - (item.product.purchasePrice || 0)) * item.quantity;
+          (Number(item.price) - Number(item.product.purchasePrice || 0)) *
+          Number(item.quantity);
         return itemSum + productProfit;
       }, 0);
       return sum + profit;
@@ -146,7 +150,7 @@ export class ReportsService {
     });
 
     const totalValue = products.reduce(
-      (sum, p) => sum + p.purchasePrice * p.stockQuantity,
+      (sum, p) => sum + Number(p.purchasePrice) * p.stockQuantity,
       0,
     );
 
@@ -185,9 +189,12 @@ export class ReportsService {
       }),
     ]);
 
-    const totalRevenue = orders.reduce((sum, o) => sum + o.grandTotal, 0);
+    const totalRevenue = orders.reduce(
+      (sum, o) => sum + Number(o.grandTotal),
+      0,
+    );
     const totalPurchases = purchaseOrders.reduce(
-      (sum, po) => sum + po.grandTotal,
+      (sum, po) => sum + Number(po.grandTotal),
       0,
     );
     const customerDebt = customers.reduce((sum, c) => sum + c.totalDebt, 0);
@@ -251,8 +258,8 @@ export class ReportsService {
     ]);
 
     return {
-      todayRevenue: todayRevenue._sum.grandTotal || 0,
-      monthRevenue: monthRevenue._sum.grandTotal || 0,
+      todayRevenue: Number(todayRevenue._sum.grandTotal || 0),
+      monthRevenue: Number(monthRevenue._sum.grandTotal || 0),
       totalCustomers,
       totalProducts,
       lowStockCount: Number(lowStockCount[0].count),

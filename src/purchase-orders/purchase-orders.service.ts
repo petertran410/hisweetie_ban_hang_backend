@@ -14,6 +14,24 @@ export class PurchaseOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode();
 
+      const itemsData = await Promise.all(
+        dto.items.map(async (item) => {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+          });
+          if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          return {
+            productId: item.productId,
+            productCode: product.code,
+            productName: product.name,
+            quantity: item.quantity,
+            price: item.unitPrice,
+            totalPrice: item.quantity * item.unitPrice,
+          };
+        }),
+      );
+
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
@@ -21,15 +39,10 @@ export class PurchaseOrdersService {
           purchaseDate: dto.purchaseDate || new Date(),
           shippingFee: dto.shippingFee || 0,
           otherFees: dto.otherFees || 0,
-          notes: dto.notes,
+          description: dto.notes,
           createdBy: userId,
           items: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              unitPrice: item.unitPrice,
-              totalPrice: item.quantity * item.unitPrice,
-            })),
+            create: itemsData,
           },
         },
         include: { items: true },
@@ -105,14 +118,29 @@ export class PurchaseOrdersService {
         await tx.purchaseOrderItem.deleteMany({
           where: { purchaseOrderId: id },
         });
+
+        const itemsData = await Promise.all(
+          dto.items.map(async (item) => {
+            const product = await tx.product.findUnique({
+              where: { id: item.productId },
+            });
+            if (!product)
+              throw new Error(`Product ${item.productId} not found`);
+
+            return {
+              purchaseOrderId: id,
+              productId: item.productId,
+              productCode: product.code,
+              productName: product.name,
+              quantity: item.quantity,
+              price: item.unitPrice,
+              totalPrice: item.quantity * item.unitPrice,
+            };
+          }),
+        );
+
         await tx.purchaseOrderItem.createMany({
-          data: dto.items.map((item) => ({
-            purchaseOrderId: id,
-            productId: item.productId,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice,
-            totalPrice: item.quantity * item.unitPrice,
-          })),
+          data: itemsData,
         });
       }
 
@@ -123,7 +151,7 @@ export class PurchaseOrdersService {
           purchaseDate: dto.purchaseDate,
           shippingFee: dto.shippingFee,
           otherFees: dto.otherFees,
-          notes: dto.notes,
+          description: dto.notes,
         },
       });
 
@@ -160,7 +188,7 @@ export class PurchaseOrdersService {
       for (const item of purchaseOrder.items) {
         await tx.product.update({
           where: { id: item.productId },
-          data: { stockQuantity: { decrement: item.quantity } },
+          data: { stockQuantity: { decrement: Number(item.quantity) } },
         });
       }
 
@@ -187,7 +215,7 @@ export class PurchaseOrdersService {
       where: { purchaseOrderId },
     });
     const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + item.totalPrice,
+      (sum: number, item: any) => sum + Number(item.totalPrice),
       0,
     );
 
@@ -196,12 +224,13 @@ export class PurchaseOrdersService {
     });
     if (!po) return;
 
-    const grandTotal = totalAmount + po.shippingFee + po.otherFees;
-    const debtAmount = grandTotal - po.paidAmount;
+    const grandTotal =
+      totalAmount + Number(po.shippingFee) + Number(po.otherFees);
+    const debtAmount = grandTotal - Number(po.paidAmount);
 
     let paymentStatus = 'unpaid';
-    if (po.paidAmount >= grandTotal) paymentStatus = 'paid';
-    else if (po.paidAmount > 0) paymentStatus = 'partial';
+    if (Number(po.paidAmount) >= grandTotal) paymentStatus = 'paid';
+    else if (Number(po.paidAmount) > 0) paymentStatus = 'partial';
 
     await tx.purchaseOrder.update({
       where: { id: purchaseOrderId },
@@ -216,7 +245,7 @@ export class PurchaseOrdersService {
     for (const item of items) {
       await tx.product.update({
         where: { id: item.productId },
-        data: { stockQuantity: { increment: item.quantity } },
+        data: { stockQuantity: { increment: Number(item.quantity) } },
       });
     }
   }
@@ -228,7 +257,7 @@ export class PurchaseOrdersService {
     for (const item of items) {
       await tx.product.update({
         where: { id: item.productId },
-        data: { stockQuantity: { decrement: item.quantity } },
+        data: { stockQuantity: { decrement: Number(item.quantity) } },
       });
     }
   }
@@ -239,7 +268,7 @@ export class PurchaseOrdersService {
     });
 
     const totalDebt = purchaseOrders.reduce(
-      (sum: number, po: any) => sum + po.debtAmount,
+      (sum: number, po: any) => sum + Number(po.debtAmount),
       0,
     );
 

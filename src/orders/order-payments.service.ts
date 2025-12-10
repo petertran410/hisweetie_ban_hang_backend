@@ -8,13 +8,16 @@ export class OrderPaymentsService {
 
   async create(dto: CreateOrderPaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
+      const code = await this.generateCode();
+
       const payment = await tx.orderPayment.create({
         data: {
+          code,
           orderId: dto.orderId,
           paymentDate: dto.paymentDate || new Date(),
           amount: dto.amount,
           paymentMethod: dto.paymentMethod || 'cash',
-          notes: dto.notes,
+          description: dto.notes,
           createdBy: userId,
         },
       });
@@ -60,19 +63,32 @@ export class OrderPaymentsService {
     });
   }
 
+  private async generateCode(): Promise<string> {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const count = await this.prisma.orderPayment.count({
+      where: {
+        createdAt: {
+          gte: new Date(today.setHours(0, 0, 0, 0)),
+        },
+      },
+    });
+    return `PT-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+  }
+
   private async calculateOrderTotals(orderId: number, tx: any) {
     const payments = await tx.orderPayment.findMany({ where: { orderId } });
     const paidAmount = payments.reduce(
-      (sum: number, p: any) => sum + p.amount,
+      (sum: number, p: any) => sum + Number(p.amount),
       0,
     );
 
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    const debtAmount = order.grandTotal - paidAmount;
+    const debtAmount = Number(order.grandTotal) - paidAmount;
     let paymentStatus = 'unpaid';
-    if (paidAmount >= order.grandTotal) paymentStatus = 'paid';
+    if (paidAmount >= Number(order.grandTotal)) paymentStatus = 'paid';
     else if (paidAmount > 0) paymentStatus = 'partial';
 
     await tx.order.update({
@@ -90,11 +106,11 @@ export class OrderPaymentsService {
     });
 
     const totalPurchased = orders.reduce(
-      (sum: number, o: any) => sum + o.grandTotal,
+      (sum: number, o: any) => sum + Number(o.grandTotal),
       0,
     );
     const totalDebt = orders.reduce(
-      (sum: number, o: any) => sum + o.debtAmount,
+      (sum: number, o: any) => sum + Number(o.debtAmount),
       0,
     );
 

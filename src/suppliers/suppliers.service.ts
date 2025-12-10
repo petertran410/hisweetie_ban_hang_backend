@@ -15,7 +15,6 @@ export class SuppliersService {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
         { code: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
       ];
     }
     if (isActive !== undefined) where.isActive = isActive;
@@ -25,11 +24,6 @@ export class SuppliersService {
         where,
         skip,
         take: limit,
-        include: {
-          _count: {
-            select: { purchaseOrders: true },
-          },
-        },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.supplier.count({ where }),
@@ -43,11 +37,8 @@ export class SuppliersService {
       where: { id },
       include: {
         purchaseOrders: {
-          orderBy: { createdAt: 'desc' },
+          orderBy: { purchaseDate: 'desc' },
           take: 10,
-        },
-        _count: {
-          select: { purchaseOrders: true },
         },
       },
     });
@@ -74,13 +65,13 @@ export class SuppliersService {
     return this.prisma.supplier.delete({ where: { id } });
   }
 
-  async updateTotalDebt(supplierId: number) {
+  async updateDebt(supplierId: number) {
     const purchaseOrders = await this.prisma.purchaseOrder.findMany({
       where: { supplierId },
     });
 
     const totalDebt = purchaseOrders.reduce(
-      (sum, po) => sum + po.debtAmount,
+      (sum, po) => sum + Number(po.debtAmount),
       0,
     );
 

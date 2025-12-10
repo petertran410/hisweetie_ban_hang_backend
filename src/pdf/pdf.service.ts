@@ -70,31 +70,31 @@ export class PdfService {
       order.items.forEach((item, index) => {
         doc.text((index + 1).toString(), 50, y);
         doc.text(item.product.name, 100, y, { width: 230 });
-        doc.text(item.quantity.toString(), 350, y);
-        doc.text(this.formatCurrency(item.unitPrice), 400, y);
-        doc.text(this.formatCurrency(item.totalPrice), 480, y);
+        doc.text(Number(item.quantity).toString(), 350, y);
+        doc.text(this.formatCurrency(Number(item.price)), 400, y);
+        doc.text(this.formatCurrency(Number(item.totalPrice)), 480, y);
         y += 30;
       });
 
       y += 20;
       doc.text('Tổng tiền:', 350, y);
-      doc.text(this.formatCurrency(order.totalAmount), 480, y);
+      doc.text(this.formatCurrency(Number(order.totalAmount)), 480, y);
 
       y += 20;
       doc.text('Giảm giá:', 350, y);
-      doc.text(this.formatCurrency(order.discountAmount), 480, y);
+      doc.text(this.formatCurrency(Number(order.discount)), 480, y);
 
       y += 20;
       doc.text('Thành tiền:', 350, y);
-      doc.text(this.formatCurrency(order.grandTotal), 480, y);
+      doc.text(this.formatCurrency(Number(order.grandTotal)), 480, y);
 
       y += 20;
       doc.text('Đã thanh toán:', 350, y);
-      doc.text(this.formatCurrency(order.paidAmount), 480, y);
+      doc.text(this.formatCurrency(Number(order.paidAmount)), 480, y);
 
       y += 20;
       doc.text('Còn nợ:', 350, y);
-      doc.text(this.formatCurrency(order.debtAmount), 480, y);
+      doc.text(this.formatCurrency(Number(order.debtAmount)), 480, y);
 
       doc.end();
     });
