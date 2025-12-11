@@ -279,6 +279,7 @@ model Product {
   fullName          String?
   slug              String    @unique
   description       String?
+  orderTemplate       String?
   categoryId        Int?
   tradeMarkId       Int?
   variantId         Int?
