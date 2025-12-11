@@ -84,6 +84,10 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsString()
+  orderTemplate?: string;
+
+  @IsOptional()
+  @IsString()
   image?: string;
 
   @IsOptional()
