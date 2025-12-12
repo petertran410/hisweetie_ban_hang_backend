@@ -107,6 +107,11 @@ export class UpdateProductDto {
 
   @IsOptional()
   @IsNumber()
+  @Type(() => Number)
+  tradeMarkId?: number;
+
+  @IsOptional()
+  @IsNumber()
   @Min(0)
   @Type(() => Number)
   purchasePrice?: number;
