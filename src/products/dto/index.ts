@@ -35,6 +35,11 @@ export class CreateProductDto {
   @Type(() => Number)
   variantId?: number;
 
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  tradeMarkId?: number;
+
   @IsNumber()
   @Min(0)
   @Type(() => Number)
