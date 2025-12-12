@@ -25,7 +25,7 @@ export class ProductsService {
         where,
         skip,
         take: limit,
-        include: { category: true, variant: true },
+        include: { category: true, tradeMark: true, variant: true },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.product.count({ where }),
@@ -37,14 +37,14 @@ export class ProductsService {
   async findOne(id: number) {
     return this.prisma.product.findUnique({
       where: { id },
-      include: { category: true, variant: true },
+      include: { category: true, variant: true, tradeMark: true },
     });
   }
 
   async create(dto: CreateProductDto) {
     return this.prisma.product.create({
       data: dto,
-      include: { category: true, variant: true },
+      include: { category: true, variant: true, tradeMark: true },
     });
   }
 
@@ -52,7 +52,7 @@ export class ProductsService {
     return this.prisma.product.update({
       where: { id },
       data: dto,
-      include: { category: true, variant: true },
+      include: { category: true, variant: true, tradeMark: true },
     });
   }
 
