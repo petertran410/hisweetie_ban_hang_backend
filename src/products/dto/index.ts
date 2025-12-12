@@ -14,6 +14,10 @@ export class CreateProductDto {
   @IsString()
   name: string;
 
+  @IsOptional()
+  @IsString()
+  fullName?: string;
+
   @IsString()
   slug: string;
 
@@ -78,6 +82,10 @@ export class UpdateProductDto {
   @IsOptional()
   @IsString()
   name?: string;
+
+  @IsOptional()
+  @IsString()
+  fullName?: string;
 
   @IsOptional()
   @IsString()
