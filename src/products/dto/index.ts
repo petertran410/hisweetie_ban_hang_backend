@@ -70,6 +70,38 @@ export class CreateProductDto {
   minStockAlert: number;
 
   @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  weight?: number;
+
+  @IsOptional()
+  @IsString()
+  weightUnit?: string;
+
+  @IsOptional()
+  @IsString()
+  unit?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  conversionValue?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  masterProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  masterUnitId?: number;
+
+  @IsOptional()
+  @IsString()
+  attributesText?: string;
+
+  @IsOptional()
   @IsBoolean()
   isActive?: boolean;
 }
@@ -147,6 +179,38 @@ export class UpdateProductDto {
   @Min(0)
   @Type(() => Number)
   minStockAlert?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  weight?: number;
+
+  @IsOptional()
+  @IsString()
+  weightUnit?: string;
+
+  @IsOptional()
+  @IsString()
+  unit?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  conversionValue?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  masterProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  masterUnitId?: number;
+
+  @IsOptional()
+  @IsString()
+  attributesText?: string;
 
   @IsOptional()
   @IsBoolean()

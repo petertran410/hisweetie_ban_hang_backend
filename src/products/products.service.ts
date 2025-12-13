@@ -1,10 +1,30 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
 
 @Injectable()
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
+
+  private parseAttributes(
+    attributesText: string | null,
+  ): { name: string; value: string }[] {
+    if (!attributesText) return [];
+    return attributesText.split('|').map((attr) => {
+      const [name, value] = attr.split(':');
+      return { name: name?.trim() || '', value: value?.trim() || '' };
+    });
+  }
+
+  private buildFullName(name: string, attributesText: string | null): string {
+    if (!attributesText) return name;
+
+    const attrs = this.parseAttributes(attributesText);
+    if (attrs.length === 0) return name;
+
+    const attrValues = attrs.map((attr) => attr.value).join(' - ');
+    return `${name} - ${attrValues}`;
+  }
 
   async findAll(query: ProductQueryDto) {
     const { page = 1, limit = 10, search, categoryId, isActive } = query;
@@ -42,16 +62,44 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto) {
+    const fullName =
+      dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
+
     return this.prisma.product.create({
-      data: dto,
+      data: {
+        ...dto,
+        fullName,
+      },
       include: { category: true, variant: true, tradeMark: true },
     });
   }
 
   async update(id: number, dto: UpdateProductDto) {
+    const currentProduct = await this.prisma.product.findUnique({
+      where: { id },
+    });
+
+    if (!currentProduct) {
+      throw new NotFoundException(`Product with id ${id} not found`);
+    }
+
+    const name = dto.name || currentProduct.name;
+    const attributesText =
+      dto.attributesText !== undefined
+        ? dto.attributesText
+        : currentProduct.attributesText;
+
+    let fullName = dto.fullName;
+    if (!fullName || dto.attributesText !== undefined || dto.name) {
+      fullName = this.buildFullName(name, attributesText);
+    }
+
     return this.prisma.product.update({
       where: { id },
-      data: dto,
+      data: {
+        ...dto,
+        fullName,
+      },
       include: { category: true, variant: true, tradeMark: true },
     });
   }
@@ -69,10 +117,10 @@ export class ProductsService {
 
   async checkLowStock() {
     return this.prisma.$queryRaw`
-    SELECT * FROM products 
-    WHERE "isActive" = true 
-    AND "stockQuantity" <= "minStockAlert"
-    ORDER BY "stockQuantity" ASC
-  `;
+      SELECT * FROM products 
+      WHERE "isActive" = true 
+      AND "stockQuantity" <= "minStockAlert"
+      ORDER BY "stockQuantity" ASC
+    `;
   }
 }

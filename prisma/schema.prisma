@@ -293,6 +293,8 @@ model Product {
   unit              String?
   conversionValue   Decimal   @default(1) @db.Decimal(18, 4)
   weight            Decimal?  @db.Decimal(18, 4)
+  weightUnit        String?   @default("kg")
+  attributesText    String?
   stockQuantity     Int       @default(0)
   minStockAlert     Int       @default(0)
   isRewardPoint     Boolean   @default(true)
