@@ -57,7 +57,7 @@ export class ProductsService {
   async findOne(id: number) {
     return this.prisma.product.findUnique({
       where: { id },
-      include: { category: true, variant: true, tradeMark: true },
+      include: { category: true, variant: true, tradeMark: true, images: true },
     });
   }
 
@@ -94,13 +94,33 @@ export class ProductsService {
       fullName = this.buildFullName(name, attributesText);
     }
 
+    if (dto.imageUrls !== undefined) {
+      await this.prisma.productImage.deleteMany({
+        where: { productId: id },
+      });
+
+      if (dto.imageUrls && dto.imageUrls.length > 0) {
+        await this.prisma.productImage.createMany({
+          data: dto.imageUrls.map((url) => ({
+            productId: id,
+            image: url,
+          })),
+        });
+      }
+    }
+
     return this.prisma.product.update({
       where: { id },
       data: {
         ...dto,
         fullName,
       },
-      include: { category: true, variant: true, tradeMark: true },
+      include: {
+        category: true,
+        variant: true,
+        tradeMark: true,
+        images: true, // THÊM DÒNG NÀY
+      },
     });
   }
 

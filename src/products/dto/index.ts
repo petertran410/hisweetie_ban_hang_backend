@@ -104,6 +104,9 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  imageUrls?: string[];
 }
 
 export class UpdateProductDto {
@@ -215,6 +218,9 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  imageUrls?: string[];
 }
 
 export class ProductQueryDto {
