@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { extname } from 'path';
+import { extname, join } from 'path';
 import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 
@@ -9,7 +9,7 @@ import { UploadService } from './upload.service';
   imports: [
     MulterModule.register({
       storage: diskStorage({
-        destination: './uploads',
+        destination: join(process.cwd(), 'uploads'),
         filename: (req, file, cb) => {
           const randomName = Array(32)
             .fill(null)
