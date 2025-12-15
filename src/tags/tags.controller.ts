@@ -24,11 +24,6 @@ export class TagsController {
     return this.tagsService.findOne(+id);
   }
 
-  @Get('slug/:slug')
-  findBySlug(@Param('slug') slug: string) {
-    return this.tagsService.findBySlug(slug);
-  }
-
   @Post()
   create(@Body() dto: CreateTagDto) {
     return this.tagsService.create(dto);

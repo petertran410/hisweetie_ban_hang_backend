@@ -20,10 +20,6 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
-  slug?: string;
-
-  @IsOptional()
-  @IsString()
   description?: string;
 
   @IsOptional()
@@ -113,6 +109,10 @@ export class CreateProductDto {
 
   @IsOptional()
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  isDirectSale?: boolean;
 }
 
 export class UpdateProductDto {
@@ -127,10 +127,6 @@ export class UpdateProductDto {
   @IsOptional()
   @IsString()
   fullName?: string;
-
-  @IsOptional()
-  @IsString()
-  slug?: string;
 
   @IsOptional()
   @IsString()
@@ -227,6 +223,10 @@ export class UpdateProductDto {
 
   @IsOptional()
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  isDirectSale?: boolean;
 }
 
 export class ProductQueryDto {

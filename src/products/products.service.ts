@@ -65,20 +65,6 @@ export class ProductsService {
     const fullName =
       dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
 
-    let slug = dto.slug;
-    if (!slug) {
-      const baseText = dto.code || dto.name;
-      slug = baseText
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/đ/g, 'd')
-        .replace(/[^a-z0-9\s-]/g, '')
-        .replace(/\s+/g, '-')
-        .replace(/-+/g, '-')
-        .trim();
-    }
-
     const { imageUrls, ...productData } = dto;
 
     const product = await this.prisma.product.create({

@@ -7,8 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ==================== USER & AUTHENTICATION ====================
-
 model User {
   id        Int      @id @default(autoincrement())
   name      String
@@ -40,7 +38,6 @@ model User {
 model Role {
   id          Int      @id @default(autoincrement())
   name        String   @unique
-  slug        String   @unique
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -54,7 +51,6 @@ model Role {
 model Permission {
   id          Int      @id @default(autoincrement())
   name        String   @unique
-  slug        String   @unique
   resource    String
   action      String
   description String?
@@ -207,8 +203,6 @@ model CustomerGroupDetail {
   @@map("customer_group_details")
 }
 
-// ==================== SUPPLIER ====================
-
 model Supplier {
   id            Int      @id @default(autoincrement())
   code          String?  @unique
@@ -228,8 +222,6 @@ model Supplier {
   
   @@map("suppliers")
 }
-
-// ==================== PRODUCT ====================
 
 model TradeMark {
   id          Int      @id @default(autoincrement())
@@ -313,6 +305,7 @@ model Product {
   orderItems         OrderItem[]
   invoiceDetails     InvoiceDetail[]
   purchaseOrderItems PurchaseOrderItem[]
+  isDirectSale  Boolean  @default(false)
   
   @@map("products")
 }
@@ -363,8 +356,6 @@ model Inventory {
   @@unique([productId, branchId])
   @@map("inventories")
 }
-
-// ==================== PRICE BOOK ====================
 
 model PriceBook {
   id              Int       @id @default(autoincrement())
@@ -446,8 +437,6 @@ model PriceBookUser {
   @@map("price_book_users")
 }
 
-// ==================== SALE CHANNEL ====================
-
 model SaleChannel {
   id          Int      @id @default(autoincrement())
   name        String
@@ -461,8 +450,6 @@ model SaleChannel {
   
   @@map("sale_channels")
 }
-
-// ==================== SURCHARGE ====================
 
 model Surcharge {
   id             Int      @id @default(autoincrement())
@@ -480,8 +467,6 @@ model Surcharge {
   @@map("surcharges")
 }
 
-// ==================== BANK ACCOUNT ====================
-
 model BankAccount {
   id            Int      @id @default(autoincrement())
   bankName      String
@@ -496,8 +481,6 @@ model BankAccount {
   
   @@map("bank_accounts")
 }
-
-// ==================== PARTNER DELIVERY ====================
 
 model PartnerDelivery {
   id            Int      @id @default(autoincrement())
@@ -864,12 +847,9 @@ model PurchaseOrderSurcharge {
   @@map("purchase_order_surcharges")
 }
 
-// ==================== POST & BLOG ====================
-
 model Post {
   id            Int       @id @default(autoincrement())
   title         String
-  slug          String    @unique
   content       String?
   excerpt       String?
   featuredImage String?
@@ -903,7 +883,6 @@ model PostMeta {
 model Tag {
   id          Int      @id @default(autoincrement())
   name        String   @unique
-  slug        String   @unique
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

@@ -7,11 +7,8 @@ export class PostsService {
   constructor(private prisma: PrismaService) {}
 
   async create(dto: CreatePostDto, userId: number) {
-    const slug = dto.slug || this.generateSlug(dto.title);
-
     const data: any = {
       title: dto.title,
-      slug,
       content: dto.content,
       excerpt: dto.excerpt,
       featuredImage: dto.featuredImage,
@@ -78,22 +75,10 @@ export class PostsService {
     });
   }
 
-  async findBySlug(slug: string) {
-    return this.prisma.post.findUnique({
-      where: { slug },
-      include: {
-        author: { select: { id: true, name: true, email: true } },
-        tags: { include: { tag: true } },
-        postMeta: true,
-      },
-    });
-  }
-
   async update(id: number, dto: UpdatePostDto) {
     const data: any = {};
 
     if (dto.title !== undefined) data.title = dto.title;
-    if (dto.slug !== undefined) data.slug = dto.slug;
     if (dto.content !== undefined) data.content = dto.content;
     if (dto.excerpt !== undefined) data.excerpt = dto.excerpt;
     if (dto.featuredImage !== undefined) data.featuredImage = dto.featuredImage;
@@ -140,14 +125,5 @@ export class PostsService {
       where: { id },
       data: { status: 'draft' },
     });
-  }
-
-  private generateSlug(title: string): string {
-    return title
-      .toLowerCase()
-      .replace(/[^\w\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .trim();
   }
 }

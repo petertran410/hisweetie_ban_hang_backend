@@ -5,9 +5,6 @@ export class CreatePermissionDto {
   name: string;
 
   @IsString()
-  slug: string;
-
-  @IsString()
   resource: string;
 
   @IsString()

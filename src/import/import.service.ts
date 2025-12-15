@@ -80,7 +80,6 @@ export class ImportService {
           return;
         }
 
-        product['slug'] = this.generateSlug(product.name);
         products.push(product);
       } catch (error) {
         errors.push({
@@ -267,17 +266,5 @@ export class ImportService {
 
     const buffer = await workbook.xlsx.writeBuffer();
     return buffer;
-  }
-
-  private generateSlug(name: string): string {
-    return name
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/[đĐ]/g, 'd')
-      .replace(/[^a-z0-9\s-]/g, '')
-      .replace(/\s+/g, '-')
-      .replace(/-+/g, '-')
-      .trim();
   }
 }

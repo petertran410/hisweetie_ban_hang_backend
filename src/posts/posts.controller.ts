@@ -26,11 +26,6 @@ export class PostsController {
     return this.postsService.findOne(+id);
   }
 
-  @Get('slug/:slug')
-  findBySlug(@Param('slug') slug: string) {
-    return this.postsService.findBySlug(slug);
-  }
-
   @Post()
   create(@Body() dto: CreatePostDto, @Req() req: any) {
     const userId = req.user?.id || 1;

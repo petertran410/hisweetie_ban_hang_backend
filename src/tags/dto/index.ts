@@ -6,10 +6,6 @@ export class CreateTagDto {
 
   @IsString()
   @IsOptional()
-  slug?: string;
-
-  @IsString()
-  @IsOptional()
   description?: string;
 }
 
@@ -17,10 +13,6 @@ export class UpdateTagDto {
   @IsString()
   @IsOptional()
   name?: string;
-
-  @IsString()
-  @IsOptional()
-  slug?: string;
 
   @IsString()
   @IsOptional()

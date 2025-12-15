@@ -48,7 +48,6 @@ export class RolesService {
     const role = await this.prisma.role.create({
       data: {
         name: dto.name,
-        slug: dto.slug,
         description: dto.description,
       },
     });
@@ -72,7 +71,6 @@ export class RolesService {
       where: { id },
       data: {
         name: dto.name,
-        slug: dto.slug,
         description: dto.description,
       },
     });

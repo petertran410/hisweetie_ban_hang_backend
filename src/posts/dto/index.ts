@@ -12,10 +12,6 @@ export class CreatePostDto {
 
   @IsString()
   @IsOptional()
-  slug?: string;
-
-  @IsString()
-  @IsOptional()
   content?: string;
 
   @IsString()
@@ -44,10 +40,6 @@ export class UpdatePostDto {
   @IsString()
   @IsOptional()
   title?: string;
-
-  @IsString()
-  @IsOptional()
-  slug?: string;
 
   @IsString()
   @IsOptional()

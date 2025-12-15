@@ -5,32 +5,10 @@ const prisma = new PrismaClient();
 
 async function main() {
   const adminRole = await prisma.role.upsert({
-    where: { slug: 'admin' },
     update: {},
     create: {
       name: 'Administrator',
-      slug: 'admin',
       description: 'Full system access',
-    },
-  });
-
-  const managerRole = await prisma.role.upsert({
-    where: { slug: 'manager' },
-    update: {},
-    create: {
-      name: 'Manager',
-      slug: 'manager',
-      description: 'Manage products and orders',
-    },
-  });
-
-  const userRole = await prisma.role.upsert({
-    where: { slug: 'user' },
-    update: {},
-    create: {
-      name: 'User',
-      slug: 'user',
-      description: 'Basic user access',
     },
   });
 
@@ -59,7 +37,6 @@ async function main() {
       update: {},
       create: {
         name: `${perm.resource}.${perm.action}`,
-        slug: `${perm.resource}.${perm.action}`,
         resource: perm.resource,
         action: perm.action,
         description: `Can ${perm.action} ${perm.resource}`,
@@ -144,7 +121,6 @@ async function main() {
       update: {},
       create: {
         name: `${perm.resource}.${perm.action}`,
-        slug: `${perm.resource}.${perm.action}`,
         resource: perm.resource,
         action: perm.action,
         description: `Can ${perm.action} ${perm.resource}`,
