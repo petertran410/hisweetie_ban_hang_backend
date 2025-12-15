@@ -11,11 +11,12 @@ import { UploadService } from './upload.service';
       storage: diskStorage({
         destination: join(process.cwd(), 'uploads'),
         filename: (req, file, cb) => {
-          const randomName = Array(32)
+          const timestamp = Date.now();
+          const randomName = Array(16)
             .fill(null)
-            .map(() => Math.round(Math.random() * 16).toString(16))
+            .map(() => Math.floor(Math.random() * 16).toString(16))
             .join('');
-          cb(null, `${randomName}${extname(file.originalname)}`);
+          cb(null, `${timestamp}-${randomName}${extname(file.originalname)}`);
         },
       }),
     }),
