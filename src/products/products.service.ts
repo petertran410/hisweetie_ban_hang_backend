@@ -109,6 +109,7 @@ export class ProductsService {
   async update(id: number, dto: UpdateProductDto) {
     const currentProduct = await this.prisma.product.findUnique({
       where: { id },
+      include: { images: true },
     });
 
     if (!currentProduct) {
@@ -127,15 +128,28 @@ export class ProductsService {
     }
 
     if (dto.imageUrls !== undefined) {
-      console.log('Deleting old images for product:', id);
-      await this.prisma.productImage.deleteMany({
-        where: { productId: id },
-      });
+      const currentImageUrls = currentProduct.images.map((img) => img.image);
+      const newImageUrls = dto.imageUrls || [];
 
-      if (dto.imageUrls && dto.imageUrls.length > 0) {
-        console.log('Creating new images:', dto.imageUrls);
+      const imagesToDelete = currentImageUrls.filter(
+        (url) => !newImageUrls.includes(url),
+      );
+      const imagesToAdd = newImageUrls.filter(
+        (url) => !currentImageUrls.includes(url),
+      );
+
+      if (imagesToDelete.length > 0) {
+        await this.prisma.productImage.deleteMany({
+          where: {
+            productId: id,
+            image: { in: imagesToDelete },
+          },
+        });
+      }
+
+      if (imagesToAdd.length > 0) {
         await this.prisma.productImage.createMany({
-          data: dto.imageUrls.map((url) => ({
+          data: imagesToAdd.map((url) => ({
             productId: id,
             image: url,
           })),
@@ -143,10 +157,12 @@ export class ProductsService {
       }
     }
 
+    const { imageUrls, ...productData } = dto;
+
     const updated = await this.prisma.product.update({
       where: { id },
       data: {
-        ...dto,
+        ...productData,
         fullName,
       },
       include: {
