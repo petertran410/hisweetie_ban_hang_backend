@@ -245,9 +245,8 @@ export class ProductQueryDto {
   search?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  categoryId?: number;
+  @IsString()
+  categoryIds?: string;
 
   @IsOptional()
   @IsBoolean()

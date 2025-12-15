@@ -27,7 +27,7 @@ export class ProductsService {
   }
 
   async findAll(query: ProductQueryDto) {
-    const { page = 1, limit = 10, search, categoryId, isActive } = query;
+    const { page = 1, limit = 15, search, categoryIds, isActive } = query;
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -37,7 +37,14 @@ export class ProductsService {
         { code: { contains: search, mode: 'insensitive' } },
       ];
     }
-    if (categoryId) where.categoryId = categoryId;
+
+    if (categoryIds) {
+      const categoryIdArray = categoryIds
+        .split(',')
+        .map((id) => parseInt(id.trim()));
+      where.categoryId = { in: categoryIdArray };
+    }
+
     if (isActive !== undefined) where.isActive = isActive;
 
     const [data, total] = await Promise.all([
