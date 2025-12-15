@@ -159,12 +159,17 @@ export class ProductsService {
 
     const { imageUrls, ...productData } = dto;
 
+    const sanitizedData = {
+      ...productData,
+      fullName,
+      categoryId: productData.categoryId || null,
+      tradeMarkId: productData.tradeMarkId || null,
+      variantId: productData.variantId || null,
+    };
+
     const updated = await this.prisma.product.update({
       where: { id },
-      data: {
-        ...productData,
-        fullName,
-      },
+      data: sanitizedData,
       include: {
         category: true,
         variant: true,
