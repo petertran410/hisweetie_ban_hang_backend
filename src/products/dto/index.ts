@@ -18,8 +18,9 @@ export class CreateProductDto {
   @IsString()
   fullName?: string;
 
+  @IsOptional()
   @IsString()
-  slug: string;
+  slug?: string;
 
   @IsOptional()
   @IsString()
@@ -44,30 +45,35 @@ export class CreateProductDto {
   @Type(() => Number)
   tradeMarkId?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  purchasePrice: number;
+  purchasePrice?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  retailPrice: number;
+  retailPrice?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  collaboratorPrice: number;
+  collaboratorPrice?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  stockQuantity: number;
+  stockQuantity?: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  minStockAlert: number;
+  minStockAlert?: number;
 
   @IsOptional()
   @IsNumber()

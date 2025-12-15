@@ -65,12 +65,53 @@ export class ProductsService {
     const fullName =
       dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
 
-    return this.prisma.product.create({
+    let slug = dto.slug;
+    if (!slug) {
+      const baseText = dto.code || dto.name;
+      slug = baseText
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/đ/g, 'd')
+        .replace(/[^a-z0-9\s-]/g, '')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .trim();
+    }
+
+    const { imageUrls, ...productData } = dto;
+
+    const product = await this.prisma.product.create({
       data: {
-        ...dto,
+        ...productData,
         fullName,
+        slug,
+        purchasePrice: dto.purchasePrice || 0,
+        retailPrice: dto.retailPrice || 0,
+        collaboratorPrice: dto.collaboratorPrice || dto.retailPrice || 0,
+        stockQuantity: dto.stockQuantity || 0,
+        minStockAlert: dto.minStockAlert || 0,
       },
       include: { category: true, variant: true, tradeMark: true },
+    });
+
+    if (imageUrls && imageUrls.length > 0) {
+      await this.prisma.productImage.createMany({
+        data: imageUrls.map((url) => ({
+          productId: product.id,
+          image: url,
+        })),
+      });
+    }
+
+    return this.prisma.product.findUnique({
+      where: { id: product.id },
+      include: {
+        category: true,
+        variant: true,
+        tradeMark: true,
+        images: true,
+      },
     });
   }
 
