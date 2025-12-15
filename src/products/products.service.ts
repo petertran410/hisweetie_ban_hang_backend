@@ -95,11 +95,13 @@ export class ProductsService {
     }
 
     if (dto.imageUrls !== undefined) {
+      console.log('Deleting old images for product:', id);
       await this.prisma.productImage.deleteMany({
         where: { productId: id },
       });
 
       if (dto.imageUrls && dto.imageUrls.length > 0) {
+        console.log('Creating new images:', dto.imageUrls);
         await this.prisma.productImage.createMany({
           data: dto.imageUrls.map((url) => ({
             productId: id,
@@ -109,7 +111,7 @@ export class ProductsService {
       }
     }
 
-    return this.prisma.product.update({
+    const updated = await this.prisma.product.update({
       where: { id },
       data: {
         ...dto,
@@ -119,9 +121,11 @@ export class ProductsService {
         category: true,
         variant: true,
         tradeMark: true,
-        images: true, // THÊM DÒNG NÀY
+        images: true,
       },
     });
+
+    return updated;
   }
 
   async remove(id: number) {
