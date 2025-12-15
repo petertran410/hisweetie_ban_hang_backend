@@ -33,6 +33,7 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { ValidationPipe } from '@nestjs/common';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TrademarksModule } from './trademarks/trademarks.module';
+import { BranchesModule } from './branches/branches.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { TrademarksModule } from './trademarks/trademarks.module';
     PermissionsModule,
     ProductsModule,
     ProductVariantsModule,
+    BranchesModule,
     CategoriesModule,
     TrademarksModule,
     CustomerTypesModule,

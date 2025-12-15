@@ -144,6 +144,39 @@ async function main() {
       },
     });
   }
+
+  const branch1 = await prisma.branch.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
+      name: 'Kho Sài Gòn',
+      contactNumber: '0901234567',
+      address: '123 Nguyễn Văn Linh, Q7, TP.HCM',
+      isActive: true,
+    },
+  });
+
+  const branch2 = await prisma.branch.upsert({
+    where: { id: 2 },
+    update: {},
+    create: {
+      name: 'Kho Hà Nội',
+      contactNumber: '0912345678',
+      address: '456 Láng Hạ, Đống Đa, Hà Nội',
+      isActive: true,
+    },
+  });
+
+  const branch3 = await prisma.branch.upsert({
+    where: { id: 3 },
+    update: {},
+    create: {
+      name: 'Cửa Hàng Diệp Trà',
+      contactNumber: '0923456789',
+      address: '789 Lê Lợi, Q1, TP.HCM',
+      isActive: true,
+    },
+  });
 }
 
 main()
