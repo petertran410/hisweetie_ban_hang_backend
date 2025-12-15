@@ -276,7 +276,6 @@ model Product {
   code              String    @unique
   name              String
   fullName          String?
-  slug              String    @unique
   description       String?
   orderTemplate       String?
   categoryId        Int?

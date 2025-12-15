@@ -85,10 +85,8 @@ export class ProductsService {
       data: {
         ...productData,
         fullName,
-        slug,
         purchasePrice: dto.purchasePrice || 0,
         retailPrice: dto.retailPrice || 0,
-        collaboratorPrice: dto.collaboratorPrice || dto.retailPrice || 0,
         stockQuantity: dto.stockQuantity || 0,
         minStockAlert: dto.minStockAlert || 0,
       },
