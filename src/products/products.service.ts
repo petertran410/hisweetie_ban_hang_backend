@@ -52,7 +52,12 @@ export class ProductsService {
         where,
         skip,
         take: limit,
-        include: { category: true, tradeMark: true, variant: true },
+        include: {
+          category: true,
+          tradeMark: true,
+          variant: true,
+          images: true,
+        },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.product.count({ where }),
