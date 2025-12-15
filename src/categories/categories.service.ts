@@ -24,14 +24,15 @@ export class CategoriesService {
       include: {
         children: {
           include: {
-            _count: {
-              select: { products: true },
+            children: {
+              include: {
+                _count: { select: { products: true } },
+              },
             },
+            _count: { select: { products: true } },
           },
         },
-        _count: {
-          select: { products: true },
-        },
+        _count: { select: { products: true } },
       },
       orderBy: { name: 'asc' },
     });
