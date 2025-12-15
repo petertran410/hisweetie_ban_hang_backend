@@ -1,3 +1,4 @@
+// src/auth/strategies/jwt.strategy.ts - Replace toàn bộ file
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
@@ -42,9 +43,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       throw new UnauthorizedException();
     }
 
-    const roles = user.userRoles.map((ur) => ur.role.slug);
+    const roles = user.userRoles.map((ur) => ur.role.name);
     const permissions = user.userRoles.flatMap((ur) =>
-      ur.role.rolePermissions.map((rp) => rp.permission.slug),
+      ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
 
     return {

@@ -1,3 +1,4 @@
+// src/auth/auth.service.ts - Replace toàn bộ file
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -45,9 +46,9 @@ export class AuthService {
       throw new UnauthorizedException('Account is inactive');
     }
 
-    const roles = user.userRoles.map((ur) => ur.role.slug);
+    const roles = user.userRoles.map((ur) => ur.role.name);
     const permissions = user.userRoles.flatMap((ur) =>
-      ur.role.rolePermissions.map((rp) => rp.permission.slug),
+      ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
 
     const payload = {
@@ -121,7 +122,7 @@ export class AuthService {
       });
 
       const defaultRole = await this.prisma.role.findUnique({
-        where: { slug: 'user' },
+        where: { name: 'User' },
       });
       if (defaultRole) {
         await this.prisma.userRole.create({
@@ -148,9 +149,9 @@ export class AuthService {
       });
     }
 
-    const roles = user.userRoles.map((ur) => ur.role.slug);
+    const roles = user.userRoles.map((ur) => ur.role.name);
     const permissions = user.userRoles.flatMap((ur) =>
-      ur.role.rolePermissions.map((rp) => rp.permission.slug),
+      ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
 
     const payload = {
@@ -207,7 +208,7 @@ export class AuthService {
     });
 
     const defaultRole = await this.prisma.role.findUnique({
-      where: { slug: 'user' },
+      where: { name: 'User' },
     });
     if (defaultRole) {
       await this.prisma.userRole.create({
@@ -219,7 +220,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       name: user.name,
-      roles: ['user'],
+      roles: ['User'],
       permissions: [],
     };
     const accessToken = this.jwtService.sign(payload);
@@ -228,7 +229,7 @@ export class AuthService {
       accessToken,
       user: {
         ...user,
-        roles: ['user'],
+        roles: ['User'],
         permissions: [],
       },
     };
