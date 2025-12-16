@@ -288,6 +288,7 @@ model Product {
   attributesText    String?
   stockQuantity     Int       @default(0)
   minStockAlert     Int       @default(0)
+  maxStockAlert     Int       @default(0)
   isRewardPoint     Boolean   @default(true)
   isActive          Boolean   @default(true)
   createdAt         DateTime  @default(now())

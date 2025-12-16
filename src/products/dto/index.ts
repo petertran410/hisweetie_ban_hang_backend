@@ -24,6 +24,10 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
+  orderTemplate?: string;
+
+  @IsOptional()
+  @IsString()
   image?: string;
 
   @IsOptional()
@@ -70,6 +74,12 @@ export class CreateProductDto {
   @Min(0)
   @Type(() => Number)
   minStockAlert?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  maxStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
@@ -184,6 +194,12 @@ export class UpdateProductDto {
   @Min(0)
   @Type(() => Number)
   minStockAlert?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  maxStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
