@@ -61,12 +61,6 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  collaboratorPrice?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   stockQuantity?: number;
 
   @IsOptional()

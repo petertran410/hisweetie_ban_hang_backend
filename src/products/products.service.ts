@@ -79,15 +79,52 @@ export class ProductsService {
 
     const { imageUrls, ...productData } = dto;
 
+    const sanitizedData: any = {
+      code: dto.code,
+      name: dto.name,
+      fullName,
+      purchasePrice: dto.purchasePrice ?? 0,
+      retailPrice: dto.retailPrice ?? 0,
+      stockQuantity: dto.stockQuantity ?? 0,
+      minStockAlert: dto.minStockAlert ?? 0,
+      maxStockAlert: dto.maxStockAlert ?? 0,
+      isActive: dto.isActive ?? true,
+      isDirectSale: dto.isDirectSale ?? false,
+    };
+
+    if (dto.description !== undefined && dto.description !== '') {
+      sanitizedData.description = dto.description;
+    }
+    if (dto.orderTemplate !== undefined && dto.orderTemplate !== '') {
+      sanitizedData.orderTemplate = dto.orderTemplate;
+    }
+    if (dto.categoryId) {
+      sanitizedData.categoryId = dto.categoryId;
+    }
+    if (dto.tradeMarkId) {
+      sanitizedData.tradeMarkId = dto.tradeMarkId;
+    }
+    if (dto.variantId) {
+      sanitizedData.variantId = dto.variantId;
+    }
+    if (dto.weight) {
+      sanitizedData.weight = dto.weight;
+    }
+    if (dto.weightUnit) {
+      sanitizedData.weightUnit = dto.weightUnit;
+    }
+    if (dto.unit) {
+      sanitizedData.unit = dto.unit;
+    }
+    if (dto.conversionValue) {
+      sanitizedData.conversionValue = dto.conversionValue;
+    }
+    if (dto.attributesText) {
+      sanitizedData.attributesText = dto.attributesText;
+    }
+
     const product = await this.prisma.product.create({
-      data: {
-        ...productData,
-        fullName,
-        purchasePrice: dto.purchasePrice || 0,
-        retailPrice: dto.retailPrice || 0,
-        stockQuantity: dto.stockQuantity || 0,
-        minStockAlert: dto.minStockAlert || 0,
-      },
+      data: sanitizedData,
       include: { category: true, variant: true, tradeMark: true },
     });
 
