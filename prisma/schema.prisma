@@ -291,6 +291,7 @@ model Product {
   maxStockAlert     Int       @default(0)
   isRewardPoint     Boolean   @default(true)
   isActive          Boolean   @default(true)
+  isDirectSale  Boolean  @default(false)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
   
@@ -306,7 +307,6 @@ model Product {
   orderItems         OrderItem[]
   invoiceDetails     InvoiceDetail[]
   purchaseOrderItems PurchaseOrderItem[]
-  isDirectSale  Boolean  @default(false)
   
   @@map("products")
 }
