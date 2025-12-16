@@ -4,8 +4,9 @@ import {
   IsBoolean,
   IsOptional,
   Min,
+  IsArray,
 } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
+import { Type } from 'class-transformer';
 
 export class CreateProductDto {
   @IsString()
@@ -27,66 +28,53 @@ export class CreateProductDto {
   orderTemplate?: string;
 
   @IsOptional()
-  @IsString()
-  image?: string;
-
-  @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
   categoryId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
   variantId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
   tradeMarkId?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : 0))
   purchasePrice?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : 0))
   retailPrice?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : 0))
   stockQuantity?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : 0))
   minStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : 0))
   maxStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
   weight?: number;
 
   @IsOptional()
@@ -100,20 +88,7 @@ export class CreateProductDto {
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
   conversionValue?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
-  masterProductId?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  @Transform(({ value }) => (value ? Number(value) : undefined))
-  masterUnitId?: number;
 
   @IsOptional()
   @IsString()
@@ -124,6 +99,8 @@ export class CreateProductDto {
   isActive?: boolean;
 
   @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
   imageUrls?: string[];
 
   @IsOptional()

@@ -1,10 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
 
 @Injectable()
 export class ProductsService {
   constructor(private prisma: PrismaService) {}
+
+  logger = new Logger();
 
   private parseAttributes(
     attributesText: string | null,
@@ -74,88 +76,118 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto) {
-    const fullName =
-      dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
+    try {
+      const fullName =
+        dto.fullName ||
+        this.buildFullName(dto.name, dto.attributesText || null);
 
-    const { imageUrls, ...productData } = dto;
+      const { imageUrls, ...productData } = dto;
 
-    const sanitizedData: any = {
-      code: dto.code,
-      name: dto.name,
-      fullName,
-      purchasePrice: dto.purchasePrice ?? 0,
-      retailPrice: dto.retailPrice ?? 0,
-      stockQuantity: dto.stockQuantity ?? 0,
-      minStockAlert: dto.minStockAlert ?? 0,
-      maxStockAlert: dto.maxStockAlert ?? 0,
-      isActive: dto.isActive ?? true,
-      isDirectSale: dto.isDirectSale ?? false,
-    };
+      const sanitizedData: any = {
+        code: dto.code,
+        name: dto.name,
+        fullName,
+        purchasePrice: dto.purchasePrice?.toString() ?? '0',
+        retailPrice: dto.retailPrice?.toString() ?? '0',
+        stockQuantity: dto.stockQuantity ?? 0,
+        minStockAlert: dto.minStockAlert ?? 0,
+        maxStockAlert: dto.maxStockAlert ?? 0,
+        isActive: dto.isActive ?? true,
+        isDirectSale: dto.isDirectSale ?? false,
+      };
 
-    if (dto.description !== undefined && dto.description !== '') {
-      sanitizedData.description = dto.description;
-    }
-    if (dto.orderTemplate !== undefined && dto.orderTemplate !== '') {
-      sanitizedData.orderTemplate = dto.orderTemplate;
-    }
-    if (dto.categoryId) {
-      sanitizedData.categoryId =
-        typeof dto.categoryId === 'string'
-          ? parseInt(dto.categoryId)
-          : dto.categoryId;
-    }
-    if (dto.tradeMarkId) {
-      sanitizedData.tradeMarkId =
-        typeof dto.tradeMarkId === 'string'
-          ? parseInt(dto.tradeMarkId)
-          : dto.tradeMarkId;
-    }
-    if (dto.variantId) {
-      sanitizedData.variantId =
-        typeof dto.variantId === 'string'
-          ? parseInt(dto.variantId)
-          : dto.variantId;
-    }
-    if (dto.weight) {
-      sanitizedData.weight =
-        typeof dto.weight === 'string' ? parseFloat(dto.weight) : dto.weight;
-    }
-    if (dto.weightUnit) {
-      sanitizedData.weightUnit = dto.weightUnit;
-    }
-    if (dto.unit) {
-      sanitizedData.unit = dto.unit;
-    }
-    if (dto.conversionValue) {
-      sanitizedData.conversionValue = dto.conversionValue;
-    }
-    if (dto.attributesText) {
-      sanitizedData.attributesText = dto.attributesText;
-    }
+      if (dto.description !== undefined && dto.description !== '') {
+        sanitizedData.description = dto.description;
+      }
+      if (dto.orderTemplate !== undefined && dto.orderTemplate !== '') {
+        sanitizedData.orderTemplate = dto.orderTemplate;
+      }
+      if (dto.categoryId) {
+        const categoryId =
+          typeof dto.categoryId === 'string'
+            ? parseInt(dto.categoryId)
+            : dto.categoryId;
 
-    const product = await this.prisma.product.create({
-      data: sanitizedData,
-      include: { category: true, variant: true, tradeMark: true },
-    });
+        const categoryExists = await this.prisma.category.findUnique({
+          where: { id: categoryId },
+        });
 
-    if (imageUrls && imageUrls.length > 0) {
-      await this.prisma.productImage.createMany({
-        data: imageUrls.map((url) => ({
-          productId: product.id,
-          image: url,
-        })),
+        if (categoryExists) {
+          sanitizedData.categoryId = categoryId;
+        }
+      }
+      if (dto.tradeMarkId) {
+        const tradeMarkId =
+          typeof dto.tradeMarkId === 'string'
+            ? parseInt(dto.tradeMarkId)
+            : dto.tradeMarkId;
+
+        const tradeMarkExists = await this.prisma.tradeMark.findUnique({
+          where: { id: tradeMarkId },
+        });
+
+        if (tradeMarkExists) {
+          sanitizedData.tradeMarkId = tradeMarkId;
+        }
+      }
+      if (dto.variantId) {
+        const variantId =
+          typeof dto.variantId === 'string'
+            ? parseInt(dto.variantId)
+            : dto.variantId;
+
+        const variantExists = await this.prisma.productVariant.findUnique({
+          where: { id: variantId },
+        });
+
+        if (variantExists) {
+          sanitizedData.variantId = variantId;
+        }
+      }
+      if (dto.weight) {
+        sanitizedData.weight =
+          typeof dto.weight === 'string' ? parseFloat(dto.weight) : dto.weight;
+      }
+      if (dto.weightUnit) {
+        sanitizedData.weightUnit = dto.weightUnit;
+      }
+      if (dto.unit) {
+        sanitizedData.unit = dto.unit;
+      }
+      if (dto.conversionValue) {
+        sanitizedData.conversionValue = dto.conversionValue;
+      }
+      if (dto.attributesText) {
+        sanitizedData.attributesText = dto.attributesText;
+      }
+
+      const product = await this.prisma.product.create({
+        data: sanitizedData,
+        include: { category: true, variant: true, tradeMark: true },
       });
-    }
 
-    return this.prisma.product.findUnique({
-      where: { id: product.id },
-      include: {
-        category: true,
-        variant: true,
-        tradeMark: true,
-        images: true,
-      },
-    });
+      if (imageUrls && imageUrls.length > 0) {
+        await this.prisma.productImage.createMany({
+          data: imageUrls.map((url) => ({
+            productId: product.id,
+            image: url,
+          })),
+        });
+      }
+
+      return this.prisma.product.findUnique({
+        where: { id: product.id },
+        include: {
+          category: true,
+          variant: true,
+          tradeMark: true,
+          images: true,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Error creating product:', error);
+      throw error;
+    }
   }
 
   async update(id: number, dto: UpdateProductDto) {
