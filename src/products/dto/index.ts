@@ -5,7 +5,7 @@ import {
   IsOptional,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class CreateProductDto {
   @IsString()
@@ -33,51 +33,60 @@ export class CreateProductDto {
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   categoryId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   variantId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   tradeMarkId?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : 0))
   purchasePrice?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : 0))
   retailPrice?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : 0))
   stockQuantity?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : 0))
   minStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : 0))
   maxStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   weight?: number;
 
   @IsOptional()
@@ -91,16 +100,19 @@ export class CreateProductDto {
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   conversionValue?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   masterProductId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  @Transform(({ value }) => (value ? Number(value) : undefined))
   masterUnitId?: number;
 
   @IsOptional()

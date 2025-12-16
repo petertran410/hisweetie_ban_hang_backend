@@ -99,16 +99,26 @@ export class ProductsService {
       sanitizedData.orderTemplate = dto.orderTemplate;
     }
     if (dto.categoryId) {
-      sanitizedData.categoryId = dto.categoryId;
+      sanitizedData.categoryId =
+        typeof dto.categoryId === 'string'
+          ? parseInt(dto.categoryId)
+          : dto.categoryId;
     }
     if (dto.tradeMarkId) {
-      sanitizedData.tradeMarkId = dto.tradeMarkId;
+      sanitizedData.tradeMarkId =
+        typeof dto.tradeMarkId === 'string'
+          ? parseInt(dto.tradeMarkId)
+          : dto.tradeMarkId;
     }
     if (dto.variantId) {
-      sanitizedData.variantId = dto.variantId;
+      sanitizedData.variantId =
+        typeof dto.variantId === 'string'
+          ? parseInt(dto.variantId)
+          : dto.variantId;
     }
     if (dto.weight) {
-      sanitizedData.weight = dto.weight;
+      sanitizedData.weight =
+        typeof dto.weight === 'string' ? parseFloat(dto.weight) : dto.weight;
     }
     if (dto.weightUnit) {
       sanitizedData.weightUnit = dto.weightUnit;
