@@ -5,6 +5,8 @@ import {
   IsOptional,
   Min,
   IsArray,
+  IsInt,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -111,6 +113,12 @@ export class CreateProductDto {
   @IsNumber()
   @Type(() => Number)
   type?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductComponentDto)
+  components?: ProductComponentDto[];
 }
 
 export class UpdateProductDto {
@@ -236,6 +244,12 @@ export class UpdateProductDto {
   @IsNumber()
   @Type(() => Number)
   type?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductComponentDto)
+  components?: ProductComponentDto[];
 }
 
 export class ProductQueryDto {
@@ -261,4 +275,14 @@ export class ProductQueryDto {
   @IsBoolean()
   @Type(() => Boolean)
   isActive?: boolean;
+}
+
+export class ProductComponentDto {
+  @IsInt()
+  componentProductId: number;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  quantity: number;
 }

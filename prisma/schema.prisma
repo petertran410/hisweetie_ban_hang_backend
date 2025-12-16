@@ -307,8 +307,25 @@ model Product {
   orderItems         OrderItem[]
   invoiceDetails     InvoiceDetail[]
   purchaseOrderItems PurchaseOrderItem[]
+  comboComponents    ProductComponent[] @relation("ComboComponents")
+  componentOf        ProductComponent[] @relation("ComponentOf")
   
   @@map("products")
+}
+
+model ProductComponent {
+  id                 Int      @id @default(autoincrement())
+  comboProductId     Int
+  componentProductId Int
+  quantity           Decimal  @db.Decimal(18, 4)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  
+  comboProduct       Product  @relation("ComboComponents", fields: [comboProductId], references: [id], onDelete: Cascade)
+  componentProduct   Product  @relation("ComponentOf", fields: [componentProductId], references: [id], onDelete: Cascade)
+  
+  @@unique([comboProductId, componentProductId])
+  @@map("product_components")
 }
 
 model ProductAttribute {

@@ -69,7 +69,17 @@ export class ProductsService {
   async findOne(id: number) {
     return this.prisma.product.findUnique({
       where: { id },
-      include: { category: true, variant: true, tradeMark: true, images: true },
+      include: {
+        category: true,
+        variant: true,
+        tradeMark: true,
+        images: true,
+        comboComponents: {
+          include: {
+            componentProduct: true,
+          },
+        },
+      },
     });
   }
 
@@ -77,45 +87,62 @@ export class ProductsService {
     const fullName =
       dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
 
-    const { imageUrls, ...productData } = dto;
+    const { imageUrls, components, ...productData } = dto;
 
-    const product = await this.prisma.product.create({
-      data: {
-        ...productData,
-        fullName,
-        type: dto.type || 2,
-        purchasePrice: dto.purchasePrice || 0,
-        retailPrice: dto.retailPrice || 0,
-        stockQuantity: dto.stockQuantity || 0,
-        minStockAlert: dto.minStockAlert || 0,
-      },
-      include: { category: true, variant: true, tradeMark: true },
-    });
-
-    if (imageUrls && imageUrls.length > 0) {
-      await this.prisma.productImage.createMany({
-        data: imageUrls.map((url) => ({
-          productId: product.id,
-          image: url,
-        })),
+    return this.prisma.$transaction(async (tx) => {
+      const product = await tx.product.create({
+        data: {
+          ...productData,
+          fullName,
+          type: dto.type || 2,
+          purchasePrice: dto.type === 1 ? 0 : dto.purchasePrice || 0,
+          retailPrice: dto.retailPrice || 0,
+          stockQuantity: dto.type === 1 ? 0 : dto.stockQuantity || 0,
+          minStockAlert: dto.minStockAlert || 0,
+        },
+        include: { category: true, variant: true, tradeMark: true },
       });
-    }
 
-    return this.prisma.product.findUnique({
-      where: { id: product.id },
-      include: {
-        category: true,
-        variant: true,
-        tradeMark: true,
-        images: true,
-      },
+      if (imageUrls && imageUrls.length > 0) {
+        await tx.productImage.createMany({
+          data: imageUrls.map((url) => ({
+            productId: product.id,
+            image: url,
+          })),
+        });
+      }
+
+      if (dto.type === 1 && components && components.length > 0) {
+        await tx.productComponent.createMany({
+          data: components.map((comp) => ({
+            comboProductId: product.id,
+            componentProductId: comp.componentProductId,
+            quantity: comp.quantity,
+          })),
+        });
+      }
+
+      return tx.product.findUnique({
+        where: { id: product.id },
+        include: {
+          category: true,
+          variant: true,
+          tradeMark: true,
+          images: true,
+          comboComponents: {
+            include: {
+              componentProduct: true,
+            },
+          },
+        },
+      });
     });
   }
 
   async update(id: number, dto: UpdateProductDto) {
     const currentProduct = await this.prisma.product.findUnique({
       where: { id },
-      include: { images: true },
+      include: { images: true, comboComponents: true },
     });
 
     if (!currentProduct) {
@@ -133,58 +160,81 @@ export class ProductsService {
       fullName = this.buildFullName(name, attributesText);
     }
 
-    if (dto.imageUrls !== undefined) {
-      const currentImageUrls = currentProduct.images.map((img) => img.image);
-      const newImageUrls = dto.imageUrls || [];
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.imageUrls !== undefined) {
+        const currentImageUrls = currentProduct.images.map((img) => img.image);
+        const newImageUrls = dto.imageUrls || [];
 
-      const imagesToDelete = currentImageUrls.filter(
-        (url) => !newImageUrls.includes(url),
-      );
-      const imagesToAdd = newImageUrls.filter(
-        (url) => !currentImageUrls.includes(url),
-      );
+        const imagesToDelete = currentImageUrls.filter(
+          (url) => !newImageUrls.includes(url),
+        );
+        const imagesToAdd = newImageUrls.filter(
+          (url) => !currentImageUrls.includes(url),
+        );
 
-      if (imagesToDelete.length > 0) {
-        await this.prisma.productImage.deleteMany({
-          where: {
-            productId: id,
-            image: { in: imagesToDelete },
+        if (imagesToDelete.length > 0) {
+          await tx.productImage.deleteMany({
+            where: {
+              productId: id,
+              image: { in: imagesToDelete },
+            },
+          });
+        }
+
+        if (imagesToAdd.length > 0) {
+          await tx.productImage.createMany({
+            data: imagesToAdd.map((url) => ({
+              productId: id,
+              image: url,
+            })),
+          });
+        }
+      }
+
+      if (currentProduct.type === 1 && dto.components !== undefined) {
+        await tx.productComponent.deleteMany({
+          where: { comboProductId: id },
+        });
+
+        if (dto.components.length > 0) {
+          await tx.productComponent.createMany({
+            data: dto.components.map((comp) => ({
+              comboProductId: id,
+              componentProductId: comp.componentProductId,
+              quantity: comp.quantity,
+            })),
+          });
+        }
+      }
+
+      const { imageUrls, components, ...productData } = dto;
+
+      const sanitizedData = {
+        ...productData,
+        fullName,
+        categoryId: productData.categoryId || null,
+        tradeMarkId: productData.tradeMarkId || null,
+        variantId: productData.variantId || null,
+      };
+
+      const updated = await tx.product.update({
+        where: { id },
+        data: sanitizedData,
+        include: {
+          category: true,
+          variant: true,
+          tradeMark: true,
+          images: true,
+          comboComponents: {
+            include: {
+              componentProduct: true,
+            },
           },
-        });
-      }
+        },
+      });
 
-      if (imagesToAdd.length > 0) {
-        await this.prisma.productImage.createMany({
-          data: imagesToAdd.map((url) => ({
-            productId: id,
-            image: url,
-          })),
-        });
-      }
-    }
-
-    const { imageUrls, ...productData } = dto;
-
-    const sanitizedData = {
-      ...productData,
-      fullName,
-      categoryId: productData.categoryId || null,
-      tradeMarkId: productData.tradeMarkId || null,
-      variantId: productData.variantId || null,
-    };
-
-    const updated = await this.prisma.product.update({
-      where: { id },
-      data: sanitizedData,
-      include: {
-        category: true,
-        variant: true,
-        tradeMark: true,
-        images: true,
-      },
+      return updated;
     });
-
-    return updated;
   }
 
   async remove(id: number) {
