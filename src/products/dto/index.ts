@@ -106,6 +106,11 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   isDirectSale?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  type?: number;
 }
 
 export class UpdateProductDto {
@@ -226,6 +231,11 @@ export class UpdateProductDto {
   @IsOptional()
   @IsBoolean()
   isDirectSale?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  type?: number;
 }
 
 export class ProductQueryDto {

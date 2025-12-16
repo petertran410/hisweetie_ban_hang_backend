@@ -83,6 +83,7 @@ export class ProductsService {
       data: {
         ...productData,
         fullName,
+        type: dto.type || 2,
         purchasePrice: dto.purchasePrice || 0,
         retailPrice: dto.retailPrice || 0,
         stockQuantity: dto.stockQuantity || 0,
