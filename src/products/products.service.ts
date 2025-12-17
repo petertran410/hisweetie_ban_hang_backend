@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
 
@@ -57,6 +61,15 @@ export class ProductsService {
           tradeMark: true,
           variant: true,
           images: true,
+          comboComponents: {
+            include: {
+              componentProduct: {
+                include: {
+                  images: true,
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -83,7 +96,25 @@ export class ProductsService {
     });
   }
 
+  async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
+    const existing = await this.prisma.product.findUnique({
+      where: { code },
+    });
+
+    if (!existing) return false;
+    if (excludeId && existing.id === excludeId) return false;
+
+    return true;
+  }
+
   async create(dto: CreateProductDto) {
+    const codeExists = await this.checkCodeExists(dto.code);
+    if (codeExists) {
+      throw new BadRequestException(
+        `Product with code ${dto.code} already exists`,
+      );
+    }
+
     const fullName =
       dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
 

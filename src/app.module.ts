@@ -33,6 +33,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TrademarksModule } from './trademarks/trademarks.module';
 import { BranchesModule } from './branches/branches.module';
+import { PriceBooksModule } from './price-books/price-books.module';
 
 @Module({
   imports: [
@@ -55,6 +56,7 @@ import { BranchesModule } from './branches/branches.module';
     SuppliersModule,
     OrdersModule,
     PurchaseOrdersModule,
+    PriceBooksModule,
     ReportsModule,
     UploadModule,
     ExportModule,

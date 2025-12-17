@@ -19,19 +19,19 @@ model User {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
-  branch                Branch?           @relation(fields: [branchId], references: [id])
+
+  branch                Branch?         @relation(fields: [branchId], references: [id])
   userRoles             UserRole[]
-  createdOrders         Order[]           @relation("OrderCreator")
-  soldOrders            Order[]           @relation("OrderSeller")
-  createdInvoices       Invoice[]         @relation("InvoiceCreator")
-  soldInvoices          Invoice[]         @relation("InvoiceSeller")
-  createdPayments       OrderPayment[]    @relation("PaymentCreator")
-  createdPurchaseOrders PurchaseOrder[]   @relation("PurchaseOrderCreator")
-  purchaseOrders        PurchaseOrder[]   @relation("PurchaseOrderBuyer")
-  posts                 Post[]            @relation("PostAuthor")
+  createdOrders         Order[]         @relation("OrderCreator")
+  soldOrders            Order[]         @relation("OrderSeller")
+  createdInvoices       Invoice[]       @relation("InvoiceCreator")
+  soldInvoices          Invoice[]       @relation("InvoiceSeller")
+  createdPayments       OrderPayment[]  @relation("PaymentCreator")
+  createdPurchaseOrders PurchaseOrder[] @relation("PurchaseOrderCreator")
+  purchaseOrders        PurchaseOrder[] @relation("PurchaseOrderBuyer")
+  posts                 Post[]          @relation("PostAuthor")
   priceBookUsers        PriceBookUser[]
-  
+
   @@map("users")
 }
 
@@ -41,10 +41,10 @@ model Role {
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
+
   userRoles       UserRole[]
   rolePermissions RolePermission[]
-  
+
   @@map("roles")
 }
 
@@ -56,9 +56,9 @@ model Permission {
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
+
   rolePermissions RolePermission[]
-  
+
   @@unique([resource, action])
   @@map("permissions")
 }
@@ -67,10 +67,10 @@ model UserRole {
   userId    Int
   roleId    Int
   createdAt DateTime @default(now())
-  
+
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
   role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  
+
   @@id([userId, roleId])
   @@map("user_roles")
 }
@@ -79,10 +79,10 @@ model RolePermission {
   roleId       Int
   permissionId Int
   createdAt    DateTime @default(now())
-  
+
   role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
-  
+
   @@id([roleId, permissionId])
   @@map("role_permissions")
 }
@@ -90,40 +90,40 @@ model RolePermission {
 // ==================== BRANCH & LOCATION ====================
 
 model Branch {
-  id                Int      @id @default(autoincrement())
-  name              String
-  contactNumber     String?
-  subContactNumber  String?
-  address           String?
-  locationId        Int?
-  wardName          String?
-  isActive          Boolean  @default(true)
-  isLock            Boolean  @default(false)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
-  location         Location?          @relation(fields: [locationId], references: [id])
-  users            User[]
-  orders           Order[]
-  invoices         Invoice[]
-  purchaseOrders   PurchaseOrder[]
-  inventories      Inventory[]
+  id               Int      @id @default(autoincrement())
+  name             String
+  contactNumber    String?
+  subContactNumber String?
+  address          String?
+  locationId       Int?
+  wardName         String?
+  isActive         Boolean  @default(true)
+  isLock           Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  location          Location?         @relation(fields: [locationId], references: [id])
+  users             User[]
+  orders            Order[]
+  invoices          Invoice[]
+  purchaseOrders    PurchaseOrder[]
+  inventories       Inventory[]
   priceBookBranches PriceBookBranch[]
-  
+
   @@map("branches")
 }
 
 model Location {
-  id          Int      @id @default(autoincrement())
-  name        String
-  normalName  String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  branches       Branch[]
-  orderDeliveries OrderDelivery[]
+  id         Int      @id @default(autoincrement())
+  name       String
+  normalName String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  branches          Branch[]
+  orderDeliveries   OrderDelivery[]
   invoiceDeliveries InvoiceDelivery[]
-  
+
   @@map("locations")
 }
 
@@ -135,9 +135,9 @@ model CustomerType {
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
+
   customers Customer[]
-  
+
   @@map("customer_types")
 }
 
@@ -147,58 +147,58 @@ model CustomerGroup {
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
-  customerGroupDetails     CustomerGroupDetail[]
-  priceBookCustomerGroups  PriceBookCustomerGroup[]
-  
+
+  customerGroupDetails    CustomerGroupDetail[]
+  priceBookCustomerGroups PriceBookCustomerGroup[]
+
   @@map("customer_groups")
 }
 
 model Customer {
-  id              Int       @id @default(autoincrement())
-  code            String?   @unique
-  name            String
-  gender          Boolean?
-  birthDate       DateTime?
-  contactNumber   String?
-  phone           String?
-  facebook        String?
-  zalo            String?
-  address         String?
-  locationName    String?
-  wardName        String?
-  email           String?
-  type            Int       @default(0)
-  organization    String?
-  taxCode         String?
-  comments        String?
-  customerTypeId  Int?
-  totalPurchased  Int       @default(0)
-  totalDebt       Int       @default(0)
-  rewardPoint     Int       @default(0)
-  psidFacebook    String?
-  isWalkIn        Boolean   @default(false)
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  
+  id             Int       @id @default(autoincrement())
+  code           String?   @unique
+  name           String
+  gender         Boolean?
+  birthDate      DateTime?
+  contactNumber  String?
+  phone          String?
+  facebook       String?
+  zalo           String?
+  address        String?
+  locationName   String?
+  wardName       String?
+  email          String?
+  type           Int       @default(0)
+  organization   String?
+  taxCode        String?
+  comments       String?
+  customerTypeId Int?
+  totalPurchased Int       @default(0)
+  totalDebt      Int       @default(0)
+  rewardPoint    Int       @default(0)
+  psidFacebook   String?
+  isWalkIn       Boolean   @default(false)
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
   customerGroupDetails CustomerGroupDetail[]
   orders               Order[]
   invoices             Invoice[]
-  
+
   @@map("customers")
 }
 
 model CustomerGroupDetail {
-  id             Int      @id @default(autoincrement())
-  customerId     Int
+  id              Int      @id @default(autoincrement())
+  customerId      Int
   customerGroupId Int
-  createdAt      DateTime @default(now())
-  
+  createdAt       DateTime @default(now())
+
   customer      Customer      @relation(fields: [customerId], references: [id], onDelete: Cascade)
   customerGroup CustomerGroup @relation(fields: [customerGroupId], references: [id], onDelete: Cascade)
-  
+
   @@unique([customerId, customerGroupId])
   @@map("customer_group_details")
 }
@@ -217,35 +217,35 @@ model Supplier {
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   purchaseOrders PurchaseOrder[]
-  
+
   @@map("suppliers")
 }
 
 model TradeMark {
-  id          Int      @id @default(autoincrement())
-  name        String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  id        Int      @id @default(autoincrement())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   products Product[]
-  
+
   @@map("trade_marks")
 }
 
 model Category {
-  id          Int      @id @default(autoincrement())
-  name        String
-  parentId    Int?
-  hasChild    Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  id        Int      @id @default(autoincrement())
+  name      String
+  parentId  Int?
+  hasChild  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   parent   Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
   children Category[] @relation("CategoryToCategory")
   products Product[]
-  
+
   @@map("categories")
 }
 
@@ -257,49 +257,50 @@ model ProductVariant {
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
+
   products Product[]
-  
+
   @@map("product_variants")
 }
 
 model Product {
-  id                Int       @id @default(autoincrement())
-  code              String    @unique
-  name              String
-  fullName          String?
-  description       String?
-  orderTemplate       String?
-  categoryId        Int?
-  tradeMarkId       Int?
-  variantId         Int?
-  masterProductId   Int?
-  masterUnitId      Int?
-  type              Int       @default(2)
-  allowsSale        Boolean   @default(true)
-  hasVariants       Boolean   @default(false)
-  basePrice         Decimal   @default(0) @db.Decimal(18, 2)
-  purchasePrice     Decimal   @default(0) @db.Decimal(18, 2)
-  retailPrice       Decimal   @default(0) @db.Decimal(18, 2)
-  unit              String?
-  conversionValue   Decimal   @default(1) @db.Decimal(18, 4)
-  weight            Decimal?  @db.Decimal(18, 4)
-  weightUnit        String?   @default("kg")
-  attributesText    String?
-  stockQuantity     Int       @default(0)
-  minStockAlert     Int       @default(0)
-  maxStockAlert     Int       @default(0)
-  isRewardPoint     Boolean   @default(true)
-  isActive          Boolean   @default(true)
-  isDirectSale  Boolean  @default(false)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  
-  category           Category?          @relation(fields: [categoryId], references: [id])
-  tradeMark          TradeMark?         @relation(fields: [tradeMarkId], references: [id])
-  variant            ProductVariant?    @relation(fields: [variantId], references: [id])
-  masterProduct      Product?           @relation("ProductUnits", fields: [masterProductId], references: [id])
-  productUnits       Product[]          @relation("ProductUnits")
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  name            String
+  fullName        String?
+  description     String?
+  orderTemplate   String?
+  categoryId      Int?
+  tradeMarkId     Int?
+  variantId       Int?
+  masterProductId Int?
+  masterUnitId    Int?
+  type            Int      @default(2)
+  allowsSale      Boolean  @default(true)
+  hasVariants     Boolean  @default(false)
+  basePrice       Decimal  @default(0) @db.Decimal(18, 2)
+  purchasePrice   Decimal  @default(0) @db.Decimal(18, 2)
+  retailPrice     Decimal  @default(0) @db.Decimal(18, 2)
+  unit            String?
+  conversionValue Decimal  @default(1) @db.Decimal(18, 4)
+  weight          Decimal? @db.Decimal(18, 4)
+  weightUnit      String?  @default("kg")
+  attributesText  String?
+  stockQuantity   Int      @default(0)
+  minStockAlert   Int      @default(0)
+  maxStockAlert   Int      @default(0)
+  isRewardPoint   Boolean  @default(true)
+  isActive        Boolean  @default(true)
+  isDirectSale    Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  priceBookId     Int?
+
+  category           Category?           @relation(fields: [categoryId], references: [id])
+  tradeMark          TradeMark?          @relation(fields: [tradeMarkId], references: [id])
+  variant            ProductVariant?     @relation(fields: [variantId], references: [id])
+  masterProduct      Product?            @relation("ProductUnits", fields: [masterProductId], references: [id])
+  productUnits       Product[]           @relation("ProductUnits")
   attributes         ProductAttribute[]
   images             ProductImage[]
   inventories        Inventory[]
@@ -307,9 +308,10 @@ model Product {
   orderItems         OrderItem[]
   invoiceDetails     InvoiceDetail[]
   purchaseOrderItems PurchaseOrderItem[]
-  comboComponents    ProductComponent[] @relation("ComboComponents")
-  componentOf        ProductComponent[] @relation("ComponentOf")
-  
+  comboComponents    ProductComponent[]  @relation("ComboComponents")
+  componentOf        ProductComponent[]  @relation("ComponentOf")
+  priceBook          PriceBook?          @relation(fields: [priceBookId], references: [id])
+
   @@map("products")
 }
 
@@ -320,10 +322,10 @@ model ProductComponent {
   quantity           Decimal  @db.Decimal(18, 4)
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
-  
-  comboProduct       Product  @relation("ComboComponents", fields: [comboProductId], references: [id], onDelete: Cascade)
-  componentProduct   Product  @relation("ComponentOf", fields: [componentProductId], references: [id], onDelete: Cascade)
-  
+
+  comboProduct     Product @relation("ComboComponents", fields: [comboProductId], references: [id], onDelete: Cascade)
+  componentProduct Product @relation("ComponentOf", fields: [componentProductId], references: [id], onDelete: Cascade)
+
   @@unique([comboProductId, componentProductId])
   @@map("product_components")
 }
@@ -335,9 +337,9 @@ model ProductAttribute {
   attributeValue String
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
-  
+
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@map("product_attributes")
 }
 
@@ -346,52 +348,56 @@ model ProductImage {
   productId Int
   image     String
   createdAt DateTime @default(now())
-  
+
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@map("product_images")
 }
 
 model Inventory {
-  id           Int     @id @default(autoincrement())
-  productId    Int
-  productCode  String
-  productName  String
-  branchId     Int
-  branchName   String
-  cost         Decimal @default(0) @db.Decimal(18, 2)
-  onHand       Decimal @default(0) @db.Decimal(18, 4)
-  reserved     Decimal @default(0) @db.Decimal(18, 4)
-  onOrder      Decimal @default(0) @db.Decimal(18, 4)
-  minQuality   Decimal @default(0) @db.Decimal(18, 4)
-  maxQuality   Decimal @default(0) @db.Decimal(18, 4)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  
+  id          Int      @id @default(autoincrement())
+  productId   Int
+  productCode String
+  productName String
+  branchId    Int
+  branchName  String
+  cost        Decimal  @default(0) @db.Decimal(18, 2)
+  onHand      Decimal  @default(0) @db.Decimal(18, 4)
+  reserved    Decimal  @default(0) @db.Decimal(18, 4)
+  onOrder     Decimal  @default(0) @db.Decimal(18, 4)
+  minQuality  Decimal  @default(0) @db.Decimal(18, 4)
+  maxQuality  Decimal  @default(0) @db.Decimal(18, 4)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   branch  Branch  @relation(fields: [branchId], references: [id])
-  
+
   @@unique([productId, branchId])
   @@map("inventories")
 }
 
 model PriceBook {
-  id              Int       @id @default(autoincrement())
-  name            String
-  isActive        Boolean   @default(true)
-  isGlobal        Boolean   @default(false)
-  startDate       DateTime?
-  endDate         DateTime?
-  forAllCusGroup  Boolean   @default(false)
-  forAllUser      Boolean   @default(false)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  
+  id                     Int       @id @default(autoincrement())
+  name                   String
+  isActive               Boolean   @default(true)
+  isGlobal               Boolean   @default(false)
+  startDate              DateTime?
+  endDate                DateTime?
+  allowNonListedProducts Boolean   @default(true)
+  warnNonListedProducts  Boolean   @default(false)
+  priority               Int       @default(0)
+  forAllCusGroup         Boolean   @default(false)
+  forAllUser             Boolean   @default(false)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
   priceBookDetails        PriceBookDetail[]
   priceBookBranches       PriceBookBranch[]
   priceBookCustomerGroups PriceBookCustomerGroup[]
   priceBookUsers          PriceBookUser[]
-  
+  Product                 Product[]
+
   @@map("price_books")
 }
 
@@ -405,10 +411,10 @@ model PriceBookDetail {
   endDate     DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
-  
+
   priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
   product   Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
-  
+
   @@unique([priceBookId, productId])
   @@map("price_book_details")
 }
@@ -419,10 +425,10 @@ model PriceBookBranch {
   branchId    Int
   branchName  String
   createdAt   DateTime @default(now())
-  
+
   priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
   branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  
+
   @@unique([priceBookId, branchId])
   @@map("price_book_branches")
 }
@@ -433,10 +439,10 @@ model PriceBookCustomerGroup {
   customerGroupId   Int
   customerGroupName String
   createdAt         DateTime @default(now())
-  
+
   priceBook     PriceBook     @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
   customerGroup CustomerGroup @relation(fields: [customerGroupId], references: [id], onDelete: Cascade)
-  
+
   @@unique([priceBookId, customerGroupId])
   @@map("price_book_customer_groups")
 }
@@ -447,41 +453,41 @@ model PriceBookUser {
   userId      Int
   userName    String
   createdAt   DateTime @default(now())
-  
+
   priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+
   @@unique([priceBookId, userId])
   @@map("price_book_users")
 }
 
 model SaleChannel {
-  id          Int      @id @default(autoincrement())
-  name        String
-  position    Int      @default(0)
-  isActivate  Boolean  @default(true)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  id         Int      @id @default(autoincrement())
+  name       String
+  position   Int      @default(0)
+  isActivate Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
   orders   Order[]
   invoices Invoice[]
-  
+
   @@map("sale_channels")
 }
 
 model Surcharge {
-  id             Int      @id @default(autoincrement())
-  code           String   @unique
-  name           String
-  valueRatio     Decimal? @db.Decimal(18, 4)
-  value          Decimal? @db.Decimal(18, 2)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  
+  id         Int      @id @default(autoincrement())
+  code       String   @unique
+  name       String
+  valueRatio Decimal? @db.Decimal(18, 4)
+  value      Decimal? @db.Decimal(18, 2)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
   orderSurcharges         OrderSurcharge[]
   invoiceSurcharges       InvoiceSurcharge[]
   purchaseOrderSurcharges PurchaseOrderSurcharge[]
-  
+
   @@map("surcharges")
 }
 
@@ -492,11 +498,11 @@ model BankAccount {
   description   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   orderPayments         OrderPayment[]
   invoicePayments       InvoicePayment[]
   purchaseOrderPayments PurchaseOrderPayment[]
-  
+
   @@map("bank_accounts")
 }
 
@@ -509,93 +515,96 @@ model PartnerDelivery {
   email         String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   orderDeliveries   OrderDelivery[]
   invoiceDeliveries InvoiceDelivery[]
-  
+
   @@map("partner_deliveries")
 }
 
 // ==================== ORDER (ĐẶT HÀNG) ====================
 
 model Order {
-  id              Int      @id @default(autoincrement())
-  code            String   @unique
-  customerId      Int?
-  branchId        Int?
-  soldById        Int?
-  saleChannelId   Int?
-  orderDate       DateTime @default(now())
-  totalAmount     Decimal  @default(0) @db.Decimal(18, 2)
-  discount        Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio   Decimal  @default(0) @db.Decimal(18, 4)
-  grandTotal      Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount      Decimal  @default(0) @db.Decimal(18, 2)
-  depositAmount   Decimal  @default(0) @db.Decimal(18, 2)
-  paymentStatus   String   @default("unpaid")
-  orderStatus     String   @default("pending")
-  usingCod        Boolean  @default(false)
-  description     String?
-  createdBy       Int
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
-  customer      Customer?       @relation(fields: [customerId], references: [id])
-  branch        Branch?         @relation(fields: [branchId], references: [id])
-  soldBy        User?           @relation("OrderSeller", fields: [soldById], references: [id])
-  saleChannel   SaleChannel?    @relation(fields: [saleChannelId], references: [id])
-  creator       User            @relation("OrderCreator", fields: [createdBy], references: [id])
-  items         OrderItem[]
-  payments      OrderPayment[]
-  surcharges    OrderSurcharge[]
-  delivery      OrderDelivery?
-  
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  customerId    Int?
+  branchId      Int?
+  soldById      Int?
+  saleChannelId Int?
+  orderDate     DateTime @default(now())
+  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  depositAmount Decimal  @default(0) @db.Decimal(18, 2)
+  paymentStatus String   @default("unpaid")
+  orderStatus   String   @default("pending")
+  usingCod      Boolean  @default(false)
+  description   String?
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer    Customer?        @relation(fields: [customerId], references: [id])
+  branch      Branch?          @relation(fields: [branchId], references: [id])
+  soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
+  saleChannel SaleChannel?     @relation(fields: [saleChannelId], references: [id])
+  creator     User             @relation("OrderCreator", fields: [createdBy], references: [id])
+  items       OrderItem[]
+  payments    OrderPayment[]
+  surcharges  OrderSurcharge[]
+  delivery    OrderDelivery?
+
   @@map("orders")
 }
 
 model OrderItem {
-  id            Int      @id @default(autoincrement())
-  orderId       Int
-  productId     Int
-  productCode   String
-  productName   String
-  quantity      Decimal  @db.Decimal(18, 4)
-  price         Decimal  @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice    Decimal  @db.Decimal(18, 2)
-  note          String?
-  serialNumbers String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  id                 Int      @id @default(autoincrement())
+  orderId            Int
+  productId          Int
+  productCode        String
+  productName        String
+  quantity           Decimal  @db.Decimal(18, 4)
+  price              Decimal  @db.Decimal(18, 2)
+  discount           Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio      Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice         Decimal  @db.Decimal(18, 2)
+  note               String?
+  serialNumbers      String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  appliedPriceBookId Int?
+  originalPrice      Decimal? @db.Decimal(18, 2)
+  appliedPrice       Decimal  @db.Decimal(18, 2)
+
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
-  
+
   @@map("order_items")
 }
 
 model OrderPayment {
-  id            Int       @id @default(autoincrement())
-  code          String    @unique
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
   orderId       Int
-  amount        Decimal   @db.Decimal(18, 2)
-  paymentDate   DateTime  @default(now())
-  paymentMethod String    @default("cash")
+  amount        Decimal  @db.Decimal(18, 2)
+  paymentDate   DateTime @default(now())
+  paymentMethod String   @default("cash")
   accountId     Int?
   bankAccount   String?
   description   String?
-  status        Int       @default(1)
+  status        Int      @default(1)
   statusValue   String?
   createdBy     Int
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  
-  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  account     BankAccount? @relation(fields: [accountId], references: [id])
-  creator     User         @relation("PaymentCreator", fields: [createdBy], references: [id])
-  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  order   Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  account BankAccount? @relation(fields: [accountId], references: [id])
+  creator User         @relation("PaymentCreator", fields: [createdBy], references: [id])
+
   @@map("order_payments")
 }
 
@@ -607,77 +616,77 @@ model OrderSurcharge {
   surValue      Decimal? @db.Decimal(18, 4)
   price         Decimal? @db.Decimal(18, 2)
   createdAt     DateTime @default(now())
-  
+
   order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   surcharge Surcharge? @relation(fields: [surchargeId], references: [id])
-  
+
   @@map("order_surcharges")
 }
 
 model OrderDelivery {
-  id                  Int      @id @default(autoincrement())
-  orderId             Int      @unique
-  deliveryCode        String?
-  type                Int?
-  status              Int      @default(1)
-  statusValue         String?
-  price               Decimal? @db.Decimal(18, 2)
-  receiver            String
-  contactNumber       String
-  address             String
-  locationId          Int?
-  locationName        String?
-  wardName            String?
-  weight              Decimal? @db.Decimal(18, 4)
-  length              Decimal? @db.Decimal(18, 4)
-  width               Decimal? @db.Decimal(18, 4)
-  height              Decimal? @db.Decimal(18, 4)
-  partnerDeliveryId   Int?
-  expectedDelivery    DateTime?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-  
+  id                Int       @id @default(autoincrement())
+  orderId           Int       @unique
+  deliveryCode      String?
+  type              Int?
+  status            Int       @default(1)
+  statusValue       String?
+  price             Decimal?  @db.Decimal(18, 2)
+  receiver          String
+  contactNumber     String
+  address           String
+  locationId        Int?
+  locationName      String?
+  wardName          String?
+  weight            Decimal?  @db.Decimal(18, 4)
+  length            Decimal?  @db.Decimal(18, 4)
+  width             Decimal?  @db.Decimal(18, 4)
+  height            Decimal?  @db.Decimal(18, 4)
+  partnerDeliveryId Int?
+  expectedDelivery  DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
   order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
   location        Location?        @relation(fields: [locationId], references: [id])
   partnerDelivery PartnerDelivery? @relation(fields: [partnerDeliveryId], references: [id])
-  
+
   @@map("order_deliveries")
 }
 
 // ==================== INVOICE (HÓA ĐƠN) ====================
 
 model Invoice {
-  id                Int      @id @default(autoincrement())
-  code              String   @unique
-  customerId        Int?
-  branchId          Int?
-  soldById          Int?
-  saleChannelId     Int?
-  purchaseDate      DateTime @default(now())
-  totalAmount       Decimal  @default(0) @db.Decimal(18, 2)
-  discount          Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio     Decimal  @default(0) @db.Decimal(18, 4)
-  grandTotal        Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount        Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount        Decimal  @default(0) @db.Decimal(18, 2)
-  status            Int      @default(1)
-  statusValue       String?
-  usingCod          Boolean  @default(false)
-  description       String?
-  createdBy         Int
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
-  
-  customer      Customer?          @relation(fields: [customerId], references: [id])
-  branch        Branch?            @relation(fields: [branchId], references: [id])
-  soldBy        User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
-  saleChannel   SaleChannel?       @relation(fields: [saleChannelId], references: [id])
-  creator       User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
-  details       InvoiceDetail[]
-  payments      InvoicePayment[]
-  surcharges    InvoiceSurcharge[]
-  delivery      InvoiceDelivery?
-  
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  customerId    Int?
+  branchId      Int?
+  soldById      Int?
+  saleChannelId Int?
+  purchaseDate  DateTime @default(now())
+  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  status        Int      @default(1)
+  statusValue   String?
+  usingCod      Boolean  @default(false)
+  description   String?
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer    Customer?          @relation(fields: [customerId], references: [id])
+  branch      Branch?            @relation(fields: [branchId], references: [id])
+  soldBy      User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
+  saleChannel SaleChannel?       @relation(fields: [saleChannelId], references: [id])
+  creator     User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  details     InvoiceDetail[]
+  payments    InvoicePayment[]
+  surcharges  InvoiceSurcharge[]
+  delivery    InvoiceDelivery?
+
   @@map("invoices")
 }
 
@@ -696,10 +705,10 @@ model InvoiceDetail {
   serialNumbers String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
-  
+
   @@map("invoice_details")
 }
 
@@ -717,10 +726,10 @@ model InvoicePayment {
   statusValue   String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   invoice Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   account BankAccount? @relation(fields: [accountId], references: [id])
-  
+
   @@map("invoice_payments")
 }
 
@@ -732,10 +741,10 @@ model InvoiceSurcharge {
   surValue      Decimal? @db.Decimal(18, 4)
   price         Decimal? @db.Decimal(18, 2)
   createdAt     DateTime @default(now())
-  
+
   invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   surcharge Surcharge? @relation(fields: [surchargeId], references: [id])
-  
+
   @@map("invoice_surcharges")
 }
 
@@ -762,47 +771,47 @@ model InvoiceDelivery {
   priceCodPayment   Decimal? @db.Decimal(18, 2)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
-  
+
   invoice         Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   location        Location?        @relation(fields: [locationId], references: [id])
   partnerDelivery PartnerDelivery? @relation(fields: [partnerDeliveryId], references: [id])
-  
+
   @@map("invoice_deliveries")
 }
 
 // ==================== PURCHASE ORDER (NHẬP HÀNG) ====================
 
 model PurchaseOrder {
-  id             Int      @id @default(autoincrement())
-  code           String   @unique
-  supplierId     Int
-  branchId       Int?
-  purchaseDate   DateTime
-  totalAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  discount       Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio  Decimal  @default(0) @db.Decimal(18, 4)
-  shippingFee    Decimal  @default(0) @db.Decimal(18, 2)
-  otherFees      Decimal  @default(0) @db.Decimal(18, 2)
-  grandTotal     Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount     Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount     Decimal  @default(0) @db.Decimal(18, 2)
-  paymentStatus  String   @default("unpaid")
-  partnerType    String?
-  isDraft        Boolean  @default(false)
-  description    String?
-  purchaseById   Int?
-  createdBy      Int
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  
-  supplier   Supplier                   @relation(fields: [supplierId], references: [id])
-  branch     Branch?                    @relation(fields: [branchId], references: [id])
-  purchaseBy User?                      @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
-  creator    User                       @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  supplierId    Int
+  branchId      Int?
+  purchaseDate  DateTime
+  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  shippingFee   Decimal  @default(0) @db.Decimal(18, 2)
+  otherFees     Decimal  @default(0) @db.Decimal(18, 2)
+  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
+  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  paymentStatus String   @default("unpaid")
+  partnerType   String?
+  isDraft       Boolean  @default(false)
+  description   String?
+  purchaseById  Int?
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  supplier   Supplier                 @relation(fields: [supplierId], references: [id])
+  branch     Branch?                  @relation(fields: [branchId], references: [id])
+  purchaseBy User?                    @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
+  creator    User                     @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
   items      PurchaseOrderItem[]
   payments   PurchaseOrderPayment[]
   surcharges PurchaseOrderSurcharge[]
-  
+
   @@map("purchase_orders")
 }
 
@@ -821,10 +830,10 @@ model PurchaseOrderItem {
   serialNumbers   String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-  
+
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
-  
+
   @@map("purchase_order_items")
 }
 
@@ -841,10 +850,10 @@ model PurchaseOrderPayment {
   statusValue     String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
-  
+
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   account       BankAccount?  @relation(fields: [accountId], references: [id])
-  
+
   @@map("purchase_order_payments")
 }
 
@@ -858,10 +867,10 @@ model PurchaseOrderSurcharge {
   isSupplierExpense Boolean  @default(false)
   type              Int      @default(0)
   createdAt         DateTime @default(now())
-  
+
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   surcharge     Surcharge?    @relation(fields: [surchargeCode], references: [code])
-  
+
   @@map("purchase_order_surcharges")
 }
 
@@ -876,11 +885,11 @@ model Post {
   authorId      Int
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
-  
+
   author   User       @relation("PostAuthor", fields: [authorId], references: [id])
   postMeta PostMeta[]
   tags     PostTag[]
-  
+
   @@map("posts")
 }
 
@@ -891,9 +900,9 @@ model PostMeta {
   metaValue String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  
+
   post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
-  
+
   @@unique([postId, metaKey])
   @@map("post_meta")
 }
@@ -904,9 +913,9 @@ model Tag {
   description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  
+
   posts PostTag[]
-  
+
   @@map("tags")
 }
 
@@ -914,10 +923,10 @@ model PostTag {
   postId    Int
   tagId     Int
   createdAt DateTime @default(now())
-  
+
   post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
   tag  Tag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
-  
+
   @@id([postId, tagId])
   @@map("post_tags")
 }

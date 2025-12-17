@@ -79,6 +79,10 @@ async function main() {
     { resource: 'posts', action: 'delete', name: 'posts.delete' },
     { resource: 'dashboard', action: 'view', name: 'dashboard.view' },
     { resource: 'analytics', action: 'view', name: 'analytics.view' },
+    { resource: 'price_books', action: 'view', name: 'price_books.view' },
+    { resource: 'price_books', action: 'create', name: 'price_books.create' },
+    { resource: 'price_books', action: 'update', name: 'price_books.update' },
+    { resource: 'price_books', action: 'delete', name: 'price_books.delete' },
   ];
 
   for (const perm of permissions) {

@@ -1,29 +1,80 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PriceBooksService } from '../price-books/price-books.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private priceBooksService: PriceBooksService,
+  ) {}
 
   async create(dto: CreateOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode();
+      const warnings: any[] = [];
+      let primaryPriceBook = null;
+
+      const applicablePriceBooks =
+        await this.priceBooksService.getApplicablePriceBooks({
+          branchId: dto.branchId,
+          customerId: dto.customerId,
+          userId,
+        });
+
+      if (applicablePriceBooks.length > 0) {
+        primaryPriceBook = applicablePriceBooks[0];
+      }
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
           });
-          if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          if (!product) {
+            throw new Error(`Product ${item.productId} not found`);
+          }
+
+          const priceInfo = await this.priceBooksService.getPriceForProduct({
+            productId: item.productId,
+            branchId: dto.branchId,
+            customerId: dto.customerId,
+            userId,
+          });
+
+          let finalPrice = item.unitPrice || priceInfo.price;
+          let appliedPriceBookId = priceInfo.priceBookId;
+
+          if (!priceInfo.priceBookId && primaryPriceBook) {
+            if (!primaryPriceBook.allowNonListedProducts) {
+              throw new Error(
+                `Sản phẩm ${product.name} không có trong bảng giá ${primaryPriceBook.name}`,
+              );
+            }
+
+            if (primaryPriceBook.warnNonListedProducts) {
+              warnings.push({
+                productId: product.id,
+                productCode: product.code,
+                productName: product.name,
+                message: `Sản phẩm không có trong bảng giá ${primaryPriceBook.name}`,
+              });
+            }
+          }
 
           return {
             productId: item.productId,
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
-            price: item.unitPrice,
-            totalPrice: item.quantity * item.unitPrice,
+            price: finalPrice,
+            discount: item.discount || 0,
+            discountRatio: item.discountRatio || 0,
+            totalPrice: item.quantity * finalPrice - (item.discount || 0),
+            note: item.note,
+            serialNumbers: item.serialNumbers,
           };
         }),
       );
@@ -32,8 +83,11 @@ export class OrdersService {
         data: {
           code,
           customerId: dto.customerId,
+          branchId: dto.branchId,
+          soldById: userId,
           orderDate: dto.orderDate || new Date(),
           discount: dto.discountAmount || 0,
+          discountRatio: dto.discountRatio || 0,
           depositAmount: dto.depositAmount || 0,
           description: dto.notes,
           orderStatus: dto.orderStatus || 'pending',
@@ -42,7 +96,9 @@ export class OrdersService {
             create: itemsData,
           },
         },
-        include: { items: true },
+        include: {
+          items: true,
+        },
       });
 
       await this.calculateTotals(order.id, tx);
@@ -55,7 +111,7 @@ export class OrdersService {
         await this.updateCustomerTotals(order.customerId, tx);
       }
 
-      return tx.order.findUnique({
+      const finalOrder = await tx.order.findUnique({
         where: { id: order.id },
         include: {
           customer: true,
@@ -63,6 +119,8 @@ export class OrdersService {
           payments: true,
         },
       });
+
+      return { order: finalOrder, warnings };
     });
   }
 
@@ -142,7 +200,11 @@ export class OrdersService {
               productName: product.name,
               quantity: item.quantity,
               price: item.unitPrice,
-              totalPrice: item.quantity * item.unitPrice,
+              discount: item.discount || 0,
+              discountRatio: item.discountRatio || 0,
+              totalPrice: item.quantity * item.unitPrice - (item.discount || 0),
+              note: item.note,
+              serialNumbers: item.serialNumbers,
             };
           }),
         );
@@ -158,6 +220,7 @@ export class OrdersService {
           customerId: dto.customerId,
           orderDate: dto.orderDate,
           discount: dto.discountAmount,
+          discountRatio: dto.discountRatio,
           depositAmount: dto.depositAmount,
           description: dto.notes,
           orderStatus: dto.orderStatus,
