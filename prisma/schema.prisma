@@ -561,27 +561,25 @@ model Order {
 }
 
 model OrderItem {
-  id                 Int      @id @default(autoincrement())
-  orderId            Int
-  productId          Int
-  productCode        String
-  productName        String
-  quantity           Decimal  @db.Decimal(18, 4)
-  price              Decimal  @db.Decimal(18, 2)
-  discount           Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio      Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice         Decimal  @db.Decimal(18, 2)
-  note               String?
-  serialNumbers      String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
-  appliedPriceBookId Int?
-  originalPrice      Decimal? @db.Decimal(18, 2)
-  appliedPrice       Decimal  @db.Decimal(18, 2)
-
+  id            Int      @id @default(autoincrement())
+  orderId       Int
+  productId     Int
+  productCode   String
+  productName   String
+  quantity      Decimal  @db.Decimal(18, 4)
+  price         Decimal  @db.Decimal(18, 2)
+  appliedPrice  Decimal  @db.Decimal(18, 2)  // THÊM FIELD NÀY
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice    Decimal  @db.Decimal(18, 2)
+  note          String?
+  serialNumbers String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
-
+  
   @@map("order_items")
 }
 

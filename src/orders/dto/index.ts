@@ -5,6 +5,8 @@ import {
   IsDateString,
   IsArray,
   ValidateNested,
+  IsNumber,
+  IsDecimal,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -12,11 +14,27 @@ export class OrderItemDto {
   @IsInt()
   productId: number;
 
-  @IsInt()
+  @IsNumber()
   quantity: number;
 
-  @IsInt()
+  @IsNumber()
   unitPrice: number;
+
+  @IsNumber()
+  @IsOptional()
+  discount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsString()
+  @IsOptional()
+  note?: string;
+
+  @IsString()
+  @IsOptional()
+  serialNumbers?: string;
 }
 
 export class CreateOrderDto {
@@ -24,15 +42,23 @@ export class CreateOrderDto {
   @IsOptional()
   customerId?: number;
 
+  @IsInt()
+  @IsOptional()
+  branchId?: number;
+
   @IsDateString()
   @IsOptional()
   orderDate?: string;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
   discountAmount?: number;
 
-  @IsInt()
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsNumber()
   @IsOptional()
   depositAmount?: number;
 
@@ -55,15 +81,23 @@ export class UpdateOrderDto {
   @IsOptional()
   customerId?: number;
 
+  @IsInt()
+  @IsOptional()
+  branchId?: number;
+
   @IsDateString()
   @IsOptional()
   orderDate?: string;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
   discountAmount?: number;
 
-  @IsInt()
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsNumber()
   @IsOptional()
   depositAmount?: number;
 
@@ -85,10 +119,12 @@ export class UpdateOrderDto {
 export class OrderQueryDto {
   @IsInt()
   @IsOptional()
+  @Type(() => Number)
   page?: number;
 
   @IsInt()
   @IsOptional()
+  @Type(() => Number)
   limit?: number;
 
   @IsString()
@@ -101,6 +137,7 @@ export class OrderQueryDto {
 
   @IsInt()
   @IsOptional()
+  @Type(() => Number)
   customerId?: number;
 }
 
@@ -112,7 +149,7 @@ export class CreateOrderPaymentDto {
   @IsOptional()
   paymentDate?: string;
 
-  @IsInt()
+  @IsNumber()
   amount: number;
 
   @IsString()

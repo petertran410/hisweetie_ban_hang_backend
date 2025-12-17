@@ -14,8 +14,9 @@ export class OrdersService {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode();
       const warnings: any[] = [];
-      let primaryPriceBook = null;
+      let primaryPriceBook: any = null;
 
+      // Get applicable price books
       const applicablePriceBooks =
         await this.priceBooksService.getApplicablePriceBooks({
           branchId: dto.branchId,
@@ -27,6 +28,7 @@ export class OrdersService {
         primaryPriceBook = applicablePriceBooks[0];
       }
 
+      // Process items
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
@@ -37,6 +39,7 @@ export class OrdersService {
             throw new Error(`Product ${item.productId} not found`);
           }
 
+          // Get price from price book
           const priceInfo = await this.priceBooksService.getPriceForProduct({
             productId: item.productId,
             branchId: dto.branchId,
@@ -45,8 +48,8 @@ export class OrdersService {
           });
 
           let finalPrice = item.unitPrice || priceInfo.price;
-          let appliedPriceBookId = priceInfo.priceBookId;
 
+          // Check if product is in price book
           if (!priceInfo.priceBookId && primaryPriceBook) {
             if (!primaryPriceBook.allowNonListedProducts) {
               throw new Error(
@@ -64,32 +67,41 @@ export class OrdersService {
             }
           }
 
+          const itemDiscount = item.discount || 0;
+          const itemDiscountRatio = item.discountRatio || 0;
+          const totalPrice =
+            item.quantity * finalPrice -
+            itemDiscount -
+            (item.quantity * finalPrice * itemDiscountRatio) / 100;
+
           return {
             productId: item.productId,
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
             price: finalPrice,
-            discount: item.discount || 0,
-            discountRatio: item.discountRatio || 0,
-            totalPrice: item.quantity * finalPrice - (item.discount || 0),
-            note: item.note,
-            serialNumbers: item.serialNumbers,
+            appliedPrice: finalPrice,
+            discount: itemDiscount,
+            discountRatio: itemDiscountRatio,
+            totalPrice: totalPrice,
+            note: item.note || null,
+            serialNumbers: item.serialNumbers || null,
           };
         }),
       );
 
+      // Create order
       const order = await tx.order.create({
         data: {
           code,
           customerId: dto.customerId,
           branchId: dto.branchId,
           soldById: userId,
-          orderDate: dto.orderDate || new Date(),
+          orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
           discount: dto.discountAmount || 0,
           discountRatio: dto.discountRatio || 0,
           depositAmount: dto.depositAmount || 0,
-          description: dto.notes,
+          description: dto.notes || null,
           orderStatus: dto.orderStatus || 'pending',
           createdBy: userId,
           items: {
@@ -193,6 +205,13 @@ export class OrdersService {
             if (!product)
               throw new Error(`Product ${item.productId} not found`);
 
+            const itemDiscount = item.discount || 0;
+            const itemDiscountRatio = item.discountRatio || 0;
+            const totalPrice =
+              item.quantity * item.unitPrice -
+              itemDiscount -
+              (item.quantity * item.unitPrice * itemDiscountRatio) / 100;
+
             return {
               orderId: id,
               productId: item.productId,
@@ -200,11 +219,12 @@ export class OrdersService {
               productName: product.name,
               quantity: item.quantity,
               price: item.unitPrice,
-              discount: item.discount || 0,
-              discountRatio: item.discountRatio || 0,
-              totalPrice: item.quantity * item.unitPrice - (item.discount || 0),
-              note: item.note,
-              serialNumbers: item.serialNumbers,
+              appliedPrice: item.unitPrice,
+              discount: itemDiscount,
+              discountRatio: itemDiscountRatio,
+              totalPrice: totalPrice,
+              note: item.note || null,
+              serialNumbers: item.serialNumbers || null,
             };
           }),
         );
@@ -218,7 +238,8 @@ export class OrdersService {
         where: { id },
         data: {
           customerId: dto.customerId,
-          orderDate: dto.orderDate,
+          branchId: dto.branchId,
+          orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
           discount: dto.discountAmount,
           discountRatio: dto.discountRatio,
           depositAmount: dto.depositAmount,
