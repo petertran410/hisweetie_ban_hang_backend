@@ -34,6 +34,7 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 import { TrademarksModule } from './trademarks/trademarks.module';
 import { BranchesModule } from './branches/branches.module';
 import { PriceBooksModule } from './price-books/price-books.module';
+import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { PriceBooksModule } from './price-books/price-books.module';
     TrademarksModule,
     CustomerTypesModule,
     CustomersModule,
+    CustomerGroupsModule,
     SuppliersModule,
     OrdersModule,
     PurchaseOrdersModule,
