@@ -120,10 +120,7 @@ export class ProductsWithPricesQueryDto {
   search?: string;
 
   @IsOptional()
-  @Transform(({ value }) => {
-    if (!value) return undefined;
-    const num = parseInt(String(value), 10);
-    return isNaN(num) ? undefined : num;
-  })
-  categoryId?: number;
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  categoryIds?: string;
 }

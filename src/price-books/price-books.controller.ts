@@ -61,7 +61,7 @@ export class PriceBooksController {
     return this.priceBooksService.getProductsWithMultiplePrices(
       query.priceBookIds,
       query.search,
-      query.categoryId,
+      query.categoryIds,
     );
   }
 

@@ -657,7 +657,7 @@ export class PriceBooksService {
   async getProductsWithMultiplePrices(
     priceBookIds: number[],
     searchQuery?: string,
-    categoryId?: number,
+    categoryIds?: string,
   ) {
     const where: any = {
       isActive: true,
@@ -670,8 +670,15 @@ export class PriceBooksService {
       ];
     }
 
-    if (categoryId) {
-      where.categoryId = categoryId;
+    if (categoryIds) {
+      const categoryIdArray = categoryIds
+        .split(',')
+        .map((id) => parseInt(id.trim(), 10))
+        .filter((id) => !isNaN(id));
+
+      if (categoryIdArray.length > 0) {
+        where.categoryId = { in: categoryIdArray };
+      }
     }
 
     const products = await this.prisma.product.findMany({
