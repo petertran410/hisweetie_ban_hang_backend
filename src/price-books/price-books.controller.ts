@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  Header,
 } from '@nestjs/common';
 import { PriceBooksService } from './price-books.service';
 import {
@@ -53,6 +54,9 @@ export class PriceBooksController {
   @Get('products-with-prices')
   @RequirePermissions('price_books.view')
   @ApiOperation({ summary: 'Get all products with multiple price book prices' })
+  @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
+  @Header('Pragma', 'no-cache')
+  @Header('Expires', '0')
   getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
     return this.priceBooksService.getProductsWithMultiplePrices(
       query.priceBookIds,
