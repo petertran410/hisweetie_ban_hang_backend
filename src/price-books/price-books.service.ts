@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePriceBookDto,
@@ -91,7 +95,11 @@ export class PriceBooksService {
   }
 
   async findOne(id: number) {
-    return this.prisma.priceBook.findUnique({
+    if (!id || isNaN(id) || id <= 0) {
+      throw new BadRequestException(`Invalid price book ID: ${id}`);
+    }
+
+    const priceBook = await this.prisma.priceBook.findUnique({
       where: { id },
       include: {
         priceBookDetails: {
@@ -139,6 +147,12 @@ export class PriceBooksService {
         },
       },
     });
+
+    if (!priceBook) {
+      throw new NotFoundException(`Price book with ID ${id} not found`);
+    }
+
+    return priceBook;
   }
 
   async create(dto: CreatePriceBookDto) {
@@ -496,7 +510,25 @@ export class PriceBooksService {
     priceBookId: number,
     products: { productId: number; price: number }[],
   ) {
+    if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
+      throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
+    }
+
+    if (!products || products.length === 0) {
+      throw new BadRequestException('Products array cannot be empty');
+    }
+
     return this.prisma.$transaction(async (tx) => {
+      const priceBook = await tx.priceBook.findUnique({
+        where: { id: priceBookId },
+      });
+
+      if (!priceBook) {
+        throw new NotFoundException(
+          `Price book with ID ${priceBookId} not found`,
+        );
+      }
+
       const existingDetails = await tx.priceBookDetail.findMany({
         where: {
           priceBookId,
@@ -528,6 +560,14 @@ export class PriceBooksService {
   }
 
   async removeProductsFromPriceBook(priceBookId: number, productIds: number[]) {
+    if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
+      throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
+    }
+
+    if (!productIds || productIds.length === 0) {
+      throw new BadRequestException('Product IDs array cannot be empty');
+    }
+
     await this.prisma.priceBookDetail.deleteMany({
       where: {
         priceBookId,
@@ -543,6 +583,18 @@ export class PriceBooksService {
     productId: number,
     price: number,
   ) {
+    if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
+      throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
+    }
+
+    if (!productId || isNaN(productId) || productId <= 0) {
+      throw new BadRequestException(`Invalid product ID: ${productId}`);
+    }
+
+    if (price < 0 || isNaN(price)) {
+      throw new BadRequestException(`Invalid price: ${price}`);
+    }
+
     await this.prisma.priceBookDetail.updateMany({
       where: {
         priceBookId,
