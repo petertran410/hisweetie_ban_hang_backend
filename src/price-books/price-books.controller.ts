@@ -125,4 +125,20 @@ export class PriceBooksController {
       body.productIds,
     );
   }
+
+  @Get('products-with-prices')
+  @RequirePermissions('price_books.view')
+  @ApiOperation({ summary: 'Get all products with multiple price book prices' })
+  getProductsWithPrices(
+    @Query('priceBookIds') priceBookIds: string,
+    @Query('search') search?: string,
+    @Query('categoryId') categoryId?: string,
+  ) {
+    const ids = priceBookIds ? priceBookIds.split(',').map(Number) : [];
+    return this.priceBooksService.getProductsWithMultiplePrices(
+      ids,
+      search,
+      categoryId ? +categoryId : undefined,
+    );
+  }
 }

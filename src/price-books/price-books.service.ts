@@ -553,4 +553,67 @@ export class PriceBooksService {
 
     return this.findOne(priceBookId);
   }
+
+  async getProductsWithMultiplePrices(
+    priceBookIds: number[],
+    searchQuery?: string,
+    categoryId?: number,
+  ) {
+    const where: any = {
+      isActive: true,
+    };
+
+    if (searchQuery) {
+      where.OR = [
+        { code: { contains: searchQuery, mode: 'insensitive' } },
+        { name: { contains: searchQuery, mode: 'insensitive' } },
+      ];
+    }
+
+    if (categoryId) {
+      where.categoryId = categoryId;
+    }
+
+    const products = await this.prisma.product.findMany({
+      where,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        purchasePrice: true,
+        retailPrice: true,
+        stockQuantity: true,
+        unit: true,
+        priceBookDetails: {
+          where: {
+            priceBookId: { in: priceBookIds },
+            isActive: true,
+          },
+          select: {
+            priceBookId: true,
+            price: true,
+          },
+        },
+      },
+      orderBy: { code: 'asc' },
+    });
+
+    return products.map((product) => {
+      const priceMap: Record<number, number> = {};
+      product.priceBookDetails.forEach((detail) => {
+        priceMap[detail.priceBookId] = Number(detail.price);
+      });
+
+      return {
+        id: product.id,
+        code: product.code,
+        name: product.name,
+        purchasePrice: Number(product.purchasePrice),
+        retailPrice: Number(product.retailPrice),
+        stockQuantity: product.stockQuantity,
+        unit: product.unit,
+        prices: priceMap,
+      };
+    });
+  }
 }
