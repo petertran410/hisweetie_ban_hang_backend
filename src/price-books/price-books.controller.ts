@@ -16,6 +16,7 @@ import {
   PriceBookQueryDto,
   ApplicablePriceBooksDto,
   ProductPriceDto,
+  ProductsWithPricesQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -129,16 +130,11 @@ export class PriceBooksController {
   @Get('products-with-prices')
   @RequirePermissions('price_books.view')
   @ApiOperation({ summary: 'Get all products with multiple price book prices' })
-  getProductsWithPrices(
-    @Query('priceBookIds') priceBookIds: string,
-    @Query('search') search?: string,
-    @Query('categoryId') categoryId?: string,
-  ) {
-    const ids = priceBookIds ? priceBookIds.split(',').map(Number) : [];
+  getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
     return this.priceBooksService.getProductsWithMultiplePrices(
-      ids,
-      search,
-      categoryId ? +categoryId : undefined,
+      query.priceBookIds,
+      query.search,
+      query.categoryId,
     );
   }
 }
