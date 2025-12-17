@@ -225,8 +225,56 @@ export class PriceBooksService {
         await tx.priceBookUser.createMany({ data: usersData });
       }
 
-      const result = await this.findOne(priceBook.id);
-      return JSON.parse(JSON.stringify(result));
+      const result = await tx.priceBook.findUnique({
+        where: { id: priceBook.id },
+        include: {
+          priceBookDetails: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  retailPrice: true,
+                  images: true,
+                },
+              },
+            },
+          },
+          priceBookBranches: {
+            include: {
+              branch: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+          priceBookCustomerGroups: {
+            include: {
+              customerGroup: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+          priceBookUsers: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      return result;
     });
   }
 
