@@ -158,17 +158,6 @@ export class PriceBooksService {
         },
       });
 
-      if (dto.products && dto.products.length > 0) {
-        await tx.priceBookDetail.createMany({
-          data: dto.products.map((p) => ({
-            priceBookId: priceBook.id,
-            productId: p.productId,
-            price: p.price,
-            isActive: p.isActive ?? true,
-          })),
-        });
-      }
-
       if (dto.branches && dto.branches.length > 0) {
         const branchesData = await Promise.all(
           dto.branches.map(async (branchId) => {
@@ -222,7 +211,8 @@ export class PriceBooksService {
         await tx.priceBookUser.createMany({ data: usersData });
       }
 
-      return this.findOne(priceBook.id);
+      const result = await this.findOne(priceBook.id);
+      return JSON.parse(JSON.stringify(result));
     });
   }
 

@@ -69,8 +69,9 @@ export class PriceBooksController {
   @Post()
   @RequirePermissions('price_books.create')
   @ApiOperation({ summary: 'Create new price book' })
-  create(@Body() dto: CreatePriceBookDto) {
-    return this.priceBooksService.create(dto);
+  async create(@Body() dto: CreatePriceBookDto) {
+    const result = await this.priceBooksService.create(dto);
+    return result;
   }
 
   @Post(':id/products')
