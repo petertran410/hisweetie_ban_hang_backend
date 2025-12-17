@@ -50,6 +50,17 @@ export class PriceBooksController {
     return this.priceBooksService.getPriceForProduct(params);
   }
 
+  @Get('products-with-prices')
+  @RequirePermissions('price_books.view')
+  @ApiOperation({ summary: 'Get all products with multiple price book prices' })
+  getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
+    return this.priceBooksService.getProductsWithMultiplePrices(
+      query.priceBookIds,
+      query.search,
+      query.categoryId,
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('price_books.view')
   @ApiOperation({ summary: 'Get price book by ID' })
@@ -124,17 +135,6 @@ export class PriceBooksController {
     return this.priceBooksService.removeProductsFromPriceBook(
       +id,
       body.productIds,
-    );
-  }
-
-  @Get('products-with-prices')
-  @RequirePermissions('price_books.view')
-  @ApiOperation({ summary: 'Get all products with multiple price book prices' })
-  getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
-    return this.priceBooksService.getProductsWithMultiplePrices(
-      query.priceBookIds,
-      query.search,
-      query.categoryId,
     );
   }
 }
