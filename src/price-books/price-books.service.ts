@@ -659,6 +659,11 @@ export class PriceBooksService {
     searchQuery?: string,
     categoryId?: number,
   ) {
+    console.log('=== DEBUG getProductsWithMultiplePrices ===');
+    console.log('Received priceBookIds:', priceBookIds);
+    console.log('Type of priceBookIds:', typeof priceBookIds);
+    console.log('Is Array:', Array.isArray(priceBookIds));
+
     const where: any = {
       isActive: true,
     };
@@ -698,11 +703,19 @@ export class PriceBooksService {
       orderBy: { code: 'asc' },
     });
 
-    return products.map((product) => {
+    console.log(`Found ${products.length} products`);
+
+    const result = products.map((product) => {
       const priceMap: Record<number, number> = {};
       product.priceBookDetails.forEach((detail) => {
         priceMap[detail.priceBookId] = Number(detail.price);
       });
+
+      console.log(
+        `Product ${product.code}: priceBookDetails=`,
+        product.priceBookDetails,
+      );
+      console.log(`Product ${product.code}: priceMap=`, priceMap);
 
       return {
         id: product.id,
@@ -715,5 +728,8 @@ export class PriceBooksService {
         prices: priceMap,
       };
     });
+
+    console.log('=== END DEBUG ===');
+    return result;
   }
 }
