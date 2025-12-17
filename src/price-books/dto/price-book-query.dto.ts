@@ -87,34 +87,31 @@ export class ProductPriceDto {
 
 export class ProductsWithPricesQueryDto {
   @Transform(({ value }) => {
-    console.log('Transform priceBookIds - Raw value:', value);
-    console.log('Transform priceBookIds - Type:', typeof value);
-
     if (Array.isArray(value)) {
-      return value
-        .map((id) => parseInt(String(id), 10))
-        .filter((id) => !isNaN(id) && id > 0);
+      const result = value
+        .map((id) => {
+          const num = typeof id === 'string' ? parseInt(id, 10) : Number(id);
+          return isNaN(num) ? null : num;
+        })
+        .filter((id) => id !== null && id > 0);
+      return result;
     }
 
     if (typeof value === 'string') {
-      return value
+      const result = value
         .split(',')
         .map((id) => parseInt(id.trim(), 10))
         .filter((id) => !isNaN(id) && id > 0);
+      return result;
     }
 
-    if (typeof value === 'number') {
+    if (typeof value === 'number' && !isNaN(value)) {
       return [value];
     }
 
-    console.warn(
-      'priceBookIds transform received unexpected type:',
-      typeof value,
-    );
     return [];
   })
   @IsArray()
-  @Type(() => Number)
   priceBookIds: number[];
 
   @IsOptional()
@@ -123,6 +120,10 @@ export class ProductsWithPricesQueryDto {
   search?: string;
 
   @IsOptional()
-  @Type(() => Number)
+  @Transform(({ value }) => {
+    if (!value) return undefined;
+    const num = parseInt(String(value), 10);
+    return isNaN(num) ? undefined : num;
+  })
   categoryId?: number;
 }

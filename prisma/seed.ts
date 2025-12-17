@@ -178,10 +178,6 @@ async function main() {
       isActive: true,
     },
   });
-
-  console.log('Seed completed successfully');
-  console.log('Admin user:', adminUser);
-  console.log('Branches:', { branch1, branch2, branch3 });
 }
 
 main()

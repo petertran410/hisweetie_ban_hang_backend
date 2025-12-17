@@ -58,10 +58,6 @@ export class PriceBooksController {
   @Header('Pragma', 'no-cache')
   @Header('Expires', '0')
   getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
-    console.log('Controller received query:', query);
-    console.log('priceBookIds type:', typeof query.priceBookIds);
-    console.log('priceBookIds value:', query.priceBookIds);
-
     return this.priceBooksService.getProductsWithMultiplePrices(
       query.priceBookIds,
       query.search,
