@@ -17,8 +17,8 @@ export class DashboardService {
         currentMonthOrders,
         totalCustomerDebt,
         totalSupplierDebt,
-        lowStockProducts,
-        outOfStockProducts,
+        lowStockResult,
+        outOfStockResult,
       ] = await Promise.all([
         this.prisma.order.aggregate({
           where: {
@@ -48,16 +48,21 @@ export class DashboardService {
           where: { isActive: true },
           _sum: { totalDebt: true },
         }),
-        this.prisma.$queryRaw<[{ count: string }]>`
-        SELECT COUNT(*) as count 
-        FROM products 
-        WHERE "isActive" = true 
-        AND "stockQuantity" > 0 
-        AND "stockQuantity" <= "minStockAlert"
+        this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(DISTINCT i."productId") as count
+        FROM inventories i
+        INNER JOIN products p ON i."productId" = p.id
+        WHERE p."isActive" = true
+        AND i."onHand" > 0
+        AND i."onHand" <= i."minQuality"
       `,
-        this.prisma.product.count({
-          where: { isActive: true, stockQuantity: 0 },
-        }),
+        this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(DISTINCT i."productId") as count
+        FROM inventories i
+        INNER JOIN products p ON i."productId" = p.id
+        WHERE p."isActive" = true
+        AND i."onHand" = 0
+      `,
       ]);
 
       const currentRevenueNum = Number(currentRevenue._sum.grandTotal || 0);
@@ -68,27 +73,17 @@ export class DashboardService {
           : 0;
 
       return {
-        currentMonthRevenue: currentRevenueNum,
-        lastMonthRevenue: lastRevenueNum,
-        revenueChange,
+        currentRevenue: currentRevenueNum,
+        lastRevenue: lastRevenueNum,
+        revenueChange: Number(revenueChange.toFixed(2)),
         currentMonthOrders,
-        totalCustomerDebt: totalCustomerDebt._sum.totalDebt || 0,
-        totalSupplierDebt: totalSupplierDebt._sum.totalDebt || 0,
-        lowStockProducts: parseInt(lowStockProducts[0]?.count || '0'),
-        outOfStockProducts,
+        totalCustomerDebt: Number(totalCustomerDebt._sum.totalDebt || 0),
+        totalSupplierDebt: Number(totalSupplierDebt._sum.totalDebt || 0),
+        lowStockProducts: Number(lowStockResult[0].count),
+        outOfStockProducts: Number(outOfStockResult[0].count),
       };
     } catch (error) {
-      console.error('Dashboard stats error:', error);
-      return {
-        currentMonthRevenue: 0,
-        lastMonthRevenue: 0,
-        revenueChange: 0,
-        currentMonthOrders: 0,
-        totalCustomerDebt: 0,
-        totalSupplierDebt: 0,
-        lowStockProducts: 0,
-        outOfStockProducts: 0,
-      };
+      throw error;
     }
   }
 
@@ -162,15 +157,41 @@ export class DashboardService {
   }
 
   async getLowStockProducts(limit: number = 20) {
-    const products = await this.prisma.$queryRaw<any[]>`
-    SELECT * FROM products 
-    WHERE "isActive" = true 
-    AND "stockQuantity" <= "minStockAlert"
-    ORDER BY "stockQuantity" ASC
+    const inventories = await this.prisma.$queryRaw<any[]>`
+    SELECT 
+      i.id,
+      i."productId",
+      i."branchId",
+      i."onHand",
+      i."minQuality",
+      i."maxQuality",
+      p.code as "productCode",
+      p.name as "productName",
+      p."basePrice",
+      p.unit,
+      b.name as "branchName"
+    FROM inventories i
+    INNER JOIN products p ON i."productId" = p.id
+    INNER JOIN branches b ON i."branchId" = b.id
+    WHERE p."isActive" = true
+    AND i."onHand" <= i."minQuality"
+    ORDER BY i."onHand" ASC
     LIMIT ${limit}
   `;
 
-    return products;
+    return inventories.map((inv) => ({
+      id: inv.id,
+      productId: inv.productId,
+      productCode: inv.productCode,
+      productName: inv.productName,
+      branchId: inv.branchId,
+      branchName: inv.branchName,
+      onHand: Number(inv.onHand),
+      minQuality: Number(inv.minQuality),
+      maxQuality: Number(inv.maxQuality),
+      basePrice: Number(inv.basePrice),
+      unit: inv.unit,
+    }));
   }
 
   async getRecentOrders(limit: number = 10) {

@@ -535,7 +535,7 @@ export class PriceBooksService {
       };
     }
 
-    return this.prisma.priceBookDetail.findMany({
+    const priceBookDetails = await this.prisma.priceBookDetail.findMany({
       where,
       include: {
         product: {
@@ -544,14 +544,31 @@ export class PriceBooksService {
             code: true,
             name: true,
             basePrice: true,
-            stockQuantity: true,
             unit: true,
             images: true,
+            inventories: {
+              select: {
+                onHand: true,
+              },
+            },
           },
         },
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    // Tính tổng tồn kho từ tất cả chi nhánh
+    return priceBookDetails.map((detail) => ({
+      ...detail,
+      product: {
+        ...detail.product,
+        totalStock: detail.product.inventories.reduce(
+          (sum, inv) => sum + Number(inv.onHand),
+          0,
+        ),
+        inventories: undefined, // Remove để không expose ra ngoài
+      },
+    }));
   }
 
   async addProductsToPriceBook(
