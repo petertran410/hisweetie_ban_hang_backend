@@ -147,6 +147,8 @@ export class ProductsService {
       categoryId,
       tradeMarkId,
       variantId,
+      masterProductId,
+      masterUnitId,
       ...productData
     } = dto;
 
@@ -174,8 +176,7 @@ export class ProductsService {
           isRewardPoint: productData.isRewardPoint,
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
-          masterProductId: productData.masterProductId,
-          masterUnitId: productData.masterUnitId,
+          masterUnitId: masterUnitId,
           // ⚠️ XỬ LÝ RELATIONS
           ...(categoryId && {
             category: {
@@ -191,6 +192,9 @@ export class ProductsService {
             variant: {
               connect: { id: variantId },
             },
+          }),
+          ...(masterProductId && {
+            masterProduct: { connect: { id: masterProductId } },
           }),
         },
       });
@@ -323,14 +327,16 @@ export class ProductsService {
       branchId,
       costScope,
       costBranchId,
-      purchasePrice, // ⚠️ EXTRACT
-      retailPrice, // ⚠️ EXTRACT
-      stockQuantity, // ⚠️ EXTRACT
-      minStockAlert, // ⚠️ EXTRACT
-      maxStockAlert, // ⚠️ EXTRACT
-      categoryId, // ⚠️ EXTRACT
-      tradeMarkId, // ⚠️ EXTRACT
-      variantId, // ⚠️ EXTRACT
+      purchasePrice,
+      retailPrice,
+      stockQuantity,
+      minStockAlert,
+      maxStockAlert,
+      categoryId,
+      tradeMarkId,
+      variantId,
+      masterProductId,
+      masterUnitId,
       ...productData
     } = dto;
 
@@ -342,8 +348,8 @@ export class ProductsService {
           ...productData,
           fullName,
           basePrice:
-            retailPrice !== undefined ? retailPrice : currentProduct.basePrice, // ⚠️ retailPrice → basePrice
-          // ⚠️ XỬ LÝ RELATIONS
+            retailPrice !== undefined ? retailPrice : currentProduct.basePrice,
+          ...(masterUnitId !== undefined && { masterUnitId }),
           ...(categoryId !== undefined && {
             category: categoryId
               ? { connect: { id: categoryId } }
@@ -357,6 +363,11 @@ export class ProductsService {
           ...(variantId !== undefined && {
             variant: variantId
               ? { connect: { id: variantId } }
+              : { disconnect: true },
+          }),
+          ...(masterProductId !== undefined && {
+            masterProduct: masterProductId
+              ? { connect: { id: masterProductId } }
               : { disconnect: true },
           }),
         },
