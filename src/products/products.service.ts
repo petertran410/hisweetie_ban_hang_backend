@@ -81,6 +81,7 @@ export class ProductsService {
               componentProduct: {
                 include: {
                   images: true,
+                  inventories: true,
                 },
               },
             },
@@ -95,7 +96,7 @@ export class ProductsService {
   }
 
   async findOne(id: number) {
-    return this.prisma.product.findUnique({
+    const product = await this.prisma.product.findUnique({
       where: { id },
       include: {
         category: true,
@@ -103,21 +104,26 @@ export class ProductsService {
         tradeMark: true,
         images: true,
         inventories: {
-          include: {
-            branch: true,
-          },
+          include: { branch: true },
         },
         comboComponents: {
           include: {
             componentProduct: {
               include: {
                 images: true,
+                inventories: true,
               },
             },
           },
         },
       },
     });
+
+    if (!product) {
+      throw new NotFoundException(`Product with id ${id} not found`);
+    }
+
+    return product;
   }
 
   async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
@@ -177,7 +183,6 @@ export class ProductsService {
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
           masterUnitId: masterUnitId,
-          // ⚠️ XỬ LÝ RELATIONS
           ...(categoryId && {
             category: {
               connect: { id: categoryId },
@@ -199,7 +204,6 @@ export class ProductsService {
         },
       });
 
-      // 2. Tạo images
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
           data: imageUrls.map((url) => ({
@@ -209,32 +213,26 @@ export class ProductsService {
         });
       }
 
-      // 3. ⚠️ TẠO INVENTORY THEO LOGIC MỚI
-      const cost = purchasePrice || 0; // ⚠️ purchasePrice → cost
-      const onHand = stockQuantity || 0; // ⚠️ stockQuantity → onHand
-      const minQuality = minStockAlert || 0; // ⚠️ minStockAlert → minQuality
-      const maxQuality = maxStockAlert || 0; // ⚠️ maxStockAlert → maxQuality
+      const cost = purchasePrice || 0;
+      const onHand = stockQuantity || 0;
+      const minQuality = minStockAlert || 0;
+      const maxQuality = maxStockAlert || 0;
 
-      // Lấy tất cả branches
       const allBranches = await tx.branch.findMany({
         where: { isActive: true },
         select: { id: true, name: true },
       });
 
-      // ⚠️ LOGIC GIÁ VỐN
       let branchesToCreateInventory: { id: number; name: string }[] = [];
 
       if (costScope === 'all') {
-        // Áp dụng giá vốn cho TẤT CẢ chi nhánh
         branchesToCreateInventory = allBranches;
       } else if (costScope === 'specific' && costBranchId) {
-        // Chỉ áp dụng giá vốn cho chi nhánh được chọn
         const selectedBranch = allBranches.find((b) => b.id === costBranchId);
         if (selectedBranch) {
           branchesToCreateInventory = [selectedBranch];
         }
       } else {
-        // Mặc định: không có scope (backward compatible)
         if (branchId) {
           const currentBranch = allBranches.find((b) => b.id === branchId);
           if (currentBranch) {
@@ -243,7 +241,6 @@ export class ProductsService {
         }
       }
 
-      // Tạo inventory records
       const inventoryData = branchesToCreateInventory.map((branch) => {
         const isCurrentBranch = branch.id === branchId;
 
@@ -253,7 +250,7 @@ export class ProductsService {
           productName: product.name,
           branchId: branch.id,
           branchName: branch.name,
-          cost: cost, // ⚠️ Giá vốn
+          cost: cost,
           onHand: isCurrentBranch ? onHand : 0,
           reserved: 0,
           onOrder: 0,
@@ -266,7 +263,6 @@ export class ProductsService {
         await tx.inventory.createMany({ data: inventoryData });
       }
 
-      // 4. Tạo combo components (nếu là combo)
       if (dto.type === 1 && components && components.length > 0) {
         await tx.productComponent.createMany({
           data: components.map((comp) => ({
@@ -341,7 +337,6 @@ export class ProductsService {
     } = dto;
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. ⚠️ UPDATE PRODUCT - CHỈ VỚI CÁC FIELDS TỒN TẠI
       const product = await tx.product.update({
         where: { id },
         data: {
@@ -373,7 +368,6 @@ export class ProductsService {
         },
       });
 
-      // 2. Update images
       if (imageUrls !== undefined) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         if (imageUrls.length > 0) {
@@ -386,18 +380,15 @@ export class ProductsService {
         }
       }
 
-      // 3. ⚠️ UPDATE INVENTORY THEO LOGIC MỚI
       const cost = purchasePrice;
       const onHand = stockQuantity;
       const minQuality = minStockAlert;
       const maxQuality = maxStockAlert;
 
-      // ⚠️ LOGIC GIÁ VỐN KHI CẬP NHẬT
       if (
         cost !== undefined &&
         (costScope === 'all' || costScope === 'specific')
       ) {
-        // Lấy tất cả branches
         const allBranches = await tx.branch.findMany({
           where: { isActive: true },
           select: { id: true, name: true },
@@ -406,17 +397,14 @@ export class ProductsService {
         let branchesToUpdateCost: { id: number; name: string }[] = [];
 
         if (costScope === 'all') {
-          // Cập nhật giá vốn cho TẤT CẢ chi nhánh
           branchesToUpdateCost = allBranches;
         } else if (costScope === 'specific' && costBranchId) {
-          // Chỉ cập nhật giá vốn cho chi nhánh được chọn
           const selectedBranch = allBranches.find((b) => b.id === costBranchId);
           if (selectedBranch) {
             branchesToUpdateCost = [selectedBranch];
           }
         }
 
-        // Cập nhật/Tạo inventory cho các chi nhánh
         for (const branch of branchesToUpdateCost) {
           const isCurrentBranch = branch.id === branchId;
 
@@ -443,8 +431,7 @@ export class ProductsService {
                 isCurrentBranch && maxQuality !== undefined ? maxQuality : 0,
             },
             update: {
-              cost: cost, // ⚠️ CẬP NHẬT GIÁ VỐN
-              // ⚠️ CHỈ CẬP NHẬT TỒN KHO NẾU LÀ CHI NHÁNH HIỆN TẠI
+              cost: cost,
               ...(isCurrentBranch && onHand !== undefined && { onHand }),
               ...(isCurrentBranch &&
                 minQuality !== undefined && { minQuality }),
@@ -454,7 +441,6 @@ export class ProductsService {
           });
         }
       } else {
-        // ⚠️ KHÔNG CÓ SCOPE: CHỈ CẬP NHẬT CHI NHÁNH HIỆN TẠI
         if (branchId) {
           const branch = await tx.branch.findUnique({
             where: { id: branchId },
@@ -482,7 +468,7 @@ export class ProductsService {
               maxQuality: maxQuality || 0,
             },
             update: {
-              ...(cost !== undefined && { cost }),
+              cost: cost,
               ...(onHand !== undefined && { onHand }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),
@@ -491,7 +477,6 @@ export class ProductsService {
         }
       }
 
-      // 4. Update combo components
       if (components !== undefined) {
         await tx.productComponent.deleteMany({
           where: { comboProductId: id },
