@@ -185,11 +185,20 @@ export class PurchaseOrdersService {
 
       await this.restoreProductStock(id, tx);
 
-      for (const item of purchaseOrder.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: { stockQuantity: { decrement: Number(item.quantity) } },
-        });
+      if (purchaseOrder.branchId) {
+        for (const item of purchaseOrder.items) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: item.productId,
+              branchId: purchaseOrder.branchId,
+            },
+            data: {
+              onHand: {
+                decrement: Number(item.quantity),
+              },
+            },
+          });
+        }
       }
 
       await tx.purchaseOrder.delete({ where: { id } });
@@ -239,25 +248,47 @@ export class PurchaseOrdersService {
   }
 
   private async updateProductStock(purchaseOrderId: number, tx: any) {
-    const items = await tx.purchaseOrderItem.findMany({
-      where: { purchaseOrderId },
+    const purchaseOrder = await tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrderId },
+      include: { items: true },
     });
-    for (const item of items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { stockQuantity: { increment: Number(item.quantity) } },
+
+    if (!purchaseOrder || !purchaseOrder.branchId) return;
+
+    for (const item of purchaseOrder.items) {
+      await tx.inventory.updateMany({
+        where: {
+          productId: item.productId,
+          branchId: purchaseOrder.branchId,
+        },
+        data: {
+          onHand: {
+            increment: Number(item.quantity),
+          },
+        },
       });
     }
   }
 
   private async restoreProductStock(purchaseOrderId: number, tx: any) {
-    const items = await tx.purchaseOrderItem.findMany({
-      where: { purchaseOrderId },
+    const purchaseOrder = await tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrderId },
+      include: { items: true },
     });
-    for (const item of items) {
-      await tx.product.update({
-        where: { id: item.productId },
-        data: { stockQuantity: { decrement: Number(item.quantity) } },
+
+    if (!purchaseOrder || !purchaseOrder.branchId) return;
+
+    for (const item of purchaseOrder.items) {
+      await tx.inventory.updateMany({
+        where: {
+          productId: item.productId,
+          branchId: purchaseOrder.branchId,
+        },
+        data: {
+          onHand: {
+            decrement: Number(item.quantity),
+          },
+        },
       });
     }
   }

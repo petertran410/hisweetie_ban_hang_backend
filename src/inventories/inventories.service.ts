@@ -128,17 +128,13 @@ export class InventoriesService {
   }
 
   async getLowStockProducts(branchId?: number) {
-    const where: any = {
-      onHand: {
-        lte: this.prisma.raw('min_quality'),
-      },
-    };
+    const where: any = {};
 
     if (branchId) {
       where.branchId = branchId;
     }
 
-    return this.prisma.inventory.findMany({
+    const allInventories = await this.prisma.inventory.findMany({
       where,
       include: {
         product: {
@@ -156,7 +152,10 @@ export class InventoriesService {
           },
         },
       },
-      orderBy: [{ branchName: 'asc' }, { productName: 'asc' }],
     });
+
+    return allInventories.filter(
+      (inv) => Number(inv.onHand) <= Number(inv.minQuality),
+    );
   }
 }

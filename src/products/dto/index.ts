@@ -9,6 +9,51 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { PartialType } from '@nestjs/swagger';
+
+export class InitialInventoryDto {
+  @IsNumber()
+  @Type(() => Number)
+  branchId: number;
+
+  @IsOptional()
+  @IsString()
+  branchName?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  cost?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  onHand?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  minQuality?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  maxQuality?: number;
+}
+
+export class ComponentDto {
+  @IsNumber()
+  @Type(() => Number)
+  componentProductId: number;
+
+  @IsNumber()
+  @Type(() => Number)
+  quantity: number;
+}
 
 export class CreateProductDto {
   @IsString()
@@ -37,18 +82,25 @@ export class CreateProductDto {
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
+  tradeMarkId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
   variantId?: number;
 
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
-  tradeMarkId?: number;
+  type?: number;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  purchasePrice?: number;
+  @IsBoolean()
+  allowsSale?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  hasVariants?: boolean;
 
   @IsOptional()
   @IsNumber()
@@ -57,22 +109,13 @@ export class CreateProductDto {
   basePrice?: number;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  stockQuantity?: number;
+  @IsString()
+  unit?: string;
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
   @Type(() => Number)
-  minStockAlert?: number;
-
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  maxStockAlert?: number;
+  conversionValue?: number;
 
   @IsOptional()
   @IsNumber()
@@ -85,20 +128,19 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
-  unit?: string;
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  conversionValue?: number;
-
-  @IsOptional()
-  @IsString()
   attributesText?: string;
 
   @IsOptional()
   @IsBoolean()
+  isRewardPoint?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
   isActive?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isDirectSale?: boolean;
 
   @IsOptional()
   @IsArray()
@@ -106,22 +148,19 @@ export class CreateProductDto {
   imageUrls?: string[];
 
   @IsOptional()
-  @IsBoolean()
-  isDirectSale?: boolean;
-
-  @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  type?: number;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InitialInventoryDto)
+  initialInventory?: InitialInventoryDto[];
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => ProductComponentDto)
-  components?: ProductComponentDto[];
+  @Type(() => ComponentDto)
+  components?: ComponentDto[];
 }
 
-export class UpdateProductDto {
+export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsOptional()
   @IsString()
   code?: string;
@@ -294,3 +333,7 @@ export class ProductComponentDto {
   @Type(() => Number)
   quantity: number;
 }
+
+export * from './create-product.dto';
+export * from './update-product.dto';
+export * from './product-query.dto';

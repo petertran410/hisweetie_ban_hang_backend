@@ -687,37 +687,39 @@ export class PriceBooksService {
         id: true,
         code: true,
         name: true,
-        purchasePrice: true,
         basePrice: true,
-        stockQuantity: true,
         unit: true,
-        priceBookDetails: {
-          where: {
-            priceBookId: { in: priceBookIds },
-            isActive: true,
-          },
-          select: {
-            priceBookId: true,
-            price: true,
-          },
-        },
       },
       orderBy: { code: 'asc' },
     });
 
+    const priceBookDetails = await this.prisma.priceBookDetail.findMany({
+      where: {
+        priceBookId: { in: priceBookIds },
+        isActive: true,
+        productId: { in: products.map((p) => p.id) },
+      },
+      select: {
+        priceBookId: true,
+        productId: true,
+        price: true,
+      },
+    });
+
     const result = products.map((product) => {
       const priceMap: Record<number, number> = {};
-      product.priceBookDetails.forEach((detail) => {
-        priceMap[detail.priceBookId] = Number(detail.price);
-      });
+
+      priceBookDetails
+        .filter((detail) => detail.productId === product.id)
+        .forEach((detail) => {
+          priceMap[detail.priceBookId] = Number(detail.price);
+        });
 
       return {
         id: product.id,
         code: product.code,
         name: product.name,
-        purchasePrice: Number(product.purchasePrice),
         basePrice: Number(product.basePrice),
-        stockQuantity: product.stockQuantity,
         unit: product.unit,
         prices: priceMap,
       };

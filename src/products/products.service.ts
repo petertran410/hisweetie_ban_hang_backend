@@ -359,12 +359,7 @@ export class ProductsService {
   }
 
   async checkLowStock() {
-    return this.prisma.inventory.findMany({
-      where: {
-        onHand: {
-          lte: this.prisma.raw('min_quality'),
-        },
-      },
+    const allInventories = await this.prisma.inventory.findMany({
       include: {
         product: {
           select: {
@@ -381,7 +376,10 @@ export class ProductsService {
           },
         },
       },
-      orderBy: [{ branchName: 'asc' }, { productName: 'asc' }],
     });
+
+    return allInventories.filter(
+      (inv) => Number(inv.onHand) <= Number(inv.minQuality),
+    );
   }
 }
