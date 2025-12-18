@@ -241,23 +241,55 @@ export class ProductsService {
         }
       }
 
-      const inventoryData = branchesToCreateInventory.map((branch) => {
-        const isCurrentBranch = branch.id === branchId;
+      const inventoryData = await Promise.all(
+        branchesToCreateInventory.map(async (branch) => {
+          const isCurrentBranch = branch.id === branchId;
+          let branchCost = cost;
+          if (
+            dto.type === 1 &&
+            components &&
+            components.length > 0 &&
+            costScope === 'all'
+          ) {
+            const componentInventories = await tx.inventory.findMany({
+              where: {
+                productId: { in: components.map((c) => c.componentProductId) },
+                branchId: branch.id,
+              },
+              select: {
+                productId: true,
+                cost: true,
+              },
+            });
 
-        return {
-          productId: product.id,
-          productCode: product.code,
-          productName: product.name,
-          branchId: branch.id,
-          branchName: branch.name,
-          cost: cost,
-          onHand: isCurrentBranch ? onHand : 0,
-          reserved: 0,
-          onOrder: 0,
-          minQuality: isCurrentBranch ? minQuality : 0,
-          maxQuality: isCurrentBranch ? maxQuality : 0,
-        };
-      });
+            const costMap = new Map(
+              componentInventories.map((inv) => [
+                inv.productId,
+                Number(inv.cost),
+              ]),
+            );
+
+            branchCost = components.reduce((sum, comp) => {
+              const componentCost = costMap.get(comp.componentProductId) || 0;
+              const quantity = Number(comp.quantity);
+              return sum + componentCost * quantity;
+            }, 0);
+          }
+          return {
+            productId: product.id,
+            productCode: product.code,
+            productName: product.name,
+            branchId: branch.id,
+            branchName: branch.name,
+            cost: branchCost,
+            onHand: isCurrentBranch ? onHand : 0,
+            reserved: 0,
+            onOrder: 0,
+            minQuality: isCurrentBranch ? minQuality : 0,
+            maxQuality: isCurrentBranch ? maxQuality : 0,
+          };
+        }),
+      );
 
       if (inventoryData.length > 0) {
         await tx.inventory.createMany({ data: inventoryData });
@@ -408,6 +440,39 @@ export class ProductsService {
         for (const branch of branchesToUpdateCost) {
           const isCurrentBranch = branch.id === branchId;
 
+          let branchCost = cost;
+
+          if (
+            currentProduct.type === 1 &&
+            components &&
+            components.length > 0 &&
+            costScope === 'all'
+          ) {
+            const componentInventories = await tx.inventory.findMany({
+              where: {
+                productId: { in: components.map((c) => c.componentProductId) },
+                branchId: branch.id,
+              },
+              select: {
+                productId: true,
+                cost: true,
+              },
+            });
+
+            const costMap = new Map(
+              componentInventories.map((inv) => [
+                inv.productId,
+                Number(inv.cost),
+              ]),
+            );
+
+            branchCost = components.reduce((sum, comp) => {
+              const componentCost = costMap.get(comp.componentProductId) || 0;
+              const quantity = Number(comp.quantity);
+              return sum + componentCost * quantity;
+            }, 0);
+          }
+
           await tx.inventory.upsert({
             where: {
               productId_branchId: {
@@ -421,7 +486,7 @@ export class ProductsService {
               productName: product.name,
               branchId: branch.id,
               branchName: branch.name,
-              cost: cost,
+              cost: branchCost,
               onHand: isCurrentBranch && onHand !== undefined ? onHand : 0,
               reserved: 0,
               onOrder: 0,
@@ -431,7 +496,7 @@ export class ProductsService {
                 isCurrentBranch && maxQuality !== undefined ? maxQuality : 0,
             },
             update: {
-              cost: cost,
+              cost: branchCost,
               ...(isCurrentBranch && onHand !== undefined && { onHand }),
               ...(isCurrentBranch &&
                 minQuality !== undefined && { minQuality }),
@@ -440,12 +505,44 @@ export class ProductsService {
             },
           });
         }
-      } else {
+      } else if (cost !== undefined) {
         if (branchId) {
           const branch = await tx.branch.findUnique({
             where: { id: branchId },
             select: { name: true },
           });
+
+          let branchCost = cost;
+
+          if (
+            currentProduct.type === 1 &&
+            components &&
+            components.length > 0
+          ) {
+            const componentInventories = await tx.inventory.findMany({
+              where: {
+                productId: { in: components.map((c) => c.componentProductId) },
+                branchId: branchId,
+              },
+              select: {
+                productId: true,
+                cost: true,
+              },
+            });
+
+            const costMap = new Map(
+              componentInventories.map((inv) => [
+                inv.productId,
+                Number(inv.cost),
+              ]),
+            );
+
+            branchCost = components.reduce((sum, comp) => {
+              const componentCost = costMap.get(comp.componentProductId) || 0;
+              const quantity = Number(comp.quantity);
+              return sum + componentCost * quantity;
+            }, 0);
+          }
 
           await tx.inventory.upsert({
             where: {
@@ -460,7 +557,7 @@ export class ProductsService {
               productName: product.name,
               branchId: branchId,
               branchName: branch?.name || '',
-              cost: cost || 0,
+              cost: branchCost,
               onHand: onHand || 0,
               reserved: 0,
               onOrder: 0,
@@ -468,7 +565,7 @@ export class ProductsService {
               maxQuality: maxQuality || 0,
             },
             update: {
-              cost: cost,
+              cost: branchCost,
               ...(onHand !== undefined && { onHand }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),

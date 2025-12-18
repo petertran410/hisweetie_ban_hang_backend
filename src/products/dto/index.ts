@@ -102,7 +102,6 @@ export class CreateProductDto {
   @IsBoolean()
   hasVariants?: boolean;
 
-  // ⚠️ THÊM CÁC FIELDS THIẾU
   @IsOptional()
   @IsNumber()
   @Min(0)
