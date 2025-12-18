@@ -43,6 +43,51 @@ export class PriceBookQueryDto {
   userId?: number;
 }
 
+export class ProductsWithPricesQueryDto {
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) {
+      const result = value
+        .map((id) => {
+          const num = typeof id === 'string' ? parseInt(id, 10) : Number(id);
+          return isNaN(num) ? null : num;
+        })
+        .filter((id) => id !== null && id > 0);
+      return result;
+    }
+
+    if (typeof value === 'string') {
+      const result = value
+        .split(',')
+        .map((id) => parseInt(id.trim(), 10))
+        .filter((id) => !isNaN(id) && id > 0);
+      return result;
+    }
+
+    if (typeof value === 'number' && !isNaN(value)) {
+      return [value];
+    }
+
+    return [];
+  })
+  @IsArray()
+  priceBookIds: number[];
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  search?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  categoryIds?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  branchId?: number;
+}
+
 export class ApplicablePriceBooksDto {
   @IsOptional()
   @Type(() => Number)
@@ -83,44 +128,4 @@ export class ProductPriceDto {
   @Type(() => Number)
   @IsNumber()
   userId?: number;
-}
-
-export class ProductsWithPricesQueryDto {
-  @Transform(({ value }) => {
-    if (Array.isArray(value)) {
-      const result = value
-        .map((id) => {
-          const num = typeof id === 'string' ? parseInt(id, 10) : Number(id);
-          return isNaN(num) ? null : num;
-        })
-        .filter((id) => id !== null && id > 0);
-      return result;
-    }
-
-    if (typeof value === 'string') {
-      const result = value
-        .split(',')
-        .map((id) => parseInt(id.trim(), 10))
-        .filter((id) => !isNaN(id) && id > 0);
-      return result;
-    }
-
-    if (typeof value === 'number' && !isNaN(value)) {
-      return [value];
-    }
-
-    return [];
-  })
-  @IsArray()
-  priceBookIds: number[];
-
-  @IsOptional()
-  @IsString()
-  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
-  search?: string;
-
-  @IsOptional()
-  @IsString()
-  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
-  categoryIds?: string;
 }

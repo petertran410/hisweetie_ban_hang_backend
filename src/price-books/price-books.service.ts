@@ -675,6 +675,7 @@ export class PriceBooksService {
     priceBookIds: number[],
     searchQuery?: string,
     categoryIds?: string,
+    branchId?: number,
   ) {
     const where: any = {
       isActive: true,
@@ -706,6 +707,24 @@ export class PriceBooksService {
         name: true,
         basePrice: true,
         unit: true,
+        inventories: branchId
+          ? {
+              where: { branchId },
+              select: {
+                onHand: true,
+                cost: true,
+                branchId: true,
+                branchName: true,
+              },
+            }
+          : {
+              select: {
+                onHand: true,
+                cost: true,
+                branchId: true,
+                branchName: true,
+              },
+            },
       },
       orderBy: { code: 'asc' },
     });
@@ -732,6 +751,11 @@ export class PriceBooksService {
           priceMap[detail.priceBookId] = Number(detail.price);
         });
 
+      const totalStock = product.inventories.reduce(
+        (sum, inv) => sum + Number(inv.onHand),
+        0,
+      );
+
       return {
         id: product.id,
         code: product.code,
@@ -739,6 +763,8 @@ export class PriceBooksService {
         basePrice: Number(product.basePrice),
         unit: product.unit,
         prices: priceMap,
+        stockQuantity: totalStock,
+        inventories: product.inventories,
       };
     });
 
