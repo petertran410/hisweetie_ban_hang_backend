@@ -275,6 +275,10 @@ export class ProductQueryDto {
   @IsBoolean()
   @Type(() => Boolean)
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
+  branchId?: string;
 }
 
 export class ProductComponentDto {

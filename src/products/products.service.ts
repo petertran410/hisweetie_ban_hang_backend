@@ -31,7 +31,14 @@ export class ProductsService {
   }
 
   async findAll(query: ProductQueryDto) {
-    const { page = 1, limit = 15, search, categoryIds, isActive } = query;
+    const {
+      page = 1,
+      limit = 15,
+      search,
+      categoryIds,
+      isActive,
+      branchId,
+    } = query;
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -61,15 +68,9 @@ export class ProductsService {
           tradeMark: true,
           variant: true,
           images: true,
-          comboComponents: {
-            include: {
-              componentProduct: {
-                include: {
-                  images: true,
-                },
-              },
-            },
-          },
+          inventories: branchId
+            ? { where: { branchId: parseInt(branchId) } }
+            : true,
         },
         orderBy: { createdAt: 'desc' },
       }),

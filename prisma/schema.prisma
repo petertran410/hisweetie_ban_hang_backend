@@ -279,16 +279,11 @@ model Product {
   allowsSale      Boolean  @default(true)
   hasVariants     Boolean  @default(false)
   basePrice       Decimal  @default(0) @db.Decimal(18, 2)
-  purchasePrice   Decimal  @default(0) @db.Decimal(18, 2)
-  retailPrice     Decimal  @default(0) @db.Decimal(18, 2)
   unit            String?
   conversionValue Decimal  @default(1) @db.Decimal(18, 4)
   weight          Decimal? @db.Decimal(18, 4)
   weightUnit      String?  @default("kg")
   attributesText  String?
-  stockQuantity   Int      @default(0)
-  minStockAlert   Int      @default(0)
-  maxStockAlert   Int      @default(0)
   isRewardPoint   Boolean  @default(true)
   isActive        Boolean  @default(true)
   isDirectSale    Boolean  @default(false)
