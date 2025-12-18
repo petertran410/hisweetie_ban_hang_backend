@@ -1,17 +1,15 @@
 import {
   IsString,
-  IsOptional,
   IsNumber,
   IsBoolean,
+  IsOptional,
   IsArray,
   ValidateNested,
-  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class InitialInventoryDto {
+export class InventoryDto {
   @IsNumber()
-  @Type(() => Number)
   branchId: number;
 
   @IsOptional()
@@ -20,36 +18,26 @@ export class InitialInventoryDto {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   cost?: number;
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   onHand?: number;
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   minQuality?: number;
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
-  @Type(() => Number)
   maxQuality?: number;
 }
 
 export class ComponentDto {
   @IsNumber()
-  @Type(() => Number)
   componentProductId: number;
 
   @IsNumber()
-  @Type(() => Number)
   quantity: number;
 }
 
@@ -72,52 +60,55 @@ export class CreateProductDto {
   @IsString()
   orderTemplate?: string;
 
+  @IsNumber()
+  type: number;
+
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
   categoryId?: number;
 
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
   tradeMarkId?: number;
 
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
   variantId?: number;
 
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
-  type?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  allowsSale?: boolean;
-
-  @IsOptional()
-  @IsBoolean()
-  hasVariants?: boolean;
+  masterProductId?: number;
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
-  @Type(() => Number)
+  masterUnitId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  purchasePrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  retailPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
   basePrice?: number;
 
   @IsOptional()
-  @IsString()
-  unit?: string;
+  @IsNumber()
+  stockQuantity?: number;
 
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
-  conversionValue?: number;
+  minStockAlert?: number;
 
   @IsOptional()
   @IsNumber()
-  @Type(() => Number)
+  maxStockAlert?: number;
+
+  @IsOptional()
+  @IsNumber()
   weight?: number;
 
   @IsOptional()
@@ -126,11 +117,15 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsString()
-  attributesText?: string;
+  unit?: string;
 
   @IsOptional()
-  @IsBoolean()
-  isRewardPoint?: boolean;
+  @IsNumber()
+  conversionValue?: number;
+
+  @IsOptional()
+  @IsString()
+  attributesText?: string;
 
   @IsOptional()
   @IsBoolean()
@@ -141,6 +136,10 @@ export class CreateProductDto {
   isDirectSale?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  isRewardPoint?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
@@ -148,12 +147,24 @@ export class CreateProductDto {
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => InitialInventoryDto)
-  initialInventory?: InitialInventoryDto[];
+  @Type(() => ComponentDto)
+  components?: ComponentDto[];
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => ComponentDto)
-  components?: ComponentDto[];
+  @Type(() => InventoryDto)
+  initialInventory?: InventoryDto[];
+
+  @IsOptional()
+  @IsNumber()
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  costScope?: 'all' | 'specific';
+
+  @IsOptional()
+  @IsNumber()
+  costBranchId?: number;
 }

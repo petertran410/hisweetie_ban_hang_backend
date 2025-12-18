@@ -132,30 +132,31 @@ export class ProductsService {
   }
 
   async create(dto: CreateProductDto) {
-    const codeExists = await this.checkCodeExists(dto.code);
-    if (codeExists) {
-      throw new BadRequestException(
-        `Product with code ${dto.code} already exists`,
-      );
-    }
+    const {
+      imageUrls,
+      components,
+      initialInventory,
+      branchId,
+      costScope,
+      costBranchId,
+      ...productData
+    } = dto;
 
-    const fullName =
-      dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
-
-    const { imageUrls, components, initialInventory, ...productData } = dto;
+    const name = dto.name;
+    const attributesText = dto.attributesText || null;
+    const fullName = dto.fullName || this.buildFullName(name, attributesText);
 
     return this.prisma.$transaction(async (tx) => {
-      // Tạo product
+      // 1. Tạo product
       const product = await tx.product.create({
         data: {
           ...productData,
           fullName,
-          type: dto.type || 2,
-          basePrice: dto.basePrice || 0,
+          basePrice: dto.basePrice || dto.retailPrice || 0,
         },
       });
 
-      // Tạo images
+      // 2. Tạo images
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
           data: imageUrls.map((url) => ({
@@ -165,35 +166,65 @@ export class ProductsService {
         });
       }
 
-      // Tạo inventory cho các chi nhánh
-      if (initialInventory && initialInventory.length > 0) {
-        const inventoryData = await Promise.all(
-          initialInventory.map(async (inv) => {
-            const branch = await tx.branch.findUnique({
-              where: { id: inv.branchId },
-              select: { name: true },
-            });
+      // 3. ⚠️ TẠO INVENTORY THEO LOGIC MỚI
+      const purchasePrice = dto.purchasePrice || 0;
+      const onHand = dto.stockQuantity || 0;
+      const minQuality = dto.minStockAlert || 0;
+      const maxQuality = dto.maxStockAlert || 0;
 
-            return {
-              productId: product.id,
-              productCode: product.code,
-              productName: product.name,
-              branchId: inv.branchId,
-              branchName: inv.branchName || branch?.name || '',
-              cost: inv.cost || 0,
-              onHand: inv.onHand || 0,
-              reserved: 0,
-              onOrder: 0,
-              minQuality: inv.minQuality || 0,
-              maxQuality: inv.maxQuality || 0,
-            };
-          }),
-        );
+      // Lấy tất cả branches
+      const allBranches = await tx.branch.findMany({
+        where: { isActive: true },
+        select: { id: true, name: true },
+      });
 
+      // ⚠️ LOGIC GIÁ VỐN
+      let branchesToCreateInventory: { id: number; name: string }[] = [];
+
+      if (costScope === 'all') {
+        // Áp dụng giá vốn cho TẤT CẢ chi nhánh
+        branchesToCreateInventory = allBranches;
+      } else if (costScope === 'specific' && costBranchId) {
+        // Chỉ áp dụng giá vốn cho chi nhánh được chọn
+        const selectedBranch = allBranches.find((b) => b.id === costBranchId);
+        if (selectedBranch) {
+          branchesToCreateInventory = [selectedBranch];
+        }
+      } else {
+        // Mặc định: không có scope (backward compatible)
+        // Hoặc có thể fallback về chi nhánh hiện tại
+        if (branchId) {
+          const currentBranch = allBranches.find((b) => b.id === branchId);
+          if (currentBranch) {
+            branchesToCreateInventory = [currentBranch];
+          }
+        }
+      }
+
+      // Tạo inventory records
+      const inventoryData = branchesToCreateInventory.map((branch) => {
+        const isCurrentBranch = branch.id === branchId;
+
+        return {
+          productId: product.id,
+          productCode: product.code,
+          productName: product.name,
+          branchId: branch.id,
+          branchName: branch.name,
+          cost: purchasePrice, // Giá vốn cho các chi nhánh theo scope
+          onHand: isCurrentBranch ? onHand : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI CÓ TỒN KHO
+          reserved: 0,
+          onOrder: 0,
+          minQuality: isCurrentBranch ? minQuality : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI
+          maxQuality: isCurrentBranch ? maxQuality : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI
+        };
+      });
+
+      if (inventoryData.length > 0) {
         await tx.inventory.createMany({ data: inventoryData });
       }
 
-      // Tạo combo components (nếu là combo)
+      // 4. Tạo combo components (nếu là combo)
       if (dto.type === 1 && components && components.length > 0) {
         await tx.productComponent.createMany({
           data: components.map((comp) => ({
@@ -247,10 +278,18 @@ export class ProductsService {
         : currentProduct.attributesText;
     const fullName = dto.fullName || this.buildFullName(name, attributesText);
 
-    const { imageUrls, components, initialInventory, ...productData } = dto;
+    const {
+      imageUrls,
+      components,
+      initialInventory,
+      branchId,
+      costScope,
+      costBranchId,
+      ...productData
+    } = dto;
 
     return this.prisma.$transaction(async (tx) => {
-      // Update product
+      // 1. Update product
       const product = await tx.product.update({
         where: { id },
         data: {
@@ -263,7 +302,7 @@ export class ProductsService {
         },
       });
 
-      // Update images
+      // 2. Update images
       if (imageUrls !== undefined) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         if (imageUrls.length > 0) {
@@ -276,11 +315,78 @@ export class ProductsService {
         }
       }
 
-      // Update inventory
-      if (initialInventory && initialInventory.length > 0) {
-        for (const inv of initialInventory) {
+      // 3. ⚠️ UPDATE INVENTORY THEO LOGIC MỚI
+      const purchasePrice = dto.purchasePrice;
+      const onHand = dto.stockQuantity;
+      const minQuality = dto.minStockAlert;
+      const maxQuality = dto.maxStockAlert;
+
+      // ⚠️ LOGIC GIÁ VỐN KHI CẬP NHẬT
+      if (
+        purchasePrice !== undefined &&
+        (costScope === 'all' || costScope === 'specific')
+      ) {
+        // Lấy tất cả branches
+        const allBranches = await tx.branch.findMany({
+          where: { isActive: true },
+          select: { id: true, name: true },
+        });
+
+        let branchesToUpdateCost: { id: number; name: string }[] = [];
+
+        if (costScope === 'all') {
+          // Cập nhật giá vốn cho TẤT CẢ chi nhánh
+          branchesToUpdateCost = allBranches;
+        } else if (costScope === 'specific' && costBranchId) {
+          // Chỉ cập nhật giá vốn cho chi nhánh được chọn
+          const selectedBranch = allBranches.find((b) => b.id === costBranchId);
+          if (selectedBranch) {
+            branchesToUpdateCost = [selectedBranch];
+          }
+        }
+
+        // Cập nhật/Tạo inventory cho các chi nhánh
+        for (const branch of branchesToUpdateCost) {
+          const isCurrentBranch = branch.id === branchId;
+
+          await tx.inventory.upsert({
+            where: {
+              productId_branchId: {
+                productId: id,
+                branchId: branch.id,
+              },
+            },
+            create: {
+              productId: id,
+              productCode: product.code,
+              productName: product.name,
+              branchId: branch.id,
+              branchName: branch.name,
+              cost: purchasePrice,
+              onHand: isCurrentBranch && onHand !== undefined ? onHand : 0,
+              reserved: 0,
+              onOrder: 0,
+              minQuality:
+                isCurrentBranch && minQuality !== undefined ? minQuality : 0,
+              maxQuality:
+                isCurrentBranch && maxQuality !== undefined ? maxQuality : 0,
+            },
+            update: {
+              cost: purchasePrice, // ⚠️ CẬP NHẬT GIÁ VỐN
+              // ⚠️ CHỈ CẬP NHẬT TỒN KHO NẾU LÀ CHI NHÁNH HIỆN TẠI
+              ...(isCurrentBranch && onHand !== undefined && { onHand }),
+              ...(isCurrentBranch &&
+                minQuality !== undefined && { minQuality }),
+              ...(isCurrentBranch &&
+                maxQuality !== undefined && { maxQuality }),
+            },
+          });
+        }
+      } else {
+        // ⚠️ KHÔNG CÓ SCOPE: CHỈ CẬP NHẬT CHI NHÁNH HIỆN TẠI
+        if (branchId) {
           const branch = await tx.branch.findUnique({
-            where: { id: inv.branchId },
+            where: { id: branchId },
             select: { name: true },
           });
 
@@ -288,39 +394,38 @@ export class ProductsService {
             where: {
               productId_branchId: {
                 productId: id,
-                branchId: inv.branchId,
+                branchId: branchId,
               },
             },
             create: {
               productId: id,
               productCode: product.code,
               productName: product.name,
-              branchId: inv.branchId,
-              branchName: inv.branchName || branch?.name || '',
-              cost: inv.cost || 0,
-              onHand: inv.onHand || 0,
+              branchId: branchId,
+              branchName: branch?.name || '',
+              cost: purchasePrice || 0,
+              onHand: onHand || 0,
               reserved: 0,
               onOrder: 0,
-              minQuality: inv.minQuality || 0,
-              maxQuality: inv.maxQuality || 0,
+              minQuality: minQuality || 0,
+              maxQuality: maxQuality || 0,
             },
             update: {
-              cost: inv.cost !== undefined ? inv.cost : undefined,
-              onHand: inv.onHand !== undefined ? inv.onHand : undefined,
-              minQuality:
-                inv.minQuality !== undefined ? inv.minQuality : undefined,
-              maxQuality:
-                inv.maxQuality !== undefined ? inv.maxQuality : undefined,
+              ...(purchasePrice !== undefined && { cost: purchasePrice }),
+              ...(onHand !== undefined && { onHand }),
+              ...(minQuality !== undefined && { minQuality }),
+              ...(maxQuality !== undefined && { maxQuality }),
             },
           });
         }
       }
 
-      // Update combo components
-      if (dto.type === 1 && components !== undefined) {
+      // 4. Update combo components
+      if (components !== undefined) {
         await tx.productComponent.deleteMany({
           where: { comboProductId: id },
         });
+
         if (components.length > 0) {
           await tx.productComponent.createMany({
             data: components.map((comp) => ({
