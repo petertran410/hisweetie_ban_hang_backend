@@ -139,6 +139,14 @@ export class ProductsService {
       branchId,
       costScope,
       costBranchId,
+      purchasePrice,
+      retailPrice,
+      stockQuantity,
+      minStockAlert,
+      maxStockAlert,
+      categoryId,
+      tradeMarkId,
+      variantId,
       ...productData
     } = dto;
 
@@ -147,12 +155,43 @@ export class ProductsService {
     const fullName = dto.fullName || this.buildFullName(name, attributesText);
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Tạo product
       const product = await tx.product.create({
         data: {
-          ...productData,
+          code: productData.code,
+          name: productData.name,
           fullName,
-          basePrice: dto.basePrice || dto.retailPrice || 0,
+          description: productData.description,
+          orderTemplate: productData.orderTemplate,
+          type: productData.type || 2,
+          allowsSale: productData.allowsSale,
+          hasVariants: productData.hasVariants,
+          basePrice: retailPrice || 0,
+          unit: productData.unit,
+          conversionValue: productData.conversionValue,
+          weight: productData.weight,
+          weightUnit: productData.weightUnit,
+          attributesText,
+          isRewardPoint: productData.isRewardPoint,
+          isActive: productData.isActive ?? true,
+          isDirectSale: productData.isDirectSale ?? false,
+          masterProductId: productData.masterProductId,
+          masterUnitId: productData.masterUnitId,
+          // ⚠️ XỬ LÝ RELATIONS
+          ...(categoryId && {
+            category: {
+              connect: { id: categoryId },
+            },
+          }),
+          ...(tradeMarkId && {
+            tradeMark: {
+              connect: { id: tradeMarkId },
+            },
+          }),
+          ...(variantId && {
+            variant: {
+              connect: { id: variantId },
+            },
+          }),
         },
       });
 
@@ -167,10 +206,10 @@ export class ProductsService {
       }
 
       // 3. ⚠️ TẠO INVENTORY THEO LOGIC MỚI
-      const purchasePrice = dto.purchasePrice || 0;
-      const onHand = dto.stockQuantity || 0;
-      const minQuality = dto.minStockAlert || 0;
-      const maxQuality = dto.maxStockAlert || 0;
+      const cost = purchasePrice || 0; // ⚠️ purchasePrice → cost
+      const onHand = stockQuantity || 0; // ⚠️ stockQuantity → onHand
+      const minQuality = minStockAlert || 0; // ⚠️ minStockAlert → minQuality
+      const maxQuality = maxStockAlert || 0; // ⚠️ maxStockAlert → maxQuality
 
       // Lấy tất cả branches
       const allBranches = await tx.branch.findMany({
@@ -192,7 +231,6 @@ export class ProductsService {
         }
       } else {
         // Mặc định: không có scope (backward compatible)
-        // Hoặc có thể fallback về chi nhánh hiện tại
         if (branchId) {
           const currentBranch = allBranches.find((b) => b.id === branchId);
           if (currentBranch) {
@@ -211,12 +249,12 @@ export class ProductsService {
           productName: product.name,
           branchId: branch.id,
           branchName: branch.name,
-          cost: purchasePrice, // Giá vốn cho các chi nhánh theo scope
-          onHand: isCurrentBranch ? onHand : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI CÓ TỒN KHO
+          cost: cost, // ⚠️ Giá vốn
+          onHand: isCurrentBranch ? onHand : 0,
           reserved: 0,
           onOrder: 0,
-          minQuality: isCurrentBranch ? minQuality : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI
-          maxQuality: isCurrentBranch ? maxQuality : 0, // ⚠️ CHỈ CHI NHÁNH HIỆN TẠI
+          minQuality: isCurrentBranch ? minQuality : 0,
+          maxQuality: isCurrentBranch ? maxQuality : 0,
         };
       });
 
@@ -285,20 +323,42 @@ export class ProductsService {
       branchId,
       costScope,
       costBranchId,
+      purchasePrice, // ⚠️ EXTRACT
+      retailPrice, // ⚠️ EXTRACT
+      stockQuantity, // ⚠️ EXTRACT
+      minStockAlert, // ⚠️ EXTRACT
+      maxStockAlert, // ⚠️ EXTRACT
+      categoryId, // ⚠️ EXTRACT
+      tradeMarkId, // ⚠️ EXTRACT
+      variantId, // ⚠️ EXTRACT
       ...productData
     } = dto;
 
     return this.prisma.$transaction(async (tx) => {
-      // 1. Update product
+      // 1. ⚠️ UPDATE PRODUCT - CHỈ VỚI CÁC FIELDS TỒN TẠI
       const product = await tx.product.update({
         where: { id },
         data: {
           ...productData,
           fullName,
           basePrice:
-            dto.basePrice !== undefined
-              ? dto.basePrice
-              : currentProduct.basePrice,
+            retailPrice !== undefined ? retailPrice : currentProduct.basePrice, // ⚠️ retailPrice → basePrice
+          // ⚠️ XỬ LÝ RELATIONS
+          ...(categoryId !== undefined && {
+            category: categoryId
+              ? { connect: { id: categoryId } }
+              : { disconnect: true },
+          }),
+          ...(tradeMarkId !== undefined && {
+            tradeMark: tradeMarkId
+              ? { connect: { id: tradeMarkId } }
+              : { disconnect: true },
+          }),
+          ...(variantId !== undefined && {
+            variant: variantId
+              ? { connect: { id: variantId } }
+              : { disconnect: true },
+          }),
         },
       });
 
@@ -316,14 +376,14 @@ export class ProductsService {
       }
 
       // 3. ⚠️ UPDATE INVENTORY THEO LOGIC MỚI
-      const purchasePrice = dto.purchasePrice;
-      const onHand = dto.stockQuantity;
-      const minQuality = dto.minStockAlert;
-      const maxQuality = dto.maxStockAlert;
+      const cost = purchasePrice;
+      const onHand = stockQuantity;
+      const minQuality = minStockAlert;
+      const maxQuality = maxStockAlert;
 
       // ⚠️ LOGIC GIÁ VỐN KHI CẬP NHẬT
       if (
-        purchasePrice !== undefined &&
+        cost !== undefined &&
         (costScope === 'all' || costScope === 'specific')
       ) {
         // Lấy tất cả branches
@@ -362,7 +422,7 @@ export class ProductsService {
               productName: product.name,
               branchId: branch.id,
               branchName: branch.name,
-              cost: purchasePrice,
+              cost: cost,
               onHand: isCurrentBranch && onHand !== undefined ? onHand : 0,
               reserved: 0,
               onOrder: 0,
@@ -372,7 +432,7 @@ export class ProductsService {
                 isCurrentBranch && maxQuality !== undefined ? maxQuality : 0,
             },
             update: {
-              cost: purchasePrice, // ⚠️ CẬP NHẬT GIÁ VỐN
+              cost: cost, // ⚠️ CẬP NHẬT GIÁ VỐN
               // ⚠️ CHỈ CẬP NHẬT TỒN KHO NẾU LÀ CHI NHÁNH HIỆN TẠI
               ...(isCurrentBranch && onHand !== undefined && { onHand }),
               ...(isCurrentBranch &&
@@ -403,7 +463,7 @@ export class ProductsService {
               productName: product.name,
               branchId: branchId,
               branchName: branch?.name || '',
-              cost: purchasePrice || 0,
+              cost: cost || 0,
               onHand: onHand || 0,
               reserved: 0,
               onOrder: 0,
@@ -411,7 +471,7 @@ export class ProductsService {
               maxQuality: maxQuality || 0,
             },
             update: {
-              ...(purchasePrice !== undefined && { cost: purchasePrice }),
+              ...(cost !== undefined && { cost }),
               ...(onHand !== undefined && { onHand }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),
