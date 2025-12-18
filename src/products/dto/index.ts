@@ -8,7 +8,7 @@ import {
   IsInt,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class CreateProductDto {
   @IsString()
@@ -254,14 +254,14 @@ export class UpdateProductDto {
 
 export class ProductQueryDto {
   @IsOptional()
-  @IsNumber()
   @Type(() => Number)
-  page?: number;
+  @IsNumber()
+  page?: number = 1;
 
   @IsOptional()
-  @IsNumber()
   @Type(() => Number)
-  limit?: number;
+  @IsNumber()
+  limit?: number = 15;
 
   @IsOptional()
   @IsString()
@@ -272,8 +272,12 @@ export class ProductQueryDto {
   categoryIds?: string;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return value;
+  })
   @IsBoolean()
-  @Type(() => Boolean)
   isActive?: boolean;
 
   @IsOptional()

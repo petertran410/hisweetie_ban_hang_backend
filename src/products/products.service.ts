@@ -69,8 +69,22 @@ export class ProductsService {
           variant: true,
           images: true,
           inventories: branchId
-            ? { where: { branchId: parseInt(branchId) } }
-            : true,
+            ? {
+                where: { branchId: parseInt(branchId) },
+                include: { branch: true },
+              }
+            : {
+                include: { branch: true },
+              },
+          comboComponents: {
+            include: {
+              componentProduct: {
+                include: {
+                  images: true,
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -88,9 +102,18 @@ export class ProductsService {
         variant: true,
         tradeMark: true,
         images: true,
+        inventories: {
+          include: {
+            branch: true,
+          },
+        },
         comboComponents: {
           include: {
-            componentProduct: true,
+            componentProduct: {
+              include: {
+                images: true,
+              },
+            },
           },
         },
       },
@@ -119,22 +142,20 @@ export class ProductsService {
     const fullName =
       dto.fullName || this.buildFullName(dto.name, dto.attributesText || null);
 
-    const { imageUrls, components, ...productData } = dto;
+    const { imageUrls, components, initialInventory, ...productData } = dto;
 
     return this.prisma.$transaction(async (tx) => {
+      // Tạo product
       const product = await tx.product.create({
         data: {
           ...productData,
           fullName,
           type: dto.type || 2,
-          purchasePrice: dto.type === 1 ? 0 : dto.purchasePrice || 0,
           basePrice: dto.basePrice || 0,
-          stockQuantity: dto.type === 1 ? 0 : dto.stockQuantity || 0,
-          minStockAlert: dto.minStockAlert || 0,
         },
-        include: { category: true, variant: true, tradeMark: true },
       });
 
+      // Tạo images
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
           data: imageUrls.map((url) => ({
@@ -144,6 +165,35 @@ export class ProductsService {
         });
       }
 
+      // Tạo inventory cho các chi nhánh
+      if (initialInventory && initialInventory.length > 0) {
+        const inventoryData = await Promise.all(
+          initialInventory.map(async (inv) => {
+            const branch = await tx.branch.findUnique({
+              where: { id: inv.branchId },
+              select: { name: true },
+            });
+
+            return {
+              productId: product.id,
+              productCode: product.code,
+              productName: product.name,
+              branchId: inv.branchId,
+              branchName: inv.branchName || branch?.name || '',
+              cost: inv.cost || 0,
+              onHand: inv.onHand || 0,
+              reserved: 0,
+              onOrder: 0,
+              minQuality: inv.minQuality || 0,
+              maxQuality: inv.maxQuality || 0,
+            };
+          }),
+        );
+
+        await tx.inventory.createMany({ data: inventoryData });
+      }
+
+      // Tạo combo components (nếu là combo)
       if (dto.type === 1 && components && components.length > 0) {
         await tx.productComponent.createMany({
           data: components.map((comp) => ({
@@ -161,9 +211,14 @@ export class ProductsService {
           variant: true,
           tradeMark: true,
           images: true,
+          inventories: {
+            include: { branch: true },
+          },
           comboComponents: {
             include: {
-              componentProduct: true,
+              componentProduct: {
+                include: { images: true },
+              },
             },
           },
         },
@@ -174,7 +229,11 @@ export class ProductsService {
   async update(id: number, dto: UpdateProductDto) {
     const currentProduct = await this.prisma.product.findUnique({
       where: { id },
-      include: { images: true, comboComponents: true },
+      include: {
+        images: true,
+        comboComponents: true,
+        inventories: true,
+      },
     });
 
     if (!currentProduct) {
@@ -186,36 +245,30 @@ export class ProductsService {
       dto.attributesText !== undefined
         ? dto.attributesText
         : currentProduct.attributesText;
+    const fullName = dto.fullName || this.buildFullName(name, attributesText);
 
-    let fullName = dto.fullName;
-    if (!fullName || dto.attributesText !== undefined || dto.name) {
-      fullName = this.buildFullName(name, attributesText);
-    }
+    const { imageUrls, components, initialInventory, ...productData } = dto;
 
     return this.prisma.$transaction(async (tx) => {
-      if (dto.imageUrls !== undefined) {
-        const currentImageUrls = currentProduct.images.map((img) => img.image);
-        const newImageUrls = dto.imageUrls || [];
+      // Update product
+      const product = await tx.product.update({
+        where: { id },
+        data: {
+          ...productData,
+          fullName,
+          basePrice:
+            dto.basePrice !== undefined
+              ? dto.basePrice
+              : currentProduct.basePrice,
+        },
+      });
 
-        const imagesToDelete = currentImageUrls.filter(
-          (url) => !newImageUrls.includes(url),
-        );
-        const imagesToAdd = newImageUrls.filter(
-          (url) => !currentImageUrls.includes(url),
-        );
-
-        if (imagesToDelete.length > 0) {
-          await tx.productImage.deleteMany({
-            where: {
-              productId: id,
-              image: { in: imagesToDelete },
-            },
-          });
-        }
-
-        if (imagesToAdd.length > 0) {
+      // Update images
+      if (imageUrls !== undefined) {
+        await tx.productImage.deleteMany({ where: { productId: id } });
+        if (imageUrls.length > 0) {
           await tx.productImage.createMany({
-            data: imagesToAdd.map((url) => ({
+            data: imageUrls.map((url) => ({
               productId: id,
               image: url,
             })),
@@ -223,14 +276,54 @@ export class ProductsService {
         }
       }
 
-      if (currentProduct.type === 1 && dto.components !== undefined) {
+      // Update inventory
+      if (initialInventory && initialInventory.length > 0) {
+        for (const inv of initialInventory) {
+          const branch = await tx.branch.findUnique({
+            where: { id: inv.branchId },
+            select: { name: true },
+          });
+
+          await tx.inventory.upsert({
+            where: {
+              productId_branchId: {
+                productId: id,
+                branchId: inv.branchId,
+              },
+            },
+            create: {
+              productId: id,
+              productCode: product.code,
+              productName: product.name,
+              branchId: inv.branchId,
+              branchName: inv.branchName || branch?.name || '',
+              cost: inv.cost || 0,
+              onHand: inv.onHand || 0,
+              reserved: 0,
+              onOrder: 0,
+              minQuality: inv.minQuality || 0,
+              maxQuality: inv.maxQuality || 0,
+            },
+            update: {
+              cost: inv.cost !== undefined ? inv.cost : undefined,
+              onHand: inv.onHand !== undefined ? inv.onHand : undefined,
+              minQuality:
+                inv.minQuality !== undefined ? inv.minQuality : undefined,
+              maxQuality:
+                inv.maxQuality !== undefined ? inv.maxQuality : undefined,
+            },
+          });
+        }
+      }
+
+      // Update combo components
+      if (dto.type === 1 && components !== undefined) {
         await tx.productComponent.deleteMany({
           where: { comboProductId: id },
         });
-
-        if (dto.components.length > 0) {
+        if (components.length > 0) {
           await tx.productComponent.createMany({
-            data: dto.components.map((comp) => ({
+            data: components.map((comp) => ({
               comboProductId: id,
               componentProductId: comp.componentProductId,
               quantity: comp.quantity,
@@ -239,33 +332,25 @@ export class ProductsService {
         }
       }
 
-      const { imageUrls, components, ...productData } = dto;
-
-      const sanitizedData = {
-        ...productData,
-        fullName,
-        categoryId: productData.categoryId || null,
-        tradeMarkId: productData.tradeMarkId || null,
-        variantId: productData.variantId || null,
-      };
-
-      const updated = await tx.product.update({
+      return tx.product.findUnique({
         where: { id },
-        data: sanitizedData,
         include: {
           category: true,
           variant: true,
           tradeMark: true,
           images: true,
+          inventories: {
+            include: { branch: true },
+          },
           comboComponents: {
             include: {
-              componentProduct: true,
+              componentProduct: {
+                include: { images: true },
+              },
             },
           },
         },
       });
-
-      return updated;
     });
   }
 
@@ -273,19 +358,30 @@ export class ProductsService {
     return this.prisma.product.delete({ where: { id } });
   }
 
-  async updateStock(id: number, quantity: number) {
-    return this.prisma.product.update({
-      where: { id },
-      data: { stockQuantity: { increment: quantity } },
-    });
-  }
-
   async checkLowStock() {
-    return this.prisma.$queryRaw`
-      SELECT * FROM products 
-      WHERE "isActive" = true 
-      AND "stockQuantity" <= "minStockAlert"
-      ORDER BY "stockQuantity" ASC
-    `;
+    return this.prisma.inventory.findMany({
+      where: {
+        onHand: {
+          lte: this.prisma.raw('min_quality'),
+        },
+      },
+      include: {
+        product: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            basePrice: true,
+          },
+        },
+        branch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: [{ branchName: 'asc' }, { productName: 'asc' }],
+    });
   }
 }

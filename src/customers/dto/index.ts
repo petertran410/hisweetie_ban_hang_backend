@@ -1,4 +1,11 @@
-import { IsString, IsNumber, IsBoolean, IsOptional } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  IsBoolean,
+  IsOptional,
+  IsDateString,
+  IsEmail,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateCustomerDto {
@@ -10,24 +17,28 @@ export class CreateCustomerDto {
   name: string;
 
   @IsOptional()
+  @IsBoolean()
+  gender?: boolean;
+
+  @IsOptional()
+  @IsDateString()
+  birthDate?: string;
+
+  @IsOptional()
+  @IsString()
+  contactNumber?: string;
+
+  @IsOptional()
   @IsString()
   phone?: string;
 
   @IsOptional()
-  @IsString()
-  facebook?: string;
-
-  @IsOptional()
-  @IsString()
-  zalo?: string;
+  @IsEmail()
+  email?: string;
 
   @IsOptional()
   @IsString()
   address?: string;
-
-  @IsOptional()
-  @IsString()
-  notes?: string;
 
   @IsOptional()
   @IsNumber()
@@ -35,8 +46,13 @@ export class CreateCustomerDto {
   customerTypeId?: number;
 
   @IsOptional()
-  @IsBoolean()
-  isWalkIn?: boolean;
+  @IsNumber()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  comments?: string;
 
   @IsOptional()
   @IsBoolean()
@@ -84,26 +100,20 @@ export class UpdateCustomerDto {
 
 export class CustomerQueryDto {
   @IsOptional()
-  @IsNumber()
   @Type(() => Number)
-  page?: number;
+  @IsNumber()
+  page?: number = 1;
 
   @IsOptional()
-  @IsNumber()
   @Type(() => Number)
-  limit?: number;
+  @IsNumber()
+  limit?: number = 10;
 
   @IsOptional()
   @IsString()
   search?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  customerTypeId?: number;
-
-  @IsOptional()
-  @IsBoolean()
-  @Type(() => Boolean)
-  isActive?: boolean;
+  @IsString()
+  branchId?: string;
 }

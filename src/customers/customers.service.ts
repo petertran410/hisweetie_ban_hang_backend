@@ -1,25 +1,31 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateCustomerDto, UpdateCustomerDto, CustomerQueryDto } from './dto';
+import { CreateCustomerDto, UpdateCustomerDto, CustomerQueryDto } from './dto/';
 
 @Injectable()
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(query: CustomerQueryDto) {
-    const { page = 1, limit = 10, search, customerTypeId, isActive } = query;
+    const { page = 1, limit = 10, search, branchId } = query;
     const skip = (page - 1) * limit;
 
+    const settings = await this.prisma.settings.findFirst();
+
     const where: any = {};
+
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
         { code: { contains: search, mode: 'insensitive' } },
+        { contactNumber: { contains: search, mode: 'insensitive' } },
         { phone: { contains: search, mode: 'insensitive' } },
       ];
     }
-    if (customerTypeId) where.customerTypeId = customerTypeId;
-    if (isActive !== undefined) where.isActive = isActive;
+
+    if (settings?.managerCustomerByBranch && branchId) {
+      where.branchId = parseInt(branchId);
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.customer.findMany({
@@ -28,8 +34,21 @@ export class CustomersService {
         take: limit,
         include: {
           customerType: true,
-          _count: {
-            select: { orders: true },
+          branch: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          customerGroupDetails: {
+            include: {
+              customerGroup: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
           },
         },
         orderBy: { createdAt: 'desc' },
@@ -41,20 +60,24 @@ export class CustomersService {
   }
 
   async findOne(id: number) {
-    return this.prisma.customer.findUnique({
+    const customer = await this.prisma.customer.findUnique({
       where: { id },
       include: {
         customerType: true,
-        orders: {
-          where: { orderStatus: { not: 'cancelled' } },
-          orderBy: { createdAt: 'desc' },
-          take: 10,
-        },
-        _count: {
-          select: { orders: true },
+        branch: true,
+        customerGroupDetails: {
+          include: {
+            customerGroup: true,
+          },
         },
       },
     });
+
+    if (!customer) {
+      throw new NotFoundException(`Customer with id ${id} not found`);
+    }
+
+    return customer;
   }
 
   async create(dto: CreateCustomerDto) {
