@@ -44,7 +44,7 @@ export class CategoriesService {
       include: {
         parent: true,
         products: {
-          select: { id: true, code: true, name: true, retailPrice: true },
+          select: { id: true, code: true, name: true, basePrice: true },
         },
         _count: {
           select: { products: true, children: true },

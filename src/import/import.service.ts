@@ -28,7 +28,7 @@ export class ImportService {
         const categoryIdValue = row.getCell(4).value;
         const variantIdValue = row.getCell(5).value;
         const purchasePriceValue = row.getCell(6).value;
-        const retailPriceValue = row.getCell(7).value;
+        const basePriceValue = row.getCell(7).value;
         const collaboratorPriceValue = row.getCell(8).value;
         const stockQuantityValue = row.getCell(9).value;
         const minStockAlertValue = row.getCell(10).value;
@@ -50,9 +50,9 @@ export class ImportService {
             purchasePriceValue && purchasePriceValue.toString()
               ? parseInt(purchasePriceValue.toString())
               : 0,
-          retailPrice:
-            retailPriceValue && retailPriceValue.toString()
-              ? parseInt(retailPriceValue.toString())
+          basePrice:
+            basePriceValue && basePriceValue.toString()
+              ? parseInt(basePriceValue.toString())
               : 0,
           collaboratorPrice:
             collaboratorPriceValue && collaboratorPriceValue.toString()
@@ -211,7 +211,7 @@ export class ImportService {
       { header: 'Category ID', key: 'categoryId', width: 12 },
       { header: 'Variant ID', key: 'variantId', width: 12 },
       { header: 'Purchase Price', key: 'purchasePrice', width: 15 },
-      { header: 'Retail Price', key: 'retailPrice', width: 15 },
+      { header: 'Retail Price', key: 'basePrice', width: 15 },
       { header: 'Collaborator Price', key: 'collaboratorPrice', width: 18 },
       { header: 'Stock Quantity', key: 'stockQuantity', width: 15 },
       { header: 'Min Stock Alert', key: 'minStockAlert', width: 15 },
@@ -225,7 +225,7 @@ export class ImportService {
       categoryId: 1,
       variantId: 1,
       purchasePrice: 100000,
-      retailPrice: 150000,
+      basePrice: 150000,
       collaboratorPrice: 120000,
       stockQuantity: 100,
       minStockAlert: 10,

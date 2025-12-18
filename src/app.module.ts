@@ -15,9 +15,9 @@ import { CustomersModule } from './customers/customers.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { OrdersModule } from './orders/orders.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
-import { ReportsModule } from './reports/reports.module';
+// import { ReportsModule } from './reports/reports.module';
 import { UploadModule } from './upload/upload.module';
-import { ExportModule } from './export/export.module';
+// import { ExportModule } from './export/export.module';
 import { ImportModule } from './import/import.module';
 import { PdfModule } from './pdf/pdf.module';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -35,6 +35,8 @@ import { TrademarksModule } from './trademarks/trademarks.module';
 import { BranchesModule } from './branches/branches.module';
 import { PriceBooksModule } from './price-books/price-books.module';
 import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
+import { InventoriesModule } from './inventories/inventories.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -50,6 +52,8 @@ import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
     ProductsModule,
     ProductVariantsModule,
     BranchesModule,
+    InventoriesModule,
+    SettingsModule,
     CategoriesModule,
     TrademarksModule,
     CustomerTypesModule,
@@ -59,9 +63,9 @@ import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
     OrdersModule,
     PurchaseOrdersModule,
     PriceBooksModule,
-    ReportsModule,
+    // ReportsModule,
     UploadModule,
-    ExportModule,
+    // ExportModule,
     ImportModule,
     PdfModule,
     AnalyticsModule,

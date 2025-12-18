@@ -50,7 +50,7 @@ export class PriceBooksService {
                   id: true,
                   code: true,
                   name: true,
-                  retailPrice: true,
+                  basePrice: true,
                 },
               },
             },
@@ -109,7 +109,7 @@ export class PriceBooksService {
                 id: true,
                 code: true,
                 name: true,
-                retailPrice: true,
+                basePrice: true,
                 images: true,
               },
             },
@@ -235,7 +235,7 @@ export class PriceBooksService {
                   id: true,
                   code: true,
                   name: true,
-                  retailPrice: true,
+                  basePrice: true,
                   images: true,
                 },
               },
@@ -464,7 +464,7 @@ export class PriceBooksService {
                 id: true,
                 code: true,
                 name: true,
-                retailPrice: true,
+                basePrice: true,
               },
             },
           },
@@ -500,23 +500,23 @@ export class PriceBooksService {
           price: Number(detail.price),
           allowNonListedProducts: priceBook.allowNonListedProducts,
           warnNonListedProducts: priceBook.warnNonListedProducts,
-          originalPrice: Number(detail.product.retailPrice),
+          originalPrice: Number(detail.product.basePrice),
         };
       }
     }
 
     const product = await this.prisma.product.findUnique({
       where: { id: productId },
-      select: { retailPrice: true },
+      select: { basePrice: true },
     });
 
     return {
       priceBookId: null,
       priceBookName: null,
-      price: product ? Number(product.retailPrice) : 0,
+      price: product ? Number(product.basePrice) : 0,
       allowNonListedProducts: true,
       warnNonListedProducts: false,
-      originalPrice: product ? Number(product.retailPrice) : 0,
+      originalPrice: product ? Number(product.basePrice) : 0,
     };
   }
 
@@ -543,7 +543,7 @@ export class PriceBooksService {
             id: true,
             code: true,
             name: true,
-            retailPrice: true,
+            basePrice: true,
             stockQuantity: true,
             unit: true,
             images: true,
@@ -688,7 +688,7 @@ export class PriceBooksService {
         code: true,
         name: true,
         purchasePrice: true,
-        retailPrice: true,
+        basePrice: true,
         stockQuantity: true,
         unit: true,
         priceBookDetails: {
@@ -716,7 +716,7 @@ export class PriceBooksService {
         code: product.code,
         name: product.name,
         purchasePrice: Number(product.purchasePrice),
-        retailPrice: Number(product.retailPrice),
+        basePrice: Number(product.basePrice),
         stockQuantity: product.stockQuantity,
         unit: product.unit,
         prices: priceMap,

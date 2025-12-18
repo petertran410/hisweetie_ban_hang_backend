@@ -92,8 +92,10 @@ model RolePermission {
 model Branch {
   id               Int      @id @default(autoincrement())
   name             String
+  code             String?  @unique
   contactNumber    String?
   subContactNumber String?
+  email            String?
   address          String?
   locationId       Int?
   wardName         String?
@@ -109,6 +111,7 @@ model Branch {
   purchaseOrders    PurchaseOrder[]
   inventories       Inventory[]
   priceBookBranches PriceBookBranch[]
+  customers         Customer[]
 
   @@map("branches")
 }
@@ -173,6 +176,7 @@ model Customer {
   taxCode        String?
   comments       String?
   customerTypeId Int?
+  branchId       Int?
   totalPurchased Int       @default(0)
   totalDebt      Int       @default(0)
   rewardPoint    Int       @default(0)
@@ -183,6 +187,7 @@ model Customer {
   updatedAt      DateTime  @updatedAt
 
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
+  branch               Branch?               @relation(fields: [branchId], references: [id])
   customerGroupDetails CustomerGroupDetail[]
   orders               Order[]
   invoices             Invoice[]
@@ -922,4 +927,16 @@ model PostTag {
 
   @@id([postId, tagId])
   @@map("post_tags")
+}
+
+model Settings {
+  id                        Int      @id @default(autoincrement())
+  managerCustomerByBranch   Boolean  @default(false)
+  allowOrderWhenOutStock    Boolean  @default(true)
+  allowSellWhenOrderOutStock Boolean @default(true)
+  allowSellWhenOutStock     Boolean  @default(true)
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  @@map("settings")
 }

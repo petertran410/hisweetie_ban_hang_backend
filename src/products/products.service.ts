@@ -128,7 +128,7 @@ export class ProductsService {
           fullName,
           type: dto.type || 2,
           purchasePrice: dto.type === 1 ? 0 : dto.purchasePrice || 0,
-          retailPrice: dto.retailPrice || 0,
+          basePrice: dto.basePrice || 0,
           stockQuantity: dto.type === 1 ? 0 : dto.stockQuantity || 0,
           minStockAlert: dto.minStockAlert || 0,
         },

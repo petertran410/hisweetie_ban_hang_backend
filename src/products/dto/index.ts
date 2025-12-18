@@ -54,7 +54,7 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  retailPrice?: number;
+  basePrice?: number;
 
   @IsOptional()
   @IsNumber()
@@ -171,7 +171,7 @@ export class UpdateProductDto {
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  retailPrice?: number;
+  basePrice?: number;
 
   @IsOptional()
   @IsNumber()
