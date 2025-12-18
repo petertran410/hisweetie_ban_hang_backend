@@ -102,12 +102,6 @@ export class CreateProductDto {
   @IsBoolean()
   hasVariants?: boolean;
 
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  basePrice?: number;
-
   // ⚠️ THÊM CÁC FIELDS THIẾU
   @IsOptional()
   @IsNumber()
@@ -119,7 +113,7 @@ export class CreateProductDto {
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  retailPrice?: number;
+  basePrice?: number;
 
   @IsOptional()
   @IsNumber()
@@ -190,7 +184,6 @@ export class CreateProductDto {
   @Type(() => ComponentDto)
   components?: ComponentDto[];
 
-  // ⚠️ THÊM CÁC FIELDS CHO LOGIC GIÁ VỐN
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
@@ -260,7 +253,7 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  purchasePrice?: number;
+  cost?: number;
 
   @IsOptional()
   @IsNumber()
@@ -346,7 +339,6 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @Type(() => ProductComponentDto)
   components?: ProductComponentDto[];
 
-  // ⚠️ THÊM CÁC FIELDS CHO LOGIC GIÁ VỐN
   @IsOptional()
   @IsNumber()
   @Type(() => Number)

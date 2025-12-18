@@ -140,7 +140,7 @@ export class ProductsService {
       costScope,
       costBranchId,
       purchasePrice,
-      retailPrice,
+      basePrice,
       stockQuantity,
       minStockAlert,
       maxStockAlert,
@@ -167,7 +167,7 @@ export class ProductsService {
           type: productData.type || 2,
           allowsSale: productData.allowsSale,
           hasVariants: productData.hasVariants,
-          basePrice: retailPrice || 0,
+          basePrice: basePrice || 0,
           unit: productData.unit,
           conversionValue: productData.conversionValue,
           weight: productData.weight,
@@ -328,7 +328,7 @@ export class ProductsService {
       costScope,
       costBranchId,
       purchasePrice,
-      retailPrice,
+      basePrice,
       stockQuantity,
       minStockAlert,
       maxStockAlert,
@@ -348,7 +348,7 @@ export class ProductsService {
           ...productData,
           fullName,
           basePrice:
-            retailPrice !== undefined ? retailPrice : currentProduct.basePrice,
+            basePrice !== undefined ? basePrice : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
           ...(categoryId !== undefined && {
             category: categoryId
