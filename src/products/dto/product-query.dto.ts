@@ -1,4 +1,10 @@
-import { IsOptional, IsString, IsBoolean, IsNumber } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsBoolean,
+  IsNumber,
+  IsArray,
+} from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
 export class ProductQueryDto {
@@ -32,4 +38,15 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   branchId?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [Number(value)];
+  })
+  @IsArray()
+  @Type(() => Number)
+  branchIds?: number[];
 }

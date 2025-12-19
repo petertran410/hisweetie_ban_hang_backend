@@ -38,6 +38,7 @@ export class ProductsService {
       categoryIds,
       isActive,
       branchId,
+      branchIds,
     } = query;
     const skip = (page - 1) * limit;
 
@@ -58,6 +59,19 @@ export class ProductsService {
 
     if (isActive !== undefined) where.isActive = isActive;
 
+    let inventoriesInclude: any = { include: { branch: true } };
+    if (branchIds && branchIds.length > 0) {
+      inventoriesInclude = {
+        where: { branchId: { in: branchIds } },
+        include: { branch: true },
+      };
+    } else if (branchId) {
+      inventoriesInclude = {
+        where: { branchId: parseInt(branchId) },
+        include: { branch: true },
+      };
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
@@ -68,14 +82,7 @@ export class ProductsService {
           tradeMark: true,
           variant: true,
           images: true,
-          inventories: branchId
-            ? {
-                where: { branchId: parseInt(branchId) },
-                include: { branch: true },
-              }
-            : {
-                include: { branch: true },
-              },
+          inventories: inventoriesInclude,
           comboComponents: {
             include: {
               componentProduct: {
