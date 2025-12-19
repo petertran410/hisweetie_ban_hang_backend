@@ -31,6 +31,7 @@ model User {
   purchaseOrders        PurchaseOrder[] @relation("PurchaseOrderBuyer")
   posts                 Post[]          @relation("PostAuthor")
   priceBookUsers        PriceBookUser[]
+  createdTransfers Transfer[] @relation("TransferCreator")
 
   @@map("users")
 }
@@ -112,6 +113,8 @@ model Branch {
   inventories       Inventory[]
   priceBookBranches PriceBookBranch[]
   customers         Customer[]
+  transfersFrom Transfer[] @relation("TransferFrom")
+  transfersTo   Transfer[] @relation("TransferTo")
 
   @@map("branches")
 }
@@ -311,6 +314,7 @@ model Product {
   comboComponents    ProductComponent[]  @relation("ComboComponents")
   componentOf        ProductComponent[]  @relation("ComponentOf")
   priceBook          PriceBook?          @relation(fields: [priceBookId], references: [id])
+  transferDetails TransferDetail[]
 
   @@map("products")
 }
@@ -939,4 +943,53 @@ model Settings {
   updatedAt                 DateTime @updatedAt
 
   @@map("settings")
+}
+
+model Transfer {
+  id                Int      @id @default(autoincrement())
+  code              String   @unique
+  fromBranchId      Int
+  toBranchId        Int
+  status            Int      @default(1)
+  transferredDate   DateTime?
+  receivedDate      DateTime?
+  createdById       Int
+  createdByName     String
+  fromBranchName    String
+  toBranchName      String
+  noteBySource      String?
+  noteByDestination String?
+  totalTransfer     Decimal  @default(0) @db.Decimal(18, 2)
+  totalReceive      Decimal  @default(0) @db.Decimal(18, 2)
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  fromBranch Branch            @relation("TransferFrom", fields: [fromBranchId], references: [id])
+  toBranch   Branch            @relation("TransferTo", fields: [toBranchId], references: [id])
+  creator    User              @relation("TransferCreator", fields: [createdById], references: [id])
+  details    TransferDetail[]
+
+  @@map("transfers")
+}
+
+model TransferDetail {
+  id                   Int      @id @default(autoincrement())
+  transferId           Int
+  productId            Int
+  productCode          String
+  productName          String
+  sendQuantity         Decimal  @db.Decimal(18, 4)
+  receivedQuantity     Decimal  @default(0) @db.Decimal(18, 4)
+  sendPrice            Decimal  @db.Decimal(18, 2)
+  receivePrice         Decimal  @default(0) @db.Decimal(18, 2)
+  totalTransfer        Decimal  @db.Decimal(18, 2)
+  totalReceive         Decimal  @default(0) @db.Decimal(18, 2)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@map("transfer_details")
 }

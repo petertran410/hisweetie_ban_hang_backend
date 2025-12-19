@@ -37,6 +37,7 @@ import { PriceBooksModule } from './price-books/price-books.module';
 import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
 import { InventoriesModule } from './inventories/inventories.module';
 import { SettingsModule } from './settings/settings.module';
+import { TransfersModule } from './transfers/transfers.module';
 
 @Module({
   imports: [
@@ -73,6 +74,7 @@ import { SettingsModule } from './settings/settings.module';
     PostsModule,
     TagsModule,
     PostMetaModule,
+    TransfersModule,
   ],
   providers: [
     {
