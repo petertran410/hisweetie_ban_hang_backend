@@ -46,7 +46,6 @@ export class ProductsController {
   }
 
   @Delete(':id')
-  @Roles('admin')
   @RequirePermissions('products.delete')
   remove(@Param('id') id: string) {
     return this.productsService.remove(+id);
