@@ -93,11 +93,38 @@ export class TransfersService {
       this.prisma.user.findUnique({ where: { id: userId } }),
     ]);
 
+    if (!fromBranch) {
+      throw new NotFoundException(
+        `Chi nhánh với ID ${dto.fromBranchId} không tồn tại`,
+      );
+    }
+    if (!toBranch) {
+      throw new NotFoundException(
+        `Chi nhánh với ID ${dto.toBranchId} không tồn tại`,
+      );
+    }
+    if (!user) {
+      throw new NotFoundException(`Người dùng với ID ${userId} không tồn tại`);
+    }
+
     const code = dto.code || (await this.generateTransferCode());
 
-    const totalTransfer = dto.transferDetails.reduce((sum, item) => {
-      return sum + item.sendQuantity * item.price;
-    }, 0);
+    const totalTransfer = dto.transferDetails.reduce(
+      (sum: number, item: { sendQuantity: number; price: number }) => {
+        return sum + item.sendQuantity * item.price;
+      },
+      0,
+    );
+
+    const productIds = dto.transferDetails.map(
+      (d: { productId: any }) => d.productId,
+    );
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true },
+    });
+
+    const productMap = new Map(products.map((p) => [p.id, p.name]));
 
     const transfer = await this.prisma.transfer.create({
       data: {
@@ -116,7 +143,7 @@ export class TransfersService {
           create: dto.transferDetails.map((item) => ({
             productId: item.productId,
             productCode: item.productCode,
-            productName: '',
+            productName: productMap.get(item.productId) || '',
             sendQuantity: item.sendQuantity,
             receivedQuantity: item.receivedQuantity || 0,
             sendPrice: item.price,
@@ -128,6 +155,9 @@ export class TransfersService {
       },
       include: {
         details: true,
+        fromBranch: true,
+        toBranch: true,
+        creator: true,
       },
     });
 
@@ -193,6 +223,12 @@ export class TransfersService {
       where: { id: transferId },
       include: { details: true },
     });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
 
     for (const detail of transfer.details) {
       await this.prisma.inventory.updateMany({

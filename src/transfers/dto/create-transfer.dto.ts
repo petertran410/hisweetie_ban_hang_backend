@@ -9,7 +9,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-class TransferDetailDto {
+export class TransferDetailDto {
   @IsString()
   productCode: string;
 

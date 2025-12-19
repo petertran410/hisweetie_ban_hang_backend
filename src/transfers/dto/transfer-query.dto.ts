@@ -1,43 +1,48 @@
-import { Type } from 'class-transformer';
-import { IsOptional, IsArray } from 'class-validator';
+import { IsOptional, IsArray, IsNumber, IsDateString } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 
 export class TransferQueryDto {
   @IsOptional()
+  @Transform(({ value }) => (value ? value.split(',').map(Number) : undefined))
   @IsArray()
   @Type(() => Number)
   fromBranchIds?: number[];
 
   @IsOptional()
+  @Transform(({ value }) => (value ? value.split(',').map(Number) : undefined))
   @IsArray()
   @Type(() => Number)
   toBranchIds?: number[];
 
   @IsOptional()
+  @Transform(({ value }) => (value ? value.split(',').map(Number) : undefined))
   @IsArray()
   @Type(() => Number)
   status?: number[];
 
   @IsOptional()
   @Type(() => Number)
+  @IsNumber()
   pageSize?: number = 20;
 
   @IsOptional()
   @Type(() => Number)
+  @IsNumber()
   currentItem?: number = 0;
 
   @IsOptional()
-  @Type(() => Date)
-  fromReceivedDate?: Date;
+  @IsDateString()
+  fromReceivedDate?: string;
 
   @IsOptional()
-  @Type(() => Date)
-  toReceivedDate?: Date;
+  @IsDateString()
+  toReceivedDate?: string;
 
   @IsOptional()
-  @Type(() => Date)
-  fromTransferDate?: Date;
+  @IsDateString()
+  fromTransferDate?: string;
 
   @IsOptional()
-  @Type(() => Date)
-  toTransferDate?: Date;
+  @IsDateString()
+  toTransferDate?: string;
 }
