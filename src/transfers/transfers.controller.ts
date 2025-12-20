@@ -11,7 +11,12 @@ import {
   Req,
 } from '@nestjs/common';
 import { TransfersService } from './transfers.service';
-import { CreateTransferDto, UpdateTransferDto, TransferQueryDto } from './dto';
+import {
+  CreateTransferDto,
+  UpdateTransferDto,
+  TransferQueryDto,
+  CancelTransferDto,
+} from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
@@ -46,5 +51,10 @@ export class TransfersController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.transfersService.remove(+id);
+  }
+
+  @Put(':id/cancel')
+  cancel(@Param('id') id: string, @Body() dto: CancelTransferDto) {
+    return this.transfersService.cancelTransfer(+id, dto);
   }
 }

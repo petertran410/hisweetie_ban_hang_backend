@@ -1,6 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateTransferDto, UpdateTransferDto, TransferQueryDto } from './dto';
+import {
+  CreateTransferDto,
+  UpdateTransferDto,
+  TransferQueryDto,
+  CancelTransferDto,
+} from './dto';
 
 @Injectable()
 export class TransfersService {
@@ -319,5 +328,65 @@ export class TransfersService {
         },
       });
     }
+  }
+
+  async cancelTransfer(id: number, dto: CancelTransferDto) {
+    const transfer = await this.findOne(id);
+
+    if (transfer.status === 4) {
+      throw new BadRequestException('Phiếu chuyển hàng đã bị hủy');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.transfer.update({
+        where: { id },
+        data: {
+          status: 4,
+          noteBySource: dto.cancelReason
+            ? `${transfer.noteBySource ? transfer.noteBySource + ' | ' : ''}Lý do hủy: ${dto.cancelReason}`
+            : transfer.noteBySource,
+        },
+      });
+
+      if (transfer.status === 2) {
+        for (const detail of transfer.details) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+            data: {
+              onHand: { increment: detail.sendQuantity },
+            },
+          });
+        }
+      }
+
+      if (transfer.status === 3) {
+        for (const detail of transfer.details) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+            data: {
+              onHand: { increment: detail.sendQuantity },
+            },
+          });
+
+          await tx.inventory.updateMany({
+            where: {
+              productId: detail.productId,
+              branchId: transfer.toBranchId,
+            },
+            data: {
+              onHand: { decrement: detail.receivedQuantity },
+            },
+          });
+        }
+      }
+    });
+
+    return { message: 'Hủy phiếu chuyển hàng thành công' };
   }
 }
