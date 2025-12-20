@@ -24,17 +24,28 @@ export class TransfersService {
     if (fromBranchIds && fromBranchIds.length > 0) {
       where.fromBranchId = { in: fromBranchIds };
     }
+
     if (toBranchIds && toBranchIds.length > 0) {
       where.toBranchId = { in: toBranchIds };
+      where.status = { gte: 2 };
     }
+
     if (status && status.length > 0) {
-      where.status = { in: status };
+      if (toBranchIds && toBranchIds.length > 0) {
+        where.status = {
+          in: status.filter((s) => s >= 2),
+        };
+      } else {
+        where.status = { in: status };
+      }
     }
+
     if (fromReceivedDate || toReceivedDate) {
       where.receivedDate = {};
       if (fromReceivedDate) where.receivedDate.gte = fromReceivedDate;
       if (toReceivedDate) where.receivedDate.lte = toReceivedDate;
     }
+
     if (fromTransferDate || toTransferDate) {
       where.transferredDate = {};
       if (fromTransferDate) where.transferredDate.gte = fromTransferDate;
@@ -176,7 +187,21 @@ export class TransfersService {
         return sum + item.sendQuantity * item.price;
       }, 0) || 0;
 
-    return this.prisma.transfer.update({
+    const totalReceive =
+      dto.transferDetails?.reduce((sum, item) => {
+        const receivedQty = item.receivedQuantity || 0;
+        return sum + receivedQty * item.price;
+      }, 0) || 0;
+
+    const productIds = dto.transferDetails?.map((d) => d.productId) || [];
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true },
+    });
+
+    const productMap = new Map(products.map((p) => [p.id, p.name]));
+
+    const updatedTransfer = await this.prisma.transfer.update({
       where: { id },
       data: {
         fromBranchId: dto.fromBranchId,
@@ -184,13 +209,15 @@ export class TransfersService {
         status: dto.status,
         noteBySource: dto.description,
         totalTransfer,
+        totalReceive,
+        receivedDate: dto.status === 3 ? new Date() : null,
         details: {
           deleteMany: {},
           create:
             dto.transferDetails?.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
-              productName: '',
+              productName: productMap.get(item.productId) || '',
               sendQuantity: item.sendQuantity,
               receivedQuantity: item.receivedQuantity || 0,
               sendPrice: item.price,
@@ -204,6 +231,12 @@ export class TransfersService {
         details: true,
       },
     });
+
+    if (dto.status === 3) {
+      await this.updateInventoryOnReceive(id);
+    }
+
+    return updatedTransfer;
   }
 
   async remove(id: number) {
@@ -219,6 +252,41 @@ export class TransfersService {
   }
 
   private async updateInventoryOnTransfer(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { details: true },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    for (const detail of transfer.details) {
+      await this.prisma.inventory.updateMany({
+        where: {
+          productId: detail.productId,
+          branchId: transfer.fromBranchId,
+        },
+        data: {
+          onHand: { decrement: detail.sendQuantity },
+        },
+      });
+
+      await this.prisma.inventory.updateMany({
+        where: {
+          productId: detail.productId,
+          branchId: transfer.toBranchId,
+        },
+        data: {
+          onHand: { increment: detail.receivedQuantity },
+        },
+      });
+    }
+  }
+
+  private async updateInventoryOnReceive(transferId: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
       include: { details: true },
