@@ -348,6 +348,7 @@ export class TransfersService {
         toBranchId: dto.toBranchId,
         status: dto.status,
         noteBySource: dto.description,
+        noteByDestination: dto.destination_description,
         totalTransfer,
         totalReceive,
         receivedDate: dto.status === 3 ? new Date() : null,

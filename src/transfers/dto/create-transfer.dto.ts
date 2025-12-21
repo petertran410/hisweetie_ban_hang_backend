@@ -46,6 +46,10 @@ export class CreateTransferDto {
   @IsOptional()
   description?: string;
 
+  @IsString()
+  @IsOptional()
+  destination_description?: string;
+
   @IsInt()
   @IsOptional()
   status?: number;
