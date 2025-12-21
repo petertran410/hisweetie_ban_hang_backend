@@ -320,7 +320,7 @@ export class TransfersService {
   }
 
   async update(id: number, dto: UpdateTransferDto) {
-    await this.findOne(id);
+    const currentTransfer = await this.findOne(id);
 
     const totalTransfer =
       dto.transferDetails?.reduce((sum, item) => {
@@ -352,6 +352,10 @@ export class TransfersService {
         totalTransfer,
         totalReceive,
         receivedDate: dto.status === 3 ? new Date() : null,
+        transferredDate:
+          dto.status === 2 && !currentTransfer.transferredDate
+            ? new Date()
+            : currentTransfer.transferredDate,
         details: {
           deleteMany: {},
           create:
@@ -372,6 +376,10 @@ export class TransfersService {
         details: true,
       },
     });
+
+    if (currentTransfer.status === 1 && dto.status === 2) {
+      await this.updateInventoryOnTransfer(id);
+    }
 
     if (dto.status === 3) {
       await this.updateInventoryOnReceive(id);
@@ -395,7 +403,11 @@ export class TransfersService {
   private async updateInventoryOnTransfer(transferId: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
-      include: { details: true },
+      include: {
+        details: true,
+        fromBranch: true,
+        toBranch: true,
+      },
     });
 
     if (!transfer) {
@@ -405,22 +417,52 @@ export class TransfersService {
     }
 
     for (const detail of transfer.details) {
-      await this.prisma.inventory.updateMany({
+      await this.prisma.inventory.upsert({
         where: {
-          productId: detail.productId,
-          branchId: transfer.fromBranchId,
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+          },
         },
-        data: {
+        create: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: transfer.fromBranchId,
+          branchName: transfer.fromBranch.name,
+          cost: Number(detail.sendPrice),
+          onHand: 0,
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+        update: {
           onHand: { decrement: detail.sendQuantity },
         },
       });
 
-      await this.prisma.inventory.updateMany({
+      await this.prisma.inventory.upsert({
         where: {
-          productId: detail.productId,
-          branchId: transfer.toBranchId,
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
         },
-        data: {
+        create: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: transfer.toBranchId,
+          branchName: transfer.toBranch.name,
+          cost: Number(detail.receivePrice),
+          onHand: Number(detail.receivedQuantity),
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+        update: {
           onHand: { increment: detail.receivedQuantity },
         },
       });
@@ -430,7 +472,11 @@ export class TransfersService {
   private async updateInventoryOnReceive(transferId: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
-      include: { details: true },
+      include: {
+        details: true,
+        fromBranch: true,
+        toBranch: true,
+      },
     });
 
     if (!transfer) {
@@ -440,22 +486,52 @@ export class TransfersService {
     }
 
     for (const detail of transfer.details) {
-      await this.prisma.inventory.updateMany({
+      await this.prisma.inventory.upsert({
         where: {
-          productId: detail.productId,
-          branchId: transfer.fromBranchId,
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+          },
         },
-        data: {
+        create: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: transfer.fromBranchId,
+          branchName: transfer.fromBranch.name,
+          cost: Number(detail.sendPrice),
+          onHand: 0,
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+        update: {
           onHand: { decrement: detail.sendQuantity },
         },
       });
 
-      await this.prisma.inventory.updateMany({
+      await this.prisma.inventory.upsert({
         where: {
-          productId: detail.productId,
-          branchId: transfer.toBranchId,
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
         },
-        data: {
+        create: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: transfer.toBranchId,
+          branchName: transfer.toBranch.name,
+          cost: Number(detail.receivePrice),
+          onHand: Number(detail.receivedQuantity),
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+        update: {
           onHand: { increment: detail.receivedQuantity },
         },
       });
@@ -482,12 +558,27 @@ export class TransfersService {
 
       if (transfer.status === 2) {
         for (const detail of transfer.details) {
-          await tx.inventory.updateMany({
+          await tx.inventory.upsert({
             where: {
-              productId: detail.productId,
-              branchId: transfer.fromBranchId,
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
             },
-            data: {
+            create: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.fromBranchId,
+              branchName: transfer.fromBranch.name,
+              cost: Number(detail.sendPrice),
+              onHand: Number(detail.sendQuantity),
+              reserved: 0,
+              onOrder: 0,
+              minQuality: 0,
+              maxQuality: 0,
+            },
+            update: {
               onHand: { increment: detail.sendQuantity },
             },
           });
@@ -496,22 +587,52 @@ export class TransfersService {
 
       if (transfer.status === 3) {
         for (const detail of transfer.details) {
-          await tx.inventory.updateMany({
+          await tx.inventory.upsert({
             where: {
-              productId: detail.productId,
-              branchId: transfer.fromBranchId,
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
             },
-            data: {
+            create: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.fromBranchId,
+              branchName: transfer.fromBranch.name,
+              cost: Number(detail.sendPrice),
+              onHand: Number(detail.sendQuantity),
+              reserved: 0,
+              onOrder: 0,
+              minQuality: 0,
+              maxQuality: 0,
+            },
+            update: {
               onHand: { increment: detail.sendQuantity },
             },
           });
 
-          await tx.inventory.updateMany({
+          await tx.inventory.upsert({
             where: {
-              productId: detail.productId,
-              branchId: transfer.toBranchId,
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.toBranchId,
+              },
             },
-            data: {
+            create: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.toBranchId,
+              branchName: transfer.toBranch.name,
+              cost: Number(detail.receivePrice),
+              onHand: 0,
+              reserved: 0,
+              onOrder: 0,
+              minQuality: 0,
+              maxQuality: 0,
+            },
+            update: {
               onHand: { decrement: detail.receivedQuantity },
             },
           });
