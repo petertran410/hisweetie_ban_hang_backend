@@ -258,24 +258,68 @@ export class TransfersService {
       throw new NotFoundException(`Người dùng với ID ${userId} không tồn tại`);
     }
 
+    const productIds = dto.transferDetails.map((d) => d.productId);
+    const finalStatus = dto.status || 1;
+
+    const [products, inventoriesFrom, inventoriesTo] = await Promise.all([
+      this.prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, name: true, code: true },
+      }),
+      this.prisma.inventory.findMany({
+        where: {
+          productId: { in: productIds },
+          branchId: dto.fromBranchId,
+        },
+        select: { productId: true, onHand: true },
+      }),
+      this.prisma.inventory.findMany({
+        where: {
+          productId: { in: productIds },
+          branchId: dto.toBranchId,
+        },
+        select: { productId: true },
+      }),
+    ]);
+
+    const productMap = new Map(products.map((p) => [p.id, p.name]));
+    const inventoryFromMap = new Map(
+      inventoriesFrom.map((inv) => [inv.productId, Number(inv.onHand)]),
+    );
+    const inventoryToSet = new Set(inventoriesTo.map((inv) => inv.productId));
+
+    if (finalStatus >= 2) {
+      const missingInBranchB: string[] = [];
+      for (const detail of dto.transferDetails) {
+        if (!inventoryToSet.has(detail.productId)) {
+          const product = products.find((p) => p.id === detail.productId);
+          missingInBranchB.push(product?.code || `ID ${detail.productId}`);
+        }
+      }
+
+      if (missingInBranchB.length > 0) {
+        throw new BadRequestException(
+          `Các sản phẩm sau chưa tồn tại ở chi nhánh "${toBranch.name}": ${missingInBranchB.join(', ')}. Vui lòng tạo sản phẩm tại chi nhánh đích trước khi chuyển hàng.`,
+        );
+      }
+
+      for (const detail of dto.transferDetails) {
+        const availableStock = inventoryFromMap.get(detail.productId) || 0;
+        if (detail.sendQuantity > availableStock) {
+          const product = products.find((p) => p.id === detail.productId);
+          throw new BadRequestException(
+            `Sản phẩm "${product?.code || detail.productId}" không đủ tồn kho tại chi nhánh "${fromBranch.name}". Tồn kho hiện tại: ${availableStock}, yêu cầu: ${detail.sendQuantity}`,
+          );
+        }
+      }
+    }
+
     const code = dto.code || (await this.generateTransferCode());
 
     const totalTransfer = dto.transferDetails.reduce(
-      (sum: number, item: { sendQuantity: number; price: number }) => {
-        return sum + item.sendQuantity * item.price;
-      },
+      (sum, item) => sum + item.sendQuantity * item.price,
       0,
     );
-
-    const productIds = dto.transferDetails.map(
-      (d: { productId: any }) => d.productId,
-    );
-    const products = await this.prisma.product.findMany({
-      where: { id: { in: productIds } },
-      select: { id: true, name: true },
-    });
-
-    const productMap = new Map(products.map((p) => [p.id, p.name]));
 
     const transfer = await this.prisma.transfer.create({
       data: {
@@ -286,10 +330,10 @@ export class TransfersService {
         toBranchName: toBranch.name,
         createdById: userId,
         createdByName: user.name,
-        status: dto.status || 1,
+        status: finalStatus,
         noteBySource: dto.description,
         totalTransfer,
-        transferredDate: dto.isDraft ? null : new Date(),
+        transferredDate: finalStatus === 2 ? new Date() : null,
         details: {
           create: dto.transferDetails.map((item) => ({
             productId: item.productId,
@@ -312,8 +356,11 @@ export class TransfersService {
       },
     });
 
-    if (!dto.isDraft) {
-      await this.updateInventoryOnTransfer(transfer.id);
+    if (finalStatus === 2) {
+      await this.decrementInventoryFromBranch(transfer.id);
+    } else if (finalStatus === 3) {
+      await this.decrementInventoryFromBranch(transfer.id);
+      await this.incrementInventoryToBranch(transfer.id);
     }
 
     return transfer;
@@ -321,17 +368,51 @@ export class TransfersService {
 
   async update(id: number, dto: UpdateTransferDto) {
     const currentTransfer = await this.findOne(id);
+    const newStatus =
+      dto.status !== undefined ? dto.status : currentTransfer.status;
+
+    if (newStatus >= 2 && dto.transferDetails) {
+      const productIds = dto.transferDetails.map((d) => d.productId);
+
+      const inventoriesTo = await this.prisma.inventory.findMany({
+        where: {
+          productId: { in: productIds },
+          branchId: currentTransfer.toBranchId,
+        },
+        select: { productId: true },
+      });
+
+      const inventoryToSet = new Set(inventoriesTo.map((inv) => inv.productId));
+      const products = await this.prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, code: true },
+      });
+
+      const missingInBranchB: string[] = [];
+      for (const detail of dto.transferDetails) {
+        if (!inventoryToSet.has(detail.productId)) {
+          const product = products.find((p) => p.id === detail.productId);
+          missingInBranchB.push(product?.code || `ID ${detail.productId}`);
+        }
+      }
+
+      if (missingInBranchB.length > 0) {
+        throw new BadRequestException(
+          `Các sản phẩm sau chưa tồn tại ở chi nhánh đích: ${missingInBranchB.join(', ')}. Vui lòng tạo sản phẩm tại chi nhánh đích trước.`,
+        );
+      }
+    }
 
     const totalTransfer =
       dto.transferDetails?.reduce((sum, item) => {
         return sum + item.sendQuantity * item.price;
-      }, 0) || 0;
+      }, 0) || currentTransfer.totalTransfer;
 
     const totalReceive =
       dto.transferDetails?.reduce((sum, item) => {
         const receivedQty = item.receivedQuantity || 0;
         return sum + receivedQty * item.price;
-      }, 0) || 0;
+      }, 0) || currentTransfer.totalReceive;
 
     const productIds = dto.transferDetails?.map((d) => d.productId) || [];
     const products = await this.prisma.product.findMany({
@@ -346,20 +427,23 @@ export class TransfersService {
       data: {
         fromBranchId: dto.fromBranchId,
         toBranchId: dto.toBranchId,
-        status: dto.status,
+        status: newStatus,
         noteBySource: dto.description,
         noteByDestination: dto.destination_description,
         totalTransfer,
         totalReceive,
-        receivedDate: dto.status === 3 ? new Date() : null,
+        receivedDate:
+          newStatus === 3 && currentTransfer.status !== 3
+            ? new Date()
+            : currentTransfer.receivedDate,
         transferredDate:
-          dto.status === 2 && !currentTransfer.transferredDate
+          newStatus === 2 && currentTransfer.status === 1
             ? new Date()
             : currentTransfer.transferredDate,
-        details: {
-          deleteMany: {},
-          create:
-            dto.transferDetails?.map((item) => ({
+        ...(dto.transferDetails && {
+          details: {
+            deleteMany: {},
+            create: dto.transferDetails.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
               productName: productMap.get(item.productId) || '',
@@ -369,20 +453,30 @@ export class TransfersService {
               receivePrice: item.price,
               totalTransfer: item.sendQuantity * item.price,
               totalReceive: (item.receivedQuantity || 0) * item.price,
-            })) || [],
-        },
+            })),
+          },
+        }),
       },
       include: {
         details: true,
+        fromBranch: true,
+        toBranch: true,
       },
     });
 
-    if (currentTransfer.status === 1 && dto.status === 2) {
-      await this.updateInventoryOnTransfer(id);
-    }
+    const oldStatus = currentTransfer.status;
 
-    if (dto.status === 3) {
-      await this.updateInventoryOnReceive(id);
+    if (oldStatus === 1 && newStatus === 2) {
+      await this.decrementInventoryFromBranch(id);
+    } else if (oldStatus === 1 && newStatus === 3) {
+      await this.decrementInventoryFromBranch(id);
+      await this.incrementInventoryToBranch(id);
+    } else if (oldStatus === 2 && newStatus === 1) {
+      await this.incrementInventoryFromBranch(id);
+    } else if (oldStatus === 2 && newStatus === 3) {
+      await this.incrementInventoryToBranch(id);
+    } else if (oldStatus === 3 && newStatus === 2) {
+      await this.decrementInventoryToBranch(id);
     }
 
     return updatedTransfer;
@@ -417,53 +511,36 @@ export class TransfersService {
     }
 
     for (const detail of transfer.details) {
-      await this.prisma.inventory.upsert({
+      const inventoryFrom = await this.prisma.inventory.findUnique({
         where: {
           productId_branchId: {
             productId: detail.productId,
             branchId: transfer.fromBranchId,
           },
         },
-        create: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: transfer.fromBranchId,
-          branchName: transfer.fromBranch.name,
-          cost: Number(detail.sendPrice),
-          onHand: 0,
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
-        },
-        update: {
-          onHand: { decrement: detail.sendQuantity },
-        },
       });
 
-      await this.prisma.inventory.upsert({
+      if (!inventoryFrom) {
+        throw new NotFoundException(
+          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.fromBranch.name}`,
+        );
+      }
+
+      if (Number(inventoryFrom.onHand) < Number(detail.sendQuantity)) {
+        throw new BadRequestException(
+          `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventoryFrom.onHand}, yêu cầu: ${detail.sendQuantity}`,
+        );
+      }
+
+      await this.prisma.inventory.update({
         where: {
           productId_branchId: {
             productId: detail.productId,
-            branchId: transfer.toBranchId,
+            branchId: transfer.fromBranchId,
           },
         },
-        create: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: transfer.toBranchId,
-          branchName: transfer.toBranch.name,
-          cost: Number(detail.receivePrice),
-          onHand: Number(detail.receivedQuantity),
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
-        },
-        update: {
-          onHand: { increment: detail.receivedQuantity },
+        data: {
+          onHand: { decrement: detail.sendQuantity },
         },
       });
     }
@@ -486,53 +563,184 @@ export class TransfersService {
     }
 
     for (const detail of transfer.details) {
-      await this.prisma.inventory.upsert({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
-          },
-        },
-        create: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: transfer.fromBranchId,
-          branchName: transfer.fromBranch.name,
-          cost: Number(detail.sendPrice),
-          onHand: 0,
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
-        },
-        update: {
-          onHand: { decrement: detail.sendQuantity },
-        },
-      });
-
-      await this.prisma.inventory.upsert({
+      const inventoryTo = await this.prisma.inventory.findUnique({
         where: {
           productId_branchId: {
             productId: detail.productId,
             branchId: transfer.toBranchId,
           },
         },
-        create: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: transfer.toBranchId,
-          branchName: transfer.toBranch.name,
-          cost: Number(detail.receivePrice),
-          onHand: Number(detail.receivedQuantity),
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
+      });
+
+      if (!inventoryTo) {
+        throw new NotFoundException(
+          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.toBranch.name}`,
+        );
+      }
+
+      await this.prisma.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
         },
-        update: {
+        data: {
           onHand: { increment: detail.receivedQuantity },
+        },
+      });
+    }
+  }
+
+  private async decrementInventoryFromBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: {
+        details: true,
+        fromBranch: true,
+      },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    for (const detail of transfer.details) {
+      const inventory = await this.prisma.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+          },
+        },
+      });
+
+      if (!inventory) {
+        throw new NotFoundException(
+          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.fromBranch.name}`,
+        );
+      }
+
+      if (Number(inventory.onHand) < Number(detail.sendQuantity)) {
+        throw new BadRequestException(
+          `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventory.onHand}, yêu cầu: ${detail.sendQuantity}`,
+        );
+      }
+
+      await this.prisma.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+          },
+        },
+        data: {
+          onHand: { decrement: detail.sendQuantity },
+        },
+      });
+    }
+  }
+
+  private async incrementInventoryFromBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: {
+        details: true,
+      },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    for (const detail of transfer.details) {
+      await this.prisma.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+          },
+        },
+        data: {
+          onHand: { increment: detail.sendQuantity },
+        },
+      });
+    }
+  }
+
+  private async incrementInventoryToBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: {
+        details: true,
+        toBranch: true,
+      },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    for (const detail of transfer.details) {
+      const inventory = await this.prisma.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
+        },
+      });
+
+      if (!inventory) {
+        throw new NotFoundException(
+          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.toBranch.name}`,
+        );
+      }
+
+      await this.prisma.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
+        },
+        data: {
+          onHand: { increment: detail.receivedQuantity },
+        },
+      });
+    }
+  }
+
+  private async decrementInventoryToBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: {
+        details: true,
+      },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    for (const detail of transfer.details) {
+      await this.prisma.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
+        },
+        data: {
+          onHand: { decrement: detail.receivedQuantity },
         },
       });
     }
@@ -543,6 +751,20 @@ export class TransfersService {
 
     if (transfer.status === 4) {
       throw new BadRequestException('Phiếu chuyển hàng đã bị hủy');
+    }
+
+    if (transfer.status === 1) {
+      await this.prisma.transfer.update({
+        where: { id },
+        data: {
+          status: 4,
+          noteBySource: dto.cancelReason
+            ? `${transfer.noteBySource ? transfer.noteBySource + ' | ' : ''}Lý do hủy: ${dto.cancelReason}`
+            : transfer.noteBySource,
+        },
+      });
+
+      return { message: 'Hủy phiếu chuyển hàng thành công' };
     }
 
     await this.prisma.$transaction(async (tx) => {
@@ -558,27 +780,14 @@ export class TransfersService {
 
       if (transfer.status === 2) {
         for (const detail of transfer.details) {
-          await tx.inventory.upsert({
+          await tx.inventory.update({
             where: {
               productId_branchId: {
                 productId: detail.productId,
                 branchId: transfer.fromBranchId,
               },
             },
-            create: {
-              productId: detail.productId,
-              productCode: detail.productCode,
-              productName: detail.productName,
-              branchId: transfer.fromBranchId,
-              branchName: transfer.fromBranch.name,
-              cost: Number(detail.sendPrice),
-              onHand: Number(detail.sendQuantity),
-              reserved: 0,
-              onOrder: 0,
-              minQuality: 0,
-              maxQuality: 0,
-            },
-            update: {
+            data: {
               onHand: { increment: detail.sendQuantity },
             },
           });
@@ -587,52 +796,26 @@ export class TransfersService {
 
       if (transfer.status === 3) {
         for (const detail of transfer.details) {
-          await tx.inventory.upsert({
+          await tx.inventory.update({
             where: {
               productId_branchId: {
                 productId: detail.productId,
                 branchId: transfer.fromBranchId,
               },
             },
-            create: {
-              productId: detail.productId,
-              productCode: detail.productCode,
-              productName: detail.productName,
-              branchId: transfer.fromBranchId,
-              branchName: transfer.fromBranch.name,
-              cost: Number(detail.sendPrice),
-              onHand: Number(detail.sendQuantity),
-              reserved: 0,
-              onOrder: 0,
-              minQuality: 0,
-              maxQuality: 0,
-            },
-            update: {
+            data: {
               onHand: { increment: detail.sendQuantity },
             },
           });
 
-          await tx.inventory.upsert({
+          await tx.inventory.update({
             where: {
               productId_branchId: {
                 productId: detail.productId,
                 branchId: transfer.toBranchId,
               },
             },
-            create: {
-              productId: detail.productId,
-              productCode: detail.productCode,
-              productName: detail.productName,
-              branchId: transfer.toBranchId,
-              branchName: transfer.toBranch.name,
-              cost: Number(detail.receivePrice),
-              onHand: 0,
-              reserved: 0,
-              onOrder: 0,
-              minQuality: 0,
-              maxQuality: 0,
-            },
-            update: {
+            data: {
               onHand: { decrement: detail.receivedQuantity },
             },
           });
