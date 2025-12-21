@@ -19,6 +19,7 @@ export class TransfersService {
     const {
       fromBranchIds,
       toBranchIds,
+      currentBranchId,
       status,
       pageSize = 20,
       currentItem = 0,
@@ -30,20 +31,85 @@ export class TransfersService {
 
     const where: any = {};
 
-    if (fromBranchIds && fromBranchIds.length > 0) {
-      where.fromBranchId = { in: fromBranchIds };
-    }
+    if (currentBranchId) {
+      const baseConditions: any[] = [
+        { fromBranchId: currentBranchId },
+        {
+          toBranchId: currentBranchId,
+          status: { gte: 2 },
+        },
+      ];
 
-    if (toBranchIds && toBranchIds.length > 0) {
-      where.toBranchId = { in: toBranchIds };
-      where.status = { gte: 2 };
+      if (fromBranchIds && fromBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+        ];
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+        ];
+      } else {
+        where.OR = baseConditions;
+      }
+    } else {
+      if (
+        fromBranchIds &&
+        fromBranchIds.length > 0 &&
+        toBranchIds &&
+        toBranchIds.length > 0
+      ) {
+        where.AND = [
+          { fromBranchId: { in: fromBranchIds } },
+          { toBranchId: { in: toBranchIds } },
+          { status: { gte: 2 } },
+        ];
+      } else if (fromBranchIds && fromBranchIds.length > 0) {
+        where.fromBranchId = { in: fromBranchIds };
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.toBranchId = { in: toBranchIds };
+        where.status = { gte: 2 };
+      }
     }
 
     if (status && status.length > 0) {
-      if (toBranchIds && toBranchIds.length > 0) {
-        where.status = {
-          in: status.filter((s) => s >= 2),
-        };
+      if (where.OR) {
+        where.OR = where.OR.map((condition: any) => {
+          if (condition.status && condition.status.gte) {
+            return {
+              ...condition,
+              status: {
+                in: status.filter((s) => s >= 2),
+              },
+            };
+          }
+          return {
+            ...condition,
+            status: { in: status },
+          };
+        });
+      } else if (where.AND) {
+        where.AND = where.AND.map((condition: any) => {
+          if (condition.status) {
+            return { status: { in: status } };
+          }
+          return condition;
+        });
       } else {
         where.status = { in: status };
       }
@@ -51,14 +117,22 @@ export class TransfersService {
 
     if (fromReceivedDate || toReceivedDate) {
       where.receivedDate = {};
-      if (fromReceivedDate) where.receivedDate.gte = fromReceivedDate;
-      if (toReceivedDate) where.receivedDate.lte = toReceivedDate;
+      if (fromReceivedDate) {
+        where.receivedDate.gte = new Date(fromReceivedDate);
+      }
+      if (toReceivedDate) {
+        where.receivedDate.lte = new Date(toReceivedDate);
+      }
     }
 
     if (fromTransferDate || toTransferDate) {
       where.transferredDate = {};
-      if (fromTransferDate) where.transferredDate.gte = fromTransferDate;
-      if (toTransferDate) where.transferredDate.lte = toTransferDate;
+      if (fromTransferDate) {
+        where.transferredDate.gte = new Date(fromTransferDate);
+      }
+      if (toTransferDate) {
+        where.transferredDate.lte = new Date(toTransferDate);
+      }
     }
 
     const [total, data] = await Promise.all([
@@ -68,12 +142,34 @@ export class TransfersService {
         skip: currentItem,
         take: Math.min(pageSize, 100),
         include: {
-          fromBranch: { select: { id: true, name: true } },
-          toBranch: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
+          fromBranch: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          toBranch: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
           details: {
             include: {
-              product: { select: { id: true, code: true, name: true } },
+              product: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  unit: true,
+                },
+              },
             },
           },
         },
@@ -81,7 +177,42 @@ export class TransfersService {
       }),
     ]);
 
-    return { total, pageSize, data };
+    const formattedData = data.map((transfer) => ({
+      id: transfer.id,
+      code: transfer.code,
+      fromBranchId: transfer.fromBranchId,
+      fromBranchName: transfer.fromBranch?.name || '',
+      toBranchId: transfer.toBranchId,
+      toBranchName: transfer.toBranch?.name || '',
+      status: transfer.status,
+      totalTransfer: Number(transfer.totalTransfer) || 0,
+      totalReceive: Number(transfer.totalReceive) || 0,
+      noteBySource: transfer.noteBySource || '',
+      noteByDestination: transfer.noteByDestination || '',
+      transferredDate: transfer.transferredDate,
+      receivedDate: transfer.receivedDate,
+      createdAt: transfer.createdAt,
+      updatedAt: transfer.updatedAt,
+      createdById: transfer.createdById,
+      createdByName: transfer.creator?.name || '',
+      details: transfer.details.map((detail) => ({
+        id: detail.id,
+        productId: detail.productId,
+        productCode: detail.productCode,
+        productName: detail.productName,
+        sendQuantity: Number(detail.sendQuantity),
+        receivedQuantity: Number(detail.receivedQuantity),
+        sendPrice: Number(detail.sendPrice),
+        receivePrice: Number(detail.receivePrice),
+      })),
+    }));
+
+    return {
+      total,
+      pageSize: Math.min(pageSize, 100),
+      currentItem,
+      data: formattedData,
+    };
   }
 
   async findOne(id: number) {

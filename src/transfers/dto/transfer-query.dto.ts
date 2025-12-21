@@ -15,6 +15,11 @@ export class TransferQueryDto {
   toBranchIds?: number[];
 
   @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  currentBranchId?: number;
+
+  @IsOptional()
   @Transform(({ value }) => {
     if (!value) return undefined;
     if (Array.isArray(value)) return value.map(Number);
