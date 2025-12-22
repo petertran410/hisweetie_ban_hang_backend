@@ -1,62 +1,117 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateCustomerDto, UpdateCustomerDto, CustomerQueryDto } from './dto/';
+import {
+  CreateCustomerDto,
+  UpdateCustomerDto,
+  CustomerQueryDto,
+  BulkCreateCustomerDto,
+  BulkUpdateCustomerDto,
+} from './dto';
 
 @Injectable()
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(query: CustomerQueryDto) {
-    const { page = 1, limit = 10, search, branchId } = query;
-    const skip = (page - 1) * limit;
+    const {
+      code,
+      name,
+      contactNumber,
+      lastModifiedFrom,
+      pageSize = 20,
+      currentItem = 0,
+      orderBy = 'createdAt',
+      orderDirection = 'asc',
+      includeRemoveIds = false,
+      includeTotal = false,
+      includeCustomerGroup = false,
+      birthDate,
+      groupId,
+      includeCustomerSocial = false,
+    } = query;
 
-    const settings = await this.prisma.settings.findFirst();
+    const where: any = { isActive: true };
 
-    const where: any = {};
-
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { code: { contains: search, mode: 'insensitive' } },
-        { contactNumber: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
-      ];
+    if (code) {
+      where.code = { contains: code, mode: 'insensitive' };
     }
 
-    if (settings?.managerCustomerByBranch && branchId) {
-      where.branchId = parseInt(branchId);
+    if (name) {
+      where.name = { contains: name, mode: 'insensitive' };
+    }
+
+    if (contactNumber) {
+      where.contactNumber = { contains: contactNumber };
+    }
+
+    if (lastModifiedFrom) {
+      where.updatedAt = { gte: new Date(lastModifiedFrom) };
+    }
+
+    if (birthDate) {
+      const birthDateObj = new Date(birthDate);
+      where.birthDate = {
+        gte: new Date(
+          birthDateObj.getFullYear(),
+          birthDateObj.getMonth(),
+          birthDateObj.getDate(),
+        ),
+        lt: new Date(
+          birthDateObj.getFullYear(),
+          birthDateObj.getMonth(),
+          birthDateObj.getDate() + 1,
+        ),
+      };
+    }
+
+    if (groupId) {
+      where.customerGroupDetails = {
+        some: { customerGroupId: groupId },
+      };
+    }
+
+    const include: any = {
+      customerType: true,
+      branch: { select: { id: true, name: true } },
+    };
+
+    if (includeCustomerGroup) {
+      include.customerGroupDetails = {
+        include: {
+          customerGroup: { select: { id: true, name: true } },
+        },
+      };
     }
 
     const [data, total] = await Promise.all([
       this.prisma.customer.findMany({
         where,
-        skip,
-        take: limit,
-        include: {
-          customerType: true,
-          branch: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          customerGroupDetails: {
-            include: {
-              customerGroup: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
+        skip: currentItem,
+        take: Math.min(pageSize, 100),
+        include,
+        orderBy: { [orderBy]: orderDirection },
       }),
       this.prisma.customer.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    const response: any = { total, pageSize, data };
+
+    if (includeRemoveIds && lastModifiedFrom) {
+      const removedIds = await this.prisma.customer.findMany({
+        where: {
+          isActive: false,
+          updatedAt: { gte: new Date(lastModifiedFrom) },
+        },
+        select: { id: true },
+      });
+      response.removeIds = removedIds.map((r) => r.id);
+    }
+
+    return response;
   }
 
   async findOne(id: number) {
@@ -67,9 +122,11 @@ export class CustomersService {
         branch: true,
         customerGroupDetails: {
           include: {
-            customerGroup: true,
+            customerGroup: { select: { id: true, name: true } },
           },
         },
+        orders: { select: { id: true, total: true, debtAmount: true } },
+        invoices: { select: { id: true, grandTotal: true } },
       },
     });
 
@@ -77,54 +134,189 @@ export class CustomersService {
       throw new NotFoundException(`Customer with id ${id} not found`);
     }
 
-    return customer;
+    const groups = customer.customerGroupDetails
+      .map((detail) => detail.customerGroup.name)
+      .join(', ');
+
+    return {
+      ...customer,
+      groups,
+      debt: customer.totalDebt,
+      totalInvoiced: customer.totalInvoiced,
+      totalPoint: customer.totalPoint,
+      totalRevenue: customer.totalRevenue,
+      rewardPoint: customer.rewardPoint,
+    };
+  }
+
+  async findByCode(code: string) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { code },
+      include: {
+        customerType: true,
+        branch: true,
+        customerGroupDetails: {
+          include: {
+            customerGroup: { select: { id: true, name: true } },
+          },
+        },
+      },
+    });
+
+    if (!customer) {
+      throw new NotFoundException(`Customer with code ${code} not found`);
+    }
+
+    const groups = customer.customerGroupDetails
+      .map((detail) => detail.customerGroup.name)
+      .join(', ');
+
+    return {
+      ...customer,
+      groups,
+    };
   }
 
   async create(dto: CreateCustomerDto) {
     const code = dto.code || (await this.generateCode());
-    return this.prisma.customer.create({
-      data: {
-        ...dto,
-        code,
-      },
-      include: { customerType: true },
+
+    const { groupIds, ...customerData } = dto;
+
+    const customer = await this.prisma.$transaction(async (tx) => {
+      const newCustomer = await tx.customer.create({
+        data: {
+          ...customerData,
+          code,
+        },
+        include: {
+          customerType: true,
+          branch: true,
+        },
+      });
+
+      if (groupIds && groupIds.length > 0) {
+        await tx.customerGroupDetail.createMany({
+          data: groupIds.map((groupId) => ({
+            customerId: newCustomer.id,
+            customerGroupId: groupId,
+          })),
+        });
+      }
+
+      return newCustomer;
     });
+
+    const customerGroupDetails = await this.prisma.customerGroupDetail.findMany(
+      {
+        where: { customerId: customer.id },
+        include: {
+          customerGroup: { select: { id: true, name: true } },
+        },
+      },
+    );
+
+    return {
+      ...customer,
+      customerGroupDetails: customerGroupDetails.map((detail) => ({
+        id: detail.id,
+        customerId: detail.customerId,
+        groupId: detail.customerGroupId,
+      })),
+    };
   }
 
   async update(id: number, dto: UpdateCustomerDto) {
-    return this.prisma.customer.update({
-      where: { id },
-      data: dto,
-      include: { customerType: true },
+    const { groupIds, ...customerData } = dto;
+
+    const customer = await this.prisma.$transaction(async (tx) => {
+      const updatedCustomer = await tx.customer.update({
+        where: { id },
+        data: customerData,
+        include: {
+          customerType: true,
+          branch: true,
+        },
+      });
+
+      if (groupIds !== undefined) {
+        await tx.customerGroupDetail.deleteMany({
+          where: { customerId: id },
+        });
+
+        if (groupIds.length > 0) {
+          await tx.customerGroupDetail.createMany({
+            data: groupIds.map((groupId) => ({
+              customerId: id,
+              customerGroupId: groupId,
+            })),
+          });
+        }
+      }
+
+      return updatedCustomer;
     });
-  }
 
-  async remove(id: number) {
-    return this.prisma.customer.delete({ where: { id } });
-  }
-
-  async updateTotals(customerId: number) {
-    const orders = await this.prisma.order.findMany({
-      where: {
-        customerId,
-        orderStatus: { not: 'cancelled' },
+    const groups = await this.prisma.customerGroupDetail.findMany({
+      where: { customerId: id },
+      include: {
+        customerGroup: { select: { name: true } },
       },
     });
 
-    const totalPurchased = orders.reduce(
-      (sum, o) => sum + Number(o.grandTotal),
-      0,
-    );
-    const totalDebt = orders.reduce((sum, o) => sum + Number(o.debtAmount), 0);
+    return {
+      ...customer,
+      groups: groups.map((g) => g.customerGroup.name).join(', '),
+    };
+  }
 
-    return this.prisma.customer.update({
-      where: { id: customerId },
-      data: { totalPurchased, totalDebt },
+  async remove(id: number) {
+    await this.prisma.customer.update({
+      where: { id },
+      data: { isActive: false },
     });
+
+    return { message: 'Xóa dữ liệu thành công' };
+  }
+
+  async bulkCreate(dto: BulkCreateCustomerDto) {
+    const results = [];
+
+    for (const customerDto of dto.listCustomers) {
+      try {
+        const customer = await this.create(customerDto);
+        results.push(customer);
+      } catch (error) {
+        console.error(`Error creating customer: ${error.message}`);
+      }
+    }
+
+    return {
+      message: 'Thêm mới danh sách khách hàng thành công',
+      data: results,
+    };
+  }
+
+  async bulkUpdate(dto: BulkUpdateCustomerDto) {
+    const results = [];
+
+    for (const customerDto of dto.listCustomers) {
+      const { id, ...updateData } = customerDto;
+      try {
+        const customer = await this.update(id, updateData);
+        results.push(customer);
+      } catch (error) {
+        console.error(`Error updating customer ${id}: ${error.message}`);
+      }
+    }
+
+    return {
+      message: 'Cập nhật danh sách khách hàng thành công',
+      data: results,
+    };
   }
 
   private async generateCode(): Promise<string> {
     const count = await this.prisma.customer.count();
-    return `KH${String(count + 1).padStart(5, '0')}`;
+    return `KH${String(count + 1).padStart(6, '0')}`;
   }
 }

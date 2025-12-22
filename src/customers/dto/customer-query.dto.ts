@@ -1,22 +1,73 @@
-import { IsOptional, IsString, IsNumber } from 'class-validator';
-import { Type } from 'class-transformer';
+import {
+  IsOptional,
+  IsString,
+  IsInt,
+  IsBoolean,
+  IsDateString,
+} from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 
 export class CustomerQueryDto {
   @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  page?: number = 1;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsNumber()
-  limit?: number = 10;
+  @IsString()
+  code?: string;
 
   @IsOptional()
   @IsString()
-  search?: string;
+  name?: string;
 
   @IsOptional()
   @IsString()
-  branchId?: string;
+  contactNumber?: string;
+
+  @IsOptional()
+  @IsDateString()
+  lastModifiedFrom?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  pageSize?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  currentItem?: number;
+
+  @IsOptional()
+  @IsString()
+  orderBy?: string;
+
+  @IsOptional()
+  @IsString()
+  orderDirection?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeRemoveIds?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeTotal?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeCustomerGroup?: boolean;
+
+  @IsOptional()
+  @IsString()
+  birthDate?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  groupId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeCustomerSocial?: boolean;
 }

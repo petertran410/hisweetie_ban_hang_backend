@@ -31,7 +31,8 @@ model User {
   purchaseOrders        PurchaseOrder[] @relation("PurchaseOrderBuyer")
   posts                 Post[]          @relation("PostAuthor")
   priceBookUsers        PriceBookUser[]
-  createdTransfers Transfer[] @relation("TransferCreator")
+  createdTransfers      Transfer[]      @relation("TransferCreator")
+  createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
 
   @@map("users")
 }
@@ -151,8 +152,10 @@ model CustomerGroup {
   id          Int      @id @default(autoincrement())
   name        String
   description String?
+  createdBy   Int?
   createdAt   DateTime @default(now())
 
+  creator                 User?                       @relation("CustomerGroupCreator", fields: [createdBy], references: [id])
   customerGroupDetails    CustomerGroupDetail[]
   priceBookCustomerGroups PriceBookCustomerGroup[]
 
@@ -179,8 +182,11 @@ model Customer {
   comments       String?
   customerTypeId Int?
   branchId       Int?
-  totalPurchased Int       @default(0)
-  totalDebt      Int       @default(0)
+  totalPurchased Decimal   @default(0) @db.Decimal(18, 2)
+  totalDebt      Decimal   @default(0) @db.Decimal(18, 2)
+  totalInvoiced  Decimal   @default(0) @db.Decimal(18, 2)
+  totalPoint     Decimal   @default(0) @db.Decimal(18, 4)
+  totalRevenue   Decimal   @default(0) @db.Decimal(18, 2)
   rewardPoint    Int       @default(0)
   psidFacebook   String?
   isWalkIn       Boolean   @default(false)
