@@ -73,7 +73,6 @@ export class CustomerQueryDto {
   @IsBoolean()
   includeCustomerSocial?: boolean;
 
-  // Extended filters
   @IsOptional()
   @IsString()
   @IsIn(['all', 'individual', 'company'])

@@ -35,14 +35,6 @@ export class CreateCustomerDto {
   phone?: string;
 
   @IsOptional()
-  @IsString()
-  facebook?: string;
-
-  @IsOptional()
-  @IsString()
-  zalo?: string;
-
-  @IsOptional()
   @IsEmail()
   email?: string;
 

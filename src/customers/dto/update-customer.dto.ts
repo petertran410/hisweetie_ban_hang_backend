@@ -33,6 +33,38 @@ export class UpdateCustomerDto {
 
   @IsOptional()
   @IsString()
+  phone?: string;
+
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+
+  @IsOptional()
+  @IsString()
+  cityCode?: string;
+
+  @IsOptional()
+  @IsString()
+  cityName?: string;
+
+  @IsOptional()
+  @IsString()
+  districtCode?: string;
+
+  @IsOptional()
+  @IsString()
+  districtName?: string;
+
+  @IsOptional()
+  @IsString()
+  wardCode?: string;
+
+  @IsOptional()
+  @IsString()
+  wardName?: string;
+
+  @IsOptional()
+  @IsString()
   address?: string;
 
   @IsOptional()
@@ -40,12 +72,61 @@ export class UpdateCustomerDto {
   locationName?: string;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  type?: number;
+
+  @IsOptional()
   @IsString()
-  wardName?: string;
+  organization?: string;
+
+  @IsOptional()
+  @IsString()
+  taxCode?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceBuyerName?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceCityCode?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceCityName?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceWardCode?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceWardName?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceAddress?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceCccdCmnd?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceBankAccount?: string;
 
   @IsOptional()
   @IsEmail()
-  email?: string;
+  invoiceEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  invoicePhone?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceDvqhnsCode?: string;
 
   @IsOptional()
   @IsString()
@@ -58,10 +139,7 @@ export class UpdateCustomerDto {
   groupIds?: number[];
 
   @IsOptional()
-  @IsString()
-  organization?: string;
-
-  @IsOptional()
-  @IsString()
-  taxCode?: string;
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
 }
