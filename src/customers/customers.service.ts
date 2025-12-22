@@ -250,6 +250,12 @@ export class CustomersService {
       totalPoint: customer.totalPoint,
       totalRevenue: customer.totalRevenue,
       rewardPoint: customer.rewardPoint,
+      customerGroupDetails: customer.customerGroupDetails.map((detail) => ({
+        id: detail.id,
+        customerId: detail.customerId,
+        groupId: detail.customerGroupId,
+        customerGroup: detail.customerGroup,
+      })),
     };
   }
 
@@ -278,6 +284,12 @@ export class CustomersService {
     return {
       ...customer,
       groups,
+      customerGroupDetails: customer.customerGroupDetails.map((detail) => ({
+        id: detail.id,
+        customerId: detail.customerId,
+        groupId: detail.customerGroupId,
+        customerGroup: detail.customerGroup,
+      })),
     };
   }
 
@@ -337,6 +349,7 @@ export class CustomersService {
         id: detail.id,
         customerId: detail.customerId,
         groupId: detail.customerGroupId,
+        customerGroup: detail.customerGroup,
       })),
     };
   }
@@ -406,6 +419,7 @@ export class CustomersService {
         id: detail.id,
         customerId: detail.customerId,
         groupId: detail.customerGroupId,
+        customerGroup: detail.customerGroup,
       })),
     };
   }
