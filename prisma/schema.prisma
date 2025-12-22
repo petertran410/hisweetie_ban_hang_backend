@@ -181,6 +181,7 @@ model Customer {
   type           Int       @default(0)
   organization   String?
   taxCode        String?
+  groups         String?
   invoiceBuyerName        String?
   invoiceCityCode         String?
   invoiceCityName         String?
