@@ -300,11 +300,22 @@ export class CustomersService {
       });
 
       if (groupIds && groupIds.length > 0) {
+        const customerGroups = await tx.customerGroup.findMany({
+          where: { id: { in: groupIds } },
+          select: { id: true, name: true },
+        });
+
         await tx.customerGroupDetail.createMany({
           data: groupIds.map((groupId) => ({
             customerId: newCustomer.id,
             customerGroupId: groupId,
           })),
+        });
+
+        const groupsString = customerGroups.map((g) => g.name).join('|');
+        await tx.customer.update({
+          where: { id: newCustomer.id },
+          data: { groups: groupsString },
         });
       }
 
@@ -352,11 +363,27 @@ export class CustomersService {
         });
 
         if (groupIds.length > 0) {
+          const customerGroups = await tx.customerGroup.findMany({
+            where: { id: { in: groupIds } },
+            select: { id: true, name: true },
+          });
+
           await tx.customerGroupDetail.createMany({
             data: groupIds.map((groupId) => ({
               customerId: id,
               customerGroupId: groupId,
             })),
+          });
+
+          const groupsString = customerGroups.map((g) => g.name).join('|');
+          await tx.customer.update({
+            where: { id },
+            data: { groups: groupsString },
+          });
+        } else {
+          await tx.customer.update({
+            where: { id },
+            data: { groups: null },
           });
         }
       }
