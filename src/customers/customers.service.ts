@@ -125,8 +125,19 @@ export class CustomersService {
             customerGroup: { select: { id: true, name: true } },
           },
         },
-        orders: { select: { id: true, total: true, debtAmount: true } },
-        invoices: { select: { id: true, grandTotal: true } },
+        orders: {
+          select: {
+            id: true,
+            grandTotal: true,
+            debtAmount: true,
+          },
+        },
+        invoices: {
+          select: {
+            id: true,
+            grandTotal: true,
+          },
+        },
       },
     });
 
@@ -279,7 +290,7 @@ export class CustomersService {
   }
 
   async bulkCreate(dto: BulkCreateCustomerDto) {
-    const results = [];
+    const results: any[] = [];
 
     for (const customerDto of dto.listCustomers) {
       try {
@@ -297,10 +308,10 @@ export class CustomersService {
   }
 
   async bulkUpdate(dto: BulkUpdateCustomerDto) {
-    const results = [];
+    const results: any[] = [];
 
     for (const customerDto of dto.listCustomers) {
-      const { id, ...updateData } = customerDto;
+      const { id, ...updateData } = customerDto as any;
       try {
         const customer = await this.update(id, updateData);
         results.push(customer);
