@@ -21,7 +21,7 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 @ApiTags('Customer Groups')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
-@Controller('customers/group')
+@Controller('customer-groups')
 export class CustomerGroupsController {
   constructor(private customerGroupsService: CustomerGroupsService) {}
 

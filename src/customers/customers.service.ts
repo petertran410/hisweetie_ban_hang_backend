@@ -25,16 +25,39 @@ export class CustomersService {
       pageSize = 20,
       currentItem = 0,
       orderBy = 'createdAt',
-      orderDirection = 'asc',
+      orderDirection = 'desc',
       includeRemoveIds = false,
       includeTotal = false,
       includeCustomerGroup = false,
       birthDate,
       groupId,
       includeCustomerSocial = false,
+      // Extended filters
+      customerType,
+      gender,
+      branchId,
+      createdBy,
+      createdDateFrom,
+      createdDateTo,
+      birthdayFrom,
+      birthdayTo,
+      totalPurchasedFrom,
+      totalPurchasedTo,
+      debtFrom,
+      debtTo,
+      pointFrom,
+      pointTo,
+      isActive,
     } = query;
 
-    const where: any = { isActive: true };
+    const where: any = {};
+
+    // Active filter
+    if (isActive !== undefined) {
+      where.isActive = isActive;
+    } else {
+      where.isActive = true; // Default to active only
+    }
 
     if (code) {
       where.code = { contains: code, mode: 'insensitive' };
@@ -45,7 +68,10 @@ export class CustomersService {
     }
 
     if (contactNumber) {
-      where.contactNumber = { contains: contactNumber };
+      where.OR = [
+        { contactNumber: { contains: contactNumber } },
+        { phone: { contains: contactNumber } },
+      ];
     }
 
     if (lastModifiedFrom) {
@@ -72,6 +98,73 @@ export class CustomersService {
       where.customerGroupDetails = {
         some: { customerGroupId: groupId },
       };
+    }
+
+    // Extended filters
+    if (customerType && customerType !== 'all') {
+      where.type = customerType === 'individual' ? 0 : 1;
+    }
+
+    if (gender && gender !== 'all') {
+      where.gender = gender === 'male' ? true : false;
+    }
+
+    if (branchId) {
+      where.branchId = branchId;
+    }
+
+    if (createdBy) {
+      where.createdBy = createdBy;
+    }
+
+    if (createdDateFrom || createdDateTo) {
+      where.createdAt = {};
+      if (createdDateFrom) {
+        where.createdAt.gte = new Date(createdDateFrom);
+      }
+      if (createdDateTo) {
+        where.createdAt.lte = new Date(createdDateTo);
+      }
+    }
+
+    if (birthdayFrom || birthdayTo) {
+      where.birthDate = where.birthDate || {};
+      if (birthdayFrom) {
+        where.birthDate.gte = new Date(birthdayFrom);
+      }
+      if (birthdayTo) {
+        where.birthDate.lte = new Date(birthdayTo);
+      }
+    }
+
+    if (totalPurchasedFrom !== undefined || totalPurchasedTo !== undefined) {
+      where.totalPurchased = {};
+      if (totalPurchasedFrom !== undefined) {
+        where.totalPurchased.gte = totalPurchasedFrom;
+      }
+      if (totalPurchasedTo !== undefined) {
+        where.totalPurchased.lte = totalPurchasedTo;
+      }
+    }
+
+    if (debtFrom !== undefined || debtTo !== undefined) {
+      where.totalDebt = {};
+      if (debtFrom !== undefined) {
+        where.totalDebt.gte = debtFrom;
+      }
+      if (debtTo !== undefined) {
+        where.totalDebt.lte = debtTo;
+      }
+    }
+
+    if (pointFrom !== undefined || pointTo !== undefined) {
+      where.totalPoint = {};
+      if (pointFrom !== undefined) {
+        where.totalPoint.gte = pointFrom;
+      }
+      if (pointTo !== undefined) {
+        where.totalPoint.lte = pointTo;
+      }
     }
 
     const include: any = {
