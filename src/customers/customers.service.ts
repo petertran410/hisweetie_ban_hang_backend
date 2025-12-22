@@ -284,13 +284,14 @@ export class CustomersService {
   async create(dto: CreateCustomerDto) {
     const code = dto.code || (await this.generateCode());
 
-    const { groupIds, ...customerData } = dto;
+    const { groupIds, birthDate, ...customerData } = dto;
 
     const customer = await this.prisma.$transaction(async (tx) => {
       const newCustomer = await tx.customer.create({
         data: {
           ...customerData,
           code,
+          birthDate: birthDate ? new Date(birthDate) : undefined,
         },
         include: {
           customerType: true,
@@ -330,12 +331,15 @@ export class CustomersService {
   }
 
   async update(id: number, dto: UpdateCustomerDto) {
-    const { groupIds, ...customerData } = dto;
+    const { groupIds, birthDate, ...customerData } = dto;
 
     const customer = await this.prisma.$transaction(async (tx) => {
       const updatedCustomer = await tx.customer.update({
         where: { id },
-        data: customerData,
+        data: {
+          ...customerData,
+          birthDate: birthDate ? new Date(birthDate) : undefined,
+        },
         include: {
           customerType: true,
           branch: true,
@@ -360,16 +364,22 @@ export class CustomersService {
       return updatedCustomer;
     });
 
-    const groups = await this.prisma.customerGroupDetail.findMany({
-      where: { customerId: id },
-      include: {
-        customerGroup: { select: { name: true } },
+    const customerGroupDetails = await this.prisma.customerGroupDetail.findMany(
+      {
+        where: { customerId: customer.id },
+        include: {
+          customerGroup: { select: { id: true, name: true } },
+        },
       },
-    });
+    );
 
     return {
       ...customer,
-      groups: groups.map((g) => g.customerGroup.name).join(', '),
+      customerGroupDetails: customerGroupDetails.map((detail) => ({
+        id: detail.id,
+        customerId: detail.customerId,
+        groupId: detail.customerGroupId,
+      })),
     };
   }
 
