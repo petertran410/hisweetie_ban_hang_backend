@@ -129,7 +129,6 @@ export class DashboardService {
       .findMany({
         where: {
           isActive: true,
-          isWalkIn: false,
         },
         orderBy: {
           totalPurchased: 'desc',

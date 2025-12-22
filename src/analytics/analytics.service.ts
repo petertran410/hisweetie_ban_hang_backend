@@ -39,22 +39,17 @@ export class AnalyticsService {
     const customers = await this.prisma.customer.findMany({
       where: {
         isActive: true,
-        isWalkIn: false,
       },
       orderBy: {
         totalPurchased: 'desc',
       },
       take: limit,
-      include: {
-        customerType: true,
-      },
     });
 
     return customers.map((customer) => ({
       id: customer.id,
       name: customer.name,
       phone: customer.phone,
-      type: customer.customerType?.name,
       totalPurchased: customer.totalPurchased,
       totalDebt: customer.totalDebt,
     }));
@@ -126,7 +121,7 @@ export class AnalyticsService {
         _sum: { grandTotal: true },
       }),
       this.prisma.customer.count({
-        where: { isActive: true, isWalkIn: false },
+        where: { isActive: true },
       }),
       this.prisma.product.count({
         where: { isActive: true },

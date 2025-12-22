@@ -170,10 +170,7 @@ model Customer {
   birthDate      DateTime?
   contactNumber  String?
   phone          String?
-  facebook       String?
-  zalo           String?
   email          String?
-  
   cityCode       String?
   cityName       String?
   districtCode   String?
@@ -181,11 +178,9 @@ model Customer {
   wardCode       String?
   wardName       String?
   address        String?
-  
   type           Int       @default(0)
   organization   String?
   taxCode        String?
-  
   invoiceBuyerName        String?
   invoiceCityCode         String?
   invoiceCityName         String?
@@ -197,19 +192,16 @@ model Customer {
   invoiceEmail            String?
   invoicePhone            String?
   invoiceDvqhnsCode       String?
-  
   comments       String?
   customerTypeId Int?
   branchId       Int?
-  totalPurchased Decimal   @default(0) @db.Decimal(18, 2)
-  totalDebt      Decimal   @default(0) @db.Decimal(18, 2)
-  totalInvoiced  Decimal   @default(0) @db.Decimal(18, 2)
-  totalPoint     Decimal   @default(0) @db.Decimal(18, 4)
-  totalRevenue   Decimal   @default(0) @db.Decimal(18, 2)
+  totalPurchased Decimal   @default(0) @db.Decimal(18, 0)
+  totalDebt      Decimal   @default(0) @db.Decimal(18, 0)
+  totalInvoiced  Decimal   @default(0) @db.Decimal(18, 0)
+  totalPoint     Decimal   @default(0) @db.Decimal(18, 0)
+  totalRevenue   Decimal   @default(0) @db.Decimal(18, 0)
   rewardPoint    Int       @default(0)
   locationName   String?
-  psidFacebook   String?
-  isWalkIn       Boolean   @default(false)
   isActive       Boolean   @default(true)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
