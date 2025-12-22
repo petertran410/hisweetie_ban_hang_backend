@@ -172,13 +172,32 @@ model Customer {
   phone          String?
   facebook       String?
   zalo           String?
-  address        String?
-  locationName   String?
-  wardName       String?
   email          String?
+  
+  cityCode       String?
+  cityName       String?
+  districtCode   String?
+  districtName   String?
+  wardCode       String?
+  wardName       String?
+  address        String?
+  
   type           Int       @default(0)
   organization   String?
   taxCode        String?
+  
+  invoiceBuyerName        String?
+  invoiceCityCode         String?
+  invoiceCityName         String?
+  invoiceWardCode         String?
+  invoiceWardName         String?
+  invoiceAddress          String?
+  invoiceCccdCmnd         String?
+  invoiceBankAccount      String?
+  invoiceEmail            String?
+  invoicePhone            String?
+  invoiceDvqhnsCode       String?
+  
   comments       String?
   customerTypeId Int?
   branchId       Int?
@@ -188,6 +207,7 @@ model Customer {
   totalPoint     Decimal   @default(0) @db.Decimal(18, 4)
   totalRevenue   Decimal   @default(0) @db.Decimal(18, 2)
   rewardPoint    Int       @default(0)
+  locationName   String?
   psidFacebook   String?
   isWalkIn       Boolean   @default(false)
   isActive       Boolean   @default(true)
