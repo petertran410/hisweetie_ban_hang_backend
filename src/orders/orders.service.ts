@@ -314,16 +314,8 @@ export class OrdersService {
   }
 
   private async generateCode(): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await this.prisma.order.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `HD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+    const count = await this.prisma.customer.count();
+    return `DH${String(count + 1).padStart(6, '0')}`;
   }
 
   private async calculateTotals(orderId: number, tx: any) {
