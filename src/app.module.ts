@@ -37,6 +37,7 @@ import { CustomerGroupsModule } from './customer-groups/customer-groups.module';
 import { InventoriesModule } from './inventories/inventories.module';
 import { SettingsModule } from './settings/settings.module';
 import { TransfersModule } from './transfers/transfers.module';
+import { SaleChannelsModule } from './sale-channels/sale-channels.module';
 
 @Module({
   imports: [
@@ -74,6 +75,7 @@ import { TransfersModule } from './transfers/transfers.module';
     TagsModule,
     PostMetaModule,
     TransfersModule,
+    SaleChannelsModule,
   ],
   providers: [
     {

@@ -16,7 +16,6 @@ export class OrdersService {
       const warnings: any[] = [];
       let primaryPriceBook: any = null;
 
-      // Get applicable price books
       const applicablePriceBooks =
         await this.priceBooksService.getApplicablePriceBooks({
           branchId: dto.branchId,
@@ -28,7 +27,6 @@ export class OrdersService {
         primaryPriceBook = applicablePriceBooks[0];
       }
 
-      // Process items
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
@@ -137,7 +135,18 @@ export class OrdersService {
   }
 
   async findAll(query: OrderQueryDto) {
-    const { page = 1, limit = 10, search, status, customerId } = query;
+    const {
+      page = 1,
+      limit = 10,
+      search,
+      status,
+      customerId,
+      branchId,
+      fromDate,
+      toDate,
+      soldById,
+      saleChannelId,
+    } = query;
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -146,6 +155,16 @@ export class OrdersService {
     }
     if (status) where.orderStatus = status;
     if (customerId) where.customerId = customerId;
+    if (branchId) where.branchId = branchId;
+    if (soldById) where.soldById = soldById;
+    if (saleChannelId) where.saleChannelId = saleChannelId;
+
+    if (fromDate && toDate) {
+      where.orderDate = {
+        gte: new Date(fromDate),
+        lte: new Date(toDate),
+      };
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.order.findMany({
@@ -154,6 +173,7 @@ export class OrdersService {
         take: limit,
         include: {
           customer: true,
+          soldBy: { select: { id: true, name: true } },
           items: { include: { product: true } },
           payments: true,
         },

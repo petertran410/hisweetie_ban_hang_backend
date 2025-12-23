@@ -117,28 +117,51 @@ export class UpdateOrderDto {
 }
 
 export class OrderQueryDto {
-  @IsInt()
   @IsOptional()
   @Type(() => Number)
+  @IsInt()
   page?: number;
 
-  @IsInt()
   @IsOptional()
   @Type(() => Number)
+  @IsInt()
   limit?: number;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   search?: string;
 
-  @IsString()
   @IsOptional()
+  @IsString()
   status?: string;
 
-  @IsInt()
   @IsOptional()
   @Type(() => Number)
+  @IsInt()
   customerId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsString()
+  toDate?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  soldById?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  saleChannelId?: number;
 }
 
 export class CreateOrderPaymentDto {
