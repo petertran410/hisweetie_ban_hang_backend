@@ -10,6 +10,48 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
+export class DeliveryInfoDto {
+  @IsString()
+  @IsOptional()
+  receiver?: string;
+
+  @IsString()
+  @IsOptional()
+  contactNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  address?: string;
+
+  @IsString()
+  @IsOptional()
+  locationName?: string;
+
+  @IsString()
+  @IsOptional()
+  wardName?: string;
+
+  @IsNumber()
+  @IsOptional()
+  weight?: number;
+
+  @IsNumber()
+  @IsOptional()
+  length?: number;
+
+  @IsNumber()
+  @IsOptional()
+  width?: number;
+
+  @IsNumber()
+  @IsOptional()
+  height?: number;
+
+  @IsString()
+  @IsOptional()
+  noteForDriver?: string;
+}
+
 export class OrderItemDto {
   @IsInt()
   productId: number;
@@ -74,6 +116,11 @@ export class CreateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
+
+  @ValidateNested()
+  @Type(() => DeliveryInfoDto)
+  @IsOptional()
+  delivery?: DeliveryInfoDto;
 }
 
 export class UpdateOrderDto {

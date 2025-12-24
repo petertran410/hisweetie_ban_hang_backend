@@ -660,6 +660,7 @@ model OrderDelivery {
   length            Decimal?  @db.Decimal(18, 4)
   width             Decimal?  @db.Decimal(18, 4)
   height            Decimal?  @db.Decimal(18, 4)
+  noteForDriver     String?
   partnerDeliveryId Int?
   expectedDelivery  DateTime?
   createdAt         DateTime  @default(now())

@@ -37,7 +37,6 @@ export class OrdersService {
             throw new Error(`Product ${item.productId} not found`);
           }
 
-          // Get price from price book
           const priceInfo = await this.priceBooksService.getPriceForProduct({
             productId: item.productId,
             branchId: dto.branchId,
@@ -47,7 +46,6 @@ export class OrdersService {
 
           let finalPrice = item.unitPrice || priceInfo.price;
 
-          // Check if product is in price book
           if (!priceInfo.priceBookId && primaryPriceBook) {
             if (!primaryPriceBook.allowNonListedProducts) {
               throw new Error(
@@ -88,7 +86,6 @@ export class OrdersService {
         }),
       );
 
-      // Create order
       const order = await tx.order.create({
         data: {
           code,
@@ -105,9 +102,26 @@ export class OrdersService {
           items: {
             create: itemsData,
           },
+          delivery: dto.delivery
+            ? {
+                create: {
+                  receiver: dto.delivery.receiver || '',
+                  contactNumber: dto.delivery.contactNumber || '',
+                  address: dto.delivery.address || '',
+                  locationName: dto.delivery.locationName,
+                  wardName: dto.delivery.wardName,
+                  weight: dto.delivery.weight,
+                  length: dto.delivery.length || 10,
+                  width: dto.delivery.width || 10,
+                  height: dto.delivery.height || 10,
+                  noteForDriver: dto.delivery.noteForDriver,
+                },
+              }
+            : undefined,
         },
         include: {
           items: true,
+          delivery: true,
         },
       });
 
@@ -127,6 +141,7 @@ export class OrdersService {
           customer: true,
           items: { include: { product: true } },
           payments: true,
+          delivery: true,
         },
       });
 
@@ -319,30 +334,46 @@ export class OrdersService {
   }
 
   private async calculateTotals(orderId: number, tx: any) {
-    const items = await tx.orderItem.findMany({ where: { orderId } });
-    const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + Number(item.totalPrice),
-      0,
-    );
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: true, payments: true },
+    });
 
-    const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    const grandTotal = totalAmount - Number(order.discount);
-    const payments = await tx.orderPayment.findMany({ where: { orderId } });
-    const paidAmount = payments.reduce(
-      (sum: number, p: any) => sum + Number(p.amount),
+    const totalAmount = order.items.reduce(
+      (sum, item) => sum + Number(item.totalPrice),
       0,
     );
-    const debtAmount = grandTotal - paidAmount;
+
+    const finalDiscount =
+      Number(order.discount) +
+      (totalAmount * Number(order.discountRatio)) / 100;
+
+    const grandTotal = totalAmount - finalDiscount;
+
+    const paidAmount =
+      order.payments.reduce((sum, payment) => sum + Number(payment.amount), 0) +
+      Number(order.depositAmount);
+
+    const debtAmount = Math.max(0, grandTotal - paidAmount);
 
     let paymentStatus = 'unpaid';
-    if (paidAmount >= grandTotal) paymentStatus = 'paid';
-    else if (paidAmount > 0) paymentStatus = 'partial';
+    if (paidAmount >= grandTotal) {
+      paymentStatus = 'paid';
+    } else if (paidAmount > 0) {
+      paymentStatus = 'partial';
+    }
 
     await tx.order.update({
       where: { id: orderId },
-      data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
+      data: {
+        totalAmount,
+        grandTotal,
+        paidAmount,
+        debtAmount,
+        paymentStatus,
+      },
     });
   }
 
