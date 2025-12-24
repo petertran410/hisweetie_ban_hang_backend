@@ -87,7 +87,7 @@ export class OrderPaymentsService {
     if (!order) return;
 
     const debtAmount = Number(order.grandTotal) - paidAmount;
-    let paymentStatus = 'unpaid';
+    let paymentStatus = 'Draft';
     if (paidAmount >= Number(order.grandTotal)) paymentStatus = 'paid';
     else if (paidAmount > 0) paymentStatus = 'partial';
 

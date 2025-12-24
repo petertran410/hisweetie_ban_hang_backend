@@ -329,8 +329,24 @@ export class OrdersService {
   }
 
   private async generateCode(): Promise<string> {
-    const count = await this.prisma.customer.count();
-    return `DH${String(count + 1).padStart(6, '0')}`;
+    const lastOrder = await this.prisma.order.findFirst({
+      where: {
+        code: {
+          startsWith: 'DH',
+        },
+      },
+      orderBy: {
+        code: 'desc',
+      },
+    });
+
+    let nextNumber = 1;
+    if (lastOrder && lastOrder.code) {
+      const currentNumber = parseInt(lastOrder.code.replace('DH', ''), 10);
+      nextNumber = currentNumber + 1;
+    }
+
+    return `DH${String(nextNumber).padStart(6, '0')}`;
   }
 
   private async calculateTotals(orderId: number, tx: any) {
@@ -358,7 +374,7 @@ export class OrdersService {
 
     const debtAmount = Math.max(0, grandTotal - paidAmount);
 
-    let paymentStatus = 'unpaid';
+    let paymentStatus = 'Draft';
     if (paidAmount >= grandTotal) {
       paymentStatus = 'paid';
     } else if (paidAmount > 0) {

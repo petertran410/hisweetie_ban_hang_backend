@@ -237,7 +237,7 @@ export class PurchaseOrdersService {
       totalAmount + Number(po.shippingFee) + Number(po.otherFees);
     const debtAmount = grandTotal - Number(po.paidAmount);
 
-    let paymentStatus = 'unpaid';
+    let paymentStatus = 'Draft';
     if (Number(po.paidAmount) >= grandTotal) paymentStatus = 'paid';
     else if (Number(po.paidAmount) > 0) paymentStatus = 'partial';
 

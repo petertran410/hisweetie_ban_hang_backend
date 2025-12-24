@@ -560,8 +560,8 @@ model Order {
   paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
   debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
   depositAmount Decimal  @default(0) @db.Decimal(18, 2)
-  paymentStatus String   @default("unpaid")
-  orderStatus   String   @default("pending")
+  paymentStatus String   @default("Draft")
+  orderStatus   String   @default("Draft")
   usingCod      Boolean  @default(false)
   description   String?
   createdBy     Int
@@ -815,7 +815,7 @@ model PurchaseOrder {
   grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
   paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
   debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  paymentStatus String   @default("unpaid")
+  paymentStatus String   @default("Draft")
   partnerType   String?
   isDraft       Boolean  @default(false)
   description   String?
