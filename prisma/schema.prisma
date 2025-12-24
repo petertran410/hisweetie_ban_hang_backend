@@ -196,11 +196,11 @@ model Customer {
   comments       String?
   customerTypeId Int?
   branchId       Int?
-  totalPurchased Decimal   @default(0) @db.Decimal(18, 0)
-  totalDebt      Decimal   @default(0) @db.Decimal(18, 0)
-  totalInvoiced  Decimal   @default(0) @db.Decimal(18, 0)
-  totalPoint     Decimal   @default(0) @db.Decimal(18, 0)
-  totalRevenue   Decimal   @default(0) @db.Decimal(18, 0)
+  totalPurchased Decimal   @default(0)
+  totalDebt      Decimal   @default(0)
+  totalInvoiced  Decimal   @default(0)
+  totalPoint     Decimal   @default(0)
+  totalRevenue   Decimal   @default(0)
   rewardPoint    Int       @default(0)
   locationName   String?
   isActive       Boolean   @default(true)
@@ -303,10 +303,10 @@ model Product {
   type            Int      @default(2)
   allowsSale      Boolean  @default(true)
   hasVariants     Boolean  @default(false)
-  basePrice       Decimal  @default(0) @db.Decimal(18, 2)
+  basePrice       Decimal  @default(0)
   unit            String?
-  conversionValue Decimal  @default(1) @db.Decimal(18, 4)
-  weight          Decimal? @db.Decimal(18, 4)
+  conversionValue Decimal  @default(1)
+  weight          Decimal?
   weightUnit      String?  @default("kg")
   attributesText  String?
   isRewardPoint   Boolean  @default(true)
@@ -340,7 +340,7 @@ model ProductComponent {
   id                 Int      @id @default(autoincrement())
   comboProductId     Int
   componentProductId Int
-  quantity           Decimal  @db.Decimal(18, 4)
+  quantity           Decimal
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -382,12 +382,12 @@ model Inventory {
   productName String
   branchId    Int
   branchName  String
-  cost        Decimal  @default(0) @db.Decimal(18, 2)
-  onHand      Decimal  @default(0) @db.Decimal(18, 4)
-  reserved    Decimal  @default(0) @db.Decimal(18, 4)
-  onOrder     Decimal  @default(0) @db.Decimal(18, 4)
-  minQuality  Decimal  @default(0) @db.Decimal(18, 4)
-  maxQuality  Decimal  @default(0) @db.Decimal(18, 4)
+  cost        Decimal  @default(0)
+  onHand      Decimal  @default(0)
+  reserved    Decimal  @default(0)
+  onOrder     Decimal  @default(0)
+  minQuality  Decimal  @default(0)
+  maxQuality  Decimal  @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -426,7 +426,7 @@ model PriceBookDetail {
   id          Int       @id @default(autoincrement())
   priceBookId Int
   productId   Int
-  price       Decimal   @db.Decimal(18, 2)
+  price       Decimal  
   isActive    Boolean   @default(true)
   startDate   DateTime?
   endDate     DateTime?
@@ -500,8 +500,8 @@ model Surcharge {
   id         Int      @id @default(autoincrement())
   code       String   @unique
   name       String
-  valueRatio Decimal? @db.Decimal(18, 4)
-  value      Decimal? @db.Decimal(18, 2)
+  valueRatio Decimal?
+  value      Decimal?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -553,13 +553,13 @@ model Order {
   soldById      Int?
   saleChannelId Int?
   orderDate     DateTime @default(now())
-  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  depositAmount Decimal  @default(0) @db.Decimal(18, 2)
+  totalAmount   Decimal  @default(0)
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  grandTotal    Decimal  @default(0)
+  paidAmount    Decimal  @default(0)
+  debtAmount    Decimal  @default(0)
+  depositAmount Decimal  @default(0)
   paymentStatus String   @default("Draft")
   orderStatus   String   @default("Draft")
   usingCod      Boolean  @default(false)
@@ -587,12 +587,12 @@ model OrderItem {
   productId     Int
   productCode   String
   productName   String
-  quantity      Decimal  @db.Decimal(18, 4)
-  price         Decimal  @db.Decimal(18, 2)
-  appliedPrice  Decimal  @db.Decimal(18, 2)  // THÊM FIELD NÀY
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice    Decimal  @db.Decimal(18, 2)
+  quantity      Decimal
+  price         Decimal 
+  appliedPrice  Decimal   // THÊM FIELD NÀY
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  totalPrice    Decimal 
   note          String?
   serialNumbers String?
   createdAt     DateTime @default(now())
@@ -608,7 +608,7 @@ model OrderPayment {
   id            Int      @id @default(autoincrement())
   code          String   @unique
   orderId       Int
-  amount        Decimal  @db.Decimal(18, 2)
+  amount        Decimal 
   paymentDate   DateTime @default(now())
   paymentMethod String   @default("cash")
   accountId     Int?
@@ -632,8 +632,8 @@ model OrderSurcharge {
   orderId       Int
   surchargeId   Int?
   surchargeName String
-  surValue      Decimal? @db.Decimal(18, 4)
-  price         Decimal? @db.Decimal(18, 2)
+  surValue      Decimal?
+  price         Decimal?
   createdAt     DateTime @default(now())
 
   order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -649,17 +649,17 @@ model OrderDelivery {
   type              Int?
   status            Int       @default(1)
   statusValue       String?
-  price             Decimal?  @db.Decimal(18, 2)
+  price             Decimal? 
   receiver          String
   contactNumber     String
   address           String
   locationId        Int?
   locationName      String?
   wardName          String?
-  weight            Decimal?  @db.Decimal(18, 4)
-  length            Decimal?  @db.Decimal(18, 4)
-  width             Decimal?  @db.Decimal(18, 4)
-  height            Decimal?  @db.Decimal(18, 4)
+  weight            Decimal?
+  length            Decimal?
+  width             Decimal?
+  height            Decimal?
   noteForDriver     String?
   partnerDeliveryId Int?
   expectedDelivery  DateTime?
@@ -683,12 +683,12 @@ model Invoice {
   soldById      Int?
   saleChannelId Int?
   purchaseDate  DateTime @default(now())
-  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  totalAmount   Decimal  @default(0)
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  grandTotal    Decimal  @default(0)
+  paidAmount    Decimal  @default(0)
+  debtAmount    Decimal  @default(0)
   status        Int      @default(1)
   statusValue   String?
   usingCod      Boolean  @default(false)
@@ -716,11 +716,11 @@ model InvoiceDetail {
   productId     Int
   productCode   String
   productName   String
-  quantity      Decimal  @db.Decimal(18, 4)
-  price         Decimal  @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice    Decimal  @db.Decimal(18, 2)
+  quantity      Decimal
+  price         Decimal 
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  totalPrice    Decimal 
   note          String?
   serialNumbers String?
   createdAt     DateTime @default(now())
@@ -736,7 +736,7 @@ model InvoicePayment {
   id            Int      @id @default(autoincrement())
   code          String   @unique
   invoiceId     Int
-  amount        Decimal  @db.Decimal(18, 2)
+  amount        Decimal 
   paymentDate   DateTime @default(now())
   paymentMethod String   @default("cash")
   accountId     Int?
@@ -758,8 +758,8 @@ model InvoiceSurcharge {
   invoiceId     Int
   surchargeId   Int?
   surchargeName String
-  surValue      Decimal? @db.Decimal(18, 4)
-  price         Decimal? @db.Decimal(18, 2)
+  surValue      Decimal?
+  price         Decimal?
   createdAt     DateTime @default(now())
 
   invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
@@ -775,20 +775,20 @@ model InvoiceDelivery {
   type              Int?
   status            Int      @default(1)
   statusValue       String?
-  price             Decimal? @db.Decimal(18, 2)
+  price             Decimal?
   receiver          String
   contactNumber     String
   address           String
   locationId        Int?
   locationName      String?
   wardName          String?
-  weight            Decimal? @db.Decimal(18, 4)
-  length            Decimal? @db.Decimal(18, 4)
-  width             Decimal? @db.Decimal(18, 4)
-  height            Decimal? @db.Decimal(18, 4)
+  weight            Decimal?
+  length            Decimal?
+  width             Decimal?
+  height            Decimal?
   partnerDeliveryId Int?
   usingPriceCod     Boolean  @default(false)
-  priceCodPayment   Decimal? @db.Decimal(18, 2)
+  priceCodPayment   Decimal?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -807,14 +807,14 @@ model PurchaseOrder {
   supplierId    Int
   branchId      Int?
   purchaseDate  DateTime
-  totalAmount   Decimal  @default(0) @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  shippingFee   Decimal  @default(0) @db.Decimal(18, 2)
-  otherFees     Decimal  @default(0) @db.Decimal(18, 2)
-  grandTotal    Decimal  @default(0) @db.Decimal(18, 2)
-  paidAmount    Decimal  @default(0) @db.Decimal(18, 2)
-  debtAmount    Decimal  @default(0) @db.Decimal(18, 2)
+  totalAmount   Decimal  @default(0)
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  shippingFee   Decimal  @default(0)
+  otherFees     Decimal  @default(0)
+  grandTotal    Decimal  @default(0)
+  paidAmount    Decimal  @default(0)
+  debtAmount    Decimal  @default(0)
   paymentStatus String   @default("Draft")
   partnerType   String?
   isDraft       Boolean  @default(false)
@@ -841,11 +841,11 @@ model PurchaseOrderItem {
   productId       Int
   productCode     String
   productName     String
-  quantity        Decimal  @db.Decimal(18, 4)
-  price           Decimal  @db.Decimal(18, 2)
-  discount        Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio   Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice      Decimal  @db.Decimal(18, 2)
+  quantity        Decimal
+  price           Decimal 
+  discount        Decimal  @default(0)
+  discountRatio   Decimal  @default(0)
+  totalPrice      Decimal 
   description     String?
   serialNumbers   String?
   createdAt       DateTime @default(now())
@@ -861,7 +861,7 @@ model PurchaseOrderPayment {
   id              Int      @id @default(autoincrement())
   code            String   @unique
   purchaseOrderId Int
-  amount          Decimal  @db.Decimal(18, 2)
+  amount          Decimal 
   paymentDate     DateTime @default(now())
   paymentMethod   String   @default("cash")
   accountId       Int?
@@ -882,8 +882,8 @@ model PurchaseOrderSurcharge {
   purchaseOrderId   Int
   surchargeCode     String
   surchargeName     String
-  value             Decimal? @db.Decimal(18, 2)
-  valueRatio        Decimal? @db.Decimal(18, 4)
+  value             Decimal?
+  valueRatio        Decimal?
   isSupplierExpense Boolean  @default(false)
   type              Int      @default(0)
   createdAt         DateTime @default(now())
@@ -977,8 +977,8 @@ model Transfer {
   toBranchName      String
   noteBySource      String?
   noteByDestination String?
-  totalTransfer     Decimal  @default(0) @db.Decimal(18, 2)
-  totalReceive      Decimal  @default(0) @db.Decimal(18, 2)
+  totalTransfer     Decimal  @default(0)
+  totalReceive      Decimal  @default(0)
   isActive          Boolean  @default(true)
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -997,12 +997,12 @@ model TransferDetail {
   productId            Int
   productCode          String
   productName          String
-  sendQuantity         Decimal  @db.Decimal(18, 4)
-  receivedQuantity     Decimal  @default(0) @db.Decimal(18, 4)
-  sendPrice            Decimal  @db.Decimal(18, 2)
-  receivePrice         Decimal  @default(0) @db.Decimal(18, 2)
-  totalTransfer        Decimal  @db.Decimal(18, 2)
-  totalReceive         Decimal  @default(0) @db.Decimal(18, 2)
+  sendQuantity         Decimal
+  receivedQuantity     Decimal  @default(0)
+  sendPrice            Decimal 
+  receivePrice         Decimal  @default(0)
+  totalTransfer        Decimal 
+  totalReceive         Decimal  @default(0)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
