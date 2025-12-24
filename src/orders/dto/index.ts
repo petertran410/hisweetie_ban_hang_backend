@@ -81,8 +81,7 @@ export class OrderItemDto {
 
 export class CreateOrderDto {
   @IsInt()
-  @IsOptional()
-  customerId?: number;
+  customerId: number;
 
   @IsInt()
   @IsOptional()
