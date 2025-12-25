@@ -205,6 +205,7 @@ export class OrdersService {
       where: { id },
       include: {
         customer: true,
+        branch: true,
         creator: { select: { id: true, name: true } },
         items: { include: { product: true } },
         payments: {
