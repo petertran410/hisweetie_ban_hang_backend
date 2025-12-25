@@ -134,7 +134,7 @@ export class OrdersService {
     return this.prisma.$transaction(async (tx) => {
       const existingOrder = await tx.order.findUnique({
         where: { id },
-        include: { items: true },
+        include: { items: true, delivery: true },
       });
 
       if (!existingOrder) {
@@ -206,6 +206,42 @@ export class OrdersService {
         where: { id },
         data: updateData,
       });
+
+      if (dto.delivery) {
+        if (existingOrder.delivery) {
+          await tx.orderDelivery.update({
+            where: { orderId: id },
+            data: {
+              receiver: dto.delivery.receiver || '',
+              contactNumber: dto.delivery.contactNumber || '',
+              address: dto.delivery.address || '',
+              locationName: dto.delivery.locationName,
+              wardName: dto.delivery.wardName,
+              weight: dto.delivery.weight,
+              length: dto.delivery.length || 10,
+              width: dto.delivery.width || 10,
+              height: dto.delivery.height || 10,
+              noteForDriver: dto.delivery.noteForDriver,
+            },
+          });
+        } else {
+          await tx.orderDelivery.create({
+            data: {
+              orderId: id,
+              receiver: dto.delivery.receiver || '',
+              contactNumber: dto.delivery.contactNumber || '',
+              address: dto.delivery.address || '',
+              locationName: dto.delivery.locationName,
+              wardName: dto.delivery.wardName,
+              weight: dto.delivery.weight,
+              length: dto.delivery.length || 10,
+              width: dto.delivery.width || 10,
+              height: dto.delivery.height || 10,
+              noteForDriver: dto.delivery.noteForDriver,
+            },
+          });
+        }
+      }
 
       await this.calculateTotals(id, tx);
 

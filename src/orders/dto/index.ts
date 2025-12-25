@@ -168,6 +168,11 @@ export class UpdateOrderDto {
   @Type(() => OrderItemDto)
   @IsOptional()
   items?: OrderItemDto[];
+
+  @ValidateNested()
+  @Type(() => DeliveryInfoDto)
+  @IsOptional()
+  delivery?: DeliveryInfoDto;
 }
 
 export class OrderQueryDto {
