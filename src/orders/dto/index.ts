@@ -103,6 +103,10 @@ export class CreateOrderDto {
   @IsOptional()
   depositAmount?: number;
 
+  @IsNumber()
+  @IsOptional()
+  saleChannelId?: number;
+
   @IsString()
   @IsOptional()
   notes?: string;
@@ -146,6 +150,10 @@ export class UpdateOrderDto {
   @IsNumber()
   @IsOptional()
   depositAmount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleChannelId?: number;
 
   @IsString()
   @IsOptional()

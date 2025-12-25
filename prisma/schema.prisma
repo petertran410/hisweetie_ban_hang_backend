@@ -562,6 +562,8 @@ model Order {
   depositAmount Decimal  @default(0)
   paymentStatus String   @default("Draft")
   orderStatus   String   @default("Draft")
+  status        Int      @default(1)
+  statusValue   String?
   usingCod      Boolean  @default(false)
   description   String?
   createdBy     Int
