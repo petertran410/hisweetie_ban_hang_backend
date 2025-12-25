@@ -1,9 +1,9 @@
 export const ORDER_STATUS = {
   PENDING: 1,
-  CONFIRMED: 2,
-  PROCESSING: 3,
-  COMPLETED: 4,
-  CANCELLED: 5,
+  CONFIRMED: 5,
+  PROCESSING: 2,
+  COMPLETED: 3,
+  CANCELLED: 4,
 } as const;
 
 export const ORDER_STATUS_LABELS = {

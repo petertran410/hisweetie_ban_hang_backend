@@ -3,7 +3,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import {
   convertStatusStringToNumber,
-  convertStatusNumberToString,
   getStatusLabel,
   ORDER_STATUS,
 } from './dto/order-status.constants';
