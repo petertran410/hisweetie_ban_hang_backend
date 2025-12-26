@@ -1,14 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
-import { Prisma } from '@prisma/client';
-
-const INVOICE_STATUS = {
-  PROCESSING: 3,
-  COMPLETED: 1,
-  CANCELLED: 2,
-  NOT_DELIVERED: 5,
-};
 
 @Injectable()
 export class InvoicesService {
@@ -17,54 +9,69 @@ export class InvoicesService {
   async findAll(query: InvoiceQueryDto) {
     const {
       page = 1,
-      limit = 10,
+      limit = 20,
       search,
-      status,
-      customerId,
-      branchId,
-      fromDate,
-      toDate,
-      soldById,
-      saleChannelId,
+      customerIds,
+      branchIds,
+      statusIds,
+      fromPurchaseDate,
+      toPurchaseDate,
+      fromCreatedDate,
+      toCreatedDate,
     } = query;
-    const skip = (page - 1) * limit;
 
     const where: any = {};
+
     if (search) {
-      where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
-    }
-    if (status) where.status = status;
-    if (customerId) where.customerId = customerId;
-    if (branchId) where.branchId = branchId;
-    if (soldById) where.soldById = soldById;
-    if (saleChannelId) where.saleChannelId = saleChannelId;
-
-    if (fromDate && toDate) {
-      where.purchaseDate = {
-        gte: new Date(fromDate),
-        lte: new Date(toDate),
-      };
+      where.OR = [
+        { code: { contains: search } },
+        { customer: { name: { contains: search } } },
+        { description: { contains: search } },
+      ];
     }
 
-    const [data, total] = await Promise.all([
+    if (customerIds && customerIds.length > 0) {
+      where.customerId = { in: customerIds };
+    }
+
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    }
+
+    if (statusIds && statusIds.length > 0) {
+      where.status = { in: statusIds };
+    }
+
+    if (fromPurchaseDate || toPurchaseDate) {
+      where.purchaseDate = {};
+      if (fromPurchaseDate) where.purchaseDate.gte = new Date(fromPurchaseDate);
+      if (toPurchaseDate) where.purchaseDate.lte = new Date(toPurchaseDate);
+    }
+
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
+
+    const [invoices, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
-        skip,
-        take: limit,
         include: {
-          customer: true,
-          branch: true,
-          soldBy: true,
-          creator: true,
-          saleChannel: true,
-          delivery: true,
+          customer: { select: { id: true, name: true, phone: true } },
+          branch: { select: { id: true, name: true } },
+          soldBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          details: { include: { product: true } },
         },
         orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * limit,
+        take: limit,
       }),
       this.prisma.invoice.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    return { data: invoices, total, page, limit };
   }
 
   async findOne(id: number) {
@@ -75,368 +82,175 @@ export class InvoicesService {
         branch: true,
         soldBy: true,
         creator: true,
-        saleChannel: true,
-        details: {
-          include: { product: true },
-        },
+        details: { include: { product: true } },
         payments: true,
-        surcharges: true,
-        delivery: {
-          include: {
-            location: true,
-            partnerDelivery: true,
-          },
-        },
+        delivery: true,
       },
     });
 
     if (!invoice) {
-      throw new NotFoundException('Không tìm thấy hóa đơn');
+      throw new NotFoundException(`Invoice with ID ${id} not found`);
     }
 
     return invoice;
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const lastInvoice = await tx.invoice.findFirst({
-        orderBy: { id: 'desc' },
-      });
-      const code = `HD${String((lastInvoice?.id || 0) + 1).padStart(6, '0')}`;
+    const invoiceCount = await this.prisma.invoice.count();
+    const code = `INV${String(invoiceCount + 1).padStart(6, '0')}`;
 
-      const invoice = await tx.invoice.create({
-        data: {
-          code,
-          customerId: dto.customerId,
+    const totalAmount = dto.items.reduce(
+      (sum, item) => sum + item.totalPrice,
+      0,
+    );
+    const discountAmount = dto.discountAmount || 0;
+    const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
+    const grandTotal = totalAmount - discountAmount - discountFromRatio;
+    const paidAmount = dto.paidAmount || 0;
+    const debtAmount = grandTotal - paidAmount;
+
+    const invoice = await this.prisma.invoice.create({
+      data: {
+        code,
+        customerId: dto.customerId,
+        branchId: dto.branchId,
+        soldById: dto.soldById,
+        saleChannelId: dto.saleChannelId,
+        purchaseDate: dto.purchaseDate
+          ? new Date(dto.purchaseDate)
+          : new Date(),
+        totalAmount,
+        discount: discountAmount,
+        discountRatio: dto.discountRatio || 0,
+        grandTotal,
+        paidAmount,
+        debtAmount,
+        usingCod: dto.usingCod || false,
+        description: dto.description,
+        createdBy: userId,
+        details: {
+          create: dto.items.map((item) => ({
+            productId: item.productId,
+            productCode: item.productCode,
+            productName: item.productName,
+            quantity: item.quantity,
+            price: item.price,
+            discount: item.discount || 0,
+            discountRatio: item.discountRatio || 0,
+            totalPrice: item.totalPrice,
+            note: item.note,
+          })),
+        },
+        ...(dto.delivery && {
+          delivery: {
+            create: {
+              receiver: dto.delivery.receiver,
+              contactNumber: dto.delivery.contactNumber,
+              address: dto.delivery.address,
+              locationName: dto.delivery.locationName,
+              wardName: dto.delivery.wardName,
+              weight: dto.delivery.weight,
+              length: dto.delivery.length,
+              width: dto.delivery.width,
+              height: dto.delivery.height,
+            },
+          },
+        }),
+      },
+      include: {
+        details: true,
+        delivery: true,
+      },
+    });
+
+    for (const item of dto.items) {
+      await this.prisma.inventory.updateMany({
+        where: {
+          productId: item.productId,
           branchId: dto.branchId,
-          soldById: userId,
-          saleChannelId: dto.saleChannelId,
-          purchaseDate: dto.purchaseDate
-            ? new Date(dto.purchaseDate)
-            : new Date(),
-          discount: dto.discountAmount || 0,
-          discountRatio: dto.discountRatio || 0,
-          usingCod: dto.usingCod || false,
-          description: dto.notes,
-          status: INVOICE_STATUS.PROCESSING,
-          statusValue: 'Đang xử lý',
-          createdBy: userId,
+        },
+        data: {
+          onHand: { decrement: item.quantity },
         },
       });
+    }
 
-      if (dto.items && dto.items.length > 0) {
-        const itemsData = await Promise.all(
-          dto.items.map(async (item) => {
-            const product = await tx.product.findUnique({
-              where: { id: item.productId },
-            });
-
-            if (!product) {
-              throw new NotFoundException(
-                `Không tìm thấy sản phẩm với ID ${item.productId}`,
-              );
-            }
-
-            const itemDiscount = item.discount || 0;
-            const itemDiscountRatio = item.discountRatio || 0;
-            const totalPrice =
-              item.quantity * item.unitPrice -
-              itemDiscount -
-              (item.quantity * item.unitPrice * itemDiscountRatio) / 100;
-
-            return {
-              invoiceId: invoice.id,
-              productId: item.productId,
-              productCode: product.code,
-              productName: product.name,
-              quantity: item.quantity,
-              price: item.unitPrice,
-              discount: itemDiscount,
-              discountRatio: itemDiscountRatio,
-              totalPrice: totalPrice,
-              note: item.note || null,
-              serialNumbers: item.serialNumbers || null,
-            };
-          }),
-        );
-
-        await tx.invoiceDetail.createMany({
-          data: itemsData,
-        });
-      }
-
-      if (dto.delivery) {
-        await tx.invoiceDelivery.create({
-          data: {
-            invoiceId: invoice.id,
-            receiver: dto.delivery.receiver || '',
-            contactNumber: dto.delivery.contactNumber || '',
-            address: dto.delivery.address || '',
-            locationName: dto.delivery.locationName,
-            wardName: dto.delivery.wardName,
-            weight: dto.delivery.weight,
-            length: dto.delivery.length || 10,
-            width: dto.delivery.width || 10,
-            height: dto.delivery.height || 10,
-            partnerDeliveryId: dto.delivery.partnerDeliveryId,
-            usingPriceCod: dto.usingCod || false,
-            priceCodPayment: dto.usingCod ? dto.totalPayment : 0,
-          },
-        });
-      }
-
-      await this.calculateTotals(invoice.id, tx);
-
-      if (dto.customerId) {
-        await this.updateCustomerTotals(dto.customerId, tx);
-      }
-
-      return this.findOne(invoice.id);
-    });
+    return invoice;
   }
 
   async update(id: number, dto: UpdateInvoiceDto) {
-    const existingInvoice = await this.prisma.invoice.findUnique({
-      where: { id },
-      include: { delivery: true },
-    });
+    await this.findOne(id);
 
-    if (!existingInvoice) {
-      throw new NotFoundException('Không tìm thấy hóa đơn');
+    const updateData: any = {};
+
+    if (dto.customerId !== undefined) updateData.customerId = dto.customerId;
+    if (dto.branchId !== undefined) updateData.branchId = dto.branchId;
+    if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
+    if (dto.description !== undefined) updateData.description = dto.description;
+
+    if (dto.items) {
+      await this.prisma.invoiceDetail.deleteMany({ where: { invoiceId: id } });
+
+      const totalAmount = dto.items.reduce(
+        (sum, item) => sum + item.totalPrice,
+        0,
+      );
+      const discountAmount = dto.discountAmount || 0;
+      const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
+      const grandTotal = totalAmount - discountAmount - discountFromRatio;
+
+      updateData.totalAmount = totalAmount;
+      updateData.discount = discountAmount;
+      updateData.discountRatio = dto.discountRatio || 0;
+      updateData.grandTotal = grandTotal;
+      updateData.debtAmount = grandTotal - (dto.paidAmount || 0);
+
+      updateData.details = {
+        create: dto.items.map((item) => ({
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          quantity: item.quantity,
+          price: item.price,
+          discount: item.discount || 0,
+          discountRatio: item.discountRatio || 0,
+          totalPrice: item.totalPrice,
+          note: item.note,
+        })),
+      };
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      if (dto.items && dto.items.length > 0) {
-        await tx.invoiceDetail.deleteMany({
-          where: { invoiceId: id },
-        });
-
-        const itemsData = await Promise.all(
-          dto.items.map(async (item) => {
-            const product = await tx.product.findUnique({
-              where: { id: item.productId },
-            });
-
-            if (!product) {
-              throw new NotFoundException(
-                `Không tìm thấy sản phẩm với ID ${item.productId}`,
-              );
-            }
-
-            const itemDiscount = item.discount || 0;
-            const itemDiscountRatio = item.discountRatio || 0;
-            const totalPrice =
-              item.quantity * item.unitPrice -
-              itemDiscount -
-              (item.quantity * item.unitPrice * itemDiscountRatio) / 100;
-
-            return {
-              invoiceId: id,
-              productId: item.productId,
-              productCode: product.code,
-              productName: product.name,
-              quantity: item.quantity,
-              price: item.unitPrice,
-              discount: itemDiscount,
-              discountRatio: itemDiscountRatio,
-              totalPrice: totalPrice,
-              note: item.note || null,
-              serialNumbers: item.serialNumbers || null,
-            };
-          }),
-        );
-
-        await tx.invoiceDetail.createMany({
-          data: itemsData,
-        });
-      }
-
-      const updateData: any = {
-        customerId: dto.customerId,
-        branchId: dto.branchId,
-        purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
-        discount: dto.discountAmount,
-        discountRatio: dto.discountRatio,
-        paidAmount: dto.totalPayment,
-        description: dto.notes,
-      };
-
-      if (dto.invoiceStatus !== undefined) {
-        updateData.status = dto.invoiceStatus;
-        updateData.statusValue = this.getStatusLabel(dto.invoiceStatus);
-      }
-
-      await tx.invoice.update({
-        where: { id },
-        data: updateData,
+    if (dto.delivery) {
+      await this.prisma.invoiceDelivery.deleteMany({
+        where: { invoiceId: id },
       });
-
-      if (dto.delivery) {
-        if (existingInvoice.delivery) {
-          await tx.invoiceDelivery.update({
-            where: { invoiceId: id },
-            data: {
-              receiver: dto.delivery.receiver || '',
-              contactNumber: dto.delivery.contactNumber || '',
-              address: dto.delivery.address || '',
-              locationName: dto.delivery.locationName,
-              wardName: dto.delivery.wardName,
-              weight: dto.delivery.weight,
-              length: dto.delivery.length || 10,
-              width: dto.delivery.width || 10,
-              height: dto.delivery.height || 10,
-            },
-          });
-        } else {
-          await tx.invoiceDelivery.create({
-            data: {
-              invoiceId: id,
-              receiver: dto.delivery.receiver || '',
-              contactNumber: dto.delivery.contactNumber || '',
-              address: dto.delivery.address || '',
-              locationName: dto.delivery.locationName,
-              wardName: dto.delivery.wardName,
-              weight: dto.delivery.weight,
-              length: dto.delivery.length || 10,
-              width: dto.delivery.width || 10,
-              height: dto.delivery.height || 10,
-            },
-          });
-        }
-      }
-
-      await this.calculateTotals(id, tx);
-
-      if (existingInvoice.customerId) {
-        await this.updateCustomerTotals(existingInvoice.customerId, tx);
-      }
-
-      return tx.invoice.findUnique({
-        where: { id },
-        include: {
-          customer: true,
-          details: { include: { product: true } },
-          payments: true,
-          delivery: true,
+      updateData.delivery = {
+        create: {
+          receiver: dto.delivery.receiver,
+          contactNumber: dto.delivery.contactNumber,
+          address: dto.delivery.address,
+          locationName: dto.delivery.locationName,
+          wardName: dto.delivery.wardName,
+          weight: dto.delivery.weight,
+          length: dto.delivery.length,
+          width: dto.delivery.width,
+          height: dto.delivery.height,
         },
-      });
+      };
+    }
+
+    return this.prisma.invoice.update({
+      where: { id },
+      data: updateData,
+      include: {
+        details: true,
+        delivery: true,
+      },
     });
   }
 
   async remove(id: number) {
-    const invoice = await this.prisma.invoice.findUnique({
-      where: { id },
-      include: { customer: true },
-    });
-
-    if (!invoice) {
-      throw new NotFoundException('Không tìm thấy hóa đơn');
-    }
-
-    await this.prisma.invoice.delete({ where: { id } });
-
-    if (invoice.customerId) {
-      await this.updateCustomerTotals(invoice.customerId);
-    }
-
-    return { message: 'Xóa hóa đơn thành công' };
-  }
-
-  private async calculateTotals(
-    invoiceId: number,
-    tx?: Prisma.TransactionClient,
-  ) {
-    const prisma = tx || this.prisma;
-
-    const items = await prisma.invoiceDetail.findMany({
-      where: { invoiceId },
-    });
-
-    const totalAmount = items.reduce(
-      (sum, item) => sum + Number(item.totalPrice),
-      0,
-    );
-
-    const invoice = await prisma.invoice.findUnique({
-      where: { id: invoiceId },
-    });
-
-    if (!invoice) {
-      throw new NotFoundException('Không tìm thấy hóa đơn');
-    }
-
-    const discount = Number(invoice.discount || 0);
-    const discountRatio = Number(invoice.discountRatio || 0);
-    const discountAmount = discount + (totalAmount * discountRatio) / 100;
-    const grandTotal = totalAmount - discountAmount;
-
-    const payments = await prisma.invoicePayment.findMany({
-      where: { invoiceId },
-    });
-
-    const paidAmount = payments.reduce(
-      (sum, payment) => sum + Number(payment.amount),
-      0,
-    );
-
-    const debtAmount = grandTotal - paidAmount;
-
-    await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: {
-        totalAmount,
-        grandTotal,
-        paidAmount,
-        debtAmount,
-      },
-    });
-  }
-
-  private async updateCustomerTotals(
-    customerId: number,
-    tx?: Prisma.TransactionClient,
-  ) {
-    const prisma = tx || this.prisma;
-
-    const invoices = await prisma.invoice.findMany({
-      where: { customerId, status: { not: INVOICE_STATUS.CANCELLED } },
-    });
-
-    const totalInvoiced = invoices.reduce(
-      (sum, inv) => sum + Number(inv.grandTotal),
-      0,
-    );
-    const totalRevenue = invoices.reduce(
-      (sum, inv) => sum + Number(inv.paidAmount),
-      0,
-    );
-    const totalDebt = invoices.reduce(
-      (sum, inv) => sum + Number(inv.debtAmount),
-      0,
-    );
-
-    await prisma.customer.update({
-      where: { id: customerId },
-      data: {
-        totalInvoiced,
-        totalRevenue,
-        totalDebt,
-      },
-    });
-  }
-
-  private getStatusLabel(status: number): string {
-    switch (status) {
-      case INVOICE_STATUS.PROCESSING:
-        return 'Đang xử lý';
-      case INVOICE_STATUS.COMPLETED:
-        return 'Hoàn thành';
-      case INVOICE_STATUS.CANCELLED:
-        return 'Đã hủy';
-      case INVOICE_STATUS.NOT_DELIVERED:
-        return 'Không giao được';
-      default:
-        return 'Không xác định';
-    }
+    await this.findOne(id);
+    return this.prisma.invoice.delete({ where: { id } });
   }
 }
