@@ -361,6 +361,10 @@ export class InvoicesService {
       where: { id: invoiceId },
     });
 
+    if (!invoice) {
+      throw new NotFoundException('Không tìm thấy hóa đơn');
+    }
+
     const discount = Number(invoice.discount || 0);
     const discountRatio = Number(invoice.discountRatio || 0);
     const discountAmount = discount + (totalAmount * discountRatio) / 100;
