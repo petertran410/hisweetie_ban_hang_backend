@@ -38,6 +38,7 @@ import { InventoriesModule } from './inventories/inventories.module';
 import { SettingsModule } from './settings/settings.module';
 import { TransfersModule } from './transfers/transfers.module';
 import { SaleChannelsModule } from './sale-channels/sale-channels.module';
+import { InvoicesModule } from './invoices/invoices.module';
 
 @Module({
   imports: [
@@ -62,6 +63,7 @@ import { SaleChannelsModule } from './sale-channels/sale-channels.module';
     CustomerGroupsModule,
     SuppliersModule,
     OrdersModule,
+    InvoicesModule,
     PurchaseOrdersModule,
     PriceBooksModule,
     // ReportsModule,
