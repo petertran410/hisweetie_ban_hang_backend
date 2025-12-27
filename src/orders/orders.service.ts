@@ -350,15 +350,22 @@ export class OrdersService {
       totalAmount -
       Number(order.discount) -
       (totalAmount * Number(order.discountRatio)) / 100;
-    const debtAmount = grandTotal - Number(order.paidAmount);
 
-    let paymentStatus = 'Draft';
-    if (Number(order.paidAmount) >= grandTotal) paymentStatus = 'paid';
-    else if (Number(order.paidAmount) > 0) paymentStatus = 'partial';
+    const payments = await tx.orderPayment.findMany({ where: { orderId } });
+    const paidAmount = payments.reduce(
+      (sum: number, p: any) => sum + Number(p.amount),
+      0,
+    );
+
+    const debtAmount = grandTotal - paidAmount;
+
+    let paymentStatus = 'unpaid';
+    if (paidAmount >= grandTotal) paymentStatus = 'paid';
+    else if (paidAmount > 0) paymentStatus = 'partial';
 
     await tx.order.update({
       where: { id: orderId },
-      data: { totalAmount, grandTotal, debtAmount, paymentStatus },
+      data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
     });
   }
 
