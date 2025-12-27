@@ -101,6 +101,10 @@ export class CreateOrderDto {
 
   @IsNumber()
   @IsOptional()
+  paidAmount?: number;
+
+  @IsNumber()
+  @IsOptional()
   depositAmount?: number;
 
   @IsNumber()
@@ -138,6 +142,10 @@ export class UpdateOrderDto {
   @IsDateString()
   @IsOptional()
   orderDate?: string;
+
+  @IsNumber()
+  @IsOptional()
+  paidAmount?: number;
 
   @IsNumber()
   @IsOptional()

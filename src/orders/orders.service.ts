@@ -189,6 +189,7 @@ export class OrdersService {
         customerId: dto.customerId,
         branchId: dto.branchId,
         orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
+        paidAmount: dto.paidAmount,
         discount: dto.discountAmount,
         discountRatio: dto.discountRatio,
         depositAmount: dto.depositAmount,
@@ -206,6 +207,8 @@ export class OrdersService {
         where: { id },
         data: updateData,
       });
+
+      console.log(updateData);
 
       if (dto.delivery) {
         if (existingOrder.delivery) {
