@@ -208,8 +208,6 @@ export class OrdersService {
         data: updateData,
       });
 
-      console.log(updateData);
-
       if (dto.delivery) {
         if (existingOrder.delivery) {
           await tx.orderDelivery.update({
