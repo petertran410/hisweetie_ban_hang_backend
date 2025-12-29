@@ -117,7 +117,7 @@ export class InvoicesService {
       const paidAmount = dto.paidAmount || 0;
       const debtAmount = grandTotal - paidAmount;
 
-      let status = INVOICE_STATUS.PROCESSING;
+      let status: number = INVOICE_STATUS.PROCESSING;
       if (debtAmount <= 0) {
         status = INVOICE_STATUS.COMPLETED;
       }
@@ -255,7 +255,8 @@ export class InvoicesService {
         const debtAmount = grandTotal - paidAmount;
 
         const currentInvoice = await tx.invoice.findUnique({ where: { id } });
-        let status = currentInvoice?.status || INVOICE_STATUS.PROCESSING;
+        let status: number =
+          currentInvoice?.status || INVOICE_STATUS.PROCESSING;
 
         if (
           status !== INVOICE_STATUS.CANCELLED &&
