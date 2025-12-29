@@ -9,11 +9,13 @@ export class InvoicesService {
   async findAll(query: InvoiceQueryDto) {
     const {
       page = 1,
-      limit = 20,
+      limit = 15,
       search,
       customerIds,
       branchId,
       statusIds,
+      fromDate,
+      toDate,
       fromPurchaseDate,
       toPurchaseDate,
       fromCreatedDate,
@@ -42,8 +44,10 @@ export class InvoicesService {
       where.status = { in: statusIds };
     }
 
-    if (fromPurchaseDate || toPurchaseDate) {
+    if (fromDate || toDate || fromPurchaseDate || toPurchaseDate) {
       where.purchaseDate = {};
+      if (fromDate) where.purchaseDate.gte = new Date(fromDate);
+      if (toDate) where.purchaseDate.lte = new Date(toDate);
       if (fromPurchaseDate) where.purchaseDate.gte = new Date(fromPurchaseDate);
       if (toPurchaseDate) where.purchaseDate.lte = new Date(toPurchaseDate);
     }

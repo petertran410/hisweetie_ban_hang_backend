@@ -675,8 +675,6 @@ model OrderDelivery {
   @@map("order_deliveries")
 }
 
-// ==================== INVOICE (HÓA ĐƠN) ====================
-
 model Invoice {
   id            Int      @id @default(autoincrement())
   code          String   @unique
@@ -691,7 +689,7 @@ model Invoice {
   grandTotal    Decimal  @default(0)
   paidAmount    Decimal  @default(0)
   debtAmount    Decimal  @default(0)
-  status        Int      @default(1)
+  status        Int      @default(3)
   statusValue   String?
   usingCod      Boolean  @default(false)
   description   String?

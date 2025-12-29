@@ -43,6 +43,14 @@ export class InvoiceQueryDto {
 
   @IsOptional()
   @IsDateString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+
+  @IsOptional()
+  @IsDateString()
   fromPurchaseDate?: string;
 
   @IsOptional()
