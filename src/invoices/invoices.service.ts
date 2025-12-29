@@ -402,6 +402,10 @@ export class InvoicesService {
         throw new BadRequestException('Đơn hàng đã được chuyển thành hóa đơn');
       }
 
+      if (!order.branchId) {
+        throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
+      }
+
       const invoiceCount = await tx.invoice.count();
       const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
 

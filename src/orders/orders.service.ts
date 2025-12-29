@@ -17,6 +17,11 @@ export class OrdersService {
       const orderStatusString = dto.orderStatus || 'pending';
       const orderStatusNumber = convertStatusStringToNumber(orderStatusString);
 
+      if (!dto.branchId) {
+        throw new Error('Branch ID is required');
+      }
+      const branchId = dto.branchId;
+
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
@@ -28,7 +33,7 @@ export class OrdersService {
             where: {
               productId_branchId: {
                 productId: item.productId,
-                branchId: dto.branchId,
+                branchId: branchId,
               },
             },
           });
@@ -68,7 +73,7 @@ export class OrdersService {
         data: {
           code: orderCode,
           customerId: dto.customerId,
-          branchId: dto.branchId,
+          branchId: branchId,
           soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
@@ -238,11 +243,9 @@ export class OrdersService {
 
       await this.calculateTotals(id, tx);
 
-      if (dto.customerId || existingOrder.customerId) {
-        await this.updateCustomerTotals(
-          dto.customerId || existingOrder.customerId,
-          tx,
-        );
+      const finalCustomerId = dto.customerId ?? existingOrder.customerId;
+      if (finalCustomerId) {
+        await this.updateCustomerTotals(finalCustomerId, tx);
       }
 
       return tx.order.findUnique({

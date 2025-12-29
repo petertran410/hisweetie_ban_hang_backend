@@ -111,6 +111,10 @@ export class CreateOrderDto {
   @IsOptional()
   saleChannelId?: number;
 
+  @IsNumber()
+  @IsOptional()
+  soldById?: number;
+
   @IsString()
   @IsOptional()
   notes?: string;
