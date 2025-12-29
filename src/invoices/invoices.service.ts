@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
+import { INVOICE_STATUS } from './dto/invoice-status.constants';
 
 @Injectable()
 export class InvoicesService {
