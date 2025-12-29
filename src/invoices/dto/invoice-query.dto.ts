@@ -30,11 +30,9 @@ export class InvoiceQueryDto {
   customerIds?: number[];
 
   @IsOptional()
-  @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
-  branchIds?: number[];
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
 
   @IsOptional()
   @IsArray()

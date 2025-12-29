@@ -12,7 +12,7 @@ export class InvoicesService {
       limit = 20,
       search,
       customerIds,
-      branchIds,
+      branchId,
       statusIds,
       fromPurchaseDate,
       toPurchaseDate,
@@ -34,8 +34,8 @@ export class InvoicesService {
       where.customerId = { in: customerIds };
     }
 
-    if (branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
+    if (branchId) {
+      where.branchId = branchId;
     }
 
     if (statusIds && statusIds.length > 0) {
@@ -97,7 +97,7 @@ export class InvoicesService {
 
   async create(dto: CreateInvoiceDto, userId: number) {
     const invoiceCount = await this.prisma.invoice.count();
-    const code = `INV${String(invoiceCount + 1).padStart(6, '0')}`;
+    const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
 
     const totalAmount = dto.items.reduce(
       (sum, item) => sum + item.totalPrice,
