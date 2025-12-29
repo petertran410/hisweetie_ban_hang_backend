@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
-import { INVOICE_STATUS } from './dto/invoice-status.constants';
+import { INVOICE_STATUS, getStatusLabel } from './dto/invoice-status.constants';
 
 @Injectable()
 export class InvoicesService {
@@ -68,6 +68,8 @@ export class InvoicesService {
           soldBy: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
           details: { include: { product: true } },
+          payments: true,
+          delivery: true,
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * limit,
@@ -101,39 +103,180 @@ export class InvoicesService {
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
-    const invoiceCount = await this.prisma.invoice.count();
-    const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
+    return this.prisma.$transaction(async (tx) => {
+      const invoiceCount = await tx.invoice.count();
+      const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
 
-    const totalAmount = dto.items.reduce(
-      (sum, item) => sum + item.totalPrice,
-      0,
-    );
-    const discountAmount = dto.discountAmount || 0;
-    const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
-    const grandTotal = totalAmount - discountAmount - discountFromRatio;
-    const paidAmount = dto.paidAmount || 0;
-    const debtAmount = grandTotal - paidAmount;
+      const totalAmount = dto.items.reduce(
+        (sum, item) => sum + item.totalPrice,
+        0,
+      );
+      const discountAmount = dto.discountAmount || 0;
+      const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
+      const grandTotal = totalAmount - discountAmount - discountFromRatio;
+      const paidAmount = dto.paidAmount || 0;
+      const debtAmount = grandTotal - paidAmount;
 
-    const invoice = await this.prisma.invoice.create({
-      data: {
-        code,
-        customerId: dto.customerId,
-        branchId: dto.branchId,
-        soldById: dto.soldById,
-        saleChannelId: dto.saleChannelId,
-        purchaseDate: dto.purchaseDate
-          ? new Date(dto.purchaseDate)
-          : new Date(),
-        totalAmount,
-        discount: discountAmount,
-        discountRatio: dto.discountRatio || 0,
-        grandTotal,
-        paidAmount,
-        debtAmount,
-        usingCod: dto.usingCod || false,
-        description: dto.description,
-        createdBy: userId,
-        details: {
+      let status = INVOICE_STATUS.PROCESSING;
+      if (debtAmount <= 0) {
+        status = INVOICE_STATUS.COMPLETED;
+      }
+
+      const invoice = await tx.invoice.create({
+        data: {
+          code,
+          customerId: dto.customerId,
+          branchId: dto.branchId,
+          soldById: dto.soldById,
+          saleChannelId: dto.saleChannelId,
+          purchaseDate: dto.purchaseDate
+            ? new Date(dto.purchaseDate)
+            : new Date(),
+          totalAmount,
+          discount: discountAmount,
+          discountRatio: dto.discountRatio || 0,
+          grandTotal,
+          paidAmount,
+          debtAmount,
+          status,
+          statusValue: getStatusLabel(status),
+          usingCod: dto.usingCod || false,
+          description: dto.description,
+          createdBy: userId,
+          details: {
+            create: dto.items.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: item.quantity,
+              price: item.price,
+              discount: item.discount || 0,
+              discountRatio: item.discountRatio || 0,
+              totalPrice: item.totalPrice,
+              note: item.note,
+            })),
+          },
+          ...(dto.delivery && {
+            delivery: {
+              create: {
+                receiver: dto.delivery.receiver,
+                contactNumber: dto.delivery.contactNumber,
+                address: dto.delivery.address,
+                locationName: dto.delivery.locationName,
+                wardName: dto.delivery.wardName,
+                weight: dto.delivery.weight,
+                length: dto.delivery.length,
+                width: dto.delivery.width,
+                height: dto.delivery.height,
+                noteForDriver: dto.delivery.noteForDriver,
+              },
+            },
+          }),
+        },
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
+        },
+      });
+
+      if (paidAmount > 0) {
+        const paymentCode = await this.generatePaymentCode(tx);
+        await tx.invoicePayment.create({
+          data: {
+            code: paymentCode,
+            invoiceId: invoice.id,
+            amount: paidAmount,
+            paymentDate: new Date(),
+            paymentMethod: 'cash',
+            description: 'Thanh toán khi tạo hóa đơn',
+          },
+        });
+      }
+
+      for (const item of dto.items) {
+        await tx.inventory.updateMany({
+          where: {
+            productId: item.productId,
+            branchId: dto.branchId,
+          },
+          data: {
+            onHand: { decrement: item.quantity },
+          },
+        });
+      }
+
+      if (dto.customerId) {
+        await this.updateCustomerTotals(dto.customerId, tx);
+      }
+
+      return tx.invoice.findUnique({
+        where: { id: invoice.id },
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
+        },
+      });
+    });
+  }
+
+  async update(id: number, dto: UpdateInvoiceDto) {
+    await this.findOne(id);
+
+    return this.prisma.$transaction(async (tx) => {
+      const updateData: any = {};
+
+      if (dto.customerId !== undefined) updateData.customerId = dto.customerId;
+      if (dto.branchId !== undefined) updateData.branchId = dto.branchId;
+      if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
+      if (dto.description !== undefined)
+        updateData.description = dto.description;
+
+      if (dto.items) {
+        await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
+
+        const totalAmount = dto.items.reduce(
+          (sum, item) => sum + item.totalPrice,
+          0,
+        );
+        const discountAmount = dto.discountAmount || 0;
+        const discountFromRatio =
+          (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+
+        const payments = await tx.invoicePayment.findMany({
+          where: { invoiceId: id },
+        });
+        const paidAmount = payments.reduce(
+          (sum, p) => sum + Number(p.amount),
+          0,
+        );
+        const debtAmount = grandTotal - paidAmount;
+
+        const currentInvoice = await tx.invoice.findUnique({ where: { id } });
+        let status = currentInvoice?.status || INVOICE_STATUS.PROCESSING;
+
+        if (
+          status !== INVOICE_STATUS.CANCELLED &&
+          status !== INVOICE_STATUS.FAILED_DELIVERY
+        ) {
+          status =
+            debtAmount <= 0
+              ? INVOICE_STATUS.COMPLETED
+              : INVOICE_STATUS.PROCESSING;
+        }
+
+        updateData.totalAmount = totalAmount;
+        updateData.discount = discountAmount;
+        updateData.discountRatio = dto.discountRatio || 0;
+        updateData.grandTotal = grandTotal;
+        updateData.debtAmount = debtAmount;
+        updateData.paidAmount = paidAmount;
+        updateData.status = status;
+        updateData.statusValue = getStatusLabel(status);
+
+        updateData.details = {
           create: dto.items.map((item) => ({
             productId: item.productId,
             productCode: item.productCode,
@@ -145,119 +288,86 @@ export class InvoicesService {
             totalPrice: item.totalPrice,
             note: item.note,
           })),
-        },
-        ...(dto.delivery && {
-          delivery: {
-            create: {
-              receiver: dto.delivery.receiver,
-              contactNumber: dto.delivery.contactNumber,
-              address: dto.delivery.address,
-              locationName: dto.delivery.locationName,
-              wardName: dto.delivery.wardName,
-              weight: dto.delivery.weight,
-              length: dto.delivery.length,
-              width: dto.delivery.width,
-              height: dto.delivery.height,
-              noteForDriver: dto.delivery.noteForDriver,
-            },
+        };
+      }
+
+      if (dto.delivery) {
+        await tx.invoiceDelivery.deleteMany({
+          where: { invoiceId: id },
+        });
+        updateData.delivery = {
+          create: {
+            receiver: dto.delivery.receiver,
+            contactNumber: dto.delivery.contactNumber,
+            address: dto.delivery.address,
+            locationName: dto.delivery.locationName,
+            wardName: dto.delivery.wardName,
+            weight: dto.delivery.weight,
+            length: dto.delivery.length,
+            width: dto.delivery.width,
+            height: dto.delivery.height,
+            noteForDriver: dto.delivery.noteForDriver,
           },
-        }),
-      },
-      include: {
-        details: true,
-        delivery: true,
-      },
-    });
+        };
+      }
 
-    for (const item of dto.items) {
-      await this.prisma.inventory.updateMany({
-        where: {
-          productId: item.productId,
-          branchId: dto.branchId,
-        },
-        data: {
-          onHand: { decrement: item.quantity },
+      const updatedInvoice = await tx.invoice.update({
+        where: { id },
+        data: updateData,
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
         },
       });
-    }
 
-    return invoice;
-  }
+      const invoice = await tx.invoice.findUnique({ where: { id } });
+      if (invoice && invoice.customerId) {
+        await this.updateCustomerTotals(invoice.customerId, tx);
+      }
 
-  async update(id: number, dto: UpdateInvoiceDto) {
-    await this.findOne(id);
-
-    const updateData: any = {};
-
-    if (dto.customerId !== undefined) updateData.customerId = dto.customerId;
-    if (dto.branchId !== undefined) updateData.branchId = dto.branchId;
-    if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
-    if (dto.description !== undefined) updateData.description = dto.description;
-
-    if (dto.items) {
-      await this.prisma.invoiceDetail.deleteMany({ where: { invoiceId: id } });
-
-      const totalAmount = dto.items.reduce(
-        (sum, item) => sum + item.totalPrice,
-        0,
-      );
-      const discountAmount = dto.discountAmount || 0;
-      const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
-      const grandTotal = totalAmount - discountAmount - discountFromRatio;
-
-      updateData.totalAmount = totalAmount;
-      updateData.discount = discountAmount;
-      updateData.discountRatio = dto.discountRatio || 0;
-      updateData.grandTotal = grandTotal;
-      updateData.debtAmount = grandTotal - (dto.paidAmount || 0);
-
-      updateData.details = {
-        create: dto.items.map((item) => ({
-          productId: item.productId,
-          productCode: item.productCode,
-          productName: item.productName,
-          quantity: item.quantity,
-          price: item.price,
-          discount: item.discount || 0,
-          discountRatio: item.discountRatio || 0,
-          totalPrice: item.totalPrice,
-          note: item.note,
-        })),
-      };
-    }
-
-    if (dto.delivery) {
-      await this.prisma.invoiceDelivery.deleteMany({
-        where: { invoiceId: id },
-      });
-      updateData.delivery = {
-        create: {
-          receiver: dto.delivery.receiver,
-          contactNumber: dto.delivery.contactNumber,
-          address: dto.delivery.address,
-          locationName: dto.delivery.locationName,
-          wardName: dto.delivery.wardName,
-          weight: dto.delivery.weight,
-          length: dto.delivery.length,
-          width: dto.delivery.width,
-          height: dto.delivery.height,
-          noteForDriver: dto.delivery.noteForDriver,
-        },
-      };
-    }
-
-    return this.prisma.invoice.update({
-      where: { id },
-      data: updateData,
-      include: {
-        details: true,
-        delivery: true,
-      },
+      return updatedInvoice;
     });
   }
 
   async remove(id: number) {
     await this.findOne(id);
     return this.prisma.invoice.delete({ where: { id } });
+  }
+
+  private async generatePaymentCode(tx: any): Promise<string> {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const count = await tx.invoicePayment.count({
+      where: {
+        createdAt: {
+          gte: new Date(today.setHours(0, 0, 0, 0)),
+        },
+      },
+    });
+    return `PTHD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+  }
+
+  private async updateCustomerTotals(customerId: number, tx: any) {
+    const invoices = await tx.invoice.findMany({
+      where: {
+        customerId,
+        status: { notIn: [INVOICE_STATUS.CANCELLED] },
+      },
+    });
+
+    const totalPurchased = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.grandTotal),
+      0,
+    );
+    const totalDebt = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      0,
+    );
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { totalPurchased, totalDebt },
+    });
   }
 }
