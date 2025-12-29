@@ -75,6 +75,10 @@ class CreateInvoiceDeliveryDto {
   @IsOptional()
   @IsNumber()
   height?: number;
+
+  @IsString()
+  @IsOptional()
+  noteForDriver?: string;
 }
 
 export class CreateInvoiceDto {

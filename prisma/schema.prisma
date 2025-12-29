@@ -787,6 +787,7 @@ model InvoiceDelivery {
   width             Decimal?
   height            Decimal?
   partnerDeliveryId Int?
+  noteForDriver     String?
   usingPriceCod     Boolean  @default(false)
   priceCodPayment   Decimal?
   createdAt         DateTime @default(now())

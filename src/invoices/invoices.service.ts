@@ -62,7 +62,7 @@ export class InvoicesService {
       this.prisma.invoice.findMany({
         where,
         include: {
-          customer: { select: { id: true, name: true, phone: true } },
+          customer: true,
           branch: { select: { id: true, name: true } },
           soldBy: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
@@ -157,6 +157,7 @@ export class InvoicesService {
               length: dto.delivery.length,
               width: dto.delivery.width,
               height: dto.delivery.height,
+              noteForDriver: dto.delivery.noteForDriver,
             },
           },
         }),
@@ -239,6 +240,7 @@ export class InvoicesService {
           length: dto.delivery.length,
           width: dto.delivery.width,
           height: dto.delivery.height,
+          noteForDriver: dto.delivery.noteForDriver,
         },
       };
     }
