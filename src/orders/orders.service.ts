@@ -13,30 +13,30 @@ export class OrdersService {
 
   async create(dto: CreateOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const warnings: any[] = [];
-      const code = await this.generateCode();
+      const warnings: string[] = [];
+      const orderStatusString = dto.orderStatus || 'pending';
+      const orderStatusNumber = convertStatusStringToNumber(orderStatusString);
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
-            include: { inventories: true },
+          });
+          if (!product) throw new Error(`Product ${item.productId} not found`);
+
+          const inventory = await tx.inventory.findUnique({
+            where: {
+              productId_branchId: {
+                productId: item.productId,
+                branchId: dto.branchId,
+              },
+            },
           });
 
-          if (!product) {
-            throw new Error(`Product ${item.productId} not found`);
-          }
-
-          const inventory = product.inventories?.find(
-            (inv) => inv.branchId === dto.branchId,
-          );
-
           if (!inventory || Number(inventory.onHand) < item.quantity) {
-            warnings.push({
-              productId: item.productId,
-              productName: product.name,
-              message: `Insufficient stock for ${product.name}`,
-            });
+            warnings.push(
+              `Sản phẩm ${product.name} không đủ tồn kho (Có: ${inventory?.onHand || 0}, Cần: ${item.quantity})`,
+            );
           }
 
           const itemDiscount = item.discount || 0;
@@ -62,14 +62,14 @@ export class OrdersService {
         }),
       );
 
-      const orderStatusString = dto.orderStatus || 'pending';
-      const orderStatusNumber = convertStatusStringToNumber(orderStatusString);
+      const orderCode = await this.generateCode();
 
       const order = await tx.order.create({
         data: {
-          code,
+          code: orderCode,
           customerId: dto.customerId,
           branchId: dto.branchId,
+          soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
           discount: dto.discountAmount || 0,
@@ -108,10 +108,6 @@ export class OrdersService {
 
       await this.calculateTotals(order.id, tx);
 
-      if (order.status === ORDER_STATUS.COMPLETED) {
-        await this.updateProductStock(order.id, tx);
-      }
-
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
       }
@@ -139,10 +135,6 @@ export class OrdersService {
 
       if (!existingOrder) {
         throw new Error('Order not found');
-      }
-
-      if (existingOrder.status === ORDER_STATUS.COMPLETED) {
-        await this.restoreProductStock(id, tx);
       }
 
       if (dto.items) {
@@ -246,13 +238,11 @@ export class OrdersService {
 
       await this.calculateTotals(id, tx);
 
-      const order = await tx.order.findUnique({ where: { id } });
-      if (order && order.status === ORDER_STATUS.COMPLETED) {
-        await this.updateProductStock(id, tx);
-      }
-
-      if (order && order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
+      if (dto.customerId || existingOrder.customerId) {
+        await this.updateCustomerTotals(
+          dto.customerId || existingOrder.customerId,
+          tx,
+        );
       }
 
       return tx.order.findUnique({
@@ -262,6 +252,7 @@ export class OrdersService {
           items: { include: { product: true } },
           payments: true,
           delivery: true,
+          branch: true,
         },
       });
     });

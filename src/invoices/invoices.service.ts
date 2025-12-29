@@ -1,7 +1,16 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
-import { INVOICE_STATUS, getStatusLabel } from './dto/invoice-status.constants';
+import {
+  INVOICE_STATUS,
+  convertStatusNumberToString,
+  getStatusLabel,
+} from './dto/invoice-status.constants';
+import { ORDER_STATUS } from 'src/orders/dto/order-status.constants';
 
 @Injectable()
 export class InvoicesService {
@@ -369,6 +378,160 @@ export class InvoicesService {
     await tx.customer.update({
       where: { id: customerId },
       data: { totalPurchased, totalDebt },
+    });
+  }
+
+  async createFromOrder(orderId: number, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: {
+          items: { include: { product: true } },
+          delivery: true,
+          payments: true,
+          customer: true,
+          branch: true,
+        },
+      });
+
+      if (!order) {
+        throw new NotFoundException(`Order with ID ${orderId} not found`);
+      }
+
+      if (order.status === ORDER_STATUS.COMPLETED) {
+        throw new BadRequestException('Đơn hàng đã được chuyển thành hóa đơn');
+      }
+
+      const invoiceCount = await tx.invoice.count();
+      const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
+
+      const totalPaymentsFromOrder = order.payments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      );
+      const totalPaidFromOrder =
+        Number(order.depositAmount || 0) + totalPaymentsFromOrder;
+
+      const totalAmount = order.items.reduce(
+        (sum, item) => sum + Number(item.totalPrice),
+        0,
+      );
+      const discountAmount = Number(order.discount) || 0;
+      const discountFromRatio =
+        (totalAmount * (Number(order.discountRatio) || 0)) / 100;
+      const grandTotal = totalAmount - discountAmount - discountFromRatio;
+      const debtAmount = grandTotal - totalPaidFromOrder;
+
+      let status: number = INVOICE_STATUS.PROCESSING;
+      if (debtAmount <= 0) {
+        status = INVOICE_STATUS.COMPLETED;
+      }
+
+      const invoice = await tx.invoice.create({
+        data: {
+          code,
+          customerId: order.customerId,
+          branchId: order.branchId,
+          soldById: order.soldById,
+          saleChannelId: order.saleChannelId,
+          purchaseDate: new Date(),
+          totalAmount,
+          discount: discountAmount,
+          discountRatio: Number(order.discountRatio) || 0,
+          grandTotal,
+          paidAmount: totalPaidFromOrder,
+          debtAmount,
+          status,
+          statusValue: getStatusLabel(status),
+          usingCod: order.usingCod || false,
+          description: order.description,
+          createdBy: userId,
+          details: {
+            create: order.items.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: Number(item.quantity),
+              price: Number(item.price),
+              discount: Number(item.discount) || 0,
+              discountRatio: Number(item.discountRatio) || 0,
+              totalPrice: Number(item.totalPrice),
+              note: item.note,
+            })),
+          },
+          ...(order.delivery && {
+            delivery: {
+              create: {
+                receiver: order.delivery.receiver,
+                contactNumber: order.delivery.contactNumber,
+                address: order.delivery.address,
+                locationName: order.delivery.locationName,
+                wardName: order.delivery.wardName,
+                weight: Number(order.delivery.weight),
+                length: Number(order.delivery.length),
+                width: Number(order.delivery.width),
+                height: Number(order.delivery.height),
+                noteForDriver: order.delivery.noteForDriver,
+              },
+            },
+          }),
+        },
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
+        },
+      });
+
+      if (totalPaidFromOrder > 0) {
+        const paymentCode = await this.generatePaymentCode(tx);
+        await tx.invoicePayment.create({
+          data: {
+            code: paymentCode,
+            invoiceId: invoice.id,
+            amount: totalPaidFromOrder,
+            paymentDate: new Date(),
+            paymentMethod: 'cash',
+            description: 'Thanh toán từ đơn hàng',
+          },
+        });
+      }
+
+      for (const item of order.items) {
+        await tx.inventory.updateMany({
+          where: {
+            productId: item.productId,
+            branchId: order.branchId,
+          },
+          data: {
+            onHand: { decrement: Number(item.quantity) },
+          },
+        });
+      }
+
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: ORDER_STATUS.COMPLETED,
+          statusValue: getStatusLabel(ORDER_STATUS.COMPLETED),
+          orderStatus: convertStatusNumberToString(ORDER_STATUS.COMPLETED),
+        },
+      });
+
+      if (order.customerId) {
+        await this.updateCustomerTotals(order.customerId, tx);
+      }
+
+      return tx.invoice.findUnique({
+        where: { id: invoice.id },
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
+          customer: true,
+          branch: true,
+        },
+      });
     });
   }
 }

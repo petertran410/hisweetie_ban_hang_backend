@@ -46,4 +46,9 @@ export class InvoicesController {
   remove(@Param('id') id: string) {
     return this.invoicesService.remove(+id);
   }
+
+  @Post('from-order/:orderId')
+  createFromOrder(@Param('orderId') orderId: string, @CurrentUser() user: any) {
+    return this.invoicesService.createFromOrder(+orderId, user.id);
+  }
 }
