@@ -235,12 +235,48 @@ export class InvoicesService {
 
     return this.prisma.$transaction(async (tx) => {
       const updateData: any = {};
+      const currentInvoice = await tx.invoice.findUnique({
+        where: { id },
+        include: { details: true },
+      });
+
+      if (!currentInvoice) {
+        throw new NotFoundException(`Invoice with ID ${id} not found`);
+      }
 
       if (dto.customerId !== undefined) updateData.customerId = dto.customerId;
       if (dto.branchId !== undefined) updateData.branchId = dto.branchId;
       if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
       if (dto.description !== undefined)
         updateData.description = dto.description;
+
+      if (dto.status !== undefined) {
+        if (
+          dto.status === INVOICE_STATUS.CANCELLED &&
+          currentInvoice.status !== INVOICE_STATUS.CANCELLED
+        ) {
+          if (!currentInvoice.branchId) {
+            throw new BadRequestException(
+              'Không thể hủy hóa đơn vì không có thông tin chi nhánh',
+            );
+          }
+
+          for (const detail of currentInvoice.details) {
+            await tx.inventory.updateMany({
+              where: {
+                productId: detail.productId,
+                branchId: currentInvoice.branchId,
+              },
+              data: {
+                onHand: { increment: Number(detail.quantity) },
+              },
+            });
+          }
+        }
+
+        updateData.status = dto.status;
+        updateData.statusValue = getStatusLabel(dto.status);
+      }
 
       if (dto.items) {
         await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
@@ -263,9 +299,7 @@ export class InvoicesService {
         );
         const debtAmount = grandTotal - paidAmount;
 
-        const currentInvoice = await tx.invoice.findUnique({ where: { id } });
-        let status: number =
-          currentInvoice?.status || INVOICE_STATUS.PROCESSING;
+        let status: number = currentInvoice.status;
 
         if (
           status !== INVOICE_STATUS.CANCELLED &&

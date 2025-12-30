@@ -122,6 +122,10 @@ export class CreateInvoiceDto {
   @IsNumber()
   paidAmount?: number;
 
+  @IsOptional()
+  @IsInt()
+  status?: number;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => CreateInvoiceDetailDto)
