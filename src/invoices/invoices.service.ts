@@ -519,6 +519,8 @@ export class InvoicesService {
           status: ORDER_STATUS.COMPLETED,
           statusValue: getStatusLabel(ORDER_STATUS.COMPLETED),
           orderStatus: convertStatusNumberToString(ORDER_STATUS.COMPLETED),
+          invoiceId: invoice.id,
+          invoiceCode: invoice.code,
         },
       });
 

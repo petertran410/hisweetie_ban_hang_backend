@@ -543,8 +543,6 @@ model PartnerDelivery {
   @@map("partner_deliveries")
 }
 
-// ==================== ORDER (ĐẶT HÀNG) ====================
-
 model Order {
   id            Int      @id @default(autoincrement())
   code          String   @unique
@@ -566,6 +564,8 @@ model Order {
   statusValue   String?
   usingCod      Boolean  @default(false)
   description   String?
+  invoiceId     Int?
+  invoiceCode   String?
   createdBy     Int
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -575,6 +575,7 @@ model Order {
   soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?     @relation(fields: [saleChannelId], references: [id])
   creator     User             @relation("OrderCreator", fields: [createdBy], references: [id])
+  invoice     Invoice?         @relation(fields: [invoiceId], references: [id])
   items       OrderItem[]
   payments    OrderPayment[]
   surcharges  OrderSurcharge[]
@@ -702,6 +703,7 @@ model Invoice {
   soldBy      User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?       @relation(fields: [saleChannelId], references: [id])
   creator     User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  orders      Order[]
   details     InvoiceDetail[]
   payments    InvoicePayment[]
   surcharges  InvoiceSurcharge[]
