@@ -10,7 +10,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { InvoicesService } from './invoices.service';
-import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
+import {
+  CreateInvoiceDto,
+  UpdateInvoiceDto,
+  InvoiceQueryDto,
+  CreateInvoiceFromOrderDto,
+} from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -48,7 +53,11 @@ export class InvoicesController {
   }
 
   @Post('from-order/:orderId')
-  createFromOrder(@Param('orderId') orderId: string, @CurrentUser() user: any) {
-    return this.invoicesService.createFromOrder(+orderId, user.id);
+  createFromOrder(
+    @Param('orderId') orderId: string,
+    @Body() dto: CreateInvoiceFromOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.invoicesService.createFromOrder(+orderId, dto, user.id);
   }
 }

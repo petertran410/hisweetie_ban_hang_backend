@@ -136,3 +136,9 @@ export class CreateInvoiceDto {
   @Type(() => CreateInvoiceDeliveryDto)
   delivery?: CreateInvoiceDeliveryDto;
 }
+
+export class CreateInvoiceFromOrderDto {
+  @IsNumber()
+  @IsOptional()
+  additionalPayment?: number;
+}

@@ -10,6 +10,7 @@ import {
   InvoiceQueryDto,
   INVOICE_STATUS,
   getStatusLabel,
+  CreateInvoiceFromOrderDto,
 } from './dto';
 import {
   ORDER_STATUS,
@@ -452,7 +453,11 @@ export class InvoicesService {
     });
   }
 
-  async createFromOrder(orderId: number, userId: number) {
+  async createFromOrder(
+    orderId: number,
+    dto: CreateInvoiceFromOrderDto,
+    userId: number,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id: orderId },
@@ -487,6 +492,9 @@ export class InvoicesService {
       const totalPaidFromOrder =
         Number(order.depositAmount || 0) + totalPaymentsFromOrder;
 
+      const additionalPayment = Number(dto.additionalPayment || 0);
+      const totalPaid = totalPaidFromOrder + additionalPayment;
+
       const totalAmount = order.items.reduce(
         (sum, item) => sum + Number(item.totalPrice),
         0,
@@ -495,7 +503,7 @@ export class InvoicesService {
       const discountFromRatio =
         (totalAmount * (Number(order.discountRatio) || 0)) / 100;
       const grandTotal = totalAmount - discountAmount - discountFromRatio;
-      const debtAmount = grandTotal - totalPaidFromOrder;
+      const debtAmount = grandTotal - totalPaid;
 
       let status: number = INVOICE_STATUS.PROCESSING;
       if (debtAmount <= 0) {
@@ -514,7 +522,7 @@ export class InvoicesService {
           discount: discountAmount,
           discountRatio: Number(order.discountRatio) || 0,
           grandTotal,
-          paidAmount: totalPaidFromOrder,
+          paidAmount: totalPaid,
           debtAmount,
           status,
           statusValue: getStatusLabel(status),
@@ -558,16 +566,16 @@ export class InvoicesService {
         },
       });
 
-      if (totalPaidFromOrder > 0) {
+      if (additionalPayment > 0) {
         const paymentCode = await this.generatePaymentCode(tx);
         await tx.invoicePayment.create({
           data: {
             code: paymentCode,
             invoiceId: invoice.id,
-            amount: totalPaidFromOrder,
+            amount: additionalPayment,
             paymentDate: new Date(),
             paymentMethod: 'cash',
-            description: 'Thanh toán từ đơn hàng',
+            description: 'Thanh toán thêm khi tạo hóa đơn từ đơn hàng',
           },
         });
       }
