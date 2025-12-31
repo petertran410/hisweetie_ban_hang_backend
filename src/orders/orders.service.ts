@@ -4,7 +4,6 @@ import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import {
   convertStatusStringToNumber,
   getStatusLabel,
-  ORDER_STATUS,
 } from './dto/order-status.constants';
 
 @Injectable()
@@ -77,16 +76,18 @@ export class OrdersService {
           soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
-          discount: dto.discountAmount || 0,
-          discountRatio: dto.discountRatio || 0,
-          depositAmount: dto.depositAmount || 0,
-          description: dto.notes || null,
-          orderStatus: orderStatusString,
           status: orderStatusNumber,
           statusValue: getStatusLabel(orderStatusNumber),
+          orderStatus: orderStatusString,
+          depositAmount: dto.depositAmount || 0,
+          discount: dto.discountAmount || 0,
+          discountRatio: dto.discountRatio || 0,
+          description: dto.notes,
           createdBy: userId,
           items: {
-            create: itemsData,
+            createMany: {
+              data: itemsData,
+            },
           },
           delivery: dto.delivery
             ? {
@@ -112,10 +113,6 @@ export class OrdersService {
       });
 
       await this.calculateTotals(order.id, tx);
-
-      if (order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
-      }
 
       const finalOrder = await tx.order.findUnique({
         where: { id: order.id },
@@ -243,11 +240,6 @@ export class OrdersService {
 
       await this.calculateTotals(id, tx);
 
-      const finalCustomerId = dto.customerId ?? existingOrder.customerId;
-      if (finalCustomerId) {
-        await this.updateCustomerTotals(finalCustomerId, tx);
-      }
-
       return tx.order.findUnique({
         where: { id },
         include: {
@@ -321,11 +313,10 @@ export class OrdersService {
       include: {
         customer: true,
         branch: true,
+        soldBy: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
         items: { include: { product: true } },
-        payments: {
-          include: { creator: { select: { id: true, name: true } } },
-        },
+        payments: true,
         delivery: true,
         invoice: true,
       },
@@ -334,6 +325,8 @@ export class OrdersService {
 
   private async calculateTotals(orderId: number, tx: any) {
     const items = await tx.orderItem.findMany({ where: { orderId } });
+    const payments = await tx.orderPayment.findMany({ where: { orderId } });
+
     const totalAmount = items.reduce(
       (sum: number, item: any) => sum + Number(item.totalPrice),
       0,
@@ -342,88 +335,24 @@ export class OrdersService {
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    const grandTotal =
-      totalAmount -
-      Number(order.discount) -
-      (totalAmount * Number(order.discountRatio)) / 100;
+    const discountAmount = Number(order.discount) || 0;
+    const discountFromRatio =
+      (totalAmount * (Number(order.discountRatio) || 0)) / 100;
+    const grandTotal = totalAmount - discountAmount - discountFromRatio;
 
-    const payments = await tx.orderPayment.findMany({ where: { orderId } });
     const paidAmount = payments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),
       0,
     );
-
     const debtAmount = grandTotal - paidAmount;
 
-    let paymentStatus = 'unpaid';
+    let paymentStatus = 'Draft';
     if (paidAmount >= grandTotal) paymentStatus = 'paid';
     else if (paidAmount > 0) paymentStatus = 'partial';
 
     await tx.order.update({
       where: { id: orderId },
       data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
-    });
-  }
-
-  private async updateProductStock(orderId: number, tx: any) {
-    const order = await tx.order.findUnique({
-      where: { id: orderId },
-      include: { items: true },
-    });
-
-    if (!order || !order.branchId) return;
-
-    for (const item of order.items) {
-      await tx.inventory.updateMany({
-        where: {
-          productId: item.productId,
-          branchId: order.branchId,
-        },
-        data: {
-          onHand: {
-            decrement: Number(item.quantity),
-          },
-        },
-      });
-    }
-  }
-
-  private async restoreProductStock(orderId: number, tx: any) {
-    const order = await tx.order.findUnique({
-      where: { id: orderId },
-      include: { items: true },
-    });
-
-    if (!order || !order.branchId) return;
-
-    for (const item of order.items) {
-      await tx.inventory.updateMany({
-        where: {
-          productId: item.productId,
-          branchId: order.branchId,
-        },
-        data: {
-          onHand: {
-            increment: Number(item.quantity),
-          },
-        },
-      });
-    }
-  }
-
-  private async updateCustomerTotals(customerId: number, tx: any) {
-    const orders = await tx.order.findMany({
-      where: { customerId },
-    });
-
-    const totalDebt = orders.reduce(
-      (sum: number, order: any) => sum + Number(order.debtAmount),
-      0,
-    );
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalDebt },
     });
   }
 
@@ -447,15 +376,7 @@ export class OrdersService {
         throw new Error('Order not found');
       }
 
-      if (order.status === ORDER_STATUS.COMPLETED) {
-        await this.restoreProductStock(id, tx);
-      }
-
       await tx.order.delete({ where: { id } });
-
-      if (order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
-      }
     });
   }
 }

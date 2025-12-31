@@ -24,11 +24,6 @@ export class OrderPaymentsService {
 
       await this.calculateOrderTotals(dto.orderId, tx);
 
-      const order = await tx.order.findUnique({ where: { id: dto.orderId } });
-      if (order && order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
-      }
-
       return tx.orderPayment.findUnique({
         where: { id: payment.id },
         include: { order: true },
@@ -53,13 +48,6 @@ export class OrderPaymentsService {
 
       await tx.orderPayment.delete({ where: { id } });
       await this.calculateOrderTotals(payment.orderId, tx);
-
-      const order = await tx.order.findUnique({
-        where: { id: payment.orderId },
-      });
-      if (order && order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
-      }
     });
   }
 
@@ -94,29 +82,6 @@ export class OrderPaymentsService {
     await tx.order.update({
       where: { id: orderId },
       data: { paidAmount, debtAmount, paymentStatus },
-    });
-  }
-
-  private async updateCustomerTotals(customerId: number, tx: any) {
-    const orders = await tx.order.findMany({
-      where: {
-        customerId,
-        orderStatus: { not: 'cancelled' },
-      },
-    });
-
-    const totalPurchased = orders.reduce(
-      (sum: number, o: any) => sum + Number(o.grandTotal),
-      0,
-    );
-    const totalDebt = orders.reduce(
-      (sum: number, o: any) => sum + Number(o.debtAmount),
-      0,
-    );
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalPurchased, totalDebt },
     });
   }
 }

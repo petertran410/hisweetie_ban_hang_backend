@@ -1,16 +1,21 @@
 import {
-  BadRequestException,
   Injectable,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateInvoiceDto, UpdateInvoiceDto, InvoiceQueryDto } from './dto';
 import {
+  CreateInvoiceDto,
+  UpdateInvoiceDto,
+  InvoiceQueryDto,
   INVOICE_STATUS,
-  convertStatusNumberToString,
   getStatusLabel,
-} from './dto/invoice-status.constants';
-import { ORDER_STATUS } from 'src/orders/dto/order-status.constants';
+} from './dto';
+import {
+  ORDER_STATUS,
+  getStatusLabel as getOrderStatusLabel,
+  convertStatusNumberToString,
+} from '../orders/dto/order-status.constants';
 
 @Injectable()
 export class InvoicesService {
@@ -68,9 +73,11 @@ export class InvoicesService {
       if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
     }
 
-    const [invoices, total] = await Promise.all([
+    const [data, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
+        skip: (page - 1) * limit,
+        take: limit,
         include: {
           customer: true,
           branch: { select: { id: true, name: true } },
@@ -81,13 +88,11 @@ export class InvoicesService {
           delivery: true,
         },
         orderBy: { createdAt: 'desc' },
-        skip: (page - 1) * limit,
-        take: limit,
       }),
       this.prisma.invoice.count({ where }),
     ]);
 
-    return { data: invoices, total, page, limit };
+    return { data, total, page, limit };
   }
 
   async findOne(id: number) {
@@ -153,17 +158,19 @@ export class InvoicesService {
           description: dto.description,
           createdBy: userId,
           details: {
-            create: dto.items.map((item) => ({
-              productId: item.productId,
-              productCode: item.productCode,
-              productName: item.productName,
-              quantity: item.quantity,
-              price: item.price,
-              discount: item.discount || 0,
-              discountRatio: item.discountRatio || 0,
-              totalPrice: item.totalPrice,
-              note: item.note,
-            })),
+            createMany: {
+              data: dto.items.map((item) => ({
+                productId: item.productId,
+                productCode: item.productCode,
+                productName: item.productName,
+                quantity: item.quantity,
+                price: item.price,
+                discount: item.discount || 0,
+                discountRatio: item.discountRatio || 0,
+                totalPrice: item.totalPrice,
+                note: item.note,
+              })),
+            },
           },
           ...(dto.delivery && {
             delivery: {
@@ -279,6 +286,24 @@ export class InvoicesService {
       }
 
       if (dto.items) {
+        if (!currentInvoice.branchId) {
+          throw new BadRequestException(
+            'Không thể cập nhật hóa đơn vì không có thông tin chi nhánh',
+          );
+        }
+
+        for (const oldDetail of currentInvoice.details) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: oldDetail.productId,
+              branchId: currentInvoice.branchId,
+            },
+            data: {
+              onHand: { increment: Number(oldDetail.quantity) },
+            },
+          });
+        }
+
         await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
 
         const totalAmount = dto.items.reduce(
@@ -333,6 +358,18 @@ export class InvoicesService {
             note: item.note,
           })),
         };
+
+        for (const item of dto.items) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: item.productId,
+              branchId: currentInvoice.branchId,
+            },
+            data: {
+              onHand: { decrement: item.quantity },
+            },
+          });
+        }
       }
 
       if (dto.delivery) {
@@ -551,7 +588,7 @@ export class InvoicesService {
         where: { id: orderId },
         data: {
           status: ORDER_STATUS.COMPLETED,
-          statusValue: getStatusLabel(ORDER_STATUS.COMPLETED),
+          statusValue: getOrderStatusLabel(ORDER_STATUS.COMPLETED),
           orderStatus: convertStatusNumberToString(ORDER_STATUS.COMPLETED),
           invoiceId: invoice.id,
           invoiceCode: invoice.code,
