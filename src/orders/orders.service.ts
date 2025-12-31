@@ -327,6 +327,7 @@ export class OrdersService {
           include: { creator: { select: { id: true, name: true } } },
         },
         delivery: true,
+        invoice: true,
       },
     });
   }
