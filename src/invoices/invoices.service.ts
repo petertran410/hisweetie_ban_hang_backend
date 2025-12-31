@@ -463,15 +463,19 @@ export class InvoicesService {
         where: { id: orderId },
         include: {
           items: { include: { product: true } },
-          delivery: true,
           payments: true,
-          customer: true,
-          branch: true,
+          delivery: true,
         },
       });
 
       if (!order) {
-        throw new NotFoundException(`Order with ID ${orderId} not found`);
+        throw new NotFoundException('Order not found');
+      }
+
+      if (order.status === ORDER_STATUS.CANCELLED) {
+        throw new BadRequestException(
+          'Không thể tạo hóa đơn từ đơn hàng đã hủy',
+        );
       }
 
       if (order.status === ORDER_STATUS.COMPLETED) {
@@ -485,13 +489,7 @@ export class InvoicesService {
       const invoiceCount = await tx.invoice.count();
       const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
 
-      const totalPaymentsFromOrder = order.payments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-      const totalPaidFromOrder =
-        Number(order.depositAmount || 0) + totalPaymentsFromOrder;
-
+      const totalPaidFromOrder = Number(order.paidAmount || 0);
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
