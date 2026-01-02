@@ -8,17 +8,66 @@ export class OrderPaymentsService {
 
   async create(dto: CreateOrderPaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateCode();
+      const order = await tx.order.findUnique({
+        where: { id: dto.orderId },
+        include: {
+          customer: {
+            select: {
+              id: true,
+              name: true,
+              contactNumber: true,
+              address: true,
+            },
+          },
+        },
+      });
+
+      if (!order) {
+        throw new Error('Không tìm thấy đơn hàng');
+      }
+
+      const existingPayments = await tx.orderPayment.findMany({
+        where: { orderId: dto.orderId },
+      });
+      const paymentSequence = existingPayments.length + 1;
+      const code = `TT${order.code}-${paymentSequence}`;
 
       const payment = await tx.orderPayment.create({
         data: {
           code,
           orderId: dto.orderId,
-          paymentDate: dto.paymentDate || new Date(),
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
           amount: dto.amount,
           paymentMethod: dto.paymentMethod || 'cash',
-          description: dto.notes,
+          accountId: dto.accountId,
+          description:
+            dto.notes ||
+            `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
           createdBy: userId,
+        },
+      });
+
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: order.branchId,
+          isReceipt: true,
+          amount: dto.amount,
+          transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+          method: dto.paymentMethod || 'cash',
+          accountId: dto.accountId,
+          partnerType: 'C',
+          partnerId: order.customerId,
+          partnerName: order.customer?.name,
+          contactNumber: order.customer?.contactNumber,
+          address: order.customer?.address,
+          description:
+            dto.notes ||
+            `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          usedForFinancialReporting: 1,
         },
       });
 
@@ -46,22 +95,13 @@ export class OrderPaymentsService {
         throw new Error('Payment not found');
       }
 
+      await tx.cashFlow.deleteMany({
+        where: { code: payment.code },
+      });
+
       await tx.orderPayment.delete({ where: { id } });
       await this.calculateOrderTotals(payment.orderId, tx);
     });
-  }
-
-  private async generateCode(): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await this.prisma.orderPayment.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `PT-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
   private async calculateOrderTotals(orderId: number, tx: any) {

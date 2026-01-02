@@ -5,9 +5,11 @@ import {
   IsDateString,
   IsNumber,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export class CreateInvoicePaymentDto {
   @IsInt()
+  @Type(() => Number)
   invoiceId: number;
 
   @IsDateString()
@@ -20,6 +22,11 @@ export class CreateInvoicePaymentDto {
   @IsString()
   @IsOptional()
   paymentMethod?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  accountId?: number;
 
   @IsString()
   @IsOptional()

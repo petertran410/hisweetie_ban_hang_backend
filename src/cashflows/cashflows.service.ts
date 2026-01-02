@@ -13,7 +13,7 @@ export class CashFlowsService {
 
   async create(dto: CreateCashFlowDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateCode(dto.isReceipt);
+      const code = await this.generateManualCode(dto.isReceipt, tx);
 
       const statusValue = dto.isReceipt ? 'Đã thanh toán' : 'Đã chi';
 
@@ -320,10 +320,15 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy hóa đơn');
       }
 
-      const paymentCode = await this.generatePaymentCode(tx);
+      const existingPayments = await tx.invoicePayment.findMany({
+        where: { invoiceId: dto.invoiceId },
+      });
+      const paymentSequence = existingPayments.length + 1;
+      const cashFlowCode = `TT${invoice.code}-${paymentSequence}`;
+
       const invoicePayment = await tx.invoicePayment.create({
         data: {
-          code: paymentCode,
+          code: cashFlowCode,
           invoiceId: dto.invoiceId,
           amount: dto.amount,
           paymentDate: new Date(),
@@ -333,7 +338,6 @@ export class CashFlowsService {
         },
       });
 
-      const cashFlowCode = await this.generateCode(true, tx);
       const cashFlow = await tx.cashFlow.create({
         data: {
           code: cashFlowCode,
@@ -348,7 +352,7 @@ export class CashFlowsService {
           partnerName: invoice.customer?.name,
           contactNumber: invoice.customer?.contactNumber,
           address: invoice.customer?.address,
-          description: `Thu tiền hóa đơn ${invoice.code}`,
+          description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
           status: 0,
           statusValue: 'Đã thanh toán',
           createdBy: userId,
@@ -402,34 +406,33 @@ export class CashFlowsService {
     });
   }
 
-  private async generateCode(isReceipt: boolean, tx?: any): Promise<string> {
+  private async generateManualCode(
+    isReceipt: boolean,
+    tx?: any,
+  ): Promise<string> {
     const prisma = tx || this.prisma;
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const prefix = isReceipt ? 'PT' : 'PC';
+    const prefix = isReceipt ? 'TT' : 'PC';
 
-    const count = await prisma.cashFlow.count({
+    const lastCashFlow = await prisma.cashFlow.findFirst({
       where: {
+        code: {
+          startsWith: prefix,
+        },
         isReceipt,
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
+      },
+      orderBy: {
+        id: 'desc',
       },
     });
 
-    return `${prefix}-${dateStr}-${String(count + 1).padStart(4, '0')}`;
-  }
+    let nextNumber = 1;
+    if (lastCashFlow && lastCashFlow.code) {
+      const match = lastCashFlow.code.match(/\d+$/);
+      if (match) {
+        nextNumber = parseInt(match[0]) + 1;
+      }
+    }
 
-  private async generatePaymentCode(tx: any): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await tx.invoicePayment.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `PTHD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
+    return `${prefix}${String(nextNumber).padStart(6, '0')}`;
   }
 }

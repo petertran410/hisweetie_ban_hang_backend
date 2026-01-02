@@ -9,25 +9,71 @@ export class InvoicePaymentsService {
 
   async create(dto: CreateInvoicePaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateCode();
+      const invoice = await tx.invoice.findUnique({
+        where: { id: dto.invoiceId },
+        include: {
+          customer: {
+            select: {
+              id: true,
+              name: true,
+              contactNumber: true,
+              address: true,
+            },
+          },
+        },
+      });
+
+      if (!invoice) {
+        throw new Error('Không tìm thấy hóa đơn');
+      }
+
+      const existingPayments = await tx.invoicePayment.findMany({
+        where: { invoiceId: dto.invoiceId },
+      });
+      const paymentSequence = existingPayments.length + 1;
+      const code = `TT${invoice.code}-${paymentSequence}`;
 
       const payment = await tx.invoicePayment.create({
         data: {
           code,
           invoiceId: dto.invoiceId,
-          paymentDate: dto.paymentDate || new Date(),
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
           amount: dto.amount,
           paymentMethod: dto.paymentMethod || 'cash',
-          description: dto.notes,
+          accountId: dto.accountId,
+          description:
+            dto.notes ||
+            `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+        },
+      });
+
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: invoice.branchId,
+          isReceipt: true,
+          amount: dto.amount,
+          transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+          method: dto.paymentMethod || 'cash',
+          accountId: dto.accountId,
+          partnerType: 'C',
+          partnerId: invoice.customerId,
+          partnerName: invoice.customer?.name,
+          contactNumber: invoice.customer?.contactNumber,
+          address: invoice.customer?.address,
+          description:
+            dto.notes ||
+            `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          usedForFinancialReporting: 1,
         },
       });
 
       await this.calculateInvoiceTotals(dto.invoiceId, tx);
 
-      const invoice = await tx.invoice.findUnique({
-        where: { id: dto.invoiceId },
-      });
-      if (invoice && invoice.customerId) {
+      if (invoice.customerId) {
         await this.updateCustomerTotals(invoice.customerId, tx);
       }
 
@@ -52,6 +98,10 @@ export class InvoicePaymentsService {
         throw new Error('Payment not found');
       }
 
+      await tx.cashFlow.deleteMany({
+        where: { code: payment.code },
+      });
+
       await tx.invoicePayment.delete({ where: { id } });
       await this.calculateInvoiceTotals(payment.invoiceId, tx);
 
@@ -62,19 +112,6 @@ export class InvoicePaymentsService {
         await this.updateCustomerTotals(invoice.customerId, tx);
       }
     });
-  }
-
-  private async generateCode(): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await this.prisma.invoicePayment.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `PTHD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
   private async calculateInvoiceTotals(invoiceId: number, tx: any) {
@@ -88,14 +125,9 @@ export class InvoicePaymentsService {
     if (!invoice) return;
 
     const debtAmount = Number(invoice.grandTotal) - paidAmount;
-
-    let status: number = INVOICE_STATUS.PROCESSING;
+    let status = INVOICE_STATUS.PROCESSING;
     if (debtAmount <= 0) {
       status = INVOICE_STATUS.COMPLETED;
-    } else if (invoice.status === INVOICE_STATUS.CANCELLED) {
-      status = INVOICE_STATUS.CANCELLED;
-    } else if (invoice.status === INVOICE_STATUS.FAILED_DELIVERY) {
-      status = INVOICE_STATUS.FAILED_DELIVERY;
     }
 
     await tx.invoice.update({
@@ -111,24 +143,17 @@ export class InvoicePaymentsService {
 
   private async updateCustomerTotals(customerId: number, tx: any) {
     const invoices = await tx.invoice.findMany({
-      where: {
-        customerId,
-        status: { notIn: [INVOICE_STATUS.CANCELLED] },
-      },
+      where: { customerId },
     });
 
-    const totalPurchased = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.grandTotal),
-      0,
-    );
     const totalDebt = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      (sum: number, invoice: any) => sum + Number(invoice.debtAmount),
       0,
     );
 
     await tx.customer.update({
       where: { id: customerId },
-      data: { totalPurchased, totalDebt },
+      data: { totalDebt },
     });
   }
 }

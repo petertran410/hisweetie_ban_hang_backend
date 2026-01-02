@@ -198,7 +198,12 @@ export class InvoicesService {
       });
 
       if (paidAmount > 0) {
-        const paymentCode = await this.generatePaymentCode(tx);
+        const existingPayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invoice.id },
+        });
+        const paymentSequence = existingPayments.length + 1;
+        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+
         await tx.invoicePayment.create({
           data: {
             code: paymentCode,
@@ -206,7 +211,26 @@ export class InvoicesService {
             amount: paidAmount,
             paymentDate: new Date(),
             paymentMethod: 'cash',
-            description: 'Thanh toán khi tạo hóa đơn',
+            description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+          },
+        });
+
+        await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: invoice.branchId,
+            isReceipt: true,
+            amount: paidAmount,
+            transDate: new Date(),
+            method: 'cash',
+            partnerType: 'C',
+            partnerId: invoice.customerId,
+            partnerName: invoice.customer?.name,
+            description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
           },
         });
       }
@@ -565,7 +589,12 @@ export class InvoicesService {
       });
 
       if (additionalPayment > 0) {
-        const paymentCode = await this.generatePaymentCode(tx);
+        const existingPayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invoice.id },
+        });
+        const paymentSequence = existingPayments.length + 1;
+        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+
         await tx.invoicePayment.create({
           data: {
             code: paymentCode,
@@ -573,7 +602,26 @@ export class InvoicesService {
             amount: additionalPayment,
             paymentDate: new Date(),
             paymentMethod: 'cash',
-            description: 'Thanh toán thêm khi tạo hóa đơn từ đơn hàng',
+            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+          },
+        });
+
+        await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: invoice.branchId,
+            isReceipt: true,
+            amount: additionalPayment,
+            transDate: new Date(),
+            method: 'cash',
+            partnerType: 'C',
+            partnerId: invoice.customerId,
+            partnerName: invoice.customer?.name,
+            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
           },
         });
       }

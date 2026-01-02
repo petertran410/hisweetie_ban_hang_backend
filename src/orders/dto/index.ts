@@ -237,6 +237,7 @@ export class OrderQueryDto {
 
 export class CreateOrderPaymentDto {
   @IsInt()
+  @Type(() => Number)
   orderId: number;
 
   @IsDateString()
@@ -249,6 +250,11 @@ export class CreateOrderPaymentDto {
   @IsString()
   @IsOptional()
   paymentMethod?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  accountId?: number;
 
   @IsString()
   @IsOptional()
