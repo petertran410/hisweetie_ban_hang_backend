@@ -33,6 +33,7 @@ model User {
   priceBookUsers        PriceBookUser[]
   createdTransfers      Transfer[]      @relation("TransferCreator")
   createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
+  cashFlows CashFlow[]
 
   @@map("users")
 }
@@ -116,6 +117,7 @@ model Branch {
   customers         Customer[]
   transfersFrom Transfer[] @relation("TransferFrom")
   transfersTo   Transfer[] @relation("TransferTo")
+  cashFlows CashFlow[]
 
   @@map("branches")
 }
@@ -523,6 +525,7 @@ model BankAccount {
   orderPayments         OrderPayment[]
   invoicePayments       InvoicePayment[]
   purchaseOrderPayments PurchaseOrderPayment[]
+  cashFlows CashFlow[]
 
   @@map("bank_accounts")
 }
@@ -1013,4 +1016,50 @@ model TransferDetail {
   product  Product  @relation(fields: [productId], references: [id])
 
   @@map("transfer_details")
+}
+
+model CashFlowGroup {
+  id          Int      @id @default(autoincrement())
+  name        String
+  isReceipt   Boolean  // true = thu, false = chi
+  isDefault   Boolean  @default(false)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cashFlows   CashFlow[]
+
+  @@map("cash_flow_groups")
+}
+
+model CashFlow {
+  id                        Int      @id @default(autoincrement())
+  code                      String   @unique
+  branchId                  Int?
+  cashFlowGroupId           Int?
+  isReceipt                 Boolean  // true = thu, false = chi
+  amount                    Decimal
+  transDate                 DateTime @default(now())
+  method                    String   @default("cash") // cash, card, transfer
+  accountId                 Int?
+  partnerType               String?
+  partnerId                 Int?
+  partnerName               String?
+  contactNumber             String?
+  address                   String?
+  wardName                  String?
+  usedForFinancialReporting Int      @default(1)
+  description               String?
+  status                    Int      @default(0)
+  statusValue               String?
+  createdBy                 Int
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  branch          Branch?         @relation(fields: [branchId], references: [id])
+  cashFlowGroup   CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
+  account         BankAccount?    @relation(fields: [accountId], references: [id])
+  creator         User            @relation(fields: [createdBy], references: [id])
+
+  @@map("cash_flows")
 }
