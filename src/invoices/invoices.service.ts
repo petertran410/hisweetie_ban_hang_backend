@@ -204,6 +204,13 @@ export class InvoicesService {
         const paymentSequence = existingPayments.length + 1;
         const paymentCode = `TT${invoice.code}-${paymentSequence}`;
 
+        const customer = dto.customerId
+          ? await tx.customer.findUnique({
+              where: { id: dto.customerId },
+              select: { id: true, name: true },
+            })
+          : null;
+
         await tx.invoicePayment.create({
           data: {
             code: paymentCode,
@@ -225,7 +232,7 @@ export class InvoicesService {
             method: 'cash',
             partnerType: 'C',
             partnerId: invoice.customerId,
-            partnerName: invoice.customer?.name,
+            partnerName: customer?.name,
             description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
             status: 0,
             statusValue: 'Đã thanh toán',
@@ -489,6 +496,14 @@ export class InvoicesService {
           items: { include: { product: true } },
           payments: true,
           delivery: true,
+          customer: {
+            select: {
+              id: true,
+              name: true,
+              contactNumber: true,
+              address: true,
+            },
+          },
         },
       });
 
@@ -616,7 +631,7 @@ export class InvoicesService {
             method: 'cash',
             partnerType: 'C',
             partnerId: invoice.customerId,
-            partnerName: invoice.customer?.name,
+            partnerName: order.customer?.name,
             description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
             status: 0,
             statusValue: 'Đã thanh toán',

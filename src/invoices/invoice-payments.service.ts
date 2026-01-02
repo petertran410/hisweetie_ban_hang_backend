@@ -125,7 +125,7 @@ export class InvoicePaymentsService {
     if (!invoice) return;
 
     const debtAmount = Number(invoice.grandTotal) - paidAmount;
-    let status = INVOICE_STATUS.PROCESSING;
+    let status: number = INVOICE_STATUS.PROCESSING;
     if (debtAmount <= 0) {
       status = INVOICE_STATUS.COMPLETED;
     }
