@@ -39,6 +39,7 @@ import { SettingsModule } from './settings/settings.module';
 import { TransfersModule } from './transfers/transfers.module';
 import { SaleChannelsModule } from './sale-channels/sale-channels.module';
 import { InvoicesModule } from './invoices/invoices.module';
+import { CashFlowsModule } from './cashflows/cashflows.module';
 
 @Module({
   imports: [
@@ -78,6 +79,7 @@ import { InvoicesModule } from './invoices/invoices.module';
     PostMetaModule,
     TransfersModule,
     SaleChannelsModule,
+    CashFlowsModule,
   ],
   providers: [
     {
