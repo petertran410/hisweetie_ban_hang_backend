@@ -435,4 +435,42 @@ export class CashFlowsService {
 
     return `${prefix}${String(nextNumber).padStart(6, '0')}`;
   }
+
+  async getOpeningBalance(filters: any) {
+    const { startDate } = filters;
+
+    if (!startDate) {
+      return 0;
+    }
+
+    const receipts = await this.prisma.cashFlow.aggregate({
+      where: {
+        isReceipt: true,
+        status: 0,
+        transDate: {
+          lt: new Date(startDate),
+        },
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+    const payments = await this.prisma.cashFlow.aggregate({
+      where: {
+        isReceipt: false,
+        status: 0,
+        transDate: {
+          lt: new Date(startDate),
+        },
+      },
+      _sum: {
+        amount: true,
+      },
+    });
+
+    return (
+      Number(receipts._sum.amount || 0) - Number(payments._sum.amount || 0)
+    );
+  }
 }

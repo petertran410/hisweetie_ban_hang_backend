@@ -52,4 +52,9 @@ export class CashFlowsController {
   cancel(@Param('id') id: string) {
     return this.cashFlowsService.cancel(+id);
   }
+
+  @Get('opening-balance')
+  getOpeningBalance(@Query() query: any) {
+    return this.cashFlowsService.getOpeningBalance(query);
+  }
 }
