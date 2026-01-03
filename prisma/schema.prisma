@@ -238,9 +238,16 @@ model Supplier {
   phone         String?
   email         String?
   address       String?
+  location      String?
+  wardName      String?
+  taxCode       String?
   contactPerson String?
   comments      String?
-  totalDebt     Int      @default(0)
+  branchId      Int?
+  groups        String?
+  totalDebt     Decimal      @default(0)
+  totalInvoiced Decimal      @default(0)
+  totalInvoicedWithoutReturn  Decimal @default(0)
   isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -518,9 +525,7 @@ model BankAccount {
   id            Int      @id @default(autoincrement())
   bankName      String
   accountNumber String
-  description   String?
   createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
 
   orderPayments         OrderPayment[]
   invoicePayments       InvoicePayment[]
