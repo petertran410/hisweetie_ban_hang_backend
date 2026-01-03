@@ -40,6 +40,7 @@ import { TransfersModule } from './transfers/transfers.module';
 import { SaleChannelsModule } from './sale-channels/sale-channels.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { CashFlowsModule } from './cashflows/cashflows.module';
+import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 
 @Module({
   imports: [
@@ -80,6 +81,7 @@ import { CashFlowsModule } from './cashflows/cashflows.module';
     TransfersModule,
     SaleChannelsModule,
     CashFlowsModule,
+    CashFlowGroupsModule,
   ],
   providers: [
     {

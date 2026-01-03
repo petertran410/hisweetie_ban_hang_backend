@@ -21,6 +21,11 @@ import {
 export class CashFlowsController {
   constructor(private cashFlowsService: CashFlowsService) {}
 
+  @Get('opening-balance')
+  getOpeningBalance(@Query() query: any) {
+    return this.cashFlowsService.getOpeningBalance(query);
+  }
+
   @Get()
   findAll(@Query() query: CashFlowQueryDto) {
     return this.cashFlowsService.findAll(query);
@@ -51,10 +56,5 @@ export class CashFlowsController {
   @Delete(':id')
   cancel(@Param('id') id: string) {
     return this.cashFlowsService.cancel(+id);
-  }
-
-  @Get('opening-balance')
-  getOpeningBalance(@Query() query: any) {
-    return this.cashFlowsService.getOpeningBalance(query);
   }
 }

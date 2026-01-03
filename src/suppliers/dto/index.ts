@@ -80,6 +80,11 @@ export class SupplierQueryDto {
   limit?: number;
 
   @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  pageSize?: number;
+
+  @IsOptional()
   @IsString()
   search?: string;
 

@@ -7,7 +7,8 @@ export class SuppliersService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(query: SupplierQueryDto) {
-    const { page = 1, limit = 10, search, isActive } = query;
+    const { page = 1, pageSize, search, isActive } = query;
+    const limit = pageSize || query.limit || 10;
     const skip = (page - 1) * limit;
 
     const where: any = {};
