@@ -38,6 +38,11 @@ export class CashFlowQueryDto {
   partnerType?: string;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  partnerId?: number;
+
+  @IsOptional()
   @IsArray()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.split(',') : value,
@@ -98,4 +103,13 @@ export class CashFlowQueryDto {
   @IsInt()
   @Type(() => Number)
   currentItem?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  sortOrder?: string;
 }

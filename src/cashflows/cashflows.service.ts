@@ -5,6 +5,7 @@ import {
   UpdateCashFlowDto,
   CashFlowQueryDto,
   CreatePaymentDto,
+  CreateCustomerPaymentDto,
 } from './dto';
 
 @Injectable()
@@ -534,5 +535,125 @@ export class CashFlowsService {
     return (
       Number(receipts._sum.amount || 0) - Number(payments._sum.amount || 0)
     );
+  }
+
+  async createCustomerPayment(dto: CreateCustomerPaymentDto, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.findUnique({
+        where: { id: dto.customerId },
+        select: {
+          id: true,
+          name: true,
+          contactNumber: true,
+          address: true,
+        },
+      });
+
+      if (!customer) {
+        throw new Error('Không tìm thấy khách hàng');
+      }
+
+      const code = await this.generateManualCode(true, tx);
+
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          isReceipt: true,
+          amount: dto.totalAmount,
+          transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+          method: dto.method,
+          accountId: dto.accountId,
+          partnerType: 'C',
+          partnerId: dto.customerId,
+          partnerName: customer.name,
+          contactNumber: customer.contactNumber,
+          address: customer.address,
+          description:
+            dto.description || `Thu tiền khách hàng ${customer.name}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          usedForFinancialReporting: 1,
+        },
+      });
+
+      const invoicePayments: any[] = [];
+      for (const invoice of dto.invoices) {
+        const invoiceData = await tx.invoice.findUnique({
+          where: { id: invoice.invoiceId },
+          include: {
+            payments: true,
+          },
+        });
+
+        if (!invoiceData) {
+          throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
+        }
+
+        const existingPayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invoice.invoiceId },
+        });
+        const paymentSequence = existingPayments.length + 1;
+        const paymentCode = `TT${invoiceData.code}-${paymentSequence}`;
+
+        const payment = await tx.invoicePayment.create({
+          data: {
+            code: paymentCode,
+            invoiceId: invoice.invoiceId,
+            amount: invoice.amount,
+            paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+            paymentMethod: dto.method,
+            accountId: dto.accountId,
+            description:
+              dto.description ||
+              `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
+          },
+        });
+
+        invoicePayments.push(payment);
+
+        const allPayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invoice.invoiceId },
+        });
+        const paidAmount = allPayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        );
+
+        const debtAmount = Number(invoiceData.grandTotal) - paidAmount;
+        let status = 3;
+        if (debtAmount <= 0) {
+          status = 4;
+        }
+
+        await tx.invoice.update({
+          where: { id: invoice.invoiceId },
+          data: {
+            paidAmount,
+            debtAmount,
+            status,
+            statusValue: status === 4 ? 'Hoàn thành' : 'Đang xử lý',
+          },
+        });
+      }
+
+      const invoices = await tx.invoice.findMany({
+        where: { customerId: dto.customerId },
+      });
+      const totalDebt = invoices.reduce(
+        (sum: number, inv: any) => sum + Number(inv.debtAmount),
+        0,
+      );
+
+      await tx.customer.update({
+        where: { id: dto.customerId },
+        data: { totalDebt },
+      });
+
+      return {
+        cashFlow,
+        invoicePayments,
+      };
+    });
   }
 }

@@ -16,6 +16,7 @@ import {
   UpdateCashFlowDto,
   CashFlowQueryDto,
   CreatePaymentDto,
+  CreateCustomerPaymentDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -57,6 +58,16 @@ export class CashFlowsController {
   createPayment(@Body() dto: CreatePaymentDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.cashFlowsService.createPaymentFromInvoice(dto, userId);
+  }
+
+  @Post('customer-payments')
+  @ApiOperation({ summary: 'Create customer payment for multiple invoices' })
+  createCustomerPayment(
+    @Body() dto: CreateCustomerPaymentDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.cashFlowsService.createCustomerPayment(dto, userId);
   }
 
   @Put(':id')
