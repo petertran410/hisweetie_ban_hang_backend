@@ -112,9 +112,9 @@ export class UpdateCustomerDto {
   @IsString()
   invoiceCccdCmnd?: string;
 
-  @IsOptional()
-  @IsString()
-  invoiceBankAccount?: string;
+  // @IsOptional()
+  // @IsString()
+  // invoiceBankAccount?: string;
 
   @IsOptional()
   @IsEmail()
