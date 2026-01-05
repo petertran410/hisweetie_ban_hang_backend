@@ -68,7 +68,12 @@ export class CashFlowsService {
         },
       });
 
-      return cashFlow;
+      return {
+        ...cashFlow,
+        branchName: cashFlow.branch?.name,
+        cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+        creatorName: cashFlow.creator?.name,
+      };
     });
   }
 
@@ -157,7 +162,7 @@ export class CashFlowsService {
       where.id = { in: ids };
     }
 
-    const [total, data] = await Promise.all([
+    const [total, cashFlows] = await Promise.all([
       this.prisma.cashFlow.count({ where }),
       this.prisma.cashFlow.findMany({
         where,
@@ -196,6 +201,13 @@ export class CashFlowsService {
       }),
     ]);
 
+    const data = cashFlows.map((cashFlow) => ({
+      ...cashFlow,
+      branchName: cashFlow.branch?.name,
+      cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+      creatorName: cashFlow.creator?.name,
+    }));
+
     return {
       total,
       pageSize,
@@ -204,7 +216,7 @@ export class CashFlowsService {
   }
 
   async findOne(id: number) {
-    return this.prisma.cashFlow.findUnique({
+    const cashFlow = await this.prisma.cashFlow.findUnique({
       where: { id },
       include: {
         branch: {
@@ -234,10 +246,21 @@ export class CashFlowsService {
         },
       },
     });
+
+    if (!cashFlow) {
+      return null;
+    }
+
+    return {
+      ...cashFlow,
+      branchName: cashFlow.branch?.name,
+      cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+      creatorName: cashFlow.creator?.name,
+    };
   }
 
   async update(id: number, dto: UpdateCashFlowDto) {
-    return this.prisma.cashFlow.update({
+    const cashFlow = await this.prisma.cashFlow.update({
       where: { id },
       data: {
         branchId: dto.branchId,
@@ -283,6 +306,13 @@ export class CashFlowsService {
         },
       },
     });
+
+    return {
+      ...cashFlow,
+      branchName: cashFlow.branch?.name,
+      cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+      creatorName: cashFlow.creator?.name,
+    };
   }
 
   async cancel(id: number) {
@@ -358,6 +388,33 @@ export class CashFlowsService {
           createdBy: userId,
           usedForFinancialReporting: 1,
         },
+        include: {
+          branch: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          cashFlowGroup: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          account: {
+            select: {
+              id: true,
+              bankName: true,
+              accountNumber: true,
+            },
+          },
+          creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+        },
       });
 
       const payments = await tx.invoicePayment.findMany({
@@ -401,7 +458,12 @@ export class CashFlowsService {
 
       return {
         invoicePayment,
-        cashFlow,
+        cashFlow: {
+          ...cashFlow,
+          branchName: cashFlow.branch?.name,
+          cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+          creatorName: cashFlow.creator?.name,
+        },
       };
     });
   }
