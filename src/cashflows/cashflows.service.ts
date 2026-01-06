@@ -556,33 +556,6 @@ export class CashFlowsService {
 
       const code = await this.generateManualCode(true, tx);
 
-      const customerDebtSnapshot = Number(customer.totalDebt) - dto.totalAmount;
-
-      const cashFlow = await tx.cashFlow.create({
-        data: {
-          code,
-          branchId: dto.branchId,
-          cashFlowGroupId: 1,
-          isReceipt: true,
-          amount: dto.totalAmount,
-          transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-          method: dto.method,
-          accountId: dto.accountId,
-          partnerType: 'C',
-          partnerId: dto.customerId,
-          partnerName: customer.name,
-          contactNumber: customer.contactNumber,
-          address: customer.address,
-          description:
-            dto.description || `Thu tiền khách hàng ${customer.name}`,
-          status: 0,
-          statusValue: 'Đã thanh toán',
-          createdBy: userId,
-          usedForFinancialReporting: 1,
-          customerDebtSnapshot,
-        },
-      });
-
       const invoicePayments: any[] = [];
       for (const invoice of dto.invoices) {
         const invoiceData = await tx.invoice.findUnique({
@@ -659,6 +632,33 @@ export class CashFlowsService {
       await tx.customer.update({
         where: { id: dto.customerId },
         data: { totalDebt },
+      });
+
+      const customerDebtSnapshot = totalDebt;
+
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: dto.branchId,
+          cashFlowGroupId: 1,
+          isReceipt: true,
+          amount: dto.totalAmount,
+          transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+          method: dto.method,
+          accountId: dto.accountId,
+          partnerType: 'C',
+          partnerId: dto.customerId,
+          partnerName: customer.name,
+          contactNumber: customer.contactNumber,
+          address: customer.address,
+          description:
+            dto.description || `Thu tiền khách hàng ${customer.name}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          usedForFinancialReporting: 1,
+          customerDebtSnapshot,
+        },
       });
 
       return {
