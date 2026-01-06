@@ -476,13 +476,11 @@ export class CustomersService {
   }
 
   async getDebtTimeline(customerId: number) {
-    const [invoices, cashflows] = await Promise.all([
+    const [invoices, invoicePayments] = await Promise.all([
       this.prisma.invoice.findMany({
         where: {
           customerId,
-          status: {
-            not: 2,
-          },
+          status: { not: 2 },
         },
         include: {
           branch: { select: { id: true, name: true } },
@@ -490,19 +488,52 @@ export class CustomersService {
         },
         orderBy: { purchaseDate: 'desc' },
       }),
-      this.prisma.cashFlow.findMany({
+      this.prisma.invoicePayment.findMany({
         where: {
-          partnerId: customerId,
-          partnerType: 'C',
-          isReceipt: true,
+          invoice: {
+            customerId: customerId,
+            status: { not: 2 },
+          },
         },
-        include: {
-          branch: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-        },
-        orderBy: { transDate: 'desc' },
+        orderBy: { paymentDate: 'desc' },
       }),
     ]);
+
+    const paymentCodes = new Set(invoicePayments.map((p) => p.code));
+    const paymentDates = invoicePayments.map((p) => ({
+      start: new Date(new Date(p.paymentDate).getTime() - 2000),
+      end: new Date(new Date(p.paymentDate).getTime() + 2000),
+    }));
+
+    const cashflows = await this.prisma.cashFlow.findMany({
+      where: {
+        OR: [
+          {
+            code: { in: Array.from(paymentCodes) },
+          },
+          {
+            AND: [
+              { partnerId: customerId },
+              { partnerType: 'C' },
+              { isReceipt: true },
+              {
+                OR: paymentDates.map((date) => ({
+                  transDate: {
+                    gte: date.start,
+                    lte: date.end,
+                  },
+                })),
+              },
+            ],
+          },
+        ],
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+      },
+      orderBy: { transDate: 'desc' },
+    });
 
     const timeline = [
       ...invoices.map((inv) => ({
