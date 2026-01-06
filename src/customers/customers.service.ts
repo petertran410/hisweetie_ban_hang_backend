@@ -478,7 +478,12 @@ export class CustomersService {
   async getDebtTimeline(customerId: number) {
     const [invoices, cashflows] = await Promise.all([
       this.prisma.invoice.findMany({
-        where: { customerId },
+        where: {
+          customerId,
+          status: {
+            not: 2,
+          },
+        },
         include: {
           branch: { select: { id: true, name: true } },
           soldBy: { select: { id: true, name: true } },
