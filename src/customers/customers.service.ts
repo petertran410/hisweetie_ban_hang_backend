@@ -503,7 +503,7 @@ export class CustomersService {
       }),
     ]);
 
-    const events = [
+    const timeline = [
       ...invoices.map((inv) => ({
         type: 'invoice' as const,
         id: inv.id,
@@ -512,6 +512,9 @@ export class CustomersService {
         amount: Number(inv.grandTotal),
         paid: Number(inv.paidAmount),
         debt: Number(inv.debtAmount),
+        debtSnapshot: inv.customerDebtSnapshot
+          ? Number(inv.customerDebtSnapshot)
+          : null,
         status: inv.status,
         statusValue: inv.statusValue,
         branch: inv.branch,
@@ -525,35 +528,15 @@ export class CustomersService {
         amount: Number(cf.amount),
         method: cf.method,
         description: cf.description,
+        debtSnapshot: cf.customerDebtSnapshot
+          ? Number(cf.customerDebtSnapshot)
+          : null,
         status: cf.status,
         statusValue: cf.statusValue,
         branch: cf.branch,
         user: cf.creator,
       })),
-    ];
-
-    events.sort(
-      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
-    );
-
-    let runningDebt = 0;
-    const timeline = events.map((event) => {
-      if (event.type === 'invoice') {
-        runningDebt += event.debt;
-        return {
-          ...event,
-          debtSnapshot: runningDebt,
-        };
-      } else {
-        runningDebt -= event.amount;
-        return {
-          ...event,
-          debtSnapshot: runningDebt >= 0 ? runningDebt : 0,
-        };
-      }
-    });
-
-    timeline.reverse();
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return { data: timeline };
   }

@@ -17,6 +17,7 @@ export class OrderPaymentsService {
               name: true,
               contactNumber: true,
               address: true,
+              totalDebt: true,
             },
           },
         },
@@ -30,7 +31,7 @@ export class OrderPaymentsService {
         where: { orderId: dto.orderId },
       });
       const paymentSequence = existingPayments.length + 1;
-      const code = `TT${order.code}-${paymentSequence}`;
+      const code = `TTDH${order.code}-${paymentSequence}`;
 
       const payment = await tx.orderPayment.create({
         data: {
@@ -46,6 +47,10 @@ export class OrderPaymentsService {
           createdBy: userId,
         },
       });
+
+      const customerDebtSnapshot = order.customer
+        ? Number(order.customer.totalDebt)
+        : null;
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -68,15 +73,32 @@ export class OrderPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
+          customerDebtSnapshot,
         },
       });
 
-      await this.calculateOrderTotals(dto.orderId, tx);
-
-      return tx.orderPayment.findUnique({
-        where: { id: payment.id },
-        include: { order: true },
+      const allPayments = await tx.orderPayment.findMany({
+        where: { orderId: dto.orderId },
       });
+      const paidAmount = allPayments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      );
+      const depositAmount = paidAmount;
+
+      await tx.order.update({
+        where: { id: dto.orderId },
+        data: {
+          paidAmount,
+          depositAmount,
+          debtAmount: Number(order.grandTotal) - paidAmount,
+        },
+      });
+
+      return {
+        payment,
+        cashFlow,
+      };
     });
   }
 

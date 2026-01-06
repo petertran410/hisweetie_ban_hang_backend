@@ -18,6 +18,7 @@ export class InvoicePaymentsService {
               name: true,
               contactNumber: true,
               address: true,
+              totalDebt: true,
             },
           },
         },
@@ -47,6 +48,10 @@ export class InvoicePaymentsService {
         },
       });
 
+      const customerDebtSnapshot = invoice.customer
+        ? Number(invoice.customer.totalDebt) - dto.amount
+        : null;
+
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
@@ -68,6 +73,7 @@ export class InvoicePaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
+          customerDebtSnapshot,
         },
       });
 
@@ -77,10 +83,15 @@ export class InvoicePaymentsService {
         await this.updateCustomerTotals(invoice.customerId, tx);
       }
 
-      return tx.invoicePayment.findUnique({
+      const paymentResult = await tx.invoicePayment.findUnique({
         where: { id: payment.id },
         include: { invoice: true },
       });
+
+      return {
+        payment: paymentResult,
+        cashFlow,
+      };
     });
   }
 
