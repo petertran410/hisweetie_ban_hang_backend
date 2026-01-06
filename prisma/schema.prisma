@@ -698,6 +698,7 @@ model Invoice {
   grandTotal    Decimal  @default(0)
   paidAmount    Decimal  @default(0)
   debtAmount    Decimal  @default(0)
+  customerDebtSnapshot  Decimal?             @default(0)
   status        Int      @default(3)
   statusValue   String?
   usingCod      Boolean  @default(false)
@@ -1042,10 +1043,10 @@ model CashFlow {
   code                      String   @unique
   branchId                  Int?
   cashFlowGroupId           Int?
-  isReceipt                 Boolean  // true = thu, false = chi
+  isReceipt                 Boolean
   amount                    Decimal
   transDate                 DateTime @default(now())
-  method                    String   @default("cash") // cash, card, transfer
+  method                    String   @default("cash")
   accountId                 Int?
   partnerType               String?
   partnerId                 Int?
@@ -1054,6 +1055,7 @@ model CashFlow {
   address                   String?
   wardName                  String?
   usedForFinancialReporting Int      @default(1)
+  customerDebtSnapshot  Decimal? @default(0)
   description               String?
   status                    Int      @default(0)
   statusValue               String?

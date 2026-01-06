@@ -137,6 +137,17 @@ export class InvoicesService {
         status = INVOICE_STATUS.COMPLETED;
       }
 
+      const customer = dto.customerId
+        ? await tx.customer.findUnique({
+            where: { id: dto.customerId },
+            select: { totalDebt: true },
+          })
+        : null;
+
+      const customerDebtSnapshot = customer
+        ? Number(customer.totalDebt) + debtAmount
+        : null;
+
       const invoice = await tx.invoice.create({
         data: {
           code,
@@ -158,6 +169,7 @@ export class InvoicesService {
           usingCod: dto.usingCod || false,
           description: dto.description,
           createdBy: userId,
+          customerDebtSnapshot,
           details: {
             createMany: {
               data: dto.items.map((item) => ({
@@ -204,7 +216,7 @@ export class InvoicesService {
         const paymentSequence = existingPayments.length + 1;
         const paymentCode = `TT${invoice.code}-${paymentSequence}`;
 
-        const customer = dto.customerId
+        const paymentCustomer = dto.customerId
           ? await tx.customer.findUnique({
               where: { id: dto.customerId },
               select: { id: true, name: true },
@@ -222,6 +234,10 @@ export class InvoicesService {
           },
         });
 
+        const cashFlowCustomerDebtSnapshot = customer
+          ? Number(customer.totalDebt) + debtAmount - paidAmount
+          : null;
+
         await tx.cashFlow.create({
           data: {
             code: paymentCode,
@@ -232,12 +248,13 @@ export class InvoicesService {
             method: 'cash',
             partnerType: 'C',
             partnerId: invoice.customerId,
-            partnerName: customer?.name,
+            partnerName: paymentCustomer?.name,
             description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
             status: 0,
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
+            customerDebtSnapshot: cashFlowCustomerDebtSnapshot,
           },
         });
       }
@@ -264,6 +281,9 @@ export class InvoicesService {
           details: true,
           payments: true,
           delivery: true,
+          customer: true,
+          branch: true,
+          soldBy: true,
         },
       });
     });

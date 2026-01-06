@@ -544,6 +544,9 @@ export class CustomersService {
         amount: Number(inv.grandTotal),
         paid: Number(inv.paidAmount),
         debt: Number(inv.debtAmount),
+        debtSnapshot: inv.customerDebtSnapshot
+          ? Number(inv.customerDebtSnapshot)
+          : null,
         status: inv.status,
         statusValue: inv.statusValue,
         branch: inv.branch,
@@ -557,6 +560,9 @@ export class CustomersService {
         amount: Number(cf.amount),
         method: cf.method,
         description: cf.description,
+        debtSnapshot: cf.customerDebtSnapshot
+          ? Number(cf.customerDebtSnapshot)
+          : null,
         status: cf.status,
         statusValue: cf.statusValue,
         branch: cf.branch,

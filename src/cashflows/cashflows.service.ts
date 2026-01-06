@@ -546,6 +546,7 @@ export class CashFlowsService {
           name: true,
           contactNumber: true,
           address: true,
+          totalDebt: true,
         },
       });
 
@@ -554,6 +555,8 @@ export class CashFlowsService {
       }
 
       const code = await this.generateManualCode(true, tx);
+
+      const customerDebtSnapshot = Number(customer.totalDebt) - dto.totalAmount;
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -576,6 +579,7 @@ export class CashFlowsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
+          customerDebtSnapshot,
         },
       });
 
