@@ -476,7 +476,7 @@ export class CustomersService {
   }
 
   async getDebtTimeline(customerId: number) {
-    const [invoices, invoicePayments] = await Promise.all([
+    const [invoices, cashFlows] = await Promise.all([
       this.prisma.invoice.findMany({
         where: {
           customerId,
@@ -488,54 +488,22 @@ export class CustomersService {
         },
         orderBy: { purchaseDate: 'desc' },
       }),
-      this.prisma.invoicePayment.findMany({
+      this.prisma.cashFlow.findMany({
         where: {
-          invoice: {
-            customerId: customerId,
-            status: { not: 2 },
-          },
+          partnerId: customerId,
+          partnerType: 'C',
+          isReceipt: true,
+          status: 0,
         },
-        orderBy: { paymentDate: 'desc' },
+        include: {
+          branch: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+        },
+        orderBy: { transDate: 'desc' },
       }),
     ]);
 
-    const paymentCodes = new Set(invoicePayments.map((p) => p.code));
-    const paymentDates = invoicePayments.map((p) => ({
-      start: new Date(new Date(p.paymentDate).getTime() - 2000),
-      end: new Date(new Date(p.paymentDate).getTime() + 2000),
-    }));
-
-    const cashflows = await this.prisma.cashFlow.findMany({
-      where: {
-        OR: [
-          {
-            code: { in: Array.from(paymentCodes) },
-          },
-          {
-            AND: [
-              { partnerId: customerId },
-              { partnerType: 'C' },
-              { isReceipt: true },
-              {
-                OR: paymentDates.map((date) => ({
-                  transDate: {
-                    gte: date.start,
-                    lte: date.end,
-                  },
-                })),
-              },
-            ],
-          },
-        ],
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-      },
-      orderBy: { transDate: 'desc' },
-    });
-
-    const timeline = [
+    const events = [
       ...invoices.map((inv) => ({
         type: 'invoice' as const,
         id: inv.id,
@@ -544,15 +512,12 @@ export class CustomersService {
         amount: Number(inv.grandTotal),
         paid: Number(inv.paidAmount),
         debt: Number(inv.debtAmount),
-        debtSnapshot: inv.customerDebtSnapshot
-          ? Number(inv.customerDebtSnapshot)
-          : null,
         status: inv.status,
         statusValue: inv.statusValue,
         branch: inv.branch,
         user: inv.soldBy,
       })),
-      ...cashflows.map((cf) => ({
+      ...cashFlows.map((cf) => ({
         type: 'payment' as const,
         id: cf.id,
         code: cf.code,
@@ -560,15 +525,35 @@ export class CustomersService {
         amount: Number(cf.amount),
         method: cf.method,
         description: cf.description,
-        debtSnapshot: cf.customerDebtSnapshot
-          ? Number(cf.customerDebtSnapshot)
-          : null,
         status: cf.status,
         statusValue: cf.statusValue,
         branch: cf.branch,
         user: cf.creator,
       })),
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    ];
+
+    events.sort(
+      (a, b) => new Date(a.date).getTime() - new Date(b.date).getTime(),
+    );
+
+    let runningDebt = 0;
+    const timeline = events.map((event) => {
+      if (event.type === 'invoice') {
+        runningDebt += event.debt;
+        return {
+          ...event,
+          debtSnapshot: runningDebt,
+        };
+      } else {
+        runningDebt -= event.amount;
+        return {
+          ...event,
+          debtSnapshot: runningDebt >= 0 ? runningDebt : 0,
+        };
+      }
+    });
+
+    timeline.reverse();
 
     return { data: timeline };
   }
