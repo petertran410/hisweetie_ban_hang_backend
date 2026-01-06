@@ -31,7 +31,7 @@ export class OrderPaymentsService {
         where: { orderId: dto.orderId },
       });
       const paymentSequence = existingPayments.length + 1;
-      const code = `TTDH${order.code}-${paymentSequence}`;
+      const code = `TT${order.code}-${paymentSequence}`;
 
       const payment = await tx.orderPayment.create({
         data: {

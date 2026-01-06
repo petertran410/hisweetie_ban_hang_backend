@@ -144,9 +144,9 @@ export class InvoicesService {
           })
         : null;
 
-      const customerDebtSnapshot = customer
-        ? Number(customer.totalDebt) + debtAmount
-        : null;
+      const customerDebtSnapshot = Number(customer?.totalDebt) + debtAmount;
+
+      console.log(customerDebtSnapshot);
 
       const invoice = await tx.invoice.create({
         data: {
@@ -568,6 +568,15 @@ export class InvoicesService {
       const grandTotal = totalAmount - discountAmount - discountFromRatio;
       const debtAmount = grandTotal - totalPaid;
 
+      const customer = order.customerId
+        ? await tx.customer.findUnique({
+            where: { id: order.customerId },
+            select: { totalDebt: true },
+          })
+        : null;
+
+      const customerDebtSnapshot = Number(customer?.totalDebt) + debtAmount;
+
       let status: number = INVOICE_STATUS.PROCESSING;
       if (debtAmount <= 0) {
         status = INVOICE_STATUS.COMPLETED;
@@ -592,6 +601,7 @@ export class InvoicesService {
           usingCod: order.usingCod || false,
           description: order.description,
           createdBy: userId,
+          customerDebtSnapshot,
           details: {
             create: order.items.map((item) => ({
               productId: item.productId,
