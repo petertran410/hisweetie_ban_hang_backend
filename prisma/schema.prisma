@@ -698,7 +698,7 @@ model Invoice {
   grandTotal    Decimal  @default(0)
   paidAmount    Decimal  @default(0)
   debtAmount    Decimal  @default(0)
-  customerDebtSnapshot  Decimal?             @default(0)
+  customerDebtSnapshot  Decimal?             @db.Decimal(15, 2)
   status        Int      @default(3)
   statusValue   String?
   usingCod      Boolean  @default(false)
@@ -1055,7 +1055,7 @@ model CashFlow {
   address                   String?
   wardName                  String?
   usedForFinancialReporting Int      @default(1)
-  customerDebtSnapshot  Decimal? @default(0)
+  customerDebtSnapshot     Decimal?      @db.Decimal(15, 2)
   description               String?
   status                    Int      @default(0)
   statusValue               String?
