@@ -27,6 +27,11 @@ export class CreateCustomerPaymentDto {
   totalAmount: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
   @IsDateString()
   transDate?: string;
 

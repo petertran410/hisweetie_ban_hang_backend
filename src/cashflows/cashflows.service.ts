@@ -558,6 +558,8 @@ export class CashFlowsService {
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
+          branchId: dto.branchId,
+          cashFlowGroupId: 1,
           isReceipt: true,
           amount: dto.totalAmount,
           transDate: dto.transDate ? new Date(dto.transDate) : new Date(),

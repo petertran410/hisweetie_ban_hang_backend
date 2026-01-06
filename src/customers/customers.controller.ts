@@ -74,4 +74,12 @@ export class CustomersController {
   bulkUpdate(@Body() dto: BulkUpdateCustomerDto) {
     return this.customersService.bulkUpdate(dto);
   }
+
+  @Get(':id/debt-timeline')
+  @ApiOperation({
+    summary: 'Get customer debt timeline (invoices + cashflows)',
+  })
+  getDebtTimeline(@Param('id') id: string) {
+    return this.customersService.getDebtTimeline(+id);
+  }
 }

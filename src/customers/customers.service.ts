@@ -474,4 +474,60 @@ export class CustomersService {
     const count = await this.prisma.customer.count();
     return `KH${String(count + 1).padStart(6, '0')}`;
   }
+
+  async getDebtTimeline(customerId: number) {
+    const [invoices, cashflows] = await Promise.all([
+      this.prisma.invoice.findMany({
+        where: { customerId },
+        include: {
+          branch: { select: { id: true, name: true } },
+          soldBy: { select: { id: true, name: true } },
+        },
+        orderBy: { purchaseDate: 'desc' },
+      }),
+      this.prisma.cashFlow.findMany({
+        where: {
+          partnerId: customerId,
+          partnerType: 'C',
+          isReceipt: true,
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+        },
+        orderBy: { transDate: 'desc' },
+      }),
+    ]);
+
+    const timeline = [
+      ...invoices.map((inv) => ({
+        type: 'invoice' as const,
+        id: inv.id,
+        code: inv.code,
+        date: inv.purchaseDate,
+        amount: Number(inv.grandTotal),
+        paid: Number(inv.paidAmount),
+        debt: Number(inv.debtAmount),
+        status: inv.status,
+        statusValue: inv.statusValue,
+        branch: inv.branch,
+        user: inv.soldBy,
+      })),
+      ...cashflows.map((cf) => ({
+        type: 'payment' as const,
+        id: cf.id,
+        code: cf.code,
+        date: cf.transDate,
+        amount: Number(cf.amount),
+        method: cf.method,
+        description: cf.description,
+        status: cf.status,
+        statusValue: cf.statusValue,
+        branch: cf.branch,
+        user: cf.creator,
+      })),
+    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return { data: timeline };
+  }
 }
