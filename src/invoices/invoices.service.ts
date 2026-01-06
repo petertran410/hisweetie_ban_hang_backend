@@ -311,6 +311,8 @@ export class InvoicesService {
               },
             });
           }
+          updateData.debtAmount = 0;
+          updateData.paidAmount = 0;
         }
 
         updateData.status = dto.status;
@@ -428,7 +430,11 @@ export class InvoicesService {
         where: { id },
         data: updateData,
         include: {
-          details: true,
+          customer: true,
+          branch: { select: { id: true, name: true } },
+          soldBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          details: { include: { product: true } },
           payments: true,
           delivery: true,
         },
@@ -474,7 +480,7 @@ export class InvoicesService {
       0,
     );
     const totalDebt = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      (sum: number, invoice: any) => sum + Number(invoice.debtAmount),
       0,
     );
 

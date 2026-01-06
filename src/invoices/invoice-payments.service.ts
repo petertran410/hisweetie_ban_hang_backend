@@ -143,7 +143,12 @@ export class InvoicePaymentsService {
 
   private async updateCustomerTotals(customerId: number, tx: any) {
     const invoices = await tx.invoice.findMany({
-      where: { customerId },
+      where: {
+        customerId,
+        status: {
+          notIn: [2],
+        },
+      },
     });
 
     const totalDebt = invoices.reduce(

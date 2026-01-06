@@ -640,7 +640,12 @@ export class CashFlowsService {
       }
 
       const invoices = await tx.invoice.findMany({
-        where: { customerId: dto.customerId },
+        where: {
+          customerId: dto.customerId,
+          status: {
+            notIn: [2],
+          },
+        },
       });
       const totalDebt = invoices.reduce(
         (sum: number, inv: any) => sum + Number(inv.debtAmount),
