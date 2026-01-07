@@ -438,7 +438,7 @@ export class CashFlowsService {
           paidAmount,
           debtAmount,
           status: invoiceStatus,
-          statusValue: invoiceStatus === 4 ? 'Hoàn thành' : 'Đang xử lý',
+          statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
         },
       });
 
