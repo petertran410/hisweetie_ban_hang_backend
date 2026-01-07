@@ -15,7 +15,6 @@ import {
 import {
   ORDER_STATUS,
   getStatusLabel as getOrderStatusLabel,
-  convertStatusNumberToString,
 } from '../orders/dto/order-status.constants';
 
 @Injectable()
@@ -144,8 +143,6 @@ export class InvoicesService {
         : null;
 
       const customerDebtSnapshot = Number(customer?.totalDebt) + debtAmount;
-
-      console.log(customerDebtSnapshot);
 
       const invoice = await tx.invoice.create({
         data: {
@@ -471,19 +468,6 @@ export class InvoicesService {
   async remove(id: number) {
     await this.findOne(id);
     return this.prisma.invoice.delete({ where: { id } });
-  }
-
-  private async generatePaymentCode(tx: any): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await tx.invoicePayment.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `PTHD-${dateStr}-${String(count + 1).padStart(4, '0')}`;
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {

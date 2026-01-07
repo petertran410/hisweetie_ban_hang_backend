@@ -429,7 +429,7 @@ export class CashFlowsService {
       const debtAmount = Number(invoice.grandTotal) - paidAmount;
       let invoiceStatus = 3;
       if (debtAmount <= 0) {
-        invoiceStatus = 4;
+        invoiceStatus = 1;
       }
 
       await tx.invoice.update({
@@ -617,7 +617,7 @@ export class CashFlowsService {
         const debtAmount = Number(invoiceData.grandTotal) - paidAmount;
         let status = 3;
         if (debtAmount <= 0) {
-          status = 4;
+          status = 1;
         }
 
         await tx.invoice.update({
