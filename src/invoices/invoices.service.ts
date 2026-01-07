@@ -698,7 +698,18 @@ export class InvoicesService {
       });
 
       if (order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
+        const currentCustomer = await tx.customer.findUnique({
+          where: { id: order.customerId },
+          select: { totalDebt: true },
+        });
+
+        const newTotalDebt =
+          Number(currentCustomer?.totalDebt || 0) + debtAmount;
+
+        await tx.customer.update({
+          where: { id: order.customerId },
+          data: { totalDebt: newTotalDebt },
+        });
       }
 
       return tx.invoice.findUnique({

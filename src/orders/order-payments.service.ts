@@ -57,7 +57,16 @@ export class OrderPaymentsService {
       );
       const depositAmount = paidAmount;
 
-      const customerDebtSnapshot = Number(order.customer?.totalDebt);
+      const newCustomerDebt = Number(order.customer?.totalDebt) - dto.amount;
+
+      if (order.customerId) {
+        await tx.customer.update({
+          where: { id: order.customerId },
+          data: { totalDebt: newCustomerDebt },
+        });
+      }
+
+      const customerDebtSnapshot = newCustomerDebt;
 
       const cashFlow = await tx.cashFlow.create({
         data: {

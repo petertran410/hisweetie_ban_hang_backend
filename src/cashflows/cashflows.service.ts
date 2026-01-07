@@ -631,25 +631,20 @@ export class CashFlowsService {
         });
       }
 
-      const invoices = await tx.invoice.findMany({
-        where: {
-          customerId: dto.customerId,
-          status: {
-            notIn: [2],
-          },
-        },
+      const currentCustomer = await tx.customer.findUnique({
+        where: { id: dto.customerId },
+        select: { totalDebt: true },
       });
-      const totalDebt = invoices.reduce(
-        (sum: number, inv: any) => sum + Number(inv.debtAmount),
-        0,
-      );
+
+      const newTotalDebt =
+        Number(currentCustomer?.totalDebt || 0) - dto.totalAmount;
 
       await tx.customer.update({
         where: { id: dto.customerId },
-        data: { totalDebt },
+        data: { totalDebt: newTotalDebt },
       });
 
-      const customerDebtSnapshot = totalDebt;
+      const customerDebtSnapshot = newTotalDebt;
 
       const code = await this.generateSafeCashFlowCode(true, tx);
 
@@ -661,15 +656,14 @@ export class CashFlowsService {
           isReceipt: true,
           amount: dto.totalAmount,
           transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-          method: dto.method,
+          method: dto.method || 'cash',
           accountId: dto.accountId,
           partnerType: 'C',
           partnerId: dto.customerId,
           partnerName: customer.name,
           contactNumber: customer.contactNumber,
           address: customer.address,
-          description:
-            dto.description || `Thu tiền khách hàng ${customer.name}`,
+          description: dto.description || 'Thu tiền khách hàng',
           status: 0,
           statusValue: 'Đã thanh toán',
           createdBy: userId,
