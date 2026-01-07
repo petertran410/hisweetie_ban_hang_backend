@@ -327,8 +327,8 @@ export class InvoicesService {
               },
             });
           }
+
           updateData.debtAmount = 0;
-          updateData.paidAmount = 0;
         }
 
         updateData.status = dto.status;

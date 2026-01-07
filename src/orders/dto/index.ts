@@ -153,6 +153,10 @@ export class UpdateOrderDto {
 
   @IsNumber()
   @IsOptional()
+  soldById?: number;
+
+  @IsNumber()
+  @IsOptional()
   discountAmount?: number;
 
   @IsNumber()

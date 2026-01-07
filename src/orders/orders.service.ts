@@ -182,6 +182,8 @@ export class OrdersService {
       const updateData: any = {
         customerId: dto.customerId,
         branchId: dto.branchId,
+        soldById: dto.soldById,
+        saleChannelId: dto.saleChannelId,
         orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
         paidAmount: dto.paidAmount,
         discount: dto.discountAmount,
@@ -195,6 +197,13 @@ export class OrdersService {
         updateData.orderStatus = dto.orderStatus;
         updateData.status = statusNumber;
         updateData.statusValue = getStatusLabel(statusNumber);
+
+        if (
+          dto.orderStatus === 'cancelled' &&
+          existingOrder.orderStatus !== 'cancelled'
+        ) {
+          updateData.debtAmount = 0;
+        }
       }
 
       await tx.order.update({
@@ -244,10 +253,13 @@ export class OrdersService {
         where: { id },
         include: {
           customer: true,
+          branch: true,
+          soldBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
           items: { include: { product: true } },
           payments: true,
           delivery: true,
-          branch: true,
+          invoice: true,
         },
       });
     });
