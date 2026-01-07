@@ -687,8 +687,7 @@ export class InvoicesService {
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
-            customerDebtSnapshot:
-              currentCustomerDebt + grandTotal - additionalPayment,
+            customerDebtSnapshot,
           },
         });
       }
@@ -716,7 +715,12 @@ export class InvoicesService {
       });
 
       if (order.customerId) {
-        await this.updateCustomerTotals(order.customerId, tx);
+        const newTotalDebt =
+          currentCustomerDebt + grandTotal - additionalPayment;
+        await tx.customer.update({
+          where: { id: order.customerId },
+          data: { totalDebt: newTotalDebt },
+        });
       }
 
       return tx.invoice.findUnique({
