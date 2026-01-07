@@ -142,7 +142,8 @@ export class InvoicesService {
           })
         : null;
 
-      const customerDebtSnapshot = Number(customer?.totalDebt) + debtAmount;
+      const currentCustomerDebt = Number(customer?.totalDebt || 0);
+      const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -230,10 +231,6 @@ export class InvoicesService {
           },
         });
 
-        const cashFlowCustomerDebtSnapshot = customer
-          ? Number(customer.totalDebt) + debtAmount - paidAmount
-          : null;
-
         await tx.cashFlow.create({
           data: {
             code: paymentCode,
@@ -250,7 +247,7 @@ export class InvoicesService {
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
-            customerDebtSnapshot: cashFlowCustomerDebtSnapshot,
+            customerDebtSnapshot: currentCustomerDebt + grandTotal - paidAmount,
           },
         });
       }
@@ -292,7 +289,10 @@ export class InvoicesService {
       const updateData: any = {};
       const currentInvoice = await tx.invoice.findUnique({
         where: { id },
-        include: { details: true },
+        include: {
+          details: true,
+          customer: { select: { totalDebt: true } },
+        },
       });
 
       if (!currentInvoice) {
@@ -386,6 +386,13 @@ export class InvoicesService {
               : INVOICE_STATUS.PROCESSING;
         }
 
+        const currentCustomerDebt = Number(
+          currentInvoice.customer?.totalDebt || 0,
+        );
+        const oldDebtAmount = Number(currentInvoice.debtAmount);
+        const customerDebtSnapshot =
+          currentCustomerDebt - oldDebtAmount + debtAmount;
+
         updateData.totalAmount = totalAmount;
         updateData.discount = discountAmount;
         updateData.discountRatio = dto.discountRatio || 0;
@@ -394,6 +401,7 @@ export class InvoicesService {
         updateData.paidAmount = paidAmount;
         updateData.status = status;
         updateData.statusValue = getStatusLabel(status);
+        updateData.customerDebtSnapshot = customerDebtSnapshot;
 
         updateData.details = {
           create: dto.items.map((item) => ({
