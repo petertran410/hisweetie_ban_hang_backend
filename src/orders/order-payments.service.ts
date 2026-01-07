@@ -56,11 +56,9 @@ export class OrderPaymentsService {
         0,
       );
       const depositAmount = paidAmount;
-      const orderDebtAmount = Number(order.grandTotal) - paidAmount;
 
-      const customerDebtSnapshot = order.customer
-        ? Number(order.customer.totalDebt) + orderDebtAmount
-        : null;
+      const customerDebtSnapshot =
+        Number(order.customer?.totalDebt) - dto.amount;
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -92,7 +90,7 @@ export class OrderPaymentsService {
         data: {
           paidAmount,
           depositAmount,
-          debtAmount: orderDebtAmount,
+          debtAmount: Number(order.grandTotal) - paidAmount,
         },
       });
 
@@ -144,7 +142,12 @@ export class OrderPaymentsService {
 
     await tx.order.update({
       where: { id: orderId },
-      data: { paidAmount, debtAmount, paymentStatus },
+      data: {
+        paidAmount,
+        depositAmount: paidAmount,
+        debtAmount,
+        paymentStatus,
+      },
     });
   }
 }

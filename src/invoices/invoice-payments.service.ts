@@ -48,8 +48,21 @@ export class InvoicePaymentsService {
         },
       });
 
-      const customerDebtSnapshot = invoice.customer
-        ? Number(invoice.customer.totalDebt) - dto.amount
+      await this.calculateInvoiceTotals(dto.invoiceId, tx);
+
+      if (invoice.customerId) {
+        await this.updateCustomerTotals(invoice.customerId, tx);
+      }
+
+      const updatedCustomer = invoice.customerId
+        ? await tx.customer.findUnique({
+            where: { id: invoice.customerId },
+            select: { totalDebt: true },
+          })
+        : null;
+
+      const customerDebtSnapshot = updatedCustomer
+        ? Number(updatedCustomer.totalDebt)
         : null;
 
       const cashFlow = await tx.cashFlow.create({
@@ -76,12 +89,6 @@ export class InvoicePaymentsService {
           customerDebtSnapshot,
         },
       });
-
-      await this.calculateInvoiceTotals(dto.invoiceId, tx);
-
-      if (invoice.customerId) {
-        await this.updateCustomerTotals(invoice.customerId, tx);
-      }
 
       const paymentResult = await tx.invoicePayment.findUnique({
         where: { id: payment.id },
