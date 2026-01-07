@@ -554,8 +554,6 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy khách hàng');
       }
 
-      const code = await this.generateManualCode(true, tx);
-
       const invoicePayments: any[] = [];
       for (const invoice of dto.invoices) {
         const invoiceData = await tx.invoice.findUnique({
@@ -636,6 +634,8 @@ export class CashFlowsService {
 
       const customerDebtSnapshot = totalDebt;
 
+      const code = await this.generateSafeCashFlowCode(true, tx);
+
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
@@ -666,5 +666,50 @@ export class CashFlowsService {
         invoicePayments,
       };
     });
+  }
+
+  private async generateSafeCashFlowCode(
+    isReceipt: boolean,
+    tx: any,
+  ): Promise<string> {
+    const prefix = isReceipt ? 'TT' : 'PC';
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const lastCashFlow = await tx.cashFlow.findFirst({
+        where: {
+          code: {
+            startsWith: prefix,
+          },
+          isReceipt,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      let nextNumber = 1;
+      if (lastCashFlow && lastCashFlow.code) {
+        const match = lastCashFlow.code.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.cashFlow.findFirst({
+        where: { code },
+      });
+
+      if (!exists) {
+        return code;
+      }
+
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã phiếu thu/chi duy nhất');
   }
 }
