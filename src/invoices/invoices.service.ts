@@ -527,6 +527,7 @@ export class InvoicesService {
               name: true,
               contactNumber: true,
               address: true,
+              totalDebt: true,
             },
           },
         },
@@ -552,7 +553,10 @@ export class InvoicesService {
 
       const code = await this.generateSafeInvoiceCode(tx);
 
-      const totalPaidFromOrder = Number(order.paidAmount || 0);
+      const totalPaidFromOrder = order.payments.reduce(
+        (sum, payment) => sum + Number(payment.amount),
+        0,
+      );
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
@@ -566,19 +570,13 @@ export class InvoicesService {
       const grandTotal = totalAmount - discountAmount - discountFromRatio;
       const debtAmount = grandTotal - totalPaid;
 
-      const customer = order.customerId
-        ? await tx.customer.findUnique({
-            where: { id: order.customerId },
-            select: { totalDebt: true },
-          })
-        : null;
-
-      const customerDebtSnapshot = Number(customer?.totalDebt) + debtAmount;
-
       let status: number = INVOICE_STATUS.PROCESSING;
       if (debtAmount <= 0) {
         status = INVOICE_STATUS.COMPLETED;
       }
+
+      const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
+      const newCustomerDebt = currentCustomerDebt + grandTotal;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -599,7 +597,7 @@ export class InvoicesService {
           usingCod: order.usingCod || false,
           description: order.description,
           createdBy: userId,
-          customerDebtSnapshot,
+          customerDebtSnapshot: newCustomerDebt,
           details: {
             create: order.items.map((item) => ({
               productId: item.productId,
@@ -621,11 +619,10 @@ export class InvoicesService {
                 address: order.delivery.address,
                 locationName: order.delivery.locationName,
                 wardName: order.delivery.wardName,
-                weight: Number(order.delivery.weight),
-                length: Number(order.delivery.length),
-                width: Number(order.delivery.width),
-                height: Number(order.delivery.height),
-                noteForDriver: order.delivery.noteForDriver,
+                weight: order.delivery.weight,
+                length: order.delivery.length,
+                width: order.delivery.width,
+                height: order.delivery.height,
               },
             },
           }),
@@ -634,11 +631,39 @@ export class InvoicesService {
           details: true,
           payments: true,
           delivery: true,
+          customer: true,
+          branch: true,
+          soldBy: true,
         },
       });
 
+      if (totalPaidFromOrder > 0) {
+        for (const orderPayment of order.payments) {
+          const existingPayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.id },
+          });
+          const paymentSequence = existingPayments.length + 1;
+          const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+
+          await tx.invoicePayment.create({
+            data: {
+              code: paymentCode,
+              invoiceId: invoice.id,
+              amount: orderPayment.amount,
+              paymentDate: orderPayment.paymentDate,
+              paymentMethod: orderPayment.paymentMethod,
+              description: `Thanh toán từ đơn hàng ${order.code}`,
+            },
+          });
+        }
+      }
+
       if (additionalPayment > 0) {
-        const paymentCode = `TT${invoice.code}-1`;
+        const existingPayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invoice.id },
+        });
+        const paymentSequence = existingPayments.length + 1;
+        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
 
         await tx.invoicePayment.create({
           data: {
@@ -669,8 +694,7 @@ export class InvoicesService {
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
-            customerDebtSnapshot:
-              Number(customer?.totalDebt) + debtAmount - additionalPayment,
+            customerDebtSnapshot: newCustomerDebt - additionalPayment,
           },
         });
       }
@@ -698,17 +722,9 @@ export class InvoicesService {
       });
 
       if (order.customerId) {
-        const currentCustomer = await tx.customer.findUnique({
-          where: { id: order.customerId },
-          select: { totalDebt: true },
-        });
-
-        const newTotalDebt =
-          Number(currentCustomer?.totalDebt || 0) + debtAmount;
-
         await tx.customer.update({
           where: { id: order.customerId },
-          data: { totalDebt: newTotalDebt },
+          data: { totalDebt: newCustomerDebt },
         });
       }
 

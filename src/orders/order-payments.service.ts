@@ -57,7 +57,17 @@ export class OrderPaymentsService {
       );
       const depositAmount = paidAmount;
 
-      const newCustomerDebt = Number(order.customer?.totalDebt) - dto.amount;
+      await tx.order.update({
+        where: { id: dto.orderId },
+        data: {
+          paidAmount,
+          depositAmount,
+          debtAmount: Number(order.grandTotal) - paidAmount,
+        },
+      });
+
+      const newCustomerDebt =
+        Number(order.customer?.totalDebt || 0) - dto.amount;
 
       if (order.customerId) {
         await tx.customer.update({
@@ -65,8 +75,6 @@ export class OrderPaymentsService {
           data: { totalDebt: newCustomerDebt },
         });
       }
-
-      const customerDebtSnapshot = newCustomerDebt;
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -89,16 +97,7 @@ export class OrderPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
-          customerDebtSnapshot,
-        },
-      });
-
-      await tx.order.update({
-        where: { id: dto.orderId },
-        data: {
-          paidAmount,
-          depositAmount,
-          debtAmount: Number(order.grandTotal) - paidAmount,
+          customerDebtSnapshot: newCustomerDebt,
         },
       });
 
