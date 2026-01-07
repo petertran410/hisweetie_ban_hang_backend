@@ -738,7 +738,12 @@ export class InvoicesService {
 
       const validCodes = allInvoices
         .map((inv: any) => inv.code)
-        .filter((code: string) => regex.test(code));
+        .filter((code: string) => regex.test(code))
+        .sort((a, b) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
 
       let nextNumber = 1;
       if (validCodes.length > 0) {
