@@ -690,25 +690,34 @@ export class CashFlowsService {
     tx: any,
   ): Promise<string> {
     const prefix = isReceipt ? 'TT' : 'PC';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
     const maxAttempts = 10;
 
     while (attempts < maxAttempts) {
-      const lastCashFlow = await tx.cashFlow.findFirst({
+      const allCashFlows = await tx.cashFlow.findMany({
         where: {
           code: {
             startsWith: prefix,
           },
           isReceipt,
         },
+        select: {
+          code: true,
+        },
         orderBy: {
           id: 'desc',
         },
       });
 
+      const validCodes = allCashFlows
+        .map((cf: any) => cf.code)
+        .filter((code: string) => regex.test(code));
+
       let nextNumber = 1;
-      if (lastCashFlow && lastCashFlow.code) {
-        const match = lastCashFlow.code.match(/\d+$/);
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
         if (match) {
           nextNumber = parseInt(match[0]) + 1;
         }
