@@ -637,6 +637,45 @@ export class InvoicesService {
         },
       });
 
+      if (totalPaidFromOrder > 0) {
+        let paymentSequence = 1;
+        const paymentCodeFromOrder = `TT${invoice.code}-${paymentSequence}`;
+
+        await tx.invoicePayment.create({
+          data: {
+            code: paymentCodeFromOrder,
+            invoiceId: invoice.id,
+            amount: totalPaidFromOrder,
+            paymentDate: new Date(),
+            paymentMethod: 'cash',
+            description: `Thanh toán từ đơn hàng ${order.code}`,
+          },
+        });
+
+        await tx.cashFlow.create({
+          data: {
+            code: paymentCodeFromOrder,
+            branchId: invoice.branchId,
+            isReceipt: true,
+            amount: totalPaidFromOrder,
+            transDate: new Date(),
+            method: 'cash',
+            partnerType: 'C',
+            partnerId: invoice.customerId,
+            partnerName: order.customer?.name,
+            contactNumber: order.customer?.contactNumber,
+            address: order.customer?.address,
+            description: `Thu tiền từ đơn hàng ${order.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            customerDebtSnapshot:
+              Number(customer?.totalDebt) + debtAmount - totalPaidFromOrder,
+          },
+        });
+      }
+
       if (additionalPayment > 0) {
         const existingPayments = await tx.invoicePayment.findMany({
           where: { invoiceId: invoice.id },
@@ -666,11 +705,15 @@ export class InvoicesService {
             partnerType: 'C',
             partnerId: invoice.customerId,
             partnerName: order.customer?.name,
-            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+            contactNumber: order.customer?.contactNumber,
+            address: order.customer?.address,
+            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
             status: 0,
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
+            customerDebtSnapshot:
+              Number(customer?.totalDebt) + debtAmount - totalPaid,
           },
         });
       }
