@@ -48,8 +48,18 @@ export class OrderPaymentsService {
         },
       });
 
+      const allPayments = await tx.orderPayment.findMany({
+        where: { orderId: dto.orderId },
+      });
+      const paidAmount = allPayments.reduce(
+        (sum, p) => sum + Number(p.amount),
+        0,
+      );
+      const depositAmount = paidAmount;
+      const orderDebtAmount = Number(order.grandTotal) - paidAmount;
+
       const customerDebtSnapshot = order.customer
-        ? Number(order.customer.totalDebt)
+        ? Number(order.customer.totalDebt) + orderDebtAmount
         : null;
 
       const cashFlow = await tx.cashFlow.create({
@@ -77,21 +87,12 @@ export class OrderPaymentsService {
         },
       });
 
-      const allPayments = await tx.orderPayment.findMany({
-        where: { orderId: dto.orderId },
-      });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-      const depositAmount = paidAmount;
-
       await tx.order.update({
         where: { id: dto.orderId },
         data: {
           paidAmount,
           depositAmount,
-          debtAmount: Number(order.grandTotal) - paidAmount,
+          debtAmount: orderDebtAmount,
         },
       });
 

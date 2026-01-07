@@ -554,6 +554,10 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy khách hàng');
       }
 
+      if (!dto.invoices || dto.invoices.length === 0) {
+        throw new Error('Cần có ít nhất một hóa đơn để thanh toán');
+      }
+
       const invoicePayments: any[] = [];
       for (const invoice of dto.invoices) {
         const invoiceData = await tx.invoice.findUnique({
@@ -565,6 +569,13 @@ export class CashFlowsService {
 
         if (!invoiceData) {
           throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
+        }
+
+        const currentDebt = Number(invoiceData.debtAmount);
+        if (invoice.amount > currentDebt) {
+          throw new Error(
+            `Số tiền thanh toán ${invoice.amount} vượt quá công nợ ${currentDebt} của hóa đơn ${invoiceData.code}`,
+          );
         }
 
         const existingPayments = await tx.invoicePayment.findMany({
