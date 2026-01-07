@@ -119,8 +119,7 @@ export class InvoicesService {
 
   async create(dto: CreateInvoiceDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const invoiceCount = await tx.invoice.count();
-      const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
+      const code = await this.generateSafeInvoiceCode(tx);
 
       const totalAmount = dto.items.reduce(
         (sum, item) => sum + item.totalPrice,
@@ -551,8 +550,7 @@ export class InvoicesService {
         throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
       }
 
-      const invoiceCount = await tx.invoice.count();
-      const code = `HD${String(invoiceCount + 1).padStart(6, '0')}`;
+      const code = await this.generateSafeInvoiceCode(tx);
 
       const totalPaidFromOrder = Number(order.paidAmount || 0);
       const additionalPayment = Number(dto.additionalPayment || 0);
@@ -715,5 +713,55 @@ export class InvoicesService {
         },
       });
     });
+  }
+
+  private async generateSafeInvoiceCode(tx: any): Promise<string> {
+    const prefix = 'HD';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allInvoices = await tx.invoice.findMany({
+        where: {
+          code: {
+            startsWith: prefix,
+          },
+        },
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      const validCodes = allInvoices
+        .map((inv: any) => inv.code)
+        .filter((code: string) => regex.test(code));
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.invoice.findFirst({
+        where: { code },
+      });
+
+      if (!exists) {
+        return code;
+      }
+
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã hóa đơn duy nhất');
   }
 }
