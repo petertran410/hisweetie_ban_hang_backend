@@ -560,7 +560,8 @@ export class InvoicesService {
       }
 
       const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
-      const newCustomerDebt = currentCustomerDebt + grandTotal;
+      const customerDebtSnapshot =
+        currentCustomerDebt + grandTotal - additionalPayment;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -581,7 +582,7 @@ export class InvoicesService {
           usingCod: order.usingCod || false,
           description: order.description,
           createdBy: userId,
-          customerDebtSnapshot: newCustomerDebt,
+          customerDebtSnapshot,
           details: {
             create: order.items.map((item) => ({
               productId: item.productId,
@@ -678,7 +679,8 @@ export class InvoicesService {
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
-            customerDebtSnapshot: newCustomerDebt - additionalPayment,
+            customerDebtSnapshot:
+              currentCustomerDebt + grandTotal - additionalPayment,
           },
         });
       }
@@ -706,10 +708,7 @@ export class InvoicesService {
       });
 
       if (order.customerId) {
-        await tx.customer.update({
-          where: { id: order.customerId },
-          data: { totalDebt: newCustomerDebt },
-        });
+        await this.updateCustomerTotals(order.customerId, tx);
       }
 
       return tx.invoice.findUnique({
