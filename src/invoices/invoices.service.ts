@@ -637,51 +637,8 @@ export class InvoicesService {
         },
       });
 
-      if (totalPaidFromOrder > 0) {
-        let paymentSequence = 1;
-        const paymentCodeFromOrder = `TT${invoice.code}-${paymentSequence}`;
-
-        await tx.invoicePayment.create({
-          data: {
-            code: paymentCodeFromOrder,
-            invoiceId: invoice.id,
-            amount: totalPaidFromOrder,
-            paymentDate: new Date(),
-            paymentMethod: 'cash',
-            description: `Thanh toán từ đơn hàng ${order.code}`,
-          },
-        });
-
-        await tx.cashFlow.create({
-          data: {
-            code: paymentCodeFromOrder,
-            branchId: invoice.branchId,
-            isReceipt: true,
-            amount: totalPaidFromOrder,
-            transDate: new Date(),
-            method: 'cash',
-            partnerType: 'C',
-            partnerId: invoice.customerId,
-            partnerName: order.customer?.name,
-            contactNumber: order.customer?.contactNumber,
-            address: order.customer?.address,
-            description: `Thu tiền từ đơn hàng ${order.code}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            usedForFinancialReporting: 1,
-            customerDebtSnapshot:
-              Number(customer?.totalDebt) + debtAmount - totalPaidFromOrder,
-          },
-        });
-      }
-
       if (additionalPayment > 0) {
-        const existingPayments = await tx.invoicePayment.findMany({
-          where: { invoiceId: invoice.id },
-        });
-        const paymentSequence = existingPayments.length + 1;
-        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+        const paymentCode = `TT${invoice.code}-1`;
 
         await tx.invoicePayment.create({
           data: {
@@ -690,7 +647,7 @@ export class InvoicesService {
             amount: additionalPayment,
             paymentDate: new Date(),
             paymentMethod: 'cash',
-            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
           },
         });
 
@@ -713,7 +670,7 @@ export class InvoicesService {
             createdBy: userId,
             usedForFinancialReporting: 1,
             customerDebtSnapshot:
-              Number(customer?.totalDebt) + debtAmount - totalPaid,
+              Number(customer?.totalDebt) + debtAmount - additionalPayment,
           },
         });
       }
@@ -734,8 +691,7 @@ export class InvoicesService {
         where: { id: orderId },
         data: {
           status: ORDER_STATUS.COMPLETED,
-          statusValue: getOrderStatusLabel(ORDER_STATUS.COMPLETED),
-          orderStatus: convertStatusNumberToString(ORDER_STATUS.COMPLETED),
+          statusValue: 'Hoàn thành',
           invoiceId: invoice.id,
           invoiceCode: invoice.code,
         },
@@ -753,6 +709,7 @@ export class InvoicesService {
           delivery: true,
           customer: true,
           branch: true,
+          soldBy: true,
         },
       });
     });

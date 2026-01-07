@@ -57,8 +57,7 @@ export class OrderPaymentsService {
       );
       const depositAmount = paidAmount;
 
-      const customerDebtSnapshot =
-        Number(order.customer?.totalDebt) - dto.amount;
+      const customerDebtSnapshot = Number(order.customer?.totalDebt);
 
       const cashFlow = await tx.cashFlow.create({
         data: {
