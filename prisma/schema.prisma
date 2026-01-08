@@ -214,7 +214,6 @@ model Customer {
   customerGroupDetails CustomerGroupDetail[]
   orders               Order[]
   invoices             Invoice[]
-  cash_flows           CashFlow[]
 
   @@map("customers")
 }
@@ -1065,7 +1064,6 @@ model CashFlow {
   updatedAt                 DateTime @updatedAt
 
   branch          Branch?         @relation(fields: [branchId], references: [id])
-  customer       Customer?       @relation(fields: [partnerId], references: [id])
   cashFlowGroup   CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
   account         BankAccount?    @relation(fields: [accountId], references: [id])
   creator         User            @relation(fields: [createdBy], references: [id])

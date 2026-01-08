@@ -1,3 +1,4 @@
+import { CashFlow } from './../../node_modules/.prisma/client/index.d';
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -245,7 +246,6 @@ export class CashFlowsService {
             name: true,
           },
         },
-        customer: true,
       },
     });
 
@@ -253,11 +253,27 @@ export class CashFlowsService {
       return null;
     }
 
+    let customer: any;
+    if (cashFlow.partnerType === 'C' && cashFlow.partnerId) {
+      customer = await this.prisma.customer.findMany({
+        where: { id: cashFlow.partnerId },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          contactNumber: true,
+          address: true,
+          totalDebt: true,
+        },
+      });
+    }
+
     return {
       ...cashFlow,
       branchName: cashFlow.branch?.name,
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
       creatorName: cashFlow.creator?.name,
+      customer,
     };
   }
 
@@ -494,13 +510,6 @@ export class CashFlowsService {
             paidAmount: true,
             debtAmount: true,
             status: true,
-          },
-        },
-        customer: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
           },
         },
       },
