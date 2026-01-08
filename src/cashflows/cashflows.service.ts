@@ -253,9 +253,16 @@ export class CashFlowsService {
       return null;
     }
 
-    let customer: any;
+    let customer: any = null;
     if (cashFlow.partnerType === 'C' && cashFlow.partnerId) {
-      customer = await this.prisma.customer.findMany({
+      customer = await this.prisma.customer.findUnique({
+        where: { id: cashFlow.partnerId },
+      });
+    }
+
+    let supplier: any = null;
+    if (cashFlow.partnerType === 'S' && cashFlow.partnerId) {
+      supplier = await this.prisma.supplier.findUnique({
         where: { id: cashFlow.partnerId },
         select: {
           id: true,
@@ -274,6 +281,7 @@ export class CashFlowsService {
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
       creatorName: cashFlow.creator?.name,
       customer,
+      supplier,
     };
   }
 
@@ -348,7 +356,10 @@ export class CashFlowsService {
     });
   }
 
-  async createPaymentFromInvoice(dto: CreatePaymentDto, userId: number) {
+  async createPaymentFromInvoice(
+    dto: CreatePaymentDto,
+    userId: number,
+  ): Promise<any> {
     return this.prisma.$transaction(async (tx) => {
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },
@@ -486,7 +497,7 @@ export class CashFlowsService {
     });
   }
 
-  async getRelatedInvoicePayments(cashFlowId: number) {
+  async getRelatedInvoicePayments(cashFlowId: number): Promise<any> {
     const cashFlow = await this.prisma.cashFlow.findUnique({
       where: { id: cashFlowId },
     });
