@@ -245,6 +245,7 @@ export class CashFlowsService {
             name: true,
           },
         },
+        customer: true,
       },
     });
 
@@ -467,6 +468,48 @@ export class CashFlowsService {
         },
       };
     });
+  }
+
+  async getRelatedInvoicePayments(cashFlowId: number) {
+    const cashFlow = await this.prisma.cashFlow.findUnique({
+      where: { id: cashFlowId },
+    });
+
+    if (!cashFlow) {
+      throw new Error('Cash flow not found');
+    }
+
+    const invoicePayments = await this.prisma.invoicePayment.findMany({
+      where: {
+        code: {
+          startsWith: cashFlow.code,
+        },
+      },
+      include: {
+        invoice: {
+          select: {
+            id: true,
+            code: true,
+            grandTotal: true,
+            paidAmount: true,
+            debtAmount: true,
+            status: true,
+          },
+        },
+        customer: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        paymentDate: 'desc',
+      },
+    });
+
+    return invoicePayments;
   }
 
   private async generateManualCode(

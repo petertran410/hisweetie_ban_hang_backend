@@ -46,6 +46,12 @@ export class CashFlowsController {
     return this.cashFlowsService.findOne(+id);
   }
 
+  @Get(':id/invoice-payments')
+  @ApiOperation({ summary: 'Get invoice payments related to cash flow' })
+  getRelatedInvoicePayments(@Param('id') id: string) {
+    return this.cashFlowsService.getRelatedInvoicePayments(+id);
+  }
+
   @Post()
   @ApiOperation({ summary: 'Create cash flow' })
   create(@Body() dto: CreateCashFlowDto, @Req() req: any) {
