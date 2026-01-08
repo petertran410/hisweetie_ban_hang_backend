@@ -32,11 +32,6 @@ export class InvoicesController {
     return this.invoicesService.findAll(query);
   }
 
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.invoicesService.findOne(+id);
-  }
-
   @Get('unpaid-by-partner')
   @ApiOperation({ summary: 'Lấy hóa đơn chưa thanh toán đầy đủ theo đối tác' })
   getUnpaidByPartner(
@@ -44,6 +39,11 @@ export class InvoicesController {
     @Query('partnerType') partnerType: string,
   ) {
     return this.invoicesService.findUnpaidByPartner(+partnerId, partnerType);
+  }
+
+  @Get(':id')
+  findOne(@Param('id') id: string) {
+    return this.invoicesService.findOne(+id);
   }
 
   @Post()

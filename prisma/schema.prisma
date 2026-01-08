@@ -33,7 +33,6 @@ model User {
   priceBookUsers        PriceBookUser[]
   createdTransfers      Transfer[]      @relation("TransferCreator")
   createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
-  cashFlows CashFlow[]
   cashFlowsCreated    CashFlow[] @relation("CashFlowCreator")
   cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
 
