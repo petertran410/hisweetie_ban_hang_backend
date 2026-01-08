@@ -1,18 +1,32 @@
 import {
   IsInt,
   IsOptional,
-  IsString,
   IsBoolean,
-  IsDateString,
   IsNumber,
+  IsString,
+  IsDateString,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
-export class CreateCashFlowDto {
-  @IsOptional()
+class InvoiceAllocationDto {
   @IsInt()
   @Type(() => Number)
-  branchId?: number;
+  invoiceId: number;
+
+  @IsNumber()
+  amount: number;
+}
+
+export class CreateCashFlowDto {
+  @IsOptional()
+  @IsString()
+  code?: string;
+
+  @IsInt()
+  @Type(() => Number)
+  branchId: number;
 
   @IsOptional()
   @IsInt()
@@ -75,10 +89,19 @@ export class CreateCashFlowDto {
   @IsOptional()
   @IsInt()
   @Type(() => Number)
-  invoiceId?: number;
+  collectorUserId?: number;
 
   @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  purchaseOrderId?: number;
+  @IsBoolean()
+  affectDebt?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  allocateToInvoices?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InvoiceAllocationDto)
+  invoiceAllocations?: InvoiceAllocationDto[];
 }

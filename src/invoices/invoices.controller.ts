@@ -18,7 +18,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 @ApiTags('Invoices')
 @ApiBearerAuth()
@@ -35,6 +35,15 @@ export class InvoicesController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.invoicesService.findOne(+id);
+  }
+
+  @Get('unpaid-by-partner')
+  @ApiOperation({ summary: 'Lấy hóa đơn chưa thanh toán đầy đủ theo đối tác' })
+  getUnpaidByPartner(
+    @Query('partnerId') partnerId: string,
+    @Query('partnerType') partnerType: string,
+  ) {
+    return this.invoicesService.findUnpaidByPartner(+partnerId, partnerType);
   }
 
   @Post()

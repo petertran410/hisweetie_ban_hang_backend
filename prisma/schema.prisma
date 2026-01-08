@@ -34,6 +34,8 @@ model User {
   createdTransfers      Transfer[]      @relation("TransferCreator")
   createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
   cashFlows CashFlow[]
+  cashFlowsCreated    CashFlow[] @relation("CashFlowCreator")
+  cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
 
   @@map("users")
 }
@@ -1059,14 +1061,16 @@ model CashFlow {
   description               String?
   status                    Int      @default(0)
   statusValue               String?
-  createdBy                 Int
+  createdBy                 Int?
+  collectorUserId           Int?
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 
   branch          Branch?         @relation(fields: [branchId], references: [id])
   cashFlowGroup   CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
   account         BankAccount?    @relation(fields: [accountId], references: [id])
-  creator         User            @relation(fields: [createdBy], references: [id])
+  creator          User?     @relation("CashFlowCreator", fields: [createdBy], references: [id])
+  collector        User?     @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
 
   @@map("cash_flows")
 }

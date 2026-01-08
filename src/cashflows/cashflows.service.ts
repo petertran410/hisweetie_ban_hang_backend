@@ -15,9 +15,99 @@ export class CashFlowsService {
 
   async create(dto: CreateCashFlowDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateManualCode(dto.isReceipt, tx);
+      const method = dto.method || 'cash';
+      const code = await this.generateManualCode(dto.isReceipt, method, tx);
 
       const statusValue = dto.isReceipt ? 'Đã thanh toán' : 'Đã chi';
+
+      let customerDebtSnapshot: number | null = null;
+
+      if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
+        const customer = await tx.customer.findUnique({
+          where: { id: dto.partnerId },
+          select: { totalDebt: true },
+        });
+
+        if (customer) {
+          const debtChange = dto.isReceipt ? -dto.amount : dto.amount;
+          const newTotalDebt = Number(customer.totalDebt) + debtChange;
+
+          await tx.customer.update({
+            where: { id: dto.partnerId },
+            data: { totalDebt: newTotalDebt },
+          });
+
+          customerDebtSnapshot = newTotalDebt;
+        }
+
+        if (
+          dto.allocateToInvoices &&
+          dto.invoiceAllocations &&
+          dto.invoiceAllocations.length > 0
+        ) {
+          for (const allocation of dto.invoiceAllocations) {
+            const invoice = await tx.invoice.findUnique({
+              where: { id: allocation.invoiceId },
+            });
+
+            if (!invoice) {
+              throw new Error(
+                `Không tìm thấy hóa đơn ID ${allocation.invoiceId}`,
+              );
+            }
+
+            if (invoice.customerId !== dto.partnerId) {
+              throw new Error(
+                `Hóa đơn ${invoice.code} không thuộc về khách hàng này`,
+              );
+            }
+
+            const existingPayments = await tx.invoicePayment.findMany({
+              where: { invoiceId: allocation.invoiceId },
+            });
+            const paymentSequence = existingPayments.length + 1;
+            const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+
+            await tx.invoicePayment.create({
+              data: {
+                code: paymentCode,
+                invoiceId: allocation.invoiceId,
+                amount: allocation.amount,
+                paymentDate: dto.transDate
+                  ? new Date(dto.transDate)
+                  : new Date(),
+                paymentMethod: method,
+                accountId: dto.accountId,
+                description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+              },
+            });
+
+            const allPayments = await tx.invoicePayment.findMany({
+              where: { invoiceId: allocation.invoiceId },
+            });
+            const paidAmount = allPayments.reduce(
+              (sum: number, p: any) => sum + Number(p.amount),
+              0,
+            );
+
+            const debtAmount = Number(invoice.grandTotal) - paidAmount;
+            let status = 3;
+            if (debtAmount <= 0) {
+              status = 1;
+            }
+
+            await tx.invoice.update({
+              where: { id: allocation.invoiceId },
+              data: {
+                paidAmount,
+                debtAmount,
+                status,
+                statusValue: status === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              },
+            });
+          }
+        }
+      }
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -27,7 +117,7 @@ export class CashFlowsService {
           isReceipt: dto.isReceipt,
           amount: dto.amount,
           transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-          method: dto.method || 'cash',
+          method: method,
           accountId: dto.accountId,
           partnerType: dto.partnerType,
           partnerId: dto.partnerId,
@@ -40,6 +130,8 @@ export class CashFlowsService {
           status: 0,
           statusValue,
           createdBy: userId,
+          collectorUserId: dto.collectorUserId || userId,
+          customerDebtSnapshot,
         },
         include: {
           branch: {
@@ -534,32 +626,80 @@ export class CashFlowsService {
 
   private async generateManualCode(
     isReceipt: boolean,
-    tx?: any,
+    method: string,
+    tx: any,
   ): Promise<string> {
-    const prisma = tx || this.prisma;
-    const prefix = isReceipt ? 'TT' : 'PC';
+    let prefix = '';
 
-    const lastCashFlow = await prisma.cashFlow.findFirst({
-      where: {
-        code: {
-          startsWith: prefix,
-        },
-        isReceipt,
-      },
-      orderBy: {
-        id: 'desc',
-      },
-    });
-
-    let nextNumber = 1;
-    if (lastCashFlow && lastCashFlow.code) {
-      const match = lastCashFlow.code.match(/\d+$/);
-      if (match) {
-        nextNumber = parseInt(match[0]) + 1;
+    if (isReceipt) {
+      if (method === 'cash') {
+        prefix = 'TTM';
+      } else if (method === 'transfer') {
+        prefix = 'TTNH';
+      } else if (method === 'ewallet') {
+        prefix = 'TTVDT';
+      } else {
+        prefix = 'TT';
+      }
+    } else {
+      if (method === 'cash') {
+        prefix = 'PCM';
+      } else if (method === 'transfer') {
+        prefix = 'PCNH';
+      } else if (method === 'ewallet') {
+        prefix = 'PCVDT';
+      } else {
+        prefix = 'PC';
       }
     }
 
-    return `${prefix}${String(nextNumber).padStart(6, '0')}`;
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allCashFlows = await tx.cashFlow.findMany({
+        where: {
+          code: {
+            startsWith: prefix,
+          },
+          isReceipt,
+        },
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      const validCodes = allCashFlows
+        .map((cf: any) => cf.code)
+        .filter((code: string) => regex.test(code));
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.cashFlow.findFirst({
+        where: { code },
+      });
+
+      if (!exists) {
+        return code;
+      }
+
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã phiếu thu/chi duy nhất');
   }
 
   async getOpeningBalance(filters: any) {

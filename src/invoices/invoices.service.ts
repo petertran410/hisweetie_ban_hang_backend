@@ -849,4 +849,44 @@ export class InvoicesService {
 
     throw new Error('Không thể tạo mã hóa đơn duy nhất');
   }
+
+  async findUnpaidByPartner(partnerId: number, partnerType: string) {
+    if (partnerType !== 'C' && partnerType !== 'S') {
+      return { data: [] };
+    }
+
+    const where: any = {
+      status: {
+        notIn: [INVOICE_STATUS.CANCELLED],
+      },
+      debtAmount: {
+        gt: 0,
+      },
+    };
+
+    if (partnerType === 'C') {
+      where.customerId = partnerId;
+    } else {
+      return { data: [] };
+    }
+
+    const invoices = await this.prisma.invoice.findMany({
+      where,
+      select: {
+        id: true,
+        code: true,
+        purchaseDate: true,
+        grandTotal: true,
+        paidAmount: true,
+        debtAmount: true,
+        status: true,
+        statusValue: true,
+      },
+      orderBy: {
+        purchaseDate: 'desc',
+      },
+    });
+
+    return { data: invoices };
+  }
 }
