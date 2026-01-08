@@ -69,6 +69,7 @@ export class InvoicePaymentsService {
         data: {
           code,
           branchId: invoice.branchId,
+          cashFlowGroupId: 3,
           isReceipt: true,
           amount: dto.amount,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),

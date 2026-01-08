@@ -292,6 +292,7 @@ export class InvoicesService {
         include: {
           details: true,
           customer: { select: { totalDebt: true } },
+          payments: true,
         },
       });
 
@@ -304,6 +305,9 @@ export class InvoicesService {
       if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
       if (dto.description !== undefined)
         updateData.description = dto.description;
+
+      let shouldUpdateCustomerDebt = false;
+      let newCustomerDebt = 0;
 
       if (dto.status !== undefined) {
         if (
@@ -329,6 +333,45 @@ export class InvoicesService {
           }
 
           updateData.debtAmount = 0;
+
+          if (currentInvoice.customerId && currentInvoice.customer) {
+            const currentCustomerDebt = Number(
+              currentInvoice.customer.totalDebt,
+            );
+            const grandTotal = Number(currentInvoice.grandTotal);
+            const debtAmount = Number(currentInvoice.debtAmount);
+            const paidAmount = Number(currentInvoice.paidAmount);
+
+            if (dto.cancelPayments === true) {
+              newCustomerDebt = currentCustomerDebt - debtAmount;
+
+              if (paidAmount > 0 && currentInvoice.payments.length > 0) {
+                for (const payment of currentInvoice.payments) {
+                  await tx.cashFlow.updateMany({
+                    where: { code: payment.code },
+                    data: {
+                      status: 2,
+                      statusValue: 'Đã hủy',
+                    },
+                  });
+                }
+
+                await tx.invoicePayment.updateMany({
+                  where: { invoiceId: id },
+                  data: {
+                    status: 2,
+                    statusValue: 'Đã hủy',
+                  },
+                });
+
+                updateData.paidAmount = 0;
+              }
+            } else {
+              newCustomerDebt = currentCustomerDebt - grandTotal;
+            }
+
+            shouldUpdateCustomerDebt = true;
+          }
         }
 
         updateData.status = dto.status;
@@ -428,6 +471,18 @@ export class InvoicesService {
             },
           });
         }
+
+        if (currentInvoice.customerId && currentInvoice.customer) {
+          const currentCustomerDebtBeforeUpdate = Number(
+            currentInvoice.customer.totalDebt,
+          );
+          const oldDebtAmountBeforeUpdate = Number(currentInvoice.debtAmount);
+          newCustomerDebt =
+            currentCustomerDebtBeforeUpdate -
+            oldDebtAmountBeforeUpdate +
+            debtAmount;
+          shouldUpdateCustomerDebt = true;
+        }
       }
 
       if (dto.delivery) {
@@ -464,9 +519,11 @@ export class InvoicesService {
         },
       });
 
-      const invoice = await tx.invoice.findUnique({ where: { id } });
-      if (invoice && invoice.customerId) {
-        await this.updateCustomerTotals(invoice.customerId, tx);
+      if (shouldUpdateCustomerDebt && currentInvoice.customerId) {
+        await tx.customer.update({
+          where: { id: currentInvoice.customerId },
+          data: { totalDebt: newCustomerDebt },
+        });
       }
 
       return updatedInvoice;
@@ -673,6 +730,7 @@ export class InvoicesService {
           data: {
             code: paymentCode,
             branchId: invoice.branchId,
+            cashFlowGroupId: 3,
             isReceipt: true,
             amount: additionalPayment,
             transDate: new Date(),
