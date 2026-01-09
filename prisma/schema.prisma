@@ -613,7 +613,7 @@ model OrderItem {
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
   
-  @@map("order_items")
+  @@map("order_details")
 }
 
 model OrderPayment {
@@ -1072,4 +1072,15 @@ model CashFlow {
   collector        User?     @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
 
   @@map("cash_flows")
+}
+
+model NoteTemplate {
+  id        Int      @id @default(autoincrement())
+  content   String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("note_templates")
 }

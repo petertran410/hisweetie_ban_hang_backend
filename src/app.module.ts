@@ -41,6 +41,7 @@ import { SaleChannelsModule } from './sale-channels/sale-channels.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { CashFlowsModule } from './cashflows/cashflows.module';
 import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
+import { NoteTemplatesModule } from './note-templates/note-templates.module';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
     SaleChannelsModule,
     CashFlowsModule,
     CashFlowGroupsModule,
+    NoteTemplatesModule,
   ],
   providers: [
     {
