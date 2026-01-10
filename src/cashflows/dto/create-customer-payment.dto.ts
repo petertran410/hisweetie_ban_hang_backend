@@ -6,6 +6,7 @@ import {
   IsDateString,
   IsArray,
   ValidateNested,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -44,11 +45,21 @@ export class CreateCustomerPaymentDto {
   accountId?: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  collectorUserId?: number;
+
+  @IsOptional()
   @IsString()
   description?: string;
 
+  @IsOptional()
+  @IsBoolean()
+  allocateToInvoices?: boolean;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InvoicePaymentItem)
-  invoices: InvoicePaymentItem[];
+  invoices?: InvoicePaymentItem[];
 }

@@ -756,90 +756,8 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy khách hàng');
       }
 
-      if (!dto.invoices || dto.invoices.length === 0) {
-        throw new Error('Cần có ít nhất một hóa đơn để thanh toán');
-      }
-
-      const invoicePayments: any[] = [];
-      for (const invoice of dto.invoices) {
-        const invoiceData = await tx.invoice.findUnique({
-          where: { id: invoice.invoiceId },
-          include: {
-            payments: true,
-          },
-        });
-
-        if (!invoiceData) {
-          throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
-        }
-
-        if (invoiceData.customerId !== dto.customerId) {
-          throw new Error(
-            `Hóa đơn ${invoiceData.code} không thuộc về khách hàng này`,
-          );
-        }
-
-        const currentDebt = Number(invoiceData.debtAmount);
-        if (invoice.amount > currentDebt) {
-          throw new Error(
-            `Số tiền thanh toán ${invoice.amount} vượt quá công nợ ${currentDebt} của hóa đơn ${invoiceData.code}`,
-          );
-        }
-
-        const existingPayments = await tx.invoicePayment.findMany({
-          where: { invoiceId: invoice.invoiceId },
-        });
-        const paymentSequence = existingPayments.length + 1;
-        const paymentCode = `TT${invoiceData.code}-${paymentSequence}`;
-
-        const payment = await tx.invoicePayment.create({
-          data: {
-            code: paymentCode,
-            invoiceId: invoice.invoiceId,
-            amount: invoice.amount,
-            paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-            paymentMethod: dto.method,
-            accountId: dto.accountId,
-            description:
-              dto.description ||
-              `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
-          },
-        });
-
-        invoicePayments.push(payment);
-
-        const allPayments = await tx.invoicePayment.findMany({
-          where: { invoiceId: invoice.invoiceId },
-        });
-        const paidAmount = allPayments.reduce(
-          (sum: number, p: any) => sum + Number(p.amount),
-          0,
-        );
-
-        const debtAmount = Number(invoiceData.grandTotal) - paidAmount;
-        let status = 3;
-        if (debtAmount <= 0) {
-          status = 1;
-        }
-
-        await tx.invoice.update({
-          where: { id: invoice.invoiceId },
-          data: {
-            paidAmount,
-            debtAmount,
-            status,
-            statusValue: status === 4 ? 'Hoàn thành' : 'Đang xử lý',
-          },
-        });
-      }
-
-      const currentCustomer = await tx.customer.findUnique({
-        where: { id: dto.customerId },
-        select: { totalDebt: true },
-      });
-
-      const newTotalDebt =
-        Number(currentCustomer?.totalDebt || 0) - dto.totalAmount;
+      const currentCustomerDebt = Number(customer.totalDebt);
+      const newTotalDebt = currentCustomerDebt - dto.totalAmount;
 
       await tx.customer.update({
         where: { id: dto.customerId },
@@ -847,6 +765,82 @@ export class CashFlowsService {
       });
 
       const customerDebtSnapshot = newTotalDebt;
+
+      const invoicePayments: any[] = [];
+
+      if (dto.allocateToInvoices && dto.invoices && dto.invoices.length > 0) {
+        for (const invoice of dto.invoices) {
+          const invoiceData = await tx.invoice.findUnique({
+            where: { id: invoice.invoiceId },
+            include: {
+              payments: true,
+            },
+          });
+
+          if (!invoiceData) {
+            throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
+          }
+
+          if (invoiceData.customerId !== dto.customerId) {
+            throw new Error(
+              `Hóa đơn ${invoiceData.code} không thuộc về khách hàng này`,
+            );
+          }
+
+          const currentDebt = Number(invoiceData.debtAmount);
+          if (invoice.amount > currentDebt) {
+            throw new Error(
+              `Số tiền thanh toán ${invoice.amount} vượt quá công nợ ${currentDebt} của hóa đơn ${invoiceData.code}`,
+            );
+          }
+
+          const existingPayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.invoiceId },
+          });
+          const paymentSequence = existingPayments.length + 1;
+          const paymentCode = `TT${invoiceData.code}-${paymentSequence}`;
+
+          const payment = await tx.invoicePayment.create({
+            data: {
+              code: paymentCode,
+              invoiceId: invoice.invoiceId,
+              amount: invoice.amount,
+              paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+              paymentMethod: dto.method,
+              accountId: dto.accountId,
+              description:
+                dto.description ||
+                `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
+            },
+          });
+
+          invoicePayments.push(payment);
+
+          const allPayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.invoiceId },
+          });
+          const paidAmount = allPayments.reduce(
+            (sum: number, p: any) => sum + Number(p.amount),
+            0,
+          );
+
+          const debtAmount = Number(invoiceData.grandTotal) - paidAmount;
+          let status = 3;
+          if (debtAmount <= 0) {
+            status = 1;
+          }
+
+          await tx.invoice.update({
+            where: { id: invoice.invoiceId },
+            data: {
+              paidAmount,
+              debtAmount,
+              status,
+              statusValue: status === 1 ? 'Hoàn thành' : 'Đang xử lý',
+            },
+          });
+        }
+      }
 
       const code = await this.generateSafeCashFlowCode(true, tx);
 
@@ -869,6 +863,7 @@ export class CashFlowsService {
           status: 0,
           statusValue: 'Đã thanh toán',
           createdBy: userId,
+          collectorUserId: dto.collectorUserId || userId,
           usedForFinancialReporting: 1,
           customerDebtSnapshot,
         },
