@@ -170,9 +170,12 @@ export class ProductsService {
     const fullName = dto.fullName || this.buildFullName(name, attributesText);
 
     return this.prisma.$transaction(async (tx) => {
+      const productCode =
+        productData.code || (await this.generateSafeProductCode(tx));
+
       const product = await tx.product.create({
         data: {
-          code: productData.code,
+          code: productCode,
           name: productData.name,
           fullName,
           description: productData.description,
@@ -639,5 +642,60 @@ export class ProductsService {
     return allInventories.filter(
       (inv) => Number(inv.onHand) <= Number(inv.minQuality),
     );
+  }
+
+  private async generateSafeProductCode(tx: any): Promise<string> {
+    const prefix = 'SP';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allProducts = await tx.product.findMany({
+        where: {
+          code: {
+            startsWith: prefix,
+          },
+        },
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      const validCodes = allProducts
+        .map((prod: any) => prod.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a, b) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.product.findFirst({
+        where: { code },
+      });
+
+      if (!exists) {
+        return code;
+      }
+
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã sản phẩm duy nhất');
   }
 }
