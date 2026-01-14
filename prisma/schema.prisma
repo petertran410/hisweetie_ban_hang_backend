@@ -272,15 +272,12 @@ model TradeMark {
 model Category {
   id        Int      @id @default(autoincrement())
   name      String
-  parentId  Int?
-  hasChild  Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  type      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
-  parent   Category?  @relation("CategoryToCategory", fields: [parentId], references: [id])
-  children Category[] @relation("CategoryToCategory")
-  products Product[]
-
+  @@unique([type, name])
+  @@index([type, name])
   @@map("categories")
 }
 
@@ -305,7 +302,9 @@ model Product {
   fullName        String?
   description     String?
   orderTemplate   String?
-  categoryId      Int?
+  parentName      String?  @map("parent_name")
+  middleName      String?  @map("middle_name")
+  childName       String?  @map("child_name")
   tradeMarkId     Int?
   variantId       Int?
   masterProductId Int?
@@ -326,7 +325,6 @@ model Product {
   updatedAt       DateTime @updatedAt
   priceBookId     Int?
 
-  category           Category?           @relation(fields: [categoryId], references: [id])
   tradeMark          TradeMark?          @relation(fields: [tradeMarkId], references: [id])
   variant            ProductVariant?     @relation(fields: [variantId], references: [id])
   masterProduct      Product?            @relation("ProductUnits", fields: [masterProductId], references: [id])
@@ -341,7 +339,7 @@ model Product {
   comboComponents    ProductComponent[]  @relation("ComboComponents")
   componentOf        ProductComponent[]  @relation("ComponentOf")
   priceBook          PriceBook?          @relation(fields: [priceBookId], references: [id])
-  transferDetails TransferDetail[]
+  transferDetails    TransferDetail[]
 
   @@map("products")
 }

@@ -157,7 +157,9 @@ export class ProductsService {
       stockQuantity,
       minStockAlert,
       maxStockAlert,
-      categoryId,
+      parentName,
+      middleName,
+      childName,
       tradeMarkId,
       variantId,
       masterProductId,
@@ -177,6 +179,9 @@ export class ProductsService {
           fullName,
           description: productData.description,
           orderTemplate: productData.orderTemplate,
+          parentName: parentName || null,
+          middleName: middleName || null,
+          childName: childName || null,
           type: productData.type || 2,
           allowsSale: productData.allowsSale,
           hasVariants: productData.hasVariants,
@@ -190,20 +195,12 @@ export class ProductsService {
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
           masterUnitId: masterUnitId,
-          ...(categoryId && {
-            category: {
-              connect: { id: categoryId },
-            },
-          }),
+          ...(masterUnitId && { masterUnitId }),
           ...(tradeMarkId && {
-            tradeMark: {
-              connect: { id: tradeMarkId },
-            },
+            tradeMark: { connect: { id: tradeMarkId } },
           }),
           ...(variantId && {
-            variant: {
-              connect: { id: variantId },
-            },
+            variant: { connect: { id: variantId } },
           }),
           ...(masterProductId && {
             masterProduct: { connect: { id: masterProductId } },
@@ -367,7 +364,9 @@ export class ProductsService {
       stockQuantity,
       minStockAlert,
       maxStockAlert,
-      categoryId,
+      parentName,
+      middleName,
+      childName,
       tradeMarkId,
       variantId,
       masterProductId,
@@ -384,11 +383,9 @@ export class ProductsService {
           basePrice:
             basePrice !== undefined ? basePrice : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
-          ...(categoryId !== undefined && {
-            category: categoryId
-              ? { connect: { id: categoryId } }
-              : { disconnect: true },
-          }),
+          ...(parentName !== undefined && { parentName: parentName || null }),
+          ...(middleName !== undefined && { middleName: middleName || null }),
+          ...(childName !== undefined && { childName: childName || null }),
           ...(tradeMarkId !== undefined && {
             tradeMark: tradeMarkId
               ? { connect: { id: tradeMarkId } }

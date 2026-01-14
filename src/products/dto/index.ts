@@ -55,6 +55,16 @@ export class ComponentDto {
   quantity: number;
 }
 
+export class ProductComponentDto {
+  @IsNumber()
+  @Type(() => Number)
+  componentProductId: number;
+
+  @IsNumber()
+  @Type(() => Number)
+  quantity: number;
+}
+
 export class CreateProductDto {
   @IsString()
   code: string;
@@ -75,9 +85,16 @@ export class CreateProductDto {
   orderTemplate?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  categoryId?: number;
+  @IsString()
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
+  middleName?: string;
+
+  @IsOptional()
+  @IsString()
+  childName?: string;
 
   @IsOptional()
   @IsNumber()
@@ -234,9 +251,16 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   image?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  categoryId?: number;
+  @IsString()
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
+  middleName?: string;
+
+  @IsOptional()
+  @IsString()
+  childName?: string;
 
   @IsOptional()
   @IsNumber()
@@ -355,14 +379,16 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
 
 export class ProductQueryDto {
   @IsOptional()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
-  @IsNumber()
-  page?: number = 1;
+  page?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
   @Type(() => Number)
-  @IsNumber()
-  limit?: number = 15;
+  limit?: number;
 
   @IsOptional()
   @IsString()
@@ -386,25 +412,7 @@ export class ProductQueryDto {
   branchId?: string;
 
   @IsOptional()
-  @Transform(({ value }) => {
-    if (!value) return undefined;
-    if (Array.isArray(value)) return value.map(Number);
-    if (typeof value === 'string') return value.split(',').map(Number);
-    return [Number(value)];
-  })
   @IsArray()
   @Type(() => Number)
   branchIds?: number[];
 }
-
-export class ProductComponentDto {
-  @IsInt()
-  componentProductId: number;
-
-  @IsNumber()
-  @Min(0)
-  @Type(() => Number)
-  quantity: number;
-}
-
-export * from './product-query.dto';
