@@ -78,7 +78,6 @@ export class ProductsService {
         skip,
         take: limit,
         include: {
-          category: true,
           tradeMark: true,
           variant: true,
           images: true,
@@ -106,7 +105,6 @@ export class ProductsService {
     const product = await this.prisma.product.findUnique({
       where: { id },
       include: {
-        category: true,
         variant: true,
         tradeMark: true,
         images: true,
@@ -312,7 +310,6 @@ export class ProductsService {
       return tx.product.findUnique({
         where: { id: product.id },
         include: {
-          category: true,
           variant: true,
           tradeMark: true,
           images: true,
@@ -597,7 +594,6 @@ export class ProductsService {
       return tx.product.findUnique({
         where: { id },
         include: {
-          category: true,
           variant: true,
           tradeMark: true,
           images: true,
