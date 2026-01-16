@@ -218,15 +218,15 @@ export class ProductsService {
         });
       }
 
-      const cost = purchasePrice || 0;
-      const onHand = stockQuantity || 0;
-      const minQuality = minStockAlert || 0;
-      const maxQuality = maxStockAlert || 0;
-
       const allBranches = await tx.branch.findMany({
         where: { isActive: true },
         select: { id: true, name: true },
       });
+
+      const cost = purchasePrice || 0;
+      const onHand = stockQuantity || 0;
+      const minQuality = minStockAlert || 0;
+      const maxQuality = maxStockAlert || 0;
 
       let branchesToCreateInventory: { id: number; name: string }[] = [];
 
@@ -251,13 +251,14 @@ export class ProductsService {
 
       const inventoryData = await Promise.all(
         branchesToCreateInventory.map(async (branch) => {
-          const isCurrentBranch = branch.id === branchId;
+          const isCurrentBranch =
+            branchId !== undefined && branch.id === branchId;
+
           let branchCost = cost;
           if (
-            dto.type === 1 &&
+            (dto.type === 1 || dto.type === 4) &&
             components &&
-            components.length > 0 &&
-            costScope === 'all'
+            components.length > 0
           ) {
             const componentInventories = await tx.inventory.findMany({
               where: {
@@ -303,7 +304,11 @@ export class ProductsService {
         await tx.inventory.createMany({ data: inventoryData });
       }
 
-      if (dto.type === 1 && components && components.length > 0) {
+      if (
+        (dto.type === 1 || dto.type === 4) &&
+        components &&
+        components.length > 0
+      ) {
         await tx.productComponent.createMany({
           data: components.map((comp) => ({
             comboProductId: product.id,
@@ -459,10 +464,9 @@ export class ProductsService {
           let branchCost = cost;
 
           if (
-            currentProduct.type === 1 &&
+            (currentProduct.type === 1 || currentProduct.type === 4) &&
             components &&
-            components.length > 0 &&
-            costScope === 'all'
+            components.length > 0
           ) {
             const componentInventories = await tx.inventory.findMany({
               where: {
@@ -533,7 +537,7 @@ export class ProductsService {
           let branchCost = cost;
 
           if (
-            currentProduct.type === 1 &&
+            (currentProduct.type === 1 || currentProduct.type === 4) &&
             components &&
             components.length > 0
           ) {
