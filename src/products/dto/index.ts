@@ -210,9 +210,10 @@ export class CreateProductDto {
   costScope?: 'all' | 'specific';
 
   @IsOptional()
-  @IsNumber()
+  @IsArray()
+  @IsNumber({}, { each: true })
   @Type(() => Number)
-  costBranchId?: number;
+  costBranchIds?: number[];
 
   @IsOptional()
   @IsNumber()
@@ -372,9 +373,10 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   costScope?: 'all' | 'specific';
 
   @IsOptional()
-  @IsNumber()
+  @IsArray()
+  @IsNumber({}, { each: true })
   @Type(() => Number)
-  costBranchId?: number;
+  costBranchIds?: number[];
 }
 
 export class ProductQueryDto {

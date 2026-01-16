@@ -149,7 +149,7 @@ export class ProductsService {
       initialInventory,
       branchId,
       costScope,
-      costBranchId,
+      costBranchIds,
       purchasePrice,
       basePrice,
       stockQuantity,
@@ -232,11 +232,14 @@ export class ProductsService {
 
       if (costScope === 'all') {
         branchesToCreateInventory = allBranches;
-      } else if (costScope === 'specific' && costBranchId) {
-        const selectedBranch = allBranches.find((b) => b.id === costBranchId);
-        if (selectedBranch) {
-          branchesToCreateInventory = [selectedBranch];
-        }
+      } else if (
+        costScope === 'specific' &&
+        costBranchIds &&
+        costBranchIds.length > 0
+      ) {
+        branchesToCreateInventory = allBranches.filter((b) =>
+          costBranchIds.includes(b.id),
+        );
       } else {
         if (branchId) {
           const currentBranch = allBranches.find((b) => b.id === branchId);
@@ -358,7 +361,7 @@ export class ProductsService {
       initialInventory,
       branchId,
       costScope,
-      costBranchId,
+      costBranchIds,
       purchasePrice,
       basePrice,
       stockQuantity,
@@ -404,6 +407,12 @@ export class ProductsService {
         },
       });
 
+      if (dto.code || dto.name) {
+        const newCode = dto.code || currentProduct.code;
+        const newName = dto.name || currentProduct.name;
+        await this.syncProductInfoToInventories(id, newCode, newName, tx);
+      }
+
       if (imageUrls !== undefined) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         if (imageUrls.length > 0) {
@@ -434,11 +443,14 @@ export class ProductsService {
 
         if (costScope === 'all') {
           branchesToUpdateCost = allBranches;
-        } else if (costScope === 'specific' && costBranchId) {
-          const selectedBranch = allBranches.find((b) => b.id === costBranchId);
-          if (selectedBranch) {
-            branchesToUpdateCost = [selectedBranch];
-          }
+        } else if (
+          costScope === 'specific' &&
+          costBranchIds &&
+          costBranchIds.length > 0
+        ) {
+          branchesToUpdateCost = allBranches.filter((b) =>
+            costBranchIds.includes(b.id),
+          );
         }
 
         for (const branch of branchesToUpdateCost) {
@@ -501,6 +513,8 @@ export class ProductsService {
             },
             update: {
               cost: branchCost,
+              productCode: product.code,
+              productName: product.name,
               ...(isCurrentBranch && onHand !== undefined && { onHand }),
               ...(isCurrentBranch &&
                 minQuality !== undefined && { minQuality }),
@@ -570,6 +584,8 @@ export class ProductsService {
             },
             update: {
               cost: branchCost,
+              productCode: product.code,
+              productName: product.name,
               ...(onHand !== undefined && { onHand }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),
@@ -697,5 +713,20 @@ export class ProductsService {
     }
 
     throw new Error('Không thể tạo mã sản phẩm duy nhất');
+  }
+
+  private async syncProductInfoToInventories(
+    productId: number,
+    newCode: string,
+    newName: string,
+    tx: any,
+  ) {
+    await tx.inventory.updateMany({
+      where: { productId },
+      data: {
+        productCode: newCode,
+        productName: newName,
+      },
+    });
   }
 }
