@@ -30,6 +30,37 @@ export class ProductsService {
     return `${name} - ${attrValues}`;
   }
 
+  private calculateManufacturingCost(
+    components: { componentProductId: number; quantity: number }[],
+    componentProducts: any[],
+    costMap: Map<number, number>,
+    productType: number,
+  ): number {
+    return components.reduce((sum, comp) => {
+      const componentCost = costMap.get(comp.componentProductId) || 0;
+      const quantity = Number(comp.quantity);
+
+      if (productType === 4) {
+        const componentProduct = componentProducts.find(
+          (p) => p.id === comp.componentProductId,
+        );
+        if (!componentProduct) return sum;
+
+        const weight = componentProduct.weight
+          ? Number(componentProduct.weight)
+          : 0;
+        if (weight === 0) return sum;
+
+        const weightInGrams =
+          componentProduct.weightUnit === 'kg' ? weight * 1000 : weight;
+
+        return sum + (componentCost / weightInGrams) * quantity;
+      }
+
+      return sum + componentCost * quantity;
+    }, 0);
+  }
+
   async findAll(query: ProductQueryDto) {
     const {
       page = 1,
@@ -260,6 +291,17 @@ export class ProductsService {
             components &&
             components.length > 0
           ) {
+            const componentProducts = await tx.product.findMany({
+              where: {
+                id: { in: components.map((c) => c.componentProductId) },
+              },
+              select: {
+                id: true,
+                weight: true,
+                weightUnit: true,
+              },
+            });
+
             const componentInventories = await tx.inventory.findMany({
               where: {
                 productId: { in: components.map((c) => c.componentProductId) },
@@ -278,11 +320,12 @@ export class ProductsService {
               ]),
             );
 
-            branchCost = components.reduce((sum, comp) => {
-              const componentCost = costMap.get(comp.componentProductId) || 0;
-              const quantity = Number(comp.quantity);
-              return sum + componentCost * quantity;
-            }, 0);
+            branchCost = this.calculateManufacturingCost(
+              components,
+              componentProducts,
+              costMap,
+              dto.type,
+            );
           }
           return {
             productId: product.id,
@@ -468,6 +511,17 @@ export class ProductsService {
             components &&
             components.length > 0
           ) {
+            const componentProducts = await tx.product.findMany({
+              where: {
+                id: { in: components.map((c) => c.componentProductId) },
+              },
+              select: {
+                id: true,
+                weight: true,
+                weightUnit: true,
+              },
+            });
+
             const componentInventories = await tx.inventory.findMany({
               where: {
                 productId: { in: components.map((c) => c.componentProductId) },
@@ -486,11 +540,12 @@ export class ProductsService {
               ]),
             );
 
-            branchCost = components.reduce((sum, comp) => {
-              const componentCost = costMap.get(comp.componentProductId) || 0;
-              const quantity = Number(comp.quantity);
-              return sum + componentCost * quantity;
-            }, 0);
+            branchCost = this.calculateManufacturingCost(
+              components,
+              componentProducts,
+              costMap,
+              currentProduct.type,
+            );
           }
 
           await tx.inventory.upsert({
@@ -541,6 +596,17 @@ export class ProductsService {
             components &&
             components.length > 0
           ) {
+            const componentProducts = await tx.product.findMany({
+              where: {
+                id: { in: components.map((c) => c.componentProductId) },
+              },
+              select: {
+                id: true,
+                weight: true,
+                weightUnit: true,
+              },
+            });
+
             const componentInventories = await tx.inventory.findMany({
               where: {
                 productId: { in: components.map((c) => c.componentProductId) },
@@ -559,11 +625,12 @@ export class ProductsService {
               ]),
             );
 
-            branchCost = components.reduce((sum, comp) => {
-              const componentCost = costMap.get(comp.componentProductId) || 0;
-              const quantity = Number(comp.quantity);
-              return sum + componentCost * quantity;
-            }, 0);
+            branchCost = this.calculateManufacturingCost(
+              components,
+              componentProducts,
+              costMap,
+              currentProduct.type,
+            );
           }
 
           await tx.inventory.upsert({
