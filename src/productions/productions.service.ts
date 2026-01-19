@@ -1,10 +1,15 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductionDto,
   UpdateProductionDto,
   ProductionQueryDto,
 } from './dto';
+import { Decimal } from '@prisma/client/runtime';
 
 @Injectable()
 export class ProductionsService {
@@ -81,18 +86,45 @@ export class ProductionsService {
   async create(dto: CreateProductionDto, userId: number) {
     const product = await this.prisma.product.findUnique({
       where: { id: dto.productId },
+      include: {
+        comboComponents: {
+          include: {
+            componentProduct: true,
+          },
+        },
+      },
     });
 
     if (!product) {
       throw new NotFoundException('Product not found');
     }
 
-    const branch = await this.prisma.branch.findUnique({
-      where: { id: dto.branchId },
+    if (product.type !== 4) {
+      throw new BadRequestException(
+        'Product must be a manufacturing product (type = 4)',
+      );
+    }
+
+    if (!product.weight) {
+      throw new BadRequestException(
+        'Manufacturing product must have weight defined',
+      );
+    }
+
+    const sourceBranch = await this.prisma.branch.findUnique({
+      where: { id: dto.sourceBranchId },
     });
 
-    if (!branch) {
-      throw new NotFoundException('Branch not found');
+    if (!sourceBranch) {
+      throw new NotFoundException('Source branch not found');
+    }
+
+    const destinationBranch = await this.prisma.branch.findUnique({
+      where: { id: dto.destinationBranchId },
+    });
+
+    if (!destinationBranch) {
+      throw new NotFoundException('Destination branch not found');
     }
 
     const user = await this.prisma.user.findUnique({
@@ -114,37 +146,47 @@ export class ProductionsService {
 
     const code = dto.code || `SX${String(nextNumber).padStart(6, '0')}`;
 
-    const inventory = await this.prisma.inventory.findUnique({
-      where: {
-        productId_branchId: {
+    const totalCost = this.calculateTotalCost(
+      product.comboComponents,
+      dto.sourceBranchId,
+      dto.quantity,
+    );
+
+    return await this.prisma.$transaction(async (tx) => {
+      const production = await tx.production.create({
+        data: {
+          code,
+          sourceBranchId: dto.sourceBranchId,
+          sourceBranchName: sourceBranch.name,
+          destinationBranchId: dto.destinationBranchId,
+          destinationBranchName: destinationBranch.name,
           productId: dto.productId,
-          branchId: dto.branchId,
+          productCode: product.code,
+          productName: product.name,
+          quantity: dto.quantity,
+          totalCost: await totalCost,
+          note: dto.note,
+          status: dto.status || 1,
+          createdById: userId,
+          createdByName: user?.name || '',
+          autoDeductComponents: dto.autoDeductComponents ?? true,
+          manufacturedDate: dto.manufacturedDate
+            ? new Date(dto.manufacturedDate)
+            : new Date(),
         },
-      },
-    });
+      });
 
-    const totalCost = inventory
-      ? Number(inventory.cost) * Number(dto.quantity)
-      : 0;
+      if (dto.status === 2 && dto.autoDeductComponents) {
+        await this.processInventoryChanges(
+          tx,
+          product,
+          dto.sourceBranchId,
+          dto.destinationBranchId,
+          dto.quantity,
+        );
+      }
 
-    return this.prisma.production.create({
-      data: {
-        code,
-        branchId: dto.branchId,
-        branchName: branch.name,
-        productId: dto.productId,
-        productCode: product.code,
-        productName: product.name,
-        quantity: dto.quantity,
-        totalCost,
-        note: dto.note,
-        status: dto.status || 1,
-        createdById: userId,
-        createdByName: user?.name || '',
-        manufacturedDate: dto.manufacturedDate
-          ? new Date(dto.manufacturedDate)
-          : null,
-      },
+      return production;
     });
   }
 
@@ -153,37 +195,44 @@ export class ProductionsService {
 
     const updateData: any = {};
 
-    if (dto.quantity !== undefined) {
-      updateData.quantity = dto.quantity;
-
-      const branchId =
-        dto.branchId !== undefined ? dto.branchId : production.branchId;
-      const productId =
-        dto.productId !== undefined ? dto.productId : production.productId;
-
-      const inventory = await this.prisma.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: productId,
-            branchId: branchId,
-          },
-        },
-      });
-
-      updateData.totalCost = inventory
-        ? Number(inventory.cost) * Number(dto.quantity)
-        : 0;
-    }
-
+    if (dto.quantity !== undefined) updateData.quantity = dto.quantity;
     if (dto.note !== undefined) updateData.note = dto.note;
     if (dto.status !== undefined) updateData.status = dto.status;
     if (dto.manufacturedDate !== undefined) {
       updateData.manufacturedDate = new Date(dto.manufacturedDate);
     }
+    if (dto.autoDeductComponents !== undefined) {
+      updateData.autoDeductComponents = dto.autoDeductComponents;
+    }
 
-    return this.prisma.production.update({
-      where: { id },
-      data: updateData,
+    return await this.prisma.$transaction(async (tx) => {
+      if (dto.status === 2 && production.status !== 2) {
+        const product = await tx.product.findUnique({
+          where: { id: production.productId },
+          include: {
+            comboComponents: {
+              include: {
+                componentProduct: true,
+              },
+            },
+          },
+        });
+
+        if (product && updateData.autoDeductComponents !== false) {
+          await this.processInventoryChanges(
+            tx,
+            product,
+            production.sourceBranchId,
+            production.destinationBranchId,
+            Number(production.quantity),
+          );
+        }
+      }
+
+      return tx.production.update({
+        where: { id },
+        data: updateData,
+      });
     });
   }
 
@@ -193,5 +242,149 @@ export class ProductionsService {
     return this.prisma.production.delete({
       where: { id },
     });
+  }
+
+  private async calculateTotalCost(
+    components: any[],
+    branchId: number,
+    quantity: number,
+  ): Promise<number> {
+    let totalCost = 0;
+
+    for (const comp of components) {
+      const inventory = await this.prisma.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: comp.componentProductId,
+            branchId: branchId,
+          },
+        },
+      });
+
+      if (inventory) {
+        const componentWeight = comp.componentProduct.weight
+          ? Number(comp.componentProduct.weight)
+          : 0;
+        const componentWeightUnit = comp.componentProduct.weightUnit || 'g';
+        const weightInGrams =
+          componentWeightUnit === 'kg'
+            ? componentWeight * 1000
+            : componentWeight;
+
+        if (weightInGrams > 0) {
+          const requiredGrams = Number(comp.quantity) * Number(quantity);
+          const costPerGram = Number(inventory.cost) / weightInGrams;
+          totalCost += costPerGram * requiredGrams;
+        }
+      }
+    }
+
+    return totalCost;
+  }
+
+  private async processInventoryChanges(
+    tx: any,
+    product: any,
+    sourceBranchId: number,
+    destinationBranchId: number,
+    quantity: number | Decimal,
+  ) {
+    const quantityNumber =
+      typeof quantity === 'number' ? quantity : Number(quantity);
+
+    for (const comp of product.comboComponents) {
+      const componentProduct = comp.componentProduct;
+      const componentWeight = componentProduct.weight
+        ? Number(componentProduct.weight)
+        : 0;
+      const componentWeightUnit = componentProduct.weightUnit || 'g';
+      const weightInGrams =
+        componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
+
+      if (weightInGrams === 0) {
+        throw new BadRequestException(
+          `Component ${componentProduct.name} must have weight defined`,
+        );
+      }
+
+      const requiredGrams = Number(comp.quantity) * quantityNumber;
+      const unitsToDeduct = requiredGrams / weightInGrams;
+
+      const sourceInventory = await tx.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: comp.componentProductId,
+            branchId: sourceBranchId,
+          },
+        },
+      });
+
+      if (!sourceInventory) {
+        throw new NotFoundException(
+          `Inventory for component ${componentProduct.name} not found at source branch`,
+        );
+      }
+
+      if (Number(sourceInventory.onHand) < unitsToDeduct) {
+        throw new BadRequestException(
+          `Insufficient inventory for component ${componentProduct.name}. Required: ${unitsToDeduct}, Available: ${sourceInventory.onHand}`,
+        );
+      }
+
+      await tx.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: comp.componentProductId,
+            branchId: sourceBranchId,
+          },
+        },
+        data: {
+          onHand: Number(sourceInventory.onHand) - unitsToDeduct,
+        },
+      });
+    }
+
+    const destInventory = await tx.inventory.findUnique({
+      where: {
+        productId_branchId: {
+          productId: product.id,
+          branchId: destinationBranchId,
+        },
+      },
+    });
+
+    if (destInventory) {
+      await tx.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: product.id,
+            branchId: destinationBranchId,
+          },
+        },
+        data: {
+          onHand: Number(destInventory.onHand) + quantityNumber,
+        },
+      });
+    } else {
+      const destBranch = await tx.branch.findUnique({
+        where: { id: destinationBranchId },
+      });
+
+      await tx.inventory.create({
+        data: {
+          productId: product.id,
+          productCode: product.code,
+          productName: product.name,
+          branchId: destinationBranchId,
+          branchName: destBranch?.name || '',
+          cost: 0,
+          onHand: quantityNumber,
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+      });
+    }
   }
 }

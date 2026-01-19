@@ -107,12 +107,14 @@ export class ProductsService {
   async findAll(query: ProductQueryDto) {
     const {
       page = 1,
-      limit = 15,
+      limit = 20,
       search,
       categoryIds,
       isActive,
       branchId,
       branchIds,
+      type,
+      types,
     } = query;
     const skip = (page - 1) * limit;
 
@@ -133,6 +135,14 @@ export class ProductsService {
 
     if (isActive !== undefined) where.isActive = isActive;
 
+    if (type !== undefined) {
+      where.type = type;
+    }
+
+    if (types && types.length > 0) {
+      where.type = { in: types };
+    }
+
     let inventoriesInclude: any = { include: { branch: true } };
     if (branchIds && branchIds.length > 0) {
       inventoriesInclude = {
@@ -141,7 +151,7 @@ export class ProductsService {
       };
     } else if (branchId) {
       inventoriesInclude = {
-        where: { branchId: parseInt(branchId) },
+        where: { branchId: branchId },
         include: { branch: true },
       };
     }

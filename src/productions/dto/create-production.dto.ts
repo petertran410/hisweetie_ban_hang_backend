@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsDecimal,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -14,7 +15,11 @@ export class CreateProductionDto {
 
   @IsInt()
   @Type(() => Number)
-  branchId: number;
+  sourceBranchId: number;
+
+  @IsInt()
+  @Type(() => Number)
+  destinationBranchId: number;
 
   @IsInt()
   @Type(() => Number)
@@ -36,4 +41,8 @@ export class CreateProductionDto {
   @IsOptional()
   @IsDateString()
   manufacturedDate?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  autoDeductComponents?: boolean;
 }

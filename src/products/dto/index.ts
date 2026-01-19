@@ -382,13 +382,11 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
 export class ProductQueryDto {
   @IsOptional()
   @IsInt()
-  @Min(1)
   @Type(() => Number)
   page?: number;
 
   @IsOptional()
   @IsInt()
-  @Min(1)
   @Type(() => Number)
   limit?: number;
 
@@ -401,20 +399,39 @@ export class ProductQueryDto {
   categoryIds?: string;
 
   @IsOptional()
-  @Transform(({ value }) => {
-    if (value === 'true') return true;
-    if (value === 'false') return false;
-    return value;
-  })
   @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
   isActive?: boolean;
 
   @IsOptional()
-  @IsString()
-  branchId?: string;
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
 
   @IsOptional()
   @IsArray()
   @Type(() => Number)
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value.split(',').map(Number);
+    }
+    return Array.isArray(value) ? value.map(Number) : [Number(value)];
+  })
   branchIds?: number[];
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  type?: number;
+
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value.split(',').map(Number);
+    }
+    return Array.isArray(value) ? value.map(Number) : [Number(value)];
+  })
+  types?: number[];
 }

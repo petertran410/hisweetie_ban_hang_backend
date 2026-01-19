@@ -109,18 +109,19 @@ model Branch {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
-  location          Location?         @relation(fields: [locationId], references: [id])
-  users             User[]
-  orders            Order[]
-  invoices          Invoice[]
-  purchaseOrders    PurchaseOrder[]
-  inventories       Inventory[]
-  priceBookBranches PriceBookBranch[]
-  customers         Customer[]
-  transfersFrom Transfer[] @relation("TransferFrom")
-  transfersTo   Transfer[] @relation("TransferTo")
-  cashFlows CashFlow[]
-  productions Production[]
+  location                   Location?         @relation(fields: [locationId], references: [id])
+  users                      User[]
+  orders                     Order[]
+  invoices                   Invoice[]
+  purchaseOrders             PurchaseOrder[]
+  inventories                Inventory[]
+  priceBookBranches          PriceBookBranch[]
+  customers                  Customer[]
+  transfersFrom              Transfer[]        @relation("TransferFrom")
+  transfersTo                Transfer[]        @relation("TransferTo")
+  cashFlows                  CashFlow[]
+  productionsSource          Production[]      @relation("ProductionSource")
+  productionsDestination     Production[]      @relation("ProductionDestination")
 
   @@map("branches")
 }
@@ -387,28 +388,33 @@ model ProductImage {
 }
 
 model Production {
-  id               Int       @id @default(autoincrement())
-  code             String    @unique
-  branchId         Int
-  branchName       String
-  productId        Int
-  productCode      String
-  productName      String
-  quantity         Decimal   @default(0)
-  totalCost        Decimal   @default(0)
-  note             String?
-  status           Int       @default(1)
-  createdById      Int
-  createdByName    String
-  manufacturedDate DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                    Int       @id @default(autoincrement())
+  code                  String    @unique
+  sourceBranchId        Int
+  sourceBranchName      String
+  destinationBranchId   Int
+  destinationBranchName String
+  productId             Int
+  productCode           String
+  productName           String
+  quantity              Decimal   @default(0)
+  totalCost             Decimal   @default(0)
+  note                  String?
+  status                Int       @default(1)
+  createdById           Int
+  createdByName         String
+  autoDeductComponents  Boolean   @default(true)
+  manufacturedDate      DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
-  branch  Branch  @relation(fields: [branchId], references: [id])
-  product Product @relation(fields: [productId], references: [id])
-  creator User    @relation("ProductionCreator", fields: [createdById], references: [id])
+  sourceBranch      Branch  @relation("ProductionSource", fields: [sourceBranchId], references: [id])
+  destinationBranch Branch  @relation("ProductionDestination", fields: [destinationBranchId], references: [id])
+  product           Product @relation(fields: [productId], references: [id])
+  creator           User    @relation("ProductionCreator", fields: [createdById], references: [id])
 
-  @@index([branchId])
+  @@index([sourceBranchId])
+  @@index([destinationBranchId])
   @@index([productId])
   @@index([status])
   @@index([manufacturedDate])
