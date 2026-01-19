@@ -30,6 +30,49 @@ export class ProductsService {
     return `${name} - ${attrValues}`;
   }
 
+  private calculateTotalWeight(
+    weight: any,
+    weightUnit: string | null | undefined,
+    onHand: any,
+  ): number {
+    const weightValue = weight ? Number(weight) : 0;
+    const onHandValue = onHand ? Number(onHand) : 0;
+
+    if (weightValue === 0) return 0;
+
+    return weightValue * onHandValue;
+  }
+
+  private async syncTotalWeightToInventories(
+    productId: number,
+    weight: any,
+    weightUnit: string | null | undefined,
+    tx: any,
+  ) {
+    const inventories = await tx.inventory.findMany({
+      where: { productId },
+      select: { branchId: true, onHand: true },
+    });
+
+    for (const inv of inventories) {
+      const totalWeight = this.calculateTotalWeight(
+        weight,
+        weightUnit,
+        inv.onHand,
+      );
+
+      await tx.inventory.update({
+        where: {
+          productId_branchId: {
+            productId,
+            branchId: inv.branchId,
+          },
+        },
+        data: { totalWeight },
+      });
+    }
+  }
+
   private calculateManufacturingCost(
     components: { componentProductId: number; quantity: number }[],
     componentProducts: any[],
@@ -327,6 +370,14 @@ export class ProductsService {
               dto.type,
             );
           }
+
+          const branchOnHand = isCurrentBranch ? onHand : 0;
+          const totalWeight = this.calculateTotalWeight(
+            dto.weight,
+            dto.weightUnit,
+            branchOnHand,
+          );
+
           return {
             productId: product.id,
             productCode: product.code,
@@ -334,11 +385,12 @@ export class ProductsService {
             branchId: branch.id,
             branchName: branch.name,
             cost: branchCost,
-            onHand: isCurrentBranch ? onHand : 0,
+            onHand: branchOnHand,
             reserved: 0,
             onOrder: 0,
             minQuality: isCurrentBranch ? minQuality : 0,
             maxQuality: isCurrentBranch ? maxQuality : 0,
+            totalWeight: totalWeight,
           };
         }),
       );
@@ -461,6 +513,21 @@ export class ProductsService {
         await this.syncProductInfoToInventories(id, newCode, newName, tx);
       }
 
+      if (dto.weight !== undefined || dto.weightUnit !== undefined) {
+        const newWeight =
+          dto.weight !== undefined ? dto.weight : currentProduct.weight;
+        const newWeightUnit =
+          dto.weightUnit !== undefined
+            ? dto.weightUnit
+            : currentProduct.weightUnit;
+        await this.syncTotalWeightToInventories(
+          id,
+          newWeight,
+          newWeightUnit,
+          tx,
+        );
+      }
+
       if (imageUrls !== undefined) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         if (imageUrls.length > 0) {
@@ -569,12 +636,25 @@ export class ProductsService {
                 isCurrentBranch && minQuality !== undefined ? minQuality : 0,
               maxQuality:
                 isCurrentBranch && maxQuality !== undefined ? maxQuality : 0,
+              totalWeight: this.calculateTotalWeight(
+                product.weight,
+                product.weightUnit,
+                isCurrentBranch && onHand !== undefined ? onHand : 0,
+              ),
             },
             update: {
               cost: branchCost,
               productCode: product.code,
               productName: product.name,
-              ...(isCurrentBranch && onHand !== undefined && { onHand }),
+              ...(isCurrentBranch &&
+                onHand !== undefined && {
+                  onHand,
+                  totalWeight: this.calculateTotalWeight(
+                    product.weight,
+                    product.weightUnit,
+                    onHand,
+                  ),
+                }),
               ...(isCurrentBranch &&
                 minQuality !== undefined && { minQuality }),
               ...(isCurrentBranch &&
@@ -652,12 +732,24 @@ export class ProductsService {
               onOrder: 0,
               minQuality: minQuality || 0,
               maxQuality: maxQuality || 0,
+              totalWeight: this.calculateTotalWeight(
+                product.weight,
+                product.weightUnit,
+                onHand || 0,
+              ),
             },
             update: {
               cost: branchCost,
               productCode: product.code,
               productName: product.name,
-              ...(onHand !== undefined && { onHand }),
+              ...(onHand !== undefined && {
+                onHand,
+                totalWeight: this.calculateTotalWeight(
+                  product.weight,
+                  product.weightUnit,
+                  onHand,
+                ),
+              }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),
             },

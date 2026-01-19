@@ -80,12 +80,30 @@ export class InventoriesService {
           branchId,
         },
       },
+      include: {
+        product: {
+          select: {
+            weight: true,
+            weightUnit: true,
+          },
+        },
+      },
     });
 
     if (!inventory) {
       throw new Error(
         `Inventory not found for product ${productId} at branch ${branchId}`,
       );
+    }
+
+    const updateData: any = { ...data };
+
+    if (data.onHand !== undefined) {
+      const weight = inventory.product.weight
+        ? Number(inventory.product.weight)
+        : 0;
+      const onHand = Number(data.onHand);
+      updateData.totalWeight = weight * onHand;
     }
 
     return this.prisma.inventory.update({
@@ -95,7 +113,7 @@ export class InventoriesService {
           branchId,
         },
       },
-      data,
+      data: updateData,
     });
   }
 
@@ -110,6 +128,18 @@ export class InventoriesService {
     minQuality?: number;
     maxQuality?: number;
   }) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: data.productId },
+      select: {
+        weight: true,
+        weightUnit: true,
+      },
+    });
+
+    const weight = product?.weight ? Number(product.weight) : 0;
+    const onHand = data.onHand || 0;
+    const totalWeight = weight * onHand;
+
     return this.prisma.inventory.create({
       data: {
         productId: data.productId,
@@ -118,11 +148,12 @@ export class InventoriesService {
         branchId: data.branchId,
         branchName: data.branchName,
         cost: data.cost || 0,
-        onHand: data.onHand || 0,
+        onHand: onHand,
         reserved: 0,
         onOrder: 0,
         minQuality: data.minQuality || 0,
         maxQuality: data.maxQuality || 0,
+        totalWeight: totalWeight,
       },
     });
   }

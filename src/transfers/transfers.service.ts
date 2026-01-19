@@ -592,6 +592,58 @@ export class TransfersService {
     }
   }
 
+  private async updateInventoryWithTotalWeight(
+    productId: number,
+    branchId: number,
+    onHandUpdate: { increment?: number; decrement?: number },
+    tx: any,
+  ) {
+    const inventory = await tx.inventory.findUnique({
+      where: {
+        productId_branchId: { productId, branchId },
+      },
+      include: {
+        product: {
+          select: {
+            weight: true,
+            weightUnit: true,
+          },
+        },
+      },
+    });
+
+    if (!inventory) {
+      throw new Error(
+        `Inventory not found for product ${productId} at branch ${branchId}`,
+      );
+    }
+
+    const currentOnHand = Number(inventory.onHand);
+    let newOnHand = currentOnHand;
+
+    if (onHandUpdate.increment) {
+      newOnHand += Number(onHandUpdate.increment);
+    }
+    if (onHandUpdate.decrement) {
+      newOnHand -= Number(onHandUpdate.decrement);
+    }
+
+    const weight = inventory.product.weight
+      ? Number(inventory.product.weight)
+      : 0;
+    const totalWeight = weight * newOnHand;
+
+    await tx.inventory.update({
+      where: {
+        productId_branchId: { productId, branchId },
+      },
+      data: {
+        onHand: onHandUpdate,
+        totalWeight: totalWeight,
+      },
+    });
+  }
+
   private async decrementInventoryFromBranch(transferId: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
@@ -607,40 +659,58 @@ export class TransfersService {
       );
     }
 
-    for (const detail of transfer.details) {
-      const inventory = await this.prisma.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
           },
-        },
-      });
-
-      if (!inventory) {
-        throw new NotFoundException(
-          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.fromBranch.name}`,
-        );
-      }
-
-      if (Number(inventory.onHand) < Number(detail.sendQuantity)) {
-        throw new BadRequestException(
-          `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventory.onHand}, yêu cầu: ${detail.sendQuantity}`,
-        );
-      }
-
-      await this.prisma.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
+          include: {
+            product: {
+              select: {
+                weight: true,
+                weightUnit: true,
+              },
+            },
           },
-        },
-        data: {
-          onHand: { decrement: detail.sendQuantity },
-        },
-      });
-    }
+        });
+
+        if (!inventory) {
+          throw new NotFoundException(
+            `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.fromBranch.name}`,
+          );
+        }
+
+        if (Number(inventory.onHand) < Number(detail.sendQuantity)) {
+          throw new BadRequestException(
+            `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventory.onHand}, yêu cầu: ${detail.sendQuantity}`,
+          );
+        }
+
+        const newOnHand =
+          Number(inventory.onHand) - Number(detail.sendQuantity);
+        const weight = inventory.product.weight
+          ? Number(inventory.product.weight)
+          : 0;
+        const totalWeight = weight * newOnHand;
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+          data: {
+            onHand: { decrement: detail.sendQuantity },
+            totalWeight: totalWeight,
+          },
+        });
+      }
+    });
   }
 
   private async incrementInventoryFromBranch(transferId: number) {
