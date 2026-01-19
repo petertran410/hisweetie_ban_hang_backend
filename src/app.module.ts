@@ -42,6 +42,7 @@ import { InvoicesModule } from './invoices/invoices.module';
 import { CashFlowsModule } from './cashflows/cashflows.module';
 import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 import { NoteTemplatesModule } from './note-templates/note-templates.module';
+import { ProductionsModule } from './productions/productions.module';
 
 @Module({
   imports: [
@@ -84,6 +85,7 @@ import { NoteTemplatesModule } from './note-templates/note-templates.module';
     CashFlowsModule,
     CashFlowGroupsModule,
     NoteTemplatesModule,
+    ProductionsModule,
   ],
   providers: [
     {

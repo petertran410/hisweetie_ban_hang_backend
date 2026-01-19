@@ -35,6 +35,7 @@ model User {
   createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
   cashFlowsCreated    CashFlow[] @relation("CashFlowCreator")
   cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
+  createdProductions Production[] @relation("ProductionCreator")
 
   @@map("users")
 }
@@ -119,6 +120,7 @@ model Branch {
   transfersFrom Transfer[] @relation("TransferFrom")
   transfersTo   Transfer[] @relation("TransferTo")
   cashFlows CashFlow[]
+  productions Production[]
 
   @@map("branches")
 }
@@ -340,6 +342,7 @@ model Product {
   componentOf        ProductComponent[]  @relation("ComponentOf")
   priceBook          PriceBook?          @relation(fields: [priceBookId], references: [id])
   transferDetails    TransferDetail[]
+  productions Production[]
 
   @@map("products")
 }
@@ -381,6 +384,35 @@ model ProductImage {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@map("product_images")
+}
+
+model Production {
+  id               Int       @id @default(autoincrement())
+  code             String    @unique
+  branchId         Int
+  branchName       String
+  productId        Int
+  productCode      String
+  productName      String
+  quantity         Decimal   @default(0)
+  totalCost        Decimal   @default(0)
+  note             String?
+  status           Int       @default(1)
+  createdById      Int
+  createdByName    String
+  manufacturedDate DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  branch  Branch  @relation(fields: [branchId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  creator User    @relation("ProductionCreator", fields: [createdById], references: [id])
+
+  @@index([branchId])
+  @@index([productId])
+  @@index([status])
+  @@index([manufacturedDate])
+  @@map("productions")
 }
 
 model Inventory {
