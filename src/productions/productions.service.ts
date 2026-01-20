@@ -206,6 +206,7 @@ export class ProductionsService {
     }
 
     return await this.prisma.$transaction(async (tx) => {
+      // Trường hợp 1: Chuyển từ Phiếu tạm (1) sang Hoàn thành (2)
       if (dto.status === 2 && production.status !== 2) {
         const product = await tx.product.findUnique({
           where: { id: production.productId },
@@ -220,6 +221,30 @@ export class ProductionsService {
 
         if (product && updateData.autoDeductComponents !== false) {
           await this.processInventoryChanges(
+            tx,
+            product,
+            production.sourceBranchId,
+            production.destinationBranchId,
+            Number(production.quantity),
+          );
+        }
+      }
+
+      // Trường hợp 2: Hủy phiếu đã Hoàn thành (2 -> 3)
+      if (dto.status === 3 && production.status === 2) {
+        const product = await tx.product.findUnique({
+          where: { id: production.productId },
+          include: {
+            comboComponents: {
+              include: {
+                componentProduct: true,
+              },
+            },
+          },
+        });
+
+        if (product && production.autoDeductComponents) {
+          await this.reverseInventoryChanges(
             tx,
             product,
             production.sourceBranchId,
@@ -386,5 +411,99 @@ export class ProductionsService {
         },
       });
     }
+  }
+
+  private async reverseInventoryChanges(
+    tx: any,
+    product: any,
+    sourceBranchId: number,
+    destinationBranchId: number,
+    quantity: number,
+  ) {
+    // Hoàn trả tồn kho cho các thành phần (cộng lại)
+    for (const comp of product.comboComponents) {
+      const componentProduct = comp.componentProduct;
+      const componentWeight = componentProduct.weight
+        ? Number(componentProduct.weight)
+        : 0;
+      const componentWeightUnit = componentProduct.weightUnit || 'g';
+      const weightInGrams =
+        componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
+
+      if (weightInGrams === 0) {
+        throw new BadRequestException(
+          `Component ${componentProduct.name} must have weight defined`,
+        );
+      }
+
+      const requiredGrams = Number(comp.quantity) * Number(quantity);
+      const unitsToRestore = requiredGrams / weightInGrams;
+
+      const sourceInventory = await tx.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: comp.componentProductId,
+            branchId: sourceBranchId,
+          },
+        },
+      });
+
+      if (!sourceInventory) {
+        throw new NotFoundException(
+          `Inventory for component ${componentProduct.name} not found at source branch`,
+        );
+      }
+
+      // Cộng lại tồn kho hiện tại
+      await tx.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: comp.componentProductId,
+            branchId: sourceBranchId,
+          },
+        },
+        data: {
+          onHand: Number(sourceInventory.onHand) + unitsToRestore,
+        },
+      });
+    }
+
+    // Trừ tồn kho sản phẩm thành phẩm ở chi nhánh đầu ra
+    const destInventory = await tx.inventory.findUnique({
+      where: {
+        productId_branchId: {
+          productId: product.id,
+          branchId: destinationBranchId,
+        },
+      },
+    });
+
+    if (!destInventory) {
+      throw new NotFoundException(
+        `Inventory for product ${product.name} not found at destination branch`,
+      );
+    }
+
+    // Trừ tồn kho hiện tại (cho phép âm nếu cần)
+    const newOnHand = Number(destInventory.onHand) - Number(quantity);
+
+    // Nếu muốn kiểm tra không cho âm, uncomment dòng này:
+    // if (newOnHand < 0) {
+    //   throw new BadRequestException(
+    //     `Insufficient inventory for product ${product.name}. Cannot cancel production because stock is insufficient. Current: ${destInventory.onHand}, Required: ${quantity}`,
+    //   );
+    // }
+
+    await tx.inventory.update({
+      where: {
+        productId_branchId: {
+          productId: product.id,
+          branchId: destinationBranchId,
+        },
+      },
+      data: {
+        onHand: newOnHand,
+      },
+    });
   }
 }
