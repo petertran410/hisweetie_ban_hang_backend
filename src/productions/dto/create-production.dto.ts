@@ -2,7 +2,7 @@ import {
   IsInt,
   IsString,
   IsOptional,
-  IsDecimal,
+  IsNumber,
   IsDateString,
   IsBoolean,
 } from 'class-validator';
@@ -25,7 +25,7 @@ export class CreateProductionDto {
   @Type(() => Number)
   productId: number;
 
-  @IsDecimal()
+  @IsNumber()
   @Type(() => Number)
   quantity: number;
 
