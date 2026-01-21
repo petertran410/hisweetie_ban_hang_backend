@@ -144,12 +144,8 @@ export class DestructionsService {
   async update(id: number, dto: UpdateDestructionDto) {
     const destruction = await this.findOne(id);
 
-    if (destruction.status === 4) {
+    if (destruction.status === 3) {
       throw new BadRequestException('Cannot update cancelled destruction');
-    }
-
-    if (destruction.status === 2) {
-      throw new BadRequestException('Cannot update completed destruction');
     }
 
     const updateData: any = {};
@@ -158,9 +154,33 @@ export class DestructionsService {
       updateData.note = dto.note;
     }
 
+    if (dto.createdById !== undefined) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: dto.createdById },
+      });
+      if (!user) {
+        throw new NotFoundException(
+          `User with ID ${dto.createdById} not found`,
+        );
+      }
+      updateData.createdById = dto.createdById;
+      updateData.createdByName = user.name;
+    }
+
+    if (dto.destructionDate !== undefined) {
+      updateData.destructionDate = dto.destructionDate
+        ? new Date(dto.destructionDate)
+        : null;
+    }
+
     if (dto.status !== undefined) {
+      if (destruction.status === 2 && dto.status !== 2) {
+        throw new BadRequestException(
+          'Cannot change status of completed destruction',
+        );
+      }
       updateData.status = dto.status;
-      if (dto.status === 2) {
+      if (dto.status === 2 && !updateData.destructionDate) {
         updateData.destructionDate = new Date();
       }
     }
@@ -223,7 +243,7 @@ export class DestructionsService {
   async cancelDestruction(id: number, dto: CancelDestructionDto) {
     const destruction = await this.findOne(id);
 
-    if (destruction.status === 4) {
+    if (destruction.status === 3) {
       throw new BadRequestException('Destruction already cancelled');
     }
 
@@ -231,7 +251,7 @@ export class DestructionsService {
       await this.prisma.destruction.update({
         where: { id },
         data: {
-          status: 4,
+          status: 3,
           note: dto.cancelReason
             ? `${destruction.note ? destruction.note + ' | ' : ''}Lý do hủy: ${dto.cancelReason}`
             : destruction.note,
@@ -244,7 +264,7 @@ export class DestructionsService {
       await tx.destruction.update({
         where: { id },
         data: {
-          status: 4,
+          status: 3,
           note: dto.cancelReason
             ? `${destruction.note ? destruction.note + ' | ' : ''}Lý do hủy: ${dto.cancelReason}`
             : destruction.note,
