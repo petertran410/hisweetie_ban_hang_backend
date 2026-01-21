@@ -43,6 +43,7 @@ import { CashFlowsModule } from './cashflows/cashflows.module';
 import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 import { NoteTemplatesModule } from './note-templates/note-templates.module';
 import { ProductionsModule } from './productions/productions.module';
+import { DestructionsModule } from './destructions/destructions.module';
 
 @Module({
   imports: [
@@ -86,6 +87,7 @@ import { ProductionsModule } from './productions/productions.module';
     CashFlowGroupsModule,
     NoteTemplatesModule,
     ProductionsModule,
+    DestructionsModule,
   ],
   providers: [
     {

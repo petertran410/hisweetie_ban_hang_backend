@@ -36,6 +36,7 @@ model User {
   cashFlowsCreated    CashFlow[] @relation("CashFlowCreator")
   cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
   createdProductions Production[] @relation("ProductionCreator")
+  createdDestructions Destruction[] @relation("DestructionCreator")
 
   @@map("users")
 }
@@ -122,6 +123,7 @@ model Branch {
   cashFlows                  CashFlow[]
   productionsSource          Production[]      @relation("ProductionSource")
   productionsDestination     Production[]      @relation("ProductionDestination")
+  destructions Destruction[]
 
   @@map("branches")
 }
@@ -344,6 +346,7 @@ model Product {
   priceBook          PriceBook?          @relation(fields: [priceBookId], references: [id])
   transferDetails    TransferDetail[]
   productions Production[]
+  destructionDetails DestructionDetail[]
 
   @@map("products")
 }
@@ -1120,4 +1123,47 @@ model NoteTemplate {
   updatedAt DateTime @updatedAt
 
   @@map("note_templates")
+}
+
+model Destruction {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique
+  branchId        Int
+  branchName      String
+  status          Int       @default(1)
+  destructionDate DateTime?
+  createdById     Int
+  createdByName   String
+  note            String?
+  totalValue      Decimal   @default(0)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  branch  Branch              @relation(fields: [branchId], references: [id])
+  creator User                @relation("DestructionCreator", fields: [createdById], references: [id])
+  details DestructionDetail[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([destructionDate])
+  @@map("destructions")
+}
+
+model DestructionDetail {
+  id             Int      @id @default(autoincrement())
+  destructionId  Int
+  productId      Int
+  productCode    String
+  productName    String
+  quantity       Decimal
+  price          Decimal
+  totalValue     Decimal
+  note           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  destruction Destruction @relation(fields: [destructionId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id])
+
+  @@map("destruction_details")
 }
