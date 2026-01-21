@@ -37,12 +37,12 @@ export class DestructionsService {
     }
 
     if (fromDestructionDate || toDestructionDate) {
-      where.destructionDate = {};
+      where.createdAt = {};
       if (fromDestructionDate) {
-        where.destructionDate.gte = new Date(fromDestructionDate);
+        where.createdAt.gte = new Date(fromDestructionDate);
       }
       if (toDestructionDate) {
-        where.destructionDate.lte = new Date(toDestructionDate);
+        where.createdAt.lte = new Date(toDestructionDate);
       }
     }
 
