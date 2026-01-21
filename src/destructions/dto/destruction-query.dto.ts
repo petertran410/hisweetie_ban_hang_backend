@@ -1,21 +1,21 @@
-import { IsOptional, IsInt, IsString, IsArray } from 'class-validator';
+import { IsOptional, IsInt, IsString } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
 export class DestructionQueryDto {
   @IsOptional()
-  @IsArray()
-  @Type(() => Number)
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @Transform(({ value }) => {
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    return value.split(',').map(Number);
+  })
   branchIds?: number[];
 
   @IsOptional()
-  @IsArray()
-  @Type(() => Number)
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @Transform(({ value }) => {
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    return value.split(',').map(Number);
+  })
   status?: number[];
 
   @IsOptional()
