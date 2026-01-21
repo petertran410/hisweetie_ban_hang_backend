@@ -312,11 +312,8 @@ export class ProductionsService {
     product: any,
     sourceBranchId: number,
     destinationBranchId: number,
-    quantity: number | Decimal,
+    quantity: number,
   ) {
-    const quantityNumber =
-      typeof quantity === 'number' ? quantity : Number(quantity);
-
     for (const comp of product.comboComponents) {
       const componentProduct = comp.componentProduct;
       const componentWeight = componentProduct.weight
@@ -332,7 +329,7 @@ export class ProductionsService {
         );
       }
 
-      const requiredGrams = Number(comp.quantity) * quantityNumber;
+      const requiredGrams = Number(comp.quantity) * Number(quantity);
       const unitsToDeduct = requiredGrams / weightInGrams;
 
       const sourceInventory = await tx.inventory.findUnique({
@@ -356,6 +353,9 @@ export class ProductionsService {
         );
       }
 
+      const newOnHand = Number(sourceInventory.onHand) - unitsToDeduct;
+      const newTotalWeight = newOnHand * weightInGrams;
+
       await tx.inventory.update({
         where: {
           productId_branchId: {
@@ -364,10 +364,16 @@ export class ProductionsService {
           },
         },
         data: {
-          onHand: Number(sourceInventory.onHand) - unitsToDeduct,
+          onHand: newOnHand,
+          totalWeight: newTotalWeight,
         },
       });
     }
+
+    const productWeight = product.weight ? Number(product.weight) : 0;
+    const productWeightUnit = product.weightUnit || 'g';
+    const productWeightInGrams =
+      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
 
     const destInventory = await tx.inventory.findUnique({
       where: {
@@ -379,6 +385,9 @@ export class ProductionsService {
     });
 
     if (destInventory) {
+      const newOnHand = Number(destInventory.onHand) + Number(quantity);
+      const newTotalWeight = newOnHand * productWeightInGrams;
+
       await tx.inventory.update({
         where: {
           productId_branchId: {
@@ -387,13 +396,16 @@ export class ProductionsService {
           },
         },
         data: {
-          onHand: Number(destInventory.onHand) + quantityNumber,
+          onHand: newOnHand,
+          totalWeight: newTotalWeight,
         },
       });
     } else {
       const destBranch = await tx.branch.findUnique({
         where: { id: destinationBranchId },
       });
+
+      const totalWeight = Number(quantity) * productWeightInGrams;
 
       await tx.inventory.create({
         data: {
@@ -403,7 +415,8 @@ export class ProductionsService {
           branchId: destinationBranchId,
           branchName: destBranch?.name || '',
           cost: 0,
-          onHand: quantityNumber,
+          onHand: Number(quantity),
+          totalWeight: totalWeight,
           reserved: 0,
           onOrder: 0,
           minQuality: 0,
@@ -420,7 +433,6 @@ export class ProductionsService {
     destinationBranchId: number,
     quantity: number,
   ) {
-    // Hoàn trả tồn kho cho các thành phần (cộng lại)
     for (const comp of product.comboComponents) {
       const componentProduct = comp.componentProduct;
       const componentWeight = componentProduct.weight
@@ -454,7 +466,9 @@ export class ProductionsService {
         );
       }
 
-      // Cộng lại tồn kho hiện tại
+      const newOnHand = Number(sourceInventory.onHand) + unitsToRestore;
+      const newTotalWeight = newOnHand * weightInGrams;
+
       await tx.inventory.update({
         where: {
           productId_branchId: {
@@ -463,12 +477,17 @@ export class ProductionsService {
           },
         },
         data: {
-          onHand: Number(sourceInventory.onHand) + unitsToRestore,
+          onHand: newOnHand,
+          totalWeight: newTotalWeight,
         },
       });
     }
 
-    // Trừ tồn kho sản phẩm thành phẩm ở chi nhánh đầu ra
+    const productWeight = product.weight ? Number(product.weight) : 0;
+    const productWeightUnit = product.weightUnit || 'g';
+    const productWeightInGrams =
+      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
+
     const destInventory = await tx.inventory.findUnique({
       where: {
         productId_branchId: {
@@ -484,15 +503,8 @@ export class ProductionsService {
       );
     }
 
-    // Trừ tồn kho hiện tại (cho phép âm nếu cần)
     const newOnHand = Number(destInventory.onHand) - Number(quantity);
-
-    // Nếu muốn kiểm tra không cho âm, uncomment dòng này:
-    // if (newOnHand < 0) {
-    //   throw new BadRequestException(
-    //     `Insufficient inventory for product ${product.name}. Cannot cancel production because stock is insufficient. Current: ${destInventory.onHand}, Required: ${quantity}`,
-    //   );
-    // }
+    const newTotalWeight = newOnHand * productWeightInGrams;
 
     await tx.inventory.update({
       where: {
@@ -503,6 +515,7 @@ export class ProductionsService {
       },
       data: {
         onHand: newOnHand,
+        totalWeight: newTotalWeight,
       },
     });
   }
