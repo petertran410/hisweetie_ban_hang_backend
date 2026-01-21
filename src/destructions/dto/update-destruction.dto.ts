@@ -13,6 +13,9 @@ class UpdateDestructionDetailDto {
   productId: number;
 
   @IsString()
+  productName: string;
+
+  @IsString()
   productCode: string;
 
   @IsNumber()
