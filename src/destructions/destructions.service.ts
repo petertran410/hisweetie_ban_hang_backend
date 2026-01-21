@@ -295,6 +295,37 @@ export class DestructionsService {
     });
 
     for (const detail of destruction.details) {
+      const inventory = await tx.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: destruction.branchId,
+          },
+        },
+        include: {
+          product: {
+            select: {
+              weight: true,
+              weightUnit: true,
+            },
+          },
+        },
+      });
+
+      if (!inventory) {
+        throw new NotFoundException(
+          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode}`,
+        );
+      }
+
+      const newOnHand = Number(inventory.onHand) - Number(detail.quantity);
+      const weight = inventory.product.weight
+        ? Number(inventory.product.weight)
+        : 0;
+      const weightUnit = inventory.product.weightUnit || 'g';
+      const weightInGrams = weightUnit === 'kg' ? weight * 1000 : weight;
+      const totalWeight = weightInGrams * newOnHand;
+
       await tx.inventory.update({
         where: {
           productId_branchId: {
@@ -304,6 +335,7 @@ export class DestructionsService {
         },
         data: {
           onHand: { decrement: detail.quantity },
+          totalWeight: totalWeight,
         },
       });
     }
