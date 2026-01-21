@@ -17,6 +17,9 @@ class DestructionDetailDto {
   @IsString()
   productCode: string;
 
+  @IsString()
+  productName: string;
+
   @IsNumber()
   @Min(0)
   quantity: number;

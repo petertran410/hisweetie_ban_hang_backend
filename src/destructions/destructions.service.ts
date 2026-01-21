@@ -273,13 +273,9 @@ export class DestructionsService {
 
   private async generateCode(): Promise<string> {
     const prefix = 'XH';
-    const date = new Date();
-    const year = date.getFullYear().toString().slice(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, '0');
-    const day = date.getDate().toString().padStart(2, '0');
 
     const lastDestruction = await this.prisma.destruction.findFirst({
-      where: { code: { startsWith: `${prefix}${year}${month}${day}` } },
+      where: { code: { startsWith: `${prefix}` } },
       orderBy: { code: 'desc' },
     });
 
@@ -289,7 +285,7 @@ export class DestructionsService {
       sequence = lastSequence + 1;
     }
 
-    return `${prefix}${year}${month}${day}${sequence.toString().padStart(6, '0')}`;
+    return `${prefix}${sequence.toString().padStart(6, '0')}`;
   }
 
   private async decrementInventory(destructionId: number, tx: any) {
