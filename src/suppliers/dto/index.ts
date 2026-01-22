@@ -1,5 +1,13 @@
-import { IsString, IsBoolean, IsOptional, IsNumber } from 'class-validator';
-import { Type } from 'class-transformer';
+import {
+  IsString,
+  IsBoolean,
+  IsOptional,
+  IsNumber,
+  IsInt,
+  IsDateString,
+  IsIn,
+} from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 
 export class CreateSupplierDto {
   @IsOptional()
@@ -8,6 +16,10 @@ export class CreateSupplierDto {
 
   @IsString()
   name: string;
+
+  @IsOptional()
+  @IsString()
+  contactNumber?: string;
 
   @IsOptional()
   @IsString()
@@ -23,11 +35,35 @@ export class CreateSupplierDto {
 
   @IsOptional()
   @IsString()
+  location?: string;
+
+  @IsOptional()
+  @IsString()
+  wardName?: string;
+
+  @IsOptional()
+  @IsString()
+  taxCode?: string;
+
+  @IsOptional()
+  @IsString()
   contactPerson?: string;
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  comments?: string;
+
+  @IsOptional()
+  @IsInt()
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  groups?: string;
+
+  @IsOptional()
+  @IsInt({ each: true })
+  groupIds?: number[];
 
   @IsOptional()
   @IsBoolean()
@@ -45,6 +81,10 @@ export class UpdateSupplierDto {
 
   @IsOptional()
   @IsString()
+  contactNumber?: string;
+
+  @IsOptional()
+  @IsString()
   phone?: string;
 
   @IsOptional()
@@ -57,11 +97,35 @@ export class UpdateSupplierDto {
 
   @IsOptional()
   @IsString()
+  location?: string;
+
+  @IsOptional()
+  @IsString()
+  wardName?: string;
+
+  @IsOptional()
+  @IsString()
+  taxCode?: string;
+
+  @IsOptional()
+  @IsString()
   contactPerson?: string;
 
   @IsOptional()
   @IsString()
-  notes?: string;
+  comments?: string;
+
+  @IsOptional()
+  @IsInt()
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  groups?: string;
+
+  @IsOptional()
+  @IsInt({ each: true })
+  groupIds?: number[];
 
   @IsOptional()
   @IsBoolean()
@@ -70,26 +134,90 @@ export class UpdateSupplierDto {
 
 export class SupplierQueryDto {
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  page?: number;
+  @IsString()
+  code?: string;
 
   @IsOptional()
-  @IsNumber()
-  @Type(() => Number)
-  limit?: number;
+  @IsString()
+  name?: string;
 
   @IsOptional()
-  @IsNumber()
+  @IsString()
+  contactNumber?: string;
+
+  @IsOptional()
+  @IsInt()
   @Type(() => Number)
   pageSize?: number;
 
   @IsOptional()
-  @IsString()
-  search?: string;
+  @IsInt()
+  @Type(() => Number)
+  currentItem?: number;
 
   @IsOptional()
+  @IsString()
+  orderBy?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['asc', 'desc'])
+  orderDirection?: 'asc' | 'desc';
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
   @IsBoolean()
-  @Type(() => Boolean)
+  includeTotal?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeSupplierGroup?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  groupId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
+  @IsDateString()
+  createdDateFrom?: string;
+
+  @IsOptional()
+  @IsDateString()
+  createdDateTo?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  totalInvoicedFrom?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  totalInvoicedTo?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  debtFrom?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  debtTo?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+    return undefined;
+  })
+  @IsBoolean()
   isActive?: boolean;
 }

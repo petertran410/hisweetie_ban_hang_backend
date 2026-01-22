@@ -37,6 +37,7 @@ model User {
   cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
   createdProductions Production[] @relation("ProductionCreator")
   createdDestructions Destruction[] @relation("DestructionCreator")
+  createdSupplierGroups SupplierGroup[] @relation("SupplierGroupCreator")
 
   @@map("users")
 }
@@ -259,8 +260,35 @@ model Supplier {
   updatedAt     DateTime @updatedAt
 
   purchaseOrders PurchaseOrder[]
+  supplierGroupDetails SupplierGroupDetail[]
 
   @@map("suppliers")
+}
+
+model SupplierGroup {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  createdBy   Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creator                 User?                       @relation("SupplierGroupCreator", fields: [createdBy], references: [id])
+  supplierGroupDetails    SupplierGroupDetail[]
+
+  @@map("supplier_groups")
+}
+
+model SupplierGroupDetail {
+  id              Int      @id @default(autoincrement())
+  supplierId      Int
+  supplierGroupId Int
+
+  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Cascade)
+  supplierGroup SupplierGroup @relation(fields: [supplierGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([supplierId, supplierGroupId])
+  @@map("supplier_group_details")
 }
 
 model TradeMark {
