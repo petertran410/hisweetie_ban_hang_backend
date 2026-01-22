@@ -7,7 +7,7 @@ export class SupplierGroupsService {
   constructor(private prisma: PrismaService) {}
 
   async findAll() {
-    return this.prisma.supplierGroup.findMany({
+    const groups = await this.prisma.supplierGroup.findMany({
       include: {
         creator: {
           select: { id: true, name: true },
@@ -18,6 +18,8 @@ export class SupplierGroupsService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return { data: groups };
   }
 
   async findOne(id: number) {

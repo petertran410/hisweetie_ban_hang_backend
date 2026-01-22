@@ -169,10 +169,11 @@ export class SuppliersService {
   }
 
   async create(dto: CreateSupplierDto) {
-    const code = dto.code || (await this.generateCode());
+    // const code = dto.code || (await this.generateCode());
     const { groupIds, ...supplierData } = dto;
 
     return this.prisma.$transaction(async (prisma) => {
+      const code = await this.generateSafeSupplierCode(prisma);
       const supplier = await prisma.supplier.create({
         data: {
           ...supplierData,
@@ -278,8 +279,56 @@ export class SuppliersService {
     });
   }
 
-  private async generateCode(): Promise<string> {
-    const count = await this.prisma.supplier.count();
-    return `NCC${String(count + 1).padStart(6, '0')}`;
+  // private async generateCode(): Promise<string> {
+  //   const count = await this.prisma.supplier.count();
+  //   return `NCC${String(count + 1).padStart(6, '0')}`;
+  // }
+
+  private async generateSafeSupplierCode(tx: any): Promise<string> {
+    const prefix = 'NCC';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allSuppliers = await tx.invoice.findMany({
+        where: {
+          code: { startsWith: prefix },
+        },
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      const validCodes = allSuppliers
+        .map((sup: any) => sup.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a, b) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.supplier.findFirst({ where: { code } });
+
+      if (!exists) return code;
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã nhà cung cấp duy nhất');
   }
 }
