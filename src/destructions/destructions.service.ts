@@ -145,7 +145,11 @@ export class DestructionsService {
     const destruction = await this.findOne(id);
 
     if (destruction.status === 3) {
-      throw new BadRequestException('Cannot update cancelled destruction');
+      if (dto.destructionDetails || dto.status || dto.branchId || dto.isDraft) {
+        throw new BadRequestException(
+          'Cannot update product details or status of cancelled destruction',
+        );
+      }
     }
 
     const updateData: any = {};
