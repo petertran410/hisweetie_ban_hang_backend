@@ -191,7 +191,7 @@ export class SuppliersService {
         });
       }
 
-      return this.findOne(supplier.id);
+      // return this.findOne(supplier.id);
     });
   }
 
