@@ -89,10 +89,6 @@ export class UpdateSupplierDto {
 
   @IsOptional()
   @IsString()
-  phone?: string;
-
-  @IsOptional()
-  @IsString()
   email?: string;
 
   @IsOptional()
@@ -113,7 +109,7 @@ export class UpdateSupplierDto {
 
   @IsOptional()
   @IsString()
-  contactPerson?: string;
+  organization?: string;
 
   @IsOptional()
   @IsString()
@@ -122,6 +118,14 @@ export class UpdateSupplierDto {
   @IsOptional()
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @IsInt()
+  createdBy?: number;
+
+  @IsOptional()
+  @IsString()
+  createdName?: string;
 
   @IsOptional()
   @IsString()
