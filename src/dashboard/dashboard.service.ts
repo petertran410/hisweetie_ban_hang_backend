@@ -46,7 +46,7 @@ export class DashboardService {
         }),
         this.prisma.supplier.aggregate({
           where: { isActive: true },
-          _sum: { totalDebt: true },
+          _sum: { debt: true },
         }),
         this.prisma.$queryRaw<[{ count: bigint }]>`
         SELECT COUNT(DISTINCT i."productId") as count
@@ -78,7 +78,7 @@ export class DashboardService {
         revenueChange: Number(revenueChange.toFixed(2)),
         currentMonthOrders,
         totalCustomerDebt: Number(totalCustomerDebt._sum.totalDebt || 0),
-        totalSupplierDebt: Number(totalSupplierDebt._sum.totalDebt || 0),
+        totalSupplierDebt: Number(totalSupplierDebt._sum.debt || 0),
         lowStockProducts: Number(lowStockResult[0].count),
         outOfStockProducts: Number(outOfStockResult[0].count),
       };

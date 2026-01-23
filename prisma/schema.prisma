@@ -242,20 +242,21 @@ model Supplier {
   code          String?  @unique
   name          String
   contactNumber String?
-  phone         String?
   email         String?
   address       String?
   location      String?
   wardName      String?
+  organization  String?
   taxCode       String?
-  contactPerson String?
   comments      String?
-  branchId      Int?
   groups        String?
-  totalDebt     Decimal      @default(0)
+  isActive      Boolean  @default(true)
+  createdBy     Int?
+  createdName     String?
+  branchId      Int?
+  debt     Decimal      @default(0)
   totalInvoiced Decimal      @default(0)
   totalInvoicedWithoutReturn  Decimal @default(0)
-  isActive      Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

@@ -23,10 +23,6 @@ export class CreateSupplierDto {
 
   @IsOptional()
   @IsString()
-  phone?: string;
-
-  @IsOptional()
-  @IsString()
   email?: string;
 
   @IsOptional()
@@ -47,7 +43,7 @@ export class CreateSupplierDto {
 
   @IsOptional()
   @IsString()
-  contactPerson?: string;
+  organization?: string;
 
   @IsOptional()
   @IsString()
@@ -56,6 +52,14 @@ export class CreateSupplierDto {
   @IsOptional()
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @IsInt()
+  createdBy?: number;
+
+  @IsOptional()
+  @IsString()
+  createdName?: string;
 
   @IsOptional()
   @IsString()

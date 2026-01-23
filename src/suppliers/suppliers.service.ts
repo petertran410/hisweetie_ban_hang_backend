@@ -41,7 +41,6 @@ export class SuppliersService {
     if (contactNumber) {
       where.OR = [
         { contactNumber: { contains: contactNumber, mode: 'insensitive' } },
-        { phone: { contains: contactNumber, mode: 'insensitive' } },
       ];
     }
 
@@ -78,12 +77,12 @@ export class SuppliersService {
     }
 
     if (debtFrom !== undefined || debtTo !== undefined) {
-      where.totalDebt = {};
+      where.debt = {};
       if (debtFrom !== undefined) {
-        where.totalDebt.gte = debtFrom;
+        where.debt.gte = debtFrom;
       }
       if (debtTo !== undefined) {
-        where.totalDebt.lte = debtTo;
+        where.debt.lte = debtTo;
       }
     }
 
@@ -260,7 +259,7 @@ export class SuppliersService {
       where: { supplierId },
     });
 
-    const totalDebt = purchaseOrders.reduce(
+    const debt = purchaseOrders.reduce(
       (sum, po) => sum + Number(po.debtAmount),
       0,
     );
@@ -273,7 +272,7 @@ export class SuppliersService {
     return this.prisma.supplier.update({
       where: { id: supplierId },
       data: {
-        totalDebt,
+        debt,
         totalInvoiced,
       },
     });

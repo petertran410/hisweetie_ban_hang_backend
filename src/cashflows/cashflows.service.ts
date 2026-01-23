@@ -361,7 +361,7 @@ export class CashFlowsService {
           name: true,
           contactNumber: true,
           address: true,
-          totalDebt: true,
+          debt: true,
         },
       });
     }
