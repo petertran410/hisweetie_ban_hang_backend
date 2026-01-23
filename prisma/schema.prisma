@@ -4,7 +4,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model User {
@@ -27,6 +26,8 @@ model User {
   createdInvoices       Invoice[]       @relation("InvoiceCreator")
   soldInvoices          Invoice[]       @relation("InvoiceSeller")
   createdPayments       OrderPayment[]  @relation("PaymentCreator")
+  createdOrderSuppliers OrderSupplier[] @relation("OrderSupplierCreator")
+  orderSuppliers        OrderSupplier[] @relation("OrderSupplierUser")  
   createdPurchaseOrders PurchaseOrder[] @relation("PurchaseOrderCreator")
   purchaseOrders        PurchaseOrder[] @relation("PurchaseOrderBuyer")
   posts                 Post[]          @relation("PostAuthor")
@@ -121,6 +122,7 @@ model Branch {
   priceBookBranches          PriceBookBranch[]
   customers                  Customer[]
   suppliers                  Supplier[]
+  orderSuppliers OrderSupplier[]
   transfersFrom              Transfer[]        @relation("TransferFrom")
   transfersTo                Transfer[]        @relation("TransferTo")
   cashFlows                  CashFlow[]
@@ -266,6 +268,7 @@ model Supplier {
   branch               Branch?                 @relation(fields: [branchId], references: [id])
   purchaseOrders       PurchaseOrder[]
   supplierGroupDetails SupplierGroupDetail[]
+  orderSuppliers OrderSupplier[]
 
   @@map("suppliers")
 }
@@ -380,6 +383,7 @@ model Product {
   transferDetails    TransferDetail[]
   productions Production[]
   destructionDetails DestructionDetail[]
+  orderSupplierItems OrderSupplierItem[]
 
   @@map("products")
 }
@@ -591,6 +595,7 @@ model Surcharge {
   orderSurcharges         OrderSurcharge[]
   invoiceSurcharges       InvoiceSurcharge[]
   purchaseOrderSurcharges PurchaseOrderSurcharge[]
+  orderSupplierExpensesOthers OrderSupplierExpensesOther[]
 
   @@map("surcharges")
 }
@@ -917,6 +922,7 @@ model PurchaseOrder {
   items      PurchaseOrderItem[]
   payments   PurchaseOrderPayment[]
   surcharges PurchaseOrderSurcharge[]
+  orderSuppliers OrderSupplier[]
 
   @@map("purchase_orders")
 }
@@ -1199,4 +1205,90 @@ model DestructionDetail {
   product     Product     @relation(fields: [productId], references: [id])
 
   @@map("destruction_details")
+}
+
+model OrderSupplier {
+  id                    Int      @id @default(autoincrement())
+  code                  String   @unique
+  invoiceId             Int?
+  orderDate             DateTime @default(now())
+  branchId              Int?
+  supplierId            Int
+  userId                Int?
+  description           String?
+  status                Int      @default(0)
+  statusValue           String?
+  discount              Decimal  @default(0)
+  discountRatio         Decimal  @default(0)
+  productQty            Decimal  @default(0)
+  total                 Decimal  @default(0)
+  subTotal              Decimal  @default(0)
+  totalAmt              Decimal  @default(0)
+  totalQty              Decimal  @default(0)
+  totalQuantity         Decimal  @default(0)
+  paidAmount            Decimal  @default(0)
+  exReturnSuppliers     Decimal  @default(0)
+  exReturnThirdParty    Decimal  @default(0)
+  toComplete            Boolean  @default(false)
+  viewPrice             Boolean  @default(true)
+  supplierDebt          Decimal  @default(0)
+  supplierOldDebt       Decimal  @default(0)
+  purchaseOrderCodes    String?
+  createdBy             Int
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  supplier            Supplier                      @relation(fields: [supplierId], references: [id])
+  branch              Branch?                       @relation(fields: [branchId], references: [id])
+  user                User?                         @relation("OrderSupplierUser", fields: [userId], references: [id])
+  creator             User                          @relation("OrderSupplierCreator", fields: [createdBy], references: [id])
+  purchaseOrder       PurchaseOrder?                @relation(fields: [invoiceId], references: [id])
+  items               OrderSupplierItem[]
+  expensesOthers      OrderSupplierExpensesOther[]
+
+  @@map("order_suppliers")
+}
+
+model OrderSupplierItem {
+  id                   Int      @id @default(autoincrement())
+  orderSupplierId      Int
+  productId            Int
+  productCode          String
+  productName          String
+  quantity             Decimal
+  price                Decimal
+  discount             Decimal  @default(0)
+  allocation           Decimal  @default(0)
+  allocationSuppliers  Decimal  @default(0)
+  allocationThirdParty Decimal  @default(0)
+  orderQuantity        Decimal  @default(0)
+  subTotal             Decimal
+  description          String?
+  orderByNumber        Int?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  orderSupplier OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@map("order_supplier_items")
+}
+
+model OrderSupplierExpensesOther {
+  id                  Int      @id @default(autoincrement())
+  orderSupplierId     Int
+  expensesOtherId     Int?
+  expensesOtherCode   String
+  expensesOtherName   String
+  form                Int?
+  expensesOtherOrder  Int?
+  price               Decimal
+  exValue             Decimal?
+  isReturnAuto        Boolean  @default(false)
+  createdAt           DateTime @default(now())
+
+  orderSupplier OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
+  surcharge     Surcharge?    @relation(fields: [expensesOtherCode], references: [code])
+
+  @@map("order_supplier_expenses_others")
 }

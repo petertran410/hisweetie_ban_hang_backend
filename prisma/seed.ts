@@ -1,5 +1,4 @@
-// prisma/seed.ts - Replace toàn bộ file
-import { PrismaClient } from '@prisma/client';
+import { PrismaClient } from '@prisma/client/extension';
 import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
