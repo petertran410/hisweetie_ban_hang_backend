@@ -108,8 +108,21 @@ export class SuppliersService {
                   },
                 },
               },
+              creator: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             }
-          : undefined,
+          : {
+              creator: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
       }),
       this.prisma.supplier.count({ where }),
     ]);
@@ -129,6 +142,12 @@ export class SuppliersService {
         supplierGroupDetails: {
           include: {
             supplierGroup: true,
+          },
+        },
+        creator: {
+          select: {
+            id: true,
+            name: true,
           },
         },
         purchaseOrders: {
@@ -157,6 +176,12 @@ export class SuppliersService {
             supplierGroup: true,
           },
         },
+        creator: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -167,16 +192,42 @@ export class SuppliersService {
     return supplier;
   }
 
-  async create(dto: CreateSupplierDto) {
-    // const code = dto.code || (await this.generateCode());
+  async create(dto: CreateSupplierDto, userId: number) {
     const { groupIds, ...supplierData } = dto;
 
     return this.prisma.$transaction(async (prisma) => {
       const code = await this.generateSafeSupplierCode(prisma);
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      const groupNames =
+        groupIds && groupIds.length > 0
+          ? await prisma.supplierGroup
+              .findMany({
+                where: { id: { in: groupIds } },
+                select: { name: true },
+              })
+              .then((groups) => groups.map((g) => g.name).join('|'))
+          : null;
+
       const supplier = await prisma.supplier.create({
         data: {
           ...supplierData,
           code,
+          createdBy: userId,
+          createdName: user?.name || '',
+          groups: groupNames,
+        },
+        include: {
+          creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
         },
       });
 
@@ -190,7 +241,29 @@ export class SuppliersService {
         });
       }
 
-      // return this.findOne(supplier.id);
+      return prisma.supplier.findUnique({
+        where: { id: supplier.id },
+        include: {
+          supplierGroupDetails: {
+            include: {
+              supplierGroup: true,
+            },
+          },
+          creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          purchaseOrders: {
+            orderBy: { purchaseDate: 'desc' },
+            take: 10,
+            include: {
+              branch: true,
+            },
+          },
+        },
+      });
     });
   }
 
@@ -206,9 +279,22 @@ export class SuppliersService {
     const { groupIds, ...supplierData } = dto;
 
     return this.prisma.$transaction(async (prisma) => {
+      const groupNames =
+        groupIds !== undefined && groupIds.length > 0
+          ? await prisma.supplierGroup
+              .findMany({
+                where: { id: { in: groupIds } },
+                select: { name: true },
+              })
+              .then((groups) => groups.map((g) => g.name).join('|'))
+          : null;
+
       const updated = await prisma.supplier.update({
         where: { id },
-        data: supplierData,
+        data: {
+          ...supplierData,
+          groups: groupNames,
+        },
       });
 
       if (groupIds !== undefined) {
@@ -278,11 +364,6 @@ export class SuppliersService {
     });
   }
 
-  // private async generateCode(): Promise<string> {
-  //   const count = await this.prisma.supplier.count();
-  //   return `NCC${String(count + 1).padStart(6, '0')}`;
-  // }
-
   private async generateSafeSupplierCode(tx: any): Promise<string> {
     const prefix = 'NCC';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
@@ -290,7 +371,7 @@ export class SuppliersService {
     const maxAttempts = 10;
 
     while (attempts < maxAttempts) {
-      const allSuppliers = await tx.invoice.findMany({
+      const allSuppliers = await tx.supplier.findMany({
         where: {
           code: { startsWith: prefix },
         },
@@ -305,7 +386,7 @@ export class SuppliersService {
       const validCodes = allSuppliers
         .map((sup: any) => sup.code)
         .filter((code: string) => regex.test(code))
-        .sort((a, b) => {
+        .sort((a: string, b: string) => {
           const numA = parseInt(a.replace(prefix, ''));
           const numB = parseInt(b.replace(prefix, ''));
           return numB - numA;

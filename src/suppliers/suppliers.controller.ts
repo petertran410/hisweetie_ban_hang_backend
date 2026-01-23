@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { SuppliersService } from './suppliers.service';
 import { CreateSupplierDto, UpdateSupplierDto, SupplierQueryDto } from './dto';
@@ -41,8 +42,9 @@ export class SuppliersController {
 
   @Post()
   @ApiOperation({ summary: 'Tạo mới nhà cung cấp' })
-  create(@Body() dto: CreateSupplierDto) {
-    return this.suppliersService.create(dto);
+  create(@Body() dto: CreateSupplierDto, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.suppliersService.create(dto, userId);
   }
 
   @Put(':id')

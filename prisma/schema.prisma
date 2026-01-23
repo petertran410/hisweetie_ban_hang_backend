@@ -38,6 +38,7 @@ model User {
   createdProductions Production[] @relation("ProductionCreator")
   createdDestructions Destruction[] @relation("DestructionCreator")
   createdSupplierGroups SupplierGroup[] @relation("SupplierGroupCreator")
+  createdSuppliers      Supplier[]      @relation("SupplierCreator")
 
   @@map("users")
 }
@@ -260,7 +261,8 @@ model Supplier {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  purchaseOrders PurchaseOrder[]
+  creator              User?                   @relation("SupplierCreator", fields: [createdBy], references: [id])
+  purchaseOrders       PurchaseOrder[]
   supplierGroupDetails SupplierGroupDetail[]
 
   @@map("suppliers")
