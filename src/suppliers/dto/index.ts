@@ -51,6 +51,7 @@ export class CreateSupplierDto {
 
   @IsOptional()
   @IsInt()
+  @Type(() => Number)
   branchId?: number;
 
   @IsOptional()
