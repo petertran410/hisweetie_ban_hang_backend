@@ -114,9 +114,21 @@ export class SuppliersService {
                   name: true,
                 },
               },
+              branch: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             }
           : {
               creator: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+              branch: {
                 select: {
                   id: true,
                   name: true,
@@ -145,6 +157,12 @@ export class SuppliersService {
           },
         },
         creator: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        branch: {
           select: {
             id: true,
             name: true,
@@ -182,6 +200,12 @@ export class SuppliersService {
             name: true,
           },
         },
+        branch: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -192,7 +216,11 @@ export class SuppliersService {
     return supplier;
   }
 
-  async create(dto: CreateSupplierDto, userId: number) {
+  async create(
+    dto: CreateSupplierDto,
+    userId: number,
+    branchId: number | null,
+  ) {
     const { groupIds, ...supplierData } = dto;
 
     return this.prisma.$transaction(async (prisma) => {
@@ -218,11 +246,18 @@ export class SuppliersService {
           ...supplierData,
           code,
           createdBy: userId,
-          createdName: user?.name || '',
+          createdName: user?.name || 'Unknown',
+          branchId: branchId,
           groups: groupNames,
         },
         include: {
           creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          branch: {
             select: {
               id: true,
               name: true,
@@ -250,6 +285,12 @@ export class SuppliersService {
             },
           },
           creator: {
+            select: {
+              id: true,
+              name: true,
+            },
+          },
+          branch: {
             select: {
               id: true,
               name: true,

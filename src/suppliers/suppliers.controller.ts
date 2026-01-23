@@ -44,7 +44,8 @@ export class SuppliersController {
   @ApiOperation({ summary: 'Tạo mới nhà cung cấp' })
   create(@Body() dto: CreateSupplierDto, @Req() req: any) {
     const userId = req.user?.id || 1;
-    return this.suppliersService.create(dto, userId);
+    const branchId = req.user?.branchId || null;
+    return this.suppliersService.create(dto, userId, branchId);
   }
 
   @Put(':id')
