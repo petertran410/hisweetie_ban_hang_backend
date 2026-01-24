@@ -9,7 +9,6 @@ import {
   UpdateProductionDto,
   ProductionQueryDto,
 } from './dto';
-import { Decimal } from '@prisma/client/runtime';
 
 @Injectable()
 export class ProductionsService {
