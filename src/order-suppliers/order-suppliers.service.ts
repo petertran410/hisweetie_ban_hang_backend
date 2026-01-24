@@ -143,7 +143,7 @@ export class OrderSuppliersService {
 
   async create(dto: CreateOrderSupplierDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateCode(tx);
+      const code = await this.generateSafeOrderSupplierCode(tx);
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
@@ -348,30 +348,51 @@ export class OrderSuppliersService {
     return { message: 'Xóa phiếu đặt hàng nhập thành công' };
   }
 
-  private async generateCode(tx?: any): Promise<string> {
-    const prisma = tx || this.prisma;
+  private async generateSafeOrderSupplierCode(tx?: any): Promise<string> {
     const prefix = 'PDN';
-    const today = new Date();
-    const year = today.getFullYear().toString().slice(-2);
-    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
 
-    const lastOrder = await prisma.orderSupplier.findFirst({
-      where: {
-        code: {
-          startsWith: `${prefix}${year}${month}`,
+    while (attempts < maxAttempts) {
+      const allOrderSuppliers = await tx.orderSupplier.findMany({
+        where: {
+          code: { startsWith: prefix },
         },
-      },
-      orderBy: {
-        code: 'desc',
-      },
-    });
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
 
-    let nextNumber = 1;
-    if (lastOrder) {
-      const lastNumber = parseInt(lastOrder.code.slice(-6));
-      nextNumber = lastNumber + 1;
+      const validCodes = allOrderSuppliers
+        .map((sup: any) => sup.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a: string, b: string) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.supplier.findFirst({ where: { code } });
+
+      if (!exists) return code;
+      attempts++;
     }
 
-    return `${prefix}${year}${month}${String(nextNumber).padStart(6, '0')}`;
+    throw new Error('Không thể tạo mã phiếu đặt hàng nhập duy nhất');
   }
 }
