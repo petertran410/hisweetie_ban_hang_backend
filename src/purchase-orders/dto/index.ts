@@ -74,23 +74,50 @@ export class UpdatePurchaseOrderDto {
 }
 
 export class PurchaseOrderQueryDto {
-  @IsInt()
   @IsOptional()
-  page?: number;
+  @Type(() => Number)
+  @IsInt()
+  pageSize?: number;
 
-  @IsInt()
   @IsOptional()
-  limit?: number;
+  @Type(() => Number)
+  @IsInt()
+  currentItem?: number;
 
   @IsString()
   @IsOptional()
   search?: string;
 
-  @IsInt()
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   supplierId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  status?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  branchId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  createdById?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  purchaseById?: number;
 
   @IsString()
   @IsOptional()
-  status?: string;
+  createdDateFrom?: string;
+
+  @IsString()
+  @IsOptional()
+  createdDateTo?: string;
 }
