@@ -45,6 +45,7 @@ import { NoteTemplatesModule } from './note-templates/note-templates.module';
 import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
+import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 
 @Module({
   imports: [
@@ -90,6 +91,7 @@ import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
     ProductionsModule,
     DestructionsModule,
     SupplierGroupsModule,
+    OrderSuppliersModule,
   ],
   providers: [
     {

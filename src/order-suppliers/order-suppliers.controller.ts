@@ -1,0 +1,59 @@
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Param,
+  Query,
+  UseGuards,
+  Req,
+} from '@nestjs/common';
+import { OrderSuppliersService } from './order-suppliers.service';
+import {
+  CreateOrderSupplierDto,
+  UpdateOrderSupplierDto,
+  OrderSupplierQueryDto,
+} from './dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+
+@ApiTags('Order Suppliers')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('order-suppliers')
+export class OrderSuppliersController {
+  constructor(private orderSuppliersService: OrderSuppliersService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Lấy danh sách đặt hàng nhập' })
+  findAll(@Query() query: OrderSupplierQueryDto) {
+    return this.orderSuppliersService.findAll(query);
+  }
+
+  @Get(':id')
+  @ApiOperation({ summary: 'Lấy chi tiết đặt hàng nhập theo ID' })
+  findOne(@Param('id') id: string) {
+    return this.orderSuppliersService.findOne(+id);
+  }
+
+  @Post()
+  @ApiOperation({ summary: 'Tạo mới đặt hàng nhập' })
+  create(@Body() dto: CreateOrderSupplierDto, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.orderSuppliersService.create(dto, userId);
+  }
+
+  @Put(':id')
+  @ApiOperation({ summary: 'Cập nhật đặt hàng nhập' })
+  update(@Param('id') id: string, @Body() dto: UpdateOrderSupplierDto) {
+    return this.orderSuppliersService.update(+id, dto);
+  }
+
+  @Delete(':id')
+  @ApiOperation({ summary: 'Xóa đặt hàng nhập' })
+  remove(@Param('id') id: string) {
+    return this.orderSuppliersService.remove(+id);
+  }
+}
