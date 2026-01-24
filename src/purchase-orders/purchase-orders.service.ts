@@ -63,8 +63,15 @@ export class PurchaseOrdersService {
   }
 
   async findAll(query: PurchaseOrderQueryDto) {
-    const { page = 1, limit = 10, search, supplierId, status } = query;
-    const skip = (page - 1) * limit;
+    const {
+      pageSize = 10,
+      currentItem = 0,
+      search,
+      supplierId,
+      status,
+    } = query;
+    const skip = currentItem;
+    const take = pageSize;
 
     const where: any = {};
     if (search) {
@@ -77,7 +84,7 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrder.findMany({
         where,
         skip,
-        take: limit,
+        take,
         include: {
           supplier: true,
           items: { include: { product: true } },
@@ -87,7 +94,7 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrder.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    return { data, total, pageSize, currentItem };
   }
 
   async findOne(id: number) {
