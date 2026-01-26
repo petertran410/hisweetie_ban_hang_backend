@@ -315,4 +315,204 @@ export class PurchaseOrdersService {
       data: { totalDebt },
     });
   }
+
+  async createFromOrderSupplier(
+    orderSupplierId: number,
+    dto: CreatePurchaseOrderFromOrderSupplierDto,
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const orderSupplier = await tx.orderSupplier.findUnique({
+        where: { id: orderSupplierId },
+        include: {
+          supplier: true,
+          branch: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
+        },
+      });
+
+      if (!orderSupplier) {
+        throw new NotFoundException('OrderSupplier not found');
+      }
+
+      if (orderSupplier.status === 4) {
+        throw new BadRequestException(
+          'Không thể tạo phiếu nhập từ đặt hàng nhập đã hủy',
+        );
+      }
+
+      if (orderSupplier.status === 3) {
+        throw new BadRequestException(
+          'Đặt hàng nhập đã được chuyển thành phiếu nhập hàng',
+        );
+      }
+
+      if (!orderSupplier.branchId) {
+        throw new BadRequestException(
+          'Đặt hàng nhập không có thông tin chi nhánh',
+        );
+      }
+
+      const code = await this.generateSafePurchaseOrderCode(tx);
+
+      const totalPaidFromOrderSupplier = Number(orderSupplier.paidAmount);
+      const additionalPayment = Number(dto.additionalPayment || 0);
+      const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
+
+      const totalAmount = orderSupplier.items.reduce(
+        (sum, item) => sum + Number(item.subTotal),
+        0,
+      );
+      const discountAmount = Number(orderSupplier.discount) || 0;
+      const discountFromRatio =
+        (totalAmount * (Number(orderSupplier.discountRatio) || 0)) / 100;
+      const grandTotal = totalAmount - discountAmount - discountFromRatio;
+      const debtAmount = grandTotal - totalPaid;
+
+      let status: number = 0;
+      if (debtAmount <= 0) {
+        status = 1;
+      }
+
+      const currentSupplierDebt = Number(orderSupplier.supplier?.debt || 0);
+      const supplierDebtSnapshot =
+        currentSupplierDebt + grandTotal - additionalPayment;
+
+      const purchaseOrder = await tx.purchaseOrder.create({
+        data: {
+          code,
+          supplierId: orderSupplier.supplierId,
+          branchId: orderSupplier.branchId,
+          purchaseById: orderSupplier.userId,
+          purchaseDate: new Date(),
+          totalAmount,
+          discount: discountAmount,
+          discountRatio: Number(orderSupplier.discountRatio) || 0,
+          grandTotal,
+          paidAmount: totalPaid,
+          debtAmount,
+          status,
+          statusValue: this.getStatusLabel(status),
+          isDraft: false,
+          description: orderSupplier.description,
+          createdBy: userId,
+          supplierDebtSnapshot,
+          items: {
+            create: orderSupplier.items.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: Number(item.quantity),
+              price: Number(item.price),
+              discount: Number(item.discount) || 0,
+              discountRatio: 0,
+              totalPrice: Number(item.subTotal),
+              description: item.description,
+            })),
+          },
+        },
+        include: {
+          items: true,
+        },
+      });
+
+      if (additionalPayment > 0) {
+        const paymentCode = `TT${purchaseOrder.code}-1`;
+        await tx.purchaseOrderPayment.create({
+          data: {
+            code: paymentCode,
+            purchaseOrderId: purchaseOrder.id,
+            amount: additionalPayment,
+            paymentDate: new Date(),
+            paymentMethod: 'cash',
+            description: `Thanh toán bổ sung từ đặt hàng nhập ${orderSupplier.code}`,
+          },
+        });
+      }
+
+      await this.updateProductStock(purchaseOrder.id, tx);
+      await this.updateSupplierDebt(orderSupplier.supplierId, tx);
+
+      await tx.orderSupplier.update({
+        where: { id: orderSupplierId },
+        data: {
+          purchaseOrderId: purchaseOrder.id,
+          status: 3,
+          statusValue: 'Hoàn thành',
+          purchaseOrderCodes: purchaseOrder.code,
+        },
+      });
+
+      return tx.purchaseOrder.findUnique({
+        where: { id: purchaseOrder.id },
+        include: {
+          supplier: true,
+          branch: true,
+          items: { include: { product: true } },
+          payments: true,
+        },
+      });
+    });
+  }
+
+  private getStatusLabel(status: number): string {
+    const labels: Record<number, string> = {
+      0: 'Phiếu tạm',
+      1: 'Đã nhập hàng',
+      2: 'Đã hủy',
+    };
+    return labels[status] || 'Không xác định';
+  }
+
+  private async generateSafePurchaseOrderCode(tx: any): Promise<string> {
+    const prefix = 'PN';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allPurchaseOrders = await tx.purchaseOrder.findMany({
+        where: {
+          code: { startsWith: prefix },
+        },
+        select: {
+          code: true,
+        },
+        orderBy: {
+          id: 'desc',
+        },
+      });
+
+      const validCodes = allPurchaseOrders
+        .map((po: any) => po.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a: string, b: string) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+      const exists = await tx.purchaseOrder.findFirst({ where: { code } });
+
+      if (!exists) return code;
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã phiếu nhập hàng duy nhất');
+  }
 }

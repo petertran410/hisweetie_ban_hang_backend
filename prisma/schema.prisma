@@ -891,30 +891,29 @@ model InvoiceDelivery {
   @@map("invoice_deliveries")
 }
 
-// ==================== PURCHASE ORDER (NHẬP HÀNG) ====================
-
 model PurchaseOrder {
-  id            Int      @id @default(autoincrement())
-  code          String   @unique
-  supplierId    Int
-  branchId      Int?
-  purchaseDate  DateTime
-  totalAmount   Decimal  @default(0)
-  discount      Decimal  @default(0)
-  discountRatio Decimal  @default(0)
-  shippingFee   Decimal  @default(0)
-  otherFees     Decimal  @default(0)
-  grandTotal    Decimal  @default(0)
-  paidAmount    Decimal  @default(0)
-  debtAmount    Decimal  @default(0)
-  paymentStatus String   @default("Draft")
-  partnerType   String?
-  isDraft       Boolean  @default(false)
-  description   String?
-  purchaseById  Int?
-  createdBy     Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                  Int      @id @default(autoincrement())
+  code                String   @unique
+  supplierId          Int
+  branchId            Int?
+  purchaseDate        DateTime
+  totalAmount         Decimal  @default(0)
+  discount            Decimal  @default(0)
+  discountRatio       Decimal  @default(0)
+  grandTotal          Decimal  @default(0)
+  paidAmount          Decimal  @default(0)
+  debtAmount          Decimal  @default(0)
+  paymentStatus       String   @default("Draft")
+  status              Int      @default(0)
+  statusValue         String?
+  partnerType         String?
+  isDraft             Boolean  @default(false)
+  description         String?
+  purchaseById        Int?
+  createdBy           Int
+  supplierDebtSnapshot Decimal?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   supplier   Supplier                 @relation(fields: [supplierId], references: [id])
   branch     Branch?                  @relation(fields: [branchId], references: [id])
@@ -1211,7 +1210,7 @@ model DestructionDetail {
 model OrderSupplier {
   id                    Int      @id @default(autoincrement())
   code                  String   @unique
-  invoiceId             Int?
+  purchaseOrderId       Int?
   orderDate             DateTime @default(now())
   branchId              Int?
   supplierId            Int
@@ -1243,7 +1242,7 @@ model OrderSupplier {
   branch              Branch?                       @relation(fields: [branchId], references: [id])
   user                User?                         @relation("OrderSupplierUser", fields: [userId], references: [id])
   creator             User                          @relation("OrderSupplierCreator", fields: [createdBy], references: [id])
-  purchaseOrder       PurchaseOrder?                @relation(fields: [invoiceId], references: [id])
+  purchaseOrder       PurchaseOrder?                @relation(fields: [purchaseOrderId], references: [id])
   items               OrderSupplierItem[]
   expensesOthers      OrderSupplierExpensesOther[]
 

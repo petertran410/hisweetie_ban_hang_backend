@@ -121,3 +121,7 @@ export class PurchaseOrderQueryDto {
   @IsOptional()
   createdDateTo?: string;
 }
+
+export class CreatePurchaseOrderFromOrderSupplierDto {
+  additionalPayment?: number;
+}
