@@ -386,15 +386,15 @@ export class SuppliersService {
       where: { supplierId },
     });
 
-    const debt = purchaseOrders.reduce(
-      (sum, po) => sum + Number(po.debtAmount),
-      0,
-    );
+    const debt = purchaseOrders.reduce((sum, po) => {
+      const poDebt =
+        Number(po.total) - Number(po.discount) - Number(po.paidAmount);
+      return sum + poDebt;
+    }, 0);
 
-    const totalInvoiced = purchaseOrders.reduce(
-      (sum, po) => sum + Number(po.grandTotal),
-      0,
-    );
+    const totalInvoiced = purchaseOrders.reduce((sum, po) => {
+      return sum + Number(po.total);
+    }, 0);
 
     return this.prisma.supplier.update({
       where: { id: supplierId },

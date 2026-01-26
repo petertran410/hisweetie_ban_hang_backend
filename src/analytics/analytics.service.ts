@@ -67,13 +67,17 @@ export class AnalyticsService {
   }
 
   async getDebtSummary() {
-    const [customerDebt, supplierDebt, overdueOrders] = await Promise.all([
+    const [customerDebt, purchaseOrders, overdueOrders] = await Promise.all([
       this.prisma.customer.aggregate({
         where: { isActive: true },
         _sum: { totalDebt: true },
       }),
-      this.prisma.purchaseOrder.aggregate({
-        _sum: { debtAmount: true },
+      this.prisma.purchaseOrder.findMany({
+        select: {
+          total: true,
+          discount: true,
+          paidAmount: true,
+        },
       }),
       this.prisma.order.count({
         where: {
@@ -85,9 +89,15 @@ export class AnalyticsService {
       }),
     ]);
 
+    const supplierDebt = purchaseOrders.reduce((sum, po) => {
+      const debt =
+        Number(po.total) - Number(po.discount) - Number(po.paidAmount);
+      return sum + debt;
+    }, 0);
+
     return {
       customerDebt: customerDebt._sum.totalDebt || 0,
-      supplierDebt: Number(supplierDebt._sum.debtAmount || 0),
+      supplierDebt,
       overdueOrders,
     };
   }
