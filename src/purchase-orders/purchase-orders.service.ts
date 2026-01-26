@@ -1,9 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePurchaseOrderDto,
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
+  CreatePurchaseOrderFromOrderSupplierDto,
 } from './dto';
 
 @Injectable()
@@ -12,51 +17,97 @@ export class PurchaseOrdersService {
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateCode();
+      const code = await this.generateSafePurchaseOrderCode(tx);
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
           });
-          if (!product) throw new Error(`Product ${item.productId} not found`);
+          if (!product)
+            throw new NotFoundException(`Product ${item.productId} not found`);
+
+          const totalPrice =
+            Number(item.quantity) * Number(item.price) -
+            (Number(item.discount) || 0);
 
           return {
             productId: item.productId,
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
-            price: item.unitPrice,
-            totalPrice: item.quantity * item.unitPrice,
+            price: item.price,
+            discount: item.discount || 0,
+            discountRatio: item.discountRatio || 0,
+            totalPrice,
+            description: item.description,
           };
         }),
+      );
+
+      const total = itemsData.reduce(
+        (sum, item) => sum + Number(item.totalPrice),
+        0,
       );
 
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
           supplierId: dto.supplierId,
-          purchaseDate: dto.purchaseDate || new Date(),
-          shippingFee: dto.shippingFee || 0,
-          otherFees: dto.otherFees || 0,
-          description: dto.notes,
+          branchId: dto.branchId,
+          purchaseDate: dto.purchaseDate
+            ? new Date(dto.purchaseDate)
+            : new Date(),
+          total,
+          discount: dto.discount || 0,
+          discountRatio: dto.discountRatio || 0,
+          paidAmount: dto.paidAmount || 0,
+          isDraft: dto.isDraft || false,
+          partnerType: dto.partnerType,
+          description: dto.description,
+          purchaseById: dto.purchaseById,
           createdBy: userId,
           items: {
             create: itemsData,
           },
+          ...(dto.surcharges &&
+            dto.surcharges.length > 0 && {
+              surcharges: {
+                create: dto.surcharges.map((s) => ({
+                  code: s.code,
+                  name: s.name,
+                  value: s.value,
+                  valueRatio: s.valueRatio,
+                  isSupplierExpense: s.isSupplierExpense || false,
+                  type: s.type || 0,
+                })),
+              },
+            }),
         },
-        include: { items: true },
+        include: {
+          items: true,
+          surcharges: true,
+          supplier: true,
+          branch: true,
+        },
       });
 
-      await this.calculateTotals(purchaseOrder.id, tx);
-      await this.updateProductStock(purchaseOrder.id, tx);
+      if (dto.branchId) {
+        await this.updateInventory(purchaseOrder.id, tx);
+      }
+
       await this.updateSupplierDebt(dto.supplierId, tx);
 
       return tx.purchaseOrder.findUnique({
         where: { id: purchaseOrder.id },
         include: {
           supplier: true,
+          branch: true,
+          purchaseBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
           items: { include: { product: true } },
+          payments: true,
+          surcharges: true,
         },
       });
     });
@@ -64,32 +115,48 @@ export class PurchaseOrdersService {
 
   async findAll(query: PurchaseOrderQueryDto) {
     const {
-      pageSize = 10,
+      pageSize = 15,
       currentItem = 0,
       search,
       supplierId,
-      status,
+      branchId,
+      createdById,
+      purchaseById,
+      createdDateFrom,
+      createdDateTo,
     } = query;
-    const skip = currentItem;
-    const take = pageSize;
 
     const where: any = {};
+
     if (search) {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
     }
     if (supplierId) where.supplierId = supplierId;
-    if (status) where.paymentStatus = status;
+    if (branchId) where.branchId = branchId;
+    if (createdById) where.createdBy = createdById;
+    if (purchaseById) where.purchaseById = purchaseById;
+
+    if (createdDateFrom || createdDateTo) {
+      where.createdAt = {};
+      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
+      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.purchaseOrder.findMany({
         where,
-        skip,
-        take,
+        skip: currentItem,
+        take: pageSize,
         include: {
-          supplier: true,
-          items: { include: { product: true } },
+          supplier: {
+            select: { id: true, code: true, name: true, contactNumber: true },
+          },
+          branch: { select: { id: true, name: true } },
+          purchaseBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          items: true,
         },
-        orderBy: { purchaseDate: 'desc' },
+        orderBy: { createdAt: 'desc' },
       }),
       this.prisma.purchaseOrder.count({ where }),
     ]);
@@ -98,14 +165,24 @@ export class PurchaseOrdersService {
   }
 
   async findOne(id: number) {
-    return this.prisma.purchaseOrder.findUnique({
+    const purchaseOrder = await this.prisma.purchaseOrder.findUnique({
       where: { id },
       include: {
         supplier: true,
+        branch: true,
+        purchaseBy: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
         items: { include: { product: true } },
+        payments: true,
+        surcharges: true,
       },
     });
+
+    if (!purchaseOrder) {
+      throw new NotFoundException('Purchase order not found');
+    }
+
+    return purchaseOrder;
   }
 
   async update(id: number, dto: UpdatePurchaseOrderDto) {
@@ -116,10 +193,12 @@ export class PurchaseOrdersService {
       });
 
       if (!existing) {
-        throw new Error('Purchase order not found');
+        throw new NotFoundException('Purchase order not found');
       }
 
-      await this.restoreProductStock(id, tx);
+      if (existing.branchId) {
+        await this.restoreInventory(id, tx);
+      }
 
       if (dto.items) {
         await tx.purchaseOrderItem.deleteMany({
@@ -132,7 +211,13 @@ export class PurchaseOrdersService {
               where: { id: item.productId },
             });
             if (!product)
-              throw new Error(`Product ${item.productId} not found`);
+              throw new NotFoundException(
+                `Product ${item.productId} not found`,
+              );
+
+            const totalPrice =
+              Number(item.quantity) * Number(item.price) -
+              (Number(item.discount) || 0);
 
             return {
               purchaseOrderId: id,
@@ -140,40 +225,84 @@ export class PurchaseOrdersService {
               productCode: product.code,
               productName: product.name,
               quantity: item.quantity,
-              price: item.unitPrice,
-              totalPrice: item.quantity * item.unitPrice,
+              price: item.price,
+              discount: item.discount || 0,
+              discountRatio: item.discountRatio || 0,
+              totalPrice,
+              description: item.description,
             };
           }),
         );
 
-        await tx.purchaseOrderItem.createMany({
-          data: itemsData,
-        });
+        await tx.purchaseOrderItem.createMany({ data: itemsData });
       }
+
+      if (dto.surcharges) {
+        await tx.purchaseOrderSurcharge.deleteMany({
+          where: { purchaseOrderId: id },
+        });
+        if (dto.surcharges.length > 0) {
+          await tx.purchaseOrderSurcharge.createMany({
+            data: dto.surcharges.map((s) => ({
+              purchaseOrderId: id,
+              code: s.code,
+              name: s.name,
+              value: s.value,
+              valueRatio: s.valueRatio,
+              isSupplierExpense: s.isSupplierExpense || false,
+              type: s.type || 0,
+            })),
+          });
+        }
+      }
+
+      const items = await tx.purchaseOrderItem.findMany({
+        where: { purchaseOrderId: id },
+      });
+      const total = items.reduce(
+        (sum, item) => sum + Number(item.totalPrice),
+        0,
+      );
 
       await tx.purchaseOrder.update({
         where: { id },
         data: {
           supplierId: dto.supplierId,
-          purchaseDate: dto.purchaseDate,
-          shippingFee: dto.shippingFee,
-          otherFees: dto.otherFees,
-          description: dto.notes,
+          branchId: dto.branchId,
+          purchaseDate: dto.purchaseDate
+            ? new Date(dto.purchaseDate)
+            : undefined,
+          total,
+          discount: dto.discount,
+          discountRatio: dto.discountRatio,
+          paidAmount: dto.paidAmount,
+          isDraft: dto.isDraft,
+          partnerType: dto.partnerType,
+          description: dto.description,
+          purchaseById: dto.purchaseById,
         },
       });
 
-      await this.calculateTotals(id, tx);
-      await this.updateProductStock(id, tx);
-      await this.updateSupplierDebt(existing.supplierId, tx);
+      const branchId = dto.branchId || existing.branchId;
+      if (branchId) {
+        await this.updateInventory(id, tx);
+      }
+
+      await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
       if (dto.supplierId && dto.supplierId !== existing.supplierId) {
-        await this.updateSupplierDebt(dto.supplierId, tx);
+        await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
       return tx.purchaseOrder.findUnique({
         where: { id },
         include: {
           supplier: true,
+          branch: true,
+          purchaseBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
           items: { include: { product: true } },
+          payments: true,
+          surcharges: true,
         },
       });
     });
@@ -187,132 +316,17 @@ export class PurchaseOrdersService {
       });
 
       if (!purchaseOrder) {
-        throw new Error('Purchase order not found');
+        throw new NotFoundException('Purchase order not found');
       }
 
-      await this.restoreProductStock(id, tx);
-
       if (purchaseOrder.branchId) {
-        for (const item of purchaseOrder.items) {
-          await tx.inventory.updateMany({
-            where: {
-              productId: item.productId,
-              branchId: purchaseOrder.branchId,
-            },
-            data: {
-              onHand: {
-                decrement: Number(item.quantity),
-              },
-            },
-          });
-        }
+        await this.restoreInventory(id, tx);
       }
 
       await tx.purchaseOrder.delete({ where: { id } });
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
-    });
-  }
 
-  private async generateCode(): Promise<string> {
-    const today = new Date();
-    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
-    const count = await this.prisma.purchaseOrder.count({
-      where: {
-        createdAt: {
-          gte: new Date(today.setHours(0, 0, 0, 0)),
-        },
-      },
-    });
-    return `PO-${dateStr}-${String(count + 1).padStart(4, '0')}`;
-  }
-
-  private async calculateTotals(purchaseOrderId: number, tx: any) {
-    const items = await tx.purchaseOrderItem.findMany({
-      where: { purchaseOrderId },
-    });
-    const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + Number(item.totalPrice),
-      0,
-    );
-
-    const po = await tx.purchaseOrder.findUnique({
-      where: { id: purchaseOrderId },
-    });
-    if (!po) return;
-
-    const grandTotal =
-      totalAmount + Number(po.shippingFee) + Number(po.otherFees);
-    const debtAmount = grandTotal - Number(po.paidAmount);
-
-    let paymentStatus = 'Draft';
-    if (Number(po.paidAmount) >= grandTotal) paymentStatus = 'paid';
-    else if (Number(po.paidAmount) > 0) paymentStatus = 'partial';
-
-    await tx.purchaseOrder.update({
-      where: { id: purchaseOrderId },
-      data: { totalAmount, grandTotal, debtAmount, paymentStatus },
-    });
-  }
-
-  private async updateProductStock(purchaseOrderId: number, tx: any) {
-    const purchaseOrder = await tx.purchaseOrder.findUnique({
-      where: { id: purchaseOrderId },
-      include: { items: true },
-    });
-
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
-
-    for (const item of purchaseOrder.items) {
-      await tx.inventory.updateMany({
-        where: {
-          productId: item.productId,
-          branchId: purchaseOrder.branchId,
-        },
-        data: {
-          onHand: {
-            increment: Number(item.quantity),
-          },
-        },
-      });
-    }
-  }
-
-  private async restoreProductStock(purchaseOrderId: number, tx: any) {
-    const purchaseOrder = await tx.purchaseOrder.findUnique({
-      where: { id: purchaseOrderId },
-      include: { items: true },
-    });
-
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
-
-    for (const item of purchaseOrder.items) {
-      await tx.inventory.updateMany({
-        where: {
-          productId: item.productId,
-          branchId: purchaseOrder.branchId,
-        },
-        data: {
-          onHand: {
-            decrement: Number(item.quantity),
-          },
-        },
-      });
-    }
-  }
-
-  private async updateSupplierDebt(supplierId: number, tx: any) {
-    const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId },
-    });
-
-    const totalDebt = purchaseOrders.reduce(
-      (sum: number, po: any) => sum + Number(po.debtAmount),
-      0,
-    );
-
-    await tx.supplier.update({
-      where: { id: supplierId },
-      data: { totalDebt },
+      return { message: 'Xóa phiếu nhập hàng thành công' };
     });
   }
 
@@ -327,16 +341,12 @@ export class PurchaseOrdersService {
         include: {
           supplier: true,
           branch: true,
-          items: {
-            include: {
-              product: true,
-            },
-          },
+          items: { include: { product: true } },
         },
       });
 
       if (!orderSupplier) {
-        throw new NotFoundException('OrderSupplier not found');
+        throw new NotFoundException('Order supplier not found');
       }
 
       if (orderSupplier.status === 4) {
@@ -359,48 +369,23 @@ export class PurchaseOrdersService {
 
       const code = await this.generateSafePurchaseOrderCode(tx);
 
-      const totalPaidFromOrderSupplier = Number(orderSupplier.paidAmount);
       const additionalPayment = Number(dto.additionalPayment || 0);
-      const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
-
-      const totalAmount = orderSupplier.items.reduce(
-        (sum, item) => sum + Number(item.subTotal),
-        0,
-      );
-      const discountAmount = Number(orderSupplier.discount) || 0;
-      const discountFromRatio =
-        (totalAmount * (Number(orderSupplier.discountRatio) || 0)) / 100;
-      const grandTotal = totalAmount - discountAmount - discountFromRatio;
-      const debtAmount = grandTotal - totalPaid;
-
-      let status: number = 0;
-      if (debtAmount <= 0) {
-        status = 1;
-      }
-
-      const currentSupplierDebt = Number(orderSupplier.supplier?.debt || 0);
-      const supplierDebtSnapshot =
-        currentSupplierDebt + grandTotal - additionalPayment;
+      const totalPaid = Number(orderSupplier.paidAmount) + additionalPayment;
 
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
           supplierId: orderSupplier.supplierId,
           branchId: orderSupplier.branchId,
-          purchaseById: orderSupplier.userId,
           purchaseDate: new Date(),
-          totalAmount,
-          discount: discountAmount,
-          discountRatio: Number(orderSupplier.discountRatio) || 0,
-          grandTotal,
+          total: Number(orderSupplier.total),
+          discount: Number(orderSupplier.discount),
+          discountRatio: Number(orderSupplier.discountRatio),
           paidAmount: totalPaid,
-          debtAmount,
-          status,
-          statusValue: this.getStatusLabel(status),
           isDraft: false,
           description: orderSupplier.description,
+          purchaseById: orderSupplier.userId,
           createdBy: userId,
-          supplierDebtSnapshot,
           items: {
             create: orderSupplier.items.map((item) => ({
               productId: item.productId,
@@ -408,16 +393,14 @@ export class PurchaseOrdersService {
               productName: item.productName,
               quantity: Number(item.quantity),
               price: Number(item.price),
-              discount: Number(item.discount) || 0,
+              discount: Number(item.discount),
               discountRatio: 0,
               totalPrice: Number(item.subTotal),
               description: item.description,
             })),
           },
         },
-        include: {
-          items: true,
-        },
+        include: { items: true },
       });
 
       if (additionalPayment > 0) {
@@ -434,7 +417,7 @@ export class PurchaseOrdersService {
         });
       }
 
-      await this.updateProductStock(purchaseOrder.id, tx);
+      await this.updateInventory(purchaseOrder.id, tx);
       await this.updateSupplierDebt(orderSupplier.supplierId, tx);
 
       await tx.orderSupplier.update({
@@ -452,20 +435,74 @@ export class PurchaseOrdersService {
         include: {
           supplier: true,
           branch: true,
+          purchaseBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
           items: { include: { product: true } },
           payments: true,
+          surcharges: true,
         },
       });
     });
   }
 
-  private getStatusLabel(status: number): string {
-    const labels: Record<number, string> = {
-      0: 'Phiếu tạm',
-      1: 'Đã nhập hàng',
-      2: 'Đã hủy',
-    };
-    return labels[status] || 'Không xác định';
+  private async updateInventory(purchaseOrderId: number, tx: any) {
+    const purchaseOrder = await tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrderId },
+      include: { items: true },
+    });
+
+    if (!purchaseOrder || !purchaseOrder.branchId) return;
+
+    for (const item of purchaseOrder.items) {
+      await tx.inventory.updateMany({
+        where: {
+          productId: item.productId,
+          branchId: purchaseOrder.branchId,
+        },
+        data: {
+          onHand: { increment: Number(item.quantity) },
+        },
+      });
+    }
+  }
+
+  private async restoreInventory(purchaseOrderId: number, tx: any) {
+    const purchaseOrder = await tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrderId },
+      include: { items: true },
+    });
+
+    if (!purchaseOrder || !purchaseOrder.branchId) return;
+
+    for (const item of purchaseOrder.items) {
+      await tx.inventory.updateMany({
+        where: {
+          productId: item.productId,
+          branchId: purchaseOrder.branchId,
+        },
+        data: {
+          onHand: { decrement: Number(item.quantity) },
+        },
+      });
+    }
+  }
+
+  private async updateSupplierDebt(supplierId: number, tx: any) {
+    const purchaseOrders = await tx.purchaseOrder.findMany({
+      where: { supplierId },
+    });
+
+    const totalDebt = purchaseOrders.reduce((sum, po) => {
+      const total = Number(po.total);
+      const discount = Number(po.discount);
+      const paid = Number(po.paidAmount);
+      return sum + (total - discount - paid);
+    }, 0);
+
+    await tx.supplier.update({
+      where: { id: supplierId },
+      data: { debt: totalDebt },
+    });
   }
 
   private async generateSafePurchaseOrderCode(tx: any): Promise<string> {
@@ -476,15 +513,9 @@ export class PurchaseOrdersService {
 
     while (attempts < maxAttempts) {
       const allPurchaseOrders = await tx.purchaseOrder.findMany({
-        where: {
-          code: { startsWith: prefix },
-        },
-        select: {
-          code: true,
-        },
-        orderBy: {
-          id: 'desc',
-        },
+        where: { code: { startsWith: prefix } },
+        select: { code: true },
+        orderBy: { id: 'desc' },
       });
 
       const validCodes = allPurchaseOrders
@@ -506,7 +537,6 @@ export class PurchaseOrdersService {
       }
 
       const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
-
       const exists = await tx.purchaseOrder.findFirst({ where: { code } });
 
       if (!exists) return code;

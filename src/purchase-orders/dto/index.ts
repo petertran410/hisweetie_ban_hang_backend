@@ -5,6 +5,8 @@ import {
   IsDateString,
   IsArray,
   ValidateNested,
+  IsBoolean,
+  IsNumber,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -12,37 +14,99 @@ export class PurchaseOrderItemDto {
   @IsInt()
   productId: number;
 
-  @IsInt()
+  @IsNumber()
   quantity: number;
 
+  @IsNumber()
+  price: number;
+
+  @IsNumber()
+  @IsOptional()
+  discount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+}
+
+export class PurchaseOrderSurchargeDto {
+  @IsString()
+  code: string;
+
+  @IsString()
+  name: string;
+
+  @IsNumber()
+  @IsOptional()
+  value?: number;
+
+  @IsNumber()
+  @IsOptional()
+  valueRatio?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  isSupplierExpense?: boolean;
+
   @IsInt()
-  unitPrice: number;
+  @IsOptional()
+  type?: number;
 }
 
 export class CreatePurchaseOrderDto {
   @IsInt()
   supplierId: number;
 
+  @IsInt()
+  @IsOptional()
+  branchId?: number;
+
   @IsDateString()
   @IsOptional()
   purchaseDate?: string;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
-  shippingFee?: number;
+  discount?: number;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
-  otherFees?: number;
+  discountRatio?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paidAmount?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  isDraft?: boolean;
 
   @IsString()
   @IsOptional()
-  notes?: string;
+  partnerType?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsInt()
+  @IsOptional()
+  purchaseById?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PurchaseOrderItemDto)
   items: PurchaseOrderItemDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PurchaseOrderSurchargeDto)
+  @IsOptional()
+  surcharges?: PurchaseOrderSurchargeDto[];
 }
 
 export class UpdatePurchaseOrderDto {
@@ -50,27 +114,53 @@ export class UpdatePurchaseOrderDto {
   @IsOptional()
   supplierId?: number;
 
+  @IsInt()
+  @IsOptional()
+  branchId?: number;
+
   @IsDateString()
   @IsOptional()
   purchaseDate?: string;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
-  shippingFee?: number;
+  discount?: number;
 
-  @IsInt()
+  @IsNumber()
   @IsOptional()
-  otherFees?: number;
+  discountRatio?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paidAmount?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  isDraft?: boolean;
 
   @IsString()
   @IsOptional()
-  notes?: string;
+  partnerType?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsInt()
+  @IsOptional()
+  purchaseById?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PurchaseOrderItemDto)
   @IsOptional()
   items?: PurchaseOrderItemDto[];
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PurchaseOrderSurchargeDto)
+  @IsOptional()
+  surcharges?: PurchaseOrderSurchargeDto[];
 }
 
 export class PurchaseOrderQueryDto {
@@ -92,11 +182,6 @@ export class PurchaseOrderQueryDto {
   @Type(() => Number)
   @IsInt()
   supplierId?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  status?: number;
 
   @IsOptional()
   @Type(() => Number)
@@ -123,5 +208,7 @@ export class PurchaseOrderQueryDto {
 }
 
 export class CreatePurchaseOrderFromOrderSupplierDto {
+  @IsNumber()
+  @IsOptional()
   additionalPayment?: number;
 }

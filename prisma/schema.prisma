@@ -896,22 +896,16 @@ model PurchaseOrder {
   code                String   @unique
   supplierId          Int
   branchId            Int?
-  purchaseDate        DateTime
-  totalAmount         Decimal  @default(0)
+  purchaseDate        DateTime @default(now())
+  total               Decimal  @default(0)
   discount            Decimal  @default(0)
   discountRatio       Decimal  @default(0)
-  grandTotal          Decimal  @default(0)
   paidAmount          Decimal  @default(0)
-  debtAmount          Decimal  @default(0)
-  paymentStatus       String   @default("Draft")
-  status              Int      @default(0)
-  statusValue         String?
-  partnerType         String?
   isDraft             Boolean  @default(false)
+  partnerType         String?
   description         String?
   purchaseById        Int?
   createdBy           Int
-  supplierDebtSnapshot Decimal?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -934,10 +928,10 @@ model PurchaseOrderItem {
   productCode     String
   productName     String
   quantity        Decimal
-  price           Decimal 
+  price           Decimal
   discount        Decimal  @default(0)
   discountRatio   Decimal  @default(0)
-  totalPrice      Decimal 
+  totalPrice      Decimal
   description     String?
   serialNumbers   String?
   createdAt       DateTime @default(now())
@@ -953,7 +947,7 @@ model PurchaseOrderPayment {
   id              Int      @id @default(autoincrement())
   code            String   @unique
   purchaseOrderId Int
-  amount          Decimal 
+  amount          Decimal
   paymentDate     DateTime @default(now())
   paymentMethod   String   @default("cash")
   accountId       Int?
@@ -972,18 +966,19 @@ model PurchaseOrderPayment {
 model PurchaseOrderSurcharge {
   id                Int      @id @default(autoincrement())
   purchaseOrderId   Int
-  surchargeCode     String
-  surchargeName     String
+  code              String
+  name              String
   value             Decimal?
   valueRatio        Decimal?
   isSupplierExpense Boolean  @default(false)
   type              Int      @default(0)
   createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
-  surcharge     Surcharge?    @relation(fields: [surchargeCode], references: [code])
 
   @@map("purchase_order_surcharges")
+  surcharges Surcharge[]
 }
 
 model Post {
