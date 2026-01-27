@@ -75,6 +75,15 @@ export class OrderSuppliersService {
           },
           items: true,
           expensesOthers: true,
+          purchaseOrders: {
+            select: {
+              id: true,
+              code: true,
+            },
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
