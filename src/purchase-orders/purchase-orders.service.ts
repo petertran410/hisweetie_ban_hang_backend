@@ -355,12 +355,6 @@ export class PurchaseOrdersService {
         );
       }
 
-      if (orderSupplier.status === 3) {
-        throw new BadRequestException(
-          'Đặt hàng nhập đã được chuyển thành phiếu nhập hàng',
-        );
-      }
-
       if (!orderSupplier.branchId) {
         throw new BadRequestException(
           'Đặt hàng nhập không có thông tin chi nhánh',
@@ -375,6 +369,7 @@ export class PurchaseOrdersService {
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
+          orderSupplierId: orderSupplierId,
           supplierId: orderSupplier.supplierId,
           branchId: orderSupplier.branchId,
           purchaseDate: new Date(),
@@ -420,19 +415,46 @@ export class PurchaseOrdersService {
       await this.updateInventory(purchaseOrder.id, tx);
       await this.updateSupplierDebt(orderSupplier.supplierId, tx);
 
+      const allPurchaseOrders = await tx.purchaseOrder.findMany({
+        where: { orderSupplierId: orderSupplierId },
+        include: { items: true },
+      });
+
+      const totalReceivedQty = allPurchaseOrders.reduce((sum, po) => {
+        return (
+          sum +
+          po.items.reduce((itemSum, item) => itemSum + Number(item.quantity), 0)
+        );
+      }, 0);
+
+      const orderSupplierTotalQty = orderSupplier.items.reduce(
+        (sum, item) => sum + Number(item.quantity),
+        0,
+      );
+
+      let newStatus = orderSupplier.status;
+      let newStatusValue = orderSupplier.statusValue;
+
+      if (totalReceivedQty >= orderSupplierTotalQty) {
+        newStatus = 3;
+        newStatusValue = 'Hoàn thành';
+      } else if (totalReceivedQty > 0) {
+        newStatus = 2;
+        newStatusValue = 'Nhập một phần';
+      }
+
       await tx.orderSupplier.update({
         where: { id: orderSupplierId },
         data: {
-          purchaseOrderId: purchaseOrder.id,
-          status: 3,
-          statusValue: 'Hoàn thành',
-          purchaseOrderCodes: purchaseOrder.code,
+          status: newStatus,
+          statusValue: newStatusValue,
         },
       });
 
       return tx.purchaseOrder.findUnique({
         where: { id: purchaseOrder.id },
         include: {
+          orderSupplier: true,
           supplier: true,
           branch: true,
           purchaseBy: { select: { id: true, name: true } },

@@ -894,6 +894,7 @@ model InvoiceDelivery {
 model PurchaseOrder {
   id                  Int      @id @default(autoincrement())
   code                String   @unique
+  orderSupplierId     Int?
   supplierId          Int
   branchId            Int?
   purchaseDate        DateTime @default(now())
@@ -909,14 +910,14 @@ model PurchaseOrder {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
-  supplier   Supplier                 @relation(fields: [supplierId], references: [id])
-  branch     Branch?                  @relation(fields: [branchId], references: [id])
-  purchaseBy User?                    @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
-  creator    User                     @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
-  items      PurchaseOrderItem[]
-  payments   PurchaseOrderPayment[]
-  surcharges PurchaseOrderSurcharge[]
-  orderSuppliers OrderSupplier[]
+  orderSupplier OrderSupplier?            @relation(fields: [orderSupplierId], references: [id])
+  supplier      Supplier                  @relation(fields: [supplierId], references: [id])
+  branch        Branch?                   @relation(fields: [branchId], references: [id])
+  purchaseBy    User?                     @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
+  creator       User                      @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
+  items         PurchaseOrderItem[]
+  payments      PurchaseOrderPayment[]
+  surcharges    PurchaseOrderSurcharge[]
 
   @@map("purchase_orders")
 }
@@ -1205,7 +1206,6 @@ model DestructionDetail {
 model OrderSupplier {
   id                    Int      @id @default(autoincrement())
   code                  String   @unique
-  purchaseOrderId       Int?
   orderDate             DateTime @default(now())
   branchId              Int?
   supplierId            Int
@@ -1228,7 +1228,6 @@ model OrderSupplier {
   viewPrice             Boolean  @default(true)
   supplierDebt          Decimal  @default(0)
   supplierOldDebt       Decimal  @default(0)
-  purchaseOrderCodes    String?
   createdBy             Int
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
@@ -1237,9 +1236,9 @@ model OrderSupplier {
   branch              Branch?                       @relation(fields: [branchId], references: [id])
   user                User?                         @relation("OrderSupplierUser", fields: [userId], references: [id])
   creator             User                          @relation("OrderSupplierCreator", fields: [createdBy], references: [id])
-  purchaseOrder       PurchaseOrder?                @relation(fields: [purchaseOrderId], references: [id])
   items               OrderSupplierItem[]
   expensesOthers      OrderSupplierExpensesOther[]
+  purchaseOrders      PurchaseOrder[]
 
   @@map("order_suppliers")
 }
