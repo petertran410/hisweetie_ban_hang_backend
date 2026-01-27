@@ -19,31 +19,29 @@ export class PurchaseOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateSafePurchaseOrderCode(tx);
 
-      const itemsData = await Promise.all(
-        dto.items.map(async (item) => {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-          });
-          if (!product)
-            throw new NotFoundException(`Product ${item.productId} not found`);
+      const itemsData = dto.items.map((item) => ({
+        productId: item.productId,
+        productCode: '',
+        productName: '',
+        quantity: item.quantity,
+        price: item.price,
+        discount: item.discount || 0,
+        discountRatio: 0,
+        totalPrice:
+          Number(item.quantity) * Number(item.price) -
+          Number(item.discount || 0),
+        description: item.description,
+      }));
 
-          const totalPrice =
-            Number(item.quantity) * Number(item.price) -
-            (Number(item.discount) || 0);
-
-          return {
-            productId: item.productId,
-            productCode: product.code,
-            productName: product.name,
-            quantity: item.quantity,
-            price: item.price,
-            discount: item.discount || 0,
-            discountRatio: item.discountRatio || 0,
-            totalPrice,
-            description: item.description,
-          };
-        }),
-      );
+      for (const item of itemsData) {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+        });
+        if (product) {
+          item.productCode = product.code;
+          item.productName = product.name;
+        }
+      }
 
       const total = itemsData.reduce(
         (sum, item) => sum + Number(item.totalPrice),
@@ -53,6 +51,7 @@ export class PurchaseOrdersService {
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
+          orderSupplierId: dto.orderSupplierId || null,
           supplierId: dto.supplierId,
           branchId: dto.branchId,
           purchaseDate: dto.purchaseDate
@@ -70,25 +69,9 @@ export class PurchaseOrdersService {
           items: {
             create: itemsData,
           },
-          ...(dto.surcharges &&
-            dto.surcharges.length > 0 && {
-              surcharges: {
-                create: dto.surcharges.map((s) => ({
-                  code: s.code,
-                  name: s.name,
-                  value: s.value,
-                  valueRatio: s.valueRatio,
-                  isSupplierExpense: s.isSupplierExpense || false,
-                  type: s.type || 0,
-                })),
-              },
-            }),
         },
         include: {
           items: true,
-          surcharges: true,
-          supplier: true,
-          branch: true,
         },
       });
 
@@ -98,9 +81,15 @@ export class PurchaseOrdersService {
 
       await this.updateSupplierDebt(dto.supplierId, tx);
 
+      // Cập nhật status OrderSupplier nếu có
+      if (dto.orderSupplierId) {
+        await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
+      }
+
       return tx.purchaseOrder.findUnique({
         where: { id: purchaseOrder.id },
         include: {
+          orderSupplier: true,
           supplier: true,
           branch: true,
           purchaseBy: { select: { id: true, name: true } },
@@ -330,140 +319,65 @@ export class PurchaseOrdersService {
     });
   }
 
-  async createFromOrderSupplier(
-    orderSupplierId: number,
-    dto: CreatePurchaseOrderFromOrderSupplierDto,
-    userId: number,
-  ) {
-    return this.prisma.$transaction(async (tx) => {
-      const orderSupplier = await tx.orderSupplier.findUnique({
-        where: { id: orderSupplierId },
-        include: {
-          supplier: true,
-          branch: true,
-          items: { include: { product: true } },
-        },
+  private async updateOrderSupplierStatus(orderSupplierId: number, tx: any) {
+    const orderSupplier = await tx.orderSupplier.findUnique({
+      where: { id: orderSupplierId },
+      include: { items: true },
+    });
+
+    if (!orderSupplier) return;
+
+    // Tính tổng số lượng đã nhập từ tất cả phiếu nhập hàng
+    const allPurchaseOrders = await tx.purchaseOrder.findMany({
+      where: { orderSupplierId: orderSupplierId },
+      include: { items: true },
+    });
+
+    // Tính tổng số lượng từng sản phẩm đã nhập
+    const receivedQuantities: { [productId: number]: number } = {};
+    allPurchaseOrders.forEach((po) => {
+      po.items.forEach((item) => {
+        if (!receivedQuantities[item.productId]) {
+          receivedQuantities[item.productId] = 0;
+        }
+        receivedQuantities[item.productId] += Number(item.quantity);
       });
+    });
 
-      if (!orderSupplier) {
-        throw new NotFoundException('Order supplier not found');
+    // So sánh với số lượng đặt hàng
+    let isFullyReceived = true;
+    let hasPartialReceived = false;
+
+    orderSupplier.items.forEach((orderItem) => {
+      const receivedQty = receivedQuantities[orderItem.productId] || 0;
+      const orderedQty = Number(orderItem.quantity);
+
+      if (receivedQty < orderedQty) {
+        isFullyReceived = false;
       }
-
-      if (orderSupplier.status === 4) {
-        throw new BadRequestException(
-          'Không thể tạo phiếu nhập từ đặt hàng nhập đã hủy',
-        );
+      if (receivedQty > 0) {
+        hasPartialReceived = true;
       }
+    });
 
-      if (!orderSupplier.branchId) {
-        throw new BadRequestException(
-          'Đặt hàng nhập không có thông tin chi nhánh',
-        );
-      }
+    // Update status
+    let newStatus = orderSupplier.status;
+    let newStatusValue = orderSupplier.statusValue;
 
-      const code = await this.generateSafePurchaseOrderCode(tx);
+    if (isFullyReceived && hasPartialReceived) {
+      newStatus = 3; // Hoàn thành
+      newStatusValue = 'Hoàn thành';
+    } else if (hasPartialReceived) {
+      newStatus = 2; // Nhập một phần
+      newStatusValue = 'Nhập một phần';
+    }
 
-      const additionalPayment = Number(dto.additionalPayment || 0);
-      const totalPaid = Number(orderSupplier.paidAmount) + additionalPayment;
-
-      const purchaseOrder = await tx.purchaseOrder.create({
-        data: {
-          code,
-          orderSupplierId: orderSupplierId,
-          supplierId: orderSupplier.supplierId,
-          branchId: orderSupplier.branchId,
-          purchaseDate: new Date(),
-          total: Number(orderSupplier.total),
-          discount: Number(orderSupplier.discount),
-          discountRatio: Number(orderSupplier.discountRatio),
-          paidAmount: totalPaid,
-          isDraft: false,
-          description: orderSupplier.description,
-          purchaseById: orderSupplier.userId,
-          createdBy: userId,
-          items: {
-            create: orderSupplier.items.map((item) => ({
-              productId: item.productId,
-              productCode: item.productCode,
-              productName: item.productName,
-              quantity: Number(item.quantity),
-              price: Number(item.price),
-              discount: Number(item.discount),
-              discountRatio: 0,
-              totalPrice: Number(item.subTotal),
-              description: item.description,
-            })),
-          },
-        },
-        include: { items: true },
-      });
-
-      if (additionalPayment > 0) {
-        const paymentCode = `TT${purchaseOrder.code}-1`;
-        await tx.purchaseOrderPayment.create({
-          data: {
-            code: paymentCode,
-            purchaseOrderId: purchaseOrder.id,
-            amount: additionalPayment,
-            paymentDate: new Date(),
-            paymentMethod: 'cash',
-            description: `Thanh toán bổ sung từ đặt hàng nhập ${orderSupplier.code}`,
-          },
-        });
-      }
-
-      await this.updateInventory(purchaseOrder.id, tx);
-      await this.updateSupplierDebt(orderSupplier.supplierId, tx);
-
-      const allPurchaseOrders = await tx.purchaseOrder.findMany({
-        where: { orderSupplierId: orderSupplierId },
-        include: { items: true },
-      });
-
-      const totalReceivedQty = allPurchaseOrders.reduce((sum, po) => {
-        return (
-          sum +
-          po.items.reduce((itemSum, item) => itemSum + Number(item.quantity), 0)
-        );
-      }, 0);
-
-      const orderSupplierTotalQty = orderSupplier.items.reduce(
-        (sum, item) => sum + Number(item.quantity),
-        0,
-      );
-
-      let newStatus = orderSupplier.status;
-      let newStatusValue = orderSupplier.statusValue;
-
-      if (totalReceivedQty >= orderSupplierTotalQty) {
-        newStatus = 3;
-        newStatusValue = 'Hoàn thành';
-      } else if (totalReceivedQty > 0) {
-        newStatus = 2;
-        newStatusValue = 'Nhập một phần';
-      }
-
-      await tx.orderSupplier.update({
-        where: { id: orderSupplierId },
-        data: {
-          status: newStatus,
-          statusValue: newStatusValue,
-        },
-      });
-
-      return tx.purchaseOrder.findUnique({
-        where: { id: purchaseOrder.id },
-        include: {
-          orderSupplier: true,
-          supplier: true,
-          branch: true,
-          purchaseBy: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-          items: { include: { product: true } },
-          payments: true,
-          surcharges: true,
-        },
-      });
+    await tx.orderSupplier.update({
+      where: { id: orderSupplierId },
+      data: {
+        status: newStatus,
+        statusValue: newStatusValue,
+      },
     });
   }
 

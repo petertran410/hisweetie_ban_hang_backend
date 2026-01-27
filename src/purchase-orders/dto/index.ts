@@ -59,6 +59,10 @@ export class PurchaseOrderSurchargeDto {
 
 export class CreatePurchaseOrderDto {
   @IsInt()
+  @IsOptional()
+  orderSupplierId?: number;
+
+  @IsInt()
   supplierId: number;
 
   @IsInt()
