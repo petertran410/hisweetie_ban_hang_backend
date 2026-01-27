@@ -81,7 +81,6 @@ export class PurchaseOrdersService {
 
       await this.updateSupplierDebt(dto.supplierId, tx);
 
-      // Cập nhật status OrderSupplier nếu có
       if (dto.orderSupplierId) {
         await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
       }

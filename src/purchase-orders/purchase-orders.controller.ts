@@ -46,21 +46,6 @@ export class PurchaseOrdersController {
     return this.purchaseOrdersService.create(dto, userId);
   }
 
-  @Post('from-order-supplier/:orderSupplierId')
-  @ApiOperation({ summary: 'Tạo phiếu nhập hàng từ đặt hàng nhập' })
-  createFromOrderSupplier(
-    @Param('orderSupplierId') orderSupplierId: string,
-    @Body() dto: CreatePurchaseOrderFromOrderSupplierDto,
-    @Req() req: any,
-  ) {
-    const userId = req.user?.id || 1;
-    return this.purchaseOrdersService.createFromOrderSupplier(
-      +orderSupplierId,
-      dto,
-      userId,
-    );
-  }
-
   @Put(':id')
   @ApiOperation({ summary: 'Cập nhật nhập hàng' })
   update(@Param('id') id: string, @Body() dto: UpdatePurchaseOrderDto) {
