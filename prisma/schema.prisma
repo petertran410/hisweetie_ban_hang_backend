@@ -611,6 +611,7 @@ model BankAccount {
   invoicePayments       InvoicePayment[]
   purchaseOrderPayments PurchaseOrderPayment[]
   cashFlows CashFlow[]
+  orderSupplierPayments  OrderSupplierPayment[]
 
   @@map("bank_accounts")
 }
@@ -1239,8 +1240,29 @@ model OrderSupplier {
   items               OrderSupplierItem[]
   expensesOthers      OrderSupplierExpensesOther[]
   purchaseOrders      PurchaseOrder[]
+  payments OrderSupplierPayment[]
 
   @@map("order_suppliers")
+}
+
+model OrderSupplierPayment {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  orderSupplierId Int
+  amount          Decimal
+  paymentDate     DateTime @default(now())
+  paymentMethod   String   @default("cash")
+  accountId       Int?
+  description     String?
+  status          Int      @default(1)
+  statusValue     String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  orderSupplier OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
+  account       BankAccount?  @relation(fields: [accountId], references: [id])
+
+  @@map("order_supplier_payments")
 }
 
 model OrderSupplierItem {

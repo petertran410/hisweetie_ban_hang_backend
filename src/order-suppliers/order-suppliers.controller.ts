@@ -11,10 +11,12 @@ import {
   Req,
 } from '@nestjs/common';
 import { OrderSuppliersService } from './order-suppliers.service';
+import { OrderSupplierPaymentsService } from './order-supplier-payments.service';
 import {
   CreateOrderSupplierDto,
   UpdateOrderSupplierDto,
   OrderSupplierQueryDto,
+  CreateOrderSupplierPaymentDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -24,7 +26,10 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 @UseGuards(JwtAuthGuard)
 @Controller('order-suppliers')
 export class OrderSuppliersController {
-  constructor(private orderSuppliersService: OrderSuppliersService) {}
+  constructor(
+    private orderSuppliersService: OrderSuppliersService,
+    private orderSupplierPaymentsService: OrderSupplierPaymentsService,
+  ) {}
 
   @Get()
   @ApiOperation({ summary: 'Lấy danh sách đặt hàng nhập' })
@@ -55,5 +60,29 @@ export class OrderSuppliersController {
   @ApiOperation({ summary: 'Xóa đặt hàng nhập' })
   remove(@Param('id') id: string) {
     return this.orderSuppliersService.remove(+id);
+  }
+
+  @Post(':id/payments')
+  @ApiOperation({ summary: 'Tạo thanh toán cho đặt hàng nhập' })
+  createPayment(
+    @Param('id') id: string,
+    @Body() dto: CreateOrderSupplierPaymentDto,
+    @Req() req: any,
+  ) {
+    dto.orderSupplierId = +id;
+    const userId = req.user?.id || 1;
+    return this.orderSupplierPaymentsService.create(dto, userId);
+  }
+
+  @Get(':id/payments')
+  @ApiOperation({ summary: 'Lấy danh sách thanh toán của đặt hàng nhập' })
+  getPayments(@Param('id') id: string) {
+    return this.orderSupplierPaymentsService.findAllByOrderSupplier(+id);
+  }
+
+  @Delete('payments/:paymentId')
+  @ApiOperation({ summary: 'Xóa thanh toán' })
+  removePayment(@Param('paymentId') paymentId: string) {
+    return this.orderSupplierPaymentsService.remove(+paymentId);
   }
 }
