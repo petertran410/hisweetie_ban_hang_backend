@@ -52,8 +52,13 @@ export class OrderSuppliersController {
 
   @Put(':id')
   @ApiOperation({ summary: 'Cập nhật đặt hàng nhập' })
-  update(@Param('id') id: string, @Body() dto: UpdateOrderSupplierDto) {
-    return this.orderSuppliersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderSupplierDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.orderSuppliersService.update(+id, dto, userId);
   }
 
   @Delete(':id')

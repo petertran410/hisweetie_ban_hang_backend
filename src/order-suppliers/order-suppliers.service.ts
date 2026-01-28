@@ -294,16 +294,22 @@ export class OrderSuppliersService {
     });
   }
 
-  async update(id: number, dto: UpdateOrderSupplierDto) {
+  async update(id: number, dto: UpdateOrderSupplierDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.orderSupplier.findUnique({
         where: { id },
-        include: { items: true },
+        include: { items: true, supplier: true },
       });
 
       if (!existing) {
         throw new NotFoundException(`OrderSupplier with id ${id} not found`);
       }
+
+      let total = Number(existing.total);
+      let discountAmount = Number(existing.discount);
+      let subTotal = Number(existing.subTotal);
+      let totalQuantity = Number(existing.totalQty);
+      let currentPaidAmount = Number(existing.paidAmount);
 
       if (dto.items) {
         await tx.orderSupplierItem.deleteMany({
@@ -343,55 +349,92 @@ export class OrderSuppliersService {
           data: itemsData,
         });
 
-        const total = itemsData.reduce(
-          (sum, item) => sum + Number(item.subTotal),
-          0,
-        );
+        total = itemsData.reduce((sum, item) => sum + Number(item.subTotal), 0);
         const discount = dto.discount || existing.discount;
-        const discountAmount = dto.discountRatio
+        discountAmount = dto.discountRatio
           ? (total * dto.discountRatio) / 100
           : Number(discount);
-        const subTotal = total - discountAmount;
-        const totalQuantity = itemsData.reduce(
+        subTotal = total - discountAmount;
+        totalQuantity = itemsData.reduce(
           (sum, item) => sum + Number(item.quantity),
           0,
         );
+      }
 
-        return tx.orderSupplier.update({
-          where: { id },
+      if (dto.paymentAmount && dto.paymentAmount > 0) {
+        const paymentCode = await this.generatePaymentCode(tx);
+
+        await tx.orderSupplierPayment.create({
           data: {
-            supplierId: dto.supplierId,
-            branchId: dto.branchId,
-            userId: dto.userId,
-            description: dto.description,
-            status: dto.status,
-            discount: discountAmount,
-            discountRatio: dto.discountRatio || existing.discountRatio,
-            total,
-            subTotal,
-            totalAmt: subTotal,
-            totalQty: totalQuantity,
-            totalQuantity,
-            supplierDebt: subTotal - Number(existing.paidAmount),
-          },
-          include: {
-            supplier: true,
-            branch: true,
-            user: true,
-            creator: true,
-            items: true,
+            code: paymentCode,
+            orderSupplierId: id,
+            amount: dto.paymentAmount,
+            paymentDate: new Date(),
+            paymentMethod: dto.paymentMethod || 'cash',
+            description: `Trả tiền đặt hàng nhập ${existing.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
           },
         });
+
+        let cashFlowMethod = 'cash';
+        if (dto.paymentMethod === 'transfer') {
+          cashFlowMethod = 'transfer';
+        } else if (dto.paymentMethod === 'card') {
+          cashFlowMethod = 'card';
+        }
+
+        await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: existing.branchId,
+            cashFlowGroupId: 4,
+            isReceipt: false,
+            amount: dto.paymentAmount,
+            transDate: new Date(),
+            method: cashFlowMethod,
+            partnerType: 'S',
+            partnerId: existing.supplierId,
+            partnerName: existing.supplier?.name,
+            contactNumber: existing.supplier?.contactNumber,
+            address: existing.supplier?.address,
+            description: `Chi tiền đặt hàng nhập ${existing.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            collectorUserId: userId,
+            usedForFinancialReporting: 1,
+          },
+        });
+
+        const allPayments = await tx.orderSupplierPayment.findMany({
+          where: { orderSupplierId: id },
+        });
+        currentPaidAmount = allPayments.reduce(
+          (sum, p) => sum + Number(p.amount),
+          0,
+        );
+
+        await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
       return tx.orderSupplier.update({
         where: { id },
         data: {
-          supplierId: dto.supplierId,
-          branchId: dto.branchId,
-          userId: dto.userId,
-          description: dto.description,
-          status: dto.status,
+          supplierId: dto.supplierId ?? existing.supplierId,
+          branchId: dto.branchId ?? existing.branchId,
+          userId: dto.userId ?? existing.userId,
+          description: dto.description ?? existing.description,
+          status: dto.status ?? existing.status,
+          discount: discountAmount,
+          discountRatio: dto.discountRatio ?? existing.discountRatio,
+          total,
+          subTotal,
+          totalAmt: subTotal,
+          totalQty: totalQuantity,
+          totalQuantity,
+          paidAmount: currentPaidAmount,
+          supplierDebt: subTotal - currentPaidAmount,
         },
         include: {
           supplier: true,
@@ -399,6 +442,7 @@ export class OrderSuppliersService {
           user: true,
           creator: true,
           items: true,
+          payments: true,
         },
       });
     });
