@@ -8,7 +8,6 @@ import {
   CreatePurchaseOrderDto,
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
-  CreatePurchaseOrderFromOrderSupplierDto,
 } from './dto';
 
 @Injectable()
@@ -19,48 +18,71 @@ export class PurchaseOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const code = await this.generateSafePurchaseOrderCode(tx);
 
-      const itemsData = dto.items.map((item) => ({
-        productId: item.productId,
-        productCode: '',
-        productName: '',
-        quantity: item.quantity,
-        price: item.price,
-        discount: item.discount || 0,
-        discountRatio: 0,
-        totalPrice:
-          Number(item.quantity) * Number(item.price) -
-          Number(item.discount || 0),
-        description: item.description,
-      }));
+      const itemsData = await Promise.all(
+        dto.items.map(async (item) => {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
+          });
+          if (!product)
+            throw new NotFoundException(`Product ${item.productId} not found`);
 
-      for (const item of itemsData) {
-        const product = await tx.product.findUnique({
-          where: { id: item.productId },
-        });
-        if (product) {
-          item.productCode = product.code;
-          item.productName = product.name;
-        }
-      }
+          const totalPrice =
+            Number(item.quantity) * Number(item.price) -
+            (Number(item.discount) || 0);
+
+          return {
+            productId: item.productId,
+            productCode: product.code,
+            productName: product.name,
+            quantity: item.quantity,
+            price: item.price,
+            discount: item.discount || 0,
+            discountRatio: item.discountRatio || 0,
+            totalPrice,
+            description: item.description,
+          };
+        }),
+      );
 
       const total = itemsData.reduce(
         (sum, item) => sum + Number(item.totalPrice),
         0,
       );
 
+      const discountAmount = dto.discountRatio
+        ? (total * dto.discountRatio) / 100
+        : Number(dto.discount || 0);
+
+      const subTotal = total - discountAmount;
+      const paidAmount = Number(dto.paidAmount || 0);
+      const debtAmount = subTotal - paidAmount;
+
+      const supplier = await tx.supplier.findUnique({
+        where: { id: dto.supplierId },
+        select: { debt: true },
+      });
+      const supplierOldDebt = Number(supplier?.debt || 0);
+
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
           code,
-          orderSupplierId: dto.orderSupplierId || null,
+          orderSupplierId: dto.orderSupplierId,
           supplierId: dto.supplierId,
           branchId: dto.branchId,
           purchaseDate: dto.purchaseDate
             ? new Date(dto.purchaseDate)
             : new Date(),
           total,
-          discount: dto.discount || 0,
+          totalAmount: total,
+          discount: discountAmount,
           discountRatio: dto.discountRatio || 0,
-          paidAmount: dto.paidAmount || 0,
+          subTotal,
+          paidAmount,
+          debtAmount,
+          status: dto.isDraft ? 0 : 1,
+          statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
+          supplierOldDebt,
+          supplierDebt: debtAmount,
           isDraft: dto.isDraft || false,
           partnerType: dto.partnerType,
           description: dto.description,

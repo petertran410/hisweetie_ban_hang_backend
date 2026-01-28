@@ -900,9 +900,16 @@ model PurchaseOrder {
   branchId            Int?
   purchaseDate        DateTime @default(now())
   total               Decimal  @default(0)
+  totalAmount         Decimal  @default(0)
   discount            Decimal  @default(0)
   discountRatio       Decimal  @default(0)
+  subTotal            Decimal  @default(0)
   paidAmount          Decimal  @default(0)
+  debtAmount          Decimal  @default(0)
+  status              Int      @default(0)
+  statusValue         String?  
+  supplierDebt        Decimal  @default(0)
+  supplierOldDebt     Decimal  @default(0)
   isDraft             Boolean  @default(false)
   partnerType         String?
   description         String?
