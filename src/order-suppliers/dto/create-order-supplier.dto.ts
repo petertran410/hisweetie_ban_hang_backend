@@ -6,8 +6,34 @@ import {
   IsNumber,
   IsArray,
   ValidateNested,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ApiProperty } from '@nestjs/swagger';
+
+class OrderSupplierItemDto {
+  @ApiProperty()
+  @IsNumber()
+  productId: number;
+
+  @ApiProperty()
+  @IsNumber()
+  quantity: number;
+
+  @ApiProperty()
+  @IsNumber()
+  price: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  discount?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  description?: string;
+}
 
 class CreateOrderSupplierItemDto {
   @IsInt()
@@ -29,39 +55,68 @@ class CreateOrderSupplierItemDto {
 }
 
 export class CreateOrderSupplierDto {
-  @IsInt()
+  @ApiProperty()
+  @IsNumber()
   supplierId: number;
 
-  @IsInt()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
   branchId?: number;
 
-  @IsInt()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
   userId?: number;
 
-  @IsString()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsString()
   description?: string;
 
-  @IsInt()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
   status?: number;
 
-  @IsNumber()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
   discount?: number;
 
-  @IsNumber()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
   discountRatio?: number;
 
-  @IsBoolean()
+  @ApiProperty({ required: false })
   @IsOptional()
+  @IsBoolean()
   toComplete?: boolean;
 
+  @ApiProperty({ type: [OrderSupplierItemDto] })
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => CreateOrderSupplierItemDto)
-  items: CreateOrderSupplierItemDto[];
+  @Type(() => OrderSupplierItemDto)
+  items: OrderSupplierItemDto[];
+
+  // THÊM CÁC FIELD MỚI
+  @ApiProperty({ required: false, description: 'Số tiền thanh toán trước' })
+  @IsOptional()
+  @IsNumber()
+  paymentAmount?: number;
+
+  @ApiProperty({
+    required: false,
+    enum: ['cash', 'transfer', 'card'],
+    description: 'Phương thức thanh toán',
+  })
+  @IsOptional()
+  @IsString()
+  paymentMethod?: string;
+
+  @ApiProperty({ required: false, description: 'Dự kiến ngày nhập hàng' })
+  @IsOptional()
+  @IsDateString()
+  expectedDeliveryDate?: string;
 }

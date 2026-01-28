@@ -196,6 +196,8 @@ export class OrderSuppliersService {
         0,
       );
 
+      const paidAmount = Number(dto.paymentAmount || 0);
+
       const orderSupplier = await tx.orderSupplier.create({
         data: {
           code,
@@ -211,7 +213,8 @@ export class OrderSuppliersService {
           totalAmt: subTotal,
           totalQty: totalQuantity,
           totalQuantity,
-          supplierDebt: subTotal,
+          paidAmount,
+          supplierDebt: subTotal - paidAmount,
           toComplete: dto.toComplete || false,
           createdBy: userId,
           items: {
@@ -226,6 +229,57 @@ export class OrderSuppliersService {
           items: true,
         },
       });
+
+      // Nếu có thanh toán trước, tạo payment record và cashflow
+      if (dto.paymentAmount && dto.paymentAmount > 0) {
+        const paymentCode = await this.generatePaymentCode(tx);
+
+        await tx.orderSupplierPayment.create({
+          data: {
+            code: paymentCode,
+            orderSupplierId: orderSupplier.id,
+            amount: dto.paymentAmount,
+            paymentDate: new Date(),
+            paymentMethod: dto.paymentMethod || 'cash',
+            description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+          },
+        });
+
+        // Map payment method to cashflow method
+        let cashFlowMethod = 'cash';
+        if (dto.paymentMethod === 'transfer') {
+          cashFlowMethod = 'transfer';
+        } else if (dto.paymentMethod === 'card') {
+          cashFlowMethod = 'card';
+        }
+
+        await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: orderSupplier.branchId,
+            cashFlowGroupId: 4,
+            isReceipt: false,
+            amount: dto.paymentAmount,
+            transDate: new Date(),
+            method: cashFlowMethod,
+            partnerType: 'S',
+            partnerId: orderSupplier.supplierId,
+            partnerName: orderSupplier.supplier?.name,
+            contactNumber: orderSupplier.supplier?.contactNumber,
+            address: orderSupplier.supplier?.address,
+            description: `Chi tiền đặt hàng nhập ${orderSupplier.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+          },
+        });
+
+        // Update supplier debt
+        await this.updateSupplierDebt(dto.supplierId, tx);
+      }
 
       return orderSupplier;
     });
@@ -403,5 +457,85 @@ export class OrderSuppliersService {
     }
 
     throw new Error('Không thể tạo mã phiếu đặt hàng nhập duy nhất');
+  }
+
+  private async generatePaymentCode(tx: any): Promise<string> {
+    const prefix = 'PDNPC';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allPayments = await tx.orderSupplierPayment.findMany({
+        where: { code: { startsWith: prefix } },
+        select: { code: true },
+        orderBy: { id: 'desc' },
+      });
+
+      const validCodes = allPayments
+        .map((p: any) => p.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a: string, b: string) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+      const exists = await tx.orderSupplierPayment.findFirst({
+        where: { code },
+      });
+
+      if (!exists) return code;
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã thanh toán duy nhất');
+  }
+
+  private async updateSupplierDebt(supplierId: number, tx: any) {
+    // Tính debt từ OrderSupplier payments
+    const orderSuppliers = await tx.orderSupplier.findMany({
+      where: { supplierId },
+      include: { payments: true },
+    });
+
+    let debtFromOrders = 0;
+    for (const os of orderSuppliers) {
+      const totalPaid = os.payments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
+        0,
+      );
+      debtFromOrders += totalPaid;
+    }
+
+    // Tính debt từ PurchaseOrder
+    const purchaseOrders = await tx.purchaseOrder.findMany({
+      where: { supplierId },
+    });
+
+    const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
+      const total = Number(po.total);
+      const discount = Number(po.discount);
+      const paid = Number(po.paidAmount);
+      return sum + (total - discount - paid);
+    }, 0);
+
+    // Debt = Mình nợ NCC - NCC nợ mình
+    const totalDebt = debtFromPurchases - debtFromOrders;
+
+    await tx.supplier.update({
+      where: { id: supplierId },
+      data: { debt: totalDebt },
+    });
   }
 }
