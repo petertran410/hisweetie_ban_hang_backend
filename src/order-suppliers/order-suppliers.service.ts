@@ -269,7 +269,7 @@ export class OrderSuppliersService {
             code: paymentCode,
             branchId: orderSupplier.branchId,
             cashFlowGroupId: 4,
-            isReceipt: false,
+            isReceipt: true,
             amount: dto.paymentAmount,
             transDate: new Date(),
             method: cashFlowMethod,
