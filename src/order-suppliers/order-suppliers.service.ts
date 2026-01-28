@@ -140,11 +140,20 @@ export class OrderSuppliersService {
           },
         },
         expensesOthers: true,
+        purchaseOrders: {
+          select: {
+            id: true,
+            code: true,
+            purchaseDate: true,
+            total: true,
+          },
+        },
+        payments: true,
       },
     });
 
     if (!orderSupplier) {
-      throw new NotFoundException(`OrderSupplier with id ${id} not found`);
+      throw new NotFoundException('Order supplier not found');
     }
 
     return orderSupplier;
