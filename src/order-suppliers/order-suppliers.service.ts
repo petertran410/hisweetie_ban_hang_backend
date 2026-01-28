@@ -222,6 +222,7 @@ export class OrderSuppliersService {
           totalAmt: subTotal,
           totalQty: totalQuantity,
           totalQuantity,
+          productQty: itemsData.length,
           paidAmount,
           supplierDebt: subTotal - paidAmount,
           toComplete: dto.toComplete || false,
@@ -239,7 +240,6 @@ export class OrderSuppliersService {
         },
       });
 
-      // Nếu có thanh toán trước, tạo payment record và cashflow
       if (dto.paymentAmount && dto.paymentAmount > 0) {
         const paymentCode = await this.generatePaymentCode(tx);
 
@@ -256,7 +256,6 @@ export class OrderSuppliersService {
           },
         });
 
-        // Map payment method to cashflow method
         let cashFlowMethod = 'cash';
         if (dto.paymentMethod === 'transfer') {
           cashFlowMethod = 'transfer';
@@ -286,7 +285,6 @@ export class OrderSuppliersService {
           },
         });
 
-        // Update supplier debt
         await this.updateSupplierDebt(dto.supplierId, tx);
       }
 
@@ -310,6 +308,7 @@ export class OrderSuppliersService {
       let subTotal = Number(existing.subTotal);
       let totalQuantity = Number(existing.totalQty);
       let currentPaidAmount = Number(existing.paidAmount);
+      let productQty = Number(existing.productQty);
 
       if (dto.items) {
         await tx.orderSupplierItem.deleteMany({
@@ -359,6 +358,7 @@ export class OrderSuppliersService {
           (sum, item) => sum + Number(item.quantity),
           0,
         );
+        productQty = itemsData.length;
       }
 
       if (dto.paymentAmount && dto.paymentAmount > 0) {
@@ -433,6 +433,7 @@ export class OrderSuppliersService {
           totalAmt: subTotal,
           totalQty: totalQuantity,
           totalQuantity,
+          productQty,
           paidAmount: currentPaidAmount,
           supplierDebt: subTotal - currentPaidAmount,
         },
