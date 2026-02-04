@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { InvoicesService } from './invoices.service';
 import {
@@ -68,5 +69,13 @@ export class InvoicesController {
     @CurrentUser() user: any,
   ) {
     return this.invoicesService.createFromOrder(+orderId, dto, user.id);
+  }
+
+  @Post('link-order/:invoiceId/:orderId')
+  async linkOrderToInvoice(
+    @Param('invoiceId', ParseIntPipe) invoiceId: number,
+    @Param('orderId', ParseIntPipe) orderId: number,
+  ) {
+    return this.invoicesService.linkOrderToInvoice(invoiceId, orderId);
   }
 }
