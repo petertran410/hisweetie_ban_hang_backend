@@ -134,7 +134,7 @@ export class CreateCustomerDto {
   groupIds?: number[];
 
   @IsOptional()
-  @IsInt()
+  @IsNumber()
   @Type(() => Number)
   branchId?: number;
 }
