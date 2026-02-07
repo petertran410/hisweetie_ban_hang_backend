@@ -126,6 +126,7 @@ export class PurchaseOrdersService {
   async findAll(query: PurchaseOrderQueryDto) {
     const {
       pageSize = 15,
+      orderSupplierId,
       currentItem = 0,
       search,
       supplierId,
@@ -137,6 +138,13 @@ export class PurchaseOrdersService {
     } = query;
 
     const where: any = {};
+
+    const orderSupplier = await this.prisma.orderSupplier.findMany({
+      where: { id: orderSupplierId },
+      select: { code: true },
+    });
+
+    console.log(orderSupplier);
 
     if (search) {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
@@ -171,7 +179,7 @@ export class PurchaseOrdersService {
       this.prisma.purchaseOrder.count({ where }),
     ]);
 
-    return { data, total, pageSize, currentItem };
+    return { data, total, pageSize, currentItem, orderSupplier };
   }
 
   async findOne(id: number) {
