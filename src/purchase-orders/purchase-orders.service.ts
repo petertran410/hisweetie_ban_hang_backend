@@ -126,7 +126,6 @@ export class PurchaseOrdersService {
   async findAll(query: PurchaseOrderQueryDto) {
     const {
       pageSize = 15,
-      orderSupplierId,
       currentItem = 0,
       search,
       supplierId,

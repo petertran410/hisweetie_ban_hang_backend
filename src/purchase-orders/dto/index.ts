@@ -176,11 +176,6 @@ export class PurchaseOrderQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  orderSupplierId?: number;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
   currentItem?: number;
 
   @IsString()
