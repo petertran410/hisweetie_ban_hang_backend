@@ -144,8 +144,6 @@ export class PurchaseOrdersService {
       select: { code: true },
     });
 
-    console.log(orderSupplier);
-
     if (search) {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
     }
