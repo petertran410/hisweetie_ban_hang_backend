@@ -184,6 +184,12 @@ export class PurchaseOrdersService {
     const purchaseOrder = await this.prisma.purchaseOrder.findUnique({
       where: { id },
       include: {
+        orderSupplier: {
+          select: {
+            id: true,
+            code: true,
+          },
+        },
         supplier: true,
         branch: true,
         purchaseBy: { select: { id: true, name: true } },
@@ -210,10 +216,6 @@ export class PurchaseOrdersService {
 
       if (!existing) {
         throw new NotFoundException('Purchase order not found');
-      }
-
-      if (existing.branchId) {
-        await this.restoreInventory(id, tx);
       }
 
       if (dto.items) {
@@ -250,41 +252,31 @@ export class PurchaseOrdersService {
           }),
         );
 
-        await tx.purchaseOrderItem.createMany({ data: itemsData });
-      }
-
-      if (dto.surcharges) {
-        await tx.purchaseOrderSurcharge.deleteMany({
-          where: { purchaseOrderId: id },
+        await tx.purchaseOrderItem.createMany({
+          data: itemsData,
         });
-        if (dto.surcharges.length > 0) {
-          await tx.purchaseOrderSurcharge.createMany({
-            data: dto.surcharges.map((s) => ({
-              purchaseOrderId: id,
-              code: s.code,
-              name: s.name,
-              value: s.value,
-              valueRatio: s.valueRatio,
-              isSupplierExpense: s.isSupplierExpense || false,
-              type: s.type || 0,
-            })),
-          });
-        }
       }
 
       const items = await tx.purchaseOrderItem.findMany({
         where: { purchaseOrderId: id },
       });
+
       const total = items.reduce(
         (sum, item) => sum + Number(item.totalPrice),
         0,
       );
 
+      const discountAmount = dto.discountRatio
+        ? (total * dto.discountRatio) / 100
+        : Number(dto.discount || 0);
+
+      const subTotal = total - discountAmount;
+      const paidAmount = Number(dto.paidAmount || existing.paidAmount);
+      const debtAmount = subTotal - paidAmount;
+
       await tx.purchaseOrder.update({
         where: { id },
         data: {
-          supplierId: dto.supplierId,
-          branchId: dto.branchId,
           purchaseDate: dto.purchaseDate
             ? new Date(dto.purchaseDate)
             : undefined,
@@ -292,7 +284,11 @@ export class PurchaseOrdersService {
           discount: dto.discount,
           discountRatio: dto.discountRatio,
           paidAmount: dto.paidAmount,
+          debtAmount,
+          subTotal,
           isDraft: dto.isDraft,
+          status: dto.isDraft ? 0 : 1,
+          statusValue: dto.isDraft ? 'Phiếu tạm' : 'Hoàn thành',
           partnerType: dto.partnerType,
           description: dto.description,
           purchaseById: dto.purchaseById,
@@ -312,6 +308,12 @@ export class PurchaseOrdersService {
       return tx.purchaseOrder.findUnique({
         where: { id },
         include: {
+          orderSupplier: {
+            select: {
+              id: true,
+              code: true,
+            },
+          },
           supplier: true,
           branch: true,
           purchaseBy: { select: { id: true, name: true } },
