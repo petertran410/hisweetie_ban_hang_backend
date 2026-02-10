@@ -545,11 +545,16 @@ export class OrderSuppliersService {
       }
 
       const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
-      const exists = await tx.orderSupplierPayment.findFirst({
+
+      const existsInPayment = await tx.orderSupplierPayment.findFirst({
         where: { code },
       });
 
-      if (!exists) return code;
+      const existsInCashFlow = await tx.cashFlow.findFirst({
+        where: { code },
+      });
+
+      if (!existsInPayment && !existsInCashFlow) return code;
       attempts++;
     }
 
