@@ -175,7 +175,7 @@ export class OrderSuppliersService {
             );
           }
 
-          const subTotal = item.quantity * item.price - (item.discount || 0);
+          const subTotal = (item.price - (item.discount || 0)) * item.quantity;
 
           return {
             productId: item.productId,
@@ -327,7 +327,8 @@ export class OrderSuppliersService {
               );
             }
 
-            const subTotal = item.quantity * item.price - (item.discount || 0);
+            const subTotal =
+              (item.price - (item.discount || 0)) * item.quantity;
 
             return {
               orderSupplierId: id,

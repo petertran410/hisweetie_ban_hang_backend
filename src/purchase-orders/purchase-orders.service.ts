@@ -27,8 +27,8 @@ export class PurchaseOrdersService {
             throw new NotFoundException(`Product ${item.productId} not found`);
 
           const totalPrice =
-            Number(item.quantity) * Number(item.price) -
-            (Number(item.discount) || 0);
+            (Number(item.price) - (Number(item.discount) || 0)) *
+            Number(item.quantity);
 
           return {
             productId: item.productId,
@@ -238,8 +238,8 @@ export class PurchaseOrdersService {
               );
 
             const totalPrice =
-              Number(item.quantity) * Number(item.price) -
-              (Number(item.discount) || 0);
+              (Number(item.price) - (Number(item.discount) || 0)) *
+              Number(item.quantity);
 
             return {
               purchaseOrderId: id,
