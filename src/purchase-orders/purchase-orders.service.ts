@@ -218,6 +218,10 @@ export class PurchaseOrdersService {
         throw new NotFoundException('Purchase order not found');
       }
 
+      if (existing.branchId) {
+        await this.restoreInventory(id, tx);
+      }
+
       if (dto.items) {
         await tx.purchaseOrderItem.deleteMany({
           where: { purchaseOrderId: id },
@@ -274,25 +278,28 @@ export class PurchaseOrdersService {
       const paidAmount = Number(dto.paidAmount || existing.paidAmount);
       const debtAmount = subTotal - paidAmount;
 
+      const updateData: any = {
+        purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
+        total,
+        discount: dto.discount,
+        discountRatio: dto.discountRatio,
+        paidAmount: dto.paidAmount,
+        debtAmount,
+        subTotal,
+        partnerType: dto.partnerType,
+        description: dto.description,
+        purchaseById: dto.purchaseById,
+      };
+
+      if (dto.isDraft !== undefined) {
+        updateData.isDraft = dto.isDraft;
+        updateData.status = dto.isDraft ? 0 : 1;
+        updateData.statusValue = dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng';
+      }
+
       await tx.purchaseOrder.update({
         where: { id },
-        data: {
-          purchaseDate: dto.purchaseDate
-            ? new Date(dto.purchaseDate)
-            : undefined,
-          total,
-          discount: dto.discount,
-          discountRatio: dto.discountRatio,
-          paidAmount: dto.paidAmount,
-          debtAmount,
-          subTotal,
-          isDraft: dto.isDraft,
-          status: dto.isDraft ? 0 : 1,
-          statusValue: dto.isDraft ? 'Phiếu tạm' : 'Hoàn thành',
-          partnerType: dto.partnerType,
-          description: dto.description,
-          purchaseById: dto.purchaseById,
-        },
+        data: updateData,
       });
 
       const branchId = dto.branchId || existing.branchId;
