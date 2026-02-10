@@ -226,6 +226,7 @@ export class OrderSuppliersService {
           paidAmount,
           supplierDebt: subTotal - paidAmount,
           toComplete: dto.toComplete || false,
+          orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
           createdBy: userId,
           items: {
             create: itemsData,
@@ -437,6 +438,9 @@ export class OrderSuppliersService {
           productQty,
           paidAmount: currentPaidAmount,
           supplierDebt: subTotal - currentPaidAmount,
+          orderDate: dto.orderDate
+            ? new Date(dto.orderDate)
+            : existing.orderDate,
         },
         include: {
           supplier: true,

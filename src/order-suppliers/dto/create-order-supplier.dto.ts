@@ -100,7 +100,6 @@ export class CreateOrderSupplierDto {
   @Type(() => OrderSupplierItemDto)
   items: OrderSupplierItemDto[];
 
-  // THÊM CÁC FIELD MỚI
   @ApiProperty({ required: false, description: 'Số tiền thanh toán trước' })
   @IsOptional()
   @IsNumber()
@@ -118,5 +117,5 @@ export class CreateOrderSupplierDto {
   @ApiProperty({ required: false, description: 'Dự kiến ngày nhập hàng' })
   @IsOptional()
   @IsDateString()
-  expectedDeliveryDate?: string;
+  orderDate?: string;
 }
