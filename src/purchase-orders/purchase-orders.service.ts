@@ -464,12 +464,28 @@ export class PurchaseOrdersService {
       where: { supplierId },
     });
 
-    const totalDebt = purchaseOrders.reduce((sum, po) => {
+    const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
       const total = Number(po.total);
       const discount = Number(po.discount);
       const paid = Number(po.paidAmount);
       return sum + (total - discount - paid);
     }, 0);
+
+    const orderSuppliers = await tx.orderSupplier.findMany({
+      where: { supplierId },
+      include: { payments: true },
+    });
+
+    let debtFromOrders = 0;
+    for (const os of orderSuppliers) {
+      const totalPaid = os.payments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
+        0,
+      );
+      debtFromOrders += totalPaid;
+    }
+
+    const totalDebt = debtFromPurchases - debtFromOrders;
 
     await tx.supplier.update({
       where: { id: supplierId },
