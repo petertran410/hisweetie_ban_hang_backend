@@ -461,7 +461,7 @@ export class PurchaseOrdersService {
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
     const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId },
+      where: { supplierId, isDraft: false },
     });
 
     const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
