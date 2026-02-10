@@ -487,7 +487,7 @@ export class OrderSuppliersService {
       const validCodes = allOrderSuppliers
         .map((sup: any) => sup.code)
         .filter((code: string) => regex.test(code))
-        .sort((a: string, b: string) => {
+        .sort((a, b) => {
           const numA = parseInt(a.replace(prefix, ''));
           const numB = parseInt(b.replace(prefix, ''));
           return numB - numA;
@@ -557,7 +557,6 @@ export class OrderSuppliersService {
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    // Tính debt từ OrderSupplier payments
     const orderSuppliers = await tx.orderSupplier.findMany({
       where: { supplierId },
       include: { payments: true },
@@ -572,7 +571,6 @@ export class OrderSuppliersService {
       debtFromOrders += totalPaid;
     }
 
-    // Tính debt từ PurchaseOrder
     const purchaseOrders = await tx.purchaseOrder.findMany({
       where: { supplierId },
     });
@@ -584,7 +582,6 @@ export class OrderSuppliersService {
       return sum + (total - discount - paid);
     }, 0);
 
-    // Debt = Mình nợ NCC - NCC nợ mình
     const totalDebt = debtFromPurchases - debtFromOrders;
 
     await tx.supplier.update({
