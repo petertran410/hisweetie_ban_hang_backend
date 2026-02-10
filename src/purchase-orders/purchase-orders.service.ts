@@ -312,6 +312,16 @@ export class PurchaseOrdersService {
         await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
+      await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
+      if (dto.supplierId && dto.supplierId !== existing.supplierId) {
+        await this.updateSupplierDebt(existing.supplierId, tx);
+      }
+
+      const orderSupplierId = existing.orderSupplierId;
+      if (orderSupplierId) {
+        await this.updateOrderSupplierStatus(orderSupplierId, tx);
+      }
+
       return tx.purchaseOrder.findUnique({
         where: { id },
         include: {
