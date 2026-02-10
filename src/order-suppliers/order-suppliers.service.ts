@@ -141,11 +141,16 @@ export class OrderSuppliersService {
         },
         expensesOthers: true,
         purchaseOrders: {
-          select: {
-            id: true,
-            code: true,
-            purchaseDate: true,
-            total: true,
+          include: {
+            items: {
+              select: {
+                productId: true,
+                quantity: true,
+              },
+            },
+          },
+          orderBy: {
+            createdAt: 'asc',
           },
         },
         payments: true,
