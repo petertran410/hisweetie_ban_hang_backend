@@ -363,13 +363,11 @@ export class PurchaseOrdersService {
 
     if (!orderSupplier) return;
 
-    // Tính tổng số lượng đã nhập từ tất cả phiếu nhập hàng
     const allPurchaseOrders = await tx.purchaseOrder.findMany({
-      where: { orderSupplierId: orderSupplierId },
+      where: { orderSupplierId: orderSupplierId, isDraft: false },
       include: { items: true },
     });
 
-    // Tính tổng số lượng từng sản phẩm đã nhập
     const receivedQuantities: { [productId: number]: number } = {};
     allPurchaseOrders.forEach((po) => {
       po.items.forEach((item) => {
@@ -380,7 +378,6 @@ export class PurchaseOrdersService {
       });
     });
 
-    // So sánh với số lượng đặt hàng
     let isFullyReceived = true;
     let hasPartialReceived = false;
 
@@ -396,15 +393,16 @@ export class PurchaseOrdersService {
       }
     });
 
-    // Update status
+    if (!hasPartialReceived) return;
+
     let newStatus = orderSupplier.status;
     let newStatusValue = orderSupplier.statusValue;
 
-    if (isFullyReceived && hasPartialReceived) {
-      newStatus = 3; // Hoàn thành
+    if (isFullyReceived) {
+      newStatus = 3;
       newStatusValue = 'Hoàn thành';
-    } else if (hasPartialReceived) {
-      newStatus = 2; // Nhập một phần
+    } else {
+      newStatus = 2;
       newStatusValue = 'Nhập một phần';
     }
 
