@@ -66,15 +66,16 @@ export class OrderPaymentsService {
         },
       });
 
-      const newCustomerDebt =
-        Number(order.customer?.totalDebt || 0) - dto.amount;
-
       if (order.customerId) {
-        await tx.customer.update({
-          where: { id: order.customerId },
-          data: { totalDebt: newCustomerDebt },
-        });
+        await this.recalculateCustomerDebt(order.customerId, tx);
       }
+
+      const updatedCustomer = order.customerId
+        ? await tx.customer.findUnique({
+            where: { id: order.customerId },
+            select: { totalDebt: true },
+          })
+        : null;
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -98,7 +99,9 @@ export class OrderPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
-          customerDebtSnapshot: newCustomerDebt,
+          customerDebtSnapshot: updatedCustomer
+            ? Number(updatedCustomer.totalDebt)
+            : null,
         },
       });
 
@@ -156,6 +159,33 @@ export class OrderPaymentsService {
         debtAmount,
         paymentStatus,
       },
+    });
+  }
+
+  private async recalculateCustomerDebt(customerId: number, tx: any) {
+    const invoices = await tx.invoice.findMany({
+      where: { customerId, status: { notIn: [2] } },
+    });
+    const debtFromInvoices = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      0,
+    );
+
+    const orders = await tx.order.findMany({
+      where: { customerId, invoiceId: null, orderStatus: { not: 'cancelled' } },
+      include: { payments: true },
+    });
+    const paidFromOrders = orders.reduce((sum: number, o: any) => {
+      return (
+        sum + o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
+      );
+    }, 0);
+
+    const totalDebt = debtFromInvoices - paidFromOrders;
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { totalDebt },
     });
   }
 }

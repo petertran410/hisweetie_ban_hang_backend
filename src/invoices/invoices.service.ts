@@ -543,14 +543,32 @@ export class InvoicesService {
       },
     });
 
+    const debtFromInvoices = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      0,
+    );
+
     const totalPurchased = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
-    const totalDebt = invoices.reduce(
-      (sum: number, invoice: any) => sum + Number(invoice.debtAmount),
-      0,
-    );
+
+    const orders = await tx.order.findMany({
+      where: {
+        customerId,
+        invoiceId: null,
+        orderStatus: { not: 'cancelled' },
+      },
+      include: { payments: true },
+    });
+
+    const paidFromOrders = orders.reduce((sum: number, o: any) => {
+      return (
+        sum + o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
+      );
+    }, 0);
+
+    const totalDebt = debtFromInvoices - paidFromOrders;
 
     await tx.customer.update({
       where: { id: customerId },
@@ -626,7 +644,7 @@ export class InvoicesService {
 
       const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
       const customerDebtSnapshot =
-        currentCustomerDebt + grandTotal - additionalPayment;
+        Number(order.customer?.totalDebt || 0) + debtAmount;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -773,12 +791,7 @@ export class InvoicesService {
       });
 
       if (order.customerId) {
-        const newTotalDebt =
-          currentCustomerDebt + grandTotal - additionalPayment;
-        await tx.customer.update({
-          where: { id: order.customerId },
-          data: { totalDebt: newTotalDebt },
-        });
+        await this.updateCustomerTotals(order.customerId, tx);
       }
 
       return tx.invoice.findUnique({
