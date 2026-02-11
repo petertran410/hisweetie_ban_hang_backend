@@ -172,7 +172,11 @@ export class OrderPaymentsService {
     );
 
     const orders = await tx.order.findMany({
-      where: { customerId, invoiceId: null, orderStatus: { not: 'cancelled' } },
+      where: {
+        customerId,
+        orderStatus: { not: 'cancelled' },
+        invoices: { none: {} },
+      },
       include: { payments: true },
     });
     const paidFromOrders = orders.reduce((sum: number, o: any) => {

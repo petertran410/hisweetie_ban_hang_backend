@@ -550,21 +550,23 @@ export class InvoicesService {
     );
 
     const orders = await tx.order.findMany({
-      where: { customerId, orderStatus: { not: 'cancelled' } },
-      include: {
-        payments: true,
-        invoices: { where: { status: { notIn: [INVOICE_STATUS.CANCELLED] } } },
+      where: {
+        customerId,
+        orderStatus: { not: 'cancelled' },
+        invoices: { none: {} },
       },
+      include: { payments: true },
     });
 
-    const paidFromOrdersWithoutInvoice = orders
-      .filter((o: any) => o.invoices.length === 0)
-      .reduce((sum: number, o: any) => {
+    const paidFromOrdersWithoutInvoice = orders.reduce(
+      (sum: number, o: any) => {
         return (
           sum +
           o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
         );
-      }, 0);
+      },
+      0,
+    );
 
     const totalDebt = debtFromInvoices - paidFromOrdersWithoutInvoice;
 
