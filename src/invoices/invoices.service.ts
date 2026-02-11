@@ -642,7 +642,6 @@ export class InvoicesService {
         status = INVOICE_STATUS.COMPLETED;
       }
 
-      const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
       const customerDebtSnapshot =
         Number(order.customer?.totalDebt || 0) + debtAmount;
 

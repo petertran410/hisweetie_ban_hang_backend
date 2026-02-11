@@ -4,6 +4,7 @@ export const ORDER_STATUS = {
   PROCESSING: 2,
   COMPLETED: 3,
   CANCELLED: 4,
+  PARTIALLY_INVOICED: 6,
 } as const;
 
 export const ORDER_STATUS_LABELS = {
@@ -12,6 +13,7 @@ export const ORDER_STATUS_LABELS = {
   [ORDER_STATUS.PROCESSING]: 'Đang giao hàng',
   [ORDER_STATUS.COMPLETED]: 'Hoàn thành',
   [ORDER_STATUS.CANCELLED]: 'Đã hủy',
+  [ORDER_STATUS.PARTIALLY_INVOICED]: 'Đã ra 1 phần hóa đơn',
 } as const;
 
 export const ORDER_STATUS_STRING_MAP = {
@@ -20,6 +22,7 @@ export const ORDER_STATUS_STRING_MAP = {
   processing: ORDER_STATUS.PROCESSING,
   completed: ORDER_STATUS.COMPLETED,
   cancelled: ORDER_STATUS.CANCELLED,
+  partially_invoiced: ORDER_STATUS.PARTIALLY_INVOICED,
 } as const;
 
 export const ORDER_STATUS_NUMBER_TO_STRING = {
@@ -28,6 +31,7 @@ export const ORDER_STATUS_NUMBER_TO_STRING = {
   [ORDER_STATUS.PROCESSING]: 'processing',
   [ORDER_STATUS.COMPLETED]: 'completed',
   [ORDER_STATUS.CANCELLED]: 'cancelled',
+  [ORDER_STATUS.PARTIALLY_INVOICED]: 'partially_invoiced',
 } as const;
 
 export function convertStatusStringToNumber(statusString: string): number {
