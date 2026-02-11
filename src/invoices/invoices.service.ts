@@ -647,10 +647,11 @@ export class InvoicesService {
 
       const code = await this.generateSafeInvoiceCode(tx);
 
-      const totalPaidFromOrder = order.payments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
+      const isFirstInvoice = order.invoices.length === 0;
+
+      const totalPaidFromOrder = isFirstInvoice
+        ? order.payments.reduce((sum, p) => sum + Number(p.amount), 0)
+        : 0;
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
@@ -730,7 +731,7 @@ export class InvoicesService {
         },
       });
 
-      if (totalPaidFromOrder > 0) {
+      if (isFirstInvoice && totalPaidFromOrder > 0) {
         for (const orderPayment of order.payments) {
           const seq = await tx.invoicePayment.count({
             where: { invoiceId: invoice.id },
