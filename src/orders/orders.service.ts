@@ -48,6 +48,10 @@ export class OrdersService {
           const totalPrice =
             (item.unitPrice - itemDiscount) * item.quantity -
             (item.unitPrice * item.quantity * itemDiscountRatio) / 100;
+          const appliedPrice =
+            item.unitPrice -
+            itemDiscount -
+            (item.unitPrice * itemDiscountRatio) / 100;
 
           return {
             productId: item.productId,
@@ -55,7 +59,7 @@ export class OrdersService {
             productName: product.name,
             quantity: item.quantity,
             price: item.unitPrice,
-            appliedPrice: item.unitPrice,
+            appliedPrice: appliedPrice,
             discount: itemDiscount,
             discountRatio: itemDiscountRatio,
             totalPrice: totalPrice,
@@ -154,6 +158,10 @@ export class OrdersService {
             const totalPrice =
               (item.unitPrice - itemDiscount) * item.quantity -
               (item.unitPrice * item.quantity * itemDiscountRatio) / 100;
+            const appliedPrice =
+              item.unitPrice -
+              itemDiscount -
+              (item.unitPrice * itemDiscountRatio) / 100;
 
             return {
               orderId: id,
@@ -162,7 +170,7 @@ export class OrdersService {
               productName: product.name,
               quantity: item.quantity,
               price: item.unitPrice,
-              appliedPrice: item.unitPrice,
+              appliedPrice: appliedPrice,
               discount: itemDiscount,
               discountRatio: itemDiscountRatio,
               totalPrice: totalPrice,
