@@ -53,6 +53,29 @@ export class PurchaseOrdersService {
         ? (total * dto.discountRatio) / 100
         : Number(dto.discount || 0);
 
+      if (dto.orderSupplierId) {
+        const linkedOrderSupplier = await tx.orderSupplier.findUnique({
+          where: { id: dto.orderSupplierId },
+          select: { discount: true },
+        });
+        if (linkedOrderSupplier) {
+          const existingPOs = await tx.purchaseOrder.findMany({
+            where: { orderSupplierId: dto.orderSupplierId },
+            select: { discount: true },
+          });
+          const usedDiscount = existingPOs.reduce(
+            (sum, po) => sum + Number(po.discount),
+            0,
+          );
+          const maxDiscount = Number(linkedOrderSupplier.discount);
+          if (usedDiscount + discountAmount > maxDiscount) {
+            throw new BadRequestException(
+              `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${maxDiscount - usedDiscount}`,
+            );
+          }
+        }
+      }
+
       const subTotal = total - discountAmount;
       const paidAmount = Number(dto.paidAmount || 0);
       const debtAmount = subTotal - paidAmount;
@@ -273,6 +296,32 @@ export class PurchaseOrdersService {
       const discountAmount = dto.discountRatio
         ? (total * dto.discountRatio) / 100
         : Number(dto.discount || 0);
+
+      if (existing.orderSupplierId) {
+        const linkedOrderSupplier = await tx.orderSupplier.findUnique({
+          where: { id: existing.orderSupplierId },
+          select: { discount: true },
+        });
+        if (linkedOrderSupplier) {
+          const existingPOs = await tx.purchaseOrder.findMany({
+            where: {
+              orderSupplierId: existing.orderSupplierId,
+              id: { not: id },
+            },
+            select: { discount: true },
+          });
+          const usedDiscount = existingPOs.reduce(
+            (sum, po) => sum + Number(po.discount),
+            0,
+          );
+          const maxDiscount = Number(linkedOrderSupplier.discount);
+          if (usedDiscount + discountAmount > maxDiscount) {
+            throw new BadRequestException(
+              `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${maxDiscount - usedDiscount}`,
+            );
+          }
+        }
+      }
 
       const subTotal = total - discountAmount;
       const paidAmount = Number(dto.paidAmount || existing.paidAmount);
