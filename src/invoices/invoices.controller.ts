@@ -70,12 +70,4 @@ export class InvoicesController {
   ) {
     return this.invoicesService.createFromOrder(+orderId, dto, user.id);
   }
-
-  @Post('link-order/:invoiceId/:orderId')
-  async linkOrderToInvoice(
-    @Param('invoiceId', ParseIntPipe) invoiceId: number,
-    @Param('orderId', ParseIntPipe) orderId: number,
-  ) {
-    return this.invoicesService.linkOrderToInvoice(invoiceId, orderId);
-  }
 }

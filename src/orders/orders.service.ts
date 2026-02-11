@@ -265,7 +265,7 @@ export class OrdersService {
           items: { include: { product: true } },
           payments: true,
           delivery: true,
-          invoice: true,
+          invoices: true,
         },
       });
     });
@@ -336,7 +336,7 @@ export class OrdersService {
         items: { include: { product: true } },
         payments: true,
         delivery: true,
-        invoice: true,
+        invoices: true,
       },
     });
   }

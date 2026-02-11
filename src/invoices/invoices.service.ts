@@ -820,38 +820,6 @@ export class InvoicesService {
     });
   }
 
-  async linkOrderToInvoice(invoiceId: number, orderId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const invoice = await tx.invoice.findUnique({
-        where: { id: invoiceId },
-      });
-
-      if (!invoice) {
-        throw new NotFoundException('Invoice not found');
-      }
-
-      const order = await tx.order.findUnique({
-        where: { id: orderId },
-      });
-
-      if (!order) {
-        throw new NotFoundException('Order not found');
-      }
-
-      await tx.order.update({
-        where: { id: orderId },
-        data: {
-          status: ORDER_STATUS.COMPLETED,
-          statusValue: 'Hoàn thành',
-          invoiceId: invoiceId,
-          invoiceCode: invoice.code,
-        },
-      });
-
-      return { success: true };
-    });
-  }
-
   private async generateSafeInvoiceCode(tx: any): Promise<string> {
     const prefix = 'HD';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
