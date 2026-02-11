@@ -657,10 +657,25 @@ export class InvoicesService {
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
-      const totalAmount = remainingItems.reduce(
-        (sum, item) =>
-          sum +
-          (Number(item.price) - Number(item.discount)) * item.remainingQuantity,
+      const itemsToInvoice =
+        dto.items && dto.items.length > 0
+          ? dto.items
+          : remainingItems.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: item.remainingQuantity,
+              price: Number(item.price),
+              discount: Number(item.discount),
+              discountRatio: Number(item.discountRatio),
+              totalPrice:
+                (Number(item.price) - Number(item.discount)) *
+                item.remainingQuantity,
+              note: item.note,
+            }));
+
+      const totalAmount = itemsToInvoice.reduce(
+        (sum, item) => sum + item.totalPrice,
         0,
       );
 
@@ -695,17 +710,15 @@ export class InvoicesService {
           createdBy: userId,
           customerDebtSnapshot,
           details: {
-            create: remainingItems.map((item) => ({
+            create: itemsToInvoice.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
               productName: item.productName,
-              quantity: item.remainingQuantity,
-              price: Number(item.price),
-              discount: Number(item.discount),
-              discountRatio: Number(item.discountRatio),
-              totalPrice:
-                (Number(item.price) - Number(item.discount)) *
-                item.remainingQuantity,
+              quantity: item.quantity,
+              price: item.price,
+              discount: item.discount,
+              discountRatio: item.discountRatio,
+              totalPrice: item.totalPrice,
               note: item.note,
             })),
           },
@@ -769,10 +782,10 @@ export class InvoicesService {
         });
       }
 
-      for (const item of remainingItems) {
+      for (const item of itemsToInvoice) {
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
-          data: { onHand: { decrement: item.remainingQuantity } },
+          data: { onHand: { decrement: item.quantity } },
         });
       }
 

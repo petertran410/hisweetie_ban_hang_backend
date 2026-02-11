@@ -141,4 +141,18 @@ export class CreateInvoiceFromOrderDto {
   @IsNumber()
   @IsOptional()
   additionalPayment?: number;
+
+  @IsArray()
+  @IsOptional()
+  items?: {
+    productId: number;
+    productCode: string;
+    productName: string;
+    quantity: number;
+    price: number;
+    discount: number;
+    discountRatio: number;
+    totalPrice: number;
+    note?: string;
+  }[];
 }
