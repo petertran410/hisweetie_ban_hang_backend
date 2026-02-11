@@ -653,8 +653,6 @@ model Order {
   statusValue   String?
   usingCod      Boolean  @default(false)
   description   String?
-  invoiceId     Int?
-  invoiceCode   String?
   createdBy     Int
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
@@ -664,7 +662,7 @@ model Order {
   soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?     @relation(fields: [saleChannelId], references: [id])
   creator     User             @relation("OrderCreator", fields: [createdBy], references: [id])
-  invoice     Invoice?         @relation(fields: [invoiceId], references: [id])
+  invoices    Invoice[]
   items       OrderItem[]
   payments    OrderPayment[]
   surcharges  OrderSurcharge[]
@@ -672,6 +670,7 @@ model Order {
 
   @@map("orders")
 }
+
 
 model OrderItem {
   id            Int      @id @default(autoincrement())
@@ -766,34 +765,35 @@ model OrderDelivery {
 }
 
 model Invoice {
-  id            Int      @id @default(autoincrement())
-  code          String   @unique
-  customerId    Int?
-  branchId      Int?
-  soldById      Int?
-  saleChannelId Int?
-  purchaseDate  DateTime @default(now())
-  totalAmount   Decimal  @default(0)
-  discount      Decimal  @default(0)
-  discountRatio Decimal  @default(0)
-  grandTotal    Decimal  @default(0)
-  paidAmount    Decimal  @default(0)
-  debtAmount    Decimal  @default(0)
-  customerDebtSnapshot  Decimal?             @db.Decimal(15, 2)
-  status        Int      @default(3)
-  statusValue   String?
-  usingCod      Boolean  @default(false)
-  description   String?
-  createdBy     Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id                   Int      @id @default(autoincrement())
+  code                 String   @unique
+  orderId              Int?
+  customerId           Int?
+  branchId             Int?
+  soldById             Int?
+  saleChannelId        Int?
+  purchaseDate         DateTime @default(now())
+  totalAmount          Decimal  @default(0)
+  discount             Decimal  @default(0)
+  discountRatio        Decimal  @default(0)
+  grandTotal           Decimal  @default(0)
+  paidAmount           Decimal  @default(0)
+  debtAmount           Decimal  @default(0)
+  customerDebtSnapshot Decimal? @db.Decimal(15, 2)
+  status               Int      @default(3)
+  statusValue          String?
+  usingCod             Boolean  @default(false)
+  description          String?
+  createdBy            Int
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
 
+  order       Order?             @relation(fields: [orderId], references: [id])
   customer    Customer?          @relation(fields: [customerId], references: [id])
   branch      Branch?            @relation(fields: [branchId], references: [id])
   soldBy      User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?       @relation(fields: [saleChannelId], references: [id])
   creator     User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
-  orders      Order[]
   details     InvoiceDetail[]
   payments    InvoicePayment[]
   surcharges  InvoiceSurcharge[]

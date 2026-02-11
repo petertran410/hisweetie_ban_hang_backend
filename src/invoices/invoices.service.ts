@@ -537,38 +537,36 @@ export class InvoicesService {
 
   private async updateCustomerTotals(customerId: number, tx: any) {
     const invoices = await tx.invoice.findMany({
-      where: {
-        customerId,
-        status: { notIn: [INVOICE_STATUS.CANCELLED] },
-      },
+      where: { customerId, status: { notIn: [INVOICE_STATUS.CANCELLED] } },
     });
 
     const debtFromInvoices = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.debtAmount),
       0,
     );
-
     const totalPurchased = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
 
     const orders = await tx.order.findMany({
-      where: {
-        customerId,
-        invoiceId: null,
-        orderStatus: { not: 'cancelled' },
+      where: { customerId, orderStatus: { not: 'cancelled' } },
+      include: {
+        payments: true,
+        invoices: { where: { status: { notIn: [INVOICE_STATUS.CANCELLED] } } },
       },
-      include: { payments: true },
     });
 
-    const paidFromOrders = orders.reduce((sum: number, o: any) => {
-      return (
-        sum + o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
-      );
-    }, 0);
+    const paidFromOrdersWithoutInvoice = orders
+      .filter((o: any) => o.invoices.length === 0)
+      .reduce((sum: number, o: any) => {
+        return (
+          sum +
+          o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
+        );
+      }, 0);
 
-    const totalDebt = debtFromInvoices - paidFromOrders;
+    const totalDebt = debtFromInvoices - paidFromOrdersWithoutInvoice;
 
     await tx.customer.update({
       where: { id: customerId },
@@ -585,9 +583,13 @@ export class InvoicesService {
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: {
-          items: { include: { product: true } },
+          items: true,
           payments: true,
           delivery: true,
+          invoices: {
+            where: { status: { not: INVOICE_STATUS.CANCELLED } },
+            include: { details: true },
+          },
           customer: {
             select: {
               id: true,
@@ -600,62 +602,86 @@ export class InvoicesService {
         },
       });
 
-      if (!order) {
-        throw new NotFoundException('Order not found');
-      }
-
+      if (!order) throw new NotFoundException('Order not found');
       if (order.status === ORDER_STATUS.CANCELLED) {
         throw new BadRequestException(
           'Không thể tạo hóa đơn từ đơn hàng đã hủy',
         );
       }
-
       if (order.status === ORDER_STATUS.COMPLETED) {
-        throw new BadRequestException('Đơn hàng đã được chuyển thành hóa đơn');
+        throw new BadRequestException('Đơn hàng đã hoàn thành');
       }
-
       if (!order.branchId) {
         throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
       }
 
+      const invoicedQuantities: Record<number, number> = {};
+      order.invoices.forEach((inv) => {
+        inv.details.forEach((d) => {
+          invoicedQuantities[d.productId] =
+            (invoicedQuantities[d.productId] || 0) + Number(d.quantity);
+        });
+      });
+
+      const remainingItems = order.items
+        .map((item) => {
+          const invoiced = invoicedQuantities[item.productId] || 0;
+          const remaining = Number(item.quantity) - invoiced;
+          return { ...item, remainingQuantity: remaining };
+        })
+        .filter((item) => item.remainingQuantity > 0);
+
+      if (remainingItems.length === 0) {
+        throw new BadRequestException(
+          'Tất cả sản phẩm trong đơn hàng đã được xuất hóa đơn',
+        );
+      }
+
+      const usedDiscount = order.invoices.reduce(
+        (sum, inv) => sum + Number(inv.discount),
+        0,
+      );
+      const remainingDiscount = Number(order.discount) - usedDiscount;
+      const discountForThisInvoice =
+        remainingDiscount > 0 ? remainingDiscount : 0;
+
       const code = await this.generateSafeInvoiceCode(tx);
 
       const totalPaidFromOrder = order.payments.reduce(
-        (sum, payment) => sum + Number(payment.amount),
+        (sum, p) => sum + Number(p.amount),
         0,
       );
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
-      const totalAmount = order.items.reduce(
-        (sum, item) => sum + Number(item.totalPrice),
+      const totalAmount = remainingItems.reduce(
+        (sum, item) =>
+          sum +
+          (Number(item.price) - Number(item.discount)) * item.remainingQuantity,
         0,
       );
-      const discountAmount = Number(order.discount) || 0;
-      const discountFromRatio =
-        (totalAmount * (Number(order.discountRatio) || 0)) / 100;
-      const grandTotal = totalAmount - discountAmount - discountFromRatio;
+
+      const grandTotal = totalAmount - discountForThisInvoice;
       const debtAmount = grandTotal - totalPaid;
 
-      let status: number = INVOICE_STATUS.PROCESSING;
-      if (debtAmount <= 0) {
-        status = INVOICE_STATUS.COMPLETED;
-      }
+      const status =
+        debtAmount <= 0 ? INVOICE_STATUS.COMPLETED : INVOICE_STATUS.PROCESSING;
 
-      const customerDebtSnapshot =
-        Number(order.customer?.totalDebt || 0) + debtAmount;
+      const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
+      const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
       const invoice = await tx.invoice.create({
         data: {
           code,
+          orderId: order.id,
           customerId: order.customerId,
           branchId: order.branchId,
           soldById: order.soldById,
           saleChannelId: order.saleChannelId,
           purchaseDate: new Date(),
           totalAmount,
-          discount: discountAmount,
-          discountRatio: Number(order.discountRatio) || 0,
+          discount: discountForThisInvoice,
+          discountRatio: 0,
           grandTotal,
           paidAmount: totalPaid,
           debtAmount,
@@ -666,15 +692,17 @@ export class InvoicesService {
           createdBy: userId,
           customerDebtSnapshot,
           details: {
-            create: order.items.map((item) => ({
+            create: remainingItems.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
               productName: item.productName,
-              quantity: Number(item.quantity),
+              quantity: item.remainingQuantity,
               price: Number(item.price),
-              discount: Number(item.discount) || 0,
-              discountRatio: Number(item.discountRatio) || 0,
-              totalPrice: Number(item.totalPrice),
+              discount: Number(item.discount),
+              discountRatio: Number(item.discountRatio),
+              totalPrice:
+                (Number(item.price) - Number(item.discount)) *
+                item.remainingQuantity,
               note: item.note,
             })),
           },
@@ -699,19 +727,15 @@ export class InvoicesService {
           payments: true,
           delivery: true,
           customer: true,
-          branch: true,
-          soldBy: true,
         },
       });
 
       if (totalPaidFromOrder > 0) {
         for (const orderPayment of order.payments) {
-          const existingPayments = await tx.invoicePayment.findMany({
+          const seq = await tx.invoicePayment.count({
             where: { invoiceId: invoice.id },
           });
-          const paymentSequence = existingPayments.length + 1;
-          const paymentCode = `TT${invoice.code}-${paymentSequence}`;
-
+          const paymentCode = `TT${invoice.code}-${seq + 1}`;
           await tx.invoicePayment.create({
             data: {
               code: paymentCode,
@@ -726,12 +750,10 @@ export class InvoicesService {
       }
 
       if (additionalPayment > 0) {
-        const existingPayments = await tx.invoicePayment.findMany({
+        const seq = await tx.invoicePayment.count({
           where: { invoiceId: invoice.id },
         });
-        const paymentSequence = existingPayments.length + 1;
-        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
-
+        const paymentCode = `TT${invoice.code}-${seq + 1}`;
         await tx.invoicePayment.create({
           data: {
             code: paymentCode,
@@ -742,50 +764,40 @@ export class InvoicesService {
             description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
           },
         });
-
-        await tx.cashFlow.create({
-          data: {
-            code: paymentCode,
-            branchId: invoice.branchId,
-            cashFlowGroupId: 3,
-            isReceipt: true,
-            amount: additionalPayment,
-            transDate: new Date(),
-            method: 'cash',
-            partnerType: 'C',
-            partnerId: invoice.customerId,
-            partnerName: order.customer?.name,
-            contactNumber: order.customer?.contactNumber,
-            address: order.customer?.address,
-            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            usedForFinancialReporting: 1,
-            customerDebtSnapshot,
-          },
-        });
       }
 
-      for (const item of order.items) {
+      for (const item of remainingItems) {
         await tx.inventory.updateMany({
-          where: {
-            productId: item.productId,
-            branchId: order.branchId,
-          },
-          data: {
-            onHand: { decrement: Number(item.quantity) },
-          },
+          where: { productId: item.productId, branchId: order.branchId },
+          data: { onHand: { decrement: item.remainingQuantity } },
         });
       }
+
+      const allInvoicedQty: Record<number, number> = {};
+      const updatedInvoices = await tx.invoice.findMany({
+        where: { orderId: order.id, status: { not: INVOICE_STATUS.CANCELLED } },
+        include: { details: true },
+      });
+      updatedInvoices.forEach((inv) => {
+        inv.details.forEach((d) => {
+          allInvoicedQty[d.productId] =
+            (allInvoicedQty[d.productId] || 0) + Number(d.quantity);
+        });
+      });
+
+      const allComplete = order.items.every(
+        (item) =>
+          (allInvoicedQty[item.productId] || 0) >= Number(item.quantity),
+      );
 
       await tx.order.update({
-        where: { id: orderId },
+        where: { id: order.id },
         data: {
-          status: ORDER_STATUS.COMPLETED,
-          statusValue: 'Hoàn thành',
-          invoiceId: invoice.id,
-          invoiceCode: invoice.code,
+          status: allComplete
+            ? ORDER_STATUS.COMPLETED
+            : ORDER_STATUS.PARTIALLY_INVOICED,
+          statusValue: allComplete ? 'Hoàn thành' : 'Đã ra 1 phần hóa đơn',
+          orderStatus: allComplete ? 'completed' : 'partial_invoiced',
         },
       });
 
