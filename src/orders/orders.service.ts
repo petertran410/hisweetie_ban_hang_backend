@@ -322,6 +322,8 @@ export class OrdersService {
       this.prisma.order.count({ where }),
     ]);
 
+    console.log(data);
+
     return { data, total, page, limit };
   }
 
