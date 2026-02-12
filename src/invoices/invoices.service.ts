@@ -813,7 +813,7 @@ export class InvoicesService {
             ? ORDER_STATUS.COMPLETED
             : ORDER_STATUS.PARTIALLY_INVOICED,
           statusValue: allComplete ? 'Hoàn thành' : 'Đã ra 1 phần hóa đơn',
-          orderStatus: allComplete ? 'completed' : 'partial_invoiced',
+          orderStatus: allComplete ? 'completed' : 'partially_invoiced',
         },
       });
 
