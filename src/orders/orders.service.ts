@@ -337,7 +337,12 @@ export class OrdersService {
         items: { include: { product: true } },
         payments: true,
         delivery: true,
-        invoices: true,
+        invoices: {
+          where: { status: { not: 5 } },
+          include: {
+            details: true,
+          },
+        },
       },
     });
   }
