@@ -316,6 +316,7 @@ export class OrdersService {
           soldBy: { select: { id: true, name: true } },
           items: { include: { product: true } },
           payments: true,
+          invoices: true,
         },
         orderBy: { orderDate: 'desc' },
       }),
