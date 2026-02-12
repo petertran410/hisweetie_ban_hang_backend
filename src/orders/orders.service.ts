@@ -323,8 +323,6 @@ export class OrdersService {
       this.prisma.order.count({ where }),
     ]);
 
-    console.log(data);
-
     return { data, total, page, limit };
   }
 
@@ -398,6 +396,73 @@ export class OrdersService {
       }
 
       await tx.order.delete({ where: { id } });
+    });
+  }
+
+  private async updateOrderStatusByInvoices(orderId: number, tx: any) {
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: {
+        items: true,
+        invoices: {
+          where: { status: { not: 5 } },
+          include: { details: true },
+        },
+      },
+    });
+
+    console.log(order);
+
+    if (!order) return;
+
+    const invoicedQuantities: { [productId: number]: number } = {};
+    order.invoices.forEach((inv) => {
+      inv.details.forEach((detail) => {
+        if (!invoicedQuantities[detail.productId]) {
+          invoicedQuantities[detail.productId] = 0;
+        }
+        invoicedQuantities[detail.productId] += Number(detail.quantity);
+      });
+    });
+
+    let isFullyInvoiced = true;
+    let hasPartialInvoiced = false;
+
+    order.items.forEach((orderItem) => {
+      const invoicedQty = invoicedQuantities[orderItem.productId] || 0;
+      const orderedQty = Number(orderItem.quantity);
+
+      if (invoicedQty < orderedQty) {
+        isFullyInvoiced = false;
+      }
+      if (invoicedQty > 0) {
+        hasPartialInvoiced = true;
+      }
+    });
+
+    if (!hasPartialInvoiced) return;
+
+    let newStatus = order.status;
+    let newStatusValue = order.statusValue;
+    let newOrderStatus = order.orderStatus;
+
+    if (isFullyInvoiced) {
+      newStatus = 3;
+      newStatusValue = 'Hoàn thành';
+      newOrderStatus = 'completed';
+    } else {
+      newStatus = 2;
+      newStatusValue = 'Đã ra 1 phần hóa đơn';
+      newOrderStatus = 'partially_invoiced';
+    }
+
+    await tx.order.update({
+      where: { id: orderId },
+      data: {
+        status: newStatus,
+        statusValue: newStatusValue,
+        orderStatus: newOrderStatus,
+      },
     });
   }
 }

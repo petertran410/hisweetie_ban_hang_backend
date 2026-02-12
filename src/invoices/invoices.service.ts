@@ -16,10 +16,14 @@ import {
   ORDER_STATUS,
   getStatusLabel as getOrderStatusLabel,
 } from '../orders/dto/order-status.constants';
+import { OrdersService } from '../orders/orders.service';
 
 @Injectable()
 export class InvoicesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private ordersService: OrdersService,
+  ) {}
 
   async findAll(query: InvoiceQueryDto) {
     const {
@@ -526,13 +530,38 @@ export class InvoicesService {
         });
       }
 
+      if (currentInvoice.orderId) {
+        await this.ordersService['updateOrderStatusByInvoices'](
+          currentInvoice.orderId,
+          tx,
+        );
+      }
+
       return updatedInvoice;
     });
   }
 
   async remove(id: number) {
-    await this.findOne(id);
-    return this.prisma.invoice.delete({ where: { id } });
+    return this.prisma.$transaction(async (tx) => {
+      const invoice = await tx.invoice.findUnique({
+        where: { id },
+      });
+
+      if (!invoice) {
+        throw new NotFoundException(`Invoice with ID ${id} not found`);
+      }
+
+      await tx.invoice.delete({ where: { id } });
+
+      if (invoice.orderId) {
+        await this.ordersService['updateOrderStatusByInvoices'](
+          invoice.orderId,
+          tx,
+        );
+      }
+
+      return invoice;
+    });
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {
@@ -806,16 +835,7 @@ export class InvoicesService {
           (allInvoicedQty[item.productId] || 0) >= Number(item.quantity),
       );
 
-      await tx.order.update({
-        where: { id: order.id },
-        data: {
-          status: allComplete
-            ? ORDER_STATUS.COMPLETED
-            : ORDER_STATUS.PARTIALLY_INVOICED,
-          statusValue: allComplete ? 'Hoàn thành' : 'Đã ra 1 phần hóa đơn',
-          orderStatus: allComplete ? 'completed' : 'partially_invoiced',
-        },
-      });
+      await this.ordersService['updateOrderStatusByInvoices'](order.id, tx);
 
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
