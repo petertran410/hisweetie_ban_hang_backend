@@ -6,6 +6,7 @@ import {
   BadRequestException,
   Delete,
   Param,
+  Body,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
@@ -16,7 +17,10 @@ export class UploadController {
 
   @Post('image')
   @UseInterceptors(FileInterceptor('file'))
-  uploadImage(@UploadedFile() file: Express.Multer.File) {
+  uploadImage(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('subfolder') subfolder?: string,
+  ) {
     if (!file) {
       throw new BadRequestException('File is required');
     }
@@ -28,7 +32,7 @@ export class UploadController {
 
     return {
       filename: file.filename,
-      url: this.uploadService.getFileUrl(file.filename),
+      url: this.uploadService.getFileUrl(file.filename, subfolder),
       size: file.size,
     };
   }

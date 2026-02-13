@@ -46,6 +46,7 @@ import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
+import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 
 @Module({
   imports: [
@@ -92,6 +93,7 @@ import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
     DestructionsModule,
     SupplierGroupsModule,
     OrderSuppliersModule,
+    PackingSlipsModule,
   ],
   providers: [
     {

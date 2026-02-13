@@ -1,24 +1,19 @@
 import { Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { unlink } from 'fs/promises';
 import { join } from 'path';
+import { existsSync, unlinkSync } from 'fs';
 
 @Injectable()
 export class UploadService {
-  constructor(private configService: ConfigService) {}
+  getFileUrl(filename: string, subfolder?: string): string {
+    const baseUrl = process.env.API_URL || 'http://localhost:3060';
+    const path = subfolder ? `${subfolder}/${filename}` : filename;
+    return `${baseUrl}/uploads/${path}`;
+  }
 
   async deleteFile(filename: string): Promise<void> {
     const filePath = join(process.cwd(), 'uploads', filename);
-    try {
-      await unlink(filePath);
-    } catch (error) {
-      console.error('Error deleting file:', error);
+    if (existsSync(filePath)) {
+      unlinkSync(filePath);
     }
-  }
-
-  getFileUrl(filename: string): string {
-    const baseUrl =
-      this.configService.get('API_BASE_URL') || 'http://localhost:3060';
-    return `${baseUrl}/uploads/${filename}`;
   }
 }
