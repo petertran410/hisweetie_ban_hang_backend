@@ -456,7 +456,7 @@ export class OrdersService {
       newStatusValue = 'Hoàn thành';
       newOrderStatus = 'completed';
     } else {
-      newStatus = 2;
+      newStatus = 6;
       newStatusValue = 'Đã ra 1 phần hóa đơn';
       newOrderStatus = 'partially_invoiced';
     }
