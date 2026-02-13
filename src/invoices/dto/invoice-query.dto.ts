@@ -19,6 +19,16 @@ export class InvoiceQueryDto {
   limit?: number;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  pageSize?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  currentItem?: number;
+
+  @IsOptional()
   @IsString()
   search?: string;
 

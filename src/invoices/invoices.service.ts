@@ -29,6 +29,8 @@ export class InvoicesService {
     const {
       page = 1,
       limit = 15,
+      pageSize,
+      currentItem,
       search,
       customerIds,
       branchId,
@@ -40,6 +42,10 @@ export class InvoicesService {
       fromCreatedDate,
       toCreatedDate,
     } = query;
+
+    const effectiveLimit = pageSize || limit;
+    const effectiveSkip =
+      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
     const where: any = {};
 
@@ -80,8 +86,8 @@ export class InvoicesService {
     const [data, total] = await Promise.all([
       this.prisma.invoice.findMany({
         where,
-        skip: (page - 1) * limit,
-        take: limit,
+        skip: effectiveSkip,
+        take: effectiveLimit,
         include: {
           customer: true,
           branch: { select: { id: true, name: true } },
@@ -96,7 +102,7 @@ export class InvoicesService {
       this.prisma.invoice.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    return { data, total };
   }
 
   async findOne(id: number) {
