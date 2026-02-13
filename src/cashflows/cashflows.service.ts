@@ -187,9 +187,13 @@ export class CashFlowsService {
       endDate,
       status,
       ids,
+      invoiceId,
+      limit,
       pageSize = 20,
       currentItem = 0,
     } = query;
+
+    const take = limit || pageSize;
 
     const where: any = {};
 
@@ -255,43 +259,37 @@ export class CashFlowsService {
       where.id = { in: ids };
     }
 
-    const [total, cashFlows] = await Promise.all([
-      this.prisma.cashFlow.count({ where }),
+    if (invoiceId) {
+      where.code = {
+        contains: `TT`,
+      };
+      const invoice = await this.prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { code: true },
+      });
+      if (invoice) {
+        where.code = {
+          contains: invoice.code,
+        };
+      }
+    }
+
+    const [cashFlows, total] = await Promise.all([
       this.prisma.cashFlow.findMany({
         where,
         include: {
-          branch: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          cashFlowGroup: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
+          branch: { select: { id: true, name: true } },
+          cashFlowGroup: { select: { id: true, name: true } },
           account: {
-            select: {
-              id: true,
-              bankName: true,
-              accountNumber: true,
-            },
+            select: { id: true, bankName: true, accountNumber: true },
           },
-          creator: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
+          creator: { select: { id: true, name: true } },
         },
-        orderBy: {
-          transDate: 'desc',
-        },
+        orderBy: { transDate: 'desc' },
         skip: currentItem,
-        take: pageSize,
+        take: take,
       }),
+      this.prisma.cashFlow.count({ where }),
     ]);
 
     const data = cashFlows.map((cashFlow) => ({
@@ -303,7 +301,7 @@ export class CashFlowsService {
 
     return {
       total,
-      pageSize,
+      pageSize: take,
       data,
     };
   }

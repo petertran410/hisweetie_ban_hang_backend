@@ -11,12 +11,28 @@ export class PackingSlipsService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(query: PackingSlipQueryDto) {
-    const { branchId, search, pageSize = 15, currentItem = 0 } = query;
+    const {
+      branchId,
+      invoiceId,
+      search,
+      limit,
+      pageSize,
+      currentItem = 0,
+    } = query;
+    const take = limit || pageSize || 15;
 
     const where: any = {};
 
     if (branchId) {
       where.branchId = branchId;
+    }
+
+    if (invoiceId) {
+      where.invoices = {
+        some: {
+          invoiceId: invoiceId,
+        },
+      };
     }
 
     if (search) {
@@ -47,7 +63,7 @@ export class PackingSlipsService {
         },
         orderBy: { createdAt: 'desc' },
         skip: currentItem,
-        take: pageSize,
+        take: take,
       }),
       this.prisma.packingSlip.count({ where }),
     ]);

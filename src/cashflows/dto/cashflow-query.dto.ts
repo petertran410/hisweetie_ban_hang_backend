@@ -43,6 +43,11 @@ export class CashFlowQueryDto {
   partnerId?: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  invoiceId?: number;
+
+  @IsOptional()
   @IsArray()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.split(',') : value,

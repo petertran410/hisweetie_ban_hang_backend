@@ -831,19 +831,18 @@ model InvoicePayment {
   id            Int      @id @default(autoincrement())
   code          String   @unique
   invoiceId     Int
-  amount        Decimal 
   paymentDate   DateTime @default(now())
-  paymentMethod String   @default("cash")
+  amount        Decimal
+  paymentMethod String?
   accountId     Int?
-  bankAccount   String?
   description   String?
-  status        Int?     @default(0)
-  statusValue   String?  @default("Đã thanh toán")
+  cashFlowId    Int?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  invoice Invoice      @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  account BankAccount? @relation(fields: [accountId], references: [id])
+  invoice  Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  account  Account?  @relation(fields: [accountId], references: [id])
+  cashFlow CashFlow? @relation(fields: [cashFlowId], references: [id])
 
   @@map("invoice_payments")
 }
@@ -1126,49 +1125,39 @@ model CashFlowGroup {
 }
 
 model CashFlow {
-  id                        Int      @id @default(autoincrement())
-  code                      String   @unique
-  branchId                  Int?
-  cashFlowGroupId           Int?
-  isReceipt                 Boolean
-  amount                    Decimal
-  transDate                 DateTime @default(now())
-  method                    String   @default("cash")
-  accountId                 Int?
-  partnerType               String?
-  partnerId                 Int?
-  partnerName               String?
-  contactNumber             String?
-  address                   String?
-  wardName                  String?
-  usedForFinancialReporting Int      @default(1)
-  customerDebtSnapshot     Decimal?      @db.Decimal(15, 2)
-  description               String?
-  status                    Int      @default(0)
-  statusValue               String?
-  createdBy                 Int?
-  collectorUserId           Int?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @updatedAt
+  id                         Int       @id @default(autoincrement())
+  code                       String    @unique
+  branchId                   Int
+  cashFlowGroupId            Int?
+  isReceipt                  Boolean
+  amount                     Decimal
+  transDate                  DateTime  @default(now())
+  method                     String?
+  accountId                  Int?
+  partnerType                String?
+  partnerId                  Int?
+  partnerName                String?
+  contactNumber              String?
+  address                    String?
+  wardName                   String?
+  usedForFinancialReporting  Int?
+  description                String?
+  status                     Int       @default(0)
+  statusValue                String?
+  createdBy                  Int
+  collectorUserId            Int?
+  customerDebtSnapshot       Decimal?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
-  branch          Branch?         @relation(fields: [branchId], references: [id])
-  cashFlowGroup   CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
-  account         BankAccount?    @relation(fields: [accountId], references: [id])
-  creator          User?     @relation("CashFlowCreator", fields: [createdBy], references: [id])
-  collector        User?     @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
+  branch         Branch          @relation(fields: [branchId], references: [id])
+  cashFlowGroup  CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
+  account        Account?        @relation(fields: [accountId], references: [id])
+  creator        User            @relation("CashFlowCreator", fields: [createdBy], references: [id])
+  collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
+  invoicePayments InvoicePayment[]
 
   @@map("cash_flows")
-}
-
-model NoteTemplate {
-  id        Int      @id @default(autoincrement())
-  content   String
-  sortOrder Int      @default(0)
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@map("note_templates")
 }
 
 model Destruction {

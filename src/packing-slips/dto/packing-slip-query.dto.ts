@@ -8,6 +8,11 @@ export class PackingSlipQueryDto {
   branchId?: number;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  invoiceId?: number;
+
+  @IsOptional()
   @IsString()
   search?: string;
 
@@ -15,6 +20,11 @@ export class PackingSlipQueryDto {
   @Type(() => Number)
   @IsInt()
   pageSize?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  limit?: number;
 
   @IsOptional()
   @Type(() => Number)
