@@ -841,7 +841,7 @@ model InvoicePayment {
   updatedAt     DateTime @updatedAt
 
   invoice  Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  account  Account?  @relation(fields: [accountId], references: [id])
+  account  BankAccount?  @relation(fields: [accountId], references: [id])
   cashFlow CashFlow? @relation(fields: [cashFlowId], references: [id])
 
   @@map("invoice_payments")
@@ -1152,7 +1152,7 @@ model CashFlow {
 
   branch         Branch          @relation(fields: [branchId], references: [id])
   cashFlowGroup  CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
-  account        Account?        @relation(fields: [accountId], references: [id])
+  account        BankAccount?        @relation(fields: [accountId], references: [id])
   creator        User            @relation("CashFlowCreator", fields: [createdBy], references: [id])
   collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
   invoicePayments InvoicePayment[]

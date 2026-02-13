@@ -272,6 +272,11 @@ export class CashFlowsService {
           contains: invoice.code,
         };
       }
+      where.invoicePayments = {
+        some: {
+          invoiceId: invoiceId,
+        },
+      };
     }
 
     const [cashFlows, total] = await Promise.all([
@@ -806,6 +811,7 @@ export class CashFlowsService {
               paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
               paymentMethod: dto.method,
               accountId: dto.accountId,
+              cashFlowId: cashFlow.id,
               description:
                 dto.description ||
                 `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
