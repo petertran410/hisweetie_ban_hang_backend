@@ -41,6 +41,7 @@ model User {
   createdDestructions Destruction[] @relation("DestructionCreator")
   createdSupplierGroups SupplierGroup[] @relation("SupplierGroupCreator")
   createdSuppliers      Supplier[]      @relation("SupplierCreator")
+  createdPackingSlips PackingSlip[] @relation("PackingSlipCreator")
 
   @@map("users")
 }
@@ -130,6 +131,7 @@ model Branch {
   productionsSource          Production[]      @relation("ProductionSource")
   productionsDestination     Production[]      @relation("ProductionDestination")
   destructions Destruction[]
+  packingSlips PackingSlip[]
 
   @@map("branches")
 }
@@ -798,6 +800,7 @@ model Invoice {
   payments    InvoicePayment[]
   surcharges  InvoiceSurcharge[]
   delivery    InvoiceDelivery?
+  packingSlips PackingSlipInvoice[]
 
   @@map("invoices")
 }
@@ -1314,4 +1317,54 @@ model OrderSupplierExpensesOther {
   surcharge     Surcharge?    @relation(fields: [expensesOtherCode], references: [code])
 
   @@map("order_supplier_expenses_others")
+}
+
+model PackingSlip {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  branchId        Int
+  numberOfPackages Int
+  paymentMethod   String
+  cashAmount      Decimal? @default(0)
+  hasFeeGuiBen    Boolean  @default(false)
+  feeGuiBen       Decimal? @default(0)
+  hasFeeGrab      Boolean  @default(false)
+  feeGrab         Decimal? @default(0)
+  hasCuocGuiHang  Boolean  @default(false)
+  cuocGuiHang     Decimal? @default(0)
+  note            String?
+  createdBy       Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch          Branch              @relation(fields: [branchId], references: [id])
+  creator         User                @relation("PackingSlipCreator", fields: [createdBy], references: [id])
+  invoices        PackingSlipInvoice[]
+  images          PackingSlipImage[]
+
+  @@map("packing_slips")
+}
+
+model PackingSlipInvoice {
+  id             Int      @id @default(autoincrement())
+  packingSlipId  Int
+  invoiceId      Int
+  createdAt      DateTime @default(now())
+
+  packingSlip    PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
+  invoice        Invoice     @relation(fields: [invoiceId], references: [id])
+
+  @@unique([packingSlipId, invoiceId])
+  @@map("packing_slip_invoices")
+}
+
+model PackingSlipImage {
+  id             Int      @id @default(autoincrement())
+  packingSlipId  Int
+  imageUrl       String
+  createdAt      DateTime @default(now())
+
+  packingSlip    PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
+
+  @@map("packing_slip_images")
 }
