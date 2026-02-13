@@ -11,7 +11,7 @@ import { UploadService } from './upload.service';
     MulterModule.register({
       storage: diskStorage({
         destination: (req, file, cb) => {
-          const subfolder = req.body.subfolder || '';
+          const subfolder = (req.query.subfolder as string) || '';
           const uploadPath = join(process.cwd(), 'uploads', subfolder);
 
           if (!existsSync(uploadPath)) {
