@@ -241,25 +241,32 @@ export class InvoicesService {
           },
         });
 
-        await tx.cashFlow.create({
-          data: {
-            code: paymentCode,
-            branchId: invoice.branchId,
-            isReceipt: true,
-            amount: paidAmount,
-            transDate: new Date(),
-            method: 'cash',
-            partnerType: 'C',
-            partnerId: invoice.customerId,
-            partnerName: paymentCustomer?.name,
-            description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            usedForFinancialReporting: 1,
-            customerDebtSnapshot: currentCustomerDebt + grandTotal - paidAmount,
-          },
-        });
+        if (paidAmount > 0) {
+          if (!dto.branchId) {
+            throw new Error('Vui lòng chọn chi nhánh');
+          }
+
+          await tx.cashFlow.create({
+            data: {
+              code: paymentCode,
+              branchId: dto.branchId,
+              isReceipt: true,
+              amount: paidAmount,
+              transDate: new Date(),
+              method: 'cash',
+              partnerType: 'C',
+              partnerId: invoice.customerId,
+              partnerName: paymentCustomer?.name,
+              description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+              customerDebtSnapshot:
+                currentCustomerDebt + grandTotal - paidAmount,
+            },
+          });
+        }
       }
 
       for (const item of dto.items) {

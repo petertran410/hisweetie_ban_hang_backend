@@ -473,23 +473,15 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy hóa đơn');
       }
 
+      if (!invoice.branchId) {
+        throw new Error('Hóa đơn không có thông tin chi nhánh');
+      }
+
       const existingPayments = await tx.invoicePayment.findMany({
         where: { invoiceId: dto.invoiceId },
       });
       const paymentSequence = existingPayments.length + 1;
       const cashFlowCode = `TT${invoice.code}-${paymentSequence}`;
-
-      const invoicePayment = await tx.invoicePayment.create({
-        data: {
-          code: cashFlowCode,
-          invoiceId: dto.invoiceId,
-          amount: dto.amount,
-          paymentDate: new Date(),
-          paymentMethod: dto.method || 'cash',
-          accountId: dto.accountId,
-          description: `Thu tiền hóa đơn ${invoice.code}`,
-        },
-      });
 
       const cashFlow = await tx.cashFlow.create({
         data: {
@@ -537,6 +529,19 @@ export class CashFlowsService {
               name: true,
             },
           },
+        },
+      });
+
+      const invoicePayment = await tx.invoicePayment.create({
+        data: {
+          code: cashFlowCode,
+          invoiceId: dto.invoiceId,
+          amount: dto.amount,
+          paymentDate: new Date(),
+          paymentMethod: dto.method || 'cash',
+          accountId: dto.accountId,
+          cashFlowId: cashFlow.id,
+          description: `Thu tiền hóa đơn ${invoice.code}`,
         },
       });
 
@@ -759,6 +764,10 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy khách hàng');
       }
 
+      if (!dto.branchId) {
+        throw new Error('Vui lòng chọn chi nhánh');
+      }
+
       const currentCustomerDebt = Number(customer.totalDebt);
       const newTotalDebt = currentCustomerDebt - dto.totalAmount;
 
@@ -768,6 +777,33 @@ export class CashFlowsService {
       });
 
       const customerDebtSnapshot = newTotalDebt;
+
+      const code = await this.generateSafeCashFlowCode(true, tx);
+
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: dto.branchId,
+          cashFlowGroupId: 1,
+          isReceipt: true,
+          amount: dto.totalAmount,
+          transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+          method: dto.method || 'cash',
+          accountId: dto.accountId,
+          partnerType: 'C',
+          partnerId: dto.customerId,
+          partnerName: customer.name,
+          contactNumber: customer.contactNumber,
+          address: customer.address,
+          description: dto.description || 'Thu tiền khách hàng',
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          collectorUserId: dto.collectorUserId || userId,
+          usedForFinancialReporting: 1,
+          customerDebtSnapshot,
+        },
+      });
 
       const invoicePayments: any[] = [];
 
@@ -845,33 +881,6 @@ export class CashFlowsService {
           });
         }
       }
-
-      const code = await this.generateSafeCashFlowCode(true, tx);
-
-      const cashFlow = await tx.cashFlow.create({
-        data: {
-          code,
-          branchId: dto.branchId,
-          cashFlowGroupId: 1,
-          isReceipt: true,
-          amount: dto.totalAmount,
-          transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-          method: dto.method || 'cash',
-          accountId: dto.accountId,
-          partnerType: 'C',
-          partnerId: dto.customerId,
-          partnerName: customer.name,
-          contactNumber: customer.contactNumber,
-          address: customer.address,
-          description: dto.description || 'Thu tiền khách hàng',
-          status: 0,
-          statusValue: 'Đã thanh toán',
-          createdBy: userId,
-          collectorUserId: dto.collectorUserId || userId,
-          usedForFinancialReporting: 1,
-          customerDebtSnapshot,
-        },
-      });
 
       return {
         cashFlow,
