@@ -27,7 +27,7 @@ export class TrademarksService {
     });
   }
 
-  async create(data: { name: string; description?: string }) {
+  async create(data: { name: string }) {
     return this.prisma.tradeMark.create({
       data,
     });

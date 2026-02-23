@@ -24,7 +24,7 @@ export class TrademarksController {
   }
 
   @Post()
-  create(@Body() data: { name: string; description?: string }) {
+  create(@Body() data: { name: string }) {
     return this.trademarksService.create(data);
   }
 
