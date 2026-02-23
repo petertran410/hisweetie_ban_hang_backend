@@ -50,6 +50,13 @@ export class InvoicePaymentsService {
         },
       });
 
+      const customerBeforeUpdate = invoice.customerId
+        ? await tx.customer.findUnique({
+            where: { id: invoice.customerId },
+            select: { totalDebt: true },
+          })
+        : null;
+
       await this.calculateInvoiceTotals(dto.invoiceId, tx);
 
       if (invoice.customerId) {

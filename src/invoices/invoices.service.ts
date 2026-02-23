@@ -842,6 +842,17 @@ export class InvoicesService {
           });
           const paymentCode = `TT${invoice.code}-${seq + 1}`;
 
+          const currentCustomer = invoice.customerId
+            ? await tx.customer.findUnique({
+                where: { id: invoice.customerId },
+                select: { totalDebt: true },
+              })
+            : null;
+
+          const customerDebtSnapshotBeforePayment = currentCustomer
+            ? Number(currentCustomer.totalDebt)
+            : null;
+
           const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
@@ -862,6 +873,9 @@ export class InvoicesService {
               statusValue: 'Đã thanh toán',
               createdBy: userId,
               usedForFinancialReporting: 1,
+              customerDebtSnapshot: customerDebtSnapshotBeforePayment
+                ? customerDebtSnapshotBeforePayment - payment.amount
+                : null,
             },
           });
 
