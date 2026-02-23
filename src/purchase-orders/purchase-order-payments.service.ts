@@ -75,18 +75,17 @@ export class PurchaseOrderPaymentsService {
         cashFlowMethod = 'card';
       }
 
-      // Tạo CashFlow với mã PNPC - isReceipt = false (chi tiền)
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: purchaseOrder.branchId,
-          cashFlowGroupId: 4, // Chi khác
-          isReceipt: false, // Chi tiền cho NCC
+          branchId: purchaseOrder.branchId ?? 1,
+          cashFlowGroupId: 4,
+          isReceipt: false,
           amount: dto.amount,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
           method: cashFlowMethod,
           accountId: dto.accountId,
-          partnerType: 'S', // Supplier
+          partnerType: 'S',
           partnerId: purchaseOrder.supplierId,
           partnerName: purchaseOrder.supplier?.name,
           contactNumber: purchaseOrder.supplier?.contactNumber,

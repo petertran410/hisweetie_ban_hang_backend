@@ -834,7 +834,7 @@ model InvoicePayment {
   paymentDate   DateTime @default(now())
   amount        Decimal
   status        Int
-  statueValue   String?
+  statusValue   String?
   paymentMethod String?
   accountId     Int?
   description   String?
@@ -1358,4 +1358,15 @@ model PackingSlipImage {
   packingSlip    PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
 
   @@map("packing_slip_images")
+}
+
+model NoteTemplate {
+  id        Int      @id @default(autoincrement())
+  content   String
+  sortOrder Int      @default(0)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("note_templates")
 }

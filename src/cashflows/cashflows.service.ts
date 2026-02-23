@@ -78,6 +78,7 @@ export class CashFlowsService {
                 paymentMethod: method,
                 accountId: dto.accountId,
                 description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+                status: 1,
               },
             });
 
@@ -542,6 +543,7 @@ export class CashFlowsService {
           accountId: dto.accountId,
           cashFlowId: cashFlow.id,
           description: `Thu tiền hóa đơn ${invoice.code}`,
+          status: 1,
         },
       });
 
@@ -847,10 +849,11 @@ export class CashFlowsService {
               paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
               paymentMethod: dto.method,
               accountId: dto.accountId,
-              cashFlowId: cashFlow.id,
               description:
                 dto.description ||
                 `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
+              status: 1,
+              cashFlowId: cashFlow.id,
             },
           });
 

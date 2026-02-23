@@ -272,7 +272,7 @@ export class OrderSuppliersService {
         await tx.cashFlow.create({
           data: {
             code: paymentCode,
-            branchId: orderSupplier.branchId,
+            branchId: orderSupplier.branchId ?? 1,
             cashFlowGroupId: 4,
             isReceipt: true,
             amount: dto.paymentAmount,
@@ -394,7 +394,7 @@ export class OrderSuppliersService {
         await tx.cashFlow.create({
           data: {
             code: paymentCode,
-            branchId: existing.branchId,
+            branchId: existing.branchId ?? 1,
             cashFlowGroupId: 4,
             isReceipt: false,
             amount: dto.paymentAmount,

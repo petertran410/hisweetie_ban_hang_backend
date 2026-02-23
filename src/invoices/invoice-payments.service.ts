@@ -46,6 +46,7 @@ export class InvoicePaymentsService {
           description:
             dto.notes ||
             `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+          status: 1,
         },
       });
 

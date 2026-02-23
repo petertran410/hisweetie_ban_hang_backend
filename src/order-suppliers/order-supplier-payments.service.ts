@@ -69,18 +69,17 @@ export class OrderSupplierPaymentsService {
         cashFlowMethod = 'card';
       }
 
-      // Tạo CashFlow với mã PDNPC - isReceipt = false (chi tiền)
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: orderSupplier.branchId,
-          cashFlowGroupId: 4, // Chi khác
-          isReceipt: false, // Chi tiền cho NCC
+          branchId: orderSupplier.branchId ?? 1,
+          cashFlowGroupId: 4,
+          isReceipt: false,
           amount: dto.amount,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
           method: cashFlowMethod,
           accountId: dto.accountId,
-          partnerType: 'S', // Supplier
+          partnerType: 'S',
           partnerId: orderSupplier.supplierId,
           partnerName: orderSupplier.supplier?.name,
           contactNumber: orderSupplier.supplier?.contactNumber,

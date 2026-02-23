@@ -80,7 +80,7 @@ export class OrderPaymentsService {
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: order.branchId,
+          branchId: order.branchId ?? 1,
           cashFlowGroupId: 3,
           isReceipt: true,
           amount: dto.amount,

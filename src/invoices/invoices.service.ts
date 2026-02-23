@@ -804,6 +804,7 @@ export class InvoicesService {
               paymentDate: orderPayment.paymentDate,
               paymentMethod: orderPayment.paymentMethod,
               description: `Thanh toán từ đơn hàng ${order.code}`,
+              status: 1,
             },
           });
         }
@@ -822,6 +823,7 @@ export class InvoicesService {
             paymentDate: new Date(),
             paymentMethod: 'cash',
             description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
+            status: 1,
           },
         });
       }
