@@ -752,7 +752,7 @@ export class InvoicesService {
           usingCod: order.usingCod || false,
           description: order.description,
           createdBy: userId,
-          customerDebtSnapshot,
+          customerDebtSnapshot: null,
           details: {
             create: itemsToInvoice.map((item) => ({
               productId: item.productId,
@@ -790,6 +790,8 @@ export class InvoicesService {
         },
       });
 
+      const cashFlowIdsToUpdate: number[] = [];
+
       if (isFirstInvoice && totalPaidFromOrder > 0) {
         for (const orderPayment of order.payments) {
           const seq = await tx.invoicePayment.count({
@@ -817,8 +819,11 @@ export class InvoicesService {
               statusValue: 'Đã thanh toán',
               createdBy: userId,
               usedForFinancialReporting: 1,
+              customerDebtSnapshot: null,
             },
           });
+
+          cashFlowIdsToUpdate.push(cashFlow.id);
 
           await tx.invoicePayment.create({
             data: {
@@ -842,17 +847,6 @@ export class InvoicesService {
           });
           const paymentCode = `TT${invoice.code}-${seq + 1}`;
 
-          const currentCustomer = invoice.customerId
-            ? await tx.customer.findUnique({
-                where: { id: invoice.customerId },
-                select: { totalDebt: true },
-              })
-            : null;
-
-          const customerDebtSnapshotBeforePayment = currentCustomer
-            ? Number(currentCustomer.totalDebt)
-            : null;
-
           const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
@@ -873,11 +867,11 @@ export class InvoicesService {
               statusValue: 'Đã thanh toán',
               createdBy: userId,
               usedForFinancialReporting: 1,
-              customerDebtSnapshot: customerDebtSnapshotBeforePayment
-                ? customerDebtSnapshotBeforePayment - payment.amount
-                : null,
+              customerDebtSnapshot: null,
             },
           });
+
+          cashFlowIdsToUpdate.push(cashFlow.id);
 
           await tx.invoicePayment.create({
             data: {
@@ -922,6 +916,33 @@ export class InvoicesService {
 
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
+
+        const updatedCustomer = await tx.customer.findUnique({
+          where: { id: order.customerId },
+          select: { totalDebt: true },
+        });
+
+        const finalCustomerDebtSnapshot = updatedCustomer
+          ? Number(updatedCustomer.totalDebt)
+          : null;
+
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: {
+            customerDebtSnapshot: finalCustomerDebtSnapshot,
+          },
+        });
+
+        if (cashFlowIdsToUpdate.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: {
+              id: { in: cashFlowIdsToUpdate },
+            },
+            data: {
+              customerDebtSnapshot: finalCustomerDebtSnapshot,
+            },
+          });
+        }
       }
 
       return tx.invoice.findUnique({
