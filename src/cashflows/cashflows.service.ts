@@ -204,6 +204,12 @@ export class CashFlowsService {
 
     if (code && code.length > 0) {
       where.code = { in: code };
+    } else {
+      where.code = {
+        not: {
+          startsWith: 'TTTU',
+        },
+      };
     }
 
     if (userId) {

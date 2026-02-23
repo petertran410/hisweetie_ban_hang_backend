@@ -47,6 +47,11 @@ export class InvoicesController {
     return this.invoicesService.findOne(+id);
   }
 
+  @Get(':id/payment-history')
+  async getPaymentHistory(@Param('id', ParseIntPipe) id: number) {
+    return this.invoicesService.getPaymentHistory(id);
+  }
+
   @Post()
   create(@Body() dto: CreateInvoiceDto, @CurrentUser() user: any) {
     return this.invoicesService.create(dto, user.id);

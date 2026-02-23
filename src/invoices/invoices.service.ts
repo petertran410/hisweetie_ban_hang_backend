@@ -1018,4 +1018,16 @@ export class InvoicesService {
 
     return { data: invoices };
   }
+
+  async getPaymentHistory(invoiceId: number) {
+    const payments = await this.prisma.invoicePayment.findMany({
+      where: { invoiceId },
+      include: {
+        cashFlow: true,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return payments;
+  }
 }

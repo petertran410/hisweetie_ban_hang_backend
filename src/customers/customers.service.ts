@@ -476,32 +476,36 @@ export class CustomersService {
   }
 
   async getDebtTimeline(customerId: number) {
-    const [invoices, cashFlows] = await Promise.all([
-      this.prisma.invoice.findMany({
-        where: {
-          customerId,
-          status: { not: 2 },
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customerId,
+        status: { not: 5 },
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        soldBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const cashFlows = await this.prisma.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        code: {
+          not: {
+            startsWith: 'TTTUHD',
+          },
         },
-        include: {
-          branch: { select: { id: true, name: true } },
-          soldBy: { select: { id: true, name: true } },
-        },
-        orderBy: { purchaseDate: 'desc' },
-      }),
-      this.prisma.cashFlow.findMany({
-        where: {
-          partnerId: customerId,
-          partnerType: 'C',
-          isReceipt: true,
-          status: 0,
-        },
-        include: {
-          branch: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-        },
-        orderBy: { transDate: 'desc' },
-      }),
-    ]);
+      },
+      include: {
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
 
     const timeline = [
       ...invoices.map((inv) => ({
@@ -509,9 +513,10 @@ export class CustomersService {
         id: inv.id,
         code: inv.code,
         date: inv.purchaseDate,
+        createdAt: inv.createdAt,
         amount: Number(inv.grandTotal),
-        paid: Number(inv.paidAmount),
-        debt: Number(inv.debtAmount),
+        method: null,
+        description: inv.description,
         debtSnapshot: inv.customerDebtSnapshot
           ? Number(inv.customerDebtSnapshot)
           : null,
@@ -525,6 +530,7 @@ export class CustomersService {
         id: cf.id,
         code: cf.code,
         date: cf.transDate,
+        createdAt: cf.createdAt,
         amount: Number(cf.amount),
         method: cf.method,
         description: cf.description,
@@ -536,7 +542,10 @@ export class CustomersService {
         branch: cf.branch,
         user: cf.creator,
       })),
-    ].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    ].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
 
     return { data: timeline };
   }
