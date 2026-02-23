@@ -795,7 +795,31 @@ export class InvoicesService {
           const seq = await tx.invoicePayment.count({
             where: { invoiceId: invoice.id },
           });
-          const paymentCode = `TT${invoice.code}-${seq + 1}`;
+          const paymentCode = `TTTUHD${invoice.code}-${seq + 1}`;
+
+          const cashFlow = await tx.cashFlow.create({
+            data: {
+              code: paymentCode,
+              branchId: invoice.branchId,
+              cashFlowGroupId: 3,
+              isReceipt: true,
+              amount: orderPayment.amount,
+              transDate: orderPayment.paymentDate,
+              method: orderPayment.paymentMethod || 'cash',
+              accountId: null,
+              partnerType: 'C',
+              partnerId: invoice.customerId,
+              partnerName: invoice.customer?.name,
+              contactNumber: invoice.customer?.contactNumber,
+              address: invoice.customer?.address,
+              description: `Thu tiền tạm ứng từ đơn hàng ${order.code} sang hóa đơn ${invoice.code}`,
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+            },
+          });
+
           await tx.invoicePayment.create({
             data: {
               code: paymentCode,
@@ -805,6 +829,7 @@ export class InvoicesService {
               paymentMethod: orderPayment.paymentMethod,
               description: `Thanh toán từ đơn hàng ${order.code}`,
               status: 1,
+              cashFlowId: cashFlow.id,
             },
           });
         }
