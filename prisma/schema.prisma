@@ -833,6 +833,8 @@ model InvoicePayment {
   invoiceId     Int
   paymentDate   DateTime @default(now())
   amount        Decimal
+  status        Int
+  statueValue   String?
   paymentMethod String?
   accountId     Int?
   description   String?

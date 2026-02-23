@@ -234,6 +234,8 @@ export class InvoicesService {
           data: {
             code: paymentCode,
             invoiceId: invoice.id,
+            status: 1,
+            statusValue: 'Paid',
             amount: paidAmount,
             paymentDate: new Date(),
             paymentMethod: 'cash',

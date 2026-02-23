@@ -21,6 +21,7 @@ export class InvoicePaymentsService {
               totalDebt: true,
             },
           },
+          branch: true,
         },
       });
 
@@ -54,6 +55,10 @@ export class InvoicePaymentsService {
         await this.updateCustomerTotals(invoice.customerId, tx);
       }
 
+      if (!invoice.branch) {
+        throw new Error('Hóa đơn chưa có chi nhánh');
+      }
+
       const updatedCustomer = invoice.customerId
         ? await tx.customer.findUnique({
             where: { id: invoice.customerId },
@@ -68,7 +73,7 @@ export class InvoicePaymentsService {
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: invoice.branchId,
+          branchId: invoice.branch?.id,
           cashFlowGroupId: 3,
           isReceipt: true,
           amount: dto.amount,
