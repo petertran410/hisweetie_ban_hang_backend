@@ -795,7 +795,7 @@ export class InvoicesService {
           const seq = await tx.invoicePayment.count({
             where: { invoiceId: invoice.id },
           });
-          const paymentCode = `TTTUHD${invoice.code}-${seq + 1}`;
+          const paymentCode = `TTTU${invoice.code}-${seq + 1}`;
 
           const cashFlow = await tx.cashFlow.create({
             data: {
@@ -835,22 +835,49 @@ export class InvoicesService {
         }
       }
 
-      if (additionalPayment > 0) {
-        const seq = await tx.invoicePayment.count({
-          where: { invoiceId: invoice.id },
-        });
-        const paymentCode = `TT${invoice.code}-${seq + 1}`;
-        await tx.invoicePayment.create({
-          data: {
-            code: paymentCode,
-            invoiceId: invoice.id,
-            amount: additionalPayment,
-            paymentDate: new Date(),
-            paymentMethod: 'cash',
-            description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
-            status: 1,
-          },
-        });
+      if (dto.payments && dto.payments.length > 0) {
+        for (const payment of dto.payments) {
+          const seq = await tx.invoicePayment.count({
+            where: { invoiceId: invoice.id },
+          });
+          const paymentCode = `TT${invoice.code}-${seq + 1}`;
+
+          const cashFlow = await tx.cashFlow.create({
+            data: {
+              code: paymentCode,
+              branchId: invoice.branchId,
+              cashFlowGroupId: 3,
+              isReceipt: true,
+              amount: payment.amount,
+              transDate: new Date(),
+              method: payment.method || 'cash',
+              accountId: null,
+              partnerType: 'C',
+              partnerId: invoice.customerId,
+              partnerName: invoice.customer?.name,
+              contactNumber: invoice.customer?.contactNumber,
+              address: invoice.customer?.address,
+              description: `Thu tiền thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+            },
+          });
+
+          await tx.invoicePayment.create({
+            data: {
+              code: paymentCode,
+              invoiceId: invoice.id,
+              amount: payment.amount,
+              paymentDate: new Date(),
+              paymentMethod: payment.method,
+              description: `Thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
+              status: 1,
+              cashFlowId: cashFlow.id,
+            },
+          });
+        }
       }
 
       for (const item of itemsToInvoice) {
