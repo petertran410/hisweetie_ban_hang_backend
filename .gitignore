@@ -12,6 +12,10 @@ yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
 
+/uploads/bao-don
+/uploads/dong-hang
+/uploads/loading
+
 # OS
 .DS_Store
 
