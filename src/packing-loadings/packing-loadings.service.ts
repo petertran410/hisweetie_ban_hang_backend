@@ -284,6 +284,6 @@ export class PackingLoadingsService {
       }
     }
 
-    return `LD${nextNumber.toString().padStart(6, '0')}`;
+    return `DLD${nextNumber.toString().padStart(6, '0')}`;
   }
 }

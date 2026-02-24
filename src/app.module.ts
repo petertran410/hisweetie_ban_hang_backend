@@ -48,10 +48,7 @@ import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
-import {
-  PackingLoadingsModule,
-  PackingLoadingsModule,
-} from './packing-loadings/packing-loadings.module';
+import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
 import { AllPackingModule } from './all-packing/all-packing.module';
 
 @Module({
