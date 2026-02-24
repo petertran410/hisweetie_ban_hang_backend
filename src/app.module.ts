@@ -50,6 +50,8 @@ import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
 import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
 import { AllPackingModule } from './all-packing/all-packing.module';
+import { AuditLogsModule } from './audit-logs/audit-logs.module';
+import { PrintTemplatesModule } from './print-templates/print-templates.module';
 
 @Module({
   imports: [
@@ -61,6 +63,8 @@ import { AllPackingModule } from './all-packing/all-packing.module';
     AuthModule,
     UsersModule,
     RolesModule,
+    AuditLogsModule,
+    PrintTemplatesModule,
     PermissionsModule,
     ProductsModule,
     ProductVariantsModule,

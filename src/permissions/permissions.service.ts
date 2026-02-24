@@ -1,86 +1,198 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreatePermissionDto, UpdatePermissionDto } from './dto';
 
 @Injectable()
 export class PermissionsService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll() {
+  async findAll(filters?: { category?: string; resource?: string }) {
+    const where: any = {};
+    if (filters?.category) where.category = filters.category;
+    if (filters?.resource) where.resource = filters.resource;
+
     return this.prisma.permission.findMany({
-      include: {
-        _count: {
-          select: { rolePermissions: true },
-        },
-      },
-      orderBy: [{ resource: 'asc' }, { action: 'asc' }],
+      where,
+      orderBy: [{ category: 'asc' }, { resource: 'asc' }, { action: 'asc' }],
     });
   }
 
-  async findOne(id: number) {
-    const permission = await this.prisma.permission.findUnique({
-      where: { id },
+  async findByUser(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
       include: {
-        rolePermissions: {
+        userRoles: {
           include: {
-            role: true,
+            role: {
+              include: {
+                rolePermissions: {
+                  include: {
+                    permission: true,
+                  },
+                },
+              },
+            },
           },
         },
-        _count: {
-          select: { rolePermissions: true },
+      },
+    });
+
+    const permissions =
+      user?.userRoles.flatMap((ur) =>
+        ur.role.rolePermissions.map((rp) => ({
+          ...rp.permission,
+          conditions: rp.conditions,
+        })),
+      ) || [];
+
+    return this.groupPermissions(permissions);
+  }
+
+  private groupPermissions(permissions: any[]) {
+    const grouped: Record<string, any> = {};
+
+    for (const perm of permissions) {
+      const key = `${perm.resource}.${perm.action}`;
+
+      if (!grouped[key]) {
+        grouped[key] = {
+          resource: perm.resource,
+          action: perm.action,
+          scopes: [],
+          fields: [],
+          conditions: {},
+        };
+      }
+
+      if (perm.scope) {
+        grouped[key].scopes.push(perm.scope);
+      }
+
+      if (perm.field) {
+        grouped[key].fields.push(perm.field);
+      }
+
+      if (perm.conditions) {
+        grouped[key].conditions = {
+          ...grouped[key].conditions,
+          ...perm.conditions,
+        };
+      }
+    }
+
+    return Object.values(grouped);
+  }
+
+  async checkPermission(
+    userId: number,
+    resource: string,
+    action: string,
+    scope?: string,
+    field?: string,
+    data?: any,
+  ): Promise<boolean> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: {
+                    permission: true,
+                  },
+                },
+              },
+            },
+          },
         },
       },
     });
 
-    if (!permission) {
-      throw new NotFoundException(`Permission with ID ${id} not found`);
+    const permissions =
+      user?.userRoles.flatMap((ur) =>
+        ur.role.rolePermissions.filter((rp) => {
+          const p = rp.permission;
+          return (
+            p.resource === resource &&
+            p.action === action &&
+            (!scope || p.scope === scope || p.scope === 'all') &&
+            (!field || p.field === field || !p.field)
+          );
+        }),
+      ) || [];
+
+    if (permissions.length === 0) return false;
+
+    for (const rp of permissions) {
+      if (this.evaluateConditions(rp.conditions, data, user)) {
+        return true;
+      }
     }
 
-    return permission;
+    return false;
   }
 
-  async create(dto: CreatePermissionDto) {
-    const permission = await this.prisma.permission.create({
-      data: dto,
-    });
+  private evaluateConditions(conditions: any, data: any, user: any): boolean {
+    if (!conditions) return true;
 
-    return this.findOne(permission.id);
+    if (conditions.branchId && data?.branchId !== user.branchId) {
+      return false;
+    }
+
+    if (conditions.userId && data?.userId !== user.id) {
+      return false;
+    }
+
+    return true;
   }
 
-  async update(id: number, dto: UpdatePermissionDto) {
-    await this.findOne(id);
+  async getFieldPermissions(userId: number, resource: string) {
+    const permissions = await this.findByUser(userId);
 
-    const permission = await this.prisma.permission.update({
-      where: { id },
-      data: dto,
-    });
+    const resourcePerms = permissions.filter((p) => p.resource === resource);
 
-    return this.findOne(permission.id);
-  }
-
-  async remove(id: number) {
-    await this.findOne(id);
-    return this.prisma.permission.delete({ where: { id } });
-  }
-
-  async findByResource(resource: string) {
-    return this.prisma.permission.findMany({
+    const fields = await this.prisma.fieldPermission.findMany({
       where: { resource },
-      orderBy: { action: 'asc' },
+    });
+
+    return fields.map((field) => {
+      const viewPerm = resourcePerms.find(
+        (p) => p.action === 'view' && p.fields.includes(field.fieldName),
+      );
+      const editPerm = resourcePerms.find(
+        (p) => p.action === 'edit' && p.fields.includes(field.fieldName),
+      );
+
+      return {
+        ...field,
+        canView: !!viewPerm || field.canView,
+        canEdit: !!editPerm || field.canEdit,
+      };
     });
   }
 
-  async getGroupedByResource() {
-    const permissions = await this.findAll();
-    const grouped: Record<string, any[]> = {};
+  async getColumnPermissions(userId: number, resource: string) {
+    const permissions = await this.findByUser(userId);
 
-    permissions.forEach((permission) => {
-      if (!grouped[permission.resource]) {
-        grouped[permission.resource] = [];
-      }
-      grouped[permission.resource].push(permission);
+    const resourcePerms = permissions.filter((p) => p.resource === resource);
+
+    const columns = await this.prisma.columnPermission.findMany({
+      where: { resource },
+      orderBy: { order: 'asc' },
     });
 
-    return grouped;
+    return columns.map((column) => {
+      const viewPerm = resourcePerms.find(
+        (p) =>
+          p.action === 'view' &&
+          (p.scopes.includes('all') || p.fields.includes(column.columnName)),
+      );
+
+      return {
+        ...column,
+        canView: !!viewPerm || column.canView,
+      };
+    });
   }
 }
