@@ -1,0 +1,19 @@
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { AllPackingService } from './all-packing.service';
+import { AllPackingQueryDto } from './dto/all-packing-query.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+
+@ApiTags('All Packing')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('all-packing')
+export class AllPackingController {
+  constructor(private allPackingService: AllPackingService) {}
+
+  @Get()
+  @ApiOperation({ summary: 'Lấy danh sách tất cả loại báo đơn' })
+  findAll(@Query() query: AllPackingQueryDto) {
+    return this.allPackingService.findAll(query);
+  }
+}
