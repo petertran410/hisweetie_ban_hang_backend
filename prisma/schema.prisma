@@ -41,7 +41,10 @@ model User {
   createdDestructions Destruction[] @relation("DestructionCreator")
   createdSupplierGroups SupplierGroup[] @relation("SupplierGroupCreator")
   createdSuppliers      Supplier[]      @relation("SupplierCreator")
-  createdPackingSlips PackingSlip[] @relation("PackingSlipCreator")
+  createdPackingSlips   PackingSlip[]   @relation("PackingSlipCreator")
+  createdPackingHangs   PackingHang[]   @relation("PackingHangCreator")
+  createdPackingLoadings PackingLoading[] @relation("PackingLoadingCreator")
+  loadedPackingLoadings  PackingLoading[] @relation("PackingLoadingUser")
 
   @@map("users")
 }
@@ -98,8 +101,6 @@ model RolePermission {
   @@map("role_permissions")
 }
 
-// ==================== BRANCH & LOCATION ====================
-
 model Branch {
   id               Int      @id @default(autoincrement())
   name             String
@@ -132,6 +133,8 @@ model Branch {
   productionsDestination     Production[]      @relation("ProductionDestination")
   destructions Destruction[]
   packingSlips PackingSlip[]
+  packingHangs               PackingHang[]
+  packingLoadings            PackingLoading[]
 
   @@map("branches")
 }
@@ -801,6 +804,8 @@ model Invoice {
   surcharges  InvoiceSurcharge[]
   delivery    InvoiceDelivery?
   packingSlips PackingSlipInvoice[]
+  packingHangs       PackingHangInvoice[]
+  packingLoadings    PackingLoadingInvoice[]
 
   @@map("invoices")
 }
@@ -1369,4 +1374,90 @@ model NoteTemplate {
   updatedAt DateTime @updatedAt
 
   @@map("note_templates")
+}
+
+model PackingHang {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  branchId        Int
+  numberOfPackages Int
+  note            String?
+  createdBy       Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch          Branch              @relation(fields: [branchId], references: [id])
+  creator         User                @relation("PackingHangCreator", fields: [createdBy], references: [id])
+  invoices        PackingHangInvoice[]
+  images          PackingHangImage[]
+
+  @@map("packing_hangs")
+}
+
+model PackingHangInvoice {
+  id             Int      @id @default(autoincrement())
+  packingHangId  Int
+  invoiceId      Int
+  createdAt      DateTime @default(now())
+
+  packingHang    PackingHang @relation(fields: [packingHangId], references: [id], onDelete: Cascade)
+  invoice        Invoice     @relation(fields: [invoiceId], references: [id])
+
+  @@unique([packingHangId, invoiceId])
+  @@map("packing_hang_invoices")
+}
+
+model PackingHangImage {
+  id             Int      @id @default(autoincrement())
+  packingHangId  Int
+  imageUrl       String
+  createdAt      DateTime @default(now())
+
+  packingHang    PackingHang @relation(fields: [packingHangId], references: [id], onDelete: Cascade)
+
+  @@map("packing_hang_images")
+}
+
+model PackingLoading {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  branchId        Int
+  loadingById     Int
+  numberOfPackages Int
+  note            String?
+  createdBy       Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  branch          Branch                @relation(fields: [branchId], references: [id])
+  loadingBy       User                  @relation("PackingLoadingUser", fields: [loadingById], references: [id])
+  creator         User                  @relation("PackingLoadingCreator", fields: [createdBy], references: [id])
+  invoices        PackingLoadingInvoice[]
+  images          PackingLoadingImage[]
+
+  @@map("packing_loadings")
+}
+
+model PackingLoadingInvoice {
+  id                Int      @id @default(autoincrement())
+  packingLoadingId  Int
+  invoiceId         Int
+  createdAt         DateTime @default(now())
+
+  packingLoading    PackingLoading @relation(fields: [packingLoadingId], references: [id], onDelete: Cascade)
+  invoice           Invoice        @relation(fields: [invoiceId], references: [id])
+
+  @@unique([packingLoadingId, invoiceId])
+  @@map("packing_loading_invoices")
+}
+
+model PackingLoadingImage {
+  id                Int      @id @default(autoincrement())
+  packingLoadingId  Int
+  imageUrl          String
+  createdAt         DateTime @default(now())
+
+  packingLoading    PackingLoading @relation(fields: [packingLoadingId], references: [id], onDelete: Cascade)
+
+  @@map("packing_loading_images")
 }

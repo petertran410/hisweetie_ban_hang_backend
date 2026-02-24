@@ -802,7 +802,7 @@ export class InvoicesService {
           const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
-              branchId: invoice.branchId,
+              branchId: invoice.branchId || 1,
               cashFlowGroupId: 3,
               isReceipt: true,
               amount: orderPayment.amount,
@@ -850,7 +850,7 @@ export class InvoicesService {
           const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
-              branchId: invoice.branchId,
+              branchId: invoice.branchId || 1,
               cashFlowGroupId: 3,
               isReceipt: true,
               amount: payment.amount,
