@@ -45,6 +45,8 @@ model User {
   createdPackingHangs   PackingHang[]   @relation("PackingHangCreator")
   createdPackingLoadings PackingLoading[] @relation("PackingLoadingCreator")
   loadedPackingLoadings  PackingLoading[] @relation("PackingLoadingUser")
+  createdPrintTemplates PrintTemplate[] @relation("PrintTemplateCreator")
+  auditLogs             AuditLog[]      @relation("AuditLogUser")
 
   @@map("users")
 }
@@ -67,14 +69,66 @@ model Permission {
   name        String   @unique
   resource    String
   action      String
+  scope       String   @default("all")
+  field       String?
   description String?
+  category    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   rolePermissions RolePermission[]
 
-  @@unique([resource, action])
+  @@unique([resource, action, scope, field])
+  @@index([resource])
+  @@index([category])
   @@map("permissions")
+}
+
+model PermissionGroup {
+  id          Int      @id @default(autoincrement())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  parentId    Int?
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   PermissionGroup?  @relation("PermissionGroupHierarchy", fields: [parentId], references: [id])
+  children PermissionGroup[] @relation("PermissionGroupHierarchy")
+
+  @@map("permission_groups")
+}
+
+model FieldPermission {
+  id           Int      @id @default(autoincrement())
+  resource     String
+  fieldName    String
+  fieldLabel   String
+  canView      Boolean  @default(true)
+  canEdit      Boolean  @default(true)
+  isRequired   Boolean  @default(false)
+  defaultValue String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([resource, fieldName])
+  @@map("field_permissions")
+}
+
+model ColumnPermission {
+  id          Int      @id @default(autoincrement())
+  resource    String
+  columnName  String
+  columnLabel String
+  canView     Boolean  @default(true)
+  canExport   Boolean  @default(true)
+  order       Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([resource, columnName])
+  @@map("column_permissions")
 }
 
 model UserRole {
@@ -92,6 +146,7 @@ model UserRole {
 model RolePermission {
   roleId       Int
   permissionId Int
+  conditions   Json?
   createdAt    DateTime @default(now())
 
   role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
@@ -1460,4 +1515,42 @@ model PackingLoadingImage {
   packingLoading    PackingLoading @relation(fields: [packingLoadingId], references: [id], onDelete: Cascade)
 
   @@map("packing_loading_images")
+}
+
+model PrintTemplate {
+  id          Int      @id @default(autoincrement())
+  name        String
+  code        String   @unique
+  templateFor String
+  content     String   @db.Text
+  isActive    Boolean  @default(true)
+  isDefault   Boolean  @default(false)
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  creator User @relation("PrintTemplateCreator", fields: [createdBy], references: [id])
+
+  @@map("print_templates")
+}
+
+model AuditLog {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  userName    String
+  action      String
+  resource    String
+  resourceId  Int?
+  oldData     Json?
+  newData     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  user User @relation("AuditLogUser", fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
 }

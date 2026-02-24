@@ -84,20 +84,20 @@ async function main() {
     { resource: 'price_books', action: 'delete', name: 'price_books.delete' },
   ];
 
-  for (const perm of permissions) {
-    await prisma.permission.upsert({
-      where: {
-        resource_action: { resource: perm.resource, action: perm.action },
-      },
-      update: {},
-      create: {
-        name: perm.name,
-        resource: perm.resource,
-        action: perm.action,
-        description: `Can ${perm.action} ${perm.resource}`,
-      },
-    });
-  }
+  // for (const perm of permissions) {
+  //   await prisma.permission.upsert({
+  //     where: {
+  //       resource_action: { resource: perm.resource, action: perm.action },
+  //     },
+  //     update: {},
+  //     create: {
+  //       name: perm.name,
+  //       resource: perm.resource,
+  //       action: perm.action,
+  //       description: `Can ${perm.action} ${perm.resource}`,
+  //     },
+  //   });
+  // }
 
   // Assign all permissions to admin role
   const allPermissions = await prisma.permission.findMany();
