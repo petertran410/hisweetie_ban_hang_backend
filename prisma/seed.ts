@@ -4,7 +4,6 @@ import * as bcrypt from 'bcrypt';
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create admin role
   const adminRole = await prisma.role.upsert({
     where: { name: 'Administrator' },
     update: {},
@@ -14,7 +13,6 @@ async function main() {
     },
   });
 
-  // Create user role
   const userRole = await prisma.role.upsert({
     where: { name: 'User' },
     update: {},
@@ -24,82 +22,421 @@ async function main() {
     },
   });
 
-  // Create permissions
   const permissions = [
-    { resource: 'products', action: 'view', name: 'products.view' },
-    { resource: 'products', action: 'create', name: 'products.create' },
-    { resource: 'products', action: 'update', name: 'products.update' },
-    { resource: 'products', action: 'delete', name: 'products.delete' },
-    { resource: 'orders', action: 'view', name: 'orders.view' },
-    { resource: 'orders', action: 'create', name: 'orders.create' },
-    { resource: 'orders', action: 'update', name: 'orders.update' },
-    { resource: 'orders', action: 'delete', name: 'orders.delete' },
-    { resource: 'customers', action: 'view', name: 'customers.view' },
-    { resource: 'customers', action: 'create', name: 'customers.create' },
-    { resource: 'customers', action: 'update', name: 'customers.update' },
-    { resource: 'customers', action: 'delete', name: 'customers.delete' },
-    { resource: 'reports', action: 'view', name: 'reports.view' },
-    { resource: 'users', action: 'manage', name: 'users.manage' },
-    { resource: 'roles', action: 'view', name: 'roles.view' },
-    { resource: 'roles', action: 'create', name: 'roles.create' },
-    { resource: 'roles', action: 'update', name: 'roles.update' },
-    { resource: 'roles', action: 'delete', name: 'roles.delete' },
-    { resource: 'permissions', action: 'view', name: 'permissions.view' },
-    { resource: 'permissions', action: 'create', name: 'permissions.create' },
-    { resource: 'permissions', action: 'update', name: 'permissions.update' },
-    { resource: 'permissions', action: 'delete', name: 'permissions.delete' },
-    { resource: 'suppliers', action: 'view', name: 'suppliers.view' },
-    { resource: 'suppliers', action: 'create', name: 'suppliers.create' },
-    { resource: 'suppliers', action: 'update', name: 'suppliers.update' },
-    { resource: 'suppliers', action: 'delete', name: 'suppliers.delete' },
+    {
+      resource: 'products',
+      action: 'view',
+      name: 'products.view',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'create',
+      name: 'products.create',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'update',
+      name: 'products.update',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'delete',
+      name: 'products.delete',
+      scope: 'all',
+      category: 'products',
+    },
+
+    {
+      resource: 'orders',
+      action: 'view',
+      name: 'orders.view',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'create',
+      name: 'orders.create',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'update',
+      name: 'orders.update',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'delete',
+      name: 'orders.delete',
+      scope: 'all',
+      category: 'orders',
+    },
+
+    {
+      resource: 'customers',
+      action: 'view',
+      name: 'customers.view',
+      scope: 'all',
+      category: 'customers',
+    },
+    {
+      resource: 'customers',
+      action: 'create',
+      name: 'customers.create',
+      scope: 'all',
+      category: 'customers',
+    },
+    {
+      resource: 'customers',
+      action: 'update',
+      name: 'customers.update',
+      scope: 'all',
+      category: 'customers',
+    },
+    {
+      resource: 'customers',
+      action: 'delete',
+      name: 'customers.delete',
+      scope: 'all',
+      category: 'customers',
+    },
+
+    {
+      resource: 'suppliers',
+      action: 'view',
+      name: 'suppliers.view',
+      scope: 'all',
+      category: 'suppliers',
+    },
+    {
+      resource: 'suppliers',
+      action: 'create',
+      name: 'suppliers.create',
+      scope: 'all',
+      category: 'suppliers',
+    },
+    {
+      resource: 'suppliers',
+      action: 'update',
+      name: 'suppliers.update',
+      scope: 'all',
+      category: 'suppliers',
+    },
+    {
+      resource: 'suppliers',
+      action: 'delete',
+      name: 'suppliers.delete',
+      scope: 'all',
+      category: 'suppliers',
+    },
+
     {
       resource: 'purchase_orders',
       action: 'view',
       name: 'purchase_orders.view',
+      scope: 'all',
+      category: 'purchase_orders',
     },
     {
       resource: 'purchase_orders',
       action: 'create',
       name: 'purchase_orders.create',
+      scope: 'all',
+      category: 'purchase_orders',
     },
     {
       resource: 'purchase_orders',
       action: 'update',
       name: 'purchase_orders.update',
+      scope: 'all',
+      category: 'purchase_orders',
     },
     {
       resource: 'purchase_orders',
       action: 'delete',
       name: 'purchase_orders.delete',
+      scope: 'all',
+      category: 'purchase_orders',
     },
-    { resource: 'posts', action: 'view', name: 'posts.view' },
-    { resource: 'posts', action: 'create', name: 'posts.create' },
-    { resource: 'posts', action: 'update', name: 'posts.update' },
-    { resource: 'posts', action: 'delete', name: 'posts.delete' },
-    { resource: 'dashboard', action: 'view', name: 'dashboard.view' },
-    { resource: 'analytics', action: 'view', name: 'analytics.view' },
-    { resource: 'price_books', action: 'view', name: 'price_books.view' },
-    { resource: 'price_books', action: 'create', name: 'price_books.create' },
-    { resource: 'price_books', action: 'update', name: 'price_books.update' },
-    { resource: 'price_books', action: 'delete', name: 'price_books.delete' },
+
+    {
+      resource: 'reports',
+      action: 'view',
+      name: 'reports.view',
+      scope: 'all',
+      category: 'reports',
+    },
+    {
+      resource: 'dashboard',
+      action: 'view',
+      name: 'dashboard.view',
+      scope: 'all',
+      category: 'dashboard',
+    },
+    {
+      resource: 'analytics',
+      action: 'view',
+      name: 'analytics.view',
+      scope: 'all',
+      category: 'analytics',
+    },
+    {
+      resource: 'price_books',
+      action: 'view',
+      name: 'price_books.view',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
+      resource: 'price_books',
+      action: 'create',
+      name: 'price_books.create',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
+      resource: 'price_books',
+      action: 'update',
+      name: 'price_books.update',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
+      resource: 'price_books',
+      action: 'delete',
+      name: 'price_books.delete',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
+      resource: 'posts',
+      action: 'view',
+      name: 'posts.view',
+      scope: 'all',
+      category: 'posts',
+    },
+    {
+      resource: 'posts',
+      action: 'create',
+      name: 'posts.create',
+      scope: 'all',
+      category: 'posts',
+    },
+    {
+      resource: 'posts',
+      action: 'update',
+      name: 'posts.update',
+      scope: 'all',
+      category: 'posts',
+    },
+    {
+      resource: 'posts',
+      action: 'delete',
+      name: 'posts.delete',
+      scope: 'all',
+      category: 'posts',
+    },
+
+    {
+      resource: 'users',
+      action: 'view',
+      name: 'users.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'users',
+      action: 'create',
+      name: 'users.create',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'users',
+      action: 'update',
+      name: 'users.update',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'users',
+      action: 'delete',
+      name: 'users.delete',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'roles',
+      action: 'view',
+      name: 'roles.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'roles',
+      action: 'create',
+      name: 'roles.create',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'roles',
+      action: 'update',
+      name: 'roles.update',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'roles',
+      action: 'delete',
+      name: 'roles.delete',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'permissions',
+      action: 'view',
+      name: 'permissions.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'permissions',
+      action: 'create',
+      name: 'permissions.create',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'permissions',
+      action: 'update',
+      name: 'permissions.update',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'permissions',
+      action: 'delete',
+      name: 'permissions.delete',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'permissions',
+      action: 'assign',
+      name: 'permissions.assign',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'branches',
+      action: 'view',
+      name: 'branches.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'branches',
+      action: 'create',
+      name: 'branches.create',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'branches',
+      action: 'update',
+      name: 'branches.update',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'branches',
+      action: 'delete',
+      name: 'branches.delete',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'audit-logs',
+      action: 'view',
+      name: 'audit-logs.view',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'print-templates',
+      action: 'view',
+      name: 'print-templates.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'print-templates',
+      action: 'create',
+      name: 'print-templates.create',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'print-templates',
+      action: 'update',
+      name: 'print-templates.update',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'print-templates',
+      action: 'delete',
+      name: 'print-templates.delete',
+      scope: 'all',
+      category: 'admin',
+    },
+
+    {
+      resource: 'settings',
+      action: 'view',
+      name: 'settings.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'settings',
+      action: 'update',
+      name: 'settings.update',
+      scope: 'all',
+      category: 'admin',
+    },
   ];
 
-  // for (const perm of permissions) {
-  //   await prisma.permission.upsert({
-  //     where: {
-  //       resource_action: { resource: perm.resource, action: perm.action },
-  //     },
-  //     update: {},
-  //     create: {
-  //       name: perm.name,
-  //       resource: perm.resource,
-  //       action: perm.action,
-  //       description: `Can ${perm.action} ${perm.resource}`,
-  //     },
-  //   });
-  // }
+  for (const perm of permissions) {
+    await prisma.permission.upsert({
+      where: { name: perm.name },
+      update: {},
+      create: {
+        name: perm.name,
+        resource: perm.resource,
+        action: perm.action,
+        scope: perm.scope,
+        category: perm.category,
+        description: `Can ${perm.action} ${perm.resource}`,
+      },
+    });
+  }
 
-  // Assign all permissions to admin role
   const allPermissions = await prisma.permission.findMany();
   for (const perm of allPermissions) {
     await prisma.rolePermission.upsert({
@@ -117,7 +454,6 @@ async function main() {
     });
   }
 
-  // Create admin user
   const adminUser = await prisma.user.upsert({
     where: { email: 'dieptra.sg@gmail.com' },
     update: {},
@@ -129,7 +465,6 @@ async function main() {
     },
   });
 
-  // Assign admin role to admin user
   await prisma.userRole.upsert({
     where: {
       userId_roleId: {
@@ -144,7 +479,6 @@ async function main() {
     },
   });
 
-  // Create branches
   const branch1 = await prisma.branch.upsert({
     where: { id: 1 },
     update: {},
@@ -177,6 +511,8 @@ async function main() {
       isActive: true,
     },
   });
+
+  console.log('Seed completed successfully');
 }
 
 main()
