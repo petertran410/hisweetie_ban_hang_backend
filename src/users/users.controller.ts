@@ -12,7 +12,7 @@ import {
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
-import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -38,6 +38,13 @@ export class UsersController {
       page: page ? +page : 1,
       limit: limit ? +limit : 20,
     });
+  }
+
+  @Get('all')
+  @ApiOperation({ summary: 'Get all users as array' })
+  async getAllUsers() {
+    const result = await this.usersService.findAll();
+    return result.data;
   }
 
   @Get(':id')

@@ -45,6 +45,13 @@ export class BranchesController {
     return this.branchesService.findByUser(user.id);
   }
 
+  @Get('all')
+  @ApiOperation({ summary: 'Get all branches as array' })
+  async getAllBranches() {
+    const result = await this.branchesService.findAll();
+    return result.data;
+  }
+
   @Get(':id')
   @RequirePermissions('branches.view')
   findOne(@Param('id') id: string) {
