@@ -513,6 +513,8 @@ async function main() {
   });
 
   console.log('Seed completed successfully');
+
+  await seedPermissions();
 }
 
 main()
@@ -523,3 +525,181 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
+
+async function seedPermissions() {
+  const permissions = [
+    {
+      resource: 'products',
+      action: 'view',
+      name: 'products.view',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'create',
+      name: 'products.create',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'update',
+      name: 'products.update',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'products',
+      action: 'delete',
+      name: 'products.delete',
+      scope: 'all',
+      category: 'products',
+    },
+    {
+      resource: 'orders',
+      action: 'view',
+      name: 'orders.view.own',
+      scope: 'own',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'view',
+      name: 'orders.view.branch',
+      scope: 'branch',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'view',
+      name: 'orders.view.all',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'create',
+      name: 'orders.create',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'update',
+      name: 'orders.update.own',
+      scope: 'own',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'update',
+      name: 'orders.update.all',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'delete',
+      name: 'orders.delete',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'invoices',
+      action: 'view',
+      name: 'invoices.view.own',
+      scope: 'own',
+      category: 'invoices',
+    },
+    {
+      resource: 'invoices',
+      action: 'view',
+      name: 'invoices.view.all',
+      scope: 'all',
+      category: 'invoices',
+    },
+    {
+      resource: 'invoices',
+      action: 'create',
+      name: 'invoices.create',
+      scope: 'all',
+      category: 'invoices',
+    },
+    {
+      resource: 'customers',
+      action: 'view',
+      name: 'customers.view.all',
+      scope: 'all',
+      category: 'customers',
+    },
+    {
+      resource: 'customers',
+      action: 'create',
+      name: 'customers.create',
+      scope: 'all',
+      category: 'customers',
+    },
+    {
+      resource: 'reports',
+      action: 'view',
+      name: 'reports.view',
+      scope: 'all',
+      category: 'reports',
+    },
+    {
+      resource: 'users',
+      action: 'view',
+      name: 'users.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'roles',
+      action: 'view',
+      name: 'roles.view',
+      scope: 'all',
+      category: 'admin',
+    },
+    {
+      resource: 'branches',
+      action: 'view',
+      name: 'branches.view',
+      scope: 'all',
+      category: 'admin',
+    },
+  ];
+
+  for (const perm of permissions) {
+    await prisma.permission.upsert({
+      where: { name: perm.name },
+      update: {},
+      create: perm,
+    });
+  }
+
+  console.log('Permissions seeded');
+
+  const adminRole = await prisma.role.findUnique({
+    where: { name: 'Administrator' },
+  });
+  if (adminRole) {
+    const allPermissions = await prisma.permission.findMany();
+    for (const perm of allPermissions) {
+      await prisma.rolePermission.upsert({
+        where: {
+          roleId_permissionId: {
+            roleId: adminRole.id,
+            permissionId: perm.id,
+          },
+        },
+        update: {},
+        create: {
+          roleId: adminRole.id,
+          permissionId: perm.id,
+        },
+      });
+    }
+    console.log('Admin role permissions assigned');
+  }
+}
