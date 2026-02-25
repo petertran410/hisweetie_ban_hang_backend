@@ -26,6 +26,9 @@ export class AuthService {
             },
           },
         },
+        userPermissions: {
+          include: { permission: true },
+        },
       },
     });
 
@@ -47,9 +50,15 @@ export class AuthService {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
-    const permissions = user.userRoles.flatMap((ur) =>
+    const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
+    const individualPermissions = user.userPermissions.map(
+      (up) => up.permission.name,
+    );
+    const permissions = [
+      ...new Set([...rolePermissions, ...individualPermissions]),
+    ];
 
     const payload = {
       sub: user.id,
@@ -94,6 +103,9 @@ export class AuthService {
             },
           },
         },
+        userPermissions: {
+          include: { permission: true },
+        },
       },
     });
 
@@ -117,6 +129,9 @@ export class AuthService {
                 },
               },
             },
+          },
+          userPermissions: {
+            include: { permission: true },
           },
         },
       });
@@ -145,14 +160,23 @@ export class AuthService {
               },
             },
           },
+          userPermissions: {
+            include: { permission: true },
+          },
         },
       });
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
-    const permissions = user.userRoles.flatMap((ur) =>
+    const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
+    const individualPermissions = user.userPermissions.map(
+      (up) => up.permission.name,
+    );
+    const permissions = [
+      ...new Set([...rolePermissions, ...individualPermissions]),
+    ];
 
     const payload = {
       sub: user.id,

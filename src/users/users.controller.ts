@@ -70,4 +70,14 @@ export class UsersController {
   delete(@Param('id') id: string) {
     return this.usersService.delete(+id);
   }
+
+  @Put(':id/permissions')
+  @RequirePermissions('users.update')
+  @ApiOperation({ summary: 'Assign permissions to user' })
+  assignPermissions(
+    @Param('id') id: string,
+    @Body() body: { permissionIds: number[] },
+  ) {
+    return this.usersService.assignPermissions(+id, body.permissionIds);
+  }
 }

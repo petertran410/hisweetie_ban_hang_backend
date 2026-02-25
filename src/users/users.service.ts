@@ -1,7 +1,7 @@
 import {
   Injectable,
-  BadRequestException,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
@@ -17,43 +17,50 @@ export class UsersService {
     page?: number;
     limit?: number;
   }) {
-    const { search, branchId, isActive, page = 1, limit = 20 } = filters || {};
-
     const where: any = {};
 
-    if (search) {
+    if (filters?.search) {
       where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search, mode: 'insensitive' } },
+        { name: { contains: filters.search, mode: 'insensitive' } },
+        { email: { contains: filters.search, mode: 'insensitive' } },
+        { phone: { contains: filters.search, mode: 'insensitive' } },
       ];
     }
 
-    if (branchId) where.branchId = branchId;
-    if (isActive !== undefined) where.isActive = isActive;
+    if (filters?.branchId !== undefined) {
+      where.branchId = filters.branchId;
+    }
 
-    const [data, total] = await Promise.all([
+    if (filters?.isActive !== undefined) {
+      where.isActive = filters.isActive;
+    }
+
+    const page = filters?.page || 1;
+    const limit = filters?.limit || 20;
+
+    const [total, data] = await Promise.all([
+      this.prisma.user.count({ where }),
       this.prisma.user.findMany({
         where,
+        skip: (page - 1) * limit,
+        take: limit,
         include: {
-          branch: true,
+          branch: { select: { id: true, name: true } },
           userRoles: {
             include: {
-              role: true,
+              role: {
+                select: { id: true, name: true, description: true },
+              },
             },
           },
         },
-        skip: (page - 1) * limit,
-        take: limit,
         orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.user.count({ where }),
     ]);
 
     return {
       data: data.map((user) => ({
         ...user,
-        password: undefined,
         roles: user.userRoles.map((ur) => ur.role),
       })),
       total,
@@ -66,32 +73,41 @@ export class UsersService {
     const user = await this.prisma.user.findUnique({
       where: { id },
       include: {
-        branch: true,
+        branch: { select: { id: true, name: true } },
         userRoles: {
           include: {
             role: {
               include: {
                 rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
+                  include: { permission: true },
                 },
               },
             },
           },
         },
+        userPermissions: {
+          include: { permission: true },
+        },
       },
     });
 
-    if (!user) throw new NotFoundException('User not found');
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const roles = user.userRoles.map((ur) => ur.role);
+    const rolePermissions = user.userRoles.flatMap((ur) =>
+      ur.role.rolePermissions.map((rp) => rp.permission),
+    );
+    const individualPermissions = user.userPermissions.map(
+      (up) => up.permission,
+    );
 
     return {
       ...user,
-      password: undefined,
-      roles: user.userRoles.map((ur) => ur.role),
-      permissions: user.userRoles.flatMap((ur) =>
-        ur.role.rolePermissions.map((rp) => rp.permission),
-      ),
+      roles,
+      rolePermissions,
+      individualPermissions,
     };
   }
 
@@ -101,7 +117,9 @@ export class UsersService {
     password: string;
     phone?: string;
     branchId?: number;
-    roleIds: number[];
+    roleIds?: number[];
+    permissionIds?: number[];
+    isActive?: boolean;
   }) {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
@@ -121,6 +139,7 @@ export class UsersService {
           password: hashedPassword,
           phone: data.phone,
           branchId: data.branchId,
+          isActive: data.isActive ?? true,
         },
       });
 
@@ -132,6 +151,17 @@ export class UsersService {
           })),
         });
       }
+
+      if (data.permissionIds && data.permissionIds.length > 0) {
+        await tx.userPermission.createMany({
+          data: data.permissionIds.map((permissionId) => ({
+            userId: user.id,
+            permissionId,
+          })),
+        });
+      }
+
+      return this.findOne(user.id);
     });
   }
 
@@ -145,6 +175,7 @@ export class UsersService {
       branchId?: number;
       isActive?: boolean;
       roleIds?: number[];
+      permissionIds?: number[];
     },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -192,6 +223,21 @@ export class UsersService {
         }
       }
 
+      if (data.permissionIds !== undefined) {
+        await tx.userPermission.deleteMany({
+          where: { userId: id },
+        });
+
+        if (data.permissionIds.length > 0) {
+          await tx.userPermission.createMany({
+            data: data.permissionIds.map((permissionId) => ({
+              userId: id,
+              permissionId,
+            })),
+          });
+        }
+      }
+
       return this.findOne(id);
     });
   }
@@ -202,5 +248,25 @@ export class UsersService {
 
     await this.prisma.user.delete({ where: { id } });
     return { message: 'User deleted successfully' };
+  }
+
+  async assignPermissions(id: number, permissionIds: number[]) {
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    await this.prisma.userPermission.deleteMany({
+      where: { userId: id },
+    });
+
+    if (permissionIds.length > 0) {
+      await this.prisma.userPermission.createMany({
+        data: permissionIds.map((permissionId) => ({
+          userId: id,
+          permissionId,
+        })),
+      });
+    }
+
+    return this.findOne(id);
   }
 }
