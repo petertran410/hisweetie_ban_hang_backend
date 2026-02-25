@@ -132,8 +132,6 @@ export class UsersService {
           })),
         });
       }
-
-      return this.findOne(user.id);
     });
   }
 
