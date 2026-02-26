@@ -1,9 +1,16 @@
-import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  Logger,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
+  private readonly logger = new Logger(PermissionsGuard.name);
+
   constructor(private reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
@@ -11,12 +18,20 @@ export class PermissionsGuard implements CanActivate {
       PERMISSIONS_KEY,
       [context.getHandler(), context.getClass()],
     );
+
     if (!requiredPermissions) {
       return true;
     }
+
     const { user } = context.switchToHttp().getRequest();
-    return requiredPermissions.every((permission) =>
+    const hasPermission = requiredPermissions.every((permission) =>
       user.permissions?.includes(permission),
     );
+
+    this.logger.debug(`Required: ${requiredPermissions.join(', ')}`);
+    this.logger.debug(`User has: ${user.permissions?.join(', ') || 'none'}`);
+    this.logger.debug(`Access: ${hasPermission ? 'GRANTED' : 'DENIED'}`);
+
+    return hasPermission;
   }
 }
