@@ -28,10 +28,6 @@ export class PermissionsGuard implements CanActivate {
       user.permissions?.includes(permission),
     );
 
-    this.logger.debug(`Required: ${requiredPermissions.join(', ')}`);
-    this.logger.debug(`User has: ${user.permissions?.join(', ') || 'none'}`);
-    this.logger.debug(`Access: ${hasPermission ? 'GRANTED' : 'DENIED'}`);
-
     return hasPermission;
   }
 }
