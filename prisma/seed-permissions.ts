@@ -23,6 +23,13 @@ async function seedPermissions() {
     {
       resource: 'orders',
       action: 'view',
+      name: 'orders.view',
+      scope: 'all',
+      category: 'orders',
+    },
+    {
+      resource: 'orders',
+      action: 'view',
       scope: 'all',
       name: 'orders.view.all',
       description: 'Xem tất cả đơn hàng',
