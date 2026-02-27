@@ -33,10 +33,15 @@ export class PermissionsService {
             },
           },
         },
+        userPermissions: {
+          include: {
+            permission: true,
+          },
+        },
       },
     });
 
-    const permissions =
+    const rolePermissions =
       user?.userRoles.flatMap((ur) =>
         ur.role.rolePermissions.map((rp) => ({
           ...rp.permission,
@@ -44,7 +49,15 @@ export class PermissionsService {
         })),
       ) || [];
 
-    return this.groupPermissions(permissions);
+    const individualPermissions =
+      user?.userPermissions.map((up) => ({
+        ...up.permission,
+        conditions: up.conditions,
+      })) || [];
+
+    const allPermissions = [...rolePermissions, ...individualPermissions];
+
+    return this.groupPermissions(allPermissions);
   }
 
   private groupPermissions(permissions: any[]) {
