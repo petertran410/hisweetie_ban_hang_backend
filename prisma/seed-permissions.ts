@@ -334,6 +334,20 @@ async function seedPermissions() {
       category: 'products',
     },
     {
+      resource: 'price_books',
+      action: 'view',
+      name: 'price_books.view',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
+      resource: 'price_books',
+      action: 'update',
+      name: 'price_books.update',
+      scope: 'all',
+      category: 'price_books',
+    },
+    {
       resource: 'customers',
       action: 'view',
       scope: 'own',
