@@ -8,6 +8,7 @@ import {
   Param,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { CustomersService } from './customers.service';
 import {
@@ -29,8 +30,8 @@ export class CustomersController {
 
   @Get()
   @ApiOperation({ summary: 'Lấy danh sách khách hàng' })
-  findAll(@Query() query: CustomerQueryDto) {
-    return this.customersService.findAll(query);
+  findAll(@Query() query: CustomerQueryDto, @Req() req: any) {
+    return this.customersService.findAll(query, req.user.id);
   }
 
   @Get(':id')

@@ -16,7 +16,7 @@ import {
 export class CustomersService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(query: CustomerQueryDto) {
+  async findAll(query: CustomerQueryDto, userId?: number) {
     const {
       code,
       name,
@@ -92,7 +92,37 @@ export class CustomersService {
       };
     }
 
-    if (groupId) {
+    if (userId) {
+      const allowedGroups = await this.prisma.customerGroup.findMany({
+        where: {
+          OR: [
+            { allowedUserIds: { isEmpty: true } },
+            { allowedUserIds: { has: userId } },
+          ],
+        },
+        select: { id: true },
+      });
+
+      const allowedGroupIds = allowedGroups.map((g) => g.id);
+
+      if (groupId) {
+        if (!allowedGroupIds.includes(groupId)) {
+          return {
+            data: [],
+            total: 0,
+            pageSize,
+            currentItem,
+          };
+        }
+        where.customerGroupDetails = {
+          some: { customerGroupId: groupId },
+        };
+      } else {
+        where.customerGroupDetails = {
+          some: { customerGroupId: { in: allowedGroupIds } },
+        };
+      }
+    } else if (groupId) {
       where.customerGroupDetails = {
         some: { customerGroupId: groupId },
       };
@@ -106,11 +136,11 @@ export class CustomersService {
       where.gender = gender === 'male' ? true : false;
     }
 
-    if (branchId) {
+    if (branchId !== undefined) {
       where.branchId = branchId;
     }
 
-    if (createdBy) {
+    if (createdBy !== undefined) {
       where.createdBy = createdBy;
     }
 
@@ -120,17 +150,29 @@ export class CustomersService {
         where.createdAt.gte = new Date(createdDateFrom);
       }
       if (createdDateTo) {
-        where.createdAt.lte = new Date(createdDateTo);
+        const endDate = new Date(createdDateTo);
+        endDate.setHours(23, 59, 59, 999);
+        where.createdAt.lte = endDate;
       }
     }
 
     if (birthdayFrom || birthdayTo) {
-      where.birthDate = where.birthDate || {};
+      where.birthDate = {};
       if (birthdayFrom) {
-        where.birthDate.gte = new Date(birthdayFrom);
+        const startDate = new Date(birthdayFrom);
+        where.birthDate.gte = new Date(
+          1900,
+          startDate.getMonth(),
+          startDate.getDate(),
+        );
       }
       if (birthdayTo) {
-        where.birthDate.lte = new Date(birthdayTo);
+        const endDate = new Date(birthdayTo);
+        where.birthDate.lte = new Date(
+          2100,
+          endDate.getMonth(),
+          endDate.getDate(),
+        );
       }
     }
 
@@ -164,44 +206,36 @@ export class CustomersService {
       }
     }
 
-    const include: any = {
-      customerType: true,
-      branch: { select: { id: true, name: true } },
-    };
-
-    if (includeCustomerGroup) {
-      include.customerGroupDetails = {
-        include: {
-          customerGroup: { select: { id: true, name: true } },
-        },
-      };
-    }
-
     const [data, total] = await Promise.all([
       this.prisma.customer.findMany({
         where,
         skip: currentItem,
-        take: Math.min(pageSize, 100),
-        include,
+        take: pageSize,
+        include: includeCustomerGroup
+          ? {
+              customerType: true,
+              branch: true,
+              customerGroupDetails: {
+                include: {
+                  customerGroup: { select: { id: true, name: true } },
+                },
+              },
+            }
+          : {
+              customerType: true,
+              branch: true,
+            },
         orderBy: { [orderBy]: orderDirection },
       }),
       this.prisma.customer.count({ where }),
     ]);
 
-    const response: any = { total, pageSize, data };
-
-    if (includeRemoveIds && lastModifiedFrom) {
-      const removedIds = await this.prisma.customer.findMany({
-        where: {
-          isActive: false,
-          updatedAt: { gte: new Date(lastModifiedFrom) },
-        },
-        select: { id: true },
-      });
-      response.removeIds = removedIds.map((r) => r.id);
-    }
-
-    return response;
+    return {
+      data,
+      total,
+      pageSize,
+      currentItem,
+    };
   }
 
   async findOne(id: number) {
