@@ -5,10 +5,7 @@
   "author": "",
   "private": true,
   "license": "UNLICENSED",
-  "prisma": {
-    "seed": "ts-node prisma/seed.ts",
-    "seed-advanced": "ts-node prisma/seed-permissions.ts"
-  },
+  "prisma": {},
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
@@ -22,7 +19,6 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "prisma:seed": "npx prisma db seed",
     "seed:permissions": "ts-node prisma/seed-permissions.ts"
   },
   "dependencies": {

@@ -2,834 +2,918 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
+interface PermissionData {
+  name: string;
+  resource: string;
+  action: string;
+  description: string;
+  category: string;
+  scope?: string;
+}
+
+const permissionsData: PermissionData[] = [
+  // Products
+  {
+    name: 'products:view',
+    resource: 'products',
+    action: 'view',
+    description: 'Xem sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:create',
+    resource: 'products',
+    action: 'create',
+    description: 'Tạo sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:update',
+    resource: 'products',
+    action: 'update',
+    description: 'Sửa sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:delete',
+    resource: 'products',
+    action: 'delete',
+    description: 'Xóa sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:import',
+    resource: 'products',
+    action: 'import',
+    description: 'Import sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:export',
+    resource: 'products',
+    action: 'export',
+    description: 'Export sản phẩm',
+    category: 'Sản phẩm',
+  },
+
+  // Categories
+  {
+    name: 'categories:view',
+    resource: 'categories',
+    action: 'view',
+    description: 'Xem danh mục',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'categories:create',
+    resource: 'categories',
+    action: 'create',
+    description: 'Tạo danh mục',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'categories:update',
+    resource: 'categories',
+    action: 'update',
+    description: 'Sửa danh mục',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'categories:delete',
+    resource: 'categories',
+    action: 'delete',
+    description: 'Xóa danh mục',
+    category: 'Sản phẩm',
+  },
+
+  // Trademarks
+  {
+    name: 'trademarks:view',
+    resource: 'trademarks',
+    action: 'view',
+    description: 'Xem thương hiệu',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'trademarks:create',
+    resource: 'trademarks',
+    action: 'create',
+    description: 'Tạo thương hiệu',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'trademarks:update',
+    resource: 'trademarks',
+    action: 'update',
+    description: 'Sửa thương hiệu',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'trademarks:delete',
+    resource: 'trademarks',
+    action: 'delete',
+    description: 'Xóa thương hiệu',
+    category: 'Sản phẩm',
+  },
+
+  // Price Books
+  {
+    name: 'price_books:view',
+    resource: 'price_books',
+    action: 'view',
+    description: 'Xem bảng giá',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'price_books:create',
+    resource: 'price_books',
+    action: 'create',
+    description: 'Tạo bảng giá',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'price_books:update',
+    resource: 'price_books',
+    action: 'update',
+    description: 'Sửa bảng giá',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'price_books:delete',
+    resource: 'price_books',
+    action: 'delete',
+    description: 'Xóa bảng giá',
+    category: 'Sản phẩm',
+  },
+
+  // Inventory
+  {
+    name: 'inventory:view',
+    resource: 'inventory',
+    action: 'view',
+    description: 'Xem tồn kho',
+    category: 'Kho',
+  },
+  {
+    name: 'inventory:update',
+    resource: 'inventory',
+    action: 'update',
+    description: 'Điều chỉnh tồn kho',
+    category: 'Kho',
+  },
+  {
+    name: 'inventory:export',
+    resource: 'inventory',
+    action: 'export',
+    description: 'Xuất báo cáo tồn kho',
+    category: 'Kho',
+  },
+
+  // Transfers
+  {
+    name: 'transfers:view',
+    resource: 'transfers',
+    action: 'view',
+    description: 'Xem chuyển kho',
+    category: 'Kho',
+  },
+  {
+    name: 'transfers:create',
+    resource: 'transfers',
+    action: 'create',
+    description: 'Tạo chuyển kho',
+    category: 'Kho',
+  },
+  {
+    name: 'transfers:update',
+    resource: 'transfers',
+    action: 'update',
+    description: 'Sửa chuyển kho',
+    category: 'Kho',
+  },
+  {
+    name: 'transfers:delete',
+    resource: 'transfers',
+    action: 'delete',
+    description: 'Xóa chuyển kho',
+    category: 'Kho',
+  },
+  {
+    name: 'transfers:approve',
+    resource: 'transfers',
+    action: 'approve',
+    description: 'Duyệt chuyển kho',
+    category: 'Kho',
+  },
+
+  // Productions
+  {
+    name: 'productions:view',
+    resource: 'productions',
+    action: 'view',
+    description: 'Xem sản xuất',
+    category: 'Kho',
+  },
+  {
+    name: 'productions:create',
+    resource: 'productions',
+    action: 'create',
+    description: 'Tạo sản xuất',
+    category: 'Kho',
+  },
+  {
+    name: 'productions:update',
+    resource: 'productions',
+    action: 'update',
+    description: 'Sửa sản xuất',
+    category: 'Kho',
+  },
+  {
+    name: 'productions:delete',
+    resource: 'productions',
+    action: 'delete',
+    description: 'Xóa sản xuất',
+    category: 'Kho',
+  },
+
+  // Destructions
+  {
+    name: 'destructions:view',
+    resource: 'destructions',
+    action: 'view',
+    description: 'Xem hủy hàng',
+    category: 'Kho',
+  },
+  {
+    name: 'destructions:create',
+    resource: 'destructions',
+    action: 'create',
+    description: 'Tạo hủy hàng',
+    category: 'Kho',
+  },
+  {
+    name: 'destructions:update',
+    resource: 'destructions',
+    action: 'update',
+    description: 'Sửa hủy hàng',
+    category: 'Kho',
+  },
+  {
+    name: 'destructions:delete',
+    resource: 'destructions',
+    action: 'delete',
+    description: 'Xóa hủy hàng',
+    category: 'Kho',
+  },
+
+  // Orders
+  {
+    name: 'orders:view',
+    resource: 'orders',
+    action: 'view',
+    description: 'Xem đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:create',
+    resource: 'orders',
+    action: 'create',
+    description: 'Tạo đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:update',
+    resource: 'orders',
+    action: 'update',
+    description: 'Sửa đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:delete',
+    resource: 'orders',
+    action: 'delete',
+    description: 'Xóa đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:approve',
+    resource: 'orders',
+    action: 'approve',
+    description: 'Duyệt đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:cancel',
+    resource: 'orders',
+    action: 'cancel',
+    description: 'Hủy đơn hàng',
+    category: 'Bán hàng',
+  },
+
+  // Invoices
+  {
+    name: 'invoices:view',
+    resource: 'invoices',
+    action: 'view',
+    description: 'Xem hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:create',
+    resource: 'invoices',
+    action: 'create',
+    description: 'Tạo hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:update',
+    resource: 'invoices',
+    action: 'update',
+    description: 'Sửa hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:delete',
+    resource: 'invoices',
+    action: 'delete',
+    description: 'Xóa hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:print',
+    resource: 'invoices',
+    action: 'print',
+    description: 'In hóa đơn',
+    category: 'Bán hàng',
+  },
+
+  // Customers
+  {
+    name: 'customers:view',
+    resource: 'customers',
+    action: 'view',
+    description: 'Xem khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customers:create',
+    resource: 'customers',
+    action: 'create',
+    description: 'Tạo khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customers:update',
+    resource: 'customers',
+    action: 'update',
+    description: 'Sửa khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customers:delete',
+    resource: 'customers',
+    action: 'delete',
+    description: 'Xóa khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customers:import',
+    resource: 'customers',
+    action: 'import',
+    description: 'Import khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customers:export',
+    resource: 'customers',
+    action: 'export',
+    description: 'Export khách hàng',
+    category: 'Khách hàng',
+  },
+
+  // Customer Groups
+  {
+    name: 'customer_groups:view',
+    resource: 'customer_groups',
+    action: 'view',
+    description: 'Xem nhóm khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customer_groups:create',
+    resource: 'customer_groups',
+    action: 'create',
+    description: 'Tạo nhóm khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customer_groups:update',
+    resource: 'customer_groups',
+    action: 'update',
+    description: 'Sửa nhóm khách hàng',
+    category: 'Khách hàng',
+  },
+  {
+    name: 'customer_groups:delete',
+    resource: 'customer_groups',
+    action: 'delete',
+    description: 'Xóa nhóm khách hàng',
+    category: 'Khách hàng',
+  },
+
+  // Suppliers
+  {
+    name: 'suppliers:view',
+    resource: 'suppliers',
+    action: 'view',
+    description: 'Xem nhà cung cấp',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'suppliers:create',
+    resource: 'suppliers',
+    action: 'create',
+    description: 'Tạo nhà cung cấp',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'suppliers:update',
+    resource: 'suppliers',
+    action: 'update',
+    description: 'Sửa nhà cung cấp',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'suppliers:delete',
+    resource: 'suppliers',
+    action: 'delete',
+    description: 'Xóa nhà cung cấp',
+    category: 'Nhà cung cấp',
+  },
+
+  // Order Suppliers
+  {
+    name: 'order_suppliers:view',
+    resource: 'order_suppliers',
+    action: 'view',
+    description: 'Xem đơn đặt hàng NCC',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'order_suppliers:create',
+    resource: 'order_suppliers',
+    action: 'create',
+    description: 'Tạo đơn đặt hàng NCC',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'order_suppliers:update',
+    resource: 'order_suppliers',
+    action: 'update',
+    description: 'Sửa đơn đặt hàng NCC',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'order_suppliers:delete',
+    resource: 'order_suppliers',
+    action: 'delete',
+    description: 'Xóa đơn đặt hàng NCC',
+    category: 'Nhà cung cấp',
+  },
+
+  // Purchase Orders
+  {
+    name: 'purchase_orders:view',
+    resource: 'purchase_orders',
+    action: 'view',
+    description: 'Xem nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'purchase_orders:create',
+    resource: 'purchase_orders',
+    action: 'create',
+    description: 'Tạo nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'purchase_orders:update',
+    resource: 'purchase_orders',
+    action: 'update',
+    description: 'Sửa nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'purchase_orders:delete',
+    resource: 'purchase_orders',
+    action: 'delete',
+    description: 'Xóa nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+
+  // Packing Slips
+  {
+    name: 'packing_slips:view',
+    resource: 'packing_slips',
+    action: 'view',
+    description: 'Xem báo đơn',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_slips:create',
+    resource: 'packing_slips',
+    action: 'create',
+    description: 'Tạo báo đơn',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_slips:update',
+    resource: 'packing_slips',
+    action: 'update',
+    description: 'Sửa báo đơn',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_slips:delete',
+    resource: 'packing_slips',
+    action: 'delete',
+    description: 'Xóa báo đơn',
+    category: 'Giao hàng',
+  },
+
+  // Packing Hangs
+  {
+    name: 'packing_hangs:view',
+    resource: 'packing_hangs',
+    action: 'view',
+    description: 'Xem báo treo',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_hangs:create',
+    resource: 'packing_hangs',
+    action: 'create',
+    description: 'Tạo báo treo',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_hangs:update',
+    resource: 'packing_hangs',
+    action: 'update',
+    description: 'Sửa báo treo',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_hangs:delete',
+    resource: 'packing_hangs',
+    action: 'delete',
+    description: 'Xóa báo treo',
+    category: 'Giao hàng',
+  },
+
+  // Packing Loadings
+  {
+    name: 'packing_loadings:view',
+    resource: 'packing_loadings',
+    action: 'view',
+    description: 'Xem lên xe',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_loadings:create',
+    resource: 'packing_loadings',
+    action: 'create',
+    description: 'Tạo lên xe',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_loadings:update',
+    resource: 'packing_loadings',
+    action: 'update',
+    description: 'Sửa lên xe',
+    category: 'Giao hàng',
+  },
+  {
+    name: 'packing_loadings:delete',
+    resource: 'packing_loadings',
+    action: 'delete',
+    description: 'Xóa lên xe',
+    category: 'Giao hàng',
+  },
+
+  // Cash Flow
+  {
+    name: 'cash_flows:view',
+    resource: 'cash_flows',
+    action: 'view',
+    description: 'Xem sổ quỹ',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:create',
+    resource: 'cash_flows',
+    action: 'create',
+    description: 'Tạo phiếu thu/chi',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:update',
+    resource: 'cash_flows',
+    action: 'update',
+    description: 'Sửa phiếu thu/chi',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:delete',
+    resource: 'cash_flows',
+    action: 'delete',
+    description: 'Xóa phiếu thu/chi',
+    category: 'Tài chính',
+  },
+
+  // Reports
+  {
+    name: 'reports:sales',
+    resource: 'reports',
+    action: 'sales',
+    description: 'Báo cáo bán hàng',
+    category: 'Báo cáo',
+  },
+  {
+    name: 'reports:inventory',
+    resource: 'reports',
+    action: 'inventory',
+    description: 'Báo cáo tồn kho',
+    category: 'Báo cáo',
+  },
+  {
+    name: 'reports:financial',
+    resource: 'reports',
+    action: 'financial',
+    description: 'Báo cáo tài chính',
+    category: 'Báo cáo',
+  },
+  {
+    name: 'reports:customer',
+    resource: 'reports',
+    action: 'customer',
+    description: 'Báo cáo khách hàng',
+    category: 'Báo cáo',
+  },
+
+  // Users
+  {
+    name: 'users:view',
+    resource: 'users',
+    action: 'view',
+    description: 'Xem người dùng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'users:create',
+    resource: 'users',
+    action: 'create',
+    description: 'Tạo người dùng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'users:update',
+    resource: 'users',
+    action: 'update',
+    description: 'Sửa người dùng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'users:delete',
+    resource: 'users',
+    action: 'delete',
+    description: 'Xóa người dùng',
+    category: 'Quản trị',
+  },
+
+  // Roles
+  {
+    name: 'roles:view',
+    resource: 'roles',
+    action: 'view',
+    description: 'Xem vai trò',
+    category: 'Quản trị',
+  },
+  {
+    name: 'roles:create',
+    resource: 'roles',
+    action: 'create',
+    description: 'Tạo vai trò',
+    category: 'Quản trị',
+  },
+  {
+    name: 'roles:update',
+    resource: 'roles',
+    action: 'update',
+    description: 'Sửa vai trò',
+    category: 'Quản trị',
+  },
+  {
+    name: 'roles:delete',
+    resource: 'roles',
+    action: 'delete',
+    description: 'Xóa vai trò',
+    category: 'Quản trị',
+  },
+  {
+    name: 'roles:assign_permissions',
+    resource: 'roles',
+    action: 'assign_permissions',
+    description: 'Phân quyền cho vai trò',
+    category: 'Quản trị',
+  },
+
+  // Branches
+  {
+    name: 'branches:view',
+    resource: 'branches',
+    action: 'view',
+    description: 'Xem chi nhánh',
+    category: 'Quản trị',
+  },
+  {
+    name: 'branches:create',
+    resource: 'branches',
+    action: 'create',
+    description: 'Tạo chi nhánh',
+    category: 'Quản trị',
+  },
+  {
+    name: 'branches:update',
+    resource: 'branches',
+    action: 'update',
+    description: 'Sửa chi nhánh',
+    category: 'Quản trị',
+  },
+  {
+    name: 'branches:delete',
+    resource: 'branches',
+    action: 'delete',
+    description: 'Xóa chi nhánh',
+    category: 'Quản trị',
+  },
+
+  // Audit Logs
+  {
+    name: 'audit_logs:view',
+    resource: 'audit_logs',
+    action: 'view',
+    description: 'Xem lịch sử thao tác',
+    category: 'Quản trị',
+  },
+
+  // Print Templates
+  {
+    name: 'print_templates:view',
+    resource: 'print_templates',
+    action: 'view',
+    description: 'Xem mẫu in',
+    category: 'Cấu hình',
+  },
+  {
+    name: 'print_templates:create',
+    resource: 'print_templates',
+    action: 'create',
+    description: 'Tạo mẫu in',
+    category: 'Cấu hình',
+  },
+  {
+    name: 'print_templates:update',
+    resource: 'print_templates',
+    action: 'update',
+    description: 'Sửa mẫu in',
+    category: 'Cấu hình',
+  },
+  {
+    name: 'print_templates:delete',
+    resource: 'print_templates',
+    action: 'delete',
+    description: 'Xóa mẫu in',
+    category: 'Cấu hình',
+  },
+];
+
 async function seedPermissions() {
-  const permissions = [
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'own',
-      name: 'orders.view.own',
-      description: 'Xem đơn hàng của chính mình',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'branch',
-      name: 'orders.view.branch',
-      description: 'Xem đơn hàng trong chi nhánh',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      name: 'orders.view',
-      scope: 'all',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'all',
-      name: 'orders.view.all',
-      description: 'Xem tất cả đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'create',
-      scope: 'own',
-      name: 'orders.create',
-      description: 'Tạo đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'update',
-      scope: 'own',
-      name: 'orders.update.own',
-      description: 'Sửa đơn hàng của chính mình',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'update',
-      scope: 'branch',
-      name: 'orders.update.branch',
-      description: 'Sửa đơn hàng trong chi nhánh',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'update',
-      scope: 'all',
-      name: 'orders.update.all',
-      description: 'Sửa tất cả đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'delete',
-      scope: 'own',
-      name: 'orders.delete.own',
-      description: 'Xóa đơn hàng của chính mình',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'delete',
-      scope: 'all',
-      name: 'orders.delete.all',
-      description: 'Xóa tất cả đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'cancel',
-      scope: 'own',
-      name: 'orders.cancel.own',
-      description: 'Hủy đơn hàng của chính mình',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'cancel',
-      scope: 'all',
-      name: 'orders.cancel.all',
-      description: 'Hủy tất cả đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'export',
-      scope: 'own',
-      name: 'orders.export.own',
-      description: 'Xuất dữ liệu đơn hàng của mình',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'export',
-      scope: 'all',
-      name: 'orders.export.all',
-      description: 'Xuất tất cả dữ liệu đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'print',
-      scope: 'own',
-      name: 'orders.print',
-      description: 'In đơn hàng',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'own',
-      field: 'discount',
-      name: 'orders.view.discount',
-      description: 'Xem giảm giá',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'edit',
-      scope: 'own',
-      field: 'discount',
-      name: 'orders.edit.discount',
-      description: 'Sửa giảm giá',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'own',
-      field: 'cost',
-      name: 'orders.view.cost',
-      description: 'Xem giá vốn',
-      category: 'orders',
-    },
-    {
-      resource: 'orders',
-      action: 'view',
-      scope: 'own',
-      field: 'profit',
-      name: 'orders.view.profit',
-      description: 'Xem lợi nhuận',
-      category: 'orders',
-    },
-    {
-      resource: 'invoices',
-      action: 'view',
-      scope: 'own',
-      name: 'invoices.view.own',
-      description: 'Xem hóa đơn của chính mình',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'view',
-      scope: 'branch',
-      name: 'invoices.view.branch',
-      description: 'Xem hóa đơn trong chi nhánh',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'view',
-      scope: 'all',
-      name: 'invoices.view.all',
-      description: 'Xem tất cả hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'create',
-      scope: 'own',
-      name: 'invoices.create',
-      description: 'Tạo hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'update',
-      scope: 'own',
-      name: 'invoices.update.own',
-      description: 'Sửa hóa đơn của chính mình',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'update',
-      scope: 'all',
-      name: 'invoices.update.all',
-      description: 'Sửa tất cả hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'delete',
-      scope: 'own',
-      name: 'invoices.delete.own',
-      description: 'Xóa hóa đơn của chính mình',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'delete',
-      scope: 'all',
-      name: 'invoices.delete.all',
-      description: 'Xóa tất cả hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'complete',
-      scope: 'own',
-      name: 'invoices.complete.own',
-      description: 'Hoàn thành hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'cancel',
-      scope: 'own',
-      name: 'invoices.cancel.own',
-      description: 'Hủy hóa đơn của mình',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'cancel',
-      scope: 'all',
-      name: 'invoices.cancel.all',
-      description: 'Hủy tất cả hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'view',
-      scope: 'own',
-      field: 'cost',
-      name: 'invoices.view.cost',
-      description: 'Xem giá vốn hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'invoices',
-      action: 'view',
-      scope: 'own',
-      field: 'profit',
-      name: 'invoices.view.profit',
-      description: 'Xem lợi nhuận hóa đơn',
-      category: 'invoices',
-    },
-    {
-      resource: 'products',
-      action: 'view',
-      scope: 'all',
-      name: 'products.view',
-      description: 'Xem sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'create',
-      scope: 'all',
-      name: 'products.create',
-      description: 'Tạo sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'update',
-      scope: 'all',
-      name: 'products.update',
-      description: 'Sửa sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'delete',
-      scope: 'all',
-      name: 'products.delete',
-      description: 'Xóa sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'view',
-      scope: 'all',
-      field: 'cost',
-      name: 'products.view.cost',
-      description: 'Xem giá vốn sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'edit',
-      scope: 'all',
-      field: 'cost',
-      name: 'products.edit.cost',
-      description: 'Sửa giá vốn sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'view',
-      scope: 'all',
-      field: 'price',
-      name: 'products.view.price',
-      description: 'Xem giá bán sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'products',
-      action: 'edit',
-      scope: 'all',
-      field: 'price',
-      name: 'products.edit.price',
-      description: 'Sửa giá bán sản phẩm',
-      category: 'products',
-    },
-    {
-      resource: 'price_books',
-      action: 'view',
-      name: 'price_books.view',
-      scope: 'all',
-      category: 'price_books',
-    },
-    {
-      resource: 'price_books',
-      action: 'update',
-      name: 'price_books.update',
-      scope: 'all',
-      category: 'price_books',
-    },
-    {
-      resource: 'customers',
-      action: 'view',
-      scope: 'own',
-      name: 'customers.view.own',
-      description: 'Xem khách hàng của mình',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'view',
-      scope: 'branch',
-      name: 'customers.view.branch',
-      description: 'Xem khách hàng trong chi nhánh',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'view',
-      scope: 'all',
-      name: 'customers.view.all',
-      description: 'Xem tất cả khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'create',
-      scope: 'own',
-      name: 'customers.create',
-      description: 'Tạo khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'update',
-      scope: 'own',
-      name: 'customers.update.own',
-      description: 'Sửa khách hàng của mình',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'update',
-      scope: 'all',
-      name: 'customers.update.all',
-      description: 'Sửa tất cả khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'delete',
-      scope: 'all',
-      name: 'customers.delete',
-      description: 'Xóa khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'view',
-      scope: 'all',
-      field: 'debt',
-      name: 'customers.view.debt',
-      description: 'Xem công nợ khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'customers',
-      action: 'edit',
-      scope: 'all',
-      field: 'debt',
-      name: 'customers.edit.debt',
-      description: 'Sửa công nợ khách hàng',
-      category: 'customers',
-    },
-    {
-      resource: 'suppliers',
-      action: 'view',
-      scope: 'all',
-      name: 'suppliers.view',
-      description: 'Xem nhà cung cấp',
-      category: 'suppliers',
-    },
-    {
-      resource: 'suppliers',
-      action: 'create',
-      scope: 'all',
-      name: 'suppliers.create',
-      description: 'Tạo nhà cung cấp',
-      category: 'suppliers',
-    },
-    {
-      resource: 'suppliers',
-      action: 'update',
-      scope: 'all',
-      name: 'suppliers.update',
-      description: 'Sửa nhà cung cấp',
-      category: 'suppliers',
-    },
-    {
-      resource: 'suppliers',
-      action: 'delete',
-      scope: 'all',
-      name: 'suppliers.delete',
-      description: 'Xóa nhà cung cấp',
-      category: 'suppliers',
-    },
-    {
-      resource: 'cashflows',
-      action: 'view',
-      scope: 'own',
-      name: 'cashflows.view.own',
-      description: 'Xem phiếu thu chi của mình',
-      category: 'cashflows',
-    },
-    {
-      resource: 'cashflows',
-      action: 'view',
-      scope: 'branch',
-      name: 'cashflows.view.branch',
-      description: 'Xem phiếu thu chi chi nhánh',
-      category: 'cashflows',
-    },
-    {
-      resource: 'cashflows',
-      action: 'view',
-      scope: 'all',
-      name: 'cashflows.view.all',
-      description: 'Xem tất cả phiếu thu chi',
-      category: 'cashflows',
-    },
-    {
-      resource: 'cashflows',
-      action: 'create',
-      scope: 'own',
-      name: 'cashflows.create',
-      description: 'Tạo phiếu thu chi',
-      category: 'cashflows',
-    },
-    {
-      resource: 'cashflows',
-      action: 'approve',
-      scope: 'branch',
-      name: 'cashflows.approve.branch',
-      description: 'Duyệt phiếu thu chi chi nhánh',
-      category: 'cashflows',
-    },
-    {
-      resource: 'cashflows',
-      action: 'approve',
-      scope: 'all',
-      name: 'cashflows.approve.all',
-      description: 'Duyệt tất cả phiếu thu chi',
-      category: 'cashflows',
-    },
-    {
-      resource: 'reports',
-      action: 'view',
-      scope: 'branch',
-      name: 'reports.view.branch',
-      description: 'Xem báo cáo chi nhánh',
-      category: 'reports',
-    },
-    {
-      resource: 'reports',
-      action: 'view',
-      scope: 'all',
-      name: 'reports.view.all',
-      description: 'Xem tất cả báo cáo',
-      category: 'reports',
-    },
-    {
-      resource: 'reports',
-      action: 'export',
-      scope: 'branch',
-      name: 'reports.export.branch',
-      description: 'Xuất báo cáo chi nhánh',
-      category: 'reports',
-    },
-    {
-      resource: 'reports',
-      action: 'export',
-      scope: 'all',
-      name: 'reports.export.all',
-      description: 'Xuất tất cả báo cáo',
-      category: 'reports',
-    },
-    {
-      resource: 'inventory',
-      action: 'view',
-      scope: 'branch',
-      name: 'inventory.view.branch',
-      description: 'Xem tồn kho chi nhánh',
-      category: 'inventory',
-    },
-    {
-      resource: 'inventory',
-      action: 'view',
-      scope: 'all',
-      name: 'inventory.view.all',
-      description: 'Xem tất cả tồn kho',
-      category: 'inventory',
-    },
-    {
-      resource: 'inventory',
-      action: 'adjust',
-      scope: 'branch',
-      name: 'inventory.adjust.branch',
-      description: 'Điều chỉnh tồn kho chi nhánh',
-      category: 'inventory',
-    },
-    {
-      resource: 'inventory',
-      action: 'adjust',
-      scope: 'all',
-      name: 'inventory.adjust.all',
-      description: 'Điều chỉnh tất cả tồn kho',
-      category: 'inventory',
-    },
-    {
-      resource: 'users',
-      action: 'view',
-      scope: 'all',
-      name: 'users.view',
-      description: 'Xem người dùng',
-      category: 'admin',
-    },
-    {
-      resource: 'users',
-      action: 'create',
-      scope: 'all',
-      name: 'users.create',
-      description: 'Tạo người dùng',
-      category: 'admin',
-    },
-    {
-      resource: 'users',
-      action: 'update',
-      scope: 'all',
-      name: 'users.update',
-      description: 'Sửa người dùng',
-      category: 'admin',
-    },
-    {
-      resource: 'users',
-      action: 'delete',
-      scope: 'all',
-      name: 'users.delete',
-      description: 'Xóa người dùng',
-      category: 'admin',
-    },
-    {
-      resource: 'roles',
-      action: 'view',
-      scope: 'all',
-      name: 'roles.view',
-      description: 'Xem vai trò',
-      category: 'admin',
-    },
-    {
-      resource: 'roles',
-      action: 'create',
-      scope: 'all',
-      name: 'roles.create',
-      description: 'Tạo vai trò',
-      category: 'admin',
-    },
-    {
-      resource: 'roles',
-      action: 'update',
-      scope: 'all',
-      name: 'roles.update',
-      description: 'Sửa vai trò',
-      category: 'admin',
-    },
-    {
-      resource: 'roles',
-      action: 'delete',
-      scope: 'all',
-      name: 'roles.delete',
-      description: 'Xóa vai trò',
-      category: 'admin',
-    },
-    {
-      resource: 'permissions',
-      action: 'view',
-      scope: 'all',
-      name: 'permissions.view',
-      description: 'Xem quyền',
-      category: 'admin',
-    },
-    {
-      resource: 'permissions',
-      action: 'assign',
-      scope: 'all',
-      name: 'permissions.assign',
-      description: 'Gán quyền',
-      category: 'admin',
-    },
-    {
-      resource: 'branches',
-      action: 'view',
-      scope: 'all',
-      name: 'branches.view',
-      description: 'Xem chi nhánh',
-      category: 'admin',
-    },
-    {
-      resource: 'branches',
-      action: 'create',
-      scope: 'all',
-      name: 'branches.create',
-      description: 'Tạo chi nhánh',
-      category: 'admin',
-    },
-    {
-      resource: 'branches',
-      action: 'update',
-      scope: 'all',
-      name: 'branches.update',
-      description: 'Sửa chi nhánh',
-      category: 'admin',
-    },
-    {
-      resource: 'branches',
-      action: 'delete',
-      scope: 'all',
-      name: 'branches.delete',
-      description: 'Xóa chi nhánh',
-      category: 'admin',
-    },
-    {
-      resource: 'audit-logs',
-      action: 'view',
-      scope: 'all',
-      name: 'audit-logs.view',
-      description: 'Xem lịch sử thao tác',
-      category: 'admin',
-    },
-    {
-      resource: 'print-templates',
-      action: 'view',
-      scope: 'all',
-      name: 'print-templates.view',
-      description: 'Xem mẫu in',
-      category: 'admin',
-    },
-    {
-      resource: 'print-templates',
-      action: 'create',
-      scope: 'all',
-      name: 'print-templates.create',
-      description: 'Tạo mẫu in',
-      category: 'admin',
-    },
-    {
-      resource: 'print-templates',
-      action: 'update',
-      scope: 'all',
-      name: 'print-templates.update',
-      description: 'Sửa mẫu in',
-      category: 'admin',
-    },
-    {
-      resource: 'print-templates',
-      action: 'delete',
-      scope: 'all',
-      name: 'print-templates.delete',
-      description: 'Xóa mẫu in',
-      category: 'admin',
-    },
-    {
-      resource: 'settings',
-      action: 'view',
-      scope: 'all',
-      name: 'settings.view',
-      description: 'Xem cài đặt',
-      category: 'admin',
-    },
-    {
-      resource: 'settings',
-      action: 'update',
-      scope: 'all',
-      name: 'settings.update',
-      description: 'Sửa cài đặt',
-      category: 'admin',
-    },
-  ];
+  console.log('🌱 Seeding permissions...');
 
-  for (const perm of permissions) {
-    await prisma.permission.upsert({
-      where: { name: perm.name },
-      update: {},
-      create: perm,
-    });
-  }
+  await prisma.permission.deleteMany({});
 
-  const fieldPermissions = [
-    { resource: 'orders', fieldName: 'discount', fieldLabel: 'Giảm giá' },
-    { resource: 'orders', fieldName: 'cost', fieldLabel: 'Giá vốn' },
-    { resource: 'orders', fieldName: 'profit', fieldLabel: 'Lợi nhuận' },
-    { resource: 'orders', fieldName: 'description', fieldLabel: 'Ghi chú' },
-    { resource: 'invoices', fieldName: 'discount', fieldLabel: 'Giảm giá' },
-    { resource: 'invoices', fieldName: 'cost', fieldLabel: 'Giá vốn' },
-    { resource: 'invoices', fieldName: 'profit', fieldLabel: 'Lợi nhuận' },
-    { resource: 'products', fieldName: 'cost', fieldLabel: 'Giá vốn' },
-    { resource: 'products', fieldName: 'price', fieldLabel: 'Giá bán' },
-    { resource: 'customers', fieldName: 'debt', fieldLabel: 'Công nợ' },
-  ];
-
-  for (const fp of fieldPermissions) {
-    await prisma.fieldPermission.upsert({
-      where: {
-        resource_fieldName: {
-          resource: fp.resource,
-          fieldName: fp.fieldName,
-        },
+  for (const perm of permissionsData) {
+    await prisma.permission.create({
+      data: {
+        name: perm.name,
+        resource: perm.resource,
+        action: perm.action,
+        description: perm.description,
+        category: perm.category,
+        scope: perm.scope || 'all',
       },
-      update: {},
-      create: fp,
     });
   }
 
-  const columnPermissions = [
-    { resource: 'orders', columnName: 'code', columnLabel: 'Mã đơn', order: 1 },
-    {
-      resource: 'orders',
-      columnName: 'customer',
-      columnLabel: 'Khách hàng',
-      order: 2,
-    },
-    {
-      resource: 'orders',
-      columnName: 'total',
-      columnLabel: 'Tổng tiền',
-      order: 3,
-    },
-    {
-      resource: 'orders',
-      columnName: 'discount',
-      columnLabel: 'Giảm giá',
-      order: 4,
-    },
-    {
-      resource: 'orders',
-      columnName: 'cost',
-      columnLabel: 'Giá vốn',
-      order: 5,
-    },
-    {
-      resource: 'orders',
-      columnName: 'profit',
-      columnLabel: 'Lợi nhuận',
-      order: 6,
-    },
-    {
-      resource: 'orders',
-      columnName: 'status',
-      columnLabel: 'Trạng thái',
-      order: 7,
-    },
-    {
-      resource: 'orders',
-      columnName: 'createdAt',
-      columnLabel: 'Ngày tạo',
-      order: 8,
-    },
-  ];
+  console.log(`✅ Created ${permissionsData.length} permissions`);
 
-  for (const cp of columnPermissions) {
-    await prisma.columnPermission.upsert({
-      where: {
-        resource_columnName: {
-          resource: cp.resource,
-          columnName: cp.columnName,
-        },
+  const superAdminRole = await prisma.role.upsert({
+    where: { name: 'Super Admin' },
+    update: {},
+    create: {
+      name: 'Super Admin',
+      description: 'Quản trị viên cấp cao - Full quyền tự động',
+    },
+  });
+
+  const adminRole = await prisma.role.upsert({
+    where: { name: 'Admin' },
+    update: {},
+    create: {
+      name: 'Admin',
+      description: 'Quản trị viên - Cần được cấp quyền',
+    },
+  });
+
+  const userRole = await prisma.role.upsert({
+    where: { name: 'User' },
+    update: {},
+    create: {
+      name: 'User',
+      description: 'Người dùng - Cần được cấp quyền',
+    },
+  });
+
+  console.log('✅ Created 3 roles: Super Admin, Admin, User');
+
+  await prisma.rolePermission.deleteMany({
+    where: {
+      roleId: {
+        in: [superAdminRole.id, adminRole.id, userRole.id],
       },
-      update: {},
-      create: cp,
+    },
+  });
+
+  const allPermissions = await prisma.permission.findMany();
+
+  for (const perm of allPermissions) {
+    await prisma.rolePermission.create({
+      data: {
+        roleId: superAdminRole.id,
+        permissionId: perm.id,
+      },
     });
   }
+
+  console.log(
+    `✅ Assigned ${allPermissions.length} permissions to Super Admin role`,
+  );
+
+  const adminPermissions = allPermissions.filter(
+    (p) =>
+      !['users:delete', 'roles:delete', 'branches:delete'].includes(p.name),
+  );
+
+  for (const perm of adminPermissions) {
+    await prisma.rolePermission.create({
+      data: {
+        roleId: adminRole.id,
+        permissionId: perm.id,
+      },
+    });
+  }
+
+  console.log(
+    `✅ Assigned ${adminPermissions.length} permissions to Admin role`,
+  );
+
+  const userPermissions = allPermissions.filter(
+    (p) =>
+      p.category === 'Bán hàng' ||
+      p.category === 'Khách hàng' ||
+      (p.category === 'Sản phẩm' && p.action === 'view') ||
+      (p.category === 'Kho' && p.action === 'view'),
+  );
+
+  for (const perm of userPermissions) {
+    await prisma.rolePermission.create({
+      data: {
+        roleId: userRole.id,
+        permissionId: perm.id,
+      },
+    });
+  }
+
+  console.log(`✅ Assigned ${userPermissions.length} permissions to User role`);
+  console.log('🎉 Seed permissions completed!');
 }
 
 seedPermissions()
-  .then(() => console.log('Permissions seeded'))
-  .catch((e) => console.error(e))
-  .finally(() => prisma.$disconnect());
+  .catch((e) => {
+    console.error(e);
+    process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });
