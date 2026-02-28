@@ -8,11 +8,11 @@ import {
   Param,
   Query,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -22,7 +22,7 @@ export class UsersController {
   constructor(private usersService: UsersService) {}
 
   @Get()
-  @RequirePermissions('users.view')
+  @ApiOperation({ summary: 'Get all users with filters' })
   findAll(
     @Query('search') search?: string,
     @Query('branchId') branchId?: string,
@@ -32,52 +32,78 @@ export class UsersController {
   ) {
     return this.usersService.findAll({
       search,
-      branchId: branchId ? +branchId : undefined,
+      branchId: branchId ? parseInt(branchId) : undefined,
       isActive:
         isActive === 'true' ? true : isActive === 'false' ? false : undefined,
-      page: page ? +page : 1,
-      limit: limit ? +limit : 20,
+      page: page ? parseInt(page) : undefined,
+      limit: limit ? parseInt(limit) : undefined,
     });
   }
 
   @Get('all')
-  @ApiOperation({ summary: 'Get all users as array' })
-  async getAllUsers() {
-    const result = await this.usersService.findAll();
-    return result.data;
+  @ApiOperation({ summary: 'Get all active users (simplified)' })
+  getUsers() {
+    return this.usersService.getUsers();
   }
 
   @Get(':id')
-  @RequirePermissions('users.view')
+  @ApiOperation({ summary: 'Get user by ID' })
   findOne(@Param('id') id: string) {
-    return this.usersService.findOne(+id);
+    return this.usersService.findOne(parseInt(id));
   }
 
   @Post()
-  @RequirePermissions('users.create')
-  create(@Body() data: any) {
+  @ApiOperation({ summary: 'Create new user' })
+  create(
+    @Body()
+    data: {
+      name: string;
+      email: string;
+      password: string;
+      phone?: string;
+      branchId?: number;
+      roleIds?: number[];
+      permissionIds?: number[];
+      isActive?: boolean;
+    },
+  ) {
     return this.usersService.create(data);
   }
 
   @Put(':id')
-  @RequirePermissions('users.update')
-  update(@Param('id') id: string, @Body() data: any) {
-    return this.usersService.update(+id, data);
+  @ApiOperation({ summary: 'Update user' })
+  update(
+    @Param('id') id: string,
+    @Body()
+    data: {
+      name?: string;
+      email?: string;
+      password?: string;
+      phone?: string;
+      branchId?: number;
+      isActive?: boolean;
+      roleIds?: number[];
+      permissionIds?: number[];
+    },
+  ) {
+    return this.usersService.update(parseInt(id), data);
   }
 
   @Delete(':id')
-  @RequirePermissions('users.delete')
+  @ApiOperation({ summary: 'Delete user' })
   delete(@Param('id') id: string) {
-    return this.usersService.delete(+id);
+    return this.usersService.delete(parseInt(id));
   }
 
   @Put(':id/permissions')
-  @RequirePermissions('users.update')
   @ApiOperation({ summary: 'Assign permissions to user' })
   assignPermissions(
     @Param('id') id: string,
-    @Body() body: { permissionIds: number[] },
+    @Body() data: { permissionIds: number[] },
   ) {
-    return this.usersService.assignPermissions(+id, body.permissionIds);
+    return this.usersService.assignPermissions(
+      parseInt(id),
+      data.permissionIds,
+    );
   }
 }

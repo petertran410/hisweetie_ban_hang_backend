@@ -69,6 +69,22 @@ export class UsersService {
     };
   }
 
+  async getUsers() {
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        isActive: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+
+    return users;
+  }
+
   async findOne(id: number) {
     const user = await this.prisma.user.findUnique({
       where: { id },
@@ -129,6 +145,18 @@ export class UsersService {
       throw new BadRequestException('Email already exists');
     }
 
+    if (data.branchId) {
+      const branch = await this.prisma.branch.findUnique({
+        where: { id: data.branchId },
+      });
+
+      if (!branch) {
+        throw new NotFoundException(
+          `Branch with id ${data.branchId} not found`,
+        );
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
     return this.prisma.$transaction(async (tx) => {
@@ -138,7 +166,7 @@ export class UsersService {
           email: data.email,
           password: hashedPassword,
           phone: data.phone,
-          branchId: data.branchId,
+          branchId: data.branchId || null,
           isActive: data.isActive ?? true,
         },
       });
@@ -190,14 +218,29 @@ export class UsersService {
       }
     }
 
+    if (data.branchId) {
+      const branch = await this.prisma.branch.findUnique({
+        where: { id: data.branchId },
+      });
+
+      if (!branch) {
+        throw new NotFoundException(
+          `Branch with id ${data.branchId} not found`,
+        );
+      }
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const updateData: any = {
         name: data.name,
         email: data.email,
         phone: data.phone,
-        branchId: data.branchId,
         isActive: data.isActive,
       };
+
+      if (data.branchId !== undefined) {
+        updateData.branchId = data.branchId || null;
+      }
 
       if (data.password) {
         updateData.password = await bcrypt.hash(data.password, 10);
