@@ -108,7 +108,9 @@ export class CustomersService {
       });
 
       isAdmin =
-        user?.userRoles.some((ur) => ur.role.name === 'Administrator') || false;
+        user?.userRoles.some(
+          (ur) => ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
+        ) || false;
     }
 
     if (userId && !isAdmin) {

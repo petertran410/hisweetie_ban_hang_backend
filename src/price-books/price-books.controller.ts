@@ -31,28 +31,28 @@ export class PriceBooksController {
   constructor(private priceBooksService: PriceBooksService) {}
 
   @Get()
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get all price books' })
   findAll(@Query() query: PriceBookQueryDto) {
     return this.priceBooksService.findAll(query);
   }
 
   @Get('applicable')
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get applicable price books for context' })
   getApplicablePriceBooks(@Query() params: ApplicablePriceBooksDto) {
     return this.priceBooksService.getApplicablePriceBooks(params);
   }
 
   @Get('product-price')
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get price for a product from price books' })
   getPriceForProduct(@Query() params: ProductPriceDto) {
     return this.priceBooksService.getPriceForProduct(params);
   }
 
   @Get('products-with-prices')
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get all products with multiple price book prices' })
   @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
   @Header('Pragma', 'no-cache')
@@ -67,14 +67,14 @@ export class PriceBooksController {
   }
 
   @Get(':id')
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get price book by ID' })
   findOne(@Param('id') id: string) {
     return this.priceBooksService.findOne(+id);
   }
 
   @Get(':id/products')
-  @RequirePermissions('price_books.view')
+  @RequirePermissions('price_books:view')
   @ApiOperation({ summary: 'Get products in price book' })
   getProductsByPriceBook(
     @Param('id') id: string,
@@ -84,7 +84,7 @@ export class PriceBooksController {
   }
 
   @Post()
-  @RequirePermissions('price_books.create')
+  @RequirePermissions('price_books:create')
   @ApiOperation({ summary: 'Create new price book' })
   async create(@Body() dto: CreatePriceBookDto) {
     const result = await this.priceBooksService.create(dto);
@@ -92,7 +92,7 @@ export class PriceBooksController {
   }
 
   @Post(':id/products')
-  @RequirePermissions('price_books.update')
+  @RequirePermissions('price_books:update')
   @ApiOperation({ summary: 'Add products to price book' })
   addProducts(
     @Param('id') id: string,
@@ -102,14 +102,14 @@ export class PriceBooksController {
   }
 
   @Put(':id')
-  @RequirePermissions('price_books.update')
+  @RequirePermissions('price_books:update')
   @ApiOperation({ summary: 'Update price book' })
   update(@Param('id') id: string, @Body() dto: UpdatePriceBookDto) {
     return this.priceBooksService.update(+id, dto);
   }
 
   @Put(':id/products/:productId')
-  @RequirePermissions('price_books.update')
+  @RequirePermissions('price_books:update')
   @ApiOperation({ summary: 'Update product price in price book' })
   updateProductPrice(
     @Param('id') id: string,
@@ -124,14 +124,14 @@ export class PriceBooksController {
   }
 
   @Delete(':id')
-  @RequirePermissions('price_books.delete')
+  @RequirePermissions('price_books:delete')
   @ApiOperation({ summary: 'Delete price book' })
   remove(@Param('id') id: string) {
     return this.priceBooksService.remove(+id);
   }
 
   @Delete(':id/products')
-  @RequirePermissions('price_books.update')
+  @RequirePermissions('price_books:update')
   @ApiOperation({ summary: 'Remove products from price book' })
   removeProducts(
     @Param('id') id: string,

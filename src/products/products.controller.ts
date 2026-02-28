@@ -11,7 +11,6 @@ import {
 } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
-import { Roles } from '../auth/decorators/roles.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
@@ -22,37 +21,37 @@ export class ProductsController {
   constructor(private productsService: ProductsService) {}
 
   @Get()
-  @RequirePermissions('products.view')
+  @RequirePermissions('products:view')
   findAll(@Query() query: ProductQueryDto) {
     return this.productsService.findAll(query);
   }
 
   @Get(':id')
-  @RequirePermissions('products.view')
+  @RequirePermissions('products:view')
   findOne(@Param('id') id: string) {
     return this.productsService.findOne(+id);
   }
 
   @Post()
-  @RequirePermissions('products.create')
+  @RequirePermissions('products:create')
   create(@Body() dto: CreateProductDto) {
     return this.productsService.create(dto);
   }
 
   @Put(':id')
-  @RequirePermissions('products.update')
+  @RequirePermissions('products:update')
   update(@Param('id') id: string, @Body() dto: UpdateProductDto) {
     return this.productsService.update(+id, dto);
   }
 
   @Delete(':id')
-  @RequirePermissions('products.delete')
+  @RequirePermissions('products:delete')
   remove(@Param('id') id: string) {
     return this.productsService.remove(+id);
   }
 
   @Get('low-stock')
-  @RequirePermissions('products.view')
+  @RequirePermissions('products:view')
   checkLowStock() {
     return this.productsService.checkLowStock();
   }

@@ -13,6 +13,7 @@ import {
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -22,6 +23,7 @@ export class UsersController {
   constructor(private usersService: UsersService) {}
 
   @Get()
+  @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get all users with filters' })
   findAll(
     @Query('search') search?: string,
@@ -41,18 +43,21 @@ export class UsersController {
   }
 
   @Get('all')
+  @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get all active users (simplified)' })
   getUsers() {
     return this.usersService.getUsers();
   }
 
   @Get(':id')
+  @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get user by ID' })
   findOne(@Param('id') id: string) {
     return this.usersService.findOne(parseInt(id));
   }
 
   @Post()
+  @RequirePermissions('users:create')
   @ApiOperation({ summary: 'Create new user' })
   create(
     @Body()
@@ -71,6 +76,7 @@ export class UsersController {
   }
 
   @Put(':id')
+  @RequirePermissions('users:update')
   @ApiOperation({ summary: 'Update user' })
   update(
     @Param('id') id: string,
@@ -90,12 +96,14 @@ export class UsersController {
   }
 
   @Delete(':id')
+  @RequirePermissions('users:delete')
   @ApiOperation({ summary: 'Delete user' })
   delete(@Param('id') id: string) {
     return this.usersService.delete(parseInt(id));
   }
 
   @Put(':id/permissions')
+  @RequirePermissions('users:update')
   @ApiOperation({ summary: 'Assign permissions to user' })
   assignPermissions(
     @Param('id') id: string,
