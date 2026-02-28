@@ -238,12 +238,16 @@ model CustomerType {
 }
 
 model CustomerGroup {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  createdBy   Int?
-  createdAt   DateTime @default(now())
-
+  id                Int      @id @default(autoincrement())
+  name              String
+  description       String?
+  discount          Decimal?
+  createdBy         Int?
+  createdAt         DateTime @default(now())
+  allowedUserIds    Int[]    @default([])
+  autoAddConditions Json?    // Lưu các điều kiện: [{field, operator, value}]
+  autoUpdateMode    String?  // 'add_by_condition' | 'refresh_by_condition' | 'no_update'
+  autoExecute       Boolean  @default(false)
   creator                 User?                       @relation("CustomerGroupCreator", fields: [createdBy], references: [id])
   customerGroupDetails    CustomerGroupDetail[]
   priceBookCustomerGroups PriceBookCustomerGroup[]

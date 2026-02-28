@@ -32,7 +32,6 @@ export class CustomersService {
       birthDate,
       groupId,
       includeCustomerSocial = false,
-      // Extended filters
       customerType,
       gender,
       branchId,
@@ -52,11 +51,10 @@ export class CustomersService {
 
     const where: any = {};
 
-    // Active filter
     if (isActive !== undefined) {
       where.isActive = isActive;
     } else {
-      where.isActive = true; // Default to active only
+      where.isActive = true;
     }
 
     if (code) {
@@ -100,7 +98,6 @@ export class CustomersService {
       };
     }
 
-    // Extended filters
     if (customerType && customerType !== 'all') {
       where.type = customerType === 'individual' ? 0 : 1;
     }
@@ -192,6 +189,16 @@ export class CustomersService {
     ]);
 
     const response: any = { total, pageSize, data };
+
+    const accessibleGroups = await this.prisma.customerGroup.findMany({
+      where: {
+        OR: [
+          { allowedUserIds: { isEmpty: true } }, // Không giới hạn
+          { allowedUserIds: { has: userId } }, // User được chỉ định
+        ],
+      },
+      select: { id: true },
+    });
 
     if (includeRemoveIds && lastModifiedFrom) {
       const removedIds = await this.prisma.customer.findMany({

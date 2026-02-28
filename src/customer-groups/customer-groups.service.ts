@@ -79,11 +79,16 @@ export class CustomerGroupsService {
     };
   }
 
-  async create(dto: CreateCustomerGroupDto, userId?: number) {
+  async create(dto: CreateCustomerGroupDto, userId: number) {
     return this.prisma.customerGroup.create({
       data: {
         name: dto.name,
         description: dto.description,
+        discount: dto.discount,
+        allowedUserIds: dto.allowedUserIds || [],
+        autoAddConditions: dto.autoAddConditions || null,
+        autoUpdateMode: dto.autoUpdateMode || null,
+        autoExecute: dto.autoExecute || false,
         createdBy: userId,
       },
       include: {
@@ -108,6 +113,11 @@ export class CustomerGroupsService {
       data: {
         name: dto.name,
         description: dto.description,
+        discount: dto.discount,
+        allowedUserIds: dto.allowedUserIds,
+        autoAddConditions: dto.autoAddConditions,
+        autoUpdateMode: dto.autoUpdateMode,
+        autoExecute: dto.autoExecute,
       },
       include: {
         creator: {
@@ -115,6 +125,17 @@ export class CustomerGroupsService {
         },
       },
     });
+  }
+
+  async checkUserAccess(groupId: number, userId: number): Promise<boolean> {
+    const group = await this.prisma.customerGroup.findUnique({
+      where: { id: groupId },
+      select: { allowedUserIds: true },
+    });
+
+    if (!group) return false;
+    if (group.allowedUserIds.length === 0) return true;
+    return group.allowedUserIds.includes(userId);
   }
 
   async remove(id: number) {
