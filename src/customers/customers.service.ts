@@ -92,7 +92,26 @@ export class CustomersService {
       };
     }
 
+    let isAdmin = false;
     if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        include: {
+          userRoles: {
+            include: {
+              role: {
+                select: { name: true },
+              },
+            },
+          },
+        },
+      });
+
+      isAdmin =
+        user?.userRoles.some((ur) => ur.role.name === 'Administrator') || false;
+    }
+
+    if (userId && !isAdmin) {
       const allowedGroups = await this.prisma.customerGroup.findMany({
         where: {
           OR: [
