@@ -145,7 +145,7 @@ export class UsersService {
       throw new BadRequestException('Email already exists');
     }
 
-    if (data.branchId) {
+    if (data.branchId && data.branchId > 0) {
       const branch = await this.prisma.branch.findUnique({
         where: { id: data.branchId },
       });
@@ -159,14 +159,14 @@ export class UsersService {
 
     const hashedPassword = await bcrypt.hash(data.password, 10);
 
-    return this.prisma.$transaction(async (tx) => {
+    const userId = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
         data: {
           name: data.name,
           email: data.email,
           password: hashedPassword,
           phone: data.phone,
-          branchId: data.branchId || null,
+          branchId: data.branchId && data.branchId > 0 ? data.branchId : null,
           isActive: data.isActive ?? true,
         },
       });
@@ -189,8 +189,10 @@ export class UsersService {
         });
       }
 
-      return this.findOne(user.id);
+      return user.id;
     });
+
+    return this.findOne(userId);
   }
 
   async update(
@@ -218,7 +220,7 @@ export class UsersService {
       }
     }
 
-    if (data.branchId) {
+    if (data.branchId && data.branchId > 0) {
       const branch = await this.prisma.branch.findUnique({
         where: { id: data.branchId },
       });
@@ -230,7 +232,7 @@ export class UsersService {
       }
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    await this.prisma.$transaction(async (tx) => {
       const updateData: any = {
         name: data.name,
         email: data.email,
@@ -239,7 +241,8 @@ export class UsersService {
       };
 
       if (data.branchId !== undefined) {
-        updateData.branchId = data.branchId || null;
+        updateData.branchId =
+          data.branchId && data.branchId > 0 ? data.branchId : null;
       }
 
       if (data.password) {
@@ -280,9 +283,9 @@ export class UsersService {
           });
         }
       }
-
-      return this.findOne(id);
     });
+
+    return this.findOne(id);
   }
 
   async delete(id: number) {
