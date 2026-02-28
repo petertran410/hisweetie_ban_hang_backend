@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateCustomerGroupDto, UpdateCustomerGroupDto } from './dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class CustomerGroupsService {
@@ -32,6 +33,11 @@ export class CustomerGroupsService {
         id: group.id,
         name: group.name,
         description: group.description,
+        discount: group.discount,
+        allowedUserIds: group.allowedUserIds,
+        autoAddConditions: group.autoAddConditions,
+        autoUpdateMode: group.autoUpdateMode,
+        autoExecute: group.autoExecute,
         createdDate: group.createdAt,
         createdBy: group.createdBy,
         customerGroupDetails: group.customerGroupDetails.map((detail) => ({
@@ -68,6 +74,11 @@ export class CustomerGroupsService {
       id: group.id,
       name: group.name,
       description: group.description,
+      discount: group.discount,
+      allowedUserIds: group.allowedUserIds,
+      autoAddConditions: group.autoAddConditions,
+      autoUpdateMode: group.autoUpdateMode,
+      autoExecute: group.autoExecute,
       createdDate: group.createdAt,
       createdBy: group.createdBy,
       customerGroupDetails: group.customerGroupDetails.map((detail) => ({
@@ -86,8 +97,10 @@ export class CustomerGroupsService {
         description: dto.description,
         discount: dto.discount,
         allowedUserIds: dto.allowedUserIds || [],
-        autoAddConditions: dto.autoAddConditions || null,
-        autoUpdateMode: dto.autoUpdateMode || null,
+        autoAddConditions: dto.autoAddConditions
+          ? (dto.autoAddConditions as Prisma.InputJsonValue)
+          : undefined,
+        autoUpdateMode: dto.autoUpdateMode || undefined,
         autoExecute: dto.autoExecute || false,
         createdBy: userId,
       },
@@ -115,8 +128,11 @@ export class CustomerGroupsService {
         description: dto.description,
         discount: dto.discount,
         allowedUserIds: dto.allowedUserIds,
-        autoAddConditions: dto.autoAddConditions,
-        autoUpdateMode: dto.autoUpdateMode,
+        // Sử dụng undefined thay vì null cho Json field
+        autoAddConditions: dto.autoAddConditions
+          ? (dto.autoAddConditions as Prisma.InputJsonValue)
+          : undefined,
+        autoUpdateMode: dto.autoUpdateMode || undefined,
         autoExecute: dto.autoExecute,
       },
       include: {

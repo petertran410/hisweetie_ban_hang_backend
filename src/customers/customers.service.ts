@@ -190,16 +190,6 @@ export class CustomersService {
 
     const response: any = { total, pageSize, data };
 
-    const accessibleGroups = await this.prisma.customerGroup.findMany({
-      where: {
-        OR: [
-          { allowedUserIds: { isEmpty: true } }, // Không giới hạn
-          { allowedUserIds: { has: userId } }, // User được chỉ định
-        ],
-      },
-      select: { id: true },
-    });
-
     if (includeRemoveIds && lastModifiedFrom) {
       const removedIds = await this.prisma.customer.findMany({
         where: {
