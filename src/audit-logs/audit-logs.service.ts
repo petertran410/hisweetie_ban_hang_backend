@@ -29,27 +29,27 @@ export class AuditLogsService {
         data: {
           userId: data.userId,
           userName: data.userName,
-          branchId: data.branchId,
+          branchId: data.branchId || undefined,
           action: data.action,
           resource: data.resource,
-          resourceId: data.resourceId,
-          method: data.method,
-          path: data.path,
-          statusCode: data.statusCode,
-          duration: data.duration,
+          resourceId: data.resourceId || undefined,
+          method: data.method || undefined,
+          path: data.path || undefined,
+          statusCode: data.statusCode || undefined,
+          duration: data.duration || undefined,
           oldData: data.oldData
             ? JSON.parse(JSON.stringify(data.oldData))
-            : null,
+            : undefined,
           newData: data.newData
             ? JSON.parse(JSON.stringify(data.newData))
-            : null,
+            : undefined,
           metadata: data.metadata
             ? JSON.parse(JSON.stringify(data.metadata))
-            : null,
-          error: data.error,
-          ipAddress: data.ipAddress,
-          userAgent: data.userAgent,
-          sessionId: data.sessionId,
+            : undefined,
+          error: data.error || undefined,
+          ipAddress: data.ipAddress || undefined,
+          userAgent: data.userAgent || undefined,
+          sessionId: data.sessionId || undefined,
         },
       });
     } catch (error) {

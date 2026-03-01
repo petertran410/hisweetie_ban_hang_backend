@@ -7,6 +7,7 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditLogsService } from '../../audit-logs/audit-logs.service';
+import path from 'path';
 
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
@@ -72,7 +73,7 @@ export class AuditInterceptor implements NestInterceptor {
               .create({
                 userId: user.id,
                 userName: user.name || user.email,
-                branchId: user.branchId || null,
+                branchId: user.branchId || undefined,
                 action,
                 resource: resourceMap[resource],
                 resourceId,
@@ -80,12 +81,14 @@ export class AuditInterceptor implements NestInterceptor {
                 path: url,
                 statusCode: response.statusCode,
                 duration,
-                oldData: method === 'PUT' || method === 'DELETE' ? body : null,
-                newData: method === 'POST' || method === 'PUT' ? data : null,
+                oldData:
+                  method === 'PUT' || method === 'DELETE' ? body : undefined,
+                newData:
+                  method === 'POST' || method === 'PUT' ? data : undefined,
                 metadata: {
                   query,
                   params,
-                  body: method === 'GET' ? null : body,
+                  body: method === 'GET' ? undefined : body,
                 },
                 ipAddress: request.ip || request.connection.remoteAddress,
                 userAgent: headers['user-agent'],
@@ -102,7 +105,7 @@ export class AuditInterceptor implements NestInterceptor {
               .create({
                 userId: user.id,
                 userName: user.name || user.email,
-                branchId: user.branchId || null,
+                branchId: user.branchId || undefined,
                 action,
                 resource: resourceMap[resource],
                 resourceId,
