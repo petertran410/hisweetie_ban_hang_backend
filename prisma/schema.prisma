@@ -205,6 +205,7 @@ model Branch {
   packingSlips PackingSlip[]
   packingHangs               PackingHang[]
   packingLoadings            PackingLoading[]
+  auditLogs AuditLog[] @relation("AuditLogBranch")
 
   @@map("branches")
 }
@@ -1557,19 +1558,31 @@ model AuditLog {
   id          Int      @id @default(autoincrement())
   userId      Int
   userName    String
+  branchId    Int?
   action      String
   resource    String
   resourceId  Int?
+  method      String?
+  path        String?
+  statusCode  Int?
+  duration    Int?
   oldData     Json?
   newData     Json?
+  metadata    Json?
+  error       String?
   ipAddress   String?
   userAgent   String?
+  sessionId   String?
   createdAt   DateTime @default(now())
 
-  user User @relation("AuditLogUser", fields: [userId], references: [id])
+  user   User    @relation("AuditLogUser", fields: [userId], references: [id])
+  branch Branch? @relation("AuditLogBranch", fields: [branchId], references: [id])
 
   @@index([userId])
+  @@index([branchId])
   @@index([resource])
+  @@index([action])
+  @@index([sessionId])
   @@index([createdAt])
   @@map("audit_logs")
 }
