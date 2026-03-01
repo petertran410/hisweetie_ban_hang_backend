@@ -12,7 +12,7 @@ export class AuditLogsController {
   constructor(private auditLogsService: AuditLogsService) {}
 
   @Get()
-  @RequirePermissions('audit-logs.view')
+  @RequirePermissions('audit_logs:view')
   findAll(
     @Query('userId') userId?: string,
     @Query('resource') resource?: string,
