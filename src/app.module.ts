@@ -52,6 +52,7 @@ import { PackingLoadingsModule } from './packing-loadings/packing-loadings.modul
 import { AllPackingModule } from './all-packing/all-packing.module';
 import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { PrintTemplatesModule } from './print-templates/print-templates.module';
+import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 
 @Module({
   imports: [
@@ -128,7 +129,7 @@ import { PrintTemplatesModule } from './print-templates/print-templates.module';
     },
     {
       provide: APP_INTERCEPTOR,
-      useClass: LoggingInterceptor,
+      useClass: AuditInterceptor,
     },
   ],
 })
