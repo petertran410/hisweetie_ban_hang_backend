@@ -346,11 +346,12 @@ export class OrdersService {
 
           message: renderAuditMessage('ORDER_UPDATE', {
             orderCode: updatedOrderBeforeCalc.code,
-            changesSummary: changes.join(', '),
+            statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
           }),
           messageTemplate: 'ORDER_UPDATE',
           messageParams: {
             orderCode: updatedOrderBeforeCalc.code,
+            statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
             changesSummary: changes.join(', '),
           },
 

@@ -9,8 +9,7 @@ export const AUDIT_TEMPLATES: Record<
     category: 'order',
   },
   ORDER_UPDATE: {
-    template:
-      'Cập nhật thông tin đơn đặt hàng: {orderCode} ({oldStatus} → {newStatus})',
+    template: 'Cập nhật thông tin đơn đặt hàng: {orderCode} ({statusValue})',
     category: 'order',
   },
   ORDER_DELETE: {
