@@ -47,27 +47,138 @@ export class AuditInterceptor implements NestInterceptor {
     data: any,
     body: any,
   ): Record<string, any> {
+    // ORDER
     if (actionCode === 'ORDER_CREATE' && data?.order) {
       return {
         orderCode: data.order.code,
+        customerCode: data.order.customer?.code,
         customerName: data.order.customer?.name,
-        totalAmount: data.order.grandTotal,
       };
     }
 
+    if (actionCode === 'ORDER_UPDATE' && data) {
+      return {
+        orderCode: data.code || body.code,
+        oldStatus: body.statusValue || 'N/A',
+        newStatus: data.statusValue || 'N/A',
+      };
+    }
+
+    if (actionCode === 'ORDER_DELETE' && body) {
+      return {
+        orderCode: body.code,
+      };
+    }
+
+    // INVOICE
     if (actionCode === 'INVOICE_CREATE' && data) {
       return {
         invoiceCode: data.code,
         orderCode: data.orderCode,
         customerName: data.customerName,
-        totalAmount: data.totalAmount,
+      };
+    }
+
+    if (actionCode === 'INVOICE_UPDATE' && data) {
+      return {
+        invoiceCode: data.code || body.code,
+      };
+    }
+
+    if (actionCode === 'INVOICE_DELETE' && body) {
+      return {
+        invoiceCode: body.code,
+      };
+    }
+
+    // PRODUCT
+    if (actionCode === 'PRODUCT_CREATE' && data) {
+      return {
+        productName: data.name,
+        productCode: data.code,
+        basePrice: data.basePrice,
       };
     }
 
     if (actionCode === 'PRODUCT_UPDATE' && data) {
       return {
-        productName: data.name,
-        changesSummary: getChangesSummary(body, data),
+        productName: data.name || body.name,
+        productCode: data.code || body.code,
+      };
+    }
+
+    if (actionCode === 'PRODUCT_DELETE' && body) {
+      return {
+        productName: body.name,
+        productCode: body.code,
+      };
+    }
+
+    // CUSTOMER
+    if (actionCode === 'CUSTOMER_CREATE' && data) {
+      return {
+        customerName: data.name,
+        customerCode: data.code,
+        contactNumber: data.contactNumber,
+      };
+    }
+
+    if (actionCode === 'CUSTOMER_UPDATE' && data) {
+      return {
+        customerName: data.name || body.name,
+        customerCode: data.code || body.code,
+      };
+    }
+
+    if (actionCode === 'CUSTOMER_DELETE' && body) {
+      return {
+        customerName: body.name,
+        customerCode: body.code,
+      };
+    }
+
+    // SUPPLIER
+    if (actionCode === 'SUPPLIER_CREATE' && data) {
+      return {
+        supplierName: data.name,
+        supplierCode: data.code,
+      };
+    }
+
+    if (actionCode === 'SUPPLIER_UPDATE' && data) {
+      return {
+        supplierName: data.name || body.name,
+        supplierCode: data.code || body.code,
+      };
+    }
+
+    if (actionCode === 'SUPPLIER_DELETE' && body) {
+      return {
+        supplierName: body.name,
+        supplierCode: body.code,
+      };
+    }
+
+    // CASHFLOW
+    if (actionCode === 'CASHFLOW_CREATE' && data) {
+      return {
+        flowType: data.isReceipt ? 'Thu' : 'Chi',
+        amount: data.amount,
+        description: data.description,
+      };
+    }
+
+    if (actionCode === 'CASHFLOW_UPDATE' && data) {
+      return {
+        flowType: data.isReceipt ? 'Thu' : 'Chi',
+        cashflowCode: data.code || body.code,
+      };
+    }
+
+    if (actionCode === 'CASHFLOW_DELETE' && body) {
+      return {
+        flowType: body.isReceipt ? 'Thu' : 'Chi',
+        cashflowCode: body.code,
       };
     }
 
@@ -83,14 +194,11 @@ export class AuditInterceptor implements NestInterceptor {
       return next.handle();
     }
 
-    // SKIP GET requests - chỉ log CREATE/UPDATE/DELETE
-    if (method === 'GET') {
+    if (method === 'PUT' || method === 'PATCH' || method === 'GET') {
       return next.handle();
     }
 
     const startTime = Date.now();
-    const sessionId =
-      headers['x-session-id'] || `session-${user?.id}-${Date.now()}`;
 
     const resourceMap = {
       '/products': 'products',
@@ -124,13 +232,11 @@ export class AuditInterceptor implements NestInterceptor {
       DELETE: 'delete',
     };
 
-    const action = actionMap[method];
     const resourceId = params?.id ? parseInt(params.id) : null;
 
     return next.handle().pipe(
       tap({
         next: (data) => {
-          const response = context.switchToHttp().getResponse();
           const duration = Date.now() - startTime;
           const actionCode = this.getActionCode(resource, method, url);
           const messageParams = this.buildMessageParams(actionCode, data, body);

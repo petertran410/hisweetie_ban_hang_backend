@@ -5,26 +5,31 @@ export const AUDIT_TEMPLATES: Record<
   // Đơn hàng
   ORDER_CREATE: {
     template:
-      'Tạo đơn đặt hàng {orderCode} cho khách hàng {customerName}, tổng tiền {totalAmount}',
+      'Tạo đơn đặt hàng {orderCode} (Phiếu tạm), khách hàng: {customerCode}, Thuê: {customerName}',
     category: 'order',
   },
   ORDER_UPDATE: {
-    template: 'Cập nhật đơn đặt hàng {orderCode}: {changesSummary}',
+    template:
+      'Cập nhật thông tin đơn đặt hàng: {orderCode} ({oldStatus} → {newStatus})',
     category: 'order',
   },
-  ORDER_CANCEL: {
-    template: 'Hủy đơn đặt hàng {orderCode}',
+  ORDER_DELETE: {
+    template: 'Hủy đơn đặt hàng: {orderCode}',
     category: 'order',
   },
 
   // Hóa đơn
   INVOICE_CREATE: {
     template:
-      'Tạo hóa đơn {invoiceCode} (cho đơn đặt hàng: {orderCode}), khách hàng {customerName}, tổng tiền {totalAmount}',
+      'Tạo hóa đơn {invoiceCode} (cho đơn đặt hàng: {orderCode}), khách hàng {customerName}',
     category: 'invoice',
   },
-  INVOICE_PAYMENT: {
-    template: 'Thanh toán hóa đơn {invoiceCode}, số tiền {amount}',
+  INVOICE_UPDATE: {
+    template: 'Cập nhật hóa đơn {invoiceCode}',
+    category: 'invoice',
+  },
+  INVOICE_DELETE: {
+    template: 'Xóa hóa đơn {invoiceCode}',
     category: 'invoice',
   },
 
@@ -34,11 +39,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'product',
   },
   PRODUCT_UPDATE: {
-    template: 'Cập nhật sản phẩm {productName}: {changesSummary}',
+    template: 'Cập nhật sản phẩm {productName} ({productCode})',
     category: 'product',
   },
-  PRODUCT_UPDATE_PRICE: {
-    template: 'Đổi giá sản phẩm {productName} từ {oldPrice} → {newPrice}',
+  PRODUCT_DELETE: {
+    template: 'Xóa sản phẩm {productName} ({productCode})',
     category: 'product',
   },
 
@@ -53,17 +58,28 @@ export const AUDIT_TEMPLATES: Record<
       'Cập nhật thông tin khách hàng {customerName} (Mã: {customerCode})',
     category: 'customer',
   },
+  CUSTOMER_DELETE: {
+    template: 'Xóa khách hàng {customerName} (Mã: {customerCode})',
+    category: 'customer',
+  },
 
   // Nhà cung cấp
   SUPPLIER_CREATE: {
     template: 'Thêm nhà cung cấp {supplierName} (Mã: {supplierCode})',
     category: 'supplier',
   },
+  SUPPLIER_UPDATE: {
+    template: 'Cập nhật nhà cung cấp {supplierName} (Mã: {supplierCode})',
+    category: 'supplier',
+  },
+  SUPPLIER_DELETE: {
+    template: 'Xóa nhà cung cấp {supplierName} (Mã: {supplierCode})',
+    category: 'supplier',
+  },
 
   // Kho
   INVENTORY_ADJUST: {
-    template:
-      'Kiểm kho {productName}: {oldQty} → {newQty} (Chênh lệch: {diff})',
+    template: 'Kiểm kho {productName}: {oldQty} → {newQty}',
     category: 'inventory',
   },
   TRANSFER_CREATE: {
@@ -71,25 +87,55 @@ export const AUDIT_TEMPLATES: Record<
       'Tạo phiếu chuyển kho {transferCode} từ {fromBranch} → {toBranch}',
     category: 'transfer',
   },
+  TRANSFER_UPDATE: {
+    template: 'Cập nhật phiếu chuyển kho {transferCode}',
+    category: 'transfer',
+  },
+  TRANSFER_DELETE: {
+    template: 'Xóa phiếu chuyển kho {transferCode}',
+    category: 'transfer',
+  },
 
   // Thu chi
-  CASHFLOW_IN: {
-    template: 'Thu tiền {amount} - {description}',
+  CASHFLOW_CREATE: {
+    template: '{flowType} tiền {amount} - {description}',
     category: 'payment',
   },
-  CASHFLOW_OUT: {
-    template: 'Chi tiền {amount} - {description}',
+  CASHFLOW_UPDATE: {
+    template: 'Cập nhật phiếu {flowType} {cashflowCode}',
+    category: 'payment',
+  },
+  CASHFLOW_DELETE: {
+    template: 'Xóa phiếu {flowType} {cashflowCode}',
     category: 'payment',
   },
 
-  // In/Xuất
-  EXPORT_EXCEL: {
-    template: 'Xuất file Excel: {fileName}',
-    category: 'export',
+  // Người dùng
+  USER_CREATE: {
+    template: 'Thêm người dùng {userName} ({userEmail})',
+    category: 'user',
   },
-  PRINT_INVOICE: {
-    template: 'In hóa đơn {invoiceCode}',
-    category: 'print',
+  USER_UPDATE: {
+    template: 'Cập nhật người dùng {userName}',
+    category: 'user',
+  },
+  USER_DELETE: {
+    template: 'Xóa người dùng {userName}',
+    category: 'user',
+  },
+
+  // Chi nhánh
+  BRANCH_CREATE: {
+    template: 'Thêm chi nhánh {branchName} ({branchCode})',
+    category: 'branch',
+  },
+  BRANCH_UPDATE: {
+    template: 'Cập nhật chi nhánh {branchName}',
+    category: 'branch',
+  },
+  BRANCH_DELETE: {
+    template: 'Xóa chi nhánh {branchName}',
+    category: 'branch',
   },
 };
 

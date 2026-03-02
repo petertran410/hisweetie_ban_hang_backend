@@ -43,8 +43,12 @@ export class OrdersController {
 
   @Put(':id')
   @RequirePermissions('orders:update')
-  update(@Param('id') id: string, @Body() dto: UpdateOrderDto) {
-    return this.ordersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.ordersService.update(+id, dto, user);
   }
 
   @Delete(':id')

@@ -5,10 +5,17 @@ import {
   convertStatusStringToNumber,
   getStatusLabel,
 } from './dto/order-status.constants';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { PriceBooksService } from '../price-books/price-books.service';
+import { renderAuditMessage } from '../audit-logs/audit-templates';
 
 @Injectable()
 export class OrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private priceBooksService: PriceBooksService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async create(dto: CreateOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -131,11 +138,15 @@ export class OrdersService {
     });
   }
 
-  async update(id: number, dto: UpdateOrderDto) {
+  async update(id: number, dto: UpdateOrderDto, user: any) {
     return this.prisma.$transaction(async (tx) => {
       const existingOrder = await tx.order.findUnique({
         where: { id },
-        include: { items: true, delivery: true },
+        include: {
+          items: { include: { product: true } },
+          delivery: true,
+          customer: true,
+        },
       });
 
       if (!existingOrder) {
@@ -251,6 +262,100 @@ export class OrdersService {
             },
           });
         }
+      }
+
+      const updatedOrderBeforeCalc = await tx.order.findUnique({
+        where: { id },
+        include: {
+          items: { include: { product: true } },
+          delivery: true,
+          customer: true,
+        },
+      });
+
+      if (!updatedOrderBeforeCalc) {
+        throw new Error('Updated order not found');
+      }
+
+      const changes: string[] = [];
+
+      if (existingOrder.statusValue !== updatedOrderBeforeCalc.statusValue) {
+        changes.push(
+          `${existingOrder.statusValue} → ${updatedOrderBeforeCalc.statusValue}`,
+        );
+      }
+
+      const oldItemMap = new Map(
+        existingOrder.items.map((i) => [i.productId, i]),
+      );
+      const newItemMap = new Map(
+        updatedOrderBeforeCalc.items.map((i) => [i.productId, i]),
+      );
+
+      updatedOrderBeforeCalc.items.forEach((newItem) => {
+        const oldItem = oldItemMap.get(newItem.productId);
+        if (!oldItem) {
+          changes.push(`Thêm ${newItem.product.name}`);
+        } else if (Number(oldItem.quantity) !== Number(newItem.quantity)) {
+          changes.push(
+            `${newItem.product.name}: SL ${oldItem.quantity} → ${newItem.quantity}`,
+          );
+        }
+      });
+
+      existingOrder.items.forEach((oldItem) => {
+        if (!newItemMap.has(oldItem.productId)) {
+          changes.push(`Xóa ${oldItem.product.name}`);
+        }
+      });
+
+      if (changes.length > 0) {
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'ORDER_UPDATE',
+          entityType: 'orders',
+          entityId: id.toString(),
+          entityCode: updatedOrderBeforeCalc.code,
+
+          oldValues: {
+            code: existingOrder.code,
+            statusValue: existingOrder.statusValue,
+            grandTotal: existingOrder.grandTotal,
+            itemCount: existingOrder.items.length,
+            items: existingOrder.items.map((i) => ({
+              productId: i.productId,
+              productName: i.product.name,
+              quantity: Number(i.quantity),
+              price: Number(i.price),
+            })),
+          },
+          newValues: {
+            code: updatedOrderBeforeCalc.code,
+            statusValue: updatedOrderBeforeCalc.statusValue,
+            grandTotal: updatedOrderBeforeCalc.grandTotal,
+            itemCount: updatedOrderBeforeCalc.items.length,
+            items: updatedOrderBeforeCalc.items.map((i) => ({
+              productId: i.productId,
+              productName: i.product.name,
+              quantity: Number(i.quantity),
+              price: Number(i.price),
+            })),
+          },
+
+          message: renderAuditMessage('ORDER_UPDATE', {
+            orderCode: updatedOrderBeforeCalc.code,
+            changesSummary: changes.join(', '),
+          }),
+          messageTemplate: 'ORDER_UPDATE',
+          messageParams: {
+            orderCode: updatedOrderBeforeCalc.code,
+            changesSummary: changes.join(', '),
+          },
+
+          userId: user.id,
+          userName: user.name || user.email,
+          branchId: updatedOrderBeforeCalc.branchId || undefined,
+        });
       }
 
       await this.calculateTotals(id, tx);
