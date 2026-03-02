@@ -83,6 +83,11 @@ export class AuditInterceptor implements NestInterceptor {
       return next.handle();
     }
 
+    // SKIP GET requests - chỉ log CREATE/UPDATE/DELETE
+    if (method === 'GET') {
+      return next.handle();
+    }
+
     const startTime = Date.now();
     const sessionId =
       headers['x-session-id'] || `session-${user?.id}-${Date.now()}`;
@@ -113,7 +118,6 @@ export class AuditInterceptor implements NestInterceptor {
     }
 
     const actionMap = {
-      GET: params?.id || query?.id ? 'view' : 'list',
       POST: 'create',
       PUT: 'update',
       PATCH: 'update',
@@ -186,7 +190,6 @@ export class AuditInterceptor implements NestInterceptor {
                   path: url,
                   statusCode: error.status || 500,
                   error: error.message || JSON.stringify(error),
-                  sessionId,
                 },
                 ipAddress: request.ip || request.connection.remoteAddress,
                 userAgent: headers['user-agent'],
