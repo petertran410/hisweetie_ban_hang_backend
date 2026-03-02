@@ -719,6 +719,8 @@ model Order {
   branchId      Int?
   soldById      Int?
   saleChannelId Int?
+  priceBookId   Int?
+  priceBookName String?
   orderDate     DateTime @default(now())
   totalAmount   Decimal  @default(0)
   discount      Decimal  @default(0)
@@ -852,6 +854,8 @@ model Invoice {
   branchId             Int?
   soldById             Int?
   saleChannelId        Int?
+  priceBookId   Int?
+  priceBookName String?
   purchaseDate         DateTime @default(now())
   totalAmount          Decimal  @default(0)
   discount             Decimal  @default(0)

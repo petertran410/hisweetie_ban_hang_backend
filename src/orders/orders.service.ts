@@ -76,7 +76,36 @@ export class OrdersService {
         }),
       );
 
+      const applicablePriceBooks = await this.prisma.priceBook.findMany({
+        where: {
+          isActive: true,
+          OR: [
+            { isGlobal: true },
+            { priceBookBranches: { some: { branchId: branchId } } },
+            ...(dto.customerId
+              ? [
+                  {
+                    priceBookCustomerGroups: {
+                      some: {
+                        customerGroup: {
+                          customerGroupDetails: {
+                            some: { customerId: dto.customerId },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  { forAllCusGroup: true },
+                ]
+              : []),
+          ],
+        },
+        orderBy: { priority: 'desc' },
+        take: 1,
+      });
+
       const orderCode = await this.generateCode();
+      const priceBook = applicablePriceBooks[0] || null;
 
       const order = await tx.order.create({
         data: {
@@ -85,6 +114,8 @@ export class OrdersService {
           branchId: branchId,
           soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
+          priceBookId: priceBook?.id || null,
+          priceBookName: priceBook?.name || null,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
           status: orderStatusNumber,
           statusValue: getStatusLabel(orderStatusNumber),
@@ -221,6 +252,59 @@ export class OrdersService {
         ) {
           updateData.debtAmount = 0;
         }
+      }
+
+      const needRecalculatePriceBook =
+        dto.customerId !== existingOrder.customerId ||
+        dto.branchId !== existingOrder.branchId ||
+        dto.soldById !== existingOrder.soldById;
+
+      if (needRecalculatePriceBook) {
+        const branchId = dto.branchId || existingOrder.branchId;
+        const customerId = dto.customerId || existingOrder.customerId;
+
+        const orConditions: any[] = [{ isGlobal: true }];
+
+        if (branchId) {
+          orConditions.push({
+            priceBookBranches: {
+              some: { branchId },
+            },
+          });
+        }
+
+        if (customerId) {
+          orConditions.push(
+            {
+              priceBookCustomerGroups: {
+                some: {
+                  customerGroup: {
+                    customerGroupDetails: {
+                      some: { customerId },
+                    },
+                  },
+                },
+              },
+            },
+            { forAllCusGroup: true },
+          );
+        }
+
+        const applicablePriceBooks = await tx.priceBook.findMany({
+          where: {
+            isActive: true,
+            OR: orConditions,
+          },
+          orderBy: { priority: 'desc' },
+          take: 1,
+        });
+
+        const priceBook = applicablePriceBooks[0] || null;
+        updateData.priceBookId = priceBook?.id || null;
+        updateData.priceBookName = priceBook?.name || null;
+
+        console.log('Id: ', priceBook?.id);
+        console.log('Name: ', priceBook?.name);
       }
 
       await tx.order.update({

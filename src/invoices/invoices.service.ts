@@ -155,6 +155,36 @@ export class InvoicesService {
       const currentCustomerDebt = Number(customer?.totalDebt || 0);
       const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
+      const applicablePriceBooks = await tx.priceBook.findMany({
+        where: {
+          isActive: true,
+          OR: [
+            { isGlobal: true },
+            { priceBookBranches: { some: { branchId: dto.branchId } } },
+            ...(dto.customerId
+              ? [
+                  {
+                    priceBookCustomerGroups: {
+                      some: {
+                        customerGroup: {
+                          customerGroupDetails: {
+                            some: { customerId: dto.customerId },
+                          },
+                        },
+                      },
+                    },
+                  },
+                  { forAllCusGroup: true },
+                ]
+              : []),
+          ],
+        },
+        orderBy: { priority: 'desc' },
+        take: 1,
+      });
+
+      const priceBook = applicablePriceBooks[0] || null;
+
       const invoice = await tx.invoice.create({
         data: {
           code,
@@ -162,6 +192,8 @@ export class InvoicesService {
           branchId: dto.branchId,
           soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
+          priceBookId: priceBook?.id || null,
+          priceBookName: priceBook?.name || null,
           purchaseDate: dto.purchaseDate
             ? new Date(dto.purchaseDate)
             : new Date(),
@@ -524,6 +556,59 @@ export class InvoicesService {
         };
       }
 
+      const needRecalculatePriceBook =
+        (dto.customerId !== undefined &&
+          dto.customerId !== currentInvoice.customerId) ||
+        (dto.branchId !== undefined &&
+          dto.branchId !== currentInvoice.branchId) ||
+        (dto.soldById !== undefined &&
+          dto.soldById !== currentInvoice.soldById);
+
+      if (needRecalculatePriceBook) {
+        const branchId = dto.branchId ?? currentInvoice.branchId;
+        const customerId = dto.customerId ?? currentInvoice.customerId;
+
+        const orConditions: any[] = [{ isGlobal: true }];
+
+        if (branchId) {
+          orConditions.push({
+            priceBookBranches: {
+              some: { branchId },
+            },
+          });
+        }
+
+        if (customerId) {
+          orConditions.push(
+            {
+              priceBookCustomerGroups: {
+                some: {
+                  customerGroup: {
+                    customerGroupDetails: {
+                      some: { customerId },
+                    },
+                  },
+                },
+              },
+            },
+            { forAllCusGroup: true },
+          );
+        }
+
+        const applicablePriceBooks = await tx.priceBook.findMany({
+          where: {
+            isActive: true,
+            OR: orConditions,
+          },
+          orderBy: { priority: 'desc' },
+          take: 1,
+        });
+
+        const priceBook = applicablePriceBooks[0] || null;
+        updateData.priceBookId = priceBook?.id || null;
+        updateData.priceBookName = priceBook?.name || null;
+      }
+
       const updatedInvoice = await tx.invoice.update({
         where: { id },
         data: updateData,
@@ -740,6 +825,8 @@ export class InvoicesService {
           branchId: order.branchId,
           soldById: order.soldById,
           saleChannelId: order.saleChannelId,
+          priceBookId: order.priceBookId,
+          priceBookName: order.priceBookName,
           purchaseDate: new Date(),
           totalAmount,
           discount: discountForThisInvoice,
