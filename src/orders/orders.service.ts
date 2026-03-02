@@ -264,6 +264,8 @@ export class OrdersService {
         }
       }
 
+      await this.calculateTotals(id, tx);
+
       const updatedOrderBeforeCalc = await tx.order.findUnique({
         where: { id },
         include: {
@@ -357,8 +359,6 @@ export class OrdersService {
           branchId: updatedOrderBeforeCalc.branchId || undefined,
         });
       }
-
-      await this.calculateTotals(id, tx);
 
       return tx.order.findUnique({
         where: { id },

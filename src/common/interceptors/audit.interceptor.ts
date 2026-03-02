@@ -56,14 +56,6 @@ export class AuditInterceptor implements NestInterceptor {
       };
     }
 
-    if (actionCode === 'ORDER_UPDATE' && data) {
-      return {
-        orderCode: data.code || body.code,
-        oldStatus: body.statusValue || 'N/A',
-        newStatus: data.statusValue || 'N/A',
-      };
-    }
-
     if (actionCode === 'ORDER_DELETE' && body) {
       return {
         orderCode: body.code,
