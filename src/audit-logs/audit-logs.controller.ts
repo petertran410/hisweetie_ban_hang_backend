@@ -1,13 +1,4 @@
-import {
-  Body,
-  Controller,
-  Delete,
-  Get,
-  Post,
-  Query,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Delete, Get, Query, UseGuards } from '@nestjs/common';
 import { AuditLogsService } from './audit-logs.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -25,10 +16,8 @@ export class AuditLogsController {
   findAll(
     @Query('userId') userId?: string,
     @Query('branchId') branchId?: string,
-    @Query('resource') resource?: string,
-    @Query('action') action?: string,
-    @Query('method') method?: string,
-    @Query('sessionId') sessionId?: string,
+    @Query('entityType') entityType?: string,
+    @Query('actionCode') actionCode?: string,
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('page') page?: string,
@@ -37,45 +26,12 @@ export class AuditLogsController {
     return this.auditLogsService.findAll({
       userId: userId ? +userId : undefined,
       branchId: branchId ? +branchId : undefined,
-      resource,
-      action,
-      method,
-      sessionId,
+      entityType,
+      actionCode,
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : undefined,
       page: page ? +page : 1,
       limit: limit ? +limit : 50,
-    });
-  }
-
-  @Post('page-view')
-  async logPageView(
-    @Body()
-    dto: {
-      userId: number;
-      userName: string;
-      branchId?: number;
-      path: string;
-      timestamp: string;
-      sessionId?: string;
-    },
-    @Req() req: any,
-  ) {
-    return this.auditLogsService.create({
-      userId: dto.userId,
-      userName: dto.userName,
-      branchId: dto.branchId,
-      actionType: 'GET',
-      actionCode: 'PAGE_VIEW',
-      entityType: 'navigation',
-      message: `Page view: ${dto.path}`,
-      metadata: {
-        timestamp: dto.timestamp,
-        path: dto.path,
-        sessionId: dto.sessionId,
-      },
-      ipAddress: req.ip || req.connection.remoteAddress,
-      userAgent: req.headers['user-agent'],
     });
   }
 
