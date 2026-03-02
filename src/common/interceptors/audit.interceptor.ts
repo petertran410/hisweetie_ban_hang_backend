@@ -7,11 +7,72 @@ import {
 import { Observable } from 'rxjs';
 import { tap } from 'rxjs/operators';
 import { AuditLogsService } from '../../audit-logs/audit-logs.service';
-import path from 'path';
+import {
+  getChangesSummary,
+  renderAuditMessage,
+} from '../../audit-logs/audit-templates';
+
+const actionCodeMap: Record<string, Record<string, string>> = {
+  '/orders': {
+    POST: 'ORDER_CREATE',
+    PUT: 'ORDER_UPDATE',
+    DELETE: 'ORDER_CANCEL',
+  },
+  '/invoices': {
+    POST: 'INVOICE_CREATE',
+    PUT: 'INVOICE_UPDATE',
+  },
+  '/products': {
+    POST: 'PRODUCT_CREATE',
+    PUT: 'PRODUCT_UPDATE',
+    DELETE: 'PRODUCT_DELETE',
+  },
+  '/customers': {
+    POST: 'CUSTOMER_CREATE',
+    PUT: 'CUSTOMER_UPDATE',
+  },
+};
 
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
   constructor(private auditLogsService: AuditLogsService) {}
+
+  private getActionCode(resource: string, method: string, url: string): string {
+    const mapping = actionCodeMap[resource];
+    return mapping?.[method] || `${resource.toUpperCase()}_${method}`;
+  }
+
+  private buildMessageParams(
+    actionCode: string,
+    data: any,
+    body: any,
+  ): Record<string, any> {
+    if (actionCode === 'ORDER_CREATE' && data?.order) {
+      return {
+        orderCode: data.order.code,
+        customerName: data.order.customer?.name,
+        totalAmount: data.order.grandTotal,
+      };
+    }
+
+    if (actionCode === 'INVOICE_CREATE' && data) {
+      return {
+        invoiceCode: data.code,
+        orderCode: data.orderCode,
+        customerName: data.customerName,
+        totalAmount: data.totalAmount,
+      };
+    }
+
+    if (actionCode === 'PRODUCT_UPDATE' && data) {
+      return {
+        productName: data.name,
+        changesSummary: getChangesSummary(body, data),
+      };
+    }
+
+    return {};
+  }
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     const request = context.switchToHttp().getRequest();
@@ -67,32 +128,39 @@ export class AuditInterceptor implements NestInterceptor {
         next: (data) => {
           const response = context.switchToHttp().getResponse();
           const duration = Date.now() - startTime;
+          const actionCode = this.getActionCode(resource, method, url);
+          const messageParams = this.buildMessageParams(actionCode, data, body);
 
           if (user?.id) {
             this.auditLogsService
               .create({
+                actionType: method,
+                actionCode,
+                entityType: resourceMap[resource],
+                entityId: resourceId?.toString(),
+                entityCode: data?.code || body?.code,
+
+                oldValues:
+                  method === 'PUT' || method === 'DELETE' ? body : undefined,
+                newValues:
+                  method === 'POST' || method === 'PUT' ? data : undefined,
+                changedFields:
+                  method === 'PUT' ? Object.keys(body || {}) : undefined,
+
+                message: renderAuditMessage(actionCode, messageParams),
+                messageTemplate: actionCode,
+                messageParams,
+
                 userId: user.id,
                 userName: user.name || user.email,
-                branchId: user.branchId || undefined,
-                action,
-                resource: resourceMap[resource],
-                resourceId,
-                method,
-                path: url,
-                statusCode: response.statusCode,
-                duration,
-                oldData:
-                  method === 'PUT' || method === 'DELETE' ? body : undefined,
-                newData:
-                  method === 'POST' || method === 'PUT' ? data : undefined,
-                metadata: {
-                  query,
-                  params,
-                  body: method === 'GET' ? undefined : body,
-                },
+                branchId: user.branchId,
+                branchName: user.branch?.name,
+
                 ipAddress: request.ip || request.connection.remoteAddress,
                 userAgent: headers['user-agent'],
-                sessionId,
+                requestId: request.id,
+
+                metadata: { query, params, duration },
               })
               .catch((err) => console.error('Audit log error:', err));
           }
@@ -106,18 +174,22 @@ export class AuditInterceptor implements NestInterceptor {
                 userId: user.id,
                 userName: user.name || user.email,
                 branchId: user.branchId || undefined,
-                action,
-                resource: resourceMap[resource],
-                resourceId,
-                method,
-                path: url,
-                statusCode: error.status || 500,
-                duration,
-                error: error.message || JSON.stringify(error),
-                metadata: { query, params },
+                actionType: method,
+                actionCode: this.getActionCode(resource, method, url),
+                entityType: resourceMap[resource],
+                entityId: resourceId?.toString(),
+                message: `Error on ${method} ${url}: ${error.message || 'Unknown error'}`,
+                metadata: {
+                  query,
+                  params,
+                  duration,
+                  path: url,
+                  statusCode: error.status || 500,
+                  error: error.message || JSON.stringify(error),
+                  sessionId,
+                },
                 ipAddress: request.ip || request.connection.remoteAddress,
                 userAgent: headers['user-agent'],
-                sessionId,
               })
               .catch((err) => console.error('Audit log error:', err));
           }

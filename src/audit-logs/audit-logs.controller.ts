@@ -65,15 +65,17 @@ export class AuditLogsController {
       userId: dto.userId,
       userName: dto.userName,
       branchId: dto.branchId,
-      action: 'page_view',
-      resource: 'navigation',
-      method: 'GET',
-      path: dto.path,
-      statusCode: 200,
-      metadata: { timestamp: dto.timestamp },
+      actionType: 'GET',
+      actionCode: 'PAGE_VIEW',
+      entityType: 'navigation',
+      message: `Page view: ${dto.path}`,
+      metadata: {
+        timestamp: dto.timestamp,
+        path: dto.path,
+        sessionId: dto.sessionId,
+      },
       ipAddress: req.ip || req.connection.remoteAddress,
       userAgent: req.headers['user-agent'],
-      sessionId: dto.sessionId,
     });
   }
 

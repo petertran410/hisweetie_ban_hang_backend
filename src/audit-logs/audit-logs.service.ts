@@ -6,50 +6,57 @@ export class AuditLogsService {
   constructor(private prisma: PrismaService) {}
 
   async create(data: {
+    actionType: string;
+    actionCode: string;
+    entityType: string;
+    entityId?: string;
+    entityCode?: string;
+    oldValues?: any;
+    newValues?: any;
+    changedFields?: any;
+    message: string;
+    messageTemplate?: string;
+    messageParams?: any;
     userId: number;
     userName: string;
-    branchId?: number | null;
-    action: string;
-    resource: string;
-    resourceId?: number | null;
-    method?: string | null;
-    path?: string | null;
-    statusCode?: number | null;
-    duration?: number | null;
-    oldData?: any;
-    newData?: any;
+    branchId?: number;
+    branchName?: string;
+    ipAddress?: string;
+    userAgent?: string;
+    requestId?: string;
     metadata?: any;
-    error?: string | null;
-    ipAddress?: string | null;
-    userAgent?: string | null;
-    sessionId?: string | null;
   }) {
     try {
       return await this.prisma.auditLog.create({
         data: {
+          actionType: data.actionType,
+          actionCode: data.actionCode,
+          entityType: data.entityType,
+          entityId: data.entityId,
+          entityCode: data.entityCode,
+
+          oldValues: data.oldValues
+            ? JSON.parse(JSON.stringify(data.oldValues))
+            : undefined,
+          newValues: data.newValues
+            ? JSON.parse(JSON.stringify(data.newValues))
+            : undefined,
+          changedFields: data.changedFields,
+
+          message: data.message,
+          messageTemplate: data.messageTemplate,
+          messageParams: data.messageParams,
+
           userId: data.userId,
           userName: data.userName,
-          branchId: data.branchId || undefined,
-          action: data.action,
-          resource: data.resource,
-          resourceId: data.resourceId || undefined,
-          method: data.method || undefined,
-          path: data.path || undefined,
-          statusCode: data.statusCode || undefined,
-          duration: data.duration || undefined,
-          oldData: data.oldData
-            ? JSON.parse(JSON.stringify(data.oldData))
-            : undefined,
-          newData: data.newData
-            ? JSON.parse(JSON.stringify(data.newData))
-            : undefined,
-          metadata: data.metadata
-            ? JSON.parse(JSON.stringify(data.metadata))
-            : undefined,
-          error: data.error || undefined,
-          ipAddress: data.ipAddress || undefined,
-          userAgent: data.userAgent || undefined,
-          sessionId: data.sessionId || undefined,
+          branchId: data.branchId,
+          branchName: data.branchName,
+
+          ipAddress: data.ipAddress,
+          userAgent: data.userAgent,
+          requestId: data.requestId,
+
+          metadata: data.metadata,
         },
       });
     } catch (error) {
