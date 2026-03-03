@@ -5,11 +5,12 @@ export const AUDIT_TEMPLATES: Record<
   // Đơn hàng
   ORDER_CREATE: {
     template:
-      'Tạo đơn đặt hàng {orderCode} (Phiếu tạm), khách hàng: {customerName}, Thuế: Tắt thuế',
+      'Tạo đơn đặt hàng {orderCode} ({statusValue}), khách hàng: {customerName}, Thuế: Tắt thuế',
     category: 'order',
   },
   ORDER_UPDATE: {
-    template: 'Cập nhật thông tin đơn đặt hàng: {orderCode} ({statusValue})',
+    template:
+      'Cập nhật thông tin đơn đặt hàng: {orderCode} ({statusValue}), khách hàng: {customerName}',
     category: 'order',
   },
   ORDER_DELETE: {
