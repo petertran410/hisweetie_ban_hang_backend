@@ -356,6 +356,9 @@ export class OrdersService {
           items: { include: { product: true } },
           delivery: true,
           customer: true,
+          soldBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } },
         },
       });
 
@@ -416,16 +419,30 @@ export class OrdersService {
             })),
           },
           newValues: {
-            code: updatedOrderBeforeCalc.code,
-            statusValue: updatedOrderBeforeCalc.statusValue,
-            grandTotal: updatedOrderBeforeCalc.grandTotal,
-            itemCount: updatedOrderBeforeCalc.items.length,
-            items: updatedOrderBeforeCalc.items.map((i) => ({
-              productId: i.productId,
-              productName: i.product.name,
-              quantity: Number(i.quantity),
-              price: Number(i.price),
-            })),
+            order: {
+              code: updatedOrderBeforeCalc.code,
+              statusValue: updatedOrderBeforeCalc.statusValue,
+              grandTotal: updatedOrderBeforeCalc.grandTotal,
+              createdAt: updatedOrderBeforeCalc.createdAt,
+              description: updatedOrderBeforeCalc.description,
+              customer: updatedOrderBeforeCalc.customer,
+              soldBy: updatedOrderBeforeCalc.soldBy,
+              branch: updatedOrderBeforeCalc.branch,
+              priceBook: updatedOrderBeforeCalc.priceBookName
+                ? {
+                    id: updatedOrderBeforeCalc.priceBookId,
+                    name: updatedOrderBeforeCalc.priceBookName,
+                  }
+                : null,
+              items: updatedOrderBeforeCalc.items.map((i) => ({
+                productId: i.productId,
+                productCode: i.productCode,
+                productName: i.product.name,
+                quantity: Number(i.quantity),
+                price: Number(i.price),
+              })),
+              delivery: updatedOrderBeforeCalc.delivery,
+            },
           },
 
           message: renderAuditMessage('ORDER_UPDATE', {
