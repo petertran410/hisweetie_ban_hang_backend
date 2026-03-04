@@ -448,11 +448,13 @@ export class OrdersService {
           message: renderAuditMessage('ORDER_UPDATE', {
             orderCode: updatedOrderBeforeCalc.code,
             statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
+            customerName: updatedOrderBeforeCalc.customer?.name || 'N/A',
           }),
           messageTemplate: 'ORDER_UPDATE',
           messageParams: {
             orderCode: updatedOrderBeforeCalc.code,
             statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
+            customerName: updatedOrderBeforeCalc.customer?.name || 'N/A',
             changesSummary: changes.join(', '),
           },
 
