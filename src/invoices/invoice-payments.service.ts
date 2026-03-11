@@ -154,7 +154,8 @@ export class InvoicePaymentsService {
           invoice: {
             code: invoice.code,
             customer: {
-              code: invoice.customer?.id ? `KH${invoice.customer.id}` : 'N/A',
+              code: customer?.code ? customer?.code : 'N/A',
+              name: customer?.name ? customer?.name : 'N/A',
             },
           },
         },
