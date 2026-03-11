@@ -9,7 +9,7 @@ import { request } from 'http';
 export class InvoicePaymentsService {
   constructor(
     private prisma: PrismaService,
-    private auditLogService: AuditLogsService,
+    private auditLogsService: AuditLogsService,
   ) {}
 
   async create(dto: CreateInvoicePaymentDto, userId: number) {
@@ -107,6 +107,16 @@ export class InvoicePaymentsService {
         include: { invoice: true },
       });
 
+      const userName = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      const customer = await this.prisma.customer.findUnique({
+        where: { id: invoice.customer?.id },
+        select: { name: true, code: true },
+      });
+
       const methodMap: Record<string, string> = {
         cash: 'Tiền mặt',
         transfer: 'Chuyển khoản',
@@ -126,11 +136,11 @@ export class InvoicePaymentsService {
         },
       );
 
-      const message = `Tạo phiếu thu: ${payment.code}, cho hóa đơn: ${invoice.code}, khách hàng ${invoice.customer?.id ? `KH${invoice.customer.id}` : 'N/A'}, với giá trị: ${Number(payment.amount).toLocaleString('vi-VN')}, phương thức thanh toán: ${payment.paymentMethod ? methodMap[payment.paymentMethod] || payment.paymentMethod : 'Tiền mặt'}, thời gian: ${formattedDate}`;
+      const message = `Tạo phiếu thu: ${payment.code}, cho hóa đơn: ${invoice.code}, khách hàng ${invoice.customer?.id ? `${customer?.name}` : 'N/A'}, với giá trị: ${Number(payment.amount).toLocaleString('vi-VN')}, phương thức thanh toán: ${payment.paymentMethod ? methodMap[payment.paymentMethod] || payment.paymentMethod : 'Tiền mặt'}, thời gian: ${formattedDate}`;
 
-      await this.auditLogService.create({
+      await this.auditLogsService.create({
         userId: userId,
-        userName: user.name,
+        userName: userName?.name || 'Unknown',
         actionType: 'create',
         actionCode: 'INVOICE_PAYMENT_CREATE',
         entityType: 'invoice_payment',
