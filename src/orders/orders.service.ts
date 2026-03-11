@@ -302,9 +302,6 @@ export class OrdersService {
         const priceBook = applicablePriceBooks[0] || null;
         updateData.priceBookId = priceBook?.id || null;
         updateData.priceBookName = priceBook?.name || null;
-
-        console.log('Id: ', priceBook?.id);
-        console.log('Name: ', priceBook?.name);
       }
 
       await tx.order.update({
@@ -624,8 +621,6 @@ export class OrdersService {
         },
       },
     });
-
-    console.log(order);
 
     if (!order) return;
 

@@ -1041,6 +1041,7 @@ export class InvoicesService {
           customer: true,
           branch: true,
           soldBy: true,
+          order: { select: { code: true } },
         },
       });
     });

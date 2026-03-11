@@ -38,7 +38,6 @@ export class ProductionsController {
 
   @Post()
   create(@Body() dto: CreateProductionDto, @Req() req: any) {
-    console.log('Received production data:', dto);
     const userId = req.user?.id || 1;
     return this.productionsService.create(dto, userId);
   }

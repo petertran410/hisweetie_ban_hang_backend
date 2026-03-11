@@ -66,8 +66,8 @@ export class AuditInterceptor implements NestInterceptor {
     if (actionCode === 'INVOICE_CREATE' && data) {
       return {
         invoiceCode: data.code,
-        orderCode: data.orderCode,
-        customerName: data.customerName,
+        orderCode: data.order?.code || 'N/A',
+        customerName: data.customer?.name || 'N/A',
       };
     }
 
