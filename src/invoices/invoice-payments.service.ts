@@ -2,10 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoicePaymentDto } from './dto';
 import { INVOICE_STATUS, getStatusLabel } from './dto/invoice-status.constants';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { request } from 'http';
 
 @Injectable()
 export class InvoicePaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogService: AuditLogsService,
+  ) {}
 
   async create(dto: CreateInvoicePaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -49,13 +54,6 @@ export class InvoicePaymentsService {
           status: 1,
         },
       });
-
-      const customerBeforeUpdate = invoice.customerId
-        ? await tx.customer.findUnique({
-            where: { id: invoice.customerId },
-            select: { totalDebt: true },
-          })
-        : null;
 
       await this.calculateInvoiceTotals(dto.invoiceId, tx);
 
@@ -107,6 +105,50 @@ export class InvoicePaymentsService {
       const paymentResult = await tx.invoicePayment.findUnique({
         where: { id: payment.id },
         include: { invoice: true },
+      });
+
+      const methodMap: Record<string, string> = {
+        cash: 'Tiền mặt',
+        transfer: 'Chuyển khoản',
+        card: 'Thẻ',
+        ewallet: 'Ví điện tử',
+      };
+
+      const formattedDate = new Date(payment.paymentDate).toLocaleString(
+        'vi-VN',
+        {
+          day: '2-digit',
+          month: '2-digit',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+        },
+      );
+
+      const message = `Tạo phiếu thu: ${payment.code}, cho hóa đơn: ${invoice.code}, khách hàng ${invoice.customer?.id ? `KH${invoice.customer.id}` : 'N/A'}, với giá trị: ${Number(payment.amount).toLocaleString('vi-VN')}, phương thức thanh toán: ${payment.paymentMethod ? methodMap[payment.paymentMethod] || payment.paymentMethod : 'Tiền mặt'}, thời gian: ${formattedDate}`;
+
+      await this.auditLogService.create({
+        userId: userId,
+        userName: user.name,
+        actionType: 'create',
+        actionCode: 'INVOICE_PAYMENT_CREATE',
+        entityType: 'invoice_payment',
+        entityId: payment.id.toString(),
+        entityCode: payment.code,
+        newValues: {
+          code: payment.code,
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+          paymentDate: payment.paymentDate,
+          invoice: {
+            code: invoice.code,
+            customer: {
+              code: invoice.customer?.id ? `KH${invoice.customer.id}` : 'N/A',
+            },
+          },
+        },
+        message,
       });
 
       return {
