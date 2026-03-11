@@ -65,8 +65,12 @@ export class InvoicesController {
 
   @Put(':id')
   @RequirePermissions('invoices:update')
-  update(@Param('id') id: string, @Body() dto: UpdateInvoiceDto) {
-    return this.invoicesService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateInvoiceDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.invoicesService.update(+id, dto, user.id);
   }
 
   @Delete(':id')

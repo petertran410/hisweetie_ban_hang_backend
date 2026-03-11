@@ -32,6 +32,14 @@ export const AUDIT_TEMPLATES: Record<
     template: 'Xóa hóa đơn {invoiceCode}',
     category: 'invoice',
   },
+  INVOICE_CANCEL: {
+    template: 'Hủy hóa đơn {invoiceCode} do cập nhật thông tin',
+    category: 'invoice',
+  },
+  INVOICE_CREATE_FROM_CANCELLED: {
+    template: 'Tạo hóa đơn {invoiceCode} từ hóa đơn đã hủy {oldInvoiceCode}',
+    category: 'invoice',
+  },
 
   // Sản phẩm
   PRODUCT_CREATE: {

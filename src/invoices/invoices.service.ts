@@ -17,12 +17,14 @@ import {
   getStatusLabel as getOrderStatusLabel,
 } from '../orders/dto/order-status.constants';
 import { OrdersService } from '../orders/orders.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 @Injectable()
 export class InvoicesService {
   constructor(
     private prisma: PrismaService,
     private ordersService: OrdersService,
+    private auditLogsService: AuditLogsService,
   ) {}
 
   async findAll(query: InvoiceQueryDto) {
@@ -333,23 +335,252 @@ export class InvoicesService {
     });
   }
 
-  async update(id: number, dto: UpdateInvoiceDto) {
+  async update(id: number, dto: UpdateInvoiceDto, userId?: number) {
     await this.findOne(id);
 
     return this.prisma.$transaction(async (tx) => {
-      const updateData: any = {};
       const currentInvoice = await tx.invoice.findUnique({
         where: { id },
         include: {
           details: true,
-          customer: { select: { totalDebt: true } },
+          customer: { select: { totalDebt: true, code: true, name: true } },
           payments: true,
+          delivery: true,
+          branch: true,
+          soldBy: true,
         },
       });
 
       if (!currentInvoice) {
         throw new NotFoundException(`Invoice with ID ${id} not found`);
       }
+
+      if (
+        dto.items &&
+        this.hasProductChanges(currentInvoice.details, dto.items)
+      ) {
+        const newCode = await this.generateInvoiceCodeWithSuffix(
+          currentInvoice.code,
+          tx,
+        );
+
+        const oldDetailsLog = currentInvoice.details
+          .map(
+            (d) =>
+              `${d.productCode} : ${d.quantity}*${new Intl.NumberFormat('vi-VN').format(Number(d.price))}`,
+          )
+          .join('\n- ');
+
+        await this.auditLogsService.create({
+          actionType: 'DELETE',
+          actionCode: 'INVOICE_CANCEL',
+          entityType: 'invoices',
+          entityId: String(currentInvoice.id),
+          entityCode: currentInvoice.code,
+          oldValues: currentInvoice,
+          message: `Hủy hóa đơn ${currentInvoice.code} do việc cập nhật thông tin hóa đơn này, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}, bao gồm:\n- ${oldDetailsLog}`,
+          userId: userId || currentInvoice.createdBy,
+          userName: 'System',
+          branchId: currentInvoice.branchId || undefined,
+        });
+
+        for (const oldDetail of currentInvoice.details) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: oldDetail.productId,
+              branchId: currentInvoice.branchId || 1,
+            },
+            data: {
+              onHand: { increment: Number(oldDetail.quantity) },
+            },
+          });
+        }
+
+        await tx.invoice.update({
+          where: { id },
+          data: { status: INVOICE_STATUS.CANCELLED, statusValue: 'Đã hủy' },
+        });
+
+        const totalAmount = dto.items.reduce(
+          (sum, item) => sum + item.totalPrice,
+          0,
+        );
+        const discountAmount = dto.discountAmount || 0;
+        const discountFromRatio =
+          (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+        const paidAmount = currentInvoice.payments.reduce(
+          (sum, p) => sum + Number(p.amount),
+          0,
+        );
+        const debtAmount = grandTotal - paidAmount;
+
+        let status: number = INVOICE_STATUS.PROCESSING;
+        if (debtAmount <= 0) status = INVOICE_STATUS.COMPLETED;
+
+        const customerDebtSnapshot = currentInvoice.customer
+          ? Number(currentInvoice.customer.totalDebt) -
+            Number(currentInvoice.debtAmount) +
+            debtAmount
+          : null;
+
+        const newInvoice = await tx.invoice.create({
+          data: {
+            code: newCode,
+            orderId: currentInvoice.orderId,
+            customerId: dto.customerId ?? currentInvoice.customerId,
+            branchId: dto.branchId ?? currentInvoice.branchId,
+            soldById: dto.soldById ?? currentInvoice.soldById,
+            saleChannelId: currentInvoice.saleChannelId,
+            priceBookId: currentInvoice.priceBookId,
+            priceBookName: currentInvoice.priceBookName,
+            purchaseDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : currentInvoice.purchaseDate,
+            totalAmount,
+            discount: discountAmount,
+            discountRatio: dto.discountRatio || 0,
+            grandTotal,
+            paidAmount,
+            debtAmount,
+            status,
+            statusValue: getStatusLabel(status),
+            customerDebtSnapshot,
+            usingCod: currentInvoice.usingCod,
+            description: dto.description ?? currentInvoice.description,
+            createdBy: currentInvoice.createdBy,
+            details: {
+              create: dto.items.map((item) => ({
+                productId: item.productId,
+                productCode: item.productCode,
+                productName: item.productName,
+                quantity: item.quantity,
+                price: item.price,
+                discount: item.discount || 0,
+                discountRatio: item.discountRatio || 0,
+                totalPrice: item.totalPrice,
+                note: item.note,
+              })),
+            },
+            ...(dto.delivery
+              ? {
+                  delivery: {
+                    create: {
+                      receiver: dto.delivery.receiver,
+                      contactNumber: dto.delivery.contactNumber,
+                      address: dto.delivery.address,
+                      locationName: dto.delivery.locationName,
+                      wardName: dto.delivery.wardName,
+                      weight: dto.delivery.weight,
+                      length: dto.delivery.length,
+                      width: dto.delivery.width,
+                      height: dto.delivery.height,
+                      noteForDriver: dto.delivery.noteForDriver,
+                      status: 1,
+                      statusValue: 'Chờ xử lý',
+                    },
+                  },
+                }
+              : currentInvoice.delivery
+                ? {
+                    delivery: {
+                      create: {
+                        receiver: currentInvoice.delivery.receiver,
+                        contactNumber: currentInvoice.delivery.contactNumber,
+                        address: currentInvoice.delivery.address,
+                        locationName: currentInvoice.delivery.locationName,
+                        wardName: currentInvoice.delivery.wardName,
+                        weight: currentInvoice.delivery.weight,
+                        length: currentInvoice.delivery.length,
+                        width: currentInvoice.delivery.width,
+                        height: currentInvoice.delivery.height,
+                        noteForDriver: currentInvoice.delivery.noteForDriver,
+                        status: currentInvoice.delivery.status,
+                        statusValue: currentInvoice.delivery.statusValue,
+                      },
+                    },
+                  }
+                : {}),
+          },
+          include: {
+            details: true,
+            delivery: true,
+            customer: true,
+          },
+        });
+
+        for (const payment of currentInvoice.payments) {
+          await tx.invoicePayment.update({
+            where: { id: payment.id },
+            data: {
+              invoiceId: newInvoice.id,
+              description: `${payment.description || 'Thanh toán hóa đơn'} (Chuyển từ ${currentInvoice.code} sang ${newCode})`,
+            },
+          });
+        }
+
+        for (const item of dto.items) {
+          await tx.inventory.updateMany({
+            where: {
+              productId: item.productId,
+              branchId: newInvoice.branchId || 1,
+            },
+            data: {
+              onHand: { decrement: item.quantity },
+            },
+          });
+        }
+
+        if (newInvoice.customerId) {
+          await this.updateCustomerTotals(newInvoice.customerId, tx);
+        }
+
+        if (currentInvoice.orderId) {
+          await this.ordersService['updateOrderStatusByInvoices'](
+            currentInvoice.orderId,
+            tx,
+          );
+        }
+
+        const newDetailsLog = dto.items
+          .map(
+            (i) =>
+              `${i.productCode} : ${i.quantity}*${new Intl.NumberFormat('vi-VN').format(Number(i.price))}, Tích điểm: Không`,
+          )
+          .join('\n- ');
+
+        const deliveryInfo = dto.delivery || currentInvoice.delivery;
+        const deliveryLog = deliveryInfo
+          ? `\nThông tin giao hàng:\n- Người nhận: ${deliveryInfo.receiver || ''}\n- Phí giao hàng: ${'price' in deliveryInfo ? deliveryInfo.price || 0 : 0}\n- Thu hộ tiền hàng: ${deliveryInfo.noteForDriver ? 'Có' : 'Không'}\n- Trạng thái giao: Chờ xử lý`
+          : '';
+
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'INVOICE_CREATE_FROM_CANCELLED',
+          entityType: 'invoices',
+          entityId: String(newInvoice.id),
+          entityCode: newCode,
+          newValues: newInvoice,
+          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}, bao gồm:\n- ${newDetailsLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
+          userId: userId || currentInvoice.createdBy,
+          userName: 'System',
+          branchId: newInvoice.branchId || undefined,
+        });
+
+        return tx.invoice.findUnique({
+          where: { id: newInvoice.id },
+          include: {
+            details: true,
+            payments: true,
+            delivery: true,
+            customer: true,
+            branch: true,
+            soldBy: true,
+          },
+        });
+      }
+
+      const updateData: any = {};
 
       if (dto.customerId !== undefined) updateData.customerId = dto.customerId;
       if (dto.branchId !== undefined) updateData.branchId = dto.branchId;
@@ -427,113 +658,6 @@ export class InvoicesService {
 
         updateData.status = dto.status;
         updateData.statusValue = getStatusLabel(dto.status);
-      }
-
-      if (dto.items) {
-        if (!currentInvoice.branchId) {
-          throw new BadRequestException(
-            'Không thể cập nhật hóa đơn vì không có thông tin chi nhánh',
-          );
-        }
-
-        for (const oldDetail of currentInvoice.details) {
-          await tx.inventory.updateMany({
-            where: {
-              productId: oldDetail.productId,
-              branchId: currentInvoice.branchId,
-            },
-            data: {
-              onHand: { increment: Number(oldDetail.quantity) },
-            },
-          });
-        }
-
-        await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
-
-        const totalAmount = dto.items.reduce(
-          (sum, item) => sum + item.totalPrice,
-          0,
-        );
-        const discountAmount = dto.discountAmount || 0;
-        const discountFromRatio =
-          (totalAmount * (dto.discountRatio || 0)) / 100;
-        const grandTotal = totalAmount - discountAmount - discountFromRatio;
-
-        const payments = await tx.invoicePayment.findMany({
-          where: { invoiceId: id },
-        });
-        const paidAmount = payments.reduce(
-          (sum, p) => sum + Number(p.amount),
-          0,
-        );
-        const debtAmount = grandTotal - paidAmount;
-
-        let status: number = currentInvoice.status;
-
-        if (
-          status !== INVOICE_STATUS.CANCELLED &&
-          status !== INVOICE_STATUS.FAILED_DELIVERY
-        ) {
-          status =
-            debtAmount <= 0
-              ? INVOICE_STATUS.COMPLETED
-              : INVOICE_STATUS.PROCESSING;
-        }
-
-        const currentCustomerDebt = Number(
-          currentInvoice.customer?.totalDebt || 0,
-        );
-        const oldDebtAmount = Number(currentInvoice.debtAmount);
-        const customerDebtSnapshot =
-          currentCustomerDebt - oldDebtAmount + debtAmount;
-
-        updateData.totalAmount = totalAmount;
-        updateData.discount = discountAmount;
-        updateData.discountRatio = dto.discountRatio || 0;
-        updateData.grandTotal = grandTotal;
-        updateData.debtAmount = debtAmount;
-        updateData.paidAmount = paidAmount;
-        updateData.status = status;
-        updateData.statusValue = getStatusLabel(status);
-        updateData.customerDebtSnapshot = customerDebtSnapshot;
-
-        updateData.details = {
-          create: dto.items.map((item) => ({
-            productId: item.productId,
-            productCode: item.productCode,
-            productName: item.productName,
-            quantity: item.quantity,
-            price: item.price,
-            discount: item.discount || 0,
-            discountRatio: item.discountRatio || 0,
-            totalPrice: item.totalPrice,
-            note: item.note,
-          })),
-        };
-
-        for (const item of dto.items) {
-          await tx.inventory.updateMany({
-            where: {
-              productId: item.productId,
-              branchId: currentInvoice.branchId,
-            },
-            data: {
-              onHand: { decrement: item.quantity },
-            },
-          });
-        }
-
-        if (currentInvoice.customerId && currentInvoice.customer) {
-          const currentCustomerDebtBeforeUpdate = Number(
-            currentInvoice.customer.totalDebt,
-          );
-          const oldDebtAmountBeforeUpdate = Number(currentInvoice.debtAmount);
-          newCustomerDebt =
-            currentCustomerDebtBeforeUpdate -
-            oldDebtAmountBeforeUpdate +
-            debtAmount;
-          shouldUpdateCustomerDebt = true;
-        }
       }
 
       if (dto.delivery) {
@@ -1045,6 +1169,50 @@ export class InvoicesService {
         },
       });
     });
+  }
+
+  private hasProductChanges(oldDetails: any[], newItems: any[]): boolean {
+    if (oldDetails.length !== newItems.length) return true;
+
+    const oldMap = new Map(
+      oldDetails.map((d) => [d.productId, Number(d.quantity)]),
+    );
+    const newMap = new Map(
+      newItems.map((i) => [i.productId, Number(i.quantity)]),
+    );
+
+    if (oldMap.size !== newMap.size) return true;
+
+    for (const [productId, oldQty] of oldMap) {
+      const newQty = newMap.get(productId);
+      if (newQty === undefined || newQty !== oldQty) return true;
+    }
+
+    return false;
+  }
+
+  private async generateInvoiceCodeWithSuffix(
+    baseCode: string,
+    tx: any,
+  ): Promise<string> {
+    const basePart = baseCode.match(/^(HD\d{6})/)?.[1] || baseCode;
+
+    const existingVersions = await tx.invoice.findMany({
+      where: {
+        code: { startsWith: basePart },
+      },
+      select: { code: true },
+    });
+
+    const suffixes = existingVersions
+      .map((inv) => {
+        const match = inv.code.match(/\.(\d+)$/);
+        return match ? parseInt(match[1]) : 0;
+      })
+      .filter((s) => s > 0);
+
+    const nextSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 1;
+    return `${basePart}.${String(nextSuffix).padStart(2, '0')}`;
   }
 
   private async generateSafeInvoiceCode(tx: any): Promise<string> {
