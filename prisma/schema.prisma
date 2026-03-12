@@ -586,6 +586,8 @@ model PriceBook {
   priceBookCustomerGroups PriceBookCustomerGroup[]
   priceBookUsers          PriceBookUser[]
   Product                 Product[]
+  orders Order[] @relation("OrderPriceBook")
+  invoices Invoice[] @relation("InvoicePriceBook")
 
   @@map("price_books")
 }
@@ -744,6 +746,7 @@ model Order {
   soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?     @relation(fields: [saleChannelId], references: [id])
   creator     User             @relation("OrderCreator", fields: [createdBy], references: [id])
+  priceBook PriceBook? @relation("OrderPriceBook", fields: [priceBookId], references: [id])
   invoices    Invoice[]
   items       OrderItem[]
   payments    OrderPayment[]
@@ -878,6 +881,7 @@ model Invoice {
   soldBy      User?              @relation("InvoiceSeller", fields: [soldById], references: [id])
   saleChannel SaleChannel?       @relation(fields: [saleChannelId], references: [id])
   creator     User               @relation("InvoiceCreator", fields: [createdBy], references: [id])
+  priceBook PriceBook? @relation("InvoicePriceBook", fields: [priceBookId], references: [id])
   details     InvoiceDetail[]
   payments    InvoicePayment[]
   surcharges  InvoiceSurcharge[]
