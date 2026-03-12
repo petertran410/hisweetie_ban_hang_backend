@@ -796,6 +796,34 @@ const permissionsData: PermissionData[] = [
     description: 'Xóa mẫu in',
     category: 'Cấu hình',
   },
+  {
+    name: 'bank_accounts:view',
+    resource: 'bank_accounts',
+    action: 'view',
+    description: 'Xem tài khoản ngân hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'bank_accounts:create',
+    resource: 'bank_accounts',
+    action: 'create',
+    description: 'Tạo tài khoản ngân hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'bank_accounts:update',
+    resource: 'bank_accounts',
+    action: 'update',
+    description: 'Sửa tài khoản ngân hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'bank_accounts:delete',
+    resource: 'bank_accounts',
+    action: 'delete',
+    description: 'Xóa tài khoản ngân hàng',
+    category: 'Quản trị',
+  },
 ];
 
 async function seedPermissions() {
