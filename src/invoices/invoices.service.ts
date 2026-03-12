@@ -330,6 +330,7 @@ export class InvoicesService {
           customer: true,
           branch: true,
           soldBy: true,
+          priceBook: true,
         },
       });
     });
@@ -428,11 +429,6 @@ export class InvoicesService {
             debtAmount
           : null;
 
-        const orderCode = await this.prisma.order.findUnique({
-          where: { id: currentInvoice.order?.id },
-          select: { code: true },
-        });
-
         const newInvoice = await tx.invoice.create({
           data: {
             code: newCode,
@@ -518,6 +514,7 @@ export class InvoicesService {
             order: true,
             branch: true,
             soldBy: true,
+            priceBook: true,
           },
         });
 
@@ -582,6 +579,7 @@ export class InvoicesService {
             branch: true,
             soldBy: true,
             order: true,
+            priceBook: true,
           },
         });
       }
@@ -750,6 +748,7 @@ export class InvoicesService {
           details: { include: { product: true } },
           payments: true,
           delivery: true,
+          priceBook: true,
         },
       });
 
@@ -1004,6 +1003,7 @@ export class InvoicesService {
           payments: true,
           delivery: true,
           customer: true,
+          priceBook: true,
         },
       });
 

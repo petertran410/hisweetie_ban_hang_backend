@@ -162,6 +162,7 @@ export class OrdersService {
           items: { include: { product: true } },
           payments: true,
           delivery: true,
+          priceBook: true,
         },
       });
 
@@ -472,6 +473,7 @@ export class OrdersService {
           payments: true,
           delivery: true,
           invoices: true,
+          priceBook: true,
         },
       });
     });
