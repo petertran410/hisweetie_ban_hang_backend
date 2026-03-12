@@ -369,6 +369,11 @@ export class InvoicesService {
           dto.items,
         );
 
+        const userName = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+
         await this.auditLogsService.create({
           actionType: 'DELETE',
           actionCode: 'INVOICE_CANCEL',
@@ -378,7 +383,7 @@ export class InvoicesService {
           oldValues: currentInvoice,
           message: `Hủy hóa đơn ${currentInvoice.code} do việc cập nhật thông tin hóa đơn này, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}. \nBao gồm:\n- ${cancelLog}`,
           userId: userId || currentInvoice.createdBy,
-          userName: 'System',
+          userName: userName?.name || 'System',
           branchId: currentInvoice.branchId || undefined,
         });
 
@@ -540,13 +545,6 @@ export class InvoicesService {
           );
         }
 
-        const newDetailsLog = dto.items
-          .map(
-            (i) =>
-              `${i.productCode} : ${i.quantity}*${new Intl.NumberFormat('vi-VN').format(Number(i.price))}, Tích điểm: Không`,
-          )
-          .join('\n- ');
-
         const deliveryInfo = dto.delivery || currentInvoice.delivery;
         const deliveryLog = deliveryInfo
           ? `\nThông tin giao hàng:\n- Người nhận: ${deliveryInfo.receiver || ''}\n- Phí giao hàng: ${'price' in deliveryInfo ? deliveryInfo.price || 0 : 0}\n- Thu hộ tiền hàng: ${deliveryInfo.noteForDriver ? 'Có' : 'Không'}\n- Trạng thái giao: Chờ xử lý`
@@ -559,9 +557,9 @@ export class InvoicesService {
           entityId: String(newInvoice.id),
           entityCode: newCode,
           newValues: newInvoice,
-          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}, bao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
+          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}. \nBao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
           userId: userId || currentInvoice.createdBy,
-          userName: 'System',
+          userName: userName?.name || 'System',
           branchId: newInvoice.branchId || undefined,
         });
 
@@ -1115,11 +1113,6 @@ export class InvoicesService {
             (allInvoicedQty[d.productId] || 0) + Number(d.quantity);
         });
       });
-
-      const allComplete = order.items.every(
-        (item) =>
-          (allInvoicedQty[item.productId] || 0) >= Number(item.quantity),
-      );
 
       await this.ordersService['updateOrderStatusByInvoices'](order.id, tx);
 
