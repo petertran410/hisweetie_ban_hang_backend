@@ -9,19 +9,19 @@ import {
 export class CreateBankAccountDto {
   @IsString()
   @IsNotEmpty()
-  accountNumber: string | undefined;
+  accountNumber!: string;
 
   @IsString()
   @IsNotEmpty()
-  bankCode: string | undefined;
+  bankCode!: string;
 
   @IsString()
   @IsNotEmpty()
-  bankName: string | undefined;
+  bankName!: string;
 
   @IsString()
   @IsNotEmpty()
-  accountHolder: string | undefined;
+  accountHolder!: string;
 
   @IsString()
   @IsOptional()
@@ -29,7 +29,7 @@ export class CreateBankAccountDto {
 
   @IsString()
   @IsNotEmpty()
-  scope: string | undefined;
+  scope!: string;
 
   @IsArray()
   @IsInt({ each: true })
