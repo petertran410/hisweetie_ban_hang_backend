@@ -364,12 +364,10 @@ export class InvoicesService {
           tx,
         );
 
-        const oldDetailsLog = currentInvoice.details
-          .map(
-            (d) =>
-              `${d.productCode} : ${d.quantity}*${new Intl.NumberFormat('vi-VN').format(Number(d.price))}`,
-          )
-          .join('\n- ');
+        const { cancelLog, newLog } = this.buildProductChangesLog(
+          currentInvoice.details,
+          dto.items,
+        );
 
         await this.auditLogsService.create({
           actionType: 'DELETE',
@@ -378,7 +376,7 @@ export class InvoicesService {
           entityId: String(currentInvoice.id),
           entityCode: currentInvoice.code,
           oldValues: currentInvoice,
-          message: `Hủy hóa đơn ${currentInvoice.code} do việc cập nhật thông tin hóa đơn này, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}, bao gồm:\n- ${oldDetailsLog}`,
+          message: `Hủy hóa đơn ${currentInvoice.code} do việc cập nhật thông tin hóa đơn này, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}. \nBao gồm:\n- ${cancelLog}`,
           userId: userId || currentInvoice.createdBy,
           userName: 'System',
           branchId: currentInvoice.branchId || undefined,
@@ -561,7 +559,7 @@ export class InvoicesService {
           entityId: String(newInvoice.id),
           entityCode: newCode,
           newValues: newInvoice,
-          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}, bao gồm:\n- ${newDetailsLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
+          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}, bao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
           userId: userId || currentInvoice.createdBy,
           userName: 'System',
           branchId: newInvoice.branchId || undefined,
@@ -1320,5 +1318,103 @@ export class InvoicesService {
     });
 
     return payments;
+  }
+
+  private buildProductChangesLog(
+    oldDetails: any[],
+    newItems: any[],
+  ): {
+    cancelLog: string;
+    newLog: string;
+  } {
+    const oldMap = new Map(
+      oldDetails.map((d) => [
+        d.productId,
+        {
+          code: d.productCode,
+          quantity: Number(d.quantity),
+          price: Number(d.price),
+        },
+      ]),
+    );
+
+    const newMap = new Map(
+      newItems.map((i) => [
+        i.productId,
+        {
+          code: i.productCode,
+          quantity: Number(i.quantity),
+          price: Number(i.price),
+        },
+      ]),
+    );
+
+    const removed: string[] = [];
+    const added: string[] = [];
+    const changed: string[] = [];
+    const unchanged: string[] = [];
+
+    for (const [productId, oldData] of oldMap) {
+      const newData = newMap.get(productId);
+      if (!newData) {
+        removed.push(
+          `${oldData.code} : ${oldData.quantity}*${new Intl.NumberFormat('vi-VN').format(oldData.price)} (Đã xóa)`,
+        );
+      } else if (oldData.quantity !== newData.quantity) {
+        changed.push(
+          `${oldData.code} : ${oldData.quantity}*${new Intl.NumberFormat('vi-VN').format(oldData.price)} → ${newData.quantity}*${new Intl.NumberFormat('vi-VN').format(newData.price)}`,
+        );
+      } else {
+        unchanged.push(
+          `${oldData.code} : ${oldData.quantity}*${new Intl.NumberFormat('vi-VN').format(oldData.price)}`,
+        );
+      }
+    }
+
+    for (const [productId, newData] of newMap) {
+      if (!oldMap.has(productId)) {
+        added.push(
+          `${newData.code} : ${newData.quantity}*${new Intl.NumberFormat('vi-VN').format(newData.price)} (Mới thêm)`,
+        );
+      }
+    }
+
+    const cancelParts: string[] = [];
+    if (unchanged.length > 0) {
+      cancelParts.push(...unchanged);
+    }
+    if (changed.length > 0) {
+      cancelParts.push(...changed.map((c) => c.split(' → ')[0]));
+    }
+    if (removed.length > 0) {
+      cancelParts.push(...removed);
+    }
+
+    const newParts: string[] = [];
+    if (unchanged.length > 0) {
+      newParts.push(...unchanged);
+    }
+    if (changed.length > 0) {
+      newParts.push(...changed.map((c) => c.split(' → ')[1]));
+    }
+    if (added.length > 0) {
+      newParts.push(...added);
+    }
+
+    let changesSummary = '\n\nThay đổi:';
+    if (removed.length > 0) {
+      changesSummary += `\n- Đã xóa: ${removed.length} sản phẩm\n  ${removed.join('\n  ')}`;
+    }
+    if (added.length > 0) {
+      changesSummary += `\n- Mới thêm: ${added.length} sản phẩm\n  ${added.join('\n  ')}`;
+    }
+    if (changed.length > 0) {
+      changesSummary += `\n- Thay đổi số lượng: ${changed.length} sản phẩm\n  ${changed.join('\n  ')}`;
+    }
+
+    return {
+      cancelLog: cancelParts.join('\n- ') + changesSummary,
+      newLog: newParts.join('\n- '),
+    };
   }
 }
