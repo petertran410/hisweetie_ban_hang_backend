@@ -581,6 +581,7 @@ export class InvoicesService {
             customer: true,
             branch: true,
             soldBy: true,
+            order: true,
           },
         });
       }
