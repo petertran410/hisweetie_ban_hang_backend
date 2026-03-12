@@ -348,6 +348,7 @@ export class InvoicesService {
           delivery: true,
           branch: true,
           soldBy: true,
+          order: true,
         },
       });
 
@@ -381,7 +382,7 @@ export class InvoicesService {
           entityId: String(currentInvoice.id),
           entityCode: currentInvoice.code,
           oldValues: currentInvoice,
-          message: `Hủy hóa đơn ${currentInvoice.code} do việc cập nhật thông tin hóa đơn này, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}. \nBao gồm:\n- ${cancelLog}`,
+          message: `Hủy hóa đơn ${currentInvoice.code} (tạo hóa đơn mới: ${newCode}), (cho đơn đặt hàng: ${currentInvoice.order?.code || 'N/A'}), khách hàng ${currentInvoice.customer?.name || 'N/A'}, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}, thời gian: ${new Date().toLocaleString('vi-VN')}, Người hủy: ${userName?.name || 'System'}, Người bán: ${currentInvoice.soldBy?.name || userName?.name || 'System'}, tại kho: ${currentInvoice.branch?.name || 'N/A'}. \nBao gồm:\n- ${cancelLog}\n- Ghi chú: ${currentInvoice.description || ''}\n\nThông tin giao hàng:\n${currentInvoice.delivery ? `- Người nhận: ${currentInvoice.delivery.receiver || 'N/A'}\n- Số điện thoại: ${currentInvoice.delivery.contactNumber || 'N/A'}\n- Địa chỉ: ${currentInvoice.delivery.address || 'N/A'}\n- Trọng lượng: ${currentInvoice.delivery.weight || 0}\n- Kích thước: ${currentInvoice.delivery.length || 0} - ${currentInvoice.delivery.width || 0} - ${currentInvoice.delivery.height || 0}\n${currentInvoice.delivery.price ? `- Phí giao hàng: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.delivery.price))}` : ''}\n${currentInvoice.delivery.noteForDriver ? `- Thu hộ tiền hàng: ${currentInvoice.delivery.noteForDriver}` : ''}\n- Trạng thái giao: ${currentInvoice.delivery.statusValue || 'Chờ xử lý'}` : '- Không có thông tin giao hàng'}`,
           userId: userId || currentInvoice.createdBy,
           userName: userName?.name || 'System',
           branchId: currentInvoice.branchId || undefined,
@@ -426,6 +427,11 @@ export class InvoicesService {
             Number(currentInvoice.debtAmount) +
             debtAmount
           : null;
+
+        const orderCode = await this.prisma.order.findUnique({
+          where: { id: currentInvoice.order?.id },
+          select: { code: true },
+        });
 
         const newInvoice = await tx.invoice.create({
           data: {
@@ -509,6 +515,9 @@ export class InvoicesService {
             details: true,
             delivery: true,
             customer: true,
+            order: true,
+            branch: true,
+            soldBy: true,
           },
         });
 
@@ -557,7 +566,7 @@ export class InvoicesService {
           entityId: String(newInvoice.id),
           entityCode: newCode,
           newValues: newInvoice,
-          message: `Tạo hóa đơn ${newCode} được tạo từ cập nhật thông tin hóa đơn: ${currentInvoice.code}. \nBao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
+          message: `Tạo hóa đơn ${newCode} từ đơn hàng: ${currentInvoice.order?.code}. \nBao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
           userId: userId || currentInvoice.createdBy,
           userName: userName?.name || 'System',
           branchId: newInvoice.branchId || undefined,
