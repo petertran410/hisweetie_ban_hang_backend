@@ -33,6 +33,11 @@ export class BankAccountsController {
     return this.bankAccountsService.findOne(+id);
   }
 
+  @Get('for-payment')
+  findAllForPayment() {
+    return this.bankAccountsService.findAll();
+  }
+
   @Post()
   @RequirePermissions('bank_accounts:create')
   create(@Body() dto: CreateBankAccountDto) {
