@@ -684,16 +684,22 @@ model Surcharge {
 }
 
 model BankAccount {
-  id            Int      @id @default(autoincrement())
-  bankName      String
-  accountNumber String
-  createdAt     DateTime @default(now())
+  id              Int      @id @default(autoincrement())
+  accountNumber   String
+  bankCode        String
+  bankName        String
+  accountHolder   String
+  note            String?
+  scope           String
+  branchIds       Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   orderPayments         OrderPayment[]
   invoicePayments       InvoicePayment[]
   purchaseOrderPayments PurchaseOrderPayment[]
-  cashFlows CashFlow[]
-  orderSupplierPayments  OrderSupplierPayment[]
+  cashFlows             CashFlow[]
+  orderSupplierPayments OrderSupplierPayment[]
 
   @@map("bank_accounts")
 }
