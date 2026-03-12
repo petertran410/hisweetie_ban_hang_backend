@@ -27,15 +27,15 @@ export class BankAccountsController {
     return this.bankAccountsService.findAll();
   }
 
+  @Get('for-payment')
+  findAllForPayment() {
+    return this.bankAccountsService.findAll();
+  }
+
   @Get(':id')
   @RequirePermissions('bank_accounts:view')
   findOne(@Param('id') id: string) {
     return this.bankAccountsService.findOne(+id);
-  }
-
-  @Get('for-payment')
-  findAllForPayment() {
-    return this.bankAccountsService.findAll();
   }
 
   @Post()
