@@ -23,7 +23,6 @@ import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
-import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class InvoicesService {
@@ -995,9 +994,6 @@ export class InvoicesService {
       const status =
         debtAmount <= 0 ? INVOICE_STATUS.COMPLETED : INVOICE_STATUS.PROCESSING;
 
-      const currentCustomerDebt = Number(order.customer?.totalDebt || 0);
-      const customerDebtSnapshot = currentCustomerDebt + debtAmount;
-
       const invoice = await tx.invoice.create({
         data: {
           code,
@@ -1058,6 +1054,18 @@ export class InvoicesService {
           priceBook: true,
         },
       });
+
+      const soldByName = await this.prisma.user.findUnique({
+        where: { id: Number(order.soldById) },
+        select: { name: true },
+      });
+
+      const createdByName = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      const invoiceData = invoice;
 
       const cashFlowIdsToUpdate: number[] = [];
 
@@ -1222,7 +1230,12 @@ export class InvoicesService {
         entityCode: invoice.code,
         category: getCategoryFromActionCode('INVOICE_CREATE'),
         severity: getSeverityFromActionCode('INVOICE_CREATE'),
-        snapshot: this.buildInvoiceSnapshot(invoice),
+        snapshot: this.buildInvoiceSnapshot(
+          invoiceData,
+          order,
+          soldByName,
+          createdByName,
+        ),
         message: renderAuditMessage('INVOICE_CREATE', {
           invoiceCode: invoice.code,
           orderCode: order.code,
@@ -1498,7 +1511,12 @@ export class InvoicesService {
     };
   }
 
-  private buildInvoiceSnapshot(invoice: any) {
+  private buildInvoiceSnapshot(
+    invoice: any,
+    order?: any,
+    soldByName?: any,
+    createdByName?: any,
+  ) {
     return {
       code: invoice.code,
       purchaseDate: invoice.purchaseDate,
@@ -1515,8 +1533,8 @@ export class InvoicesService {
       customer: invoice.customer
         ? { code: invoice.customer.code, name: invoice.customer.name }
         : null,
-      order: invoice.order ? { code: invoice.order.code } : null,
-      soldBy: invoice.soldBy ? { name: invoice.soldBy.name } : null,
+      order: order,
+      soldBy: soldByName,
       branch: invoice.branch ? { name: invoice.branch.name } : null,
       items: (invoice.details || []).map((i: any) => ({
         productId: i.productId,
