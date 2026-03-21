@@ -44,17 +44,28 @@ export class TransfersController {
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateTransferDto) {
-    return this.transfersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateTransferDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.transfersService.update(+id, dto, userId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.transfersService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.transfersService.remove(+id, userId);
   }
 
   @Put(':id/cancel')
-  cancel(@Param('id') id: string, @Body() dto: CancelTransferDto) {
-    return this.transfersService.cancelTransfer(+id, dto);
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelTransferDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.transfersService.cancelTransfer(+id, dto, userId);
   }
 }

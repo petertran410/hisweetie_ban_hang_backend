@@ -7,10 +7,20 @@ import {
   CreatePaymentDto,
   CreateCustomerPaymentDto,
 } from './dto';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { buildChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class CashFlowsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async create(dto: CreateCashFlowDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -160,6 +170,31 @@ export class CashFlowsService {
             },
           },
         },
+      });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'CASHFLOW_CREATE',
+        entityType: 'cashflows',
+        entityId: cashFlow.id.toString(),
+        entityCode: cashFlow.code,
+        category: getCategoryFromActionCode('CASHFLOW_CREATE'),
+        severity: getSeverityFromActionCode('CASHFLOW_CREATE'),
+        snapshot: this.buildCashFlowSnapshot(cashFlow),
+        message: renderAuditMessage('CASHFLOW_CREATE', {
+          flowType: cashFlow.isReceipt ? 'Thu' : 'Chi',
+          amount: Number(cashFlow.amount),
+          description: cashFlow.description || '',
+        }),
+        messageTemplate: 'CASHFLOW_CREATE',
+        userId,
+        userName: user?.name || 'System',
+        branchId: cashFlow.branchId,
       });
 
       return {
@@ -386,7 +421,11 @@ export class CashFlowsService {
     };
   }
 
-  async update(id: number, dto: UpdateCashFlowDto) {
+  async update(id: number, dto: UpdateCashFlowDto, userId?: number) {
+    const existingCashFlow = await this.prisma.cashFlow.findUnique({
+      where: { id },
+    });
+
     const cashFlow = await this.prisma.cashFlow.update({
       where: { id },
       data: {
@@ -433,6 +472,47 @@ export class CashFlowsService {
         },
       },
     });
+
+    if (userId && existingCashFlow) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      const changes = buildChanges(
+        'cashflows',
+        {
+          amount: Number(existingCashFlow.amount),
+          description: existingCashFlow.description,
+          status: existingCashFlow.status,
+        },
+        {
+          amount: Number(cashFlow.amount),
+          description: cashFlow.description,
+          status: cashFlow.status,
+        },
+      );
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CASHFLOW_UPDATE',
+        entityType: 'cashflows',
+        entityId: id.toString(),
+        entityCode: cashFlow.code,
+        category: getCategoryFromActionCode('CASHFLOW_UPDATE'),
+        severity: getSeverityFromActionCode('CASHFLOW_UPDATE'),
+        snapshot: this.buildCashFlowSnapshot(cashFlow),
+        changes: changes.length > 0 ? changes : null,
+        message: renderAuditMessage('CASHFLOW_UPDATE', {
+          flowType: cashFlow.isReceipt ? 'Thu' : 'Chi',
+          cashflowCode: cashFlow.code,
+        }),
+        messageTemplate: 'CASHFLOW_UPDATE',
+        userId,
+        userName: user?.name || 'System',
+        branchId: cashFlow.branchId,
+      });
+    }
 
     return {
       ...cashFlow,
@@ -950,5 +1030,24 @@ export class CashFlowsService {
     }
 
     throw new Error('Không thể tạo mã phiếu thu/chi duy nhất');
+  }
+
+  private buildCashFlowSnapshot(cashFlow: any) {
+    return {
+      code: cashFlow.code,
+      isReceipt: cashFlow.isReceipt,
+      amount: Number(cashFlow.amount),
+      transDate: cashFlow.transDate,
+      method: cashFlow.method,
+      status: cashFlow.status,
+      statusValue: cashFlow.statusValue,
+      description: cashFlow.description,
+      partnerType: cashFlow.partnerType,
+      partnerName: cashFlow.partnerName,
+      branchName: cashFlow.branchName || cashFlow.branch?.name,
+      cashFlowGroupName:
+        cashFlow.cashFlowGroupName || cashFlow.cashFlowGroup?.name,
+      creatorName: cashFlow.creatorName || cashFlow.creator?.name,
+    };
   }
 }

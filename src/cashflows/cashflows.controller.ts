@@ -87,8 +87,13 @@ export class CashFlowsController {
   @Put(':id')
   @RequirePermissions('cash_flows:update')
   @ApiOperation({ summary: 'Update cash flow' })
-  update(@Param('id') id: string, @Body() dto: UpdateCashFlowDto) {
-    return this.cashFlowsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCashFlowDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.cashFlowsService.update(+id, dto, userId);
   }
 
   @Delete(':id')

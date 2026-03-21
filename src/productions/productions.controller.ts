@@ -43,12 +43,18 @@ export class ProductionsController {
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateProductionDto) {
-    return this.productionsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateProductionDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.productionsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.productionsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.productionsService.remove(+id, userId);
   }
 }

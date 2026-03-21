@@ -9,10 +9,19 @@ import {
   UpdateProductionDto,
   ProductionQueryDto,
 } from './dto';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 @Injectable()
 export class ProductionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: ProductionQueryDto) {
     const {
@@ -185,11 +194,29 @@ export class ProductionsService {
         );
       }
 
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PRODUCTION_CREATE',
+        entityType: 'productions',
+        entityId: production.id.toString(),
+        entityCode: production.code,
+        category: getCategoryFromActionCode('PRODUCTION_CREATE'),
+        severity: getSeverityFromActionCode('PRODUCTION_CREATE'),
+        snapshot: this.buildProductionSnapshot(production),
+        message: renderAuditMessage('PRODUCTION_CREATE', {
+          productionCode: production.code,
+        }),
+        messageTemplate: 'PRODUCTION_CREATE',
+        userId,
+        userName: user?.name || 'System',
+        branchId: dto.sourceBranchId,
+      });
+
       return production;
     });
   }
 
-  async update(id: number, dto: UpdateProductionDto) {
+  async update(id: number, dto: UpdateProductionDto, userId?: number) {
     const production = await this.findOne(id);
 
     const updateData: any = {};
@@ -253,6 +280,37 @@ export class ProductionsService {
         }
       }
 
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+
+        const updatedProduction = await tx.production.findUnique({
+          where: { id },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'PRODUCTION_UPDATE',
+          entityType: 'productions',
+          entityId: id.toString(),
+          entityCode: production.code,
+          category: getCategoryFromActionCode('PRODUCTION_UPDATE'),
+          severity: getSeverityFromActionCode('PRODUCTION_UPDATE'),
+          snapshot: this.buildProductionSnapshot(
+            updatedProduction || production,
+          ),
+          message: renderAuditMessage('PRODUCTION_UPDATE', {
+            productionCode: production.code,
+          }),
+          messageTemplate: 'PRODUCTION_UPDATE',
+          userId,
+          userName: user?.name || 'System',
+          branchId: production.sourceBranchId,
+        });
+      }
+
       return tx.production.update({
         where: { id },
         data: updateData,
@@ -260,12 +318,36 @@ export class ProductionsService {
     });
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const production = await this.findOne(id);
 
-    return this.prisma.production.delete({
-      where: { id },
-    });
+    await this.prisma.production.delete({ where: { id } });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PRODUCTION_DELETE',
+        entityType: 'productions',
+        entityId: id.toString(),
+        entityCode: production.code,
+        category: getCategoryFromActionCode('PRODUCTION_DELETE'),
+        severity: getSeverityFromActionCode('PRODUCTION_DELETE'),
+        snapshot: this.buildProductionSnapshot(production),
+        message: renderAuditMessage('PRODUCTION_DELETE', {
+          productionCode: production.code,
+        }),
+        messageTemplate: 'PRODUCTION_DELETE',
+        userId,
+        userName: user?.name || 'System',
+      });
+    }
+
+    return { message: 'Xóa phiếu sản xuất thành công' };
   }
 
   private async calculateTotalCost(
@@ -517,5 +599,23 @@ export class ProductionsService {
         totalWeight: newTotalWeight,
       },
     });
+  }
+
+  private buildProductionSnapshot(production: any) {
+    return {
+      code: production.code,
+      status: production.status,
+      productId: production.productId,
+      productCode: production.productCode,
+      productName: production.productName,
+      quantity: Number(production.quantity),
+      totalCost: Number(production.totalCost),
+      sourceBranchName: production.sourceBranchName,
+      destinationBranchName: production.destinationBranchName,
+      note: production.note,
+      autoDeductComponents: production.autoDeductComponents,
+      manufacturedDate: production.manufacturedDate,
+      createdByName: production.createdByName,
+    };
   }
 }

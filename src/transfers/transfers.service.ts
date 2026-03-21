@@ -10,10 +10,20 @@ import {
   TransferQueryDto,
   CancelTransferDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class TransfersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: TransferQueryDto) {
     const {
@@ -363,10 +373,30 @@ export class TransfersService {
       await this.incrementInventoryToBranch(transfer.id);
     }
 
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'TRANSFER_CREATE',
+      entityType: 'transfers',
+      entityId: transfer.id.toString(),
+      entityCode: transfer.code,
+      category: getCategoryFromActionCode('TRANSFER_CREATE'),
+      severity: getSeverityFromActionCode('TRANSFER_CREATE'),
+      snapshot: this.buildTransferSnapshot(transfer),
+      message: renderAuditMessage('TRANSFER_CREATE', {
+        transferCode: transfer.code,
+        fromBranch: fromBranch.name,
+        toBranch: toBranch.name,
+      }),
+      messageTemplate: 'TRANSFER_CREATE',
+      userId,
+      userName: user.name || 'System',
+      branchId: fromBranch.id,
+    });
+
     return transfer;
   }
 
-  async update(id: number, dto: UpdateTransferDto) {
+  async update(id: number, dto: UpdateTransferDto, userId?: number) {
     const currentTransfer = await this.findOne(id);
     const newStatus =
       dto.status !== undefined ? dto.status : currentTransfer.status;
@@ -479,12 +509,76 @@ export class TransfersService {
       await this.decrementInventoryToBranch(id);
     }
 
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'TRANSFER_UPDATE',
+        entityType: 'transfers',
+        entityId: id.toString(),
+        entityCode: updatedTransfer.code,
+        category: getCategoryFromActionCode('TRANSFER_UPDATE'),
+        severity: getSeverityFromActionCode('TRANSFER_UPDATE'),
+        snapshot: this.buildTransferSnapshot(updatedTransfer),
+        changes: buildChanges(
+          'transfers',
+          {
+            status: currentTransfer.status,
+            noteBySource: currentTransfer.noteBySource,
+            noteByDestination: currentTransfer.noteByDestination,
+          },
+          {
+            status: updatedTransfer.status,
+            noteBySource: updatedTransfer.noteBySource,
+            noteByDestination: updatedTransfer.noteByDestination,
+          },
+        ),
+        message: renderAuditMessage('TRANSFER_UPDATE', {
+          transferCode: updatedTransfer.code,
+        }),
+        messageTemplate: 'TRANSFER_UPDATE',
+        userId,
+        userName: user?.name || 'System',
+        branchId: updatedTransfer.fromBranchId,
+      });
+    }
+
     return updatedTransfer;
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const transfer = await this.findOne(id);
+
     await this.prisma.transfer.delete({ where: { id } });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'TRANSFER_DELETE',
+        entityType: 'transfers',
+        entityId: id.toString(),
+        entityCode: transfer.code,
+        category: getCategoryFromActionCode('TRANSFER_DELETE'),
+        severity: getSeverityFromActionCode('TRANSFER_DELETE'),
+        snapshot: this.buildTransferSnapshot(transfer),
+        message: renderAuditMessage('TRANSFER_DELETE', {
+          transferCode: transfer.code,
+        }),
+        messageTemplate: 'TRANSFER_DELETE',
+        userId,
+        userName: user?.name || 'System',
+      });
+    }
+
     return { message: 'Xóa dữ liệu thành công' };
   }
 
@@ -492,156 +586,6 @@ export class TransfersService {
     const prefix = 'TRF';
     const count = await this.prisma.transfer.count();
     return `${prefix}${String(count + 1).padStart(6, '0')}`;
-  }
-
-  private async updateInventoryOnTransfer(transferId: number) {
-    const transfer = await this.prisma.transfer.findUnique({
-      where: { id: transferId },
-      include: {
-        details: true,
-        fromBranch: true,
-        toBranch: true,
-      },
-    });
-
-    if (!transfer) {
-      throw new NotFoundException(
-        `Transfer với ID ${transferId} không tồn tại`,
-      );
-    }
-
-    for (const detail of transfer.details) {
-      const inventoryFrom = await this.prisma.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
-          },
-        },
-      });
-
-      if (!inventoryFrom) {
-        throw new NotFoundException(
-          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.fromBranch.name}`,
-        );
-      }
-
-      if (Number(inventoryFrom.onHand) < Number(detail.sendQuantity)) {
-        throw new BadRequestException(
-          `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventoryFrom.onHand}, yêu cầu: ${detail.sendQuantity}`,
-        );
-      }
-
-      await this.prisma.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
-          },
-        },
-        data: {
-          onHand: { decrement: detail.sendQuantity },
-        },
-      });
-    }
-  }
-
-  private async updateInventoryOnReceive(transferId: number) {
-    const transfer = await this.prisma.transfer.findUnique({
-      where: { id: transferId },
-      include: {
-        details: true,
-        fromBranch: true,
-        toBranch: true,
-      },
-    });
-
-    if (!transfer) {
-      throw new NotFoundException(
-        `Transfer với ID ${transferId} không tồn tại`,
-      );
-    }
-
-    for (const detail of transfer.details) {
-      const inventoryTo = await this.prisma.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.toBranchId,
-          },
-        },
-      });
-
-      if (!inventoryTo) {
-        throw new NotFoundException(
-          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.toBranch.name}`,
-        );
-      }
-
-      await this.prisma.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.toBranchId,
-          },
-        },
-        data: {
-          onHand: { increment: detail.receivedQuantity },
-        },
-      });
-    }
-  }
-
-  private async updateInventoryWithTotalWeight(
-    productId: number,
-    branchId: number,
-    onHandUpdate: { increment?: number; decrement?: number },
-    tx: any,
-  ) {
-    const inventory = await tx.inventory.findUnique({
-      where: {
-        productId_branchId: { productId, branchId },
-      },
-      include: {
-        product: {
-          select: {
-            weight: true,
-            weightUnit: true,
-          },
-        },
-      },
-    });
-
-    if (!inventory) {
-      throw new Error(
-        `Inventory not found for product ${productId} at branch ${branchId}`,
-      );
-    }
-
-    const currentOnHand = Number(inventory.onHand);
-    let newOnHand = currentOnHand;
-
-    if (onHandUpdate.increment) {
-      newOnHand += Number(onHandUpdate.increment);
-    }
-    if (onHandUpdate.decrement) {
-      newOnHand -= Number(onHandUpdate.decrement);
-    }
-
-    const weight = inventory.product.weight
-      ? Number(inventory.product.weight)
-      : 0;
-    const totalWeight = weight * newOnHand;
-
-    await tx.inventory.update({
-      where: {
-        productId_branchId: { productId, branchId },
-      },
-      data: {
-        onHand: onHandUpdate,
-        totalWeight: totalWeight,
-      },
-    });
   }
 
   private async decrementInventoryFromBranch(transferId: number) {
@@ -816,7 +760,7 @@ export class TransfersService {
     }
   }
 
-  async cancelTransfer(id: number, dto: CancelTransferDto) {
+  async cancelTransfer(id: number, dto: CancelTransferDto, userId?: number) {
     const transfer = await this.findOne(id);
 
     if (transfer.status === 4) {
@@ -893,6 +837,55 @@ export class TransfersService {
       }
     });
 
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'TRANSFER_DELETE',
+        entityType: 'transfers',
+        entityId: id.toString(),
+        entityCode: transfer.code,
+        category: getCategoryFromActionCode('TRANSFER_DELETE'),
+        severity: getSeverityFromActionCode('TRANSFER_DELETE'),
+        snapshot: this.buildTransferSnapshot(transfer),
+        message: `Hủy phiếu chuyển kho ${transfer.code}${dto.cancelReason ? ` - Lý do: ${dto.cancelReason}` : ''}`,
+        messageTemplate: 'TRANSFER_DELETE',
+        userId,
+        userName: user?.name || 'System',
+        branchId: transfer.fromBranchId,
+      });
+    }
+
     return { message: 'Hủy phiếu chuyển hàng thành công' };
+  }
+
+  private buildTransferSnapshot(transfer: any) {
+    return {
+      code: transfer.code,
+      status: transfer.status,
+      fromBranchId: transfer.fromBranchId,
+      fromBranchName: transfer.fromBranchName || transfer.fromBranch?.name,
+      toBranchId: transfer.toBranchId,
+      toBranchName: transfer.toBranchName || transfer.toBranch?.name,
+      totalTransfer: Number(transfer.totalTransfer || 0),
+      totalReceive: Number(transfer.totalReceive || 0),
+      noteBySource: transfer.noteBySource,
+      noteByDestination: transfer.noteByDestination,
+      transferredDate: transfer.transferredDate,
+      receivedDate: transfer.receivedDate,
+      createdByName: transfer.createdByName || transfer.creator?.name,
+      details: (transfer.details || []).map((d: any) => ({
+        productId: d.productId,
+        productCode: d.productCode,
+        productName: d.productName,
+        sendQuantity: Number(d.sendQuantity),
+        receivedQuantity: Number(d.receivedQuantity),
+        sendPrice: Number(d.sendPrice),
+      })),
+    };
   }
 }
