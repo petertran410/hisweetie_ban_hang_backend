@@ -613,6 +613,77 @@ export class OrdersService {
     });
   }
 
+  async updateOrderStatusByInvoices(orderId: number, tx: any) {
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      include: { items: true },
+    });
+
+    if (!order) return;
+
+    if (order.status === 4) return;
+
+    const invoices = await tx.invoice.findMany({
+      where: {
+        orderId,
+        status: { not: 2 },
+      },
+      include: { details: true },
+    });
+
+    if (invoices.length === 0) {
+      if (order.status === 6 || order.status === 3) {
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            status: 1,
+            statusValue: getStatusLabel(1),
+            orderStatus: 'pending',
+          },
+        });
+      }
+      return;
+    }
+
+    const invoicedQty: Record<number, number> = {};
+    invoices.forEach((inv: any) => {
+      inv.details.forEach((d: any) => {
+        invoicedQty[d.productId] =
+          (invoicedQty[d.productId] || 0) + Number(d.quantity);
+      });
+    });
+
+    let isFullyInvoiced = true;
+    for (const item of order.items) {
+      const orderedQty = Number(item.quantity);
+      const invoiced = invoicedQty[item.productId] || 0;
+      if (invoiced < orderedQty) {
+        isFullyInvoiced = false;
+        break;
+      }
+    }
+
+    if (isFullyInvoiced) {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 3,
+          statusValue: getStatusLabel(3),
+          orderStatus: 'completed',
+        },
+      });
+    } else {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 6,
+          statusValue: getStatusLabel(6),
+          orderStatus: 'partially_invoiced',
+        },
+      });
+    }
+  }
+
   private async generateCode(): Promise<string> {
     const lastOrder = await this.prisma.order.findFirst({
       orderBy: { id: 'desc' },
