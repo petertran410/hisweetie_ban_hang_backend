@@ -52,7 +52,6 @@ import { PackingLoadingsModule } from './packing-loadings/packing-loadings.modul
 import { AllPackingModule } from './all-packing/all-packing.module';
 import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { PrintTemplatesModule } from './print-templates/print-templates.module';
-import { AuditInterceptor } from './common/interceptors/audit.interceptor';
 import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
 
 @Module({
@@ -128,10 +127,6 @@ import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
     {
       provide: APP_PIPE,
       useClass: ValidationPipe,
-    },
-    {
-      provide: APP_INTERCEPTOR,
-      useClass: AuditInterceptor,
     },
   ],
 })

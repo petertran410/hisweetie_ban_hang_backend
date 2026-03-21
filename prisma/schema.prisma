@@ -1575,10 +1575,11 @@ model AuditLog {
   entityType      String   @map("entity_type")
   entityId        String?  @map("entity_id")
   entityCode      String?  @map("entity_code")
+  category        String?  @map("category")
+  severity        String   @default("info") @map("severity")
   
-  oldValues       Json?    @map("old_values")
-  newValues       Json?    @map("new_values")
-  changedFields   Json?    @map("changed_fields")
+  snapshot        Json?    @map("snapshot")
+  changes         Json?    @map("changes")
   
   message         String
   messageTemplate String?  @map("message_template")
@@ -1606,5 +1607,7 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([actionCode])
   @@index([createdAt])
+  @@index([category])
+  @@index([severity])
   @@map("audit_logs")
 }

@@ -11,9 +11,10 @@ export class AuditLogsService {
     entityType: string;
     entityId?: string;
     entityCode?: string;
-    oldValues?: any;
-    newValues?: any;
-    changedFields?: any;
+    category?: string;
+    severity?: string;
+    snapshot?: any;
+    changes?: any;
     message: string;
     messageTemplate?: string;
     messageParams?: any;
@@ -34,14 +35,15 @@ export class AuditLogsService {
           entityType: data.entityType,
           entityId: data.entityId,
           entityCode: data.entityCode,
+          category: data.category,
+          severity: data.severity || 'info',
 
-          oldValues: data.oldValues
-            ? JSON.parse(JSON.stringify(data.oldValues))
+          snapshot: data.snapshot
+            ? JSON.parse(JSON.stringify(data.snapshot))
             : undefined,
-          newValues: data.newValues
-            ? JSON.parse(JSON.stringify(data.newValues))
+          changes: data.changes
+            ? JSON.parse(JSON.stringify(data.changes))
             : undefined,
-          changedFields: data.changedFields,
 
           message: data.message,
           messageTemplate: data.messageTemplate,
@@ -70,6 +72,8 @@ export class AuditLogsService {
     branchId?: number;
     entityType?: string;
     actionCode?: string;
+    category?: string;
+    severity?: string;
     startDate?: Date;
     endDate?: Date;
     page?: number;
@@ -80,6 +84,8 @@ export class AuditLogsService {
       branchId,
       entityType,
       actionCode,
+      category,
+      severity,
       startDate,
       endDate,
       page = 1,
@@ -92,6 +98,8 @@ export class AuditLogsService {
     if (branchId) where.branchId = branchId;
     if (entityType) where.entityType = entityType;
     if (actionCode) where.actionCode = actionCode;
+    if (category) where.category = category;
+    if (severity) where.severity = severity;
 
     if (startDate || endDate) {
       where.createdAt = {};
