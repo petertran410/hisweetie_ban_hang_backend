@@ -18,6 +18,12 @@ import {
 } from '../orders/dto/order-status.constants';
 import { OrdersService } from '../orders/orders.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class InvoicesService {
@@ -321,6 +327,41 @@ export class InvoicesService {
         await this.updateCustomerTotals(dto.customerId, tx);
       }
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      const orderCode = await tx.order.findUnique({
+        where: { id: Number(invoice.orderId) },
+        select: { code: true },
+      });
+
+      const customerName = await tx.customer.findUnique({
+        where: { id: Number(invoice.customerId) },
+        select: { name: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'INVOICE_CREATE',
+        entityType: 'invoices',
+        entityId: invoice.id.toString(),
+        entityCode: invoice.code,
+        category: getCategoryFromActionCode('INVOICE_CREATE'),
+        severity: getSeverityFromActionCode('INVOICE_CREATE'),
+        snapshot: this.buildInvoiceSnapshot(invoice),
+        message: renderAuditMessage('INVOICE_CREATE', {
+          invoiceCode: invoice.code,
+          orderCode: orderCode || '',
+          customerName: customerName || '',
+        }),
+        messageTemplate: 'INVOICE_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: invoice.branchId || undefined,
+      });
+
       return tx.invoice.findUnique({
         where: { id: invoice.id },
         include: {
@@ -382,8 +423,13 @@ export class InvoicesService {
           entityType: 'invoices',
           entityId: String(currentInvoice.id),
           entityCode: currentInvoice.code,
-          oldValues: currentInvoice,
-          message: `Hủy hóa đơn ${currentInvoice.code} (tạo hóa đơn mới: ${newCode}), (cho đơn đặt hàng: ${currentInvoice.order?.code || 'N/A'}), khách hàng ${currentInvoice.customer?.name || 'N/A'}, với giá trị: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.grandTotal))}, thời gian: ${new Date().toLocaleString('vi-VN')}, Người hủy: ${userName?.name || 'System'}, Người bán: ${currentInvoice.soldBy?.name || userName?.name || 'System'}, tại kho: ${currentInvoice.branch?.name || 'N/A'}. \nBao gồm:\n- ${cancelLog}\n- Ghi chú: ${currentInvoice.description || ''}\n\nThông tin giao hàng:\n${currentInvoice.delivery ? `- Người nhận: ${currentInvoice.delivery.receiver || 'N/A'}\n- Số điện thoại: ${currentInvoice.delivery.contactNumber || 'N/A'}\n- Địa chỉ: ${currentInvoice.delivery.address || 'N/A'}\n- Trọng lượng: ${currentInvoice.delivery.weight || 0}\n- Kích thước: ${currentInvoice.delivery.length || 0} - ${currentInvoice.delivery.width || 0} - ${currentInvoice.delivery.height || 0}\n${currentInvoice.delivery.price ? `- Phí giao hàng: ${new Intl.NumberFormat('vi-VN').format(Number(currentInvoice.delivery.price))}` : ''}\n${currentInvoice.delivery.noteForDriver ? `- Thu hộ tiền hàng: ${currentInvoice.delivery.noteForDriver}` : ''}\n- Trạng thái giao: ${currentInvoice.delivery.statusValue || 'Chờ xử lý'}` : '- Không có thông tin giao hàng'}`,
+          category: getCategoryFromActionCode('INVOICE_CANCEL'),
+          severity: getSeverityFromActionCode('INVOICE_CANCEL'),
+          snapshot: this.buildInvoiceSnapshot(currentInvoice),
+          message: renderAuditMessage('INVOICE_CANCEL', {
+            invoiceCode: currentInvoice.code,
+          }),
+          messageTemplate: 'INVOICE_CANCEL',
           userId: userId || currentInvoice.createdBy,
           userName: userName?.name || 'System',
           branchId: currentInvoice.branchId || undefined,
@@ -562,8 +608,14 @@ export class InvoicesService {
           entityType: 'invoices',
           entityId: String(newInvoice.id),
           entityCode: newCode,
-          newValues: newInvoice,
-          message: `Tạo hóa đơn ${newCode} từ đơn hàng: ${currentInvoice.order?.code}. \nBao gồm:\n- ${newLog}\n- Ghi chú: ${dto.description || ''}${deliveryLog}`,
+          category: getCategoryFromActionCode('INVOICE_CREATE_FROM_CANCELLED'),
+          severity: getSeverityFromActionCode('INVOICE_CREATE_FROM_CANCELLED'),
+          snapshot: this.buildInvoiceSnapshot(newInvoice),
+          message: renderAuditMessage('INVOICE_CREATE_FROM_CANCELLED', {
+            invoiceCode: newCode,
+            oldInvoiceCode: currentInvoice.code,
+          }),
+          messageTemplate: 'INVOICE_CREATE_FROM_CANCELLED',
           userId: userId || currentInvoice.createdBy,
           userName: userName?.name || 'System',
           branchId: newInvoice.branchId || undefined,
@@ -1157,6 +1209,31 @@ export class InvoicesService {
         }
       }
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'INVOICE_CREATE',
+        entityType: 'invoices',
+        entityId: invoice.id.toString(),
+        entityCode: invoice.code,
+        category: getCategoryFromActionCode('INVOICE_CREATE'),
+        severity: getSeverityFromActionCode('INVOICE_CREATE'),
+        snapshot: this.buildInvoiceSnapshot(invoice),
+        message: renderAuditMessage('INVOICE_CREATE', {
+          invoiceCode: invoice.code,
+          orderCode: order.code,
+          customerName: invoice.customer?.name || 'N/A',
+        }),
+        messageTemplate: 'INVOICE_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: invoice.branchId || undefined,
+      });
+
       return tx.invoice.findUnique({
         where: { id: invoice.id },
         include: {
@@ -1418,6 +1495,53 @@ export class InvoicesService {
     return {
       cancelLog: cancelParts.join('\n- ') + changesSummary,
       newLog: newParts.join('\n- '),
+    };
+  }
+
+  private buildInvoiceSnapshot(invoice: any) {
+    return {
+      code: invoice.code,
+      purchaseDate: invoice.purchaseDate,
+      statusValue: invoice.statusValue,
+      grandTotal: Number(invoice.grandTotal),
+      totalAmount: Number(invoice.totalAmount || 0),
+      discount: Number(invoice.discount || 0),
+      discountRatio: Number(invoice.discountRatio || 0),
+      paidAmount: Number(invoice.paidAmount || 0),
+      debtAmount: Number(invoice.debtAmount || 0),
+      description: invoice.description,
+      usingCod: invoice.usingCod,
+      priceBookName: invoice.priceBookName || invoice.priceBook?.name || null,
+      customer: invoice.customer
+        ? { code: invoice.customer.code, name: invoice.customer.name }
+        : null,
+      order: invoice.order ? { code: invoice.order.code } : null,
+      soldBy: invoice.soldBy ? { name: invoice.soldBy.name } : null,
+      branch: invoice.branch ? { name: invoice.branch.name } : null,
+      items: (invoice.details || []).map((i: any) => ({
+        productId: i.productId,
+        productCode: i.productCode || i.product?.code,
+        productName: i.productName || i.product?.name,
+        quantity: Number(i.quantity),
+        price: Number(i.price),
+        discount: Number(i.discount || 0),
+        isRewardPoint: i.isRewardPoint,
+      })),
+      delivery: invoice.delivery
+        ? {
+            receiver: invoice.delivery.receiver,
+            contactNumber: invoice.delivery.contactNumber,
+            address: invoice.delivery.address,
+            wardName: invoice.delivery.wardName,
+            weight: invoice.delivery.weight,
+            length: invoice.delivery.length,
+            width: invoice.delivery.width,
+            height: invoice.delivery.height,
+            price: invoice.delivery.price,
+            noteForDriver: invoice.delivery.noteForDriver,
+            statusValue: invoice.delivery.statusValue,
+          }
+        : null,
     };
   }
 }

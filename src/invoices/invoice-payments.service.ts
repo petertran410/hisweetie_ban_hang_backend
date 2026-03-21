@@ -3,7 +3,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateInvoicePaymentDto } from './dto';
 import { INVOICE_STATUS, getStatusLabel } from './dto/invoice-status.constants';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
-import { request } from 'http';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class InvoicePaymentsService {
@@ -20,6 +24,7 @@ export class InvoicePaymentsService {
           customer: {
             select: {
               id: true,
+              code: true,
               name: true,
               contactNumber: true,
               address: true,
@@ -112,54 +117,36 @@ export class InvoicePaymentsService {
         select: { name: true },
       });
 
-      const customer = await this.prisma.customer.findUnique({
-        where: { id: invoice.customer?.id },
-        select: { name: true, code: true },
-      });
-
-      const methodMap: Record<string, string> = {
-        cash: 'Tiền mặt',
-        transfer: 'Chuyển khoản',
-        card: 'Thẻ',
-        ewallet: 'Ví điện tử',
-      };
-
-      const formattedDate = new Date(payment.paymentDate).toLocaleString(
-        'vi-VN',
-        {
-          day: '2-digit',
-          month: '2-digit',
-          year: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        },
-      );
-
-      const message = `Tạo phiếu thu: ${payment.code}, cho hóa đơn: ${invoice.code}, khách hàng ${invoice.customer?.id ? `${customer?.name}` : 'N/A'}, với giá trị: ${Number(payment.amount).toLocaleString('vi-VN')}, phương thức thanh toán: ${payment.paymentMethod ? methodMap[payment.paymentMethod] || payment.paymentMethod : 'Tiền mặt'}, thời gian: ${formattedDate}`;
-
       await this.auditLogsService.create({
-        userId: userId,
-        userName: userName?.name || 'Unknown',
-        actionType: 'create',
+        actionType: 'POST',
         actionCode: 'INVOICE_PAYMENT_CREATE',
         entityType: 'invoice_payment',
         entityId: payment.id.toString(),
         entityCode: payment.code,
-        newValues: {
+        category: getCategoryFromActionCode('INVOICE_PAYMENT_CREATE'),
+        severity: getSeverityFromActionCode('INVOICE_PAYMENT_CREATE'),
+        snapshot: {
           code: payment.code,
           amount: Number(payment.amount),
           paymentMethod: payment.paymentMethod,
           paymentDate: payment.paymentDate,
           invoice: {
             code: invoice.code,
-            customer: {
-              code: customer?.code ? customer?.code : 'N/A',
-              name: customer?.name ? customer?.name : 'N/A',
-            },
+            customer: invoice.customer
+              ? { code: invoice.customer.code, name: invoice.customer.name }
+              : null,
           },
+          accountId: payment.accountId,
         },
-        message,
+        message: renderAuditMessage('INVOICE_PAYMENT_CREATE', {
+          paymentCode: payment.code,
+          invoiceCode: invoice.code,
+          amount: Number(payment.amount),
+        }),
+        messageTemplate: 'INVOICE_PAYMENT_CREATE',
+        userId,
+        userName: userName?.name || 'Unknown',
+        branchId: invoice.branch?.id || undefined,
       });
 
       return {

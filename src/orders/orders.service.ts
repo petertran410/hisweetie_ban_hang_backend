@@ -7,7 +7,12 @@ import {
 } from './dto/order-status.constants';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { PriceBooksService } from '../price-books/price-books.service';
-import { renderAuditMessage } from '../audit-logs/audit-templates';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class OrdersService {
@@ -164,6 +169,30 @@ export class OrdersService {
           delivery: true,
           priceBook: true,
         },
+      });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'ORDER_CREATE',
+        entityType: 'orders',
+        entityId: finalOrder?.id.toString(),
+        entityCode: finalOrder?.code,
+        category: getCategoryFromActionCode('ORDER_CREATE'),
+        severity: getSeverityFromActionCode('ORDER_CREATE'),
+        snapshot: this.buildOrderSnapshot(finalOrder),
+        message: renderAuditMessage('ORDER_CREATE', {
+          orderCode: finalOrder?.code,
+          customerName: finalOrder?.customer?.name || 'N/A',
+        }),
+        messageTemplate: 'ORDER_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: finalOrder?.branchId || undefined,
       });
 
       return { order: finalOrder, warnings };
@@ -396,71 +425,65 @@ export class OrdersService {
         }
       });
 
-      if (changes.length > 0) {
-        await this.auditLogsService.create({
-          actionType: 'PUT',
-          actionCode: 'ORDER_UPDATE',
-          entityType: 'orders',
-          entityId: id.toString(),
-          entityCode: updatedOrderBeforeCalc.code,
+      const fieldChanges = buildChanges(
+        'orders',
+        {
+          statusValue: existingOrder.statusValue,
+          grandTotal: Number(existingOrder.grandTotal),
+          discount: Number(existingOrder.discount || 0),
+          discountRatio: Number(existingOrder.discountRatio || 0),
+          description: existingOrder.description,
+          customerId: existingOrder.customerId,
+        },
+        {
+          statusValue: updatedOrderBeforeCalc.statusValue,
+          grandTotal: Number(updatedOrderBeforeCalc.grandTotal),
+          discount: Number(updatedOrderBeforeCalc.discount || 0),
+          discountRatio: Number(updatedOrderBeforeCalc.discountRatio || 0),
+          description: updatedOrderBeforeCalc.description,
+          customerId: updatedOrderBeforeCalc.customerId,
+        },
+      );
 
-          oldValues: {
-            code: existingOrder.code,
-            statusValue: existingOrder.statusValue,
-            grandTotal: existingOrder.grandTotal,
-            itemCount: existingOrder.items.length,
-            items: existingOrder.items.map((i) => ({
-              productId: i.productId,
-              productName: i.product.name,
-              quantity: Number(i.quantity),
-              price: Number(i.price),
-            })),
-          },
-          newValues: {
-            order: {
-              code: updatedOrderBeforeCalc.code,
-              statusValue: updatedOrderBeforeCalc.statusValue,
-              grandTotal: updatedOrderBeforeCalc.grandTotal,
-              createdAt: updatedOrderBeforeCalc.createdAt,
-              description: updatedOrderBeforeCalc.description,
-              customer: updatedOrderBeforeCalc.customer,
-              soldBy: updatedOrderBeforeCalc.soldBy,
-              branch: updatedOrderBeforeCalc.branch,
-              priceBook: updatedOrderBeforeCalc.priceBookName
-                ? {
-                    id: updatedOrderBeforeCalc.priceBookId,
-                    name: updatedOrderBeforeCalc.priceBookName,
-                  }
-                : null,
-              items: updatedOrderBeforeCalc.items.map((i) => ({
-                productId: i.productId,
-                productCode: i.productCode,
-                productName: i.product.name,
-                quantity: Number(i.quantity),
-                price: Number(i.price),
-              })),
-              delivery: updatedOrderBeforeCalc.delivery,
-            },
-          },
+      const itemChanges = buildItemChanges(
+        existingOrder.items.map((i) => ({
+          productId: i.productId,
+          productName: i.product.name,
+          quantity: Number(i.quantity),
+          price: Number(i.price),
+          discount: Number(i.discount || 0),
+        })),
+        updatedOrderBeforeCalc.items.map((i) => ({
+          productId: i.productId,
+          productName: i.product.name,
+          quantity: Number(i.quantity),
+          price: Number(i.price),
+          discount: Number(i.discount || 0),
+        })),
+      );
 
-          message: renderAuditMessage('ORDER_UPDATE', {
-            orderCode: updatedOrderBeforeCalc.code,
-            statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
-            customerName: updatedOrderBeforeCalc.customer?.name || 'N/A',
-          }),
-          messageTemplate: 'ORDER_UPDATE',
-          messageParams: {
-            orderCode: updatedOrderBeforeCalc.code,
-            statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
-            customerName: updatedOrderBeforeCalc.customer?.name || 'N/A',
-            changesSummary: changes.join(', '),
-          },
+      const allChanges = [...fieldChanges, ...itemChanges];
 
-          userId: user.id,
-          userName: user.name || user.email,
-          branchId: updatedOrderBeforeCalc.branchId || undefined,
-        });
-      }
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_UPDATE',
+        entityType: 'orders',
+        entityId: id.toString(),
+        entityCode: updatedOrderBeforeCalc.code,
+        category: getCategoryFromActionCode('ORDER_UPDATE'),
+        severity: getSeverityFromActionCode('ORDER_UPDATE'),
+        snapshot: this.buildOrderSnapshot(updatedOrderBeforeCalc),
+        changes: allChanges.length > 0 ? allChanges : null,
+        message: renderAuditMessage('ORDER_UPDATE', {
+          orderCode: updatedOrderBeforeCalc.code,
+          statusValue: updatedOrderBeforeCalc.statusValue || 'Phiếu tạm',
+          customerName: updatedOrderBeforeCalc.customer?.name || 'N/A',
+        }),
+        messageTemplate: 'ORDER_UPDATE',
+        userId: user.id,
+        userName: user.name || user.email,
+        branchId: updatedOrderBeforeCalc.branchId || undefined,
+      });
 
       return tx.order.findUnique({
         where: { id },
@@ -675,5 +698,49 @@ export class OrdersService {
         orderStatus: newOrderStatus,
       },
     });
+  }
+
+  private buildOrderSnapshot(order: any) {
+    return {
+      code: order.code,
+      orderDate: order.orderDate,
+      statusValue: order.statusValue,
+      grandTotal: Number(order.grandTotal),
+      totalAmount: Number(order.totalAmount || 0),
+      discount: Number(order.discount || 0),
+      discountRatio: Number(order.discountRatio || 0),
+      paidAmount: Number(order.paidAmount || 0),
+      depositAmount: Number(order.depositAmount || 0),
+      debtAmount: Number(order.debtAmount || 0),
+      description: order.description,
+      priceBookName: order.priceBookName || order.priceBook?.name || null,
+      customer: order.customer
+        ? { code: order.customer.code, name: order.customer.name }
+        : null,
+      soldBy: order.soldBy ? { name: order.soldBy.name } : null,
+      branch: order.branch ? { name: order.branch.name } : null,
+      items: (order.items || []).map((i: any) => ({
+        productId: i.productId,
+        productCode: i.productCode || i.product?.code,
+        productName: i.productName || i.product?.name,
+        quantity: Number(i.quantity),
+        price: Number(i.price),
+        discount: Number(i.discount || 0),
+      })),
+      delivery: order.delivery
+        ? {
+            receiver: order.delivery.receiver,
+            contactNumber: order.delivery.contactNumber,
+            address: order.delivery.address,
+            wardName: order.delivery.wardName,
+            weight: order.delivery.weight,
+            length: order.delivery.length,
+            width: order.delivery.width,
+            height: order.delivery.height,
+            noteForDriver: order.delivery.noteForDriver,
+            statusValue: order.delivery.statusValue,
+          }
+        : null,
+    };
   }
 }
