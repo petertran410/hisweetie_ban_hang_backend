@@ -7,7 +7,7 @@ import {
   Body,
   Param,
   Query,
-  UseGuards,
+  Req,
 } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
@@ -33,21 +33,25 @@ export class ProductsController {
   }
 
   @Post()
-  @RequirePermissions('products:create')
-  create(@Body() dto: CreateProductDto) {
-    return this.productsService.create(dto);
+  create(@Body() dto: CreateProductDto, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.productsService.create(dto, userId);
   }
 
   @Put(':id')
-  @RequirePermissions('products:update')
-  update(@Param('id') id: string, @Body() dto: UpdateProductDto) {
-    return this.productsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateProductDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.productsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
-  @RequirePermissions('products:delete')
-  remove(@Param('id') id: string) {
-    return this.productsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.productsService.remove(+id, userId);
   }
 
   @Get('low-stock')

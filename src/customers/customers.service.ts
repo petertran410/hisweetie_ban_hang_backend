@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCustomerDto,
@@ -11,10 +7,20 @@ import {
   BulkCreateCustomerDto,
   BulkUpdateCustomerDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class CustomersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: CustomerQueryDto, userId?: number) {
     const {
@@ -345,7 +351,7 @@ export class CustomersService {
     };
   }
 
-  async create(dto: CreateCustomerDto) {
+  async create(dto: CreateCustomerDto, userId?: number) {
     const code = dto.code || (await this.generateCode());
 
     const { groupIds, birthDate, ...customerData } = dto;
@@ -395,6 +401,37 @@ export class CustomersService {
       },
     );
 
+    const groupsString = customerGroupDetails
+      .map((d) => d.customerGroup.name)
+      .join(', ');
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'CUSTOMER_CREATE',
+        entityType: 'customers',
+        entityId: customer.id.toString(),
+        entityCode: customer.code || '',
+        category: getCategoryFromActionCode('CUSTOMER_CREATE'),
+        severity: getSeverityFromActionCode('CUSTOMER_CREATE'),
+        snapshot: this.buildCustomerSnapshot(customer, groupsString),
+        message: renderAuditMessage('CUSTOMER_CREATE', {
+          customerName: customer.name,
+          customerCode: customer.code,
+          contactNumber: customer.contactNumber || 'N/A',
+        }),
+        messageTemplate: 'CUSTOMER_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
     return {
       ...customer,
       customerGroupDetails: customerGroupDetails.map((detail) => ({
@@ -406,8 +443,13 @@ export class CustomersService {
     };
   }
 
-  async update(id: number, dto: UpdateCustomerDto) {
+  async update(id: number, dto: UpdateCustomerDto, userId?: number) {
     const { groupIds, birthDate, ...customerData } = dto;
+
+    const existingCustomer = await this.prisma.customer.findUnique({
+      where: { id },
+      include: { customerType: true, branch: true },
+    });
 
     const customer = await this.prisma.$transaction(async (tx) => {
       const updatedCustomer = await tx.customer.update({
@@ -456,6 +498,63 @@ export class CustomersService {
       return updatedCustomer;
     });
 
+    if (userId && existingCustomer) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      const changes = buildChanges(
+        'customers',
+        {
+          name: existingCustomer.name,
+          contactNumber: existingCustomer.contactNumber,
+          email: existingCustomer.email,
+          address: existingCustomer.address,
+          wardName: existingCustomer.wardName,
+          taxCode: existingCustomer.taxCode,
+          isActive: existingCustomer.isActive,
+        },
+        {
+          name: customer.name,
+          contactNumber: customer.contactNumber,
+          email: customer.email,
+          address: customer.address,
+          wardName: customer.wardName,
+          taxCode: customer.taxCode,
+          isActive: customer.isActive,
+        },
+      );
+
+      const groupDetails = await this.prisma.customerGroupDetail.findMany({
+        where: { customerId: id },
+        include: { customerGroup: { select: { name: true } } },
+      });
+      const groupsString = groupDetails
+        .map((d) => d.customerGroup.name)
+        .join(', ');
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CUSTOMER_UPDATE',
+        entityType: 'customers',
+        entityId: id.toString(),
+        entityCode: customer.code || '',
+        category: getCategoryFromActionCode('CUSTOMER_UPDATE'),
+        severity: getSeverityFromActionCode('CUSTOMER_UPDATE'),
+        snapshot: this.buildCustomerSnapshot(customer, groupsString),
+        changes: changes.length > 0 ? changes : null,
+        message: renderAuditMessage('CUSTOMER_UPDATE', {
+          customerName: customer.name,
+          customerCode: customer.code,
+        }),
+        messageTemplate: 'CUSTOMER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
     const customerGroupDetails = await this.prisma.customerGroupDetail.findMany(
       {
         where: { customerId: customer.id },
@@ -476,11 +575,42 @@ export class CustomersService {
     };
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId?: number) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id },
+      include: { customerType: true, branch: true },
+    });
+
     await this.prisma.customer.update({
       where: { id },
       data: { isActive: false },
     });
+
+    if (userId && customer) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'CUSTOMER_DELETE',
+        entityType: 'customers',
+        entityId: id.toString(),
+        entityCode: customer.code || '',
+        category: getCategoryFromActionCode('CUSTOMER_DELETE'),
+        severity: getSeverityFromActionCode('CUSTOMER_DELETE'),
+        snapshot: this.buildCustomerSnapshot(customer),
+        message: renderAuditMessage('CUSTOMER_DELETE', {
+          customerName: customer.name,
+          customerCode: customer.code,
+        }),
+        messageTemplate: 'CUSTOMER_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
 
     return { message: 'Xóa dữ liệu thành công' };
   }
@@ -600,5 +730,28 @@ export class CustomersService {
     );
 
     return { data: timeline };
+  }
+
+  private buildCustomerSnapshot(customer: any, groups?: string) {
+    return {
+      code: customer.code,
+      name: customer.name,
+      contactNumber: customer.contactNumber,
+      email: customer.email,
+      address: customer.address,
+      wardName: customer.wardName,
+      taxCode: customer.taxCode,
+      birthDate: customer.birthDate,
+      isActive: customer.isActive,
+      groups: groups || customer.groups,
+      totalPurchased: customer.totalPurchased
+        ? Number(customer.totalPurchased)
+        : 0,
+      totalDebt: customer.totalDebt ? Number(customer.totalDebt) : 0,
+      customerType: customer.customerType
+        ? { name: customer.customerType.name }
+        : null,
+      branch: customer.branch ? { name: customer.branch.name } : null,
+    };
   }
 }

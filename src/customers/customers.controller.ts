@@ -53,22 +53,29 @@ export class CustomersController {
   @Post()
   @RequirePermissions('customers:create')
   @ApiOperation({ summary: 'Thêm mới khách hàng' })
-  create(@Body() dto: CreateCustomerDto) {
-    return this.customersService.create(dto);
+  create(@Body() dto: CreateCustomerDto, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.customersService.create(dto, userId);
   }
 
   @Put(':id')
   @RequirePermissions('customers:update')
   @ApiOperation({ summary: 'Cập nhật khách hàng' })
-  update(@Param('id') id: string, @Body() dto: UpdateCustomerDto) {
-    return this.customersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.customersService.update(+id, dto, userId);
   }
 
   @Delete(':id')
   @RequirePermissions('customers:delete')
   @ApiOperation({ summary: 'Xóa khách hàng' })
-  remove(@Param('id') id: string) {
-    return this.customersService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.customersService.remove(+id, userId);
   }
 
   @Post('listaddcutomers')

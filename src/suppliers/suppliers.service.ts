@@ -2,10 +2,20 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSupplierDto, UpdateSupplierDto, SupplierQueryDto } from './dto';
 import { Prisma } from '@prisma/client';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class SuppliersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: SupplierQueryDto) {
     const {
@@ -228,7 +238,7 @@ export class SuppliersService {
 
       const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { name: true },
+        select: { name: true, email: true, branchId: true },
       });
 
       const groupNames =
@@ -276,6 +286,41 @@ export class SuppliersService {
         });
       }
 
+      const finalSupplier = await prisma.supplier.findUnique({
+        where: { id: supplier.id },
+        include: {
+          supplierGroupDetails: { include: { supplierGroup: true } },
+          creator: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } },
+          purchaseOrders: {
+            orderBy: { purchaseDate: 'desc' },
+            take: 10,
+            include: { branch: true },
+          },
+        },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'SUPPLIER_CREATE',
+        entityType: 'suppliers',
+        entityId: supplier.id.toString(),
+        entityCode: supplier.code || '',
+        category: getCategoryFromActionCode('SUPPLIER_CREATE'),
+        severity: getSeverityFromActionCode('SUPPLIER_CREATE'),
+        snapshot: this.buildSupplierSnapshot(supplier),
+        message: renderAuditMessage('SUPPLIER_CREATE', {
+          supplierName: supplier.name,
+          supplierCode: supplier.code,
+        }),
+        messageTemplate: 'SUPPLIER_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+
+      return finalSupplier;
+
       return prisma.supplier.findUnique({
         where: { id: supplier.id },
         include: {
@@ -308,18 +353,18 @@ export class SuppliersService {
     });
   }
 
-  async update(id: number, dto: UpdateSupplierDto) {
-    const supplier = await this.prisma.supplier.findUnique({
+  async update(id: number, dto: UpdateSupplierDto, userId?: number) {
+    const existingSupplier = await this.prisma.supplier.findUnique({
       where: { id },
     });
 
-    if (!supplier) {
+    if (!existingSupplier) {
       throw new NotFoundException(`Supplier with id ${id} not found`);
     }
 
     const { groupIds, ...supplierData } = dto;
 
-    return this.prisma.$transaction(async (prisma) => {
+    const result = await this.prisma.$transaction(async (prisma) => {
       const groupNames =
         groupIds !== undefined && groupIds.length > 0
           ? await prisma.supplierGroup
@@ -356,15 +401,60 @@ export class SuppliersService {
 
       return this.findOne(updated.id);
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      const changes = buildChanges(
+        'suppliers',
+        {
+          name: existingSupplier.name,
+          contactNumber: existingSupplier.contactNumber,
+          email: existingSupplier.email,
+          address: existingSupplier.address,
+          taxCode: existingSupplier.taxCode,
+        },
+        {
+          name: result.name,
+          contactNumber: result.contactNumber,
+          email: result.email,
+          address: result.address,
+          taxCode: result.taxCode,
+        },
+      );
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'SUPPLIER_UPDATE',
+        entityType: 'suppliers',
+        entityId: id.toString(),
+        entityCode: result.code || '',
+        category: getCategoryFromActionCode('SUPPLIER_UPDATE'),
+        severity: getSeverityFromActionCode('SUPPLIER_UPDATE'),
+        snapshot: this.buildSupplierSnapshot(result),
+        changes: changes.length > 0 ? changes : null,
+        message: renderAuditMessage('SUPPLIER_UPDATE', {
+          supplierName: result.name,
+          supplierCode: result.code,
+        }),
+        messageTemplate: 'SUPPLIER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId?: number) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { id },
       include: {
-        _count: {
-          select: { purchaseOrders: true },
-        },
+        _count: { select: { purchaseOrders: true } },
       },
     });
 
@@ -377,6 +467,32 @@ export class SuppliersService {
     }
 
     await this.prisma.supplier.delete({ where: { id } });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'SUPPLIER_DELETE',
+        entityType: 'suppliers',
+        entityId: id.toString(),
+        entityCode: supplier.code || '',
+        category: getCategoryFromActionCode('SUPPLIER_DELETE'),
+        severity: getSeverityFromActionCode('SUPPLIER_DELETE'),
+        snapshot: this.buildSupplierSnapshot(supplier),
+        message: renderAuditMessage('SUPPLIER_DELETE', {
+          supplierName: supplier.name,
+          supplierCode: supplier.code,
+        }),
+        messageTemplate: 'SUPPLIER_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
 
     return { message: 'Xóa nhà cung cấp thành công' };
   }
@@ -451,5 +567,23 @@ export class SuppliersService {
     }
 
     throw new Error('Không thể tạo mã nhà cung cấp duy nhất');
+  }
+
+  private buildSupplierSnapshot(supplier: any) {
+    return {
+      code: supplier.code,
+      name: supplier.name,
+      contactNumber: supplier.contactNumber,
+      email: supplier.email,
+      address: supplier.address,
+      taxCode: supplier.taxCode,
+      groups: supplier.groups,
+      debt: supplier.debt ? Number(supplier.debt) : 0,
+      totalInvoiced: supplier.totalInvoiced
+        ? Number(supplier.totalInvoiced)
+        : 0,
+      branch: supplier.branch ? { name: supplier.branch.name } : null,
+      creator: supplier.creator ? { name: supplier.creator.name } : null,
+    };
   }
 }

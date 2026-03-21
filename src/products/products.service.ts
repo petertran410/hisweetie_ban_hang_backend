@@ -1,14 +1,20 @@
-import {
-  BadRequestException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
+import { buildChanges } from '../audit-logs/audit-diff.utils';
 
 @Injectable()
 export class ProductsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   private parseAttributes(
     attributesText: string | null,
@@ -226,7 +232,7 @@ export class ProductsService {
     return true;
   }
 
-  async create(dto: CreateProductDto) {
+  async create(dto: CreateProductDto, userId?: number) {
     const {
       imageUrls,
       components,
@@ -423,6 +429,38 @@ export class ProductsService {
         });
       }
 
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        });
+
+        const finalProduct = await tx.product.findUnique({
+          where: { id: product.id },
+          include: { variant: true, tradeMark: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'PRODUCT_CREATE',
+          entityType: 'products',
+          entityId: product.id.toString(),
+          entityCode: product.code,
+          category: getCategoryFromActionCode('PRODUCT_CREATE'),
+          severity: getSeverityFromActionCode('PRODUCT_CREATE'),
+          snapshot: this.buildProductSnapshot(finalProduct || product),
+          message: renderAuditMessage('PRODUCT_CREATE', {
+            productName: product.name,
+            productCode: product.code,
+            basePrice: Number(product.basePrice || 0),
+          }),
+          messageTemplate: 'PRODUCT_CREATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: user?.branchId || undefined,
+        });
+      }
+
       return tx.product.findUnique({
         where: { id: product.id },
         include: {
@@ -444,13 +482,15 @@ export class ProductsService {
     });
   }
 
-  async update(id: number, dto: UpdateProductDto) {
+  async update(id: number, dto: UpdateProductDto, userId?: number) {
     const currentProduct = await this.prisma.product.findUnique({
       where: { id },
       include: {
         images: true,
         comboComponents: true,
         inventories: true,
+        variant: true,
+        tradeMark: true,
       },
     });
 
@@ -783,6 +823,64 @@ export class ProductsService {
         }
       }
 
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        });
+
+        const updatedProduct = await tx.product.findUnique({
+          where: { id },
+          include: { variant: true, tradeMark: true },
+        });
+
+        const changes = buildChanges(
+          'products',
+          {
+            name: currentProduct.name,
+            basePrice: Number(currentProduct.basePrice || 0),
+            weight: Number(currentProduct.weight || 0),
+            weightUnit: currentProduct.weightUnit,
+            unit: currentProduct.unit,
+            isActive: currentProduct.isActive,
+            allowsSale: currentProduct.allowsSale,
+            isRewardPoint: currentProduct.isRewardPoint,
+            description: currentProduct.description,
+          },
+          {
+            name: updatedProduct?.name,
+            basePrice: Number(updatedProduct?.basePrice || 0),
+            weight: Number(updatedProduct?.weight || 0),
+            weightUnit: updatedProduct?.weightUnit,
+            unit: updatedProduct?.unit,
+            isActive: updatedProduct?.isActive,
+            allowsSale: updatedProduct?.allowsSale,
+            isRewardPoint: updatedProduct?.isRewardPoint,
+            description: updatedProduct?.description,
+          },
+        );
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'PRODUCT_UPDATE',
+          entityType: 'products',
+          entityId: id.toString(),
+          entityCode: updatedProduct?.code || currentProduct.code,
+          category: getCategoryFromActionCode('PRODUCT_UPDATE'),
+          severity: getSeverityFromActionCode('PRODUCT_UPDATE'),
+          snapshot: this.buildProductSnapshot(updatedProduct || currentProduct),
+          changes: changes.length > 0 ? changes : null,
+          message: renderAuditMessage('PRODUCT_UPDATE', {
+            productName: updatedProduct?.name || currentProduct.name,
+            productCode: updatedProduct?.code || currentProduct.code,
+          }),
+          messageTemplate: 'PRODUCT_UPDATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: user?.branchId || undefined,
+        });
+      }
+
       return tx.product.findUnique({
         where: { id },
         include: {
@@ -804,8 +902,41 @@ export class ProductsService {
     });
   }
 
-  async remove(id: number) {
-    return this.prisma.product.delete({ where: { id } });
+  async remove(id: number, userId?: number) {
+    const product = await this.prisma.product.findUnique({
+      where: { id },
+      include: { variant: true, tradeMark: true },
+    });
+
+    await this.prisma.product.delete({ where: { id } });
+
+    if (userId && product) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PRODUCT_DELETE',
+        entityType: 'products',
+        entityId: id.toString(),
+        entityCode: product.code,
+        category: getCategoryFromActionCode('PRODUCT_DELETE'),
+        severity: getSeverityFromActionCode('PRODUCT_DELETE'),
+        snapshot: this.buildProductSnapshot(product),
+        message: renderAuditMessage('PRODUCT_DELETE', {
+          productName: product.name,
+          productCode: product.code,
+        }),
+        messageTemplate: 'PRODUCT_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
+    return { message: 'Xóa sản phẩm thành công' };
   }
 
   async checkLowStock() {
@@ -901,5 +1032,25 @@ export class ProductsService {
         productName: newName,
       },
     });
+  }
+
+  private buildProductSnapshot(product: any) {
+    return {
+      code: product.code,
+      name: product.name,
+      fullName: product.fullName,
+      basePrice: product.basePrice ? Number(product.basePrice) : 0,
+      weight: product.weight ? Number(product.weight) : 0,
+      weightUnit: product.weightUnit,
+      unit: product.unit,
+      type: product.type,
+      isActive: product.isActive,
+      allowsSale: product.allowsSale,
+      isRewardPoint: product.isRewardPoint,
+      isDirectSale: product.isDirectSale,
+      description: product.description,
+      variant: product.variant ? { name: product.variant.name } : null,
+      tradeMark: product.tradeMark ? { name: product.tradeMark.name } : null,
+    };
   }
 }

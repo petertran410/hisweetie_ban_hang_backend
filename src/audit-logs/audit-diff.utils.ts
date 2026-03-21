@@ -45,12 +45,14 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
   },
   products: {
     basePrice: 'Giá bán',
-    costPrice: 'Giá vốn',
     weight: 'Trọng lượng',
+    weightUnit: 'Đơn vị trọng lượng',
     unit: 'Đơn vị',
     categoryId: 'Danh mục',
     trademarkId: 'Thương hiệu',
-    allowSale: 'Cho phép bán',
+    allowsSale: 'Cho phép bán',
+    isRewardPoint: 'Tích điểm',
+    isDirectSale: 'Bán trực tiếp',
   },
   customers: {
     totalPurchased: 'Tổng mua',

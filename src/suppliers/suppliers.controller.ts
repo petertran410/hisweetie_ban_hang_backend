@@ -55,16 +55,18 @@ export class SuppliersController {
   }
 
   @Put(':id')
-  @RequirePermissions('suppliers:update')
-  @ApiOperation({ summary: 'Cập nhật nhà cung cấp' })
-  update(@Param('id') id: string, @Body() dto: UpdateSupplierDto) {
-    return this.suppliersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateSupplierDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.suppliersService.update(+id, dto, userId);
   }
 
   @Delete(':id')
-  @RequirePermissions('suppliers:delete')
-  @ApiOperation({ summary: 'Xóa nhà cung cấp' })
-  remove(@Param('id') id: string) {
-    return this.suppliersService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.suppliersService.remove(+id, userId);
   }
 }
