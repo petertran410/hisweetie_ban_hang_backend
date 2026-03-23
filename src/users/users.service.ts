@@ -90,6 +90,9 @@ export class UsersService {
       where: { id },
       include: {
         branch: { select: { id: true, name: true } },
+        userBranches: {
+          include: { branch: { select: { id: true, name: true } } },
+        },
         userRoles: {
           include: {
             role: {
@@ -115,15 +118,22 @@ export class UsersService {
     const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission),
     );
-    const individualPermissions = user.userPermissions.map(
-      (up) => up.permission,
-    );
+    const grantPermissions = user.userPermissions
+      .filter((up) => up.type === 'grant')
+      .map((up) => up.permission);
+    const denyPermissions = user.userPermissions
+      .filter((up) => up.type === 'deny')
+      .map((up) => up.permission);
+    const assignedBranches =
+      (user as any).userBranches?.map((ub: any) => ub.branch) || [];
 
     return {
       ...user,
       roles,
       rolePermissions,
-      individualPermissions,
+      individualPermissions: grantPermissions,
+      denyPermissions,
+      assignedBranches,
     };
   }
 
@@ -294,30 +304,30 @@ export class UsersService {
         }
       }
 
-      if (data.permissionIds !== undefined) {
+      if (
+        data.permissionIds !== undefined ||
+        data.denyPermissionIds !== undefined
+      ) {
         await tx.userPermission.deleteMany({
-          where: { userId: id, type: 'grant' },
+          where: { userId: id },
         });
 
-        if (data.permissionIds.length > 0) {
+        const grantIds = data.permissionIds || [];
+        const denyIds = data.denyPermissionIds || [];
+
+        if (grantIds.length > 0) {
           await tx.userPermission.createMany({
-            data: data.permissionIds.map((permissionId) => ({
+            data: grantIds.map((permissionId) => ({
               userId: id,
               permissionId,
               type: 'grant',
             })),
           });
         }
-      }
 
-      if (data.denyPermissionIds !== undefined) {
-        await tx.userPermission.deleteMany({
-          where: { userId: id, type: 'deny' },
-        });
-
-        if (data.denyPermissionIds.length > 0) {
+        if (denyIds.length > 0) {
           await tx.userPermission.createMany({
-            data: data.denyPermissionIds.map((permissionId) => ({
+            data: denyIds.map((permissionId) => ({
               userId: id,
               permissionId,
               type: 'deny',
