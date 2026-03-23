@@ -38,6 +38,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         userPermissions: {
           include: { permission: true },
         },
+        userBranches: {
+          include: { branch: { select: { id: true, name: true } } },
+        },
       },
     });
 
@@ -46,15 +49,29 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     const roles = user.userRoles.map((ur) => ur.role.name);
+
     const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
-    const individualPermissions = user.userPermissions.map(
-      (up) => up.permission.name,
+
+    const grantPermissions = user.userPermissions
+      .filter((up) => up.type === 'grant')
+      .map((up) => up.permission.name);
+
+    const denyPermissions = new Set(
+      user.userPermissions
+        .filter((up) => up.type === 'deny')
+        .map((up) => up.permission.name),
     );
+
     const permissions = [
-      ...new Set([...rolePermissions, ...individualPermissions]),
-    ];
+      ...new Set([...rolePermissions, ...grantPermissions]),
+    ].filter((p) => !denyPermissions.has(p));
+
+    const branchIds = user.userBranches.map((ub) => ub.branchId);
+    if (user.branchId && !branchIds.includes(user.branchId)) {
+      branchIds.push(user.branchId);
+    }
 
     return {
       id: user.id,
@@ -62,6 +79,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       name: user.name,
       roles,
       permissions,
+      branchId: user.branchId,
+      branchIds,
     };
   }
 }

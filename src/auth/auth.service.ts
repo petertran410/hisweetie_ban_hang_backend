@@ -53,12 +53,26 @@ export class AuthService {
     const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
-    const individualPermissions = user.userPermissions.map(
-      (up) => up.permission.name,
+    const grantPermissions = user.userPermissions
+      .filter((up) => up.type === 'grant')
+      .map((up) => up.permission.name);
+    const denyPermissions = new Set(
+      user.userPermissions
+        .filter((up) => up.type === 'deny')
+        .map((up) => up.permission.name),
     );
     const permissions = [
-      ...new Set([...rolePermissions, ...individualPermissions]),
-    ];
+      ...new Set([...rolePermissions, ...grantPermissions]),
+    ].filter((p) => !denyPermissions.has(p));
+
+    const userBranches = await this.prisma.userBranch.findMany({
+      where: { userId: user.id },
+      select: { branchId: true },
+    });
+    const branchIds = userBranches.map((ub) => ub.branchId);
+    if (user.branchId && !branchIds.includes(user.branchId)) {
+      branchIds.push(user.branchId);
+    }
 
     const payload = {
       sub: user.id,
@@ -79,6 +93,8 @@ export class AuthService {
         avatar: user.avatar,
         roles,
         permissions,
+        branchId: user.branchId,
+        branchIds,
       },
     };
   }
@@ -171,12 +187,26 @@ export class AuthService {
     const rolePermissions = user.userRoles.flatMap((ur) =>
       ur.role.rolePermissions.map((rp) => rp.permission.name),
     );
-    const individualPermissions = user.userPermissions.map(
-      (up) => up.permission.name,
+    const grantPermissions = user.userPermissions
+      .filter((up) => up.type === 'grant')
+      .map((up) => up.permission.name);
+    const denyPermissions = new Set(
+      user.userPermissions
+        .filter((up) => up.type === 'deny')
+        .map((up) => up.permission.name),
     );
     const permissions = [
-      ...new Set([...rolePermissions, ...individualPermissions]),
-    ];
+      ...new Set([...rolePermissions, ...grantPermissions]),
+    ].filter((p) => !denyPermissions.has(p));
+
+    const userBranches = await this.prisma.userBranch.findMany({
+      where: { userId: user.id },
+      select: { branchId: true },
+    });
+    const branchIds = userBranches.map((ub) => ub.branchId);
+    if (user.branchId && !branchIds.includes(user.branchId)) {
+      branchIds.push(user.branchId);
+    }
 
     const payload = {
       sub: user.id,
@@ -197,6 +227,8 @@ export class AuthService {
         avatar: user.avatar,
         roles,
         permissions,
+        branchId: user.branchId,
+        branchIds,
       },
     };
   }
@@ -280,29 +312,62 @@ export class AuthService {
   }
 
   async getProfile(userId: number) {
-    return this.prisma.user.findUnique({
+    const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        avatar: true,
-        createdAt: true,
-        updatedAt: true,
+      include: {
+        branch: { select: { id: true, name: true } },
         userRoles: {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: { permission: true },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
         },
+        userPermissions: { include: { permission: true } },
+        userBranches: {
+          include: { branch: { select: { id: true, name: true } } },
+        },
       },
     });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException();
+    }
+
+    const roles = user.userRoles.map((ur) => ur.role.name);
+    const rolePermissions = user.userRoles.flatMap((ur) =>
+      ur.role.rolePermissions.map((rp) => rp.permission.name),
+    );
+    const grantPermissions = user.userPermissions
+      .filter((up) => up.type === 'grant')
+      .map((up) => up.permission.name);
+    const denyPermissions = new Set(
+      user.userPermissions
+        .filter((up) => up.type === 'deny')
+        .map((up) => up.permission.name),
+    );
+    const permissions = [
+      ...new Set([...rolePermissions, ...grantPermissions]),
+    ].filter((p) => !denyPermissions.has(p));
+
+    const branchIds = user.userBranches.map((ub) => ub.branchId);
+    if (user.branchId && !branchIds.includes(user.branchId)) {
+      branchIds.push(user.branchId);
+    }
+
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      avatar: user.avatar,
+      roles,
+      permissions,
+      branchId: user.branchId,
+      branchIds,
+    };
   }
 
   async updateProfile(

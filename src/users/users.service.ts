@@ -135,6 +135,8 @@ export class UsersService {
     branchId?: number;
     roleIds?: number[];
     permissionIds?: number[];
+    denyPermissionIds?: number[];
+    branchIds?: number[];
     isActive?: boolean;
   }) {
     const existingUser = await this.prisma.user.findUnique({
@@ -185,6 +187,27 @@ export class UsersService {
           data: data.permissionIds.map((permissionId) => ({
             userId: user.id,
             permissionId,
+            type: 'grant',
+          })),
+        });
+      }
+
+      if (data.denyPermissionIds && data.denyPermissionIds.length > 0) {
+        await tx.userPermission.createMany({
+          data: data.denyPermissionIds.map((permissionId) => ({
+            userId: user.id,
+            permissionId,
+            type: 'deny',
+          })),
+        });
+      }
+
+      if (data.branchIds && data.branchIds.length > 0) {
+        await tx.userBranch.createMany({
+          data: data.branchIds.map((branchId, index) => ({
+            userId: user.id,
+            branchId,
+            isPrimary: index === 0,
           })),
         });
       }
@@ -206,6 +229,8 @@ export class UsersService {
       isActive?: boolean;
       roleIds?: number[];
       permissionIds?: number[];
+      denyPermissionIds?: number[];
+      branchIds?: number[];
     },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -271,7 +296,7 @@ export class UsersService {
 
       if (data.permissionIds !== undefined) {
         await tx.userPermission.deleteMany({
-          where: { userId: id },
+          where: { userId: id, type: 'grant' },
         });
 
         if (data.permissionIds.length > 0) {
@@ -279,6 +304,39 @@ export class UsersService {
             data: data.permissionIds.map((permissionId) => ({
               userId: id,
               permissionId,
+              type: 'grant',
+            })),
+          });
+        }
+      }
+
+      if (data.denyPermissionIds !== undefined) {
+        await tx.userPermission.deleteMany({
+          where: { userId: id, type: 'deny' },
+        });
+
+        if (data.denyPermissionIds.length > 0) {
+          await tx.userPermission.createMany({
+            data: data.denyPermissionIds.map((permissionId) => ({
+              userId: id,
+              permissionId,
+              type: 'deny',
+            })),
+          });
+        }
+      }
+
+      if (data.branchIds !== undefined) {
+        await tx.userBranch.deleteMany({
+          where: { userId: id },
+        });
+
+        if (data.branchIds.length > 0) {
+          await tx.userBranch.createMany({
+            data: data.branchIds.map((branchId, index) => ({
+              userId: id,
+              branchId,
+              isPrimary: index === 0,
             })),
           });
         }

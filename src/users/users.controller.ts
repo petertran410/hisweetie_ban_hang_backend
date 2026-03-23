@@ -58,7 +58,6 @@ export class UsersController {
 
   @Post()
   @RequirePermissions('users:create')
-  @ApiOperation({ summary: 'Create new user' })
   create(
     @Body()
     data: {
@@ -69,6 +68,8 @@ export class UsersController {
       branchId?: number;
       roleIds?: number[];
       permissionIds?: number[];
+      denyPermissionIds?: number[];
+      branchIds?: number[];
       isActive?: boolean;
     },
   ) {
@@ -77,7 +78,6 @@ export class UsersController {
 
   @Put(':id')
   @RequirePermissions('users:update')
-  @ApiOperation({ summary: 'Update user' })
   update(
     @Param('id') id: string,
     @Body()
@@ -90,6 +90,8 @@ export class UsersController {
       isActive?: boolean;
       roleIds?: number[];
       permissionIds?: number[];
+      denyPermissionIds?: number[];
+      branchIds?: number[];
     },
   ) {
     return this.usersService.update(parseInt(id), data);

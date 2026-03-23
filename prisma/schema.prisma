@@ -21,6 +21,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   branch                Branch?         @relation(fields: [branchId], references: [id])
+  userBranches          UserBranch[]
   userRoles             UserRole[]
   userPermissions       UserPermission[]
   createdOrders         Order[]         @relation("OrderCreator")
@@ -29,7 +30,7 @@ model User {
   soldInvoices          Invoice[]       @relation("InvoiceSeller")
   createdPayments       OrderPayment[]  @relation("PaymentCreator")
   createdOrderSuppliers OrderSupplier[] @relation("OrderSupplierCreator")
-  orderSuppliers        OrderSupplier[] @relation("OrderSupplierUser")  
+  orderSuppliers        OrderSupplier[] @relation("OrderSupplierUser")
   createdPurchaseOrders PurchaseOrder[] @relation("PurchaseOrderCreator")
   purchaseOrders        PurchaseOrder[] @relation("PurchaseOrderBuyer")
   posts                 Post[]          @relation("PostAuthor")
@@ -50,6 +51,19 @@ model User {
   auditLogs             AuditLog[]      @relation("AuditLogUser")
 
   @@map("users")
+}
+
+model UserBranch {
+  userId    Int
+  branchId  Int
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@map("user_branches")
 }
 
 model Role {
@@ -158,9 +172,10 @@ model RolePermission {
   @@map("role_permissions")
 }
 
- model UserPermission {
+model UserPermission {
   userId       Int
   permissionId Int
+  type         String   @default("grant")
   conditions   Json?
   createdAt    DateTime @default(now())
 
@@ -188,6 +203,7 @@ model Branch {
 
   location                   Location?         @relation(fields: [locationId], references: [id])
   users                      User[]
+  userBranches               UserBranch[]
   orders                     Order[]
   invoices                   Invoice[]
   purchaseOrders             PurchaseOrder[]

@@ -25,18 +25,14 @@ export class PermissionsService {
             role: {
               include: {
                 rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
+                  include: { permission: true },
                 },
               },
             },
           },
         },
         userPermissions: {
-          include: {
-            permission: true,
-          },
+          include: { permission: true },
         },
       },
     });
@@ -49,13 +45,23 @@ export class PermissionsService {
         })),
       ) || [];
 
-    const individualPermissions =
-      user?.userPermissions.map((up) => ({
-        ...up.permission,
-        conditions: up.conditions,
-      })) || [];
+    const grantPermissions =
+      user?.userPermissions
+        .filter((up) => up.type === 'grant')
+        .map((up) => ({
+          ...up.permission,
+          conditions: up.conditions,
+        })) || [];
 
-    const allPermissions = [...rolePermissions, ...individualPermissions];
+    const denyPermissionNames = new Set(
+      user?.userPermissions
+        .filter((up) => up.type === 'deny')
+        .map((up) => up.permission.name) || [],
+    );
+
+    const allPermissions = [...rolePermissions, ...grantPermissions].filter(
+      (p) => !denyPermissionNames.has(p.name),
+    );
 
     return this.groupPermissions(allPermissions);
   }
@@ -111,19 +117,36 @@ export class PermissionsService {
             role: {
               include: {
                 rolePermissions: {
-                  include: {
-                    permission: true,
-                  },
+                  include: { permission: true },
                 },
               },
             },
           },
         },
+        userPermissions: {
+          include: { permission: true },
+        },
       },
     });
 
-    const permissions =
-      user?.userRoles.flatMap((ur) =>
+    if (!user) return false;
+
+    const denyPermissions = user.userPermissions
+      .filter((up) => up.type === 'deny')
+      .map((up) => up.permission);
+
+    const isDenied = denyPermissions.some(
+      (p) =>
+        p.resource === resource &&
+        p.action === action &&
+        (!scope || p.scope === scope || p.scope === 'all') &&
+        (!field || p.field === field || !p.field),
+    );
+
+    if (isDenied) return false;
+
+    const grantedFromRole =
+      user.userRoles.flatMap((ur) =>
         ur.role.rolePermissions.filter((rp) => {
           const p = rp.permission;
           return (
@@ -135,10 +158,24 @@ export class PermissionsService {
         }),
       ) || [];
 
-    if (permissions.length === 0) return false;
+    const grantedFromUser = user.userPermissions.filter((up) => {
+      const p = up.permission;
+      return (
+        up.type === 'grant' &&
+        p.resource === resource &&
+        p.action === action &&
+        (!scope || p.scope === scope || p.scope === 'all') &&
+        (!field || p.field === field || !p.field)
+      );
+    });
 
-    for (const rp of permissions) {
-      if (this.evaluateConditions(rp.conditions, data, user)) {
+    const allGranted = [...grantedFromRole, ...grantedFromUser];
+
+    if (allGranted.length === 0) return false;
+
+    for (const rp of allGranted) {
+      const conditions = 'conditions' in rp ? rp.conditions : null;
+      if (this.evaluateConditions(conditions, data, user)) {
         return true;
       }
     }
