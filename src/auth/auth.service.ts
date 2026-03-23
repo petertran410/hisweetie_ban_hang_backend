@@ -102,6 +102,7 @@ export class AuthService {
         permissions,
         branchId: user.branchId,
         branchIds,
+        canViewOtherStaffData: user.canViewOtherStaffData,
       },
     };
   }
@@ -381,6 +382,7 @@ export class AuthService {
       permissions,
       branchId: user.branchId,
       branchIds,
+      canViewOtherStaffData: user.canViewOtherStaffData,
     };
   }
 

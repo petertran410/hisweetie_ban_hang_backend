@@ -241,6 +241,7 @@ export class UsersService {
       permissionIds?: number[];
       denyPermissionIds?: number[];
       branchIds?: number[];
+      canViewOtherStaffData?: boolean;
     },
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
@@ -274,6 +275,10 @@ export class UsersService {
         phone: data.phone,
         isActive: data.isActive,
       };
+
+      if (data.canViewOtherStaffData !== undefined) {
+        updateData.canViewOtherStaffData = data.canViewOtherStaffData;
+      }
 
       if (data.branchId !== undefined) {
         updateData.branchId =

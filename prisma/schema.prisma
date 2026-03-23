@@ -20,6 +20,8 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  canViewOtherStaffData Boolean @default(false) @map("can_view_other_staff_data")
+
   branch                Branch?         @relation(fields: [branchId], references: [id])
   userBranches          UserBranch[]
   userRoles             UserRole[]
