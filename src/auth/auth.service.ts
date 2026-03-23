@@ -420,4 +420,84 @@ export class AuthService {
 
     return { message: 'Password changed successfully' };
   }
+
+  async getPermissionsForBranch(
+    userId: number,
+    branchId?: number,
+  ): Promise<string[]> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: { permission: true },
+                },
+              },
+            },
+          },
+        },
+        userPermissions: {
+          include: { permission: true },
+        },
+      },
+    });
+
+    if (!user) return [];
+
+    const rolePermKeys = new Set<string>();
+    for (const ur of user.userRoles) {
+      for (const rp of ur.role.rolePermissions) {
+        rolePermKeys.add(`${rp.permission.resource}:${rp.permission.action}`);
+      }
+    }
+
+    const grantKeys = new Set<string>();
+    for (const up of user.userPermissions) {
+      grantKeys.add(`${up.permission.resource}:${up.permission.action}`);
+    }
+
+    const denyKeys = new Set<string>();
+
+    let basePermissions = new Set([...rolePermKeys, ...grantKeys]);
+    for (const dk of denyKeys) {
+      basePermissions.delete(dk);
+    }
+
+    if (!branchId) {
+      return Array.from(basePermissions);
+    }
+
+    const branchOverrides = await this.prisma.userBranchPermission.findMany({
+      where: { userId, branchId },
+      include: { permission: true },
+    });
+
+    if (branchOverrides.length === 0) {
+      return Array.from(basePermissions);
+    }
+
+    const branchGrants = new Set<string>();
+    const branchDenies = new Set<string>();
+
+    for (const bp of branchOverrides) {
+      const key = `${bp.permission.resource}:${bp.permission.action}`;
+      if (bp.granted) {
+        branchGrants.add(key);
+      } else {
+        branchDenies.add(key);
+      }
+    }
+
+    for (const bg of branchGrants) {
+      basePermissions.add(bg);
+    }
+    for (const bd of branchDenies) {
+      basePermissions.delete(bd);
+    }
+
+    return Array.from(basePermissions);
+  }
 }

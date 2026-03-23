@@ -49,6 +49,7 @@ model User {
   loadedPackingLoadings  PackingLoading[] @relation("PackingLoadingUser")
   createdPrintTemplates PrintTemplate[] @relation("PrintTemplateCreator")
   auditLogs             AuditLog[]      @relation("AuditLogUser")
+  branchPermissions UserBranchPermission[]
 
   @@map("users")
 }
@@ -93,6 +94,7 @@ model Permission {
 
   rolePermissions RolePermission[]
   userPermissions UserPermission[]
+  userBranchPermissions UserBranchPermission[]
 
   @@unique([resource, action, scope, field])
   @@index([resource])
@@ -222,8 +224,25 @@ model Branch {
   packingHangs               PackingHang[]
   packingLoadings            PackingLoading[]
   auditLogs AuditLog[] @relation("AuditLogBranch")
+  userBranchPermissions UserBranchPermission[]
 
   @@map("branches")
+}
+
+model UserBranchPermission {
+  id           Int        @id @default(autoincrement())
+  userId       Int
+  branchId     Int
+  permissionId Int
+  granted      Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+
+  user         User       @relation(fields: [userId], references: [id])
+  branch       Branch     @relation(fields: [branchId], references: [id])
+  permission   Permission @relation(fields: [permissionId], references: [id])
+
+  @@unique([userId, branchId, permissionId])
+  @@map("user_branch_permissions")
 }
 
 model Location {

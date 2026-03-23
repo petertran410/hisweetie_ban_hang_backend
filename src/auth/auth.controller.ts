@@ -8,6 +8,7 @@ import {
   Request,
   Req,
   Res,
+  Query,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { Response } from 'express';
@@ -61,12 +62,32 @@ export class AuthController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @Get('profile')
-  @ApiOperation({ summary: 'Get current user profile' })
-  getProfile(@Request() req) {
-    return this.authService.getProfile(req.user.id);
+  @UseGuards(JwtAuthGuard)
+  async getProfile(@Req() req, @Query('branchId') branchId?: string) {
+    const userId = req.user.id;
+    const parsedBranchId = branchId ? parseInt(branchId) : undefined;
+
+    const user = await this.usersService.findOne(userId);
+    const permissions = await this.authService.getPermissionsForBranch(
+      userId,
+      parsedBranchId,
+    );
+
+    const branchIds = user.assignedBranches?.map((b: any) => b.id) || [];
+    const roles = user.roles?.map((r: any) => r.name) || [];
+
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      avatar: user.avatar,
+      branchId: user.branchId,
+      branchIds,
+      roles,
+      permissions,
+    };
   }
 
   @UseGuards(JwtAuthGuard)

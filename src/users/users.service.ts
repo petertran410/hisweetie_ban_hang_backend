@@ -383,4 +383,12 @@ export class UsersService {
 
     return this.findOne(id);
   }
+
+  async findAllForFilter() {
+    return this.prisma.user.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    });
+  }
 }

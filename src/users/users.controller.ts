@@ -49,6 +49,12 @@ export class UsersController {
     return this.usersService.getUsers();
   }
 
+  @Get('for-filter')
+  @UseGuards(JwtAuthGuard)
+  async getUsersForFilter() {
+    return this.usersService.findAllForFilter();
+  }
+
   @Get(':id')
   @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get user by ID' })
