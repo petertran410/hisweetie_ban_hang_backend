@@ -55,6 +55,18 @@ export class UsersController {
     return this.usersService.findAllForFilter();
   }
 
+  @Get(':id/branch-permissions/:branchId')
+  @RequirePermissions('users:view')
+  getBranchPermissions(
+    @Param('id') id: string,
+    @Param('branchId') branchId: string,
+  ) {
+    return this.usersService.getBranchPermissions(
+      parseInt(id),
+      parseInt(branchId),
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get user by ID' })
@@ -80,6 +92,25 @@ export class UsersController {
     },
   ) {
     return this.usersService.create(data);
+  }
+
+  @Put(':id/branch-permissions')
+  @RequirePermissions('users:update')
+  assignBranchPermissions(
+    @Param('id') id: string,
+    @Body()
+    data: {
+      branchId: number;
+      grantPermissionIds: number[];
+      denyPermissionIds: number[];
+    },
+  ) {
+    return this.usersService.assignBranchPermissions(
+      parseInt(id),
+      data.branchId,
+      data.grantPermissionIds,
+      data.denyPermissionIds,
+    );
   }
 
   @Put(':id')

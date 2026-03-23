@@ -391,4 +391,48 @@ export class UsersService {
       orderBy: { name: 'asc' },
     });
   }
+
+  async getBranchPermissions(userId: number, branchId: number) {
+    const records = await this.prisma.userBranchPermission.findMany({
+      where: { userId, branchId },
+      include: { permission: true },
+    });
+
+    return {
+      grants: records.filter((r) => r.granted).map((r) => r.permission),
+      denies: records.filter((r) => !r.granted).map((r) => r.permission),
+    };
+  }
+
+  async assignBranchPermissions(
+    userId: number,
+    branchId: number,
+    grantPermissionIds: number[],
+    denyPermissionIds: number[],
+  ) {
+    await this.prisma.userBranchPermission.deleteMany({
+      where: { userId, branchId },
+    });
+
+    const records = [
+      ...grantPermissionIds.map((permissionId) => ({
+        userId,
+        branchId,
+        permissionId,
+        granted: true,
+      })),
+      ...denyPermissionIds.map((permissionId) => ({
+        userId,
+        branchId,
+        permissionId,
+        granted: false,
+      })),
+    ];
+
+    if (records.length > 0) {
+      await this.prisma.userBranchPermission.createMany({ data: records });
+    }
+
+    return { success: true };
+  }
 }

@@ -7,14 +7,18 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
+import { AuthService } from '../auth.service';
 
 @Injectable()
 export class PermissionsGuard implements CanActivate {
   private readonly logger = new Logger(PermissionsGuard.name);
 
-  constructor(private reflector: Reflector) {}
+  constructor(
+    private reflector: Reflector,
+    private authService: AuthService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const requiredPermissions = this.reflector.getAllAndOverride<string[]>(
       PERMISSIONS_KEY,
       [context.getHandler(), context.getClass()],
@@ -27,12 +31,30 @@ export class PermissionsGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
-    if (!user || !user.permissions) {
+    if (!user || !user.id) {
       throw new ForbiddenException('Không có quyền truy cập');
     }
 
+    const branchIdRaw =
+      request.headers['x-branch-id'] ||
+      request.body?.branchId ||
+      request.query?.branchId;
+
+    const branchId = branchIdRaw ? parseInt(String(branchIdRaw)) : undefined;
+
+    let permissions: string[];
+
+    if (branchId && !isNaN(branchId)) {
+      permissions = await this.authService.getPermissionsForBranch(
+        user.id,
+        branchId,
+      );
+    } else {
+      permissions = user.permissions || [];
+    }
+
     const hasPermission = requiredPermissions.every((permission) =>
-      user.permissions?.includes(permission),
+      permissions.includes(permission),
     );
 
     if (!hasPermission) {
@@ -41,6 +63,6 @@ export class PermissionsGuard implements CanActivate {
       );
     }
 
-    return hasPermission;
+    return true;
   }
 }

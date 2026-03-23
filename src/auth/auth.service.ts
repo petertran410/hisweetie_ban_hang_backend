@@ -12,29 +12,96 @@ export class AuthService {
   ) {}
 
   async login(email: string, password: string, branchId?: number) {
-    const user = await this.validateUser(email, password);
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: {
+        userRoles: {
+          include: {
+            role: {
+              include: {
+                rolePermissions: {
+                  include: { permission: true },
+                },
+              },
+            },
+          },
+        },
+        userPermissions: {
+          include: { permission: true },
+        },
+      },
+    });
 
-    const permissions = await this.getPermissionsForBranch(user.id, branchId);
+    if (!user) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.password) {
+      throw new UnauthorizedException('Please login with Google');
+    }
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.isActive) {
+      throw new UnauthorizedException('Account is inactive');
+    }
+
+    const roles = user.userRoles.map((ur) => ur.role.name);
+
+    let permissions: string[];
+
+    if (branchId) {
+      permissions = await this.getPermissionsForBranch(user.id, branchId);
+    } else {
+      const rolePermissions = user.userRoles.flatMap((ur) =>
+        ur.role.rolePermissions.map((rp) => rp.permission.name),
+      );
+      const grantPermissions = user.userPermissions
+        .filter((up) => up.type === 'grant')
+        .map((up) => up.permission.name);
+      const denyPermissions = new Set(
+        user.userPermissions
+          .filter((up) => up.type === 'deny')
+          .map((up) => up.permission.name),
+      );
+      permissions = [
+        ...new Set([...rolePermissions, ...grantPermissions]),
+      ].filter((p) => !denyPermissions.has(p));
+    }
+
+    const userBranches = await this.prisma.userBranch.findMany({
+      where: { userId: user.id },
+      select: { branchId: true },
+    });
+    const branchIds = userBranches.map((ub) => ub.branchId);
+    if (user.branchId && !branchIds.includes(user.branchId)) {
+      branchIds.push(user.branchId);
+    }
 
     const payload = {
       sub: user.id,
       email: user.email,
       name: user.name,
-      roles: user.roles.map((r: any) => r.name),
+      roles,
       permissions,
     };
+    const accessToken = this.jwtService.sign(payload);
 
     return {
-      accessToken: this.jwtService.sign(payload),
+      accessToken,
       user: {
         id: user.id,
         name: user.name,
         email: user.email,
         phone: user.phone,
         avatar: user.avatar,
-        roles: payload.roles,
+        roles,
         permissions,
-        branchIds: user.assignedBranches?.map((b: any) => b.id) || [],
+        branchId: user.branchId,
+        branchIds,
       },
     };
   }
