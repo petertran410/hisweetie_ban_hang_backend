@@ -1,10 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderSupplierPaymentDto } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class OrderSupplierPaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async create(dto: CreateOrderSupplierPaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -96,6 +105,39 @@ export class OrderSupplierPaymentsService {
       // Update supplier debt: Trừ vào debt (NCC nợ mình nếu số âm)
       await this.updateSupplierDebt(orderSupplier.supplierId, tx);
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'ORDER_SUPPLIER_PAYMENT_CREATE',
+        entityType: 'order_supplier_payment',
+        entityId: payment.id.toString(),
+        entityCode: payment.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_PAYMENT_CREATE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_PAYMENT_CREATE'),
+        snapshot: {
+          code: payment.code,
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+          orderSupplier: {
+            code: orderSupplier.code,
+            supplier: orderSupplier.supplier?.name,
+          },
+        },
+        message: renderAuditMessage('ORDER_SUPPLIER_PAYMENT_CREATE', {
+          paymentCode: payment.code,
+          orderSupplierCode: orderSupplier.code,
+          amount: Number(payment.amount),
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_PAYMENT_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: orderSupplier.branchId || undefined,
+      });
+
       return {
         payment,
         cashFlow,
@@ -110,7 +152,7 @@ export class OrderSupplierPaymentsService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.orderSupplierPayment.findUnique({
         where: { id },
@@ -142,6 +184,50 @@ export class OrderSupplierPaymentsService {
         where: { id: payment.orderSupplierId },
         data: { paidAmount },
       });
+
+      if (userId) {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        });
+
+        const supplierName = await this.prisma.supplier.findUnique({
+          where: { id: payment.orderSupplier.supplierId },
+          select: { name: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'DELETE',
+          actionCode: 'ORDER_SUPPLIER_DELETE',
+          entityType: 'order_suppliers',
+          entityId: id.toString(),
+          entityCode: payment.code,
+          category: getCategoryFromActionCode('ORDER_SUPPLIER_DELETE'),
+          severity: getSeverityFromActionCode('ORDER_SUPPLIER_DELETE'),
+          snapshot: {
+            code: payment.code,
+            amount: Number(payment.amount),
+            paymentMethod: payment.paymentMethod,
+            paymentDate: payment.paymentDate,
+            purchaseOrder: {
+              code: payment.orderSupplier.code,
+              supplier: supplierName?.name
+                ? {
+                    name: supplierName?.name,
+                  }
+                : null,
+            },
+          },
+          message: renderAuditMessage('ORDER_SUPPLIER_DELETE', {
+            orderSupplierCode: payment.code,
+          }),
+          messageTemplate: 'ORDER_SUPPLIER_DELETE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId:
+            payment.orderSupplier.branchId || user?.branchId || undefined,
+        });
+      }
 
       // Update supplier debt
       await this.updateSupplierDebt(payment.orderSupplier.supplierId, tx);

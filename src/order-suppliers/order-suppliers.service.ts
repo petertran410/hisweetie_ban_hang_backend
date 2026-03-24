@@ -458,30 +458,7 @@ export class OrderSuppliersService {
         await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true, branchId: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'PUT',
-        actionCode: 'ORDER_SUPPLIER_UPDATE',
-        entityType: 'order_suppliers',
-        entityId: id.toString(),
-        entityCode: existing.code,
-        category: getCategoryFromActionCode('ORDER_SUPPLIER_UPDATE'),
-        severity: getSeverityFromActionCode('ORDER_SUPPLIER_UPDATE'),
-        snapshot: this.buildOrderSupplierSnapshot(updatedOrderSupplier),
-        message: renderAuditMessage('ORDER_SUPPLIER_UPDATE', {
-          orderSupplierCode: updatedOrderSupplier.code,
-        }),
-        messageTemplate: 'ORDER_SUPPLIER_UPDATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: updatedOrderSupplier.branchId || user?.branchId || undefined,
-      });
-
-      return tx.orderSupplier.update({
+      const updatedOrderSupplier = await tx.orderSupplier.update({
         where: { id },
         data: {
           supplierId: dto.supplierId ?? existing.supplierId,
@@ -512,6 +489,31 @@ export class OrderSuppliersService {
           payments: true,
         },
       });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_SUPPLIER_UPDATE',
+        entityType: 'order_suppliers',
+        entityId: id.toString(),
+        entityCode: updatedOrderSupplier.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_UPDATE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_UPDATE'),
+        snapshot: this.buildOrderSupplierSnapshot(updatedOrderSupplier),
+        message: renderAuditMessage('ORDER_SUPPLIER_UPDATE', {
+          orderSupplierCode: updatedOrderSupplier.code,
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: updatedOrderSupplier.branchId || user?.branchId || undefined,
+      });
+
+      return updatedOrderSupplier;
     });
   }
 

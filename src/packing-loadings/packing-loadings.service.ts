@@ -9,10 +9,19 @@ import {
   UpdatePackingLoadingDto,
   PackingLoadingQueryDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class PackingLoadingsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: PackingLoadingQueryDto) {
     const {
@@ -184,6 +193,29 @@ export class PackingLoadingsService {
         },
       });
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PACKING_LOADING_CREATE',
+        entityType: 'packing_loadings',
+        entityId: packingLoading.id.toString(),
+        entityCode: packingLoading.code,
+        category: getCategoryFromActionCode('PACKING_LOADING_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_LOADING_CREATE'),
+        snapshot: this.buildPackingLoadingSnapshot(packingLoading),
+        message: renderAuditMessage('PACKING_LOADING_CREATE', {
+          packingCode: packingLoading.code,
+        }),
+        messageTemplate: 'PACKING_LOADING_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingLoading.branchId || undefined,
+      });
+
       return packingLoading;
     });
   }
@@ -262,12 +294,39 @@ export class PackingLoadingsService {
     });
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const packingLoading = await this.findOne(id);
 
-    return this.prisma.packingLoading.delete({
+    await this.prisma.packingLoading.delete({
       where: { id },
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PACKING_LOADING_DELETE',
+        entityType: 'packing_loadings',
+        entityId: id.toString(),
+        entityCode: packingLoading.code,
+        category: getCategoryFromActionCode('PACKING_LOADING_DELETE'),
+        severity: getSeverityFromActionCode('PACKING_LOADING_DELETE'),
+        snapshot: this.buildPackingLoadingSnapshot(packingLoading),
+        message: renderAuditMessage('PACKING_LOADING_DELETE', {
+          packingCode: packingLoading.code,
+        }),
+        messageTemplate: 'PACKING_LOADING_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingLoading.branchId || undefined,
+      });
+    }
+
+    return { message: 'Xóa phiếu xếp hàng lên xe thành công' };
   }
 
   private async generateCode(tx: any): Promise<string> {
@@ -285,5 +344,20 @@ export class PackingLoadingsService {
     }
 
     return `DLD${nextNumber.toString().padStart(6, '0')}`;
+  }
+
+  private buildPackingLoadingSnapshot(pl: any) {
+    return {
+      code: pl.code,
+      branchId: pl.branchId,
+      branchName: pl.branch?.name,
+      loadingByName: pl.loadingBy?.name,
+      numberOfPackages: pl.numberOfPackages,
+      note: pl.note,
+      invoices: (pl.invoices || []).map((i: any) => ({
+        invoiceId: i.invoiceId,
+        invoiceCode: i.invoice?.code,
+      })),
+    };
   }
 }

@@ -5,10 +5,19 @@ import {
   UpdatePackingSlipDto,
   PackingSlipQueryDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class PackingSlipsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: PackingSlipQueryDto) {
     const {
@@ -54,7 +63,16 @@ export class PackingSlipsService {
                 select: {
                   id: true,
                   code: true,
+                  customerId: true,
+                  purchaseDate: true,
                   grandTotal: true,
+                  customer: {
+                    select: {
+                      id: true,
+                      name: true,
+                      contactNumber: true,
+                    },
+                  },
                 },
               },
             },
@@ -83,6 +101,8 @@ export class PackingSlipsService {
               select: {
                 id: true,
                 code: true,
+                customerId: true,
+                purchaseDate: true,
                 grandTotal: true,
                 customer: {
                   select: {
@@ -150,6 +170,29 @@ export class PackingSlipsService {
         },
       });
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PACKING_SLIP_CREATE',
+        entityType: 'packing_slips',
+        entityId: packingSlip.id.toString(),
+        entityCode: packingSlip.code,
+        category: getCategoryFromActionCode('PACKING_SLIP_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_SLIP_CREATE'),
+        snapshot: this.buildPackingSlipSnapshot(packingSlip),
+        message: renderAuditMessage('PACKING_SLIP_CREATE', {
+          packingCode: packingSlip.code,
+        }),
+        messageTemplate: 'PACKING_SLIP_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingSlip.branchId || undefined,
+      });
+
       return packingSlip;
     });
   }
@@ -213,12 +256,39 @@ export class PackingSlipsService {
     });
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const packingSlip = await this.findOne(id);
 
-    return this.prisma.packingSlip.delete({
+    await this.prisma.packingSlip.delete({
       where: { id },
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PACKING_SLIP_DELETE',
+        entityType: 'packing_slips',
+        entityId: id.toString(),
+        entityCode: packingSlip.code,
+        category: getCategoryFromActionCode('PACKING_SLIP_DELETE'),
+        severity: getSeverityFromActionCode('PACKING_SLIP_DELETE'),
+        snapshot: this.buildPackingSlipSnapshot(packingSlip),
+        message: renderAuditMessage('PACKING_SLIP_DELETE', {
+          packingCode: packingSlip.code,
+        }),
+        messageTemplate: 'PACKING_SLIP_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingSlip.branchId || undefined,
+      });
+    }
+
+    return { message: 'Xóa phiếu giao hàng thành công' };
   }
 
   private async generateCode(tx: any): Promise<string> {
@@ -236,5 +306,24 @@ export class PackingSlipsService {
     }
 
     return `BD${nextNumber.toString().padStart(6, '0')}`;
+  }
+
+  private buildPackingSlipSnapshot(ps: any) {
+    return {
+      code: ps.code,
+      branchId: ps.branchId,
+      branchName: ps.branch?.name,
+      numberOfPackages: ps.numberOfPackages,
+      paymentMethod: ps.paymentMethod,
+      cashAmount: Number(ps.cashAmount || 0),
+      feeGuiBen: Number(ps.feeGuiBen || 0),
+      feeGrab: Number(ps.feeGrab || 0),
+      cuocGuiHang: Number(ps.cuocGuiHang || 0),
+      note: ps.note,
+      invoices: (ps.invoices || []).map((i: any) => ({
+        invoiceId: i.invoiceId,
+        invoiceCode: i.invoice?.code,
+      })),
+    };
   }
 }

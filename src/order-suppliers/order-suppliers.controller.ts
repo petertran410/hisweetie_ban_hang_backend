@@ -88,7 +88,8 @@ export class OrderSuppliersController {
 
   @Delete('payments/:paymentId')
   @ApiOperation({ summary: 'Xóa thanh toán' })
-  removePayment(@Param('paymentId') paymentId: string) {
-    return this.orderSupplierPaymentsService.remove(+paymentId);
+  removePayment(@Param('paymentId') paymentId: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.orderSupplierPaymentsService.remove(+paymentId, userId);
   }
 }

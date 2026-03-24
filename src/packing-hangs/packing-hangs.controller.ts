@@ -53,7 +53,8 @@ export class PackingHangsController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa đóng hàng' })
-  remove(@Param('id') id: string) {
-    return this.packingHangsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.packingHangsService.remove(+id, userId);
   }
 }

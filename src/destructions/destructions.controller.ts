@@ -44,17 +44,28 @@ export class DestructionsController {
   }
 
   @Put(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateDestructionDto) {
-    return this.destructionsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDestructionDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.destructionsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.destructionsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.destructionsService.remove(+id, userId);
   }
 
   @Put(':id/cancel')
-  cancel(@Param('id') id: string, @Body() dto: CancelDestructionDto) {
-    return this.destructionsService.cancelDestruction(+id, dto);
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelDestructionDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.destructionsService.cancelDestruction(+id, dto, userId);
   }
 }

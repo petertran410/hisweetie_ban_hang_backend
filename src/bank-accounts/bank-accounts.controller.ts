@@ -7,6 +7,7 @@ import {
   Body,
   Param,
   UseGuards,
+  Req,
 } from '@nestjs/common';
 import { BankAccountsService } from './bank-accounts.service';
 import { CreateBankAccountDto, UpdateBankAccountDto } from './dto';
@@ -40,19 +41,26 @@ export class BankAccountsController {
 
   @Post()
   @RequirePermissions('bank_accounts:create')
-  create(@Body() dto: CreateBankAccountDto) {
-    return this.bankAccountsService.create(dto);
+  create(@Body() dto: CreateBankAccountDto, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.bankAccountsService.create(dto, userId);
   }
 
   @Put(':id')
   @RequirePermissions('bank_accounts:update')
-  update(@Param('id') id: string, @Body() dto: UpdateBankAccountDto) {
-    return this.bankAccountsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateBankAccountDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id;
+    return this.bankAccountsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
   @RequirePermissions('bank_accounts:delete')
-  remove(@Param('id') id: string) {
-    return this.bankAccountsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.bankAccountsService.remove(+id, userId);
   }
 }

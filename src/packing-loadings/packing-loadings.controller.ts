@@ -53,7 +53,8 @@ export class PackingLoadingsController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa loading' })
-  remove(@Param('id') id: string) {
-    return this.packingLoadingsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.packingLoadingsService.remove(+id, userId);
   }
 }

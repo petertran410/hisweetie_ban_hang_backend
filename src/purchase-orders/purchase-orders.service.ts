@@ -405,6 +405,14 @@ export class PurchaseOrdersService {
       }
 
       if (userId) {
+        const updatedPO = await tx.purchaseOrder.findUnique({
+          where: { id },
+          include: {
+            supplier: { select: { id: true, name: true } },
+            items: true,
+          },
+        });
+
         const user = await tx.user.findUnique({
           where: { id: userId },
           select: { name: true, email: true, branchId: true },
@@ -415,17 +423,21 @@ export class PurchaseOrdersService {
           actionCode: 'PURCHASE_ORDER_UPDATE',
           entityType: 'purchase_orders',
           entityId: id.toString(),
-          entityCode: existing.code,
+          entityCode: updatedPO?.code || existing.code,
           category: getCategoryFromActionCode('PURCHASE_ORDER_UPDATE'),
           severity: getSeverityFromActionCode('PURCHASE_ORDER_UPDATE'),
-          snapshot: this.buildPurchaseOrderSnapshot(updateData),
+          snapshot: this.buildPurchaseOrderSnapshot(updatedPO || existing),
           message: renderAuditMessage('PURCHASE_ORDER_UPDATE', {
-            purchaseOrderCode: existing.code,
+            purchaseOrderCode: updatedPO?.code || existing.code,
           }),
           messageTemplate: 'PURCHASE_ORDER_UPDATE',
           userId,
           userName: user?.name || user?.email || 'System',
-          branchId: existing.branchId || user?.branchId || undefined,
+          branchId:
+            updatedPO?.branchId ||
+            existing.branchId ||
+            user?.branchId ||
+            undefined,
         });
       }
 

@@ -11,10 +11,19 @@ import {
   CancelDestructionDto,
 } from './dto';
 import { Prisma } from '@prisma/client';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 @Injectable()
 export class DestructionsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: DestructionQueryDto) {
     const {
@@ -137,11 +146,29 @@ export class DestructionsService {
         await this.decrementInventory(destruction.id, tx);
       }
 
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'DESTRUCTION_CREATE',
+        entityType: 'destructions',
+        entityId: destruction.id.toString(),
+        entityCode: destruction.code,
+        category: getCategoryFromActionCode('DESTRUCTION_CREATE'),
+        severity: getSeverityFromActionCode('DESTRUCTION_CREATE'),
+        snapshot: this.buildDestructionSnapshot(destruction),
+        message: renderAuditMessage('DESTRUCTION_CREATE', {
+          destructionCode: destruction.code,
+        }),
+        messageTemplate: 'DESTRUCTION_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: destruction.branchId || undefined,
+      });
+
       return destruction;
     });
   }
 
-  async update(id: number, dto: UpdateDestructionDto) {
+  async update(id: number, dto: UpdateDestructionDto, userId: number) {
     const destruction = await this.findOne(id);
 
     if (destruction.status === 3) {
@@ -231,7 +258,7 @@ export class DestructionsService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     const destruction = await this.findOne(id);
 
     if (destruction.status === 2) {
@@ -244,7 +271,11 @@ export class DestructionsService {
     return { message: 'Destruction deleted successfully' };
   }
 
-  async cancelDestruction(id: number, dto: CancelDestructionDto) {
+  async cancelDestruction(
+    id: number,
+    dto: CancelDestructionDto,
+    userId: number,
+  ) {
     const destruction = await this.findOne(id);
 
     if (destruction.status === 3) {
@@ -290,6 +321,29 @@ export class DestructionsService {
           });
         }
       }
+    });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'DESTRUCTION_CANCEL',
+      entityType: 'destructions',
+      entityId: id.toString(),
+      entityCode: destruction.code,
+      category: getCategoryFromActionCode('DESTRUCTION_CANCEL'),
+      severity: getSeverityFromActionCode('DESTRUCTION_CANCEL'),
+      snapshot: this.buildDestructionSnapshot(destruction),
+      message: renderAuditMessage('DESTRUCTION_CANCEL', {
+        destructionCode: destruction.code,
+      }),
+      messageTemplate: 'DESTRUCTION_CANCEL',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: destruction.branchId || undefined,
     });
 
     return { message: 'Destruction cancelled successfully' };
@@ -363,5 +417,23 @@ export class DestructionsService {
         },
       });
     }
+  }
+
+  private buildDestructionSnapshot(d: any) {
+    return {
+      code: d.code,
+      branchId: d.branchId,
+      status: d.status,
+      totalValue: Number(d.totalValue || 0),
+      destructionDate: d.destructionDate,
+      note: d.note,
+      details: (d.details || []).map((item: any) => ({
+        productId: item.productId,
+        productCode: item.productCode,
+        productName: item.productName,
+        quantity: Number(item.quantity),
+        price: Number(item.price),
+      })),
+    };
   }
 }

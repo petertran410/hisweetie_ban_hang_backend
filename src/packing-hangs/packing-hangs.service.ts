@@ -9,10 +9,19 @@ import {
   UpdatePackingHangDto,
   PackingHangQueryDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class PackingHangsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: PackingHangQueryDto) {
     const {
@@ -180,6 +189,29 @@ export class PackingHangsService {
         },
       });
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PACKING_HANG_CREATE',
+        entityType: 'packing_hangs',
+        entityId: packingHang.id.toString(),
+        entityCode: packingHang.code,
+        category: getCategoryFromActionCode('PACKING_HANG_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_HANG_CREATE'),
+        snapshot: this.buildPackingHangSnapshot(packingHang),
+        message: renderAuditMessage('PACKING_HANG_CREATE', {
+          packingCode: packingHang.code,
+        }),
+        messageTemplate: 'PACKING_HANG_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingHang.branchId || undefined,
+      });
+
       return packingHang;
     });
   }
@@ -256,12 +288,39 @@ export class PackingHangsService {
     });
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const packingHang = await this.findOne(id);
 
-    return this.prisma.packingHang.delete({
+    await this.prisma.packingHang.delete({
       where: { id },
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PACKING_HANG_DELETE',
+        entityType: 'packing_hangs',
+        entityId: id.toString(),
+        entityCode: packingHang.code,
+        category: getCategoryFromActionCode('PACKING_HANG_DELETE'),
+        severity: getSeverityFromActionCode('PACKING_HANG_DELETE'),
+        snapshot: this.buildPackingHangSnapshot(packingHang),
+        message: renderAuditMessage('PACKING_HANG_DELETE', {
+          packingCode: packingHang.code,
+        }),
+        messageTemplate: 'PACKING_HANG_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingHang.branchId || undefined,
+      });
+    }
+
+    return { message: 'Xóa phiếu treo hàng thành công' };
   }
 
   private async generateCode(tx: any): Promise<string> {
@@ -279,5 +338,19 @@ export class PackingHangsService {
     }
 
     return `DDH${nextNumber.toString().padStart(6, '0')}`;
+  }
+
+  private buildPackingHangSnapshot(ph: any) {
+    return {
+      code: ph.code,
+      branchId: ph.branchId,
+      branchName: ph.branch?.name,
+      numberOfPackages: ph.numberOfPackages,
+      note: ph.note,
+      invoices: (ph.invoices || []).map((i: any) => ({
+        invoiceId: i.invoiceId,
+        invoiceCode: i.invoice?.code,
+      })),
+    };
   }
 }

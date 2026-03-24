@@ -53,7 +53,8 @@ export class PackingSlipsController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa báo đơn' })
-  remove(@Param('id') id: string) {
-    return this.packingSlipsService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.packingSlipsService.remove(+id, userId);
   }
 }
