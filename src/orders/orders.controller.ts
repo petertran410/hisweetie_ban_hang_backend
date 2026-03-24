@@ -25,8 +25,8 @@ export class OrdersController {
 
   @Get()
   @RequirePermissions('orders:view')
-  findAll(@Query() query: OrderQueryDto) {
-    return this.ordersService.findAll(query);
+  findAll(@Query() query: OrderQueryDto, @CurrentUser() user: any) {
+    return this.ordersService.findAll(query, user);
   }
 
   @Get(':id')

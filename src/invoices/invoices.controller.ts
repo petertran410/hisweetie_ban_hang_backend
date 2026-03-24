@@ -31,8 +31,8 @@ export class InvoicesController {
 
   @Get()
   @RequirePermissions('invoices:view')
-  findAll(@Query() query: InvoiceQueryDto) {
-    return this.invoicesService.findAll(query);
+  findAll(@Query() query: InvoiceQueryDto, @CurrentUser() user: any) {
+    return this.invoicesService.findAll(query, user);
   }
 
   @Get('unpaid-by-partner')

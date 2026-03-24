@@ -32,7 +32,7 @@ export class InvoicesService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: InvoiceQueryDto) {
+  async findAll(query: InvoiceQueryDto, currentUser?: any) {
     const {
       page = 1,
       limit = 15,
@@ -55,6 +55,10 @@ export class InvoicesService {
       currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
     const where: any = {};
+
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      where.createdBy = currentUser.id;
+    }
 
     if (search) {
       where.OR = [

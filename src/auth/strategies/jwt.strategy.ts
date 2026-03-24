@@ -81,6 +81,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       permissions,
       branchId: user.branchId,
       branchIds,
+      canViewOtherStaffData: user.canViewOtherStaffData,
     };
   }
 }

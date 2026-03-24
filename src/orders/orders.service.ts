@@ -504,7 +504,7 @@ export class OrdersService {
     });
   }
 
-  async findAll(query: OrderQueryDto) {
+  async findAll(query: OrderQueryDto, currentUser?: any) {
     const {
       page = 1,
       limit = 10,
@@ -520,6 +520,11 @@ export class OrdersService {
     const skip = (page - 1) * limit;
 
     const where: any = {};
+
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      where.createdBy = currentUser.id;
+    }
+
     if (search) {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
     }
