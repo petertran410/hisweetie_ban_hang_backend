@@ -52,6 +52,7 @@ async function bootstrap() {
       'Origin',
       'X-Force-Signature',
       'X-Site-Code',
+      'X-Branch-Id',
     ],
     exposedHeaders: ['Set-Cookie'],
     maxAge: 86400,
