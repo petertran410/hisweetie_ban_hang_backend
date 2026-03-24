@@ -152,7 +152,10 @@ export class PurchaseOrdersService {
         entityCode: purchaseOrder.code,
         category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
         severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
-        snapshot: this.buildPurchaseOrderSnapshot(purchaseOrder),
+        snapshot: this.buildPurchaseOrderSnapshot(
+          purchaseOrder,
+          supplier?.name,
+        ),
         message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
           purchaseOrderCode: purchaseOrder.code,
           supplierName: supplier?.name || 'N/A',
@@ -418,6 +421,11 @@ export class PurchaseOrdersService {
           select: { name: true, email: true, branchId: true },
         });
 
+        const supplierName = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: { name: true },
+        });
+
         await this.auditLogsService.create({
           actionType: 'PUT',
           actionCode: 'PURCHASE_ORDER_UPDATE',
@@ -426,7 +434,10 @@ export class PurchaseOrdersService {
           entityCode: updatedPO?.code || existing.code,
           category: getCategoryFromActionCode('PURCHASE_ORDER_UPDATE'),
           severity: getSeverityFromActionCode('PURCHASE_ORDER_UPDATE'),
-          snapshot: this.buildPurchaseOrderSnapshot(updatedPO || existing),
+          snapshot: this.buildPurchaseOrderSnapshot(
+            updatedPO || existing,
+            supplierName?.name,
+          ),
           message: renderAuditMessage('PURCHASE_ORDER_UPDATE', {
             purchaseOrderCode: updatedPO?.code || existing.code,
           }),
@@ -686,11 +697,12 @@ export class PurchaseOrdersService {
     throw new Error('Không thể tạo mã phiếu nhập hàng duy nhất');
   }
 
-  private buildPurchaseOrderSnapshot(po: any) {
+  private buildPurchaseOrderSnapshot(po: any, supplierName?: any) {
     return {
       code: po.code,
       supplierId: po.supplierId,
-      supplierName: po.supplier?.name,
+      supplierName: supplierName,
+      supplierDebt: po.supplierDebt,
       branchId: po.branchId,
       total: Number(po.total || 0),
       discount: Number(po.discount || 0),

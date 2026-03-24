@@ -693,6 +693,7 @@ export class OrderSuppliersService {
       code: os.code,
       supplierId: os.supplierId,
       supplierName: os.supplier?.name,
+      supplierDebt: os.supplierDebt,
       branchId: os.branchId,
       status: os.status,
       statusValue: os.statusValue,
