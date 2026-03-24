@@ -9,10 +9,19 @@ import {
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class PurchaseOrdersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -82,7 +91,7 @@ export class PurchaseOrdersService {
 
       const supplier = await tx.supplier.findUnique({
         where: { id: dto.supplierId },
-        select: { debt: true },
+        select: { debt: true, name: true, code: true },
       });
       const supplierOldDebt = Number(supplier?.debt || 0);
 
@@ -129,6 +138,30 @@ export class PurchaseOrdersService {
       if (dto.orderSupplierId) {
         await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
       }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PURCHASE_ORDER_CREATE',
+        entityType: 'purchase_orders',
+        entityId: purchaseOrder.id.toString(),
+        entityCode: purchaseOrder.code,
+        category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
+        severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
+        snapshot: this.buildPurchaseOrderSnapshot(purchaseOrder),
+        message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
+          purchaseOrderCode: purchaseOrder.code,
+          supplierName: supplier?.name || 'N/A',
+        }),
+        messageTemplate: 'PURCHASE_ORDER_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: purchaseOrder.branchId || user?.branchId || undefined,
+      });
 
       return tx.purchaseOrder.findUnique({
         where: { id: purchaseOrder.id },
@@ -230,7 +263,7 @@ export class PurchaseOrdersService {
     return purchaseOrder;
   }
 
-  async update(id: number, dto: UpdatePurchaseOrderDto) {
+  async update(id: number, dto: UpdatePurchaseOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.purchaseOrder.findUnique({
         where: { id },
@@ -371,6 +404,31 @@ export class PurchaseOrdersService {
         await this.updateOrderSupplierStatus(orderSupplierId, tx);
       }
 
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'PURCHASE_ORDER_UPDATE',
+          entityType: 'purchase_orders',
+          entityId: id.toString(),
+          entityCode: existing.code,
+          category: getCategoryFromActionCode('PURCHASE_ORDER_UPDATE'),
+          severity: getSeverityFromActionCode('PURCHASE_ORDER_UPDATE'),
+          snapshot: this.buildPurchaseOrderSnapshot(updateData),
+          message: renderAuditMessage('PURCHASE_ORDER_UPDATE', {
+            purchaseOrderCode: existing.code,
+          }),
+          messageTemplate: 'PURCHASE_ORDER_UPDATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: existing.branchId || user?.branchId || undefined,
+        });
+      }
+
       return tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -392,7 +450,7 @@ export class PurchaseOrdersService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
@@ -409,6 +467,31 @@ export class PurchaseOrdersService {
 
       await tx.purchaseOrder.delete({ where: { id } });
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
+
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'DELETE',
+          actionCode: 'PURCHASE_ORDER_DELETE',
+          entityType: 'purchase_orders',
+          entityId: id.toString(),
+          entityCode: purchaseOrder.code,
+          category: getCategoryFromActionCode('PURCHASE_ORDER_DELETE'),
+          severity: getSeverityFromActionCode('PURCHASE_ORDER_DELETE'),
+          snapshot: this.buildPurchaseOrderSnapshot(purchaseOrder),
+          message: renderAuditMessage('PURCHASE_ORDER_DELETE', {
+            purchaseOrderCode: purchaseOrder.code,
+          }),
+          messageTemplate: 'PURCHASE_ORDER_DELETE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: purchaseOrder.branchId || user?.branchId || undefined,
+        });
+      }
 
       return { message: 'Xóa phiếu nhập hàng thành công' };
     });
@@ -589,5 +672,28 @@ export class PurchaseOrdersService {
     }
 
     throw new Error('Không thể tạo mã phiếu nhập hàng duy nhất');
+  }
+
+  private buildPurchaseOrderSnapshot(po: any) {
+    return {
+      code: po.code,
+      supplierId: po.supplierId,
+      supplierName: po.supplier?.name,
+      branchId: po.branchId,
+      total: Number(po.total || 0),
+      discount: Number(po.discount || 0),
+      paidAmount: Number(po.paidAmount || 0),
+      isDraft: po.isDraft,
+      orderSupplierId: po.orderSupplierId,
+      items: (po.items || []).map((item: any) => ({
+        productId: item.productId,
+        productCode: item.productCode,
+        productName: item.productName,
+        quantity: Number(item.quantity),
+        price: Number(item.price),
+        discount: Number(item.discount || 0),
+        totalPrice: Number(item.totalPrice),
+      })),
+    };
   }
 }

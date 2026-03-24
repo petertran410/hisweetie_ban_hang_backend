@@ -51,17 +51,22 @@ export class PurchaseOrdersController {
 
   @Put(':id')
   @ApiOperation({ summary: 'Cập nhật nhập hàng' })
-  update(@Param('id') id: string, @Body() dto: UpdatePurchaseOrderDto) {
-    return this.purchaseOrdersService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePurchaseOrderDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.purchaseOrdersService.update(+id, dto, userId);
   }
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa nhập hàng' })
-  remove(@Param('id') id: string) {
-    return this.purchaseOrdersService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.purchaseOrdersService.remove(+id, userId);
   }
 
-  // Payment endpoints
   @Post(':id/payments')
   @ApiOperation({ summary: 'Tạo thanh toán cho nhập hàng' })
   createPayment(@Param('id') id: string, @Body() dto: any, @Req() req: any) {
@@ -78,7 +83,8 @@ export class PurchaseOrdersController {
 
   @Delete('payments/:paymentId')
   @ApiOperation({ summary: 'Xóa thanh toán' })
-  removePayment(@Param('paymentId') paymentId: string) {
-    return this.purchaseOrderPaymentsService.remove(+paymentId);
+  removePayment(@Param('paymentId') paymentId: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.purchaseOrderPaymentsService.remove(+paymentId, userId);
   }
 }

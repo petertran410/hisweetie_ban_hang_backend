@@ -1,5 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 
 export class CreatePurchaseOrderPaymentDto {
   purchaseOrderId: number;
@@ -12,7 +18,10 @@ export class CreatePurchaseOrderPaymentDto {
 
 @Injectable()
 export class PurchaseOrderPaymentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async create(dto: CreatePurchaseOrderPaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -102,6 +111,39 @@ export class PurchaseOrderPaymentsService {
       // Update supplier debt
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PURCHASE_ORDER_PAYMENT_CREATE',
+        entityType: 'purchase_order_payment',
+        entityId: payment.id.toString(),
+        entityCode: payment.code,
+        category: getCategoryFromActionCode('PURCHASE_ORDER_PAYMENT_CREATE'),
+        severity: getSeverityFromActionCode('PURCHASE_ORDER_PAYMENT_CREATE'),
+        snapshot: {
+          code: payment.code,
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+          purchaseOrder: {
+            code: purchaseOrder.code,
+            supplier: purchaseOrder.supplier?.name,
+          },
+        },
+        message: renderAuditMessage('PURCHASE_ORDER_PAYMENT_CREATE', {
+          paymentCode: payment.code,
+          purchaseOrderCode: purchaseOrder.code,
+          amount: Number(payment.amount),
+        }),
+        messageTemplate: 'PURCHASE_ORDER_PAYMENT_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: purchaseOrder.branchId || undefined,
+      });
+
       return {
         payment,
         cashFlow,
@@ -116,26 +158,31 @@ export class PurchaseOrderPaymentsService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId?: number) {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.purchaseOrderPayment.findUnique({
         where: { id },
-        include: { purchaseOrder: true },
+        include: {
+          purchaseOrder: {
+            include: {
+              supplier: {
+                select: { id: true, name: true, contactNumber: true },
+              },
+            },
+          },
+        },
       });
 
       if (!payment) {
         throw new Error('Không tìm thấy thanh toán');
       }
 
-      // Xóa CashFlow
       await tx.cashFlow.deleteMany({
         where: { code: payment.code },
       });
 
-      // Xóa payment
       await tx.purchaseOrderPayment.delete({ where: { id } });
 
-      // Recalculate paidAmount
       const allPayments = await tx.purchaseOrderPayment.findMany({
         where: { purchaseOrderId: payment.purchaseOrderId },
       });
@@ -149,8 +196,47 @@ export class PurchaseOrderPaymentsService {
         data: { paidAmount },
       });
 
-      // Update supplier debt
       await this.updateSupplierDebt(payment.purchaseOrder.supplierId, tx);
+
+      const auditUserId = userId || 1;
+      const user = await tx.user.findUnique({
+        where: { id: auditUserId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PURCHASE_ORDER_PAYMENT_DELETE',
+        entityType: 'purchase_order_payment',
+        entityId: id.toString(),
+        entityCode: payment.code,
+        category: getCategoryFromActionCode('PURCHASE_ORDER_PAYMENT_DELETE'),
+        severity: getSeverityFromActionCode('PURCHASE_ORDER_PAYMENT_DELETE'),
+        snapshot: {
+          code: payment.code,
+          amount: Number(payment.amount),
+          paymentMethod: payment.paymentMethod,
+          paymentDate: payment.paymentDate,
+          purchaseOrder: {
+            code: payment.purchaseOrder.code,
+            supplier: payment.purchaseOrder.supplier
+              ? {
+                  name: payment.purchaseOrder.supplier.name,
+                }
+              : null,
+          },
+        },
+        message: renderAuditMessage('PURCHASE_ORDER_PAYMENT_DELETE', {
+          paymentCode: payment.code,
+          purchaseOrderCode: payment.purchaseOrder.code,
+        }),
+        messageTemplate: 'PURCHASE_ORDER_PAYMENT_DELETE',
+        userId: auditUserId,
+        userName: user?.name || user?.email || 'System',
+        branchId: payment.purchaseOrder.branchId || undefined,
+      });
+
+      return { message: 'Xóa thanh toán thành công' };
     });
   }
 
@@ -198,7 +284,6 @@ export class PurchaseOrderPaymentsService {
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    // Tính debt từ OrderSupplier payments
     const orderSuppliers = await tx.orderSupplier.findMany({
       where: { supplierId },
       include: { payments: true },

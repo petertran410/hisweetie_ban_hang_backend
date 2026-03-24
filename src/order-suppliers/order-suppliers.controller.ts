@@ -63,8 +63,9 @@ export class OrderSuppliersController {
 
   @Delete(':id')
   @ApiOperation({ summary: 'Xóa đặt hàng nhập' })
-  remove(@Param('id') id: string) {
-    return this.orderSuppliersService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.orderSuppliersService.remove(+id, userId);
   }
 
   @Post(':id/payments')

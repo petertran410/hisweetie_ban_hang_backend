@@ -5,10 +5,19 @@ import {
   UpdateOrderSupplierDto,
   OrderSupplierQueryDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class OrderSuppliersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: OrderSupplierQueryDto) {
     const {
@@ -294,6 +303,30 @@ export class OrderSuppliersService {
         await this.updateSupplierDebt(dto.supplierId, tx);
       }
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'ORDER_SUPPLIER_CREATE',
+        entityType: 'order_suppliers',
+        entityId: orderSupplier.id.toString(),
+        entityCode: orderSupplier.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_CREATE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_CREATE'),
+        snapshot: this.buildOrderSupplierSnapshot(orderSupplier),
+        message: renderAuditMessage('ORDER_SUPPLIER_CREATE', {
+          orderSupplierCode: orderSupplier.code,
+          supplierName: orderSupplier.supplier?.name || 'N/A',
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: orderSupplier.branchId || user?.branchId || undefined,
+      });
+
       return orderSupplier;
     });
   }
@@ -425,6 +458,29 @@ export class OrderSuppliersService {
         await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_SUPPLIER_UPDATE',
+        entityType: 'order_suppliers',
+        entityId: id.toString(),
+        entityCode: existing.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_UPDATE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_UPDATE'),
+        snapshot: this.buildOrderSupplierSnapshot(updatedOrderSupplier),
+        message: renderAuditMessage('ORDER_SUPPLIER_UPDATE', {
+          orderSupplierCode: updatedOrderSupplier.code,
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: updatedOrderSupplier.branchId || user?.branchId || undefined,
+      });
+
       return tx.orderSupplier.update({
         where: { id },
         data: {
@@ -459,7 +515,7 @@ export class OrderSuppliersService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     const orderSupplier = await this.prisma.orderSupplier.findUnique({
       where: { id },
     });
@@ -471,6 +527,31 @@ export class OrderSuppliersService {
     await this.prisma.orderSupplier.delete({
       where: { id },
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'ORDER_SUPPLIER_DELETE',
+        entityType: 'order_suppliers',
+        entityId: id.toString(),
+        entityCode: orderSupplier.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_DELETE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_DELETE'),
+        snapshot: this.buildOrderSupplierSnapshot(orderSupplier),
+        message: renderAuditMessage('ORDER_SUPPLIER_DELETE', {
+          orderSupplierCode: orderSupplier.code,
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: orderSupplier.branchId || user?.branchId || undefined,
+      });
+    }
 
     return { message: 'Xóa phiếu đặt hàng nhập thành công' };
   }
@@ -603,5 +684,26 @@ export class OrderSuppliersService {
       where: { id: supplierId },
       data: { debt: totalDebt },
     });
+  }
+
+  private buildOrderSupplierSnapshot(os: any) {
+    return {
+      code: os.code,
+      supplierId: os.supplierId,
+      supplierName: os.supplier?.name,
+      branchId: os.branchId,
+      status: os.status,
+      statusValue: os.statusValue,
+      total: Number(os.total || 0),
+      discount: Number(os.discount || 0),
+      paidAmount: Number(os.paidAmount || 0),
+      items: (os.items || []).map((item: any) => ({
+        productId: item.productId,
+        productCode: item.productCode,
+        productName: item.productName,
+        quantity: Number(item.quantity),
+        price: Number(item.price),
+      })),
+    };
   }
 }
