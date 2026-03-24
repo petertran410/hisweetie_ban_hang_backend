@@ -9,8 +9,53 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:3050',
+    origin: (origin, callback) => {
+      const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || [];
+
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      try {
+        const url = new URL(origin);
+        const isAllowed = allowedOrigins.some((allowedOrigin) => {
+          if (allowedOrigin === origin) return true;
+
+          if (process.env.NODE_ENV === 'development') {
+            if (url.hostname === 'localhost') {
+              return true;
+            }
+          }
+
+          return false;
+        });
+
+        if (isAllowed) {
+          callback(null, true);
+        } else {
+          console.warn(`CORS: Rejected origin ${origin}`);
+          callback(null, false);
+        }
+      } catch (error) {
+        console.warn(`CORS: Invalid origin format ${origin}`);
+        callback(null, false);
+      }
+    },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With',
+      'X-CSRF-Token',
+      'Accept',
+      'Origin',
+      'X-Force-Signature',
+      'X-Site-Code',
+    ],
+    exposedHeaders: ['Set-Cookie'],
+    maxAge: 86400,
+    optionsSuccessStatus: 200,
   });
 
   app.useGlobalPipes(
