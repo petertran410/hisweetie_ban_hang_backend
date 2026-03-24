@@ -8,6 +8,8 @@ Dockerfile
 docker-compose.yml
 deploy.sh
 
+/uploads
+
 # Logs
 logs
 *.log
