@@ -133,7 +133,6 @@ export class CreateProductDto {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
   @Type(() => Number)
   stockQuantity?: number;
 
@@ -293,7 +292,6 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
   @Type(() => Number)
   stockQuantity?: number;
 
