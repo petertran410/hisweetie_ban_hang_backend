@@ -10,7 +10,8 @@ async function bootstrap() {
 
   app.enableCors({
     origin: (origin, callback) => {
-      const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || [];
+      const allowedOrigins =
+        process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()) || [];
 
       if (!origin) {
         return callback(null, true);
@@ -21,10 +22,16 @@ async function bootstrap() {
         const isAllowed = allowedOrigins.some((allowedOrigin) => {
           if (allowedOrigin === origin) return true;
 
-          if (process.env.NODE_ENV === 'development') {
-            if (url.hostname === 'localhost') {
+          try {
+            const allowedUrl = new URL(allowedOrigin);
+            if (
+              allowedUrl.hostname === 'localhost' &&
+              url.hostname === 'localhost'
+            ) {
               return true;
             }
+          } catch {
+            if (allowedOrigin === '*') return true;
           }
 
           return false;
@@ -33,7 +40,9 @@ async function bootstrap() {
         if (isAllowed) {
           callback(null, true);
         } else {
-          console.warn(`CORS: Rejected origin ${origin}`);
+          console.warn(
+            `CORS: Rejected origin ${origin}. Allowed: ${allowedOrigins.join(', ')}`,
+          );
           callback(null, false);
         }
       } catch (error) {
@@ -84,5 +93,8 @@ async function bootstrap() {
   const port = process.env.PORT || 3060;
   await app.listen(port);
   console.log(`Application is running on: http://localhost:${port}`);
+  console.log(
+    `CORS allowed origins: ${process.env.CORS_ORIGIN || 'None set - requests may be blocked'}`,
+  );
 }
 bootstrap();

@@ -17,12 +17,28 @@ import { PrismaModule } from '../prisma/prisma.module';
     ConfigModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
-      useFactory: async (configService: ConfigService) => ({
-        secret: configService.get<string>('JWT_SECRET') || 'default-secret-key',
-        signOptions: {
-          expiresIn: configService.get<string>('JWT_EXPIRATION') || '7d',
-        },
-      }),
+      useFactory: async (configService: ConfigService) => {
+        const jwtSecret =
+          configService.get<string>('JWT_SECRET') || 'default-secret-key';
+        let jwtExpiration = configService.get<string>('JWT_EXPIRATION') || '7d';
+
+        jwtExpiration = jwtExpiration.trim();
+
+        const validFormats = /^(\d+[smhd]|\d+)$/;
+        if (!validFormats.test(jwtExpiration)) {
+          console.warn(
+            `Invalid JWT_EXPIRATION format: "${jwtExpiration}". Using default: 7d`,
+          );
+          jwtExpiration = '7d';
+        }
+
+        return {
+          secret: jwtSecret,
+          signOptions: {
+            expiresIn: jwtExpiration,
+          },
+        };
+      },
       inject: [ConfigService],
     }),
   ],
