@@ -214,12 +214,29 @@ export class InvoicePaymentsService {
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, parentId: true },
+    });
+
+    if (!customer) return;
+
+    const targetCustomerId = customer.parentId || customerId;
+
+    const childIds = await tx.customer.findMany({
+      where: { parentId: targetCustomerId },
+      select: { id: true },
+    });
+
+    const allCustomerIds = [
+      targetCustomerId,
+      ...childIds.map((c: any) => c.id),
+    ];
+
     const invoices = await tx.invoice.findMany({
       where: {
-        customerId,
-        status: {
-          notIn: [2],
-        },
+        customerId: { in: allCustomerIds },
+        status: { notIn: [2] },
       },
     });
 
@@ -229,8 +246,15 @@ export class InvoicePaymentsService {
     );
 
     await tx.customer.update({
-      where: { id: customerId },
+      where: { id: targetCustomerId },
       data: { totalDebt },
     });
+
+    if (childIds.length > 0) {
+      await tx.customer.updateMany({
+        where: { id: { in: childIds.map((c: any) => c.id) } },
+        data: { totalDebt: 0 },
+      });
+    }
   }
 }

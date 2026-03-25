@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCustomerDto,
@@ -271,6 +275,12 @@ export class CustomersService {
       include: {
         customerType: true,
         branch: true,
+        parent: {
+          select: { id: true, code: true, name: true },
+        },
+        children: {
+          select: { id: true, code: true, name: true },
+        },
         customerGroupDetails: {
           include: {
             customerGroup: { select: { id: true, name: true } },
@@ -351,8 +361,52 @@ export class CustomersService {
     };
   }
 
+  async findParents(search?: string) {
+    const where: any = {
+      parentId: null,
+      isActive: true,
+    };
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { code: { contains: search, mode: 'insensitive' } },
+        { contactNumber: { contains: search } },
+      ];
+    }
+
+    const data = await this.prisma.customer.findMany({
+      where,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        contactNumber: true,
+      },
+      orderBy: { name: 'asc' },
+      take: 50,
+    });
+
+    return { data };
+  }
+
   async create(dto: CreateCustomerDto, userId?: number) {
     const code = dto.code || (await this.generateCode());
+
+    if (dto.parentId) {
+      const parentCustomer = await this.prisma.customer.findUnique({
+        where: { id: dto.parentId },
+        select: { id: true, parentId: true },
+      });
+      if (!parentCustomer) {
+        throw new BadRequestException('Tài khoản cha không tồn tại');
+      }
+      if (parentCustomer.parentId !== null) {
+        throw new BadRequestException(
+          'Không thể chọn tài khoản con làm tài khoản cha (chỉ hỗ trợ 1 cấp)',
+        );
+      }
+    }
 
     const { groupIds, birthDate, ...customerData } = dto;
 
@@ -497,6 +551,38 @@ export class CustomersService {
 
       return updatedCustomer;
     });
+
+    if (dto.parentId !== undefined) {
+      if (dto.parentId !== null) {
+        if (dto.parentId === id) {
+          throw new BadRequestException(
+            'Không thể chọn chính mình làm tài khoản cha',
+          );
+        }
+
+        const hasChildren = await this.prisma.customer.count({
+          where: { parentId: id },
+        });
+        if (hasChildren > 0) {
+          throw new BadRequestException(
+            'Tài khoản đã có tài khoản con, không thể trở thành tài khoản con',
+          );
+        }
+
+        const parentCustomer = await this.prisma.customer.findUnique({
+          where: { id: dto.parentId },
+          select: { id: true, parentId: true },
+        });
+        if (!parentCustomer) {
+          throw new BadRequestException('Tài khoản cha không tồn tại');
+        }
+        if (parentCustomer.parentId !== null) {
+          throw new BadRequestException(
+            'Không thể chọn tài khoản con làm tài khoản cha (chỉ hỗ trợ 1 cấp)',
+          );
+        }
+      }
+    }
 
     if (userId && existingCustomer) {
       const user = await this.prisma.user.findUnique({

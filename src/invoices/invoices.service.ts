@@ -849,8 +849,30 @@ export class InvoicesService {
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, parentId: true },
+    });
+
+    if (!customer) return;
+
+    const targetCustomerId = customer.parentId || customerId;
+
+    const childIds = await tx.customer.findMany({
+      where: { parentId: targetCustomerId },
+      select: { id: true },
+    });
+
+    const allCustomerIds = [
+      targetCustomerId,
+      ...childIds.map((c: any) => c.id),
+    ];
+
     const invoices = await tx.invoice.findMany({
-      where: { customerId, status: { notIn: [INVOICE_STATUS.CANCELLED] } },
+      where: {
+        customerId: { in: allCustomerIds },
+        status: { notIn: [2] },
+      },
     });
 
     const debtFromInvoices = invoices.reduce(
@@ -864,7 +886,7 @@ export class InvoicesService {
 
     const orders = await tx.order.findMany({
       where: {
-        customerId,
+        customerId: { in: allCustomerIds },
         orderStatus: { not: 'cancelled' },
         invoices: { none: {} },
       },
@@ -884,9 +906,16 @@ export class InvoicesService {
     const totalDebt = debtFromInvoices - paidFromOrdersWithoutInvoice;
 
     await tx.customer.update({
-      where: { id: customerId },
+      where: { id: targetCustomerId },
       data: { totalPurchased, totalDebt },
     });
+
+    if (childIds.length > 0) {
+      await tx.customer.updateMany({
+        where: { id: { in: childIds.map((c: any) => c.id) } },
+        data: { totalDebt: 0, totalPurchased: 0 },
+      });
+    }
   }
 
   async createFromOrder(

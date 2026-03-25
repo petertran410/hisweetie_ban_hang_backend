@@ -72,6 +72,11 @@ export class CreateCustomerDto {
   type?: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  parentId?: number;
+
+  @IsOptional()
   @IsString()
   organization?: string;
 
