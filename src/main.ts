@@ -92,7 +92,6 @@ async function bootstrap() {
 
   const port = process.env.PORT || 3060;
   await app.listen(port);
-  console.log(`Application is running on: http://localhost:${port}`);
   console.log(
     `CORS allowed origins: ${process.env.CORS_ORIGIN || 'None set - requests may be blocked'}`,
   );
