@@ -4,6 +4,7 @@ import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import {
   convertStatusStringToNumber,
   getStatusLabel,
+  ORDER_STATUS,
 } from './dto/order-status.constants';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { PriceBooksService } from '../price-books/price-books.service';
@@ -13,6 +14,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
+import { INVOICE_STATUS } from 'src/invoices/dto';
 
 @Injectable()
 export class OrdersService {
@@ -711,6 +713,91 @@ export class OrdersService {
 
       await tx.order.delete({ where: { id } });
     });
+  }
+
+  async getProductPriceHistory(customerId: number, productId: number) {
+    const orderHistory = await this.prisma.orderItem.findMany({
+      where: {
+        productId,
+        order: {
+          customerId,
+          status: { notIn: [ORDER_STATUS.CANCELLED] },
+        },
+      },
+      select: {
+        price: true,
+        discount: true,
+        quantity: true,
+        order: {
+          select: {
+            id: true,
+            code: true,
+            orderDate: true,
+          },
+        },
+      },
+      orderBy: {
+        order: {
+          orderDate: 'desc',
+        },
+      },
+      take: 5,
+    });
+
+    const invoiceHistory = await this.prisma.invoiceDetail.findMany({
+      where: {
+        productId,
+        invoice: {
+          customerId,
+          status: { notIn: [INVOICE_STATUS.CANCELLED] },
+        },
+      },
+      select: {
+        price: true,
+        discount: true,
+        quantity: true,
+        invoice: {
+          select: {
+            id: true,
+            code: true,
+            purchaseDate: true,
+          },
+        },
+      },
+      orderBy: {
+        invoice: {
+          purchaseDate: 'desc',
+        },
+      },
+      take: 5,
+    });
+
+    const combinedHistory = [
+      ...orderHistory.map((item) => ({
+        code: item.order.code,
+        date: item.order.orderDate,
+        price: Number(item.price),
+        discount: Number(item.discount),
+        quantity: Number(item.quantity),
+        finalPrice: Number(item.price) - Number(item.discount),
+        type: 'order' as const,
+      })),
+      ...invoiceHistory.map((item) => ({
+        code: item.invoice.code,
+        date: item.invoice.purchaseDate,
+        price: Number(item.price),
+        discount: Number(item.discount),
+        quantity: Number(item.quantity),
+        finalPrice: Number(item.price) - Number(item.discount),
+        type: 'invoice' as const,
+      })),
+    ];
+
+    combinedHistory.sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+
+    return combinedHistory.slice(0, 5);
   }
 
   private buildOrderSnapshot(order: any) {

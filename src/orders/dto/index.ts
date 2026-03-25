@@ -264,3 +264,8 @@ export class CreateOrderPaymentDto {
   @IsOptional()
   notes?: string;
 }
+
+export class ProductPriceHistoryDto {
+  customerId: number;
+  productId: number;
+}

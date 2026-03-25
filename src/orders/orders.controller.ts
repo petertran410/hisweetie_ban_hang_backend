@@ -10,7 +10,12 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
-import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
+import {
+  CreateOrderDto,
+  UpdateOrderDto,
+  OrderQueryDto,
+  ProductPriceHistoryDto,
+} from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -27,6 +32,15 @@ export class OrdersController {
   @RequirePermissions('orders:view')
   findAll(@Query() query: OrderQueryDto, @CurrentUser() user: any) {
     return this.ordersService.findAll(query, user);
+  }
+
+  @Get('product-price-history')
+  @RequirePermissions('orders:view')
+  getProductPriceHistory(@Query() params: ProductPriceHistoryDto) {
+    return this.ordersService.getProductPriceHistory(
+      +params.customerId,
+      +params.productId,
+    );
   }
 
   @Get(':id')
