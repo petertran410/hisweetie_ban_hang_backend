@@ -7,6 +7,7 @@ import {
   ValidateNested,
   IsNumber,
   IsDecimal,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -266,6 +267,16 @@ export class CreateOrderPaymentDto {
 }
 
 export class ProductPriceHistoryDto {
+  @IsInt()
+  @Type(() => Number)
   customerId: number;
+
+  @IsInt()
+  @Type(() => Number)
   productId: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['order', 'invoice'])
+  type?: 'order' | 'invoice';
 }

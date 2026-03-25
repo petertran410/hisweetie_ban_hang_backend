@@ -40,6 +40,7 @@ export class OrdersController {
     return this.ordersService.getProductPriceHistory(
       +params.customerId,
       +params.productId,
+      params.type,
     );
   }
 
