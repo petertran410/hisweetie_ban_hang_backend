@@ -27,7 +27,6 @@ export class CreateInventoryDto {
 
   @IsOptional()
   @IsNumber()
-  @Min(0)
   @Type(() => Number)
   onHand?: number;
 
