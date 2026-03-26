@@ -279,7 +279,15 @@ export class CustomersService {
           select: { id: true, code: true, name: true },
         },
         children: {
-          select: { id: true, code: true, name: true },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            districtName: true,
+            wardName: true,
+            address: true,
+            cityName: true,
+          },
         },
         customerGroupDetails: {
           include: {
@@ -382,6 +390,11 @@ export class CustomersService {
         code: true,
         name: true,
         contactNumber: true,
+        phone: true,
+        address: true,
+        cityName: true,
+        districtName: true,
+        wardName: true,
         _count: {
           select: { children: true },
         },
@@ -414,6 +427,11 @@ export class CustomersService {
         code: true,
         name: true,
         contactNumber: true,
+        phone: true,
+        address: true,
+        cityName: true,
+        districtName: true,
+        wardName: true,
       },
       orderBy: { name: 'asc' },
       take: 50,
