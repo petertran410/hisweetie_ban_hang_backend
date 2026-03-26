@@ -50,13 +50,6 @@ export class CustomersController {
     return this.customersService.findParents(search);
   }
 
-  @Get(':id')
-  @RequirePermissions('customers:view')
-  @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })
-  findOne(@Param('id') id: string) {
-    return this.customersService.findOne(+id);
-  }
-
   @Get('children/:parentId')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy danh sách tài khoản con theo parentId' })
@@ -67,12 +60,42 @@ export class CustomersController {
     return this.customersService.findChildren(+parentId, search);
   }
 
+  @Get(':id')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })
+  findOne(@Param('id') id: string) {
+    return this.customersService.findOne(+id);
+  }
+
+  @Get(':id/debt-timeline')
+  @RequirePermissions('customers:view')
+  @ApiOperation({
+    summary: 'Get customer debt timeline (invoices + cashflows)',
+  })
+  getDebtTimeline(@Param('id') id: string) {
+    return this.customersService.getDebtTimeline(+id);
+  }
+
   @Post()
   @RequirePermissions('customers:create')
   @ApiOperation({ summary: 'Thêm mới khách hàng' })
   create(@Body() dto: CreateCustomerDto, @Req() req: any) {
     const userId = req.user?.id;
     return this.customersService.create(dto, userId);
+  }
+
+  @Post('listaddcutomers')
+  @RequirePermissions('customers:create')
+  @ApiOperation({ summary: 'Thêm mới danh sách khách hàng' })
+  bulkCreate(@Body() dto: BulkCreateCustomerDto) {
+    return this.customersService.bulkCreate(dto);
+  }
+
+  @Put('listupdatecustomers')
+  @RequirePermissions('customers:update')
+  @ApiOperation({ summary: 'Cập nhật danh sách khách hàng' })
+  bulkUpdate(@Body() dto: BulkUpdateCustomerDto) {
+    return this.customersService.bulkUpdate(dto);
   }
 
   @Put(':id')
@@ -93,28 +116,5 @@ export class CustomersController {
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.customersService.remove(+id, userId);
-  }
-
-  @Post('listaddcutomers')
-  @RequirePermissions('customers:create')
-  @ApiOperation({ summary: 'Thêm mới danh sách khách hàng' })
-  bulkCreate(@Body() dto: BulkCreateCustomerDto) {
-    return this.customersService.bulkCreate(dto);
-  }
-
-  @Put('listupdatecustomers')
-  @RequirePermissions('customers:update')
-  @ApiOperation({ summary: 'Cập nhật danh sách khách hàng' })
-  bulkUpdate(@Body() dto: BulkUpdateCustomerDto) {
-    return this.customersService.bulkUpdate(dto);
-  }
-
-  @Get(':id/debt-timeline')
-  @RequirePermissions('customers:view')
-  @ApiOperation({
-    summary: 'Get customer debt timeline (invoices + cashflows)',
-  })
-  getDebtTimeline(@Param('id') id: string) {
-    return this.customersService.getDebtTimeline(+id);
   }
 }
