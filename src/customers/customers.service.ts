@@ -382,6 +382,38 @@ export class CustomersService {
         code: true,
         name: true,
         contactNumber: true,
+        _count: {
+          select: { children: true },
+        },
+      },
+      orderBy: { name: 'asc' },
+      take: 50,
+    });
+
+    return { data };
+  }
+
+  async findChildren(parentId: number, search?: string) {
+    const where: any = {
+      parentId: parentId,
+      isActive: true,
+    };
+
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { code: { contains: search, mode: 'insensitive' } },
+        { contactNumber: { contains: search } },
+      ];
+    }
+
+    const data = await this.prisma.customer.findMany({
+      where,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        contactNumber: true,
       },
       orderBy: { name: 'asc' },
       take: 50,

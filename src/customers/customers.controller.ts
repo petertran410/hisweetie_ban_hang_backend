@@ -57,6 +57,16 @@ export class CustomersController {
     return this.customersService.findOne(+id);
   }
 
+  @Get('children/:parentId')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Lấy danh sách tài khoản con theo parentId' })
+  findChildren(
+    @Param('parentId') parentId: string,
+    @Query('search') search?: string,
+  ) {
+    return this.customersService.findChildren(+parentId, search);
+  }
+
   @Post()
   @RequirePermissions('customers:create')
   @ApiOperation({ summary: 'Thêm mới khách hàng' })
