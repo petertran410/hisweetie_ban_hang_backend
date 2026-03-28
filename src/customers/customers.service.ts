@@ -794,28 +794,55 @@ export class CustomersService {
   }
 
   async getDebtTimeline(customerId: number) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, parentId: true },
+    });
+
+    if (!customer) return { data: [] };
+
+    const isParentOrStandalone = !customer.parentId;
+
+    // Nếu là parent/standalone → query tất cả invoice của parent + children qua parentCustomerId
+    // Nếu là child → chỉ query invoice của chính nó
+    const invoiceWhere: any = {
+      status: { not: 5 },
+    };
+
+    if (isParentOrStandalone) {
+      invoiceWhere.parentCustomerId = customerId;
+    } else {
+      invoiceWhere.customerId = customerId;
+    }
+
     const invoices = await this.prisma.invoice.findMany({
-      where: {
-        customerId,
-        status: { not: 5 },
-      },
+      where: invoiceWhere,
       include: {
         branch: { select: { id: true, name: true } },
         soldBy: { select: { id: true, name: true } },
+        customer: { select: { id: true, code: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
 
+    // CashFlow: nếu là parent → query partnerId thuộc parent + tất cả children
+    let cashFlowPartnerIds: number[] = [customerId];
+    if (isParentOrStandalone) {
+      const children = await this.prisma.customer.findMany({
+        where: { parentId: customerId },
+        select: { id: true },
+      });
+      cashFlowPartnerIds = [customerId, ...children.map((c) => c.id)];
+    }
+
     const cashFlows = await this.prisma.cashFlow.findMany({
       where: {
-        partnerId: customerId,
+        partnerId: { in: cashFlowPartnerIds },
         partnerType: 'C',
         isReceipt: true,
         status: { not: 2 },
         code: {
-          not: {
-            startsWith: 'TTTUHD',
-          },
+          not: { startsWith: 'TTTUHD' },
         },
       },
       include: {
@@ -842,6 +869,8 @@ export class CustomersService {
         statusValue: inv.statusValue,
         branch: inv.branch,
         user: inv.soldBy,
+        customerName: inv.customer?.name || null,
+        customerCode: inv.customer?.code || null,
       })),
       ...cashFlows.map((cf) => ({
         type: 'payment' as const,
@@ -859,6 +888,8 @@ export class CustomersService {
         statusValue: cf.statusValue,
         branch: cf.branch,
         user: cf.creator,
+        customerName: cf.partnerName || null,
+        customerCode: null,
       })),
     ].sort(
       (a, b) =>

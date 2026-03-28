@@ -72,6 +72,10 @@ export class InvoicesService {
       where.customerId = { in: customerIds };
     }
 
+    if (query.parentCustomerId) {
+      where.parentCustomerId = query.parentCustomerId;
+    }
+
     if (branchId) {
       where.branchId = branchId;
     }
@@ -159,8 +163,12 @@ export class InvoicesService {
       const customer = dto.customerId
         ? await tx.customer.findUnique({
             where: { id: dto.customerId },
-            select: { totalDebt: true },
+            select: { id: true, parentId: true, totalDebt: true },
           })
+        : null;
+
+      const parentCustomerId = customer
+        ? customer.parentId || customer.id
         : null;
 
       const currentCustomerDebt = Number(customer?.totalDebt || 0);
@@ -200,6 +208,7 @@ export class InvoicesService {
         data: {
           code,
           customerId: dto.customerId,
+          parentCustomerId,
           branchId: dto.branchId,
           soldById: dto.soldById,
           saleChannelId: dto.saleChannelId,
@@ -478,11 +487,23 @@ export class InvoicesService {
             debtAmount
           : null;
 
+        const cancelCustomerId = dto.customerId ?? currentInvoice.customerId;
+        const cancelCustomer = cancelCustomerId
+          ? await tx.customer.findUnique({
+              where: { id: cancelCustomerId },
+              select: { id: true, parentId: true },
+            })
+          : null;
+        const cancelParentCustomerId = cancelCustomer
+          ? cancelCustomer.parentId || cancelCustomer.id
+          : null;
+
         const newInvoice = await tx.invoice.create({
           data: {
             code: newCode,
             orderId: currentInvoice.orderId,
             customerId: dto.customerId ?? currentInvoice.customerId,
+            parentCustomerId: cancelParentCustomerId,
             branchId: dto.branchId ?? currentInvoice.branchId,
             soldById: dto.soldById ?? currentInvoice.soldById,
             saleChannelId: currentInvoice.saleChannelId,
@@ -1027,11 +1048,23 @@ export class InvoicesService {
       const status =
         debtAmount <= 0 ? INVOICE_STATUS.COMPLETED : INVOICE_STATUS.PROCESSING;
 
+      const orderCustomer = order.customerId
+        ? await tx.customer.findUnique({
+            where: { id: order.customerId },
+            select: { id: true, parentId: true },
+          })
+        : null;
+
+      const parentCustomerId = orderCustomer
+        ? orderCustomer.parentId || orderCustomer.id
+        : null;
+
       const invoice = await tx.invoice.create({
         data: {
           code,
           orderId: order.id,
           customerId: order.customerId,
+          parentCustomerId,
           branchId: order.branchId,
           soldById: order.soldById,
           saleChannelId: order.saleChannelId,

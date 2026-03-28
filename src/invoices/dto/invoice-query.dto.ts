@@ -45,6 +45,11 @@ export class InvoiceQueryDto {
   branchId?: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  parentCustomerId?: number;
+
+  @IsOptional()
   @IsArray()
   @Transform(({ value }) =>
     typeof value === 'string' ? value.split(',').map(Number) : value,

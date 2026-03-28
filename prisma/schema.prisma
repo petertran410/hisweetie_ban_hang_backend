@@ -345,9 +345,8 @@ model Customer {
   children             Customer[]            @relation("CustomerParentChild")
   customerGroupDetails CustomerGroupDetail[]
   orders               Order[]
-  invoices             Invoice[]  @relation("InvoiceCustomer")
-  customer       Customer?  @relation("InvoiceCustomer", fields: [customerId], references: [id])
-  parentInvoices       Invoice[]  @relation("InvoiceParentCustomer")
+  invoices             Invoice[]             @relation("InvoiceCustomer")
+  parentInvoices       Invoice[]             @relation("InvoiceParentCustomer")
 
   @@map("customers")
 }
@@ -925,7 +924,7 @@ model Invoice {
   updatedAt            DateTime @updatedAt
 
   order       Order?             @relation(fields: [orderId], references: [id])
-  customer    Customer?          @relation(fields: [customerId], references: [id])
+  customer       Customer?  @relation("InvoiceCustomer", fields: [customerId], references: [id])
   parentCustomer Customer?  @relation("InvoiceParentCustomer", fields: [parentCustomerId], references: [id])
   branch      Branch?            @relation(fields: [branchId], references: [id])
   soldBy      User?              @relation("InvoiceSeller", fields: [soldById], references: [id])

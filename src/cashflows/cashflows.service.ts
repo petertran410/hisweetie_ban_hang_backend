@@ -908,7 +908,11 @@ export class CashFlowsService {
             throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
           }
 
-          if (invoiceData.customerId !== dto.customerId) {
+          const belongsToCustomer =
+            invoiceData.customerId === dto.customerId ||
+            invoiceData.parentCustomerId === dto.customerId;
+
+          if (!belongsToCustomer) {
             throw new Error(
               `Hóa đơn ${invoiceData.code} không thuộc về khách hàng này`,
             );
