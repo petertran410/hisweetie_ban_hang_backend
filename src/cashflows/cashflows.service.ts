@@ -34,15 +34,23 @@ export class CashFlowsService {
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
         const customer = await tx.customer.findUnique({
           where: { id: dto.partnerId },
-          select: { totalDebt: true },
+          select: { id: true, parentId: true, totalDebt: true },
         });
 
         if (customer) {
+          const debtHolderId = customer.parentId || customer.id;
+          const debtHolder = customer.parentId
+            ? await tx.customer.findUnique({
+                where: { id: customer.parentId },
+                select: { totalDebt: true },
+              })
+            : customer;
+
           const debtChange = dto.isReceipt ? -dto.amount : dto.amount;
-          const newTotalDebt = Number(customer.totalDebt) + debtChange;
+          const newTotalDebt = Number(debtHolder?.totalDebt || 0) + debtChange;
 
           await tx.customer.update({
-            where: { id: dto.partnerId },
+            where: { id: debtHolderId },
             data: { totalDebt: newTotalDebt },
           });
 
@@ -65,7 +73,11 @@ export class CashFlowsService {
               );
             }
 
-            if (invoice.customerId !== dto.partnerId) {
+            const belongsToPartner =
+              invoice.customerId === dto.partnerId ||
+              invoice.parentCustomerId === dto.partnerId;
+
+            if (!belongsToPartner) {
               throw new Error(
                 `Hóa đơn ${invoice.code} không thuộc về khách hàng này`,
               );

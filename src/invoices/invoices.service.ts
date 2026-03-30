@@ -171,7 +171,14 @@ export class InvoicesService {
         ? customer.parentId || customer.id
         : null;
 
-      const currentCustomerDebt = Number(customer?.totalDebt || 0);
+      const parentDebtHolder = customer?.parentId
+        ? await tx.customer.findUnique({
+            where: { id: customer.parentId },
+            select: { totalDebt: true },
+          })
+        : customer;
+
+      const currentCustomerDebt = Number(parentDebtHolder?.totalDebt || 0);
       const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
       const applicablePriceBooks = await tx.priceBook.findMany({
@@ -1255,10 +1262,14 @@ export class InvoicesService {
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
 
-        const updatedCustomer = await tx.customer.findUnique({
-          where: { id: order.customerId },
-          select: { totalDebt: true },
-        });
+        const targetDebtCustomerId =
+          orderCustomer?.parentId || order.customerId;
+        const updatedCustomer = targetDebtCustomerId
+          ? await tx.customer.findUnique({
+              where: { id: targetDebtCustomerId },
+              select: { totalDebt: true },
+            })
+          : null;
 
         const finalCustomerDebtSnapshot = updatedCustomer
           ? Number(updatedCustomer.totalDebt)
@@ -1477,6 +1488,27 @@ export class InvoicesService {
     });
 
     return payments;
+  }
+
+  private async getParentCustomerDebt(
+    customerId: number,
+    tx: any,
+  ): Promise<number> {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true, parentId: true, totalDebt: true },
+    });
+    if (!customer) return 0;
+
+    if (customer.parentId) {
+      const parent = await tx.customer.findUnique({
+        where: { id: customer.parentId },
+        select: { totalDebt: true },
+      });
+      return Number(parent?.totalDebt || 0);
+    }
+
+    return Number(customer.totalDebt);
   }
 
   private buildProductChangesLog(

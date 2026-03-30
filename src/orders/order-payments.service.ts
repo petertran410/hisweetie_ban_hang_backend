@@ -80,9 +80,17 @@ export class OrderPaymentsService {
         await this.recalculateCustomerDebt(order.customerId, tx);
       }
 
-      const updatedCustomer = order.customerId
+      const orderCust = order.customerId
         ? await tx.customer.findUnique({
             where: { id: order.customerId },
+            select: { id: true, parentId: true },
+          })
+        : null;
+
+      const debtHolderId = orderCust?.parentId || order.customerId;
+      const updatedCustomer = debtHolderId
+        ? await tx.customer.findUnique({
+            where: { id: debtHolderId },
             select: { totalDebt: true },
           })
         : null;

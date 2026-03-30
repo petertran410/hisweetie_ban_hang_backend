@@ -70,15 +70,23 @@ export class InvoicePaymentsService {
         throw new Error('Hóa đơn chưa có chi nhánh');
       }
 
-      const updatedCustomer = invoice.customerId
+      const invoiceCustomer = invoice.customerId
         ? await tx.customer.findUnique({
             where: { id: invoice.customerId },
+            select: { id: true, parentId: true },
+          })
+        : null;
+
+      const debtHolderId = invoiceCustomer?.parentId || invoice.customerId;
+      const updatedDebtHolder = debtHolderId
+        ? await tx.customer.findUnique({
+            where: { id: debtHolderId },
             select: { totalDebt: true },
           })
         : null;
 
-      const customerDebtSnapshot = updatedCustomer
-        ? Number(updatedCustomer.totalDebt)
+      const customerDebtSnapshot = updatedDebtHolder
+        ? Number(updatedDebtHolder.totalDebt)
         : null;
 
       const cashFlow = await tx.cashFlow.create({
