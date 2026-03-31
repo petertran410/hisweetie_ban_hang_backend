@@ -803,14 +803,26 @@ export class CustomersService {
 
     const isParentOrStandalone = !customer.parentId;
 
-    // Nếu là parent/standalone → query tất cả invoice của parent + children qua parentCustomerId
-    // Nếu là child → chỉ query invoice của chính nó
     const invoiceWhere: any = {
       status: { not: 5 },
     };
 
     if (isParentOrStandalone) {
-      invoiceWhere.parentCustomerId = customerId;
+      // Lấy danh sách tài khoản con
+      const children = await this.prisma.customer.findMany({
+        where: { parentId: customerId },
+        select: { id: true },
+      });
+
+      const allCustomerIds = [customerId, ...children.map((c) => c.id)];
+
+      // Lấy invoice có:
+      // - parentCustomerId = customerId (logic đúng cho data mới)
+      // - HOẶC customerId thuộc parent/children (catch trường hợp parentCustomerId null hoặc sai)
+      invoiceWhere.OR = [
+        { parentCustomerId: customerId },
+        { customerId: { in: allCustomerIds } },
+      ];
     } else {
       invoiceWhere.customerId = customerId;
     }
@@ -825,7 +837,6 @@ export class CustomersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // CashFlow: nếu là parent → query partnerId thuộc parent + tất cả children
     let cashFlowPartnerIds: number[] = [customerId];
     if (isParentOrStandalone) {
       const children = await this.prisma.customer.findMany({
