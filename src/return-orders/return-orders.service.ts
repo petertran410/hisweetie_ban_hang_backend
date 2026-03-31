@@ -491,6 +491,7 @@ export class ReturnOrdersService {
             amount: refundAmount,
             transDate: new Date(),
             method: dto.method || 'cash',
+            cashFlowGroupId: 5,
             accountId: dto.accountId || null,
             partnerType: 'C',
             partnerId: returnOrder.customerId,
