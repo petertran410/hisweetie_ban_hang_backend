@@ -947,6 +947,7 @@ model Invoice {
   packingHangs       PackingHangInvoice[]
   packingLoadings    PackingLoadingInvoice[]
   returnOrders    ReturnOrder[]
+  returnOrderDetails ReturnOrderDetail[]
 
   @@map("invoices")
 }
@@ -1667,7 +1668,7 @@ model AuditLog {
 model ReturnOrder {
   id                  Int       @id @default(autoincrement())
   code                String    @unique
-  invoiceId           Int
+  invoiceId           Int?
   customerId          Int?
   parentCustomerId    Int?
   branchId            Int
@@ -1691,7 +1692,7 @@ model ReturnOrder {
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
-  invoice          Invoice           @relation(fields: [invoiceId], references: [id])
+  invoice          Invoice?          @relation(fields: [invoiceId], references: [id])
   customer         Customer?         @relation("ReturnOrderCustomer", fields: [customerId], references: [id])
   parentCustomer   Customer?         @relation("ReturnOrderParentCustomer", fields: [parentCustomerId], references: [id])
   branch           Branch            @relation(fields: [branchId], references: [id])
@@ -1711,6 +1712,8 @@ model ReturnOrder {
 model ReturnOrderDetail {
   id              Int      @id @default(autoincrement())
   returnOrderId   Int
+  invoiceId       Int
+  invoiceCode     String
   productId       Int
   productCode     String
   productName     String
@@ -1725,6 +1728,7 @@ model ReturnOrderDetail {
   updatedAt       DateTime @updatedAt
 
   returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
+  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
   product     Product     @relation(fields: [productId], references: [id])
 
   @@map("return_order_details")

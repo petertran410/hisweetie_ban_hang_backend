@@ -2,7 +2,6 @@ import { Type } from 'class-transformer';
 import {
   IsArray,
   IsInt,
-  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -11,6 +10,12 @@ import {
 } from 'class-validator';
 
 export class ReturnOrderDetailDto {
+  @IsInt()
+  invoiceId: number;
+
+  @IsString()
+  invoiceCode: string;
+
   @IsInt()
   productId: number;
 
@@ -40,11 +45,15 @@ export class ReturnOrderDetailDto {
 }
 
 export class CreateReturnOrderDto {
-  @IsInt()
-  invoiceId: number;
+  @IsArray()
+  invoiceIds: number[];
 
   @IsInt()
   branchId: number;
+
+  @IsOptional()
+  @IsInt()
+  customerId?: number;
 
   @IsString()
   @IsOptional()

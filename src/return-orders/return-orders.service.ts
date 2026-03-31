@@ -92,6 +92,9 @@ export class ReturnOrdersService {
               product: {
                 select: { id: true, code: true, name: true },
               },
+              invoice: {
+                select: { id: true, code: true },
+              },
             },
           },
         },
@@ -141,50 +144,65 @@ export class ReturnOrdersService {
 
   async create(dto: CreateReturnOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const invoice = await tx.invoice.findUnique({
-        where: { id: dto.invoiceId },
+      const invoices = await tx.invoice.findMany({
+        where: { id: { in: dto.invoiceIds } },
         include: {
           details: true,
           customer: { select: { id: true, parentId: true, name: true } },
         },
       });
 
-      if (!invoice) {
+      if (invoices.length === 0) {
         throw new NotFoundException('Không tìm thấy hóa đơn');
       }
 
+      const invoiceMap = new Map(invoices.map((inv) => [inv.id, inv]));
+
       const existingReturns = await tx.returnOrder.findMany({
         where: {
-          invoiceId: dto.invoiceId,
           status: { notIn: [RETURN_ORDER_STATUS.CANCELLED] },
+          details: {
+            some: {
+              invoiceId: { in: dto.invoiceIds },
+            },
+          },
         },
         include: { details: true },
       });
 
-      const returnedQuantities: Record<number, number> = {};
+      const returnedQuantities: Record<string, number> = {};
       existingReturns.forEach((ro) => {
         ro.details.forEach((d) => {
-          returnedQuantities[d.productId] =
-            (returnedQuantities[d.productId] || 0) + Number(d.requestQuantity);
+          const key = `${d.invoiceId}-${d.productId}`;
+          returnedQuantities[key] =
+            (returnedQuantities[key] || 0) + Number(d.requestQuantity);
         });
       });
 
       for (const detail of dto.details) {
+        const invoice = invoiceMap.get(detail.invoiceId);
+        if (!invoice) {
+          throw new BadRequestException(
+            `Hóa đơn ${detail.invoiceCode} không tồn tại`,
+          );
+        }
+
         const invoiceDetail = invoice.details.find(
           (d) => d.productId === detail.productId,
         );
         if (!invoiceDetail) {
           throw new BadRequestException(
-            `Sản phẩm ${detail.productCode} không có trong hóa đơn`,
+            `Sản phẩm ${detail.productCode} không có trong hóa đơn ${detail.invoiceCode}`,
           );
         }
 
-        const alreadyReturned = returnedQuantities[detail.productId] || 0;
+        const key = `${detail.invoiceId}-${detail.productId}`;
+        const alreadyReturned = returnedQuantities[key] || 0;
         const maxReturnable = Number(invoiceDetail.quantity) - alreadyReturned;
 
         if (detail.requestQuantity > maxReturnable) {
           throw new BadRequestException(
-            `Sản phẩm ${detail.productName}: Số lượng trả (${detail.requestQuantity}) vượt quá số lượng còn lại (${maxReturnable})`,
+            `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${detail.requestQuantity}) vượt quá còn lại (${maxReturnable})`,
           );
         }
       }
@@ -195,12 +213,18 @@ export class ReturnOrdersService {
         select: { id: true, name: true, email: true },
       });
 
+      const firstInvoice = invoices[0];
+      const customerId = dto.customerId || firstInvoice.customerId;
+      const parentCustomerId = firstInvoice.customer?.parentId || null;
+
       const detailsData = dto.details.map((d) => {
         const returnPrice =
           d.returnPrice !== undefined && d.returnPrice !== null
             ? d.returnPrice
             : d.invoicePrice;
         return {
+          invoiceId: d.invoiceId,
+          invoiceCode: d.invoiceCode,
           productId: d.productId,
           productCode: d.productCode,
           productName: d.productName,
@@ -222,9 +246,9 @@ export class ReturnOrdersService {
       const returnOrder = await tx.returnOrder.create({
         data: {
           code,
-          invoiceId: dto.invoiceId,
-          customerId: invoice.customerId,
-          parentCustomerId: invoice.customer?.parentId || null,
+          invoiceId: dto.invoiceIds.length === 1 ? dto.invoiceIds[0] : null,
+          customerId,
+          parentCustomerId,
           branchId: dto.branchId,
           status: RETURN_ORDER_STATUS.REQUEST,
           statusValue: RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.REQUEST],
@@ -247,6 +271,8 @@ export class ReturnOrdersService {
         },
       });
 
+      const invoiceCodes = invoices.map((inv) => inv.code).join(', ');
+
       await this.auditLogsService.create({
         actionType: 'POST',
         actionCode: 'RETURN_ORDER_CREATE',
@@ -257,20 +283,13 @@ export class ReturnOrdersService {
         severity: 'info',
         snapshot: {
           code: returnOrder.code,
-          invoiceCode: returnOrder.invoice.code,
+          invoiceCodes,
           customerName: returnOrder.customer?.name || 'N/A',
           branchName: returnOrder.branch.name,
           totalReturnAmount: Number(returnOrder.totalReturnAmount),
           status: returnOrder.statusValue,
-          details: detailsData.map((d) => ({
-            productCode: d.productCode,
-            productName: d.productName,
-            requestQuantity: d.requestQuantity,
-            returnPrice: d.returnPrice,
-            totalAmount: d.totalAmount,
-          })),
         },
-        message: `Tạo phiếu trả hàng ${returnOrder.code} từ hóa đơn ${returnOrder.invoice.code}`,
+        message: `Tạo phiếu trả hàng ${returnOrder.code} từ hóa đơn ${invoiceCodes}`,
         messageTemplate: 'RETURN_ORDER_CREATE',
         userId,
         userName: user?.name || 'System',
