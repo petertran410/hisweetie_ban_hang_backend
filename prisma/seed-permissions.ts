@@ -824,6 +824,48 @@ const permissionsData: PermissionData[] = [
     description: 'Xóa tài khoản ngân hàng',
     category: 'Quản trị',
   },
+  {
+    name: 'return_orders:view',
+    resource: 'return_orders',
+    action: 'view',
+    description: 'Xem trả hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'return_orders:create',
+    resource: 'return_orders',
+    action: 'create',
+    description: 'Tạo trả hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'return_orders:update',
+    resource: 'return_orders',
+    action: 'update',
+    description: 'Cập nhật trả hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'return_orders:delete',
+    resource: 'return_orders',
+    action: 'delete',
+    description: 'Hủy trả hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'return_orders_price:view',
+    resource: 'return_orders_price',
+    action: 'view',
+    description: 'Xem giá nhập lại trả hàng',
+    category: 'Quản trị',
+  },
+  {
+    name: 'return_orders_total_prices:view',
+    resource: 'return_orders_total_prices',
+    action: 'view',
+    description: 'Xem tổng tiền hàng trả hàng',
+    category: 'Quản trị',
+  },
 ];
 
 async function seedPermissions() {

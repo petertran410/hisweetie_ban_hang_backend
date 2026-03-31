@@ -53,6 +53,7 @@ import { AllPackingModule } from './all-packing/all-packing.module';
 import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { PrintTemplatesModule } from './print-templates/print-templates.module';
 import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
+import { ReturnOrdersModule } from './return-orders/return-orders.module';
 
 @Module({
   imports: [
@@ -106,6 +107,7 @@ import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
     PackingLoadingsModule,
     AllPackingModule,
     BankAccountsModule,
+    ReturnOrdersModule,
   ],
   providers: [
     {

@@ -52,6 +52,10 @@ model User {
   createdPrintTemplates PrintTemplate[] @relation("PrintTemplateCreator")
   auditLogs             AuditLog[]      @relation("AuditLogUser")
   branchPermissions UserBranchPermission[]
+  createdReturnOrders    ReturnOrder[] @relation("ReturnOrderCreator")
+  receivedReturnOrders   ReturnOrder[] @relation("ReturnOrderReceiver")
+  confirmedReturnOrders  ReturnOrder[] @relation("ReturnOrderConfirmer")
+  refundConfirmedReturnOrders ReturnOrder[] @relation("ReturnOrderRefundConfirmer")
 
   @@map("users")
 }
@@ -227,6 +231,7 @@ model Branch {
   packingLoadings            PackingLoading[]
   auditLogs AuditLog[] @relation("AuditLogBranch")
   userBranchPermissions UserBranchPermission[]
+  returnOrders    ReturnOrder[]
 
   @@map("branches")
 }
@@ -347,6 +352,8 @@ model Customer {
   orders               Order[]
   invoices             Invoice[]             @relation("InvoiceCustomer")
   parentInvoices       Invoice[]             @relation("InvoiceParentCustomer")
+  returnOrders         ReturnOrder[]  @relation("ReturnOrderCustomer")
+  parentReturnOrders   ReturnOrder[]  @relation("ReturnOrderParentCustomer")
 
   @@map("customers")
 }
@@ -506,6 +513,7 @@ model Product {
   productions Production[]
   destructionDetails DestructionDetail[]
   orderSupplierItems OrderSupplierItem[]
+  returnOrderDetails  ReturnOrderDetail[]
 
   @@map("products")
 }
@@ -938,6 +946,7 @@ model Invoice {
   packingSlips PackingSlipInvoice[]
   packingHangs       PackingHangInvoice[]
   packingLoadings    PackingLoadingInvoice[]
+  returnOrders    ReturnOrder[]
 
   @@map("invoices")
 }
@@ -1653,4 +1662,70 @@ model AuditLog {
   @@index([category])
   @@index([severity])
   @@map("audit_logs")
+}
+
+model ReturnOrder {
+  id                  Int       @id @default(autoincrement())
+  code                String    @unique
+  invoiceId           Int
+  customerId          Int?
+  parentCustomerId    Int?
+  branchId            Int
+  status              Int       @default(1)
+  statusValue         String?
+  totalReturnAmount   Decimal   @default(0)
+  refundAmount        Decimal   @default(0)
+  refundedAmount      Decimal   @default(0)
+  note                String?
+  receivedById        Int?
+  receivedByName      String?
+  createdBy           Int
+  createdByName       String?
+  confirmedBy         Int?
+  confirmedByName     String?
+  confirmedAt         DateTime?
+  refundConfirmedBy   Int?
+  refundConfirmedByName String?
+  refundConfirmedAt   DateTime?
+  customerDebtSnapshot Decimal? @db.Decimal(15, 2)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  invoice          Invoice           @relation(fields: [invoiceId], references: [id])
+  customer         Customer?         @relation("ReturnOrderCustomer", fields: [customerId], references: [id])
+  parentCustomer   Customer?         @relation("ReturnOrderParentCustomer", fields: [parentCustomerId], references: [id])
+  branch           Branch            @relation(fields: [branchId], references: [id])
+  creator          User              @relation("ReturnOrderCreator", fields: [createdBy], references: [id])
+  receivedBy       User?             @relation("ReturnOrderReceiver", fields: [receivedById], references: [id])
+  confirmedByUser  User?             @relation("ReturnOrderConfirmer", fields: [confirmedBy], references: [id])
+  refundConfirmedByUser User?        @relation("ReturnOrderRefundConfirmer", fields: [refundConfirmedBy], references: [id])
+  details          ReturnOrderDetail[]
+
+  @@index([invoiceId])
+  @@index([customerId])
+  @@index([branchId])
+  @@index([status])
+  @@map("return_orders")
+}
+
+model ReturnOrderDetail {
+  id              Int      @id @default(autoincrement())
+  returnOrderId   Int
+  productId       Int
+  productCode     String
+  productName     String
+  invoiceQuantity Decimal
+  invoicePrice    Decimal
+  requestQuantity Decimal
+  confirmedQuantity Decimal @default(0)
+  returnPrice     Decimal
+  totalAmount     Decimal
+  note            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id])
+
+  @@map("return_order_details")
 }
