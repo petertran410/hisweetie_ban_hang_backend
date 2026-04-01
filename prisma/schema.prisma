@@ -1676,6 +1676,7 @@ model ReturnOrder {
   statusValue         String?
   totalReturnAmount   Decimal   @default(0)
   refundAmount        Decimal   @default(0)
+  refundType          String?
   refundedAmount      Decimal   @default(0)
   note                String?
   receivedById        Int?

@@ -907,6 +907,45 @@ export class CustomersService {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
+    const returnOrders = await this.prisma.returnOrder.findMany({
+      where: {
+        customerId: { in: allCustomerIds },
+        status: 4,
+        refundType: 'debt_offset',
+      },
+      select: {
+        id: true,
+        code: true,
+        refundAmount: true,
+        customerDebtSnapshot: true,
+        refundConfirmedAt: true,
+        branchId: true,
+        customerId: true,
+        branch: { select: { id: true, name: true } },
+        customer: { select: { id: true, code: true, name: true } },
+      },
+      orderBy: { refundConfirmedAt: 'desc' },
+    });
+
+    for (const ro of returnOrders) {
+      timeline.push({
+        type: 'debt_offset',
+        id: ro.id,
+        code: ro.code,
+        date: ro.refundConfirmedAt,
+        amount: Number(ro.refundAmount),
+        debtSnapshot: ro.customerDebtSnapshot
+          ? Number(ro.customerDebtSnapshot)
+          : null,
+        status: 4,
+        statusValue: 'Cấn trừ công nợ',
+        branch: ro.branch,
+        customerId: ro.customerId,
+        customerName: ro.customer?.name,
+        customerCode: ro.customer?.code,
+      });
+    }
+
     return { data: timeline };
   }
 

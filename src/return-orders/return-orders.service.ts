@@ -57,6 +57,7 @@ export class ReturnOrdersService {
     if (query.customerId) where.customerId = query.customerId;
     if (query.createdBy) where.createdBy = query.createdBy;
     if (query.invoiceId) where.invoiceId = query.invoiceId;
+    if (query.refundType) where.refundType = query.refundType;
 
     if (query.fromDate || query.toDate) {
       where.createdAt = {};
@@ -464,6 +465,7 @@ export class ReturnOrdersService {
       });
 
       const refundAmount = Number(returnOrder.refundAmount);
+      const refundType = dto.refundType || 'cash_refund';
 
       if (returnOrder.customerId && refundAmount > 0) {
         const debtHolderId =
@@ -481,45 +483,45 @@ export class ReturnOrdersService {
           data: { totalDebt: newDebt },
         });
 
-        const invoiceIds = [
-          ...new Set(returnOrder.details.map((d) => d.invoiceId)),
-        ];
+        let actualCashRefund = 0;
 
-        const invoices = await tx.invoice.findMany({
-          where: { id: { in: invoiceIds } },
-          select: { id: true, paidAmount: true, debtAmount: true },
-        });
-
-        const totalPaidFromInvoices = invoices.reduce(
-          (sum, inv) => sum + Number(inv.paidAmount),
-          0,
-        );
-
-        const actualCashRefund = Math.min(refundAmount, totalPaidFromInvoices);
-
-        if (actualCashRefund > 0) {
-          const cashFlowCode = `CHI-TH-${returnOrder.code}`;
-
-          await tx.cashFlow.create({
-            data: {
-              code: cashFlowCode,
-              branchId: returnOrder.branchId,
-              isReceipt: false,
-              amount: actualCashRefund,
-              transDate: new Date(),
-              method: dto.method || 'cash',
-              accountId: dto.accountId || null,
-              partnerType: 'C',
-              partnerId: returnOrder.customerId,
-              partnerName: returnOrder.customer?.name,
-              description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
-              status: 0,
-              statusValue: 'Đã chi',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-              customerDebtSnapshot: newDebt,
-            },
+        if (refundType === 'cash_refund') {
+          const invoiceIds = [
+            ...new Set(returnOrder.details.map((d) => d.invoiceId)),
+          ];
+          const invoices = await tx.invoice.findMany({
+            where: { id: { in: invoiceIds } },
+            select: { id: true, paidAmount: true },
           });
+          const totalPaid = invoices.reduce(
+            (sum, inv) => sum + Number(inv.paidAmount),
+            0,
+          );
+          actualCashRefund = Math.min(refundAmount, totalPaid);
+
+          if (actualCashRefund > 0) {
+            const cashFlowCode = `CHI-TH-${returnOrder.code}`;
+            await tx.cashFlow.create({
+              data: {
+                code: cashFlowCode,
+                branchId: returnOrder.branchId,
+                isReceipt: false,
+                amount: actualCashRefund,
+                transDate: new Date(),
+                method: dto.method || 'cash',
+                accountId: dto.accountId || null,
+                partnerType: 'C',
+                partnerId: returnOrder.customerId,
+                partnerName: returnOrder.customer?.name,
+                description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
+                status: 0,
+                statusValue: 'Đã chi',
+                createdBy: userId,
+                usedForFinancialReporting: 1,
+                customerDebtSnapshot: newDebt,
+              },
+            });
+          }
         }
 
         await tx.returnOrder.update({
@@ -529,6 +531,7 @@ export class ReturnOrdersService {
             statusValue:
               RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.COMPLETED],
             refundedAmount: actualCashRefund,
+            refundType,
             refundConfirmedBy: userId,
             refundConfirmedByName: user?.name || 'System',
             refundConfirmedAt: new Date(),
@@ -544,6 +547,7 @@ export class ReturnOrdersService {
             statusValue:
               RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.COMPLETED],
             refundedAmount: 0,
+            refundType: 'debt_offset',
             refundConfirmedBy: userId,
             refundConfirmedByName: user?.name || 'System',
             refundConfirmedAt: new Date(),
@@ -563,9 +567,10 @@ export class ReturnOrdersService {
         snapshot: {
           code: returnOrder.code,
           refundAmount,
+          refundType,
           customerName: returnOrder.customer?.name || 'N/A',
         },
-        message: `Xác nhận hoàn tiền trả hàng ${returnOrder.code}`,
+        message: `${refundType === 'debt_offset' ? 'Cấn trừ công nợ' : 'Xác nhận hoàn tiền'} trả hàng ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_REFUND_CONFIRMED',
         userId,
         userName: user?.name || 'System',

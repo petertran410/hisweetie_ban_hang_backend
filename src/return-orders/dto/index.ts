@@ -97,6 +97,10 @@ export class ConfirmRefundDto {
   @IsInt()
   @IsOptional()
   accountId?: number;
+
+  @IsString()
+  @IsOptional()
+  refundType?: string;
 }
 
 export class ReturnOrderQueryDto {
@@ -146,6 +150,10 @@ export class ReturnOrderQueryDto {
   @Type(() => Number)
   @IsInt()
   invoiceId?: number;
+
+  @IsOptional()
+  @IsString()
+  refundType?: string;
 }
 
 export const RETURN_ORDER_STATUS = {
