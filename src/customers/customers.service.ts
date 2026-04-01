@@ -907,9 +907,13 @@ export class CustomersService {
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
 
+    const returnOrderCustomerIds = isParentOrStandalone
+      ? [customerId, ...cashFlowPartnerIds]
+      : [customerId];
+
     const returnOrders = await this.prisma.returnOrder.findMany({
       where: {
-        customerId: { in: allCustomerIds },
+        customerId: { in: returnOrderCustomerIds },
         status: 4,
         refundType: 'debt_offset',
       },
@@ -919,6 +923,7 @@ export class CustomersService {
         refundAmount: true,
         customerDebtSnapshot: true,
         refundConfirmedAt: true,
+        createdAt: true,
         branchId: true,
         customerId: true,
         branch: { select: { id: true, name: true } },
@@ -928,21 +933,24 @@ export class CustomersService {
     });
 
     for (const ro of returnOrders) {
-      timeline.push({
+      (timeline as any[]).push({
         type: 'debt_offset',
         id: ro.id,
         code: ro.code,
-        date: ro.refundConfirmedAt,
+        date: ro.refundConfirmedAt || ro.createdAt,
+        createdAt: ro.createdAt,
         amount: Number(ro.refundAmount),
+        method: null,
+        description: `Cấn trừ công nợ từ trả hàng ${ro.code}`,
         debtSnapshot: ro.customerDebtSnapshot
           ? Number(ro.customerDebtSnapshot)
           : null,
         status: 4,
         statusValue: 'Cấn trừ công nợ',
         branch: ro.branch,
-        customerId: ro.customerId,
-        customerName: ro.customer?.name,
-        customerCode: ro.customer?.code,
+        user: null,
+        customerName: ro.customer?.name || null,
+        customerCode: ro.customer?.code || null,
       });
     }
 
