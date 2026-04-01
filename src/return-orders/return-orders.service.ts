@@ -309,7 +309,13 @@ export class ReturnOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
-        include: { details: true, invoice: { include: { details: true } } },
+        include: {
+          details: true,
+          invoice: { include: { details: true } },
+          customer: {
+            select: { id: true, parentId: true, name: true, totalDebt: true },
+          },
+        },
       });
 
       if (!returnOrder) {
@@ -391,6 +397,27 @@ export class ReturnOrdersService {
         0,
       );
 
+      let customerDebtSnapshot: number | null = null;
+
+      if (returnOrder.customerId && refundAmount > 0) {
+        const debtHolderId =
+          returnOrder.customer?.parentId || returnOrder.customerId;
+
+        const debtHolder = await tx.customer.findUnique({
+          where: { id: debtHolderId },
+          select: { totalDebt: true },
+        });
+
+        const newDebt = Number(debtHolder?.totalDebt || 0) - refundAmount;
+
+        await tx.customer.update({
+          where: { id: debtHolderId },
+          data: { totalDebt: newDebt },
+        });
+
+        customerDebtSnapshot = newDebt;
+      }
+
       await tx.returnOrder.update({
         where: { id },
         data: {
@@ -402,6 +429,7 @@ export class ReturnOrdersService {
           confirmedBy: userId,
           confirmedByName: user?.name || 'System',
           confirmedAt: new Date(),
+          customerDebtSnapshot,
           note: dto.note || returnOrder.note,
         },
       });
@@ -417,6 +445,7 @@ export class ReturnOrdersService {
         snapshot: {
           code: returnOrder.code,
           refundAmount,
+          customerDebtSnapshot,
           details: updatedDetails.map((d) => ({
             productCode: d.productCode,
             productName: d.productName,
@@ -425,7 +454,7 @@ export class ReturnOrdersService {
             returnPrice: Number(d.returnPrice),
           })),
         },
-        message: `Xác nhận nhập hàng trả ${returnOrder.code}`,
+        message: `Xác nhận nhập hàng trả ${returnOrder.code} - Giảm công nợ ${refundAmount}`,
         messageTemplate: 'RETURN_ORDER_STOCK_RECEIVED',
         userId,
         userName: user?.name || 'System',
@@ -467,94 +496,79 @@ export class ReturnOrdersService {
       const refundAmount = Number(returnOrder.refundAmount);
       const refundType = dto.refundType || 'cash_refund';
 
-      if (returnOrder.customerId && refundAmount > 0) {
-        const debtHolderId =
-          returnOrder.customer?.parentId || returnOrder.customerId;
+      let actualCashRefund = 0;
+      let finalDebtSnapshot = returnOrder.customerDebtSnapshot
+        ? Number(returnOrder.customerDebtSnapshot)
+        : null;
 
-        const debtHolder = await tx.customer.findUnique({
-          where: { id: debtHolderId },
-          select: { totalDebt: true },
+      if (
+        refundType === 'cash_refund' &&
+        returnOrder.customerId &&
+        refundAmount > 0
+      ) {
+        const invoiceIds = [
+          ...new Set(returnOrder.details.map((d) => d.invoiceId)),
+        ];
+        const invoices = await tx.invoice.findMany({
+          where: { id: { in: invoiceIds } },
+          select: { id: true, paidAmount: true },
         });
+        const totalPaid = invoices.reduce(
+          (sum, inv) => sum + Number(inv.paidAmount),
+          0,
+        );
+        actualCashRefund = Math.min(refundAmount, totalPaid);
 
-        const newDebt = Number(debtHolder?.totalDebt || 0) - refundAmount;
+        if (actualCashRefund > 0) {
+          const debtHolderId =
+            returnOrder.customer?.parentId || returnOrder.customerId;
 
-        await tx.customer.update({
-          where: { id: debtHolderId },
-          data: { totalDebt: newDebt },
-        });
-
-        let actualCashRefund = 0;
-
-        if (refundType === 'cash_refund') {
-          const invoiceIds = [
-            ...new Set(returnOrder.details.map((d) => d.invoiceId)),
-          ];
-          const invoices = await tx.invoice.findMany({
-            where: { id: { in: invoiceIds } },
-            select: { id: true, paidAmount: true },
+          const debtHolder = await tx.customer.findUnique({
+            where: { id: debtHolderId },
+            select: { totalDebt: true },
           });
-          const totalPaid = invoices.reduce(
-            (sum, inv) => sum + Number(inv.paidAmount),
-            0,
-          );
-          actualCashRefund = Math.min(refundAmount, totalPaid);
 
-          if (actualCashRefund > 0) {
-            const cashFlowCode = `CHI-TH-${returnOrder.code}`;
-            await tx.cashFlow.create({
-              data: {
-                code: cashFlowCode,
-                branchId: returnOrder.branchId,
-                isReceipt: false,
-                amount: actualCashRefund,
-                transDate: new Date(),
-                method: dto.method || 'cash',
-                accountId: dto.accountId || null,
-                partnerType: 'C',
-                partnerId: returnOrder.customerId,
-                partnerName: returnOrder.customer?.name,
-                description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
-                status: 0,
-                statusValue: 'Đã chi',
-                createdBy: userId,
-                usedForFinancialReporting: 1,
-                customerDebtSnapshot: newDebt,
-              },
-            });
-          }
+          finalDebtSnapshot = Number(debtHolder?.totalDebt || 0);
+
+          const cashFlowCode = `CHI-TH-${returnOrder.code}`;
+          await tx.cashFlow.create({
+            data: {
+              code: cashFlowCode,
+              branchId: returnOrder.branchId,
+              isReceipt: false,
+              amount: actualCashRefund,
+              transDate: new Date(),
+              method: dto.method || 'cash',
+              accountId: dto.accountId || null,
+              partnerType: 'C',
+              partnerId: returnOrder.customerId,
+              partnerName: returnOrder.customer?.name,
+              description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
+              status: 0,
+              statusValue: 'Đã chi',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+              customerDebtSnapshot: finalDebtSnapshot,
+            },
+          });
         }
-
-        await tx.returnOrder.update({
-          where: { id },
-          data: {
-            status: RETURN_ORDER_STATUS.COMPLETED,
-            statusValue:
-              RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.COMPLETED],
-            refundedAmount: actualCashRefund,
-            refundType,
-            refundConfirmedBy: userId,
-            refundConfirmedByName: user?.name || 'System',
-            refundConfirmedAt: new Date(),
-            customerDebtSnapshot: newDebt,
-            note: dto.note || returnOrder.note,
-          },
-        });
-      } else {
-        await tx.returnOrder.update({
-          where: { id },
-          data: {
-            status: RETURN_ORDER_STATUS.COMPLETED,
-            statusValue:
-              RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.COMPLETED],
-            refundedAmount: 0,
-            refundType: 'debt_offset',
-            refundConfirmedBy: userId,
-            refundConfirmedByName: user?.name || 'System',
-            refundConfirmedAt: new Date(),
-            note: dto.note || returnOrder.note,
-          },
-        });
       }
+
+      await tx.returnOrder.update({
+        where: { id },
+        data: {
+          status: RETURN_ORDER_STATUS.COMPLETED,
+          statusValue:
+            RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.COMPLETED],
+          refundedAmount: actualCashRefund,
+          refundType,
+          refundConfirmedBy: userId,
+          refundConfirmedByName: user?.name || 'System',
+          refundConfirmedAt: new Date(),
+          customerDebtSnapshot: finalDebtSnapshot,
+          note: dto.note || returnOrder.note,
+        },
+      });
 
       await this.auditLogsService.create({
         actionType: 'PUT',
@@ -568,6 +582,7 @@ export class ReturnOrdersService {
           code: returnOrder.code,
           refundAmount,
           refundType,
+          actualCashRefund,
           customerName: returnOrder.customer?.name || 'N/A',
         },
         message: `${refundType === 'debt_offset' ? 'Cấn trừ công nợ' : 'Xác nhận hoàn tiền'} trả hàng ${returnOrder.code}`,
@@ -585,7 +600,12 @@ export class ReturnOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
-        include: { details: true },
+        include: {
+          details: true,
+          customer: {
+            select: { id: true, parentId: true, totalDebt: true },
+          },
+        },
       });
 
       if (!returnOrder) {
@@ -619,6 +639,21 @@ export class ReturnOrdersService {
               },
             });
           }
+        }
+
+        const refundAmount = Number(returnOrder.refundAmount);
+        if (returnOrder.customerId && refundAmount > 0) {
+          const debtHolderId =
+            returnOrder.customer?.parentId || returnOrder.customerId;
+
+          await tx.customer.update({
+            where: { id: debtHolderId },
+            data: {
+              totalDebt: {
+                increment: refundAmount,
+              },
+            },
+          });
         }
       }
 
