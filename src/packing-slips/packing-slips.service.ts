@@ -11,6 +11,7 @@ import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
+import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 
 @Injectable()
 export class PackingSlipsService {
@@ -173,6 +174,19 @@ export class PackingSlipsService {
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { name: true, email: true },
+      });
+
+      await tx.invoice.updateMany({
+        where: {
+          id: { in: dto.invoiceIds },
+          status: {
+            notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+          },
+        },
+        data: {
+          status: INVOICE_STATUS.DELIVERED,
+          statusValue: getStatusLabel(INVOICE_STATUS.DELIVERED),
+        },
       });
 
       await this.auditLogsService.create({

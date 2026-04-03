@@ -1498,7 +1498,15 @@ export class InvoicesService {
     const { search, branchId, limit = 20 } = query;
 
     const where: any = {
-      status: { in: [1, 3] },
+      status: {
+        in: [
+          INVOICE_STATUS.COMPLETED,
+          INVOICE_STATUS.PROCESSING,
+          INVOICE_STATUS.PACKED,
+          INVOICE_STATUS.LOADING,
+          INVOICE_STATUS.DELIVERED,
+        ],
+      },
     };
 
     if (branchId) {

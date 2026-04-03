@@ -205,9 +205,21 @@ export class InvoicePaymentsService {
     if (!invoice) return;
 
     const debtAmount = Number(invoice.grandTotal) - paidAmount;
-    let status: number = INVOICE_STATUS.PROCESSING;
+    const currentStatus = invoice.status;
+
+    let newStatus = currentStatus;
+
     if (debtAmount <= 0) {
-      status = INVOICE_STATUS.COMPLETED;
+      if (
+        currentStatus === INVOICE_STATUS.PROCESSING ||
+        currentStatus === INVOICE_STATUS.DELIVERED
+      ) {
+        newStatus = INVOICE_STATUS.COMPLETED;
+      }
+    } else {
+      if (currentStatus === INVOICE_STATUS.COMPLETED) {
+        newStatus = INVOICE_STATUS.PROCESSING;
+      }
     }
 
     await tx.invoice.update({
@@ -215,8 +227,8 @@ export class InvoicePaymentsService {
       data: {
         paidAmount,
         debtAmount,
-        status,
-        statusValue: getStatusLabel(status),
+        status: newStatus,
+        statusValue: getStatusLabel(newStatus),
       },
     });
   }

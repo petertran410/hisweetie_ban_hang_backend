@@ -18,6 +18,7 @@ import {
   RETURN_ORDER_STATUS,
   RETURN_ORDER_STATUS_LABELS,
 } from './dto';
+import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 
 @Injectable()
 export class ReturnOrdersService {
@@ -273,6 +274,17 @@ export class ReturnOrdersService {
       });
 
       const invoiceCodes = invoices.map((inv) => inv.code).join(', ');
+
+      await tx.invoice.updateMany({
+        where: {
+          id: { in: dto.invoiceIds },
+          status: { notIn: [INVOICE_STATUS.CANCELLED] },
+        },
+        data: {
+          status: INVOICE_STATUS.RETURNED,
+          statusValue: INVOICE_STATUS_LABELS[INVOICE_STATUS.RETURNED],
+        },
+      });
 
       await this.auditLogsService.create({
         actionType: 'POST',
