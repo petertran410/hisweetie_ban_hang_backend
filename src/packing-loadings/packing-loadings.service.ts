@@ -142,6 +142,7 @@ export class PackingLoadingsService {
         select: {
           id: true,
           branchId: true,
+          orderId: true,
         },
       });
 
@@ -211,6 +212,28 @@ export class PackingLoadingsService {
           statusValue: getStatusLabel(INVOICE_STATUS.LOADING),
         },
       });
+
+      const orderIds = [
+        ...new Set(
+          invoices
+            .map((inv) => inv.orderId)
+            .filter((id): id is number => id !== null && id !== undefined),
+        ),
+      ];
+
+      if (orderIds.length > 0) {
+        await tx.order.updateMany({
+          where: {
+            id: { in: orderIds },
+            status: { notIn: [4] },
+          },
+          data: {
+            status: 2,
+            statusValue: 'Đang giao hàng',
+            orderStatus: 'processing',
+          },
+        });
+      }
 
       await this.auditLogsService.create({
         actionType: 'POST',
