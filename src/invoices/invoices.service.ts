@@ -1490,25 +1490,73 @@ export class InvoicesService {
     return payments;
   }
 
-  private async getParentCustomerDebt(
-    customerId: number,
-    tx: any,
-  ): Promise<number> {
-    const customer = await tx.customer.findUnique({
-      where: { id: customerId },
-      select: { id: true, parentId: true, totalDebt: true },
-    });
-    if (!customer) return 0;
+  async findForReturnOrder(query: {
+    search?: string;
+    branchId?: number;
+    limit?: number;
+  }) {
+    const { search, branchId, limit = 20 } = query;
 
-    if (customer.parentId) {
-      const parent = await tx.customer.findUnique({
-        where: { id: customer.parentId },
-        select: { totalDebt: true },
-      });
-      return Number(parent?.totalDebt || 0);
+    const where: any = {
+      status: { in: [1, 3] },
+    };
+
+    if (branchId) {
+      where.branchId = branchId;
     }
 
-    return Number(customer.totalDebt);
+    if (search) {
+      where.OR = [
+        { code: { contains: search } },
+        { customer: { name: { contains: search } } },
+      ];
+    }
+
+    const invoices = await this.prisma.invoice.findMany({
+      where,
+      include: {
+        details: true,
+        customer: { select: { id: true, name: true, code: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    });
+
+    if (invoices.length === 0) return [];
+
+    const invoiceIds = invoices.map((inv) => inv.id);
+
+    const existingReturns = await this.prisma.returnOrder.findMany({
+      where: {
+        status: { notIn: [5] },
+        details: {
+          some: { invoiceId: { in: invoiceIds } },
+        },
+      },
+      select: {
+        details: {
+          where: { invoiceId: { in: invoiceIds } },
+          select: { invoiceId: true, productId: true, requestQuantity: true },
+        },
+      },
+    });
+
+    const returnedMap: Record<string, number> = {};
+    existingReturns.forEach((ro) => {
+      ro.details.forEach((d) => {
+        const key = `${d.invoiceId}-${d.productId}`;
+        returnedMap[key] = (returnedMap[key] || 0) + Number(d.requestQuantity);
+      });
+    });
+
+    return invoices.filter((inv) => {
+      if (!inv.details || inv.details.length === 0) return false;
+      return inv.details.some((d) => {
+        const key = `${inv.id}-${d.productId}`;
+        const returned = returnedMap[key] || 0;
+        return Number(d.quantity) - returned > 0;
+      });
+    });
   }
 
   private buildProductChangesLog(
