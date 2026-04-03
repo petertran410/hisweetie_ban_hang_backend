@@ -136,6 +136,7 @@ export class CashFlowsService {
           code,
           branchId: dto.branchId,
           cashFlowGroupId: dto.cashFlowGroupId,
+          collectionBranchId: dto.collectionBranchId,
           isReceipt: dto.isReceipt,
           amount: dto.amount,
           transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
@@ -181,6 +182,9 @@ export class CashFlowsService {
               name: true,
             },
           },
+          collectionBranch: {
+            select: { id: true, name: true },
+          },
         },
       });
 
@@ -213,6 +217,7 @@ export class CashFlowsService {
         ...cashFlow,
         branchName: cashFlow.branch?.name,
         cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+        collectionBranchName: cashFlow.collectionBranch?.name,
         creatorName: cashFlow.creator?.name,
       };
     });
@@ -343,6 +348,9 @@ export class CashFlowsService {
             select: { id: true, bankName: true, accountNumber: true },
           },
           creator: { select: { id: true, name: true } },
+          collectionBranch: {
+            select: { id: true, name: true },
+          },
         },
         orderBy: { transDate: 'desc' },
         skip: currentItem,
@@ -355,6 +363,7 @@ export class CashFlowsService {
       ...cashFlow,
       branchName: cashFlow.branch?.name,
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
+      collectionBranchName: cashFlow.collectionBranch?.name,
       creatorName: cashFlow.creator?.name,
     }));
 

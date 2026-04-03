@@ -33,6 +33,11 @@ export class CreateCashFlowDto {
   @Type(() => Number)
   cashFlowGroupId?: number;
 
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  collectionBranchId?: number;
+
   @IsBoolean()
   isReceipt: boolean;
 

@@ -54,6 +54,7 @@ import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { PrintTemplatesModule } from './print-templates/print-templates.module';
 import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
 import { ReturnOrdersModule } from './return-orders/return-orders.module';
+import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 
 @Module({
   imports: [
@@ -108,6 +109,7 @@ import { ReturnOrdersModule } from './return-orders/return-orders.module';
     AllPackingModule,
     BankAccountsModule,
     ReturnOrdersModule,
+    CashFlowCollectionBranchesModule,
   ],
   providers: [
     {

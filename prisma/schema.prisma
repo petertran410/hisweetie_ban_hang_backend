@@ -1259,6 +1259,18 @@ model TransferDetail {
   @@map("transfer_details")
 }
 
+model CashFlowCollectionBranch {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  cashFlows   CashFlow[]
+
+  @@map("cash_flow_collection_branches")
+}
+
 model CashFlowGroup {
   id          Int      @id @default(autoincrement())
   name        String
@@ -1278,6 +1290,7 @@ model CashFlow {
   code                       String    @unique
   branchId                   Int
   cashFlowGroupId            Int?
+  collectionBranchId         Int?
   isReceipt                  Boolean
   amount                     Decimal
   transDate                  DateTime  @default(now())
@@ -1301,6 +1314,7 @@ model CashFlow {
 
   branch         Branch          @relation(fields: [branchId], references: [id])
   cashFlowGroup  CashFlowGroup?  @relation(fields: [cashFlowGroupId], references: [id])
+  collectionBranch   CashFlowCollectionBranch? @relation(fields: [collectionBranchId], references: [id])
   account        BankAccount?        @relation(fields: [accountId], references: [id])
   creator        User            @relation("CashFlowCreator", fields: [createdBy], references: [id])
   collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])

@@ -20,37 +20,18 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
-import { InvoicesService } from 'src/invoices/invoices.service';
 
 @ApiTags('Return Orders')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('return-orders')
 export class ReturnOrdersController {
-  constructor(
-    private returnOrdersService: ReturnOrdersService,
-    private invoicesService: InvoicesService,
-  ) {}
+  constructor(private returnOrdersService: ReturnOrdersService) {}
 
   @Get()
   @RequirePermissions('return_orders:view')
   findAll(@Query() query: ReturnOrderQueryDto) {
     return this.returnOrdersService.findAll(query);
-  }
-
-  @Get('for-return-order')
-  @RequirePermissions('invoices:view')
-  @ApiOperation({ summary: 'Lấy hóa đơn khả dụng để tạo phiếu trả hàng' })
-  findForReturnOrder(
-    @Query('search') search?: string,
-    @Query('branchId') branchId?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.invoicesService.findForReturnOrder({
-      search,
-      branchId: branchId ? +branchId : undefined,
-      limit: limit ? +limit : 20,
-    });
   }
 
   @Get(':id')

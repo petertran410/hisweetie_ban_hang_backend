@@ -45,6 +45,21 @@ export class InvoicesController {
     return this.invoicesService.findUnpaidByPartner(+partnerId, partnerType);
   }
 
+  @Get('for-return-order')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({ summary: 'Lấy hóa đơn khả dụng để tạo phiếu trả hàng' })
+  findForReturnOrder(
+    @Query('search') search?: string,
+    @Query('branchId') branchId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.invoicesService.findForReturnOrder({
+      search,
+      branchId: branchId ? +branchId : undefined,
+      limit: limit ? +limit : 20,
+    });
+  }
+
   @Get(':id')
   @RequirePermissions('invoices:view')
   findOne(@Param('id') id: string) {
