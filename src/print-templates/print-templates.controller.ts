@@ -23,7 +23,7 @@ export class PrintTemplatesController {
   constructor(private printTemplatesService: PrintTemplatesService) {}
 
   @Get()
-  @RequirePermissions('print-templates.view')
+  @RequirePermissions('print_templates:view')
   findAll(
     @Query('templateFor') templateFor?: string,
     @Query('isActive') isActive?: string,
@@ -35,20 +35,32 @@ export class PrintTemplatesController {
     });
   }
 
-  @Get(':id')
-  @RequirePermissions('print-templates.view')
-  findOne(@Param('id') id: string) {
-    return this.printTemplatesService.findOne(+id);
+  @Get('variables/:templateFor')
+  @RequirePermissions('print_templates:view')
+  getVariables(@Param('templateFor') templateFor: string) {
+    return this.printTemplatesService.getVariables(templateFor);
+  }
+
+  @Get('variables')
+  @RequirePermissions('print_templates:view')
+  getAllVariables(@Query('templateFor') templateFor?: string) {
+    return this.printTemplatesService.getAllVariables(templateFor);
   }
 
   @Get('by-code/:code')
-  @RequirePermissions('print-templates.view')
+  @RequirePermissions('print_templates:view')
   findByCode(@Param('code') code: string) {
     return this.printTemplatesService.findByCode(code);
   }
 
+  @Get(':id')
+  @RequirePermissions('print_templates:view')
+  findOne(@Param('id') id: string) {
+    return this.printTemplatesService.findOne(+id);
+  }
+
   @Post()
-  @RequirePermissions('print-templates.create')
+  @RequirePermissions('print_templates:create')
   create(@Body() data: any, @Req() req: any) {
     return this.printTemplatesService.create({
       ...data,
@@ -57,38 +69,14 @@ export class PrintTemplatesController {
   }
 
   @Put(':id')
-  @RequirePermissions('print-templates.update')
+  @RequirePermissions('print_templates:update')
   update(@Param('id') id: string, @Body() data: any) {
     return this.printTemplatesService.update(+id, data);
   }
 
   @Delete(':id')
-  @RequirePermissions('print-templates.delete')
+  @RequirePermissions('print_templates:delete')
   delete(@Param('id') id: string) {
     return this.printTemplatesService.delete(+id);
-  }
-
-  @Get('variables')
-  @RequirePermissions('print-templates.view')
-  getAllVariables(@Query('templateFor') templateFor?: string) {
-    return this.printTemplatesService.getAllVariables(templateFor);
-  }
-
-  @Post('variables')
-  @RequirePermissions('print-templates.create')
-  createVariable(@Body() data: any) {
-    return this.printTemplatesService.createVariable(data);
-  }
-
-  @Put('variables/:id')
-  @RequirePermissions('print-templates.update')
-  updateVariable(@Param('id') id: string, @Body() data: any) {
-    return this.printTemplatesService.updateVariable(+id, data);
-  }
-
-  @Delete('variables/:id')
-  @RequirePermissions('print-templates.delete')
-  deleteVariable(@Param('id') id: string) {
-    return this.printTemplatesService.deleteVariable(+id);
   }
 }
