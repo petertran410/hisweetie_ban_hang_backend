@@ -1636,17 +1636,18 @@ model PrintTemplate {
 }
 
 model PrintTemplateVariable {
-  id          Int      @id @default(autoincrement())
-  templateFor String
-  key         String
-  label       String
-  group       String
-  dataType    String   @default("string")
-  description String?
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  templateFor   String
+  key           String
+  label         String
+  group         String
+  dataType      String   @default("string")
+  description   String?
+  isActive      Boolean  @default(true)
+  isItemVariable Boolean @default(false)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([templateFor, key])
   @@index([templateFor])

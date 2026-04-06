@@ -116,14 +116,63 @@ export class PrintTemplatesService {
   }
 
   replaceVariables(content: string, data: Record<string, any>): string {
+    const items = data.items || [];
     let result = content;
 
+    const itemVariableKeys = this.getItemVariableKeys(content);
+
+    if (itemVariableKeys.length > 0 && items.length > 0) {
+      result = this.replaceItemVariables(result, items, itemVariableKeys);
+    }
+
     for (const [key, value] of Object.entries(data)) {
-      const regex = new RegExp(`{${key}}`, 'g');
-      result = result.replace(regex, value?.toString() || '');
+      if (key !== 'items' && !Array.isArray(value)) {
+        const regex = new RegExp(`{${key}}`, 'g');
+        result = result.replace(regex, value?.toString() || '');
+      }
     }
 
     return result;
+  }
+
+  private getItemVariableKeys(content: string): string[] {
+    const matches = content.match(/{(\w+)}/g) || [];
+    return matches.map((m) => m.replace(/[{}]/g, ''));
+  }
+
+  private replaceItemVariables(
+    content: string,
+    items: any[],
+    itemVariableKeys: string[],
+  ): string {
+    const trRegex = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
+    const rows = content.match(trRegex) || [];
+
+    for (const row of rows) {
+      const hasItemVariable = itemVariableKeys.some((key) =>
+        row.includes(`{${key}}`),
+      );
+
+      if (hasItemVariable) {
+        const clonedRows = items
+          .map((item) => {
+            let itemRow = row;
+            for (const key of itemVariableKeys) {
+              const value = item[key] || '';
+              itemRow = itemRow.replace(
+                new RegExp(`{${key}}`, 'g'),
+                value.toString(),
+              );
+            }
+            return itemRow;
+          })
+          .join('');
+
+        content = content.replace(row, clonedRows);
+      }
+    }
+
+    return content;
   }
 
   async getVariables(templateFor: string) {
