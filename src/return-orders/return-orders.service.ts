@@ -345,6 +345,11 @@ export class ReturnOrdersService {
         select: { id: true, name: true, email: true },
       });
 
+      const branch = await tx.branch.findUnique({
+        where: { id: returnOrder.branchId },
+        select: { id: true, name: true },
+      });
+
       for (const confirmDetail of dto.details) {
         const detail = returnOrder.details.find(
           (d) => d.id === confirmDetail.detailId,
@@ -388,7 +393,7 @@ export class ReturnOrdersService {
               productCode: detail.productCode,
               productName: detail.productName,
               branchId: returnOrder.branchId,
-              branchName: '',
+              branchName: branch?.name || '',
               onHand: confirmDetail.confirmedQuantity,
             },
           });
@@ -399,7 +404,7 @@ export class ReturnOrdersService {
               productCode: detail.productCode,
               productName: detail.productName,
               branchId: returnOrder.branchId,
-              branchName: returnOrder.branch?.name || '',
+              branchName: branch?.name || '',
               transactionType: 'RETURN',
               refCode: returnOrder.code,
               refType: 'return_order',
