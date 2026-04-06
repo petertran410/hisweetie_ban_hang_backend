@@ -764,6 +764,15 @@ export class TransfersService {
     }
 
     for (const detail of transfer.details) {
+      const inventorySnapshot = await this.prisma.inventory.findUnique({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: transfer.toBranchId,
+          },
+        },
+      });
+
       await this.prisma.inventory.update({
         where: {
           productId_branchId: {
@@ -788,7 +797,7 @@ export class TransfersService {
           refType: 'transfer',
           refId: transfer.id,
           quantity: Number(detail.sendQuantity),
-          costPrice: inventory ? Number(inventory.cost) : 0,
+          costPrice: inventorySnapshot ? Number(inventorySnapshot.cost) : 0,
           transactionPrice: null,
           partnerName: null,
         },

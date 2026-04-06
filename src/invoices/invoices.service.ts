@@ -350,7 +350,7 @@ export class InvoicesService {
             productId: item.productId,
             productCode: item.productCode || '',
             productName: item.productName || '',
-            branchId: dto.branchId,
+            branchId: dto.branchId!,
             branchName: branch?.name || '',
             transactionType: 'SALE',
             refCode: invoice.code,
