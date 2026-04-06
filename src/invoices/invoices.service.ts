@@ -163,7 +163,7 @@ export class InvoicesService {
       const customer = dto.customerId
         ? await tx.customer.findUnique({
             where: { id: dto.customerId },
-            select: { id: true, parentId: true, totalDebt: true },
+            select: { id: true, parentId: true, totalDebt: true, name: true },
           })
         : null;
 
@@ -330,14 +330,37 @@ export class InvoicesService {
         }
       }
 
+      const branch = await this.prisma.branch.findUnique({
+        where: { id: dto.branchId },
+        select: { id: true, name: true },
+      });
+
       for (const item of dto.items) {
+        const invSnapshot = await tx.inventory.findFirst({
+          where: { productId: item.productId, branchId: dto.branchId },
+        });
+
         await tx.inventory.updateMany({
-          where: {
-            productId: item.productId,
-            branchId: dto.branchId,
-          },
+          where: { productId: item.productId, branchId: dto.branchId },
+          data: { onHand: { decrement: item.quantity } },
+        });
+
+        await tx.inventoryLog.create({
           data: {
-            onHand: { decrement: item.quantity },
+            productId: item.productId,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            branchId: dto.branchId,
+            branchName: branch?.name || '',
+            transactionType: 'SALE',
+            refCode: invoice.code,
+            refType: 'invoice',
+            refId: invoice.id,
+            quantity: -Number(item.quantity),
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+            transactionPrice: Number(item.price),
+            partnerId: dto.customerId || null,
+            partnerName: customer?.name,
           },
         });
       }
@@ -606,13 +629,37 @@ export class InvoicesService {
         }
 
         for (const item of dto.items) {
+          const invSnapshot = await tx.inventory.findFirst({
+            where: {
+              productId: item.productId,
+              branchId: newInvoice.branchId || 1,
+            },
+          });
+
           await tx.inventory.updateMany({
             where: {
               productId: item.productId,
               branchId: newInvoice.branchId || 1,
             },
+            data: { onHand: { decrement: item.quantity } },
+          });
+
+          await tx.inventoryLog.create({
             data: {
-              onHand: { decrement: item.quantity },
+              productId: item.productId,
+              productCode: item.productCode || '',
+              productName: item.productName || '',
+              branchId: newInvoice.branchId || 1,
+              branchName: newInvoice.branch?.name || '',
+              transactionType: 'SALE',
+              refCode: newInvoice.code,
+              refType: 'invoice',
+              refId: newInvoice.id,
+              quantity: -Number(item.quantity),
+              costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+              transactionPrice: Number(item.price),
+              partnerId: newInvoice.customerId || null,
+              partnerName: newInvoice.customer?.name || null,
             },
           });
         }
@@ -1238,10 +1285,38 @@ export class InvoicesService {
         }
       }
 
+      const branch = await this.prisma.branch.findUnique({
+        where: { id: order.branchId },
+        select: { id: true, name: true },
+      });
+
       for (const item of itemsToInvoice) {
+        const invSnapshot = await tx.inventory.findFirst({
+          where: { productId: item.productId, branchId: order.branchId },
+        });
+
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
           data: { onHand: { decrement: item.quantity } },
+        });
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: item.productId,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            branchId: order.branchId,
+            branchName: branch?.name || '',
+            transactionType: 'SALE',
+            refCode: invoice.code,
+            refType: 'invoice',
+            refId: invoice.id,
+            quantity: -Number(item.quantity),
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+            transactionPrice: Number(item.price),
+            partnerId: order.customerId || null,
+            partnerName: order.customer?.name || null,
+          },
         });
       }
 

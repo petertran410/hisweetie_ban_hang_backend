@@ -26,6 +26,18 @@ export class ProductsController {
     return this.productsService.findAll(query);
   }
 
+  @Get(':id/inventory-logs')
+  @RequirePermissions('products:view')
+  findInventoryLogs(
+    @Param('id') id: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.productsService.findInventoryLogs(
+      +id,
+      branchId ? +branchId : undefined,
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('products:view')
   findOne(@Param('id') id: string) {

@@ -449,6 +449,23 @@ export class ProductionsService {
           totalWeight: newTotalWeight,
         },
       });
+
+      await tx.inventoryLog.create({
+        data: {
+          productId: comp.componentProductId,
+          productCode: componentProduct.code,
+          productName: componentProduct.name,
+          branchId: sourceBranchId,
+          branchName: '',
+          transactionType: 'PRODUCTION_OUT',
+          refCode: '',
+          refType: 'production',
+          refId: 0,
+          quantity: -unitsToDeduct,
+          costPrice: sourceInventory ? Number(sourceInventory.cost) : 0,
+          transactionPrice: null,
+        },
+      });
     }
 
     const productWeight = product.weight ? Number(product.weight) : 0;

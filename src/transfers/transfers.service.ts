@@ -653,6 +653,24 @@ export class TransfersService {
             totalWeight: totalWeight,
           },
         });
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.fromBranchId,
+            branchName: transfer.fromBranch?.name || '',
+            transactionType: 'TRANSFER_OUT',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: -Number(detail.sendQuantity),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+          },
+        });
       }
     });
   }
@@ -755,6 +773,24 @@ export class TransfersService {
         },
         data: {
           onHand: { decrement: detail.receivedQuantity },
+        },
+      });
+
+      await this.prisma.inventoryLog.create({
+        data: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: transfer.toBranchId,
+          branchName: transfer.toBranchName || '',
+          transactionType: 'TRANSFER_IN',
+          refCode: transfer.code,
+          refType: 'transfer',
+          refId: transfer.id,
+          quantity: Number(detail.sendQuantity),
+          costPrice: inventory ? Number(inventory.cost) : 0,
+          transactionPrice: null,
+          partnerName: null,
         },
       });
     }

@@ -939,6 +939,17 @@ export class ProductsService {
     return { message: 'Xóa sản phẩm thành công' };
   }
 
+  async findInventoryLogs(productId: number, branchId?: number) {
+    const where: any = { productId };
+    if (branchId) where.branchId = branchId;
+
+    return this.prisma.inventoryLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: 200,
+    });
+  }
+
   async checkLowStock() {
     const allInventories = await this.prisma.inventory.findMany({
       include: {

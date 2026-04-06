@@ -232,6 +232,7 @@ model Branch {
   auditLogs AuditLog[] @relation("AuditLogBranch")
   userBranchPermissions UserBranchPermission[]
   returnOrders    ReturnOrder[]
+  inventoryLogs      InventoryLog[]
 
   @@map("branches")
 }
@@ -514,6 +515,7 @@ model Product {
   destructionDetails DestructionDetail[]
   orderSupplierItems OrderSupplierItem[]
   returnOrderDetails  ReturnOrderDetail[]
+  inventoryLogs      InventoryLog[]
 
   @@map("products")
 }
@@ -613,6 +615,36 @@ model Inventory {
 
   @@unique([productId, branchId])
   @@map("inventories")
+}
+
+model InventoryLog {
+  id               Int      @id @default(autoincrement())
+  productId        Int
+  productCode      String
+  productName      String
+  branchId         Int
+  branchName       String
+  transactionType  String
+  refCode          String
+  refType          String
+  refId            Int
+  quantity         Decimal
+  costPrice        Decimal  @default(0)
+  transactionPrice Decimal? @default(0)
+  partnerId        Int?
+  partnerName      String?
+  note             String?
+  createdAt        DateTime @default(now())
+  createdByName    String?
+
+  product Product @relation(fields: [productId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+
+  @@index([productId])
+  @@index([branchId])
+  @@index([productId, branchId])
+  @@index([createdAt])
+  @@map("inventory_logs")
 }
 
 model PriceBook {

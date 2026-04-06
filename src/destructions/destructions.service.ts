@@ -416,6 +416,24 @@ export class DestructionsService {
           totalWeight: totalWeight,
         },
       });
+
+      await tx.inventoryLog.create({
+        data: {
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          branchId: destruction.branchId,
+          branchName: '',
+          transactionType: 'DESTRUCTION',
+          refCode: destruction.code,
+          refType: 'destruction',
+          refId: destruction.id,
+          quantity: -Number(detail.quantity),
+          costPrice: inventory ? Number(inventory.cost) : 0,
+          transactionPrice: null,
+          partnerName: null,
+        },
+      });
     }
   }
 

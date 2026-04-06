@@ -583,12 +583,20 @@ export class PurchaseOrdersService {
   private async updateInventory(purchaseOrderId: number, tx: any) {
     const purchaseOrder = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
-      include: { items: true },
+      include: {
+        items: true,
+        branch: { select: { id: true, name: true } },
+        supplier: { select: { id: true, name: true } },
+      },
     });
 
     if (!purchaseOrder || !purchaseOrder.branchId) return;
 
     for (const item of purchaseOrder.items) {
+      const invSnapshot = await tx.inventory.findFirst({
+        where: { productId: item.productId, branchId: purchaseOrder.branchId },
+      });
+
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
@@ -596,6 +604,25 @@ export class PurchaseOrdersService {
         },
         data: {
           onHand: { increment: Number(item.quantity) },
+        },
+      });
+
+      await tx.inventoryLog.create({
+        data: {
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          branchId: purchaseOrder.branchId,
+          branchName: purchaseOrder.branch?.name || '',
+          transactionType: 'PURCHASE',
+          refCode: purchaseOrder.code,
+          refType: 'purchase_order',
+          refId: purchaseOrder.id,
+          quantity: Number(item.quantity),
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          transactionPrice: Number(item.price),
+          partnerId: purchaseOrder.supplierId,
+          partnerName: purchaseOrder.supplier?.name || null,
         },
       });
     }

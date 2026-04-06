@@ -392,6 +392,25 @@ export class ReturnOrdersService {
               onHand: confirmDetail.confirmedQuantity,
             },
           });
+
+          await tx.inventoryLog.create({
+            data: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: returnOrder.branchId,
+              branchName: returnOrder.branch?.name || '',
+              transactionType: 'RETURN',
+              refCode: returnOrder.code,
+              refType: 'return_order',
+              refId: returnOrder.id,
+              quantity: Number(confirmDetail.confirmedQuantity),
+              costPrice: 0,
+              transactionPrice: Number(detail.returnPrice),
+              partnerId: returnOrder.customerId || null,
+              partnerName: returnOrder.customer?.name || null,
+            },
+          });
         }
       }
 
