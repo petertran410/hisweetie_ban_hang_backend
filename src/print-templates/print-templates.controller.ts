@@ -67,4 +67,28 @@ export class PrintTemplatesController {
   delete(@Param('id') id: string) {
     return this.printTemplatesService.delete(+id);
   }
+
+  @Get('variables')
+  @RequirePermissions('print-templates.view')
+  getAllVariables(@Query('templateFor') templateFor?: string) {
+    return this.printTemplatesService.getAllVariables(templateFor);
+  }
+
+  @Post('variables')
+  @RequirePermissions('print-templates.create')
+  createVariable(@Body() data: any) {
+    return this.printTemplatesService.createVariable(data);
+  }
+
+  @Put('variables/:id')
+  @RequirePermissions('print-templates.update')
+  updateVariable(@Param('id') id: string, @Body() data: any) {
+    return this.printTemplatesService.updateVariable(+id, data);
+  }
+
+  @Delete('variables/:id')
+  @RequirePermissions('print-templates.delete')
+  deleteVariable(@Param('id') id: string) {
+    return this.printTemplatesService.deleteVariable(+id);
+  }
 }
