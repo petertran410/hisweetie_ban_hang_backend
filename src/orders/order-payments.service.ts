@@ -52,7 +52,7 @@ export class OrderPaymentsService {
           paymentMethod: dto.paymentMethod || 'cash',
           accountId: dto.accountId,
           description:
-            dto.notes ||
+            dto.description ||
             `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
           createdBy: userId,
         },
@@ -111,7 +111,7 @@ export class OrderPaymentsService {
           contactNumber: order.customer?.contactNumber,
           address: order.customer?.address,
           description:
-            dto.notes ||
+            dto.description ||
             `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
           status: 0,
           statusValue: 'Đã thanh toán',

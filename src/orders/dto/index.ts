@@ -118,7 +118,7 @@ export class CreateOrderDto {
 
   @IsString()
   @IsOptional()
-  notes?: string;
+  description?: string;
 
   @IsString()
   @IsOptional()
@@ -174,7 +174,7 @@ export class UpdateOrderDto {
 
   @IsString()
   @IsOptional()
-  notes?: string;
+  description?: string;
 
   @IsString()
   @IsOptional()
@@ -263,7 +263,7 @@ export class CreateOrderPaymentDto {
 
   @IsString()
   @IsOptional()
-  notes?: string;
+  description?: string;
 }
 
 export class ProductPriceHistoryDto {

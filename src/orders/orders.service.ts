@@ -130,7 +130,7 @@ export class OrdersService {
           depositAmount: dto.depositAmount || 0,
           discount: dto.discountAmount || 0,
           discountRatio: dto.discountRatio || 0,
-          description: dto.notes,
+          description: dto.description,
           createdBy: userId,
           items: {
             createMany: {
@@ -271,7 +271,7 @@ export class OrdersService {
         discount: dto.discountAmount,
         discountRatio: dto.discountRatio,
         depositAmount: dto.depositAmount,
-        description: dto.notes,
+        description: dto.description,
       };
 
       if (dto.orderStatus) {
