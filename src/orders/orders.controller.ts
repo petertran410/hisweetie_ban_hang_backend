@@ -20,6 +20,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 
 @ApiTags('Orders')
 @ApiBearerAuth()
@@ -42,6 +43,16 @@ export class OrdersController {
       +params.productId,
       params.type,
     );
+  }
+
+  @Put(':id/cancel')
+  @RequirePermissions('orders:update')
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.ordersService.cancelOrder(+id, dto, user.id);
   }
 
   @Get(':id')

@@ -1,4 +1,8 @@
-import { Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import {
@@ -15,6 +19,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 import { INVOICE_STATUS } from 'src/invoices/dto';
+import { CancelOrderDto } from './dto/cancel-order.dto';
 
 @Injectable()
 export class OrdersService {
@@ -712,6 +717,154 @@ export class OrdersService {
       }
 
       await tx.order.delete({ where: { id } });
+    });
+  }
+
+  async cancelOrder(id: number, dto: CancelOrderDto, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          invoices: { where: { status: { not: ORDER_STATUS.CANCELLED } } },
+          payments: true,
+          customer: {
+            select: { id: true, code: true, name: true, totalDebt: true },
+          },
+          creator: { select: { id: true, name: true } },
+        },
+      });
+
+      if (!order) {
+        throw new NotFoundException('Không tìm thấy đơn hàng');
+      }
+
+      if (order.status === ORDER_STATUS.CANCELLED) {
+        throw new BadRequestException('Đơn hàng đã được hủy trước đó');
+      }
+
+      // Kiểm tra có hóa đơn không bị hủy
+      if (order.invoices.length > 0) {
+        throw new BadRequestException(
+          'Đơn hàng có hóa đơn. Vui lòng hủy tất cả hóa đơn trước khi hủy đơn hàng',
+        );
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, email: true },
+      });
+
+      // Hủy phiếu thu nếu được yêu cầu
+      if (dto.cancelPayments && order.payments.length > 0) {
+        for (const payment of order.payments) {
+          // Xóa phiếu thu
+          await tx.orderPayment.delete({ where: { id: payment.id } });
+
+          // Xóa cash flow tương ứng
+          await tx.cashFlow.deleteMany({ where: { code: payment.code } });
+
+          // Log audit xóa payment
+          await this.auditLogsService.create({
+            actionType: 'DELETE',
+            actionCode: 'ORDER_PAYMENT_DELETE',
+            entityType: 'order_payment',
+            entityId: payment.id.toString(),
+            entityCode: payment.code,
+            category: getCategoryFromActionCode('ORDER_PAYMENT_DELETE'),
+            severity: getSeverityFromActionCode('ORDER_PAYMENT_DELETE'),
+            snapshot: {
+              code: payment.code,
+              amount: Number(payment.amount),
+              paymentMethod: payment.paymentMethod,
+              order: {
+                code: order.code,
+                customer: order.customer,
+              },
+            },
+            message: renderAuditMessage('ORDER_PAYMENT_DELETE', {
+              paymentCode: payment.code,
+              orderCode: order.code,
+            }),
+            messageTemplate: 'ORDER_PAYMENT_DELETE',
+            userId,
+            userName: user?.name || 'System',
+            branchId: order.branchId || undefined,
+          });
+        }
+
+        // Cập nhật lại công nợ khách hàng nếu có payments bị xóa
+        if (order.customerId) {
+          await this.recalculateCustomerDebt(order.customerId, tx);
+        }
+      }
+
+      // Hủy đơn hàng
+      await tx.order.update({
+        where: { id },
+        data: {
+          status: ORDER_STATUS.CANCELLED,
+          statusValue: getStatusLabel(ORDER_STATUS.CANCELLED),
+          orderStatus: 'cancelled',
+          debtAmount: 0,
+        },
+      });
+
+      // Log audit hủy đơn hàng
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_CANCEL',
+        entityType: 'orders',
+        entityId: id.toString(),
+        entityCode: order.code,
+        category: getCategoryFromActionCode('ORDER_UPDATE'),
+        severity: getSeverityFromActionCode('ORDER_UPDATE'),
+        snapshot: this.buildOrderSnapshot(order),
+        message: renderAuditMessage('ORDER_UPDATE', {
+          orderCode: order.code,
+          statusValue: 'Đã hủy',
+          customerName: order.customer?.name || 'N/A',
+        }),
+        messageTemplate: 'ORDER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: order.branchId || undefined,
+      });
+
+      return { message: 'Hủy đơn hàng thành công' };
+    });
+  }
+
+  private async recalculateCustomerDebt(customerId: number, tx: any) {
+    // Tính lại tổng công nợ từ hóa đơn
+    const invoices = await tx.invoice.findMany({
+      where: { customerId, status: { notIn: [2] } },
+    });
+    const debtFromInvoices = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+      0,
+    );
+
+    // Tính payments từ các đơn hàng chưa có hóa đơn
+    const orders = await tx.order.findMany({
+      where: {
+        customerId,
+        orderStatus: { not: 'cancelled' },
+        invoices: { none: {} },
+      },
+      include: { payments: true },
+    });
+    const paidFromOrders = orders.reduce((sum: number, o: any) => {
+      return (
+        sum + o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
+      );
+    }, 0);
+
+    const totalDebt = debtFromInvoices - paidFromOrders;
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { totalDebt },
     });
   }
 

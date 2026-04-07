@@ -1,16 +1,14 @@
 export const ORDER_STATUS = {
   PENDING: 1,
   CONFIRMED: 5,
-  PROCESSING: 2,
   COMPLETED: 3,
   CANCELLED: 4,
-  PARTIALLY_INVOICED: 6,
+  PARTIALLY_INVOICED: 2,
 } as const;
 
 export const ORDER_STATUS_LABELS = {
   [ORDER_STATUS.PENDING]: 'Phiếu tạm',
   [ORDER_STATUS.CONFIRMED]: 'Đã xác nhận',
-  [ORDER_STATUS.PROCESSING]: 'Đang giao hàng',
   [ORDER_STATUS.COMPLETED]: 'Hoàn thành',
   [ORDER_STATUS.CANCELLED]: 'Đã hủy',
   [ORDER_STATUS.PARTIALLY_INVOICED]: 'Đã ra 1 phần hóa đơn',
@@ -19,7 +17,6 @@ export const ORDER_STATUS_LABELS = {
 export const ORDER_STATUS_STRING_MAP = {
   pending: ORDER_STATUS.PENDING,
   confirmed: ORDER_STATUS.CONFIRMED,
-  processing: ORDER_STATUS.PROCESSING,
   completed: ORDER_STATUS.COMPLETED,
   cancelled: ORDER_STATUS.CANCELLED,
   partially_invoiced: ORDER_STATUS.PARTIALLY_INVOICED,
@@ -28,7 +25,6 @@ export const ORDER_STATUS_STRING_MAP = {
 export const ORDER_STATUS_NUMBER_TO_STRING = {
   [ORDER_STATUS.PENDING]: 'pending',
   [ORDER_STATUS.CONFIRMED]: 'confirmed',
-  [ORDER_STATUS.PROCESSING]: 'processing',
   [ORDER_STATUS.COMPLETED]: 'completed',
   [ORDER_STATUS.CANCELLED]: 'cancelled',
   [ORDER_STATUS.PARTIALLY_INVOICED]: 'partially_invoiced',
