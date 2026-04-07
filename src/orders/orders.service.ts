@@ -744,7 +744,9 @@ export class OrdersService {
       }
 
       // Kiểm tra có hóa đơn không bị hủy
-      if (order.invoices.length > 0) {
+      const hasActiveInvoices =
+        order.invoices && order.invoices.some((inv) => inv.status !== 2);
+      if (hasActiveInvoices) {
         throw new BadRequestException(
           'Đơn hàng có hóa đơn. Vui lòng hủy tất cả hóa đơn trước khi hủy đơn hàng',
         );
