@@ -644,16 +644,6 @@ export class OrdersService {
     });
 
     if (invoices.length === 0) {
-      if (order.status === 6 || order.status === 3) {
-        await tx.order.update({
-          where: { id: orderId },
-          data: {
-            status: 1,
-            statusValue: getStatusLabel(1),
-            orderStatus: 'pending',
-          },
-        });
-      }
       return;
     }
 
@@ -726,7 +716,7 @@ export class OrdersService {
         where: { id },
         include: {
           items: true,
-          invoices: { where: { status: { not: ORDER_STATUS.CANCELLED } } },
+          invoices: { where: { status: { not: INVOICE_STATUS.CANCELLED } } },
           payments: true,
           customer: {
             select: { id: true, code: true, name: true, totalDebt: true },
@@ -744,8 +734,7 @@ export class OrdersService {
       }
 
       // Kiểm tra có hóa đơn không bị hủy
-      const hasActiveInvoices =
-        order.invoices && order.invoices.some((inv) => inv.status !== 2);
+      const hasActiveInvoices = order.invoices && order.invoices.length > 0;
       if (hasActiveInvoices) {
         throw new BadRequestException(
           'Đơn hàng có hóa đơn. Vui lòng hủy tất cả hóa đơn trước khi hủy đơn hàng',
