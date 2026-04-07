@@ -970,35 +970,46 @@ export class InvoicesService {
       },
     });
 
-    const debtFromInvoices = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.debtAmount),
-      0,
-    );
-    const totalPurchased = invoices.reduce(
+    // Dùng grandTotal (bất biến) thay vì debtAmount để tránh mất credit
+    // khi thanh toán vượt quá giá trị hóa đơn.
+    const totalGrandTotal = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
+    const totalPurchased = totalGrandTotal;
 
-    const orders = await tx.order.findMany({
+    // Tổng tiền thu từ khách qua phiếu thu (cashflow)
+    const cashFlows = await tx.cashFlow.findMany({
       where: {
-        customerId: { in: allCustomerIds },
-        orderStatus: { not: 'cancelled' },
-        invoices: { none: {} },
+        partnerId: { in: allCustomerIds },
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        code: { not: { startsWith: 'TTTUHD' } },
       },
-      include: { payments: true },
+      select: { amount: true },
     });
-
-    const paidFromOrdersWithoutInvoice = orders.reduce(
-      (sum: number, o: any) => {
-        return (
-          sum +
-          o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
-        );
-      },
+    const totalCashFlowPaid = cashFlows.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
       0,
     );
 
-    const totalDebt = debtFromInvoices - paidFromOrdersWithoutInvoice;
+    // Tổng cấn trừ công nợ từ phiếu trả hàng (debt_offset)
+    // Không tính manual_offset vì không làm thay đổi totalDebt
+    const debtOffsets = await tx.returnOrder.findMany({
+      where: {
+        customerId: { in: allCustomerIds },
+        status: 4,
+        refundType: 'debt_offset',
+      },
+      select: { refundAmount: true },
+    });
+    const totalDebtOffsets = debtOffsets.reduce(
+      (sum: number, ro: any) => sum + Number(ro.refundAmount),
+      0,
+    );
+
+    const totalDebt = totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
 
     await tx.customer.update({
       where: { id: targetCustomerId },
