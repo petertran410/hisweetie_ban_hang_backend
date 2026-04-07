@@ -58,7 +58,13 @@ export class ReturnOrdersService {
     if (query.customerId) where.customerId = query.customerId;
     if (query.createdBy) where.createdBy = query.createdBy;
     if (query.invoiceId) where.invoiceId = query.invoiceId;
-    if (query.refundType) where.refundType = query.refundType;
+    if (query.refundType) {
+      if (query.refundType === 'debt_offsets') {
+        where.refundType = { in: ['debt_offset', 'manual_offset'] };
+      } else {
+        where.refundType = query.refundType;
+      }
+    }
 
     if (query.fromDate || query.toDate) {
       where.createdAt = {};
@@ -274,17 +280,6 @@ export class ReturnOrdersService {
       });
 
       const invoiceCodes = invoices.map((inv) => inv.code).join(', ');
-
-      await tx.invoice.updateMany({
-        where: {
-          id: { in: dto.invoiceIds },
-          status: { notIn: [INVOICE_STATUS.CANCELLED] },
-        },
-        data: {
-          status: INVOICE_STATUS.RETURNED,
-          statusValue: INVOICE_STATUS_LABELS[INVOICE_STATUS.RETURNED],
-        },
-      });
 
       await this.auditLogsService.create({
         actionType: 'POST',

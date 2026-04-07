@@ -19,6 +19,15 @@ class InvoicePaymentItem {
   amount: number;
 }
 
+class DebtOffsetItem {
+  @IsInt()
+  @Type(() => Number)
+  invoiceId: number;
+
+  @IsNumber()
+  amount: number;
+}
+
 export class CreateCustomerPaymentDto {
   @IsInt()
   @Type(() => Number)
@@ -62,4 +71,10 @@ export class CreateCustomerPaymentDto {
   @ValidateNested({ each: true })
   @Type(() => InvoicePaymentItem)
   invoices?: InvoicePaymentItem[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DebtOffsetItem)
+  debtOffsets?: DebtOffsetItem[];
 }

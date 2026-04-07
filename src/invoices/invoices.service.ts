@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -131,6 +132,7 @@ export class InvoicesService {
         details: { include: { product: true } },
         payments: true,
         delivery: true,
+        _count: { select: { returnOrders: true } },
       },
     });
 
@@ -730,6 +732,24 @@ export class InvoicesService {
           dto.status === INVOICE_STATUS.CANCELLED &&
           currentInvoice.status !== INVOICE_STATUS.CANCELLED
         ) {
+          if (currentInvoice.status === INVOICE_STATUS.COMPLETED) {
+            const actor = userId
+              ? await tx.user.findUnique({
+                  where: { id: userId },
+                  include: { userRoles: { include: { role: true } } },
+                })
+              : null;
+            const isAdmin = actor?.userRoles?.some(
+              (ur: any) =>
+                ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
+            );
+            if (!isAdmin) {
+              throw new ForbiddenException(
+                'Chỉ Admin mới được phép hủy hóa đơn hoàn thành',
+              );
+            }
+          }
+
           if (!currentInvoice.branchId) {
             throw new BadRequestException(
               'Không thể hủy hóa đơn vì không có thông tin chi nhánh',

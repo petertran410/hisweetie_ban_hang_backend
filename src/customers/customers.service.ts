@@ -804,7 +804,7 @@ export class CustomersService {
     const isParentOrStandalone = !customer.parentId;
 
     const invoiceWhere: any = {
-      status: { not: 5 },
+      status: { notIn: [2, 5] },
     };
 
     if (isParentOrStandalone) {
@@ -863,7 +863,7 @@ export class CustomersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    const timeline = [
+    const timeline: any[] = [
       ...invoices.map((inv) => ({
         type: 'invoice' as const,
         id: inv.id,
@@ -873,9 +873,7 @@ export class CustomersService {
         amount: Number(inv.grandTotal),
         method: null,
         description: inv.description,
-        debtSnapshot: inv.customerDebtSnapshot
-          ? Number(inv.customerDebtSnapshot)
-          : null,
+        debtSnapshot: 0,
         status: inv.status,
         statusValue: inv.statusValue,
         branch: inv.branch,
@@ -892,9 +890,7 @@ export class CustomersService {
         amount: Number(cf.amount),
         method: cf.method,
         description: cf.description,
-        debtSnapshot: cf.customerDebtSnapshot
-          ? Number(cf.customerDebtSnapshot)
-          : null,
+        debtSnapshot: 0,
         status: cf.status,
         statusValue: cf.statusValue,
         branch: cf.branch,
@@ -902,10 +898,7 @@ export class CustomersService {
         customerName: cf.partnerName || null,
         customerCode: null,
       })),
-    ].sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    ];
 
     const returnOrderCustomerIds = isParentOrStandalone
       ? [customerId, ...cashFlowPartnerIds]
@@ -933,7 +926,7 @@ export class CustomersService {
     });
 
     for (const ro of returnOrders) {
-      (timeline as any[]).push({
+      timeline.push({
         type: 'debt_offset',
         id: ro.id,
         code: ro.code,
@@ -942,9 +935,7 @@ export class CustomersService {
         amount: Number(ro.refundAmount),
         method: null,
         description: `Cấn trừ công nợ từ trả hàng ${ro.code}`,
-        debtSnapshot: ro.customerDebtSnapshot
-          ? Number(ro.customerDebtSnapshot)
-          : null,
+        debtSnapshot: 0,
         status: 4,
         statusValue: 'Cấn trừ công nợ',
         branch: ro.branch,
@@ -953,6 +944,35 @@ export class CustomersService {
         customerCode: ro.customer?.code || null,
       });
     }
+
+    // Tính lại debtSnapshot theo zigzag (sắp xếp tăng dần theo thời gian)
+    timeline.sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+
+    let runningDebt = 0;
+    for (const item of timeline) {
+      if (item.type === 'invoice') {
+        runningDebt += item.amount;
+      } else {
+        runningDebt -= item.amount;
+      }
+      item.debtSnapshot = runningDebt;
+    }
+
+    // Sắp xếp giảm dần, tiebreaker: payment/debt_offset trước invoice cùng timestamp
+    const typeOrder: Record<string, number> = {
+      payment: 0,
+      debt_offset: 1,
+      invoice: 2,
+    };
+    timeline.sort((a, b) => {
+      const timeDiff =
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (typeOrder[a.type] ?? 3) - (typeOrder[b.type] ?? 3);
+    });
 
     return { data: timeline };
   }
