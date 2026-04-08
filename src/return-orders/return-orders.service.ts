@@ -473,27 +473,29 @@ export class ReturnOrdersService {
           await tx.returnOrder.update({
             where: { id: ctn.id },
             data: {
-              status: 5, // CANCELLED
+              status: 5,
               statusValue: 'Đã hủy',
             },
           });
 
-          // Hoàn lại paidAmount và debtAmount cho Invoice
-          const invoice = await tx.invoice.findUnique({
-            where: { id: ctn.invoiceId },
-            select: { paidAmount: true, debtAmount: true },
-          });
-
-          if (invoice) {
-            await tx.invoice.update({
+          // ✅ FIX: Check invoiceId không null
+          if (ctn.invoiceId) {
+            const invoice = await tx.invoice.findUnique({
               where: { id: ctn.invoiceId },
-              data: {
-                paidAmount:
-                  Number(invoice.paidAmount) - Number(ctn.refundAmount),
-                debtAmount:
-                  Number(invoice.debtAmount) + Number(ctn.refundAmount),
-              },
+              select: { paidAmount: true, debtAmount: true },
             });
+
+            if (invoice) {
+              await tx.invoice.update({
+                where: { id: ctn.invoiceId },
+                data: {
+                  paidAmount:
+                    Number(invoice.paidAmount) - Number(ctn.refundAmount),
+                  debtAmount:
+                    Number(invoice.debtAmount) + Number(ctn.refundAmount),
+                },
+              });
+            }
           }
 
           // Log audit

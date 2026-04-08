@@ -950,40 +950,25 @@ export class CustomersService {
       });
     }
 
-    const returnOrders = await this.prisma.returnOrder.findMany({
-      where: {
-        customerId: { in: returnOrderCustomerIds },
-        status: 4,
-        refundType: 'debt_offset',
-      },
-      select: {
-        id: true,
-        code: true,
-        refundAmount: true,
-        customerDebtSnapshot: true,
-        refundConfirmedAt: true,
-        createdAt: true,
-        branchId: true,
-        customerId: true,
-        branch: { select: { id: true, name: true } },
-        customer: { select: { id: true, code: true, name: true } },
-      },
-      orderBy: { refundConfirmedAt: 'desc' },
-    });
-
-    // ✅ Lấy TẤT CẢ ReturnOrder từ status >= 2 (đã nhập kho và giảm nợ)
-    // LOẠI TRỪ: status = 4 và refundType = 'cash_refund' (vì đã có phiếu chi)
+    // ✅ Query DUY NHẤT cho tất cả ReturnOrder
     const allReturnOrders = await this.prisma.returnOrder.findMany({
       where: {
         customerId: { in: returnOrderCustomerIds },
-        status: { in: [2, 3, 4, 5] }, // ✅ THÊM status = 5 (CANCELLED)
-        NOT: {
-          AND: [
-            { status: 4 },
-            { refundType: 'cash_refund' },
-            { code: { startsWith: 'TH' } },
-          ],
-        },
+        OR: [
+          // TH: Phiếu trả hàng từ step 2 trở lên (KHÔNG lấy step 3 cash_refund vì đã có phiếu chi)
+          {
+            code: { startsWith: 'TH' },
+            status: { in: [2, 3, 4, 5] },
+            NOT: {
+              AND: [{ status: 4 }, { refundType: 'cash_refund' }],
+            },
+          },
+          // CTN: CHỈ lấy khi đã bị hủy (status = 5)
+          {
+            refundType: 'manual_offset',
+            status: 5, // ✅ CHỈ lấy CTN đã hủy
+          },
+        ],
       },
       select: {
         id: true,
@@ -1000,15 +985,14 @@ export class CustomersService {
         branch: { select: { id: true, name: true } },
         customer: { select: { id: true, code: true, name: true } },
       },
-      orderBy: { confirmedAt: 'desc' },
+      orderBy: { createdAt: 'desc' },
     });
 
-    // ✅ Push vào timeline với type dựa vào refundType
+    // ✅ Push vào timeline
     for (const ro of allReturnOrders) {
       const displayDate =
         ro.refundConfirmedAt || ro.confirmedAt || ro.createdAt;
 
-      // Phân loại type
       let itemType: string;
       let description: string;
 
@@ -1019,9 +1003,6 @@ export class CustomersService {
       } else if (ro.status === 4 && ro.refundType === 'debt_offset') {
         itemType = 'debt_offset';
         description = `Cấn trừ công nợ từ trả hàng ${ro.code}`;
-      } else if (ro.refundType === 'manual_offset') {
-        itemType = 'debt_offset';
-        description = `Cấn trừ công nợ ${ro.code}`;
       } else {
         itemType = 'return_order';
         description = `Trả hàng ${ro.code}`;
@@ -1044,26 +1025,6 @@ export class CustomersService {
             : ro.status === 4 && ro.refundType === 'debt_offset'
               ? 'Cấn trừ công nợ'
               : 'Trả hàng',
-        branch: ro.branch,
-        user: null,
-        customerName: ro.customer?.name || null,
-        customerCode: ro.customer?.code || null,
-      });
-    }
-
-    for (const ro of returnOrders) {
-      timeline.push({
-        type: 'debt_offset',
-        id: ro.id,
-        code: ro.code,
-        date: ro.refundConfirmedAt || ro.createdAt,
-        createdAt: ro.createdAt,
-        amount: Number(ro.refundAmount),
-        method: null,
-        description: `Cấn trừ công nợ từ trả hàng ${ro.code}`,
-        debtSnapshot: 0,
-        status: 4,
-        statusValue: 'Cấn trừ công nợ',
         branch: ro.branch,
         user: null,
         customerName: ro.customer?.name || null,
