@@ -114,7 +114,8 @@ export class InvoicesService {
           delivery: true,
           returnOrders: {
             where: {
-              status: { gte: 2 }, // Chỉ lấy những phiếu đã nhập kho trở lên
+              status: { gte: 2 }, // Đã nhập kho trở lên
+              code: { startsWith: 'TH' }, // CHỈ LẤY PHIẾU TRẢ HÀNG, KHÔNG LẤY CTN
             },
             select: {
               id: true,
@@ -1807,7 +1808,11 @@ export class InvoicesService {
     let totalCashRefund = 0;
     let totalDebtOffset = 0;
 
+    // CHỈ XỬ LÝ ReturnOrder có code bắt đầu bằng 'TH' (phiếu trả hàng)
+    // Không tính CTN (cấn trừ nợ từ modal thanh toán) vì đã được tính vào paidAmount
     for (const ro of returnOrders) {
+      if (!ro.code || !ro.code.startsWith('TH')) continue;
+
       const refundAmount = Number(ro.refundAmount || 0);
 
       // Trả hàng: Tổng refundAmount từ các phiếu đã nhập kho (status >= 2)
