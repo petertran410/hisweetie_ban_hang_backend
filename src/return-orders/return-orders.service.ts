@@ -430,6 +430,7 @@ export class ReturnOrdersService {
 
       let customerDebtSnapshot: number | null = null;
 
+      // Giảm nợ khách hàng
       if (returnOrder.customerId && refundAmount > 0) {
         const debtHolderId =
           returnOrder.customer?.parentId || returnOrder.customerId;
@@ -447,6 +448,75 @@ export class ReturnOrdersService {
         });
 
         customerDebtSnapshot = newDebt;
+
+        // ✅ THÊM: Hủy các phiếu CTN (manual_offset) gắn vào hóa đơn bị trả
+        const invoiceIds = [
+          ...new Set(returnOrder.details.map((d) => d.invoiceId)),
+        ];
+
+        const ctnToCancel = await tx.returnOrder.findMany({
+          where: {
+            invoiceId: { in: invoiceIds },
+            refundType: 'manual_offset',
+            status: 4, // Chỉ hủy CTN đã hoàn thành
+          },
+          select: {
+            id: true,
+            code: true,
+            invoiceId: true,
+            refundAmount: true,
+          },
+        });
+
+        for (const ctn of ctnToCancel) {
+          // Hủy CTN
+          await tx.returnOrder.update({
+            where: { id: ctn.id },
+            data: {
+              status: 5, // CANCELLED
+              statusValue: 'Đã hủy',
+            },
+          });
+
+          // Hoàn lại paidAmount và debtAmount cho Invoice
+          const invoice = await tx.invoice.findUnique({
+            where: { id: ctn.invoiceId },
+            select: { paidAmount: true, debtAmount: true },
+          });
+
+          if (invoice) {
+            await tx.invoice.update({
+              where: { id: ctn.invoiceId },
+              data: {
+                paidAmount:
+                  Number(invoice.paidAmount) - Number(ctn.refundAmount),
+                debtAmount:
+                  Number(invoice.debtAmount) + Number(ctn.refundAmount),
+              },
+            });
+          }
+
+          // Log audit
+          await this.auditLogsService.create({
+            actionType: 'PUT',
+            actionCode: 'CTN_CANCELLED_DUE_TO_RETURN',
+            entityType: 'return_orders',
+            entityId: ctn.id.toString(),
+            entityCode: ctn.code,
+            category: 'return_order',
+            severity: 'warning',
+            snapshot: {
+              code: ctn.code,
+              cancelledBy: returnOrder.code,
+              refundAmount: Number(ctn.refundAmount),
+            },
+            message: `Hủy phiếu cấn trừ nợ ${ctn.code} do trả hàng ${returnOrder.code}`,
+            messageTemplate: 'CTN_CANCELLED_DUE_TO_RETURN',
+            userId,
+            userName: user?.name || 'System',
+            branchId: returnOrder.branchId,
+          });
+        }
       }
 
       await tx.returnOrder.update({

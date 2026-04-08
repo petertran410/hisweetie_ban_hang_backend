@@ -971,6 +971,86 @@ export class CustomersService {
       orderBy: { refundConfirmedAt: 'desc' },
     });
 
+    // ✅ Lấy TẤT CẢ ReturnOrder từ status >= 2 (đã nhập kho và giảm nợ)
+    // LOẠI TRỪ: status = 4 và refundType = 'cash_refund' (vì đã có phiếu chi)
+    const allReturnOrders = await this.prisma.returnOrder.findMany({
+      where: {
+        customerId: { in: returnOrderCustomerIds },
+        status: { in: [2, 3, 4, 5] }, // ✅ THÊM status = 5 (CANCELLED)
+        NOT: {
+          AND: [
+            { status: 4 },
+            { refundType: 'cash_refund' },
+            { code: { startsWith: 'TH' } },
+          ],
+        },
+      },
+      select: {
+        id: true,
+        code: true,
+        status: true,
+        refundAmount: true,
+        refundType: true,
+        customerDebtSnapshot: true,
+        confirmedAt: true,
+        refundConfirmedAt: true,
+        createdAt: true,
+        branchId: true,
+        customerId: true,
+        branch: { select: { id: true, name: true } },
+        customer: { select: { id: true, code: true, name: true } },
+      },
+      orderBy: { confirmedAt: 'desc' },
+    });
+
+    // ✅ Push vào timeline với type dựa vào refundType
+    for (const ro of allReturnOrders) {
+      const displayDate =
+        ro.refundConfirmedAt || ro.confirmedAt || ro.createdAt;
+
+      // Phân loại type
+      let itemType: string;
+      let description: string;
+
+      if (ro.status === 5 && ro.refundType === 'manual_offset') {
+        // CTN đã hủy
+        itemType = 'ctn_cancelled';
+        description = `Hủy cấn trừ nợ ${ro.code}`;
+      } else if (ro.status === 4 && ro.refundType === 'debt_offset') {
+        itemType = 'debt_offset';
+        description = `Cấn trừ công nợ từ trả hàng ${ro.code}`;
+      } else if (ro.refundType === 'manual_offset') {
+        itemType = 'debt_offset';
+        description = `Cấn trừ công nợ ${ro.code}`;
+      } else {
+        itemType = 'return_order';
+        description = `Trả hàng ${ro.code}`;
+      }
+
+      timeline.push({
+        type: itemType,
+        id: ro.id,
+        code: ro.code,
+        date: displayDate,
+        createdAt: ro.createdAt,
+        amount: Number(ro.refundAmount),
+        method: null,
+        description,
+        debtSnapshot: 0,
+        status: ro.status,
+        statusValue:
+          ro.status === 5
+            ? 'Đã hủy'
+            : ro.status === 4 && ro.refundType === 'debt_offset'
+              ? 'Cấn trừ công nợ'
+              : 'Trả hàng',
+        branch: ro.branch,
+        user: null,
+        customerName: ro.customer?.name || null,
+        customerCode: ro.customer?.code || null,
+      });
+    }
+
     for (const ro of returnOrders) {
       timeline.push({
         type: 'debt_offset',
@@ -1000,12 +1080,13 @@ export class CustomersService {
     let runningDebt = 0;
     for (const item of timeline) {
       if (item.type === 'invoice') {
-        runningDebt += item.amount; // Bán hàng: tăng nợ
+        runningDebt += item.amount;
       } else if (item.type === 'return_order') {
-        // Trả hàng: GIẢM nợ (công ty nợ khách)
         runningDebt -= item.amount;
       } else if (item.type === 'expense') {
-        // Phiếu chi: TĂNG nợ lên lại (đã chi tiền, nợ trở về 0)
+        runningDebt += item.amount;
+      } else if (item.type === 'ctn_cancelled') {
+        // ✅ THÊM: Hủy CTN → Cộng lại (hoàn lại dư nợ)
         runningDebt += item.amount;
       } else {
         // payment, debt_offset: trừ đi
