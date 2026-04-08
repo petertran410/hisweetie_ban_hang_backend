@@ -548,27 +548,28 @@ export class ReturnOrdersService {
         );
         actualCashRefund = Math.min(refundAmount, totalPaid);
 
-        if (actualCashRefund > 0) {
-          const debtHolderId =
-            returnOrder.customer?.parentId || returnOrder.customerId;
+        const debtHolderId =
+          returnOrder.customer?.parentId || returnOrder.customerId;
 
-          // THÊM: Cộng lại totalDebt vì công ty phải trả tiền cho khách
-          await tx.customer.update({
-            where: { id: debtHolderId },
-            data: {
-              totalDebt: {
-                increment: refundAmount, // Cộng lại số tiền đã trừ ở step 2
-              },
+        // ✅ LUÔN cộng lại totalDebt khi chọn cash_refund (không phụ thuộc actualCashRefund)
+        await tx.customer.update({
+          where: { id: debtHolderId },
+          data: {
+            totalDebt: {
+              increment: refundAmount,
             },
-          });
+          },
+        });
 
-          const debtHolder = await tx.customer.findUnique({
-            where: { id: debtHolderId },
-            select: { totalDebt: true },
-          });
+        const debtHolder = await tx.customer.findUnique({
+          where: { id: debtHolderId },
+          select: { totalDebt: true },
+        });
 
-          finalDebtSnapshot = Number(debtHolder?.totalDebt || 0);
+        finalDebtSnapshot = Number(debtHolder?.totalDebt || 0);
 
+        // ✅ CHỈ tạo phiếu chi khi actualCashRefund > 0
+        if (actualCashRefund > 0) {
           const cashFlowCode = `CHI-TH-${returnOrder.code}`;
           await tx.cashFlow.create({
             data: {
