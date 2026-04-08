@@ -685,6 +685,71 @@ export class ReturnOrdersService {
         },
       });
 
+      if (refundType === 'debt_offset' && returnOrder.customerId) {
+        const debtHolderId =
+          returnOrder.customer?.parentId || returnOrder.customerId;
+
+        const childIds = await tx.customer.findMany({
+          where: { parentId: debtHolderId },
+          select: { id: true },
+        });
+
+        const allCustomerIds = [
+          debtHolderId,
+          ...childIds.map((c: any) => c.id),
+        ];
+
+        const invoices = await tx.invoice.findMany({
+          where: {
+            customerId: { in: allCustomerIds },
+            status: { notIn: [2] },
+          },
+          select: { grandTotal: true },
+        });
+        const totalGrandTotal = invoices.reduce(
+          (sum: number, inv: any) => sum + Number(inv.grandTotal),
+          0,
+        );
+
+        const cashFlows = await tx.cashFlow.findMany({
+          where: {
+            partnerId: { in: allCustomerIds },
+            partnerType: 'C',
+            isReceipt: true,
+            status: { not: 2 },
+            code: { not: { startsWith: 'TTTUHD' } },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowPaid = cashFlows.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        const debtOffsets = await tx.returnOrder.findMany({
+          where: {
+            customerId: { in: allCustomerIds },
+            status: 4,
+            refundType: 'debt_offset',
+          },
+          select: { refundAmount: true },
+        });
+        const totalDebtOffsets = debtOffsets.reduce(
+          (sum: number, ro: any) => sum + Number(ro.refundAmount),
+          0,
+        );
+
+        const recalculatedDebt =
+          totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
+
+        await tx.customer.update({
+          where: { id: debtHolderId },
+          data: { totalDebt: recalculatedDebt },
+        });
+
+        finalDebtSnapshot = recalculatedDebt;
+      }
+
       await this.auditLogsService.create({
         actionType: 'PUT',
         actionCode: 'RETURN_ORDER_REFUND_CONFIRMED',
