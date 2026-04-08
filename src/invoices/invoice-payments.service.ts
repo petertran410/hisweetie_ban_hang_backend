@@ -258,12 +258,42 @@ export class InvoicePaymentsService {
         customerId: { in: allCustomerIds },
         status: { notIn: [2] },
       },
+      select: { grandTotal: true },
     });
-
-    const totalDebt = invoices.reduce(
-      (sum: number, invoice: any) => sum + Number(invoice.debtAmount),
+    const totalGrandTotal = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
+
+    const cashFlows = await tx.cashFlow.findMany({
+      where: {
+        partnerId: { in: allCustomerIds },
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        code: { not: { startsWith: 'TTTUHD' } },
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowPaid = cashFlows.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const debtOffsets = await tx.returnOrder.findMany({
+      where: {
+        customerId: { in: allCustomerIds },
+        status: 4,
+        refundType: 'debt_offset',
+      },
+      select: { refundAmount: true },
+    });
+    const totalDebtOffsets = debtOffsets.reduce(
+      (sum: number, ro: any) => sum + Number(ro.refundAmount),
+      0,
+    );
+
+    const totalDebt = totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
 
     await tx.customer.update({
       where: { id: targetCustomerId },

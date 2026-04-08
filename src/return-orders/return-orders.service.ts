@@ -669,6 +669,103 @@ export class ReturnOrdersService {
         }
       }
 
+      if (
+        refundType === 'debt_offset' &&
+        returnOrder.customerId &&
+        refundAmount > 0
+      ) {
+        // 1. Cập nhật invoice.debtAmount của hóa đơn bị trả
+        if (returnOrder.invoiceId) {
+          const inv = await tx.invoice.findUnique({
+            where: { id: returnOrder.invoiceId },
+            select: { debtAmount: true },
+          });
+
+          if (inv) {
+            const newDebtAmount = Math.max(
+              0,
+              Number(inv.debtAmount) - refundAmount,
+            );
+            const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+
+            await tx.invoice.update({
+              where: { id: returnOrder.invoiceId },
+              data: {
+                debtAmount: newDebtAmount,
+                status: invoiceStatus,
+                statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              },
+            });
+          }
+        }
+
+        // 2. Recalculate customer.totalDebt bằng đúng công thức
+        const debtHolderId =
+          returnOrder.customer?.parentId || returnOrder.customerId;
+
+        const childIds = await tx.customer.findMany({
+          where: { parentId: debtHolderId },
+          select: { id: true },
+        });
+        const allCustomerIds = [
+          debtHolderId,
+          ...childIds.map((c: any) => c.id),
+        ];
+
+        const allInvoices = await tx.invoice.findMany({
+          where: {
+            customerId: { in: allCustomerIds },
+            status: { notIn: [2] },
+          },
+          select: { grandTotal: true },
+        });
+        const totalGrandTotal = allInvoices.reduce(
+          (sum: number, inv: any) => sum + Number(inv.grandTotal),
+          0,
+        );
+
+        const cashFlows = await tx.cashFlow.findMany({
+          where: {
+            partnerId: { in: allCustomerIds },
+            partnerType: 'C',
+            isReceipt: true,
+            status: { not: 2 },
+            code: { not: { startsWith: 'TTTUHD' } },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowPaid = cashFlows.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        // Query các debt_offset đã hoàn thành (chưa tính RO hiện tại vì chưa update status)
+        const existingDebtOffsets = await tx.returnOrder.findMany({
+          where: {
+            customerId: { in: allCustomerIds },
+            status: 4,
+            refundType: 'debt_offset',
+          },
+          select: { refundAmount: true },
+        });
+        // Cộng thêm refundAmount của RO hiện tại (đang được set status=4 + debt_offset)
+        const totalDebtOffsets =
+          existingDebtOffsets.reduce(
+            (sum: number, ro: any) => sum + Number(ro.refundAmount),
+            0,
+          ) + refundAmount;
+
+        const recalculatedDebt =
+          totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
+
+        await tx.customer.update({
+          where: { id: debtHolderId },
+          data: { totalDebt: recalculatedDebt },
+        });
+
+        finalDebtSnapshot = recalculatedDebt;
+      }
+
       await tx.returnOrder.update({
         where: { id },
         data: {
