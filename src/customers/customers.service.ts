@@ -1000,13 +1000,13 @@ export class CustomersService {
     let runningDebt = 0;
     for (const item of timeline) {
       if (item.type === 'invoice') {
-        runningDebt += item.amount;
+        runningDebt += item.amount; // Bán hàng: tăng nợ
       } else if (item.type === 'return_order') {
-        // Trả hàng: cộng lại (vì đã trừ ở step 2, giờ trả tiền nên cộng lại)
-        runningDebt += item.amount;
-      } else if (item.type === 'expense') {
-        // Phiếu chi: trừ đi (công ty chi tiền cho khách)
+        // Trả hàng: GIẢM nợ (công ty nợ khách)
         runningDebt -= item.amount;
+      } else if (item.type === 'expense') {
+        // Phiếu chi: TĂNG nợ lên lại (đã chi tiền, nợ trở về 0)
+        runningDebt += item.amount;
       } else {
         // payment, debt_offset: trừ đi
         runningDebt -= item.amount;
