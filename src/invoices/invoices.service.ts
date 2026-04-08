@@ -112,13 +112,44 @@ export class InvoicesService {
           details: { include: { product: true } },
           payments: true,
           delivery: true,
+          returnOrders: {
+            where: {
+              status: { gte: 2 }, // Chỉ lấy những phiếu đã nhập kho trở lên
+            },
+            select: {
+              id: true,
+              code: true,
+              status: true,
+              refundAmount: true,
+              refundedAmount: true,
+              refundType: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.invoice.count({ where }),
     ]);
 
-    return { data, total };
+    // Tính toán 4 trường mới cho mỗi invoice
+    const dataWithReturnCalculations = data.map((invoice) => {
+      const returnSummary = this.calculateReturnSummary(
+        invoice.returnOrders || [],
+      );
+
+      return {
+        ...invoice,
+        returnOrderAmount: returnSummary.returnOrderAmount,
+        cashRefundAmount: returnSummary.cashRefundAmount,
+        debtOffsetAmount: returnSummary.debtOffsetAmount,
+        remainingAmount: returnSummary.remainingAmount(
+          Number(invoice.grandTotal),
+          Number(invoice.paidAmount),
+        ),
+      };
+    });
+
+    return { data: dataWithReturnCalculations, total };
   }
 
   async findOne(id: number) {
@@ -1768,6 +1799,47 @@ export class InvoicesService {
     return {
       cancelLog: cancelParts.join('\n- ') + changesSummary,
       newLog: newParts.join('\n- '),
+    };
+  }
+
+  private calculateReturnSummary(returnOrders: any[]) {
+    let totalReturnAmount = 0;
+    let totalCashRefund = 0;
+    let totalDebtOffset = 0;
+
+    for (const ro of returnOrders) {
+      const refundAmount = Number(ro.refundAmount || 0);
+
+      // Trả hàng: Tổng refundAmount từ các phiếu đã nhập kho (status >= 2)
+      if (ro.status >= 2) {
+        totalReturnAmount += refundAmount;
+      }
+
+      // Phiếu chi: refundedAmount từ phiếu với refundType = 'cash_refund' (status = 4)
+      if (ro.status === 4 && ro.refundType === 'cash_refund') {
+        totalCashRefund += Number(ro.refundedAmount || 0);
+      }
+
+      // Cấn trừ nợ: refundAmount từ phiếu với refundType = 'debt_offset' (status = 4)
+      if (ro.status === 4 && ro.refundType === 'debt_offset') {
+        totalDebtOffset += refundAmount;
+      }
+    }
+
+    return {
+      returnOrderAmount: totalReturnAmount,
+      cashRefundAmount: -totalCashRefund, // Hiển thị âm
+      debtOffsetAmount: -totalDebtOffset, // Hiển thị âm
+      remainingAmount: (grandTotal: number, paidAmount: number) => {
+        // Còn lại = Tổng tiền - Khách đã trả - Trả hàng - Phiếu chi - Cấn trừ nợ
+        return (
+          grandTotal -
+          paidAmount -
+          totalReturnAmount -
+          -totalCashRefund -
+          -totalDebtOffset
+        );
+      },
     };
   }
 
