@@ -794,115 +794,161 @@ export class CustomersService {
   }
 
   async getDebtTimeline(customerId: number) {
+    const timeline: any[] = [];
+
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: { id: true, parentId: true },
     });
 
-    if (!customer) return { data: [] };
-
-    const isParentOrStandalone = !customer.parentId;
-
-    const invoiceWhere: any = {
-      status: { notIn: [2, 5] },
-    };
-
-    if (isParentOrStandalone) {
-      // Lấy danh sách tài khoản con
-      const children = await this.prisma.customer.findMany({
-        where: { parentId: customerId },
-        select: { id: true },
-      });
-
-      const allCustomerIds = [customerId, ...children.map((c) => c.id)];
-
-      // Lấy invoice có:
-      // - parentCustomerId = customerId (logic đúng cho data mới)
-      // - HOẶC customerId thuộc parent/children (catch trường hợp parentCustomerId null hoặc sai)
-      invoiceWhere.OR = [
-        { parentCustomerId: customerId },
-        { customerId: { in: allCustomerIds } },
-      ];
-    } else {
-      invoiceWhere.customerId = customerId;
+    if (!customer) {
+      throw new NotFoundException('Không tìm thấy khách hàng');
     }
 
+    const invoiceCustomerIds =
+      customer.parentId === null
+        ? [customerId]
+        : [customerId, customer.parentId];
+
     const invoices = await this.prisma.invoice.findMany({
-      where: invoiceWhere,
-      include: {
+      where: {
+        customerId: { in: invoiceCustomerIds },
+        status: { notIn: [2] },
+      },
+      select: {
+        id: true,
+        code: true,
+        purchaseDate: true,
+        grandTotal: true,
+        createdAt: true,
+        branchId: true,
+        soldById: true,
+        customerId: true,
         branch: { select: { id: true, name: true } },
         soldBy: { select: { id: true, name: true } },
         customer: { select: { id: true, code: true, name: true } },
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { purchaseDate: 'desc' },
     });
 
-    let cashFlowPartnerIds: number[] = [customerId];
-    if (isParentOrStandalone) {
-      const children = await this.prisma.customer.findMany({
-        where: { parentId: customerId },
-        select: { id: true },
-      });
-      cashFlowPartnerIds = [customerId, ...children.map((c) => c.id)];
-    }
-
-    const cashFlows = await this.prisma.cashFlow.findMany({
-      where: {
-        partnerId: { in: cashFlowPartnerIds },
-        partnerType: 'C',
-        isReceipt: true,
-        status: { not: 2 },
-        code: {
-          not: { startsWith: 'TTTUHD' },
-        },
-      },
-      include: {
-        branch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    const timeline: any[] = [
-      ...invoices.map((inv) => ({
-        type: 'invoice' as const,
+    for (const inv of invoices) {
+      timeline.push({
+        type: 'invoice',
         id: inv.id,
         code: inv.code,
         date: inv.purchaseDate,
         createdAt: inv.createdAt,
         amount: Number(inv.grandTotal),
         method: null,
-        description: inv.description,
+        description: 'Bán hàng',
         debtSnapshot: 0,
-        status: inv.status,
-        statusValue: inv.statusValue,
+        status: 1,
+        statusValue: 'Hoàn thành',
         branch: inv.branch,
         user: inv.soldBy,
         customerName: inv.customer?.name || null,
         customerCode: inv.customer?.code || null,
-      })),
-      ...cashFlows.map((cf) => ({
-        type: 'payment' as const,
+      });
+    }
+
+    const cashFlowPartnerIds =
+      customer.parentId === null
+        ? [customerId]
+        : [customerId, customer.parentId];
+
+    const cashFlows = await this.prisma.cashFlow.findMany({
+      where: {
+        partnerType: 'C',
+        partnerId: { in: cashFlowPartnerIds },
+        // THÊM: Lấy cả phiếu thu (isReceipt = true) VÀ phiếu chi từ trả hàng (CHI-TH)
+        OR: [{ isReceipt: true }, { code: { startsWith: 'CHI-TH' } }],
+      },
+      select: {
+        id: true,
+        code: true,
+        isReceipt: true,
+        amount: true,
+        transDate: true,
+        method: true,
+        description: true,
+        createdAt: true,
+        branchId: true,
+        createdBy: true,
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+      },
+      orderBy: { transDate: 'desc' },
+    });
+
+    for (const cf of cashFlows) {
+      timeline.push({
+        type: cf.isReceipt ? 'payment' : 'expense', // THÊM: phân biệt payment vs expense
         id: cf.id,
         code: cf.code,
         date: cf.transDate,
         createdAt: cf.createdAt,
         amount: Number(cf.amount),
         method: cf.method,
-        description: cf.description,
+        description:
+          cf.description ||
+          (cf.isReceipt ? 'Thu tiền khách hàng' : 'Chi hoàn tiền trả hàng'),
         debtSnapshot: 0,
-        status: cf.status,
-        statusValue: cf.statusValue,
+        status: 0,
+        statusValue: cf.isReceipt ? 'Đã thanh toán' : 'Đã chi',
         branch: cf.branch,
         user: cf.creator,
-        customerName: cf.partnerName || null,
+        customerName: null,
         customerCode: null,
-      })),
-    ];
+      });
+    }
 
-    const returnOrderCustomerIds = isParentOrStandalone
-      ? [customerId, ...cashFlowPartnerIds]
-      : [customerId];
+    const returnOrderCustomerIds =
+      customer.parentId === null
+        ? [customerId, ...cashFlowPartnerIds]
+        : [customerId];
+
+    // THÊM: Lấy ReturnOrder với refundType = 'cash_refund' để hiển thị trong timeline
+    const returnOrdersCashRefund = await this.prisma.returnOrder.findMany({
+      where: {
+        customerId: { in: returnOrderCustomerIds },
+        status: 4,
+        refundType: 'cash_refund',
+      },
+      select: {
+        id: true,
+        code: true,
+        refundAmount: true,
+        refundedAmount: true,
+        customerDebtSnapshot: true,
+        refundConfirmedAt: true,
+        createdAt: true,
+        branchId: true,
+        customerId: true,
+        branch: { select: { id: true, name: true } },
+        customer: { select: { id: true, code: true, name: true } },
+      },
+      orderBy: { refundConfirmedAt: 'desc' },
+    });
+
+    for (const ro of returnOrdersCashRefund) {
+      timeline.push({
+        type: 'return_order',
+        id: ro.id,
+        code: ro.code,
+        date: ro.refundConfirmedAt || ro.createdAt,
+        createdAt: ro.createdAt,
+        amount: Number(ro.refundAmount),
+        method: null,
+        description: `Trả hàng ${ro.code}`,
+        debtSnapshot: 0,
+        status: 4,
+        statusValue: 'Trả hàng',
+        branch: ro.branch,
+        user: null,
+        customerName: ro.customer?.name || null,
+        customerCode: ro.customer?.code || null,
+      });
+    }
 
     const returnOrders = await this.prisma.returnOrder.findMany({
       where: {
@@ -945,7 +991,7 @@ export class CustomersService {
       });
     }
 
-    // Tính lại debtSnapshot theo zigzag (sắp xếp tăng dần theo thời gian)
+    // Tính lại debtSnapshot theo zigzag
     timeline.sort(
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
@@ -955,23 +1001,32 @@ export class CustomersService {
     for (const item of timeline) {
       if (item.type === 'invoice') {
         runningDebt += item.amount;
+      } else if (item.type === 'return_order') {
+        // Trả hàng: cộng lại (vì đã trừ ở step 2, giờ trả tiền nên cộng lại)
+        runningDebt += item.amount;
+      } else if (item.type === 'expense') {
+        // Phiếu chi: trừ đi (công ty chi tiền cho khách)
+        runningDebt -= item.amount;
       } else {
+        // payment, debt_offset: trừ đi
         runningDebt -= item.amount;
       }
       item.debtSnapshot = runningDebt;
     }
 
-    // Sắp xếp giảm dần, tiebreaker: payment/debt_offset trước invoice cùng timestamp
+    // Sắp xếp giảm dần
     const typeOrder: Record<string, number> = {
       payment: 0,
-      debt_offset: 1,
-      invoice: 2,
+      expense: 1,
+      debt_offset: 2,
+      return_order: 3,
+      invoice: 4,
     };
     timeline.sort((a, b) => {
       const timeDiff =
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       if (timeDiff !== 0) return timeDiff;
-      return (typeOrder[a.type] ?? 3) - (typeOrder[b.type] ?? 3);
+      return (typeOrder[a.type] ?? 5) - (typeOrder[b.type] ?? 5);
     });
 
     return { data: timeline };

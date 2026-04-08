@@ -503,9 +503,7 @@ export class ReturnOrdersService {
         include: {
           details: true,
           invoice: true,
-          customer: {
-            select: { id: true, parentId: true, name: true, totalDebt: true },
-          },
+          customer: true,
         },
       });
 
@@ -554,6 +552,16 @@ export class ReturnOrdersService {
           const debtHolderId =
             returnOrder.customer?.parentId || returnOrder.customerId;
 
+          // THÊM: Cộng lại totalDebt vì công ty phải trả tiền cho khách
+          await tx.customer.update({
+            where: { id: debtHolderId },
+            data: {
+              totalDebt: {
+                increment: refundAmount, // Cộng lại số tiền đã trừ ở step 2
+              },
+            },
+          });
+
           const debtHolder = await tx.customer.findUnique({
             where: { id: debtHolderId },
             select: { totalDebt: true },
@@ -572,6 +580,9 @@ export class ReturnOrdersService {
               method: dto.method || 'cash',
               accountId: dto.accountId || null,
               partnerType: 'C',
+              cashFlowGroupId: 7,
+              contactNumber: returnOrder.customer?.contactNumber,
+              address: returnOrder.customer?.address,
               partnerId: returnOrder.customerId,
               partnerName: returnOrder.customer?.name,
               description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
