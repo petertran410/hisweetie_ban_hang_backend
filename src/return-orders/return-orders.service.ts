@@ -472,77 +472,6 @@ export class ReturnOrdersService {
         });
 
         customerDebtSnapshot = newDebt;
-
-        // ✅ THÊM: Hủy các phiếu CTN (manual_offset) gắn vào hóa đơn bị trả
-        const invoiceIds = [
-          ...new Set(returnOrder.details.map((d) => d.invoiceId)),
-        ];
-
-        const ctnToCancel = await tx.returnOrder.findMany({
-          where: {
-            invoiceId: { in: invoiceIds },
-            refundType: 'manual_offset',
-            status: 4, // Chỉ hủy CTN đã hoàn thành
-          },
-          select: {
-            id: true,
-            code: true,
-            invoiceId: true,
-            refundAmount: true,
-          },
-        });
-
-        for (const ctn of ctnToCancel) {
-          // Hủy CTN
-          await tx.returnOrder.update({
-            where: { id: ctn.id },
-            data: {
-              status: 5,
-              statusValue: 'Đã hủy',
-            },
-          });
-
-          // ✅ FIX: Check invoiceId không null
-          if (ctn.invoiceId) {
-            const invoice = await tx.invoice.findUnique({
-              where: { id: ctn.invoiceId },
-              select: { paidAmount: true, debtAmount: true },
-            });
-
-            if (invoice) {
-              await tx.invoice.update({
-                where: { id: ctn.invoiceId },
-                data: {
-                  paidAmount:
-                    Number(invoice.paidAmount) - Number(ctn.refundAmount),
-                  debtAmount:
-                    Number(invoice.debtAmount) + Number(ctn.refundAmount),
-                },
-              });
-            }
-          }
-
-          // Log audit
-          await this.auditLogsService.create({
-            actionType: 'PUT',
-            actionCode: 'CTN_CANCELLED_DUE_TO_RETURN',
-            entityType: 'return_orders',
-            entityId: ctn.id.toString(),
-            entityCode: ctn.code,
-            category: 'return_order',
-            severity: 'warning',
-            snapshot: {
-              code: ctn.code,
-              cancelledBy: returnOrder.code,
-              refundAmount: Number(ctn.refundAmount),
-            },
-            message: `Hủy phiếu cấn trừ nợ ${ctn.code} do trả hàng ${returnOrder.code}`,
-            messageTemplate: 'CTN_CANCELLED_DUE_TO_RETURN',
-            userId,
-            userName: user?.name || 'System',
-            branchId: returnOrder.branchId,
-          });
-        }
       }
 
       await tx.returnOrder.update({
@@ -619,128 +548,58 @@ export class ReturnOrdersService {
       });
 
       const refundAmount = Number(returnOrder.refundAmount);
-      const refundType = dto.refundType || 'cash_refund';
+      const dtoRefundType = dto.refundType || 'debt_offset';
 
-      let actualCashRefund = 0;
-      let finalDebtSnapshot = returnOrder.customerDebtSnapshot
-        ? Number(returnOrder.customerDebtSnapshot)
-        : null;
-
-      if (
-        refundType === 'cash_refund' &&
-        returnOrder.customerId &&
-        refundAmount > 0
-      ) {
+      // ── Tính originalDebt (nợ còn lại của hóa đơn trước khi trả hàng)
+      // invoice.paidAmount KHÔNG thay đổi ở bước 2 → phản ánh đúng trạng thái trước khi trả hàng
+      let originalDebt = 0;
+      if (returnOrder.invoice) {
+        originalDebt = Math.max(
+          0,
+          Number(returnOrder.invoice.grandTotal) -
+            Number(returnOrder.invoice.paidAmount),
+        );
+      } else if (returnOrder.details.length > 0) {
         const invoiceIds = [
           ...new Set(returnOrder.details.map((d) => d.invoiceId)),
         ];
         const invoices = await tx.invoice.findMany({
           where: { id: { in: invoiceIds } },
-          select: { id: true, paidAmount: true },
+          select: { grandTotal: true, paidAmount: true },
         });
-        const totalPaid = invoices.reduce(
-          (sum, inv) => sum + Number(inv.paidAmount),
+        originalDebt = invoices.reduce(
+          (sum, inv) =>
+            sum + Math.max(0, Number(inv.grandTotal) - Number(inv.paidAmount)),
           0,
         );
-        actualCashRefund = Math.min(refundAmount, totalPaid);
-
-        const debtHolderId =
-          returnOrder.customer?.parentId || returnOrder.customerId;
-
-        // ✅ LUÔN cộng lại totalDebt khi chọn cash_refund (không phụ thuộc actualCashRefund)
-        await tx.customer.update({
-          where: { id: debtHolderId },
-          data: {
-            totalDebt: {
-              increment: refundAmount,
-            },
-          },
-        });
-
-        const debtHolder = await tx.customer.findUnique({
-          where: { id: debtHolderId },
-          select: { totalDebt: true },
-        });
-
-        finalDebtSnapshot = Number(debtHolder?.totalDebt || 0);
-
-        // ✅ CHỈ tạo phiếu chi khi actualCashRefund > 0
-        if (actualCashRefund > 0) {
-          const cashFlowCode = `CHI-TH-${returnOrder.code}`;
-          await tx.cashFlow.create({
-            data: {
-              code: cashFlowCode,
-              branchId: returnOrder.branchId,
-              isReceipt: false,
-              amount: actualCashRefund,
-              transDate: new Date(),
-              method: dto.method || 'cash',
-              accountId: dto.accountId || null,
-              partnerType: 'C',
-              cashFlowGroupId: 7,
-              contactNumber: returnOrder.customer?.contactNumber,
-              address: returnOrder.customer?.address,
-              partnerId: returnOrder.customerId,
-              partnerName: returnOrder.customer?.name,
-              description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
-              status: 0,
-              statusValue: 'Đã chi',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-              customerDebtSnapshot: finalDebtSnapshot,
-            },
-          });
-        }
       }
 
-      if (
-        refundType === 'debt_offset' &&
-        returnOrder.customerId &&
-        refundAmount > 0
-      ) {
-        // 1. Cập nhật invoice.debtAmount của hóa đơn bị trả
-        if (returnOrder.invoiceId) {
-          const inv = await tx.invoice.findUnique({
-            where: { id: returnOrder.invoiceId },
-            select: { debtAmount: true },
-          });
+      // effectiveRefundAmount = phần dư vượt quá nợ → cần hoàn lại cho khách
+      const effectiveRefundAmount = Math.max(0, refundAmount - originalDebt);
 
-          if (inv) {
-            const newDebtAmount = Math.max(
-              0,
-              Number(inv.debtAmount) - refundAmount,
-            );
-            const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+      // refundType thực tế: nếu không có khoản dư thì bắt buộc debt_offset
+      const refundType =
+        effectiveRefundAmount === 0 ? 'debt_offset' : dtoRefundType;
 
-            await tx.invoice.update({
-              where: { id: returnOrder.invoiceId },
-              data: {
-                debtAmount: newDebtAmount,
-                status: invoiceStatus,
-                statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
-              },
-            });
-          }
-        }
+      let actualCashRefund = 0;
+      let finalDebtSnapshot: number | null = null;
 
-        // 2. Recalculate customer.totalDebt bằng đúng công thức
-        const debtHolderId =
-          returnOrder.customer?.parentId || returnOrder.customerId;
+      const debtHolderId =
+        returnOrder.customer?.parentId || returnOrder.customerId!;
 
-        const childIds = await tx.customer.findMany({
-          where: { parentId: debtHolderId },
-          select: { id: true },
-        });
-        const allCustomerIds = [
-          debtHolderId,
-          ...childIds.map((c: any) => c.id),
-        ];
+      // ── Helper: lấy allCustomerIds
+      const childIds = await tx.customer.findMany({
+        where: { parentId: debtHolderId },
+        select: { id: true },
+      });
+      const allCustomerIds = [debtHolderId, ...childIds.map((c: any) => c.id)];
 
+      // ── Helper: recalculate totalDebt theo công thức chuẩn
+      // Gọi TRƯỚC returnOrder.update nên RO hiện tại vẫn ở status=2
+      // → cộng thủ công refundAmount vào totalDebtOffsets để phản ánh việc sắp chuyển sang 4+debt_offset
+      const recalculateDebt = async (): Promise<number> => {
         const allInvoices = await tx.invoice.findMany({
-          where: {
-            customerId: { in: allCustomerIds },
-            status: { notIn: [2] },
-          },
+          where: { customerId: { in: allCustomerIds }, status: { notIn: [2] } },
           select: { grandTotal: true },
         });
         const totalGrandTotal = allInvoices.reduce(
@@ -777,7 +636,6 @@ export class ReturnOrdersService {
           0,
         );
 
-        // Query các debt_offset đã hoàn thành (chưa tính RO hiện tại vì chưa update status)
         const existingDebtOffsets = await tx.returnOrder.findMany({
           where: {
             customerId: { in: allCustomerIds },
@@ -786,25 +644,74 @@ export class ReturnOrdersService {
           },
           select: { refundAmount: true },
         });
-        // Cộng thêm refundAmount của RO hiện tại (đang được set status=4 + debt_offset)
+        // Cộng refundAmount của RO hiện tại vì sắp được set status=4+debt_offset
         const totalDebtOffsets =
           existingDebtOffsets.reduce(
             (sum: number, ro: any) => sum + Number(ro.refundAmount),
             0,
           ) + refundAmount;
 
-        const recalculatedDebt =
+        return (
           totalGrandTotal -
           totalCashFlowReceived +
           totalCashFlowPaidOut -
-          totalDebtOffsets;
+          totalDebtOffsets
+        );
+      };
 
+      // ── Xử lý theo từng case
+      if (effectiveRefundAmount === 0) {
+        // Case 1 (return == debt) hoặc Case 3 (return < debt)
+        // Bước 2 đã xử lý phần nợ, bước 3 chỉ cần recalculate để đồng bộ formula
+        const recalculated = await recalculateDebt();
         await tx.customer.update({
           where: { id: debtHolderId },
-          data: { totalDebt: recalculatedDebt },
+          data: { totalDebt: recalculated },
+        });
+        finalDebtSnapshot = recalculated;
+      } else {
+        // Case 2 (return > debt): phần dư cần hoàn lại cho khách
+        // Bước 2 đã giảm totalDebt thêm effectiveRefundAmount → cộng lại để phản ánh
+        // rằng phần dư đó được xử lý (hoặc chi tiền hoặc cấn trừ)
+        await tx.customer.update({
+          where: { id: debtHolderId },
+          data: { totalDebt: { increment: effectiveRefundAmount } },
         });
 
-        finalDebtSnapshot = recalculatedDebt;
+        const updatedDebtHolder = await tx.customer.findUnique({
+          where: { id: debtHolderId },
+          select: { totalDebt: true },
+        });
+        finalDebtSnapshot = Number(updatedDebtHolder?.totalDebt || 0);
+
+        // Chỉ tạo phiếu chi khi chọn cash_refund
+        if (refundType === 'cash_refund') {
+          actualCashRefund = effectiveRefundAmount;
+          const cashFlowCode = `CHI-TH-${returnOrder.code}`;
+          await tx.cashFlow.create({
+            data: {
+              code: cashFlowCode,
+              branchId: returnOrder.branchId,
+              isReceipt: false,
+              amount: actualCashRefund,
+              transDate: new Date(),
+              method: dto.method || 'cash',
+              accountId: dto.accountId || null,
+              partnerType: 'C',
+              cashFlowGroupId: 7,
+              contactNumber: returnOrder.customer?.contactNumber,
+              address: returnOrder.customer?.address,
+              partnerId: returnOrder.customerId,
+              partnerName: returnOrder.customer?.name,
+              description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
+              status: 0,
+              statusValue: 'Đã chi',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+              customerDebtSnapshot: finalDebtSnapshot,
+            },
+          });
+        }
       }
 
       await tx.returnOrder.update({
@@ -823,88 +730,6 @@ export class ReturnOrdersService {
         },
       });
 
-      if (refundType === 'debt_offset' && returnOrder.customerId) {
-        const debtHolderId =
-          returnOrder.customer?.parentId || returnOrder.customerId;
-
-        const childIds = await tx.customer.findMany({
-          where: { parentId: debtHolderId },
-          select: { id: true },
-        });
-
-        const allCustomerIds = [
-          debtHolderId,
-          ...childIds.map((c: any) => c.id),
-        ];
-
-        const invoices = await tx.invoice.findMany({
-          where: {
-            customerId: { in: allCustomerIds },
-            status: { notIn: [2] },
-          },
-          select: { grandTotal: true },
-        });
-        const totalGrandTotal = invoices.reduce(
-          (sum: number, inv: any) => sum + Number(inv.grandTotal),
-          0,
-        );
-
-        const cashFlowsReceipt = await tx.cashFlow.findMany({
-          where: {
-            partnerId: { in: allCustomerIds },
-            partnerType: 'C',
-            isReceipt: true,
-            status: { not: 2 },
-            code: { not: { startsWith: 'TTTUHD' } },
-          },
-          select: { amount: true },
-        });
-        const totalCashFlowReceived = cashFlowsReceipt.reduce(
-          (sum: number, cf: any) => sum + Number(cf.amount),
-          0,
-        );
-
-        const cashFlowsPayment = await tx.cashFlow.findMany({
-          where: {
-            partnerId: { in: allCustomerIds },
-            partnerType: 'C',
-            isReceipt: false,
-            status: { not: 2 },
-          },
-          select: { amount: true },
-        });
-        const totalCashFlowPaidOut = cashFlowsPayment.reduce(
-          (sum: number, cf: any) => sum + Number(cf.amount),
-          0,
-        );
-
-        const debtOffsets = await tx.returnOrder.findMany({
-          where: {
-            customerId: { in: allCustomerIds },
-            status: 4,
-            refundType: 'debt_offset',
-          },
-          select: { refundAmount: true },
-        });
-        const totalDebtOffsets = debtOffsets.reduce(
-          (sum: number, ro: any) => sum + Number(ro.refundAmount),
-          0,
-        );
-
-        const recalculatedDebt =
-          totalGrandTotal -
-          totalCashFlowReceived +
-          totalCashFlowPaidOut -
-          totalDebtOffsets;
-
-        await tx.customer.update({
-          where: { id: debtHolderId },
-          data: { totalDebt: recalculatedDebt },
-        });
-
-        finalDebtSnapshot = recalculatedDebt;
-      }
-
       await this.auditLogsService.create({
         actionType: 'PUT',
         actionCode: 'RETURN_ORDER_REFUND_CONFIRMED',
@@ -916,6 +741,7 @@ export class ReturnOrdersService {
         snapshot: {
           code: returnOrder.code,
           refundAmount,
+          effectiveRefundAmount,
           refundType,
           actualCashRefund,
           customerName: returnOrder.customer?.name || 'N/A',
