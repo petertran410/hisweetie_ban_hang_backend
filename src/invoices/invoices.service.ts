@@ -1024,7 +1024,7 @@ export class InvoicesService {
       0,
     );
 
-    const cashFlowsPayment = await tx.cashFlow.findMany({
+    const cashFlowsPaidOut = await tx.cashFlow.findMany({
       where: {
         partnerId: { in: allCustomerIds },
         partnerType: 'C',
@@ -1033,7 +1033,7 @@ export class InvoicesService {
       },
       select: { amount: true },
     });
-    const totalCashFlowPaidOut = cashFlowsPayment.reduce(
+    const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
       (sum: number, cf: any) => sum + Number(cf.amount),
       0,
     );

@@ -428,6 +428,30 @@ export class ReturnOrdersService {
         0,
       );
 
+      if (returnOrder.invoiceId && refundAmount > 0) {
+        const inv = await tx.invoice.findUnique({
+          where: { id: returnOrder.invoiceId },
+          select: { debtAmount: true },
+        });
+
+        if (inv) {
+          const newDebtAmount = Math.max(
+            0,
+            Number(inv.debtAmount) - refundAmount,
+          );
+          const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+
+          await tx.invoice.update({
+            where: { id: returnOrder.invoiceId },
+            data: {
+              debtAmount: newDebtAmount,
+              status: invoiceStatus,
+              statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+            },
+          });
+        }
+      }
+
       let customerDebtSnapshot: number | null = null;
 
       // Giảm nợ khách hàng
@@ -724,7 +748,7 @@ export class ReturnOrdersService {
           0,
         );
 
-        const cashFlows = await tx.cashFlow.findMany({
+        const cashFlowsReceipt = await tx.cashFlow.findMany({
           where: {
             partnerId: { in: allCustomerIds },
             partnerType: 'C',
@@ -734,7 +758,21 @@ export class ReturnOrdersService {
           },
           select: { amount: true },
         });
-        const totalCashFlowPaid = cashFlows.reduce(
+        const totalCashFlowReceived = cashFlowsReceipt.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        const cashFlowsPayment = await tx.cashFlow.findMany({
+          where: {
+            partnerId: { in: allCustomerIds },
+            partnerType: 'C',
+            isReceipt: false,
+            status: { not: 2 },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowPaidOut = cashFlowsPayment.reduce(
           (sum: number, cf: any) => sum + Number(cf.amount),
           0,
         );
@@ -756,7 +794,10 @@ export class ReturnOrdersService {
           ) + refundAmount;
 
         const recalculatedDebt =
-          totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
+          totalGrandTotal -
+          totalCashFlowReceived +
+          totalCashFlowPaidOut -
+          totalDebtOffsets;
 
         await tx.customer.update({
           where: { id: debtHolderId },
@@ -808,7 +849,7 @@ export class ReturnOrdersService {
           0,
         );
 
-        const cashFlows = await tx.cashFlow.findMany({
+        const cashFlowsReceipt = await tx.cashFlow.findMany({
           where: {
             partnerId: { in: allCustomerIds },
             partnerType: 'C',
@@ -818,7 +859,21 @@ export class ReturnOrdersService {
           },
           select: { amount: true },
         });
-        const totalCashFlowPaid = cashFlows.reduce(
+        const totalCashFlowReceived = cashFlowsReceipt.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        const cashFlowsPayment = await tx.cashFlow.findMany({
+          where: {
+            partnerId: { in: allCustomerIds },
+            partnerType: 'C',
+            isReceipt: false,
+            status: { not: 2 },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowPaidOut = cashFlowsPayment.reduce(
           (sum: number, cf: any) => sum + Number(cf.amount),
           0,
         );
@@ -837,7 +892,10 @@ export class ReturnOrdersService {
         );
 
         const recalculatedDebt =
-          totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
+          totalGrandTotal -
+          totalCashFlowReceived +
+          totalCashFlowPaidOut -
+          totalDebtOffsets;
 
         await tx.customer.update({
           where: { id: debtHolderId },
