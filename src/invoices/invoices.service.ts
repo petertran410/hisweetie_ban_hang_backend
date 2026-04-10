@@ -1866,7 +1866,7 @@ export class InvoicesService {
 
     // Cấn trừ nợ chỉ hiển thị khi hóa đơn có thanh toán trước (paidAmount > 0)
     // Với hóa đơn chưa trả: "Trả hàng" đã đại diện cho việc giảm nợ rồi
-    const displayDebtOffset = paidAmount > 0 ? -totalDebtOffset : 0;
+    const displayDebtOffset = paidAmount > 0 ? -effectiveDebtOffset : 0;
 
     const remainingAmount =
       grandTotal -
@@ -1877,8 +1877,8 @@ export class InvoicesService {
 
     return {
       returnOrderAmount: totalReturnAmount,
-      cashRefundAmount: -totalCashRefund,
-      debtOffsetAmount: displayDebtOffset,
+      cashRefundAmount: totalCashRefund,
+      debtOffsetAmount: effectiveDebtOffset,
       remainingAmount,
     };
   }
