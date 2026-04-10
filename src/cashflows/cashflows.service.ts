@@ -679,18 +679,94 @@ export class CashFlowsService {
       });
 
       if (invoice.customerId) {
-        const invoices = await tx.invoice.findMany({
-          where: { customerId: invoice.customerId },
-        });
-        const totalDebt = invoices.reduce(
-          (sum: number, inv: any) => sum + Number(inv.debtAmount),
-          0,
-        );
-
-        await tx.customer.update({
+        const customer = await tx.customer.findUnique({
           where: { id: invoice.customerId },
-          data: { totalDebt },
+          select: { id: true, parentId: true },
         });
+
+        if (customer) {
+          const targetCustomerId = customer.parentId || customer.id;
+
+          const childIds = await tx.customer.findMany({
+            where: { parentId: targetCustomerId },
+            select: { id: true },
+          });
+          const allCustomerIds = [
+            targetCustomerId,
+            ...childIds.map((c: any) => c.id),
+          ];
+
+          const allInvoices = await tx.invoice.findMany({
+            where: {
+              customerId: { in: allCustomerIds },
+              status: { notIn: [2] },
+            },
+            select: { grandTotal: true },
+          });
+          const totalGrandTotal = allInvoices.reduce(
+            (sum: number, inv: any) => sum + Number(inv.grandTotal),
+            0,
+          );
+
+          const cashFlowsReceipt = await tx.cashFlow.findMany({
+            where: {
+              partnerId: { in: allCustomerIds },
+              partnerType: 'C',
+              isReceipt: true,
+              status: { not: 2 },
+              code: { not: { startsWith: 'TTTUHD' } },
+            },
+            select: { amount: true },
+          });
+          const totalCashFlowReceived = cashFlowsReceipt.reduce(
+            (sum: number, cf: any) => sum + Number(cf.amount),
+            0,
+          );
+
+          const cashFlowsPayment = await tx.cashFlow.findMany({
+            where: {
+              partnerId: { in: allCustomerIds },
+              partnerType: 'C',
+              isReceipt: false,
+              status: { not: 2 },
+            },
+            select: { amount: true },
+          });
+          const totalCashFlowPaidOut = cashFlowsPayment.reduce(
+            (sum: number, cf: any) => sum + Number(cf.amount),
+            0,
+          );
+
+          const debtOffsets = await tx.returnOrder.findMany({
+            where: {
+              customerId: { in: allCustomerIds },
+              OR: [{ status: 2 }, { status: 4, refundType: 'debt_offset' }],
+            },
+            select: { refundAmount: true },
+          });
+          const totalDebtOffsets = debtOffsets.reduce(
+            (sum: number, ro: any) => sum + Number(ro.refundAmount),
+            0,
+          );
+
+          const totalDebt =
+            totalGrandTotal -
+            totalCashFlowReceived +
+            totalCashFlowPaidOut -
+            totalDebtOffsets;
+
+          await tx.customer.update({
+            where: { id: targetCustomerId },
+            data: { totalDebt },
+          });
+
+          if (childIds.length > 0) {
+            await tx.customer.updateMany({
+              where: { id: { in: childIds.map((c: any) => c.id) } },
+              data: { totalDebt: 0 },
+            });
+          }
+        }
       }
 
       return {
@@ -927,7 +1003,12 @@ export class CashFlowsService {
 
       const invoicePayments: any[] = [];
 
-      if (cashFlow && dto.allocateToInvoices && dto.invoices && dto.invoices.length > 0) {
+      if (
+        cashFlow &&
+        dto.allocateToInvoices &&
+        dto.invoices &&
+        dto.invoices.length > 0
+      ) {
         for (const invoice of dto.invoices) {
           const invoiceData = await tx.invoice.findUnique({
             where: { id: invoice.invoiceId },
