@@ -659,10 +659,7 @@ export class ReturnOrdersService {
         );
       };
 
-      // ── Xử lý theo từng case
       if (effectiveRefundAmount === 0) {
-        // Case 1 (return == debt) hoặc Case 3 (return < debt)
-        // Bước 2 đã xử lý phần nợ, bước 3 chỉ cần recalculate để đồng bộ formula
         const recalculated = await recalculateDebt();
         await tx.customer.update({
           where: { id: debtHolderId },
@@ -670,23 +667,26 @@ export class ReturnOrdersService {
         });
         finalDebtSnapshot = recalculated;
       } else {
-        // Case 2 (return > debt): phần dư cần hoàn lại cho khách
-        // Bước 2 đã giảm totalDebt thêm effectiveRefundAmount → cộng lại để phản ánh
-        // rằng phần dư đó được xử lý (hoặc chi tiền hoặc cấn trừ)
-        await tx.customer.update({
-          where: { id: debtHolderId },
-          data: { totalDebt: { increment: effectiveRefundAmount } },
-        });
+        // Case 2 (return > debt): refundAmount > originalDebt
+        // Bước 2 đã giảm totalDebt bằng toàn bộ refundAmount → có thể đã âm
+        // effectiveRefundAmount = phần dư vượt quá debt (cửa hàng nợ khách)
 
-        const updatedDebtHolder = await tx.customer.findUnique({
-          where: { id: debtHolderId },
-          select: { totalDebt: true },
-        });
-        finalDebtSnapshot = Number(updatedDebtHolder?.totalDebt || 0);
-
-        // Chỉ tạo phiếu chi khi chọn cash_refund
         if (refundType === 'cash_refund') {
+          // Hoàn tiền mặt: cộng lại effectiveRefundAmount vì cửa hàng đã chi tiền thật
+          // Ví dụ: totalDebt = -20k, chi 20k tiền mặt → debt = 0 (đã giải quyết xong)
           actualCashRefund = effectiveRefundAmount;
+
+          await tx.customer.update({
+            where: { id: debtHolderId },
+            data: { totalDebt: { increment: effectiveRefundAmount } },
+          });
+
+          const updatedDebtHolder = await tx.customer.findUnique({
+            where: { id: debtHolderId },
+            select: { totalDebt: true },
+          });
+          finalDebtSnapshot = Number(updatedDebtHolder?.totalDebt || 0);
+
           const cashFlowCode = `CHI-TH-${returnOrder.code}`;
           await tx.cashFlow.create({
             data: {
@@ -711,6 +711,16 @@ export class ReturnOrdersService {
               customerDebtSnapshot: finalDebtSnapshot,
             },
           });
+        } else {
+          // debt_offset: cửa hàng CHƯA chi tiền thật
+          // Không increment totalDebt → giữ nguyên mức âm (cửa hàng vẫn nợ khách)
+          // Ví dụ: totalDebt = -20k sau bước 2, chọn debt_offset → vẫn = -20k
+          const debtHolder = await tx.customer.findUnique({
+            where: { id: debtHolderId },
+            select: { totalDebt: true },
+          });
+          finalDebtSnapshot = Number(debtHolder?.totalDebt || 0);
+          // totalDebt KHÔNG thay đổi
         }
       }
 
