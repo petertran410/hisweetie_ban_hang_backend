@@ -946,6 +946,15 @@ export class CashFlowsService {
         },
       });
 
+      const childIds = await tx.customer.findMany({
+        where: { parentId: dto.customerId },
+        select: { id: true },
+      });
+      const allCustomerIds = [
+        dto.customerId,
+        ...childIds.map((c: any) => c.id),
+      ];
+
       if (!customer) {
         throw new Error('Không tìm thấy khách hàng');
       }
@@ -1167,6 +1176,41 @@ export class CashFlowsService {
               createdByName: user?.name || 'System',
             },
           });
+        }
+
+        let creditToConsume = dto.debtOffsets.reduce(
+          (sum: number, d: any) => sum + d.amount,
+          0,
+        );
+
+        if (creditToConsume > 0) {
+          const overpaidInvoices = await tx.invoice.findMany({
+            where: {
+              customerId: { in: allCustomerIds },
+              debtAmount: { lt: 0 },
+              status: { not: 2 },
+            },
+            select: { id: true, debtAmount: true, status: true },
+            orderBy: { purchaseDate: 'asc' }, // oldest first
+          });
+
+          for (const inv of overpaidInvoices) {
+            if (creditToConsume <= 0) break;
+
+            const available = Math.abs(Number(inv.debtAmount)); // e.g. 10k
+            const consume = Math.min(available, creditToConsume);
+
+            await tx.invoice.update({
+              where: { id: inv.id },
+              data: {
+                debtAmount: Number(inv.debtAmount) + consume, // -10k + 10k = 0
+                status: 1, // COMPLETED
+                statusValue: 'Hoàn thành',
+              },
+            });
+
+            creditToConsume -= consume;
+          }
         }
       }
 
