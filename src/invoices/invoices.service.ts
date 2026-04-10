@@ -1009,8 +1009,7 @@ export class InvoicesService {
     );
     const totalPurchased = totalGrandTotal;
 
-    // Tổng tiền thu từ khách qua phiếu thu (cashflow)
-    const cashFlows = await tx.cashFlow.findMany({
+    const cashFlowsReceipt = await tx.cashFlow.findMany({
       where: {
         partnerId: { in: allCustomerIds },
         partnerType: 'C',
@@ -1020,7 +1019,21 @@ export class InvoicesService {
       },
       select: { amount: true },
     });
-    const totalCashFlowPaid = cashFlows.reduce(
+    const totalCashFlowReceived = cashFlowsReceipt.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const cashFlowsPayment = await tx.cashFlow.findMany({
+      where: {
+        partnerId: { in: allCustomerIds },
+        partnerType: 'C',
+        isReceipt: false,
+        status: { not: 2 },
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowPaidOut = cashFlowsPayment.reduce(
       (sum: number, cf: any) => sum + Number(cf.amount),
       0,
     );
@@ -1046,7 +1059,11 @@ export class InvoicesService {
       0,
     );
 
-    const totalDebt = totalGrandTotal - totalCashFlowPaid - totalDebtOffsets;
+    const totalDebt =
+      totalGrandTotal -
+      totalCashFlowReceived +
+      totalCashFlowPaidOut -
+      totalDebtOffsets;
 
     await tx.customer.update({
       where: { id: targetCustomerId },
