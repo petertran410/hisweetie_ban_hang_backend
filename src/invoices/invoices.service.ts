@@ -1026,13 +1026,19 @@ export class InvoicesService {
       0,
     );
 
-    // Tổng cấn trừ công nợ từ phiếu trả hàng (debt_offset)
-    // Không tính manual_offset vì không làm thay đổi totalDebt
+    // Tổng cấn trừ công nợ từ phiếu trả hàng
+    // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt,
+    //   nên phải tính vào công thức để không bị reset khi recalculate
+    // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
+    // - Không tính manual_offset vì totalDebt đã được trừ trực tiếp qua increment
+    // - Không tính cash_refund status=4 vì confirmRefund đã cộng lại totalDebt
     const debtOffsets = await tx.returnOrder.findMany({
       where: {
         customerId: { in: allCustomerIds },
-        status: 4,
-        refundType: 'debt_offset',
+        OR: [
+          { status: 2 }, // STOCK_RECEIVED – confirmStockReceived đã trừ totalDebt
+          { status: 4, refundType: 'debt_offset' }, // COMPLETED debt_offset
+        ],
       },
       select: { refundAmount: true },
     });

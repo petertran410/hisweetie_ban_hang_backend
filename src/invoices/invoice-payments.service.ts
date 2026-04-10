@@ -280,11 +280,15 @@ export class InvoicePaymentsService {
       0,
     );
 
+    // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt
+    // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
     const debtOffsets = await tx.returnOrder.findMany({
       where: {
         customerId: { in: allCustomerIds },
-        status: 4,
-        refundType: 'debt_offset',
+        OR: [
+          { status: 2 }, // STOCK_RECEIVED
+          { status: 4, refundType: 'debt_offset' }, // COMPLETED debt_offset
+        ],
       },
       select: { refundAmount: true },
     });
