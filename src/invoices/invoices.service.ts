@@ -136,6 +136,8 @@ export class InvoicesService {
     const dataWithReturnCalculations = data.map((invoice) => {
       const returnSummary = this.calculateReturnSummary(
         invoice.returnOrders || [],
+        Number(invoice.grandTotal),
+        Number(invoice.paidAmount),
       );
 
       return {
@@ -143,10 +145,7 @@ export class InvoicesService {
         returnOrderAmount: returnSummary.returnOrderAmount,
         cashRefundAmount: returnSummary.cashRefundAmount,
         debtOffsetAmount: returnSummary.debtOffsetAmount,
-        remainingAmount: returnSummary.remainingAmount(
-          Number(invoice.grandTotal),
-          Number(invoice.paidAmount),
-        ),
+        remainingAmount: returnSummary.remainingAmount,
       };
     });
 
@@ -1809,7 +1808,11 @@ export class InvoicesService {
     };
   }
 
-  private calculateReturnSummary(returnOrders: any[]) {
+  private calculateReturnSummary(
+    returnOrders: any[],
+    grandTotal: number,
+    paidAmount: number,
+  ) {
     let totalReturnAmount = 0;
     let totalCashRefund = 0;
     let totalDebtOffset = 0;
@@ -1837,20 +1840,29 @@ export class InvoicesService {
       }
     }
 
+    // Credit = phần trả hàng vượt quá khoản nợ ban đầu (tiền khách đã trả, được hoàn lại)
+    // Với hóa đơn chưa trả: debtBeforeReturn = grandTotal → credit = 0 → effectiveDebtOffset = 0
+    // Với hóa đơn đã trả: debtBeforeReturn = 0 → credit = totalReturnAmount → effectiveDebtOffset = totalDebtOffset
+    const debtBeforeReturn = grandTotal - paidAmount;
+    const credit = Math.max(0, totalReturnAmount - debtBeforeReturn);
+    const effectiveDebtOffset = Math.min(totalDebtOffset, credit);
+
+    // Cấn trừ nợ chỉ hiển thị khi hóa đơn có thanh toán trước (paidAmount > 0)
+    // Với hóa đơn chưa trả: "Trả hàng" đã đại diện cho việc giảm nợ rồi
+    const displayDebtOffset = paidAmount > 0 ? -totalDebtOffset : 0;
+
+    const remainingAmount =
+      grandTotal -
+      paidAmount -
+      totalReturnAmount +
+      totalCashRefund +
+      effectiveDebtOffset;
+
     return {
       returnOrderAmount: totalReturnAmount,
-      cashRefundAmount: -totalCashRefund, // Hiển thị âm
-      debtOffsetAmount: -totalDebtOffset, // Hiển thị âm
-      remainingAmount: (grandTotal: number, paidAmount: number) => {
-        // Còn lại = Tổng tiền - Khách đã trả - Trả hàng - Phiếu chi - Cấn trừ nợ
-        return (
-          grandTotal -
-          paidAmount -
-          totalReturnAmount -
-          -totalCashRefund -
-          -totalDebtOffset
-        );
-      },
+      cashRefundAmount: -totalCashRefund,
+      debtOffsetAmount: displayDebtOffset,
+      remainingAmount,
     };
   }
 

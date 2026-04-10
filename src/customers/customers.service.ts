@@ -858,10 +858,16 @@ export class CustomersService {
 
     const cashFlows = await this.prisma.cashFlow.findMany({
       where: {
+        // partnerType: 'C',
+        // partnerId: { in: cashFlowPartnerIds },
+        // // THÊM: Lấy cả phiếu thu (isReceipt = true) VÀ phiếu chi từ trả hàng (CHI-TH)
+        // OR: [{ isReceipt: true }, { code: { startsWith: 'CHI-TH' } }],
+
         partnerType: 'C',
         partnerId: { in: cashFlowPartnerIds },
-        // THÊM: Lấy cả phiếu thu (isReceipt = true) VÀ phiếu chi từ trả hàng (CHI-TH)
-        OR: [{ isReceipt: true }, { code: { startsWith: 'CHI-TH' } }],
+        // Lấy tất cả phiếu thu VÀ phiếu chi (PC, CHI-TH, ...) liên quan đến khách hàng
+        // Chỉ loại phiếu đã hủy (status = 1)
+        status: { not: 1 },
       },
       select: {
         id: true,
