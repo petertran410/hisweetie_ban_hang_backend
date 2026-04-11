@@ -594,10 +594,9 @@ export class ReturnOrdersService {
       });
       const allCustomerIds = [debtHolderId, ...childIds.map((c: any) => c.id)];
 
-      // ── Helper: recalculate totalDebt theo công thức chuẩn
-      // Gọi TRƯỚC returnOrder.update nên RO hiện tại vẫn ở status=2
-      // → cộng thủ công refundAmount vào totalDebtOffsets để phản ánh việc sắp chuyển sang 4+debt_offset
       const recalculateDebt = async (): Promise<number> => {
+        const currentReturnOrderId = id;
+
         const allInvoices = await tx.invoice.findMany({
           where: { customerId: { in: allCustomerIds }, status: { notIn: [2] } },
           select: { grandTotal: true },
@@ -636,15 +635,23 @@ export class ReturnOrdersService {
           0,
         );
 
+        // Lấy tất cả RO đã trừ totalDebt, LOẠI TRỪ RO hiện tại (sẽ cộng thủ công bên dưới)
+        // - status=2: Bước 2 đã trừ totalDebt
+        // - status=4 debt_offset: cấn trừ vĩnh viễn
+        // - status=4 cash_refund: Bước 2 đã trừ refundAmount, Bước 3 chỉ cộng lại phần dư qua CHI-TH
         const existingDebtOffsets = await tx.returnOrder.findMany({
           where: {
             customerId: { in: allCustomerIds },
-            status: 4,
-            refundType: 'debt_offset',
+            NOT: { id: currentReturnOrderId },
+            OR: [
+              { status: 2 },
+              { status: 4, refundType: 'debt_offset' },
+              { status: 4, refundType: 'cash_refund' },
+            ],
           },
           select: { refundAmount: true },
         });
-        // Cộng refundAmount của RO hiện tại vì sắp được set status=4+debt_offset
+        // Cộng refundAmount của RO hiện tại vì sắp chuyển sang status=4
         const totalDebtOffsets =
           existingDebtOffsets.reduce(
             (sum: number, ro: any) => sum + Number(ro.refundAmount),

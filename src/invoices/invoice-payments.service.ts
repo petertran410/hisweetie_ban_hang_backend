@@ -296,12 +296,15 @@ export class InvoicePaymentsService {
 
     // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt
     // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
+    // - status=4 + cash_refund: Bước 2 đã trừ nguyên refundAmount; Bước 3 chỉ cộng lại
+    //   effectiveRefundAmount qua CHI-TH (nằm trong totalCashFlowPaidOut).
     const debtOffsets = await tx.returnOrder.findMany({
       where: {
         customerId: { in: allCustomerIds },
         OR: [
           { status: 2 }, // STOCK_RECEIVED
           { status: 4, refundType: 'debt_offset' }, // COMPLETED debt_offset
+          { status: 4, refundType: 'cash_refund' }, // COMPLETED cash_refund
         ],
       },
       select: { refundAmount: true },
