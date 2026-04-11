@@ -866,8 +866,7 @@ export class CustomersService {
         partnerType: 'C',
         partnerId: { in: cashFlowPartnerIds },
         // Lấy tất cả phiếu thu VÀ phiếu chi (PC, CHI-TH, ...) liên quan đến khách hàng
-        // Chỉ loại phiếu đã hủy (status = 1)
-        status: { not: 1 },
+        status: { not: 2 },
       },
       select: {
         id: true,
