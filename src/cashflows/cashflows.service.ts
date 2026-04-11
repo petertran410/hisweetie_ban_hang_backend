@@ -552,7 +552,7 @@ export class CashFlowsService {
     return this.prisma.cashFlow.update({
       where: { id },
       data: {
-        status: 1,
+        status: 2,
         statusValue: 'Đã hủy',
       },
     });
