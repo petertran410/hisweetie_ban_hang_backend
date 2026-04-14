@@ -50,6 +50,7 @@ model User {
   createdPackingLoadings PackingLoading[] @relation("PackingLoadingCreator")
   loadedPackingLoadings  PackingLoading[] @relation("PackingLoadingUser")
   createdPrintTemplates PrintTemplate[] @relation("PrintTemplateCreator")
+  updatedPrintTemplates PrintTemplate[] @relation("PrintTemplateUpdater")
   auditLogs             AuditLog[]      @relation("AuditLogUser")
   branchPermissions UserBranchPermission[]
   createdReturnOrders    ReturnOrder[] @relation("ReturnOrderCreator")
@@ -1653,17 +1654,23 @@ model PackingLoadingImage {
 model PrintTemplate {
   id          Int      @id @default(autoincrement())
   name        String
-  code        String   @unique
+  code        String
   templateFor String
   content     String   @db.Text
+  paperSize   String   @default("A5")
+  orientation String   @default("portrait")
   isActive    Boolean  @default(true)
   isDefault   Boolean  @default(false)
   createdBy   Int
+  updatedBy   Int?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  creator User @relation("PrintTemplateCreator", fields: [createdBy], references: [id])
+  creator User  @relation("PrintTemplateCreator", fields: [createdBy], references: [id])
+  updater User? @relation("PrintTemplateUpdater", fields: [updatedBy], references: [id])
 
+  @@unique([templateFor, code])
+  @@index([templateFor])
   @@map("print_templates")
 }
 
