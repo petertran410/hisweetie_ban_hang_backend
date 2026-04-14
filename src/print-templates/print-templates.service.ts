@@ -9,15 +9,14 @@ import { PrismaService } from '../prisma/prisma.service';
 export class PrintTemplatesService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(filters?: { templateFor?: string; isActive?: boolean }) {
-    const where: any = {};
+  // ==================== TEMPLATE CRUD ====================
 
-    if (filters?.templateFor) where.templateFor = filters.templateFor;
-    if (filters?.isActive !== undefined) where.isActive = filters.isActive;
-
+  async findAll(params: { templateFor?: string; isActive?: boolean }) {
     return this.prisma.printTemplate.findMany({
-      where,
-      include: { creator: { select: { id: true, name: true } } },
+      where: {
+        ...(params.templateFor && { templateFor: params.templateFor }),
+        ...(params.isActive !== undefined && { isActive: params.isActive }),
+      },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
     });
   }
@@ -25,60 +24,30 @@ export class PrintTemplatesService {
   async findOne(id: number) {
     const template = await this.prisma.printTemplate.findUnique({
       where: { id },
-      include: { creator: { select: { id: true, name: true } } },
     });
-
     if (!template) throw new NotFoundException('Template not found');
     return template;
   }
 
   async findByCode(code: string) {
-    const template = await this.prisma.printTemplate.findUnique({
+    const template = await this.prisma.printTemplate.findFirst({
       where: { code },
     });
-
     if (!template) throw new NotFoundException('Template not found');
     return template;
   }
 
-  async create(data: {
-    name: string;
-    code: string;
-    templateFor: string;
-    content: string;
-    isDefault?: boolean;
-    createdBy: number;
-  }) {
-    const existing = await this.prisma.printTemplate.findUnique({
-      where: { code: data.code },
-    });
-
-    if (existing) {
-      throw new BadRequestException('Template code already exists');
-    }
-
+  async create(data: any) {
     if (data.isDefault) {
       await this.prisma.printTemplate.updateMany({
-        where: {
-          templateFor: data.templateFor,
-          isDefault: true,
-        },
+        where: { templateFor: data.templateFor, isDefault: true },
         data: { isDefault: false },
       });
     }
-
     return this.prisma.printTemplate.create({ data });
   }
 
-  async update(
-    id: number,
-    data: {
-      name?: string;
-      content?: string;
-      isActive?: boolean;
-      isDefault?: boolean;
-    },
-  ) {
+  async update(id: number, data: any) {
     const template = await this.prisma.printTemplate.findUnique({
       where: { id },
     });
@@ -94,11 +63,7 @@ export class PrintTemplatesService {
         data: { isDefault: false },
       });
     }
-
-    return this.prisma.printTemplate.update({
-      where: { id },
-      data,
-    });
+    return this.prisma.printTemplate.update({ where: { id }, data });
   }
 
   async delete(id: number) {
@@ -106,23 +71,71 @@ export class PrintTemplatesService {
       where: { id },
     });
     if (!template) throw new NotFoundException('Template not found');
-
-    if (template.isDefault) {
+    if (template.isDefault)
       throw new BadRequestException('Cannot delete default template');
-    }
-
     await this.prisma.printTemplate.delete({ where: { id } });
     return { message: 'Template deleted successfully' };
   }
 
-  replaceVariables(content: string, data: Record<string, any>): string {
+  // ==================== VARIABLES ====================
+
+  async getVariables(templateFor: string) {
+    const variables = await this.prisma.printTemplateVariable.findMany({
+      where: { templateFor, isActive: true },
+      orderBy: [{ group: 'asc' }, { sortOrder: 'asc' }],
+    });
+
+    return variables.reduce(
+      (acc, v) => {
+        if (!acc[v.group]) acc[v.group] = [];
+        acc[v.group].push({
+          id: v.id,
+          key: v.key,
+          label: v.label,
+          group: v.group,
+          dataType: v.dataType,
+          description: v.description,
+          isItemVariable: v.isItemVariable,
+        });
+        return acc;
+      },
+      {} as Record<string, any[]>,
+    );
+  }
+
+  async getAllVariables(templateFor?: string) {
+    return this.prisma.printTemplateVariable.findMany({
+      where: templateFor ? { templateFor } : {},
+      orderBy: [{ templateFor: 'asc' }, { group: 'asc' }, { sortOrder: 'asc' }],
+    });
+  }
+
+  async createVariable(data: any) {
+    return this.prisma.printTemplateVariable.create({ data });
+  }
+
+  async updateVariable(id: number, data: any) {
+    return this.prisma.printTemplateVariable.update({ where: { id }, data });
+  }
+
+  async deleteVariable(id: number) {
+    return this.prisma.printTemplateVariable.delete({ where: { id } });
+  }
+
+  // ==================== REPLACE ENGINE ====================
+
+  async replaceVariables(
+    content: string,
+    data: Record<string, any>,
+    templateFor: string,
+  ): Promise<string> {
     const items = data.items || [];
     let result = content;
 
-    const itemVariableKeys = this.getItemVariableKeys(content);
+    const itemKeys = await this.getItemVariableKeys(templateFor);
 
-    if (itemVariableKeys.length > 0 && items.length > 0) {
-      result = this.replaceItemVariables(result, items, itemVariableKeys);
+    if (itemKeys.size > 0 && items.length > 0) {
+      result = this.replaceItemVariables(result, items, itemKeys);
     }
 
     for (const [key, value] of Object.entries(data)) {
@@ -135,189 +148,409 @@ export class PrintTemplatesService {
     return result;
   }
 
-  private getItemVariableKeys(content: string): string[] {
-    const matches = content.match(/{(\w+)}/g) || [];
-    return matches.map((m) => m.replace(/[{}]/g, ''));
+  private async getItemVariableKeys(templateFor: string): Promise<Set<string>> {
+    const vars = await this.prisma.printTemplateVariable.findMany({
+      where: { templateFor, isItemVariable: true, isActive: true },
+      select: { key: true },
+    });
+    return new Set(vars.map((v) => v.key));
   }
 
   private replaceItemVariables(
     content: string,
     items: any[],
-    itemVariableKeys: string[],
+    itemKeys: Set<string>,
   ): string {
     const trRegex = /<tr[^>]*>[\s\S]*?<\/tr>/gi;
     const rows = content.match(trRegex) || [];
 
     for (const row of rows) {
-      const hasItemVariable = itemVariableKeys.some((key) =>
-        row.includes(`{${key}}`),
+      const hasItemVar = Array.from(itemKeys).some((k) =>
+        row.includes(`{${k}}`),
       );
+      if (!hasItemVar) continue;
 
-      if (hasItemVariable) {
-        const clonedRows = items
-          .map((item) => {
-            let itemRow = row;
-            for (const key of itemVariableKeys) {
-              const value = item[key] || '';
-              itemRow = itemRow.replace(
-                new RegExp(`{${key}}`, 'g'),
-                value.toString(),
-              );
-            }
-            return itemRow;
-          })
-          .join('');
+      const clonedRows = items
+        .map((item) => {
+          let itemRow = row;
+          for (const key of itemKeys) {
+            const value = item[key] ?? '';
+            itemRow = itemRow.replace(
+              new RegExp(`{${key}}`, 'g'),
+              value.toString(),
+            );
+          }
+          return itemRow;
+        })
+        .join('');
 
-        content = content.replace(row, clonedRows);
-      }
+      content = content.replace(row, clonedRows);
     }
 
     return content;
   }
 
-  async getVariables(templateFor: string) {
-    const variables = await this.prisma.printTemplateVariable.findMany({
-      where: {
-        templateFor,
-        isActive: true,
-      },
-      orderBy: [{ group: 'asc' }, { sortOrder: 'asc' }],
-    });
-
-    return variables.reduce(
-      (acc, v) => {
-        const groupKey = v.group;
-        if (!acc[groupKey]) acc[groupKey] = [];
-        acc[groupKey].push({
-          id: v.id,
-          key: v.key,
-          label: v.label,
-          group: v.group,
-          dataType: v.dataType,
-          description: v.description,
-        });
-        return acc;
-      },
-      {} as Record<string, any[]>,
-    );
-  }
-
-  async getAllVariables(templateFor?: string) {
-    const where = templateFor ? { templateFor } : {};
-
-    return this.prisma.printTemplateVariable.findMany({
-      where,
-      orderBy: [{ templateFor: 'asc' }, { group: 'asc' }, { sortOrder: 'asc' }],
-    });
-  }
-
-  async createVariable(data: any) {
-    return this.prisma.printTemplateVariable.create({ data });
-  }
-
-  async updateVariable(id: number, data: any) {
-    return this.prisma.printTemplateVariable.update({
-      where: { id },
-      data,
-    });
-  }
-
-  async deleteVariable(id: number) {
-    return this.prisma.printTemplateVariable.delete({ where: { id } });
-  }
+  // ==================== DISPATCHER ====================
 
   async renderPreview(templateId: number, entityId: number) {
     const template = await this.prisma.printTemplate.findUnique({
       where: { id: templateId },
     });
-
     if (!template) throw new NotFoundException('Template not found');
 
-    let data: any = {};
-
-    if (template.templateFor === 'invoice') {
-      const invoice = await this.prisma.invoice.findUnique({
-        where: { id: entityId },
-        include: {
-          customer: true,
-          soldBy: true,
-          creator: true,
-          branch: true,
-          details: {
-            include: { product: true },
-          },
-        },
-      });
-
-      if (!invoice) throw new NotFoundException('Invoice not found');
-
-      data = this.mapInvoiceToVariables(invoice);
-    }
-
-    const renderedContent = this.replaceVariables(template.content, data);
-
-    return {
-      content: renderedContent,
+    const data = await this.loadEntityData(template.templateFor, entityId);
+    const content = await this.replaceVariables(
+      template.content,
       data,
+      template.templateFor,
+    );
+
+    return { content, data };
+  }
+
+  private async loadEntityData(
+    templateFor: string,
+    entityId: number,
+  ): Promise<any> {
+    switch (templateFor) {
+      case 'invoice':
+        return this.mapInvoice(await this.loadInvoice(entityId));
+      case 'order':
+        return this.mapOrder(await this.loadOrder(entityId));
+      case 'order_supplier':
+        return this.mapOrderSupplier(await this.loadOrderSupplier(entityId));
+      case 'purchase_order':
+        return this.mapPurchaseOrder(await this.loadPurchaseOrder(entityId));
+      case 'return_order':
+        return this.mapReturnOrder(await this.loadReturnOrder(entityId));
+      case 'transfer':
+        return this.mapTransfer(await this.loadTransfer(entityId));
+      case 'cash_flow_receipt':
+      case 'cash_flow_payment':
+        return this.mapCashFlow(await this.loadCashFlow(entityId));
+      default:
+        throw new BadRequestException(
+          `Unsupported templateFor: ${templateFor}`,
+        );
+    }
+  }
+
+  // ==================== LOADERS ====================
+
+  private async loadInvoice(id: number) {
+    const entity = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        soldBy: true,
+        creator: true,
+        branch: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('Invoice not found');
+    return entity;
+  }
+
+  private async loadOrder(id: number) {
+    const entity = await this.prisma.order.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        soldBy: true,
+        creator: true,
+        branch: true,
+        items: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('Order not found');
+    return entity;
+  }
+
+  private async loadOrderSupplier(id: number) {
+    const entity = await this.prisma.orderSupplier.findUnique({
+      where: { id },
+      include: {
+        supplier: true,
+        user: true,
+        creator: true,
+        branch: true,
+        items: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('OrderSupplier not found');
+    return entity;
+  }
+
+  private async loadPurchaseOrder(id: number) {
+    const entity = await this.prisma.purchaseOrder.findUnique({
+      where: { id },
+      include: {
+        supplier: true,
+        purchaseBy: true,
+        creator: true,
+        branch: true,
+        items: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('PurchaseOrder not found');
+    return entity;
+  }
+
+  private async loadReturnOrder(id: number) {
+    const entity = await this.prisma.returnOrder.findUnique({
+      where: { id },
+      include: {
+        customer: true,
+        creator: true,
+        branch: true,
+        invoice: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('ReturnOrder not found');
+    return entity;
+  }
+
+  private async loadTransfer(id: number) {
+    const entity = await this.prisma.transfer.findUnique({
+      where: { id },
+      include: {
+        fromBranch: true,
+        toBranch: true,
+        creator: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('Transfer not found');
+    return entity;
+  }
+
+  private async loadCashFlow(id: number) {
+    const entity = await this.prisma.cashFlow.findUnique({
+      where: { id },
+      include: { branch: true },
+    });
+    if (!entity) throw new NotFoundException('CashFlow not found');
+    return entity;
+  }
+
+  // ==================== MAPPERS ====================
+
+  private storeVars(branch: any) {
+    return {
+      Ten_Cua_Hang: branch?.name || '',
+      Dia_Chi_Cua_Hang: branch?.address || '',
+      So_Dien_Thoai_Cua_Hang: branch?.contactNumber || '',
+      Chi_Nhanh_Ban_Hang: branch?.name || '',
     };
   }
 
-  private mapInvoiceToVariables(invoice: any) {
-    const totalDiscount = Number(invoice.discount || 0);
-    const discountRatio = Number(invoice.discountRatio || 0);
-
+  private dateVars(date: Date | null | undefined) {
+    if (!date) return { Ngay: '', Thang: '', Nam: '' };
+    const d = new Date(date);
     return {
-      Ma_Don_Hang: invoice.code || '',
-      Ngay: invoice.purchaseDate
-        ? new Date(invoice.purchaseDate).toLocaleDateString('vi-VN')
-        : '',
-      Khu_Vuc_Chi_Nhanh_QH_TP: invoice.branch?.name || '',
+      Ngay: d.toLocaleDateString('vi-VN'),
+      Thang: (d.getMonth() + 1).toString(),
+      Nam: d.getFullYear().toString(),
+    };
+  }
 
-      Ma_Khach_Hang: invoice.customer?.code || '',
-      Khach_Hang: invoice.customer?.name || 'Khách lẻ',
-      So_Dien_Thoai: invoice.customer?.phone || '',
-      Dia_Chi_Khach_Hang: invoice.customer?.address || '',
-      Phuong_Xa_Khach_Hang: invoice.customer?.wardName || '',
-      Khu_Vuc_Khach_Hang_QH_TP: invoice.customer?.locationName || '',
-      Ghi_Chu_Khach_Hang: invoice.customer?.comments || '',
-      Ghi_Chu: invoice.description || '',
+  private customerVars(customer: any) {
+    return {
+      Ma_Khach_Hang: customer?.code || '',
+      Khach_Hang: customer?.name || 'Khách lẻ',
+      So_Dien_Thoai: customer?.contactNumber || '',
+      Dia_Chi_Khach_Hang: customer?.address || '',
+      Ghi_Chu_Khach_Hang: customer?.comments || '',
+    };
+  }
 
-      Nhan_Vien_Ban_Hang: invoice.soldBy?.name || invoice.creator?.name || '',
-      Dien_Thoai_Nguoi_Ban:
-        invoice.soldBy?.phone || invoice.creator?.phone || '',
+  private supplierVars(supplier: any) {
+    return {
+      Ma_Nha_Cung_Cap: supplier?.code || '',
+      Ten_Nha_Cung_Cap: supplier?.name || '',
+      So_Dien_Thoai_NCC: supplier?.contactNumber || '',
+      Dia_Chi_NCC: supplier?.address || '',
+    };
+  }
 
-      Tong_Tien_Hang: new Intl.NumberFormat('vi-VN').format(
-        Number(invoice.totalAmount),
+  private money(value: any): string {
+    return new Intl.NumberFormat('vi-VN').format(Number(value || 0));
+  }
+
+  private mapInvoice(inv: any) {
+    return {
+      ...this.storeVars(inv.branch),
+      ...this.dateVars(inv.purchaseDate),
+      ...this.customerVars(inv.customer),
+      Ma_Don_Hang: inv.code || '',
+      Nhan_Vien_Ban_Hang: inv.soldBy?.name || inv.creator?.name || '',
+      Nguoi_Lap: inv.creator?.name || '',
+      Ghi_Chu: inv.description || '',
+      Tong_Tien_Hang: this.money(inv.totalAmount),
+      Chiet_Khau_Hoa_Don: this.money(inv.discount),
+      Tong_Can_Thanh_Toan: this.money(inv.grandTotal),
+      Da_Thanh_Toan: this.money(inv.paidAmount),
+      Con_Lai: this.money(inv.debtAmount),
+      Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
+        Number(inv.grandTotal || 0),
       ),
-      Chiet_Khau_Hoa_Don_Phan_Tram: `${discountRatio}%`,
-      Chiet_Khau_Hoa_Don: new Intl.NumberFormat('vi-VN').format(totalDiscount),
-      Da_Thanh_Toan_Ten_Phuong_Thuc_Ttoan: new Intl.NumberFormat(
-        'vi-VN',
-      ).format(Number(invoice.paidAmount)),
-      Can_Thanh_Toan: new Intl.NumberFormat('vi-VN').format(
-        Number(invoice.debtAmount),
+      items: (inv.details || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
+  private mapOrder(o: any) {
+    return {
+      ...this.storeVars(o.branch),
+      ...this.dateVars(o.orderDate),
+      ...this.customerVars(o.customer),
+      Ma_Don_Hang: o.code || '',
+      Nhan_Vien_Ban_Hang: o.soldBy?.name || o.creator?.name || '',
+      Nguoi_Lap: o.creator?.name || '',
+      Ghi_Chu: o.description || '',
+      Tong_Tien_Hang: this.money(o.totalAmount),
+      Chiet_Khau_Hoa_Don: this.money(o.discount),
+      Tong_Can_Thanh_Toan: this.money(o.grandTotal),
+      Da_Thanh_Toan: this.money(o.paidAmount),
+      Con_Lai: this.money(o.debtAmount),
+      Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
+        Number(o.grandTotal || 0),
+      ),
+      items: (o.items || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
+  private mapOrderSupplier(os: any) {
+    return {
+      ...this.storeVars(os.branch),
+      ...this.dateVars(os.orderDate),
+      ...this.supplierVars(os.supplier),
+      Ma_Dat_Hang_Nhap: os.code || '',
+      Nhan_Vien_Ban_Hang: os.user?.name || os.creator?.name || '',
+      Nguoi_Lap: os.creator?.name || '',
+      Ghi_Chu: os.description || '',
+      Tong_Tien_Hang: this.money(os.subTotal),
+      Chiet_Khau_Hoa_Don: this.money(os.discount),
+      Tong_Can_Thanh_Toan: this.money(os.totalAmt),
+      Da_Thanh_Toan: this.money(os.paidAmount),
+      Con_Lai: this.money(
+        Number(os.totalAmt || 0) - Number(os.paidAmount || 0),
       ),
       Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
-        Number(invoice.grandTotal),
+        Number(os.totalAmt || 0),
       ),
+      items: (os.items || []).map((i: any) => this.mapItem(i)),
+    };
+  }
 
-      items: (invoice.details || []).map((item: any) => ({
-        Ten_Hang_Hoa: item.productName || item.product?.name || '',
-        Ghi_Chu_Hang_Hoa: item.note || '',
-        Don_Gia_Sau_Chiet_Khau: new Intl.NumberFormat('vi-VN').format(
-          Number(item.price),
-        ),
-        So_Luong: Number(item.quantity),
-        Thanh_Tien: new Intl.NumberFormat('vi-VN').format(
-          Number(item.totalPrice),
-        ),
+  private mapPurchaseOrder(po: any) {
+    return {
+      ...this.storeVars(po.branch),
+      ...this.dateVars(po.purchaseDate),
+      ...this.supplierVars(po.supplier),
+      Ma_Nhap_Hang: po.code || '',
+      Nhan_Vien_Ban_Hang: po.purchaseBy?.name || po.creator?.name || '',
+      Nguoi_Lap: po.creator?.name || '',
+      Ghi_Chu: po.description || '',
+      Tong_Tien_Hang: this.money(po.subTotal),
+      Chiet_Khau_Hoa_Don: this.money(po.discount),
+      Tong_Can_Thanh_Toan: this.money(po.total),
+      Da_Thanh_Toan: this.money(po.paidAmount),
+      Con_Lai: this.money(Number(po.total || 0) - Number(po.paidAmount || 0)),
+      Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(Number(po.total || 0)),
+      items: (po.items || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
+  private mapReturnOrder(ro: any) {
+    return {
+      ...this.storeVars(ro.branch),
+      ...this.dateVars(ro.createdAt),
+      ...this.customerVars(ro.customer),
+      Ma_Tra_Hang: ro.code || '',
+      Ma_Don_Hang_Goc: ro.invoice?.code || '',
+      Nhan_Vien_Ban_Hang: ro.creator?.name || '',
+      Nguoi_Lap: ro.creator?.name || '',
+      Ghi_Chu: ro.note || '',
+      Tong_Tien_Tra: this.money(ro.refundAmount || ro.totalReturnAmount),
+      Da_Hoan_Tra: this.money(ro.refundedAmount),
+      items: (ro.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || '',
+        Ten_Hang_Hoa: d.productName || '',
+        Don_Vi_Tinh: '',
+        So_Luong: Number(d.requestQuantity),
+        Don_Gia: this.money(d.returnPrice),
+        Don_Gia_Sau_Chiet_Khau: this.money(d.returnPrice),
+        Ghi_Chu_Hang_Hoa: d.note || '',
+        Thanh_Tien: this.money(d.totalAmount),
       })),
     };
   }
 
+  private mapTransfer(t: any) {
+    return {
+      Ten_Cua_Hang: t.fromBranch?.name || '',
+      Dia_Chi_Cua_Hang: t.fromBranch?.address || '',
+      So_Dien_Thoai_Cua_Hang: t.fromBranch?.contactNumber || '',
+      ...this.dateVars(t.transferredDate || t.createdAt),
+      Ma_Chuyen_Hang: t.code || '',
+      Chi_Nhanh_Nguon: t.fromBranchName || t.fromBranch?.name || '',
+      Chi_Nhanh_Dich: t.toBranchName || t.toBranch?.name || '',
+      Nhan_Vien_Ban_Hang: t.creator?.name || '',
+      Nguoi_Lap: t.createdByName || t.creator?.name || '',
+      Ghi_Chu: t.noteBySource || '',
+      Tong_Tien_Chuyen: this.money(t.totalTransfer),
+      items: (t.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || '',
+        Ten_Hang_Hoa: d.productName || '',
+        Don_Vi_Tinh: '',
+        So_Luong: Number(d.sendQuantity),
+        Don_Gia: this.money(d.sendPrice),
+        Don_Gia_Sau_Chiet_Khau: this.money(d.sendPrice),
+        Ghi_Chu_Hang_Hoa: '',
+        Thanh_Tien: this.money(d.totalTransfer),
+      })),
+    };
+  }
+
+  private mapCashFlow(cf: any) {
+    const codeKey = cf.isReceipt ? 'Ma_Phieu_Thu' : 'Ma_Phieu_Chi';
+    const partnerKey = cf.isReceipt ? 'Nguoi_Nop' : 'Nguoi_Nhan';
+    const addrKey = cf.isReceipt ? 'Dia_Chi_Nguoi_Nop' : 'Dia_Chi_Nguoi_Nhan';
+    const reasonKey = cf.isReceipt ? 'Ly_Do_Thu' : 'Ly_Do_Chi';
+
+    return {
+      ...this.storeVars(cf.branch),
+      ...this.dateVars(cf.transDate),
+      [codeKey]: cf.code || '',
+      [partnerKey]: cf.partnerName || '',
+      [addrKey]: cf.address || '',
+      Nhan_Vien_Ban_Hang: '',
+      Nguoi_Lap: '',
+      [reasonKey]: cf.description || '',
+      So_Tien: this.money(cf.amount),
+      So_Tien_Bang_Chu: this.numberToWords(Number(cf.amount || 0)),
+    };
+  }
+
+  private mapItem(item: any) {
+    return {
+      Ma_Hang: item.productCode || item.product?.code || '',
+      Ten_Hang_Hoa: item.productName || item.product?.name || '',
+      Don_Vi_Tinh: item.product?.unit || '',
+      So_Luong: Number(item.quantity),
+      Don_Gia: this.money(item.price),
+      Don_Gia_Sau_Chiet_Khau: this.money(item.price),
+      Ghi_Chu_Hang_Hoa: item.note || item.description || '',
+      Thanh_Tien: this.money(item.totalPrice || item.subTotal),
+    };
+  }
+
+  // ==================== NUMBER TO WORDS ====================
+
   private numberToWords(num: number): string {
     if (num === 0) return 'Không đồng';
-
     const ones = [
       '',
       'một',
@@ -365,9 +598,12 @@ export class PrintTemplatesService {
         const rest = n % 1000000;
         return convert(million) + ' triệu' + (rest ? ' ' + convert(rest) : '');
       }
-      return 'Số quá lớn';
+      const billion = Math.floor(num / 1000000000);
+      const rest = num % 1000000000;
+      return convert(billion) + ' tỷ' + (rest ? ' ' + convert(rest) : '');
     };
 
-    return convert(Math.floor(num)) + ' đồng';
+    const words = convert(Math.floor(num)) + ' đồng';
+    return words.charAt(0).toUpperCase() + words.slice(1);
   }
 }
