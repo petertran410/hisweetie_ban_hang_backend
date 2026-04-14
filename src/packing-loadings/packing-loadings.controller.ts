@@ -15,6 +15,7 @@ import {
   CreatePackingLoadingDto,
   UpdatePackingLoadingDto,
   PackingLoadingQueryDto,
+  CheckInvoicesDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -30,6 +31,12 @@ export class PackingLoadingsController {
   @ApiOperation({ summary: 'Lấy danh sách loading' })
   findAll(@Query() query: PackingLoadingQueryDto) {
     return this.packingLoadingsService.findAll(query);
+  }
+
+  @Post('check-invoices')
+  @ApiOperation({ summary: 'Kiểm tra hóa đơn đã có loading chưa' })
+  checkInvoices(@Body() dto: CheckInvoicesDto) {
+    return this.packingLoadingsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')
