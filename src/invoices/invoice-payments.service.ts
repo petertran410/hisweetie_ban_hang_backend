@@ -27,8 +27,12 @@ export class InvoicePaymentsService {
               code: true,
               name: true,
               contactNumber: true,
-              address: true,
               totalDebt: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
             },
           },
           branch: true,
@@ -70,23 +74,15 @@ export class InvoicePaymentsService {
         throw new Error('Hóa đơn chưa có chi nhánh');
       }
 
-      const invoiceCustomer = invoice.customerId
+      const updatedCustomer = invoice.customerId
         ? await tx.customer.findUnique({
             where: { id: invoice.customerId },
-            select: { id: true, parentId: true },
-          })
-        : null;
-
-      const debtHolderId = invoiceCustomer?.parentId || invoice.customerId;
-      const updatedDebtHolder = debtHolderId
-        ? await tx.customer.findUnique({
-            where: { id: debtHolderId },
             select: { totalDebt: true },
           })
         : null;
 
-      const customerDebtSnapshot = updatedDebtHolder
-        ? Number(updatedDebtHolder.totalDebt)
+      const customerDebtSnapshot = updatedCustomer
+        ? Number(updatedCustomer.totalDebt)
         : null;
 
       const cashFlow = await tx.cashFlow.create({
@@ -103,7 +99,7 @@ export class InvoicePaymentsService {
           partnerId: invoice.customerId,
           partnerName: invoice.customer?.name,
           contactNumber: invoice.customer?.contactNumber,
-          address: invoice.customer?.address,
+          address: invoice.customer?.addresses?.[0]?.address || null,
           description:
             dto.notes ||
             `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
@@ -236,26 +232,14 @@ export class InvoicePaymentsService {
   private async updateCustomerTotals(customerId: number, tx: any) {
     const customer = await tx.customer.findUnique({
       where: { id: customerId },
-      select: { id: true, parentId: true },
+      select: { id: true },
     });
 
     if (!customer) return;
 
-    const targetCustomerId = customer.parentId || customerId;
-
-    const childIds = await tx.customer.findMany({
-      where: { parentId: targetCustomerId },
-      select: { id: true },
-    });
-
-    const allCustomerIds = [
-      targetCustomerId,
-      ...childIds.map((c: any) => c.id),
-    ];
-
     const invoices = await tx.invoice.findMany({
       where: {
-        customerId: { in: allCustomerIds },
+        customerId,
         status: { notIn: [2] },
       },
       select: { grandTotal: true },
@@ -267,7 +251,7 @@ export class InvoicePaymentsService {
 
     const cashFlowsReceipt = await tx.cashFlow.findMany({
       where: {
-        partnerId: { in: allCustomerIds },
+        partnerId: customerId,
         partnerType: 'C',
         isReceipt: true,
         status: { not: 2 },
@@ -282,7 +266,7 @@ export class InvoicePaymentsService {
 
     const cashFlowsPayment = await tx.cashFlow.findMany({
       where: {
-        partnerId: { in: allCustomerIds },
+        partnerId: customerId,
         partnerType: 'C',
         isReceipt: false,
         status: { not: 2 },
@@ -296,15 +280,15 @@ export class InvoicePaymentsService {
 
     // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt
     // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
-    // - status=4 + cash_refund: Bước 2 đã trừ nguyên refundAmount; Bước 3 chỉ cộng lại
+    // - status=4 + cash_refund: Bước 2 đã trừ nguyên refundAmount; Bước 3 cộng lại
     //   effectiveRefundAmount qua CHI-TH (nằm trong totalCashFlowPaidOut).
     const debtOffsets = await tx.returnOrder.findMany({
       where: {
-        customerId: { in: allCustomerIds },
+        customerId,
         OR: [
-          { status: 2 }, // STOCK_RECEIVED
-          { status: 4, refundType: 'debt_offset' }, // COMPLETED debt_offset
-          { status: 4, refundType: 'cash_refund' }, // COMPLETED cash_refund
+          { status: 2 },
+          { status: 4, refundType: 'debt_offset' },
+          { status: 4, refundType: 'cash_refund' },
         ],
       },
       select: { refundAmount: true },
@@ -321,15 +305,8 @@ export class InvoicePaymentsService {
       totalDebtOffsets;
 
     await tx.customer.update({
-      where: { id: targetCustomerId },
+      where: { id: customerId },
       data: { totalDebt },
     });
-
-    if (childIds.length > 0) {
-      await tx.customer.updateMany({
-        where: { id: { in: childIds.map((c: any) => c.id) } },
-        data: { totalDebt: 0 },
-      });
-    }
   }
 }

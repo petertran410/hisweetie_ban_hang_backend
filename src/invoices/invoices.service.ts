@@ -196,22 +196,13 @@ export class InvoicesService {
       const customer = dto.customerId
         ? await tx.customer.findUnique({
             where: { id: dto.customerId },
-            select: { id: true, parentId: true, totalDebt: true, name: true },
+            select: { id: true, totalDebt: true, name: true },
           })
         : null;
 
-      const parentCustomerId = customer
-        ? customer.parentId || customer.id
-        : null;
+      const parentCustomerId = customer ? customer.id : null;
 
-      const parentDebtHolder = customer?.parentId
-        ? await tx.customer.findUnique({
-            where: { id: customer.parentId },
-            select: { totalDebt: true },
-          })
-        : customer;
-
-      const currentCustomerDebt = Number(parentDebtHolder?.totalDebt || 0);
+      const currentCustomerDebt = Number(customer?.totalDebt || 0);
       const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
       const applicablePriceBooks = await tx.priceBook.findMany({
@@ -551,15 +542,7 @@ export class InvoicesService {
           : null;
 
         const cancelCustomerId = dto.customerId ?? currentInvoice.customerId;
-        const cancelCustomer = cancelCustomerId
-          ? await tx.customer.findUnique({
-              where: { id: cancelCustomerId },
-              select: { id: true, parentId: true },
-            })
-          : null;
-        const cancelParentCustomerId = cancelCustomer
-          ? cancelCustomer.parentId || cancelCustomer.id
-          : null;
+        const cancelParentCustomerId = cancelCustomerId;
 
         const newInvoice = await tx.invoice.create({
           data: {
@@ -977,32 +960,18 @@ export class InvoicesService {
   private async updateCustomerTotals(customerId: number, tx: any) {
     const customer = await tx.customer.findUnique({
       where: { id: customerId },
-      select: { id: true, parentId: true },
+      select: { id: true },
     });
 
     if (!customer) return;
 
-    const targetCustomerId = customer.parentId || customerId;
-
-    const childIds = await tx.customer.findMany({
-      where: { parentId: targetCustomerId },
-      select: { id: true },
-    });
-
-    const allCustomerIds = [
-      targetCustomerId,
-      ...childIds.map((c: any) => c.id),
-    ];
-
     const invoices = await tx.invoice.findMany({
       where: {
-        customerId: { in: allCustomerIds },
+        customerId,
         status: { notIn: [2] },
       },
     });
 
-    // Dùng grandTotal (bất biến) thay vì debtAmount để tránh mất credit
-    // khi thanh toán vượt quá giá trị hóa đơn.
     const totalGrandTotal = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
@@ -1011,7 +980,7 @@ export class InvoicesService {
 
     const cashFlowsReceipt = await tx.cashFlow.findMany({
       where: {
-        partnerId: { in: allCustomerIds },
+        partnerId: customerId,
         partnerType: 'C',
         isReceipt: true,
         status: { not: 2 },
@@ -1026,7 +995,7 @@ export class InvoicesService {
 
     const cashFlowsPaidOut = await tx.cashFlow.findMany({
       where: {
-        partnerId: { in: allCustomerIds },
+        partnerId: customerId,
         partnerType: 'C',
         isReceipt: false,
         status: { not: 2 },
@@ -1039,20 +1008,18 @@ export class InvoicesService {
     );
 
     // Tổng cấn trừ công nợ từ phiếu trả hàng
-    // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt,
-    //   nên phải tính vào công thức để không bị reset khi recalculate
+    // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt
     // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
     // - status=4 + cash_refund: Bước 2 đã trừ nguyên refundAmount khỏi totalDebt;
-    //   Bước 3 chỉ cộng lại effectiveRefundAmount qua CHI-TH (nằm trong totalCashFlowPaidOut).
-    //   Nếu không trừ refundAmount ở đây, recalc sẽ bỏ sót phần trừ của Bước 2.
+    //   Bước 3 cộng lại effectiveRefundAmount qua CHI-TH (nằm trong totalCashFlowPaidOut).
     // - Không tính manual_offset vì CTN không đụng totalDebt
     const debtOffsets = await tx.returnOrder.findMany({
       where: {
-        customerId: { in: allCustomerIds },
+        customerId,
         OR: [
-          { status: 2 }, // STOCK_RECEIVED – confirmStockReceived đã trừ totalDebt
-          { status: 4, refundType: 'debt_offset' }, // COMPLETED debt_offset
-          { status: 4, refundType: 'cash_refund' }, // COMPLETED cash_refund
+          { status: 2 },
+          { status: 4, refundType: 'debt_offset' },
+          { status: 4, refundType: 'cash_refund' },
         ],
       },
       select: { refundAmount: true },
@@ -1069,16 +1036,9 @@ export class InvoicesService {
       totalDebtOffsets;
 
     await tx.customer.update({
-      where: { id: targetCustomerId },
+      where: { id: customerId },
       data: { totalPurchased, totalDebt },
     });
-
-    if (childIds.length > 0) {
-      await tx.customer.updateMany({
-        where: { id: { in: childIds.map((c: any) => c.id) } },
-        data: { totalDebt: 0, totalPurchased: 0 },
-      });
-    }
   }
 
   async createFromOrder(
@@ -1193,13 +1153,11 @@ export class InvoicesService {
       const orderCustomer = order.customerId
         ? await tx.customer.findUnique({
             where: { id: order.customerId },
-            select: { id: true, parentId: true },
+            select: { id: true },
           })
         : null;
 
-      const parentCustomerId = orderCustomer
-        ? orderCustomer.parentId || orderCustomer.id
-        : null;
+      const parentCustomerId = orderCustomer ? orderCustomer.id : null;
 
       const invoice = await tx.invoice.create({
         data: {
@@ -1425,8 +1383,7 @@ export class InvoicesService {
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
 
-        const targetDebtCustomerId =
-          orderCustomer?.parentId || order.customerId;
+        const targetDebtCustomerId = order.customerId;
         const updatedCustomer = targetDebtCustomerId
           ? await tx.customer.findUnique({
               where: { id: targetDebtCustomerId },
