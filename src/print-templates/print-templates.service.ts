@@ -363,6 +363,8 @@ export class PrintTemplatesService {
       So_Dien_Thoai: customer?.contactNumber || '',
       Dia_Chi_Khach_Hang: customer?.address || '',
       Ghi_Chu_Khach_Hang: customer?.comments || '',
+      Phuong_Xa_Khach_Hang: customer?.wardName || '',
+      Khu_Vuc_Khach_Hang_QH_TP: customer?.districtCode || '',
     };
   }
 
@@ -376,7 +378,7 @@ export class PrintTemplatesService {
   }
 
   private money(value: any): string {
-    return new Intl.NumberFormat('vi-VN').format(Number(value || 0));
+    return new Intl.NumberFormat('en-US').format(Number(value || 0));
   }
 
   private mapInvoice(inv: any) {
@@ -384,7 +386,7 @@ export class PrintTemplatesService {
       ...this.storeVars(inv.branch),
       ...this.dateVars(inv.purchaseDate),
       ...this.customerVars(inv.customer),
-      Ma_Don_Hang: inv.code || '',
+      Ma_Hoa_Don: inv.code || '',
       Nhan_Vien_Ban_Hang: inv.soldBy?.name || inv.creator?.name || '',
       Nguoi_Lap: inv.creator?.name || '',
       Ghi_Chu: inv.description || '',
