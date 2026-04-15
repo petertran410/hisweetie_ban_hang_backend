@@ -309,55 +309,81 @@ model Customer {
   contactNumber  String?
   phone          String?
   email          String?
-  cityCode       String?
-  cityName       String?
-  districtCode   String?
-  districtName   String?
-  wardCode       String?
-  wardName       String?
-  address        String?
   type           Int       @default(0)
   organization   String?
   taxCode        String?
   groups         String?
-  invoiceBuyerName        String?
-  invoiceCityCode         String?
-  invoiceCityName         String?
-  invoiceWardCode         String?
-  invoiceWardName         String?
-  invoiceAddress          String?
-  invoiceCccdCmnd         String?
-  invoiceBankAccount      String?
-  invoiceEmail            String?
-  invoicePhone            String?
-  invoiceDvqhnsCode       String?
   comments       String?
   customerTypeId Int?
   branchId       Int?
-  parentId       Int?
   totalPurchased Decimal   @default(0)
   totalDebt      Decimal   @default(0)
   totalInvoiced  Decimal   @default(0)
   totalPoint     Decimal   @default(0)
   totalRevenue   Decimal   @default(0)
   rewardPoint    Int       @default(0)
-  locationName   String?
   isActive       Boolean   @default(true)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
   branch               Branch?               @relation(fields: [branchId], references: [id])
-  parent               Customer?             @relation("CustomerParentChild", fields: [parentId], references: [id])
-  children             Customer[]            @relation("CustomerParentChild")
   customerGroupDetails CustomerGroupDetail[]
   orders               Order[]
   invoices             Invoice[]             @relation("InvoiceCustomer")
   parentInvoices       Invoice[]             @relation("InvoiceParentCustomer")
-  returnOrders         ReturnOrder[]  @relation("ReturnOrderCustomer")
-  parentReturnOrders   ReturnOrder[]  @relation("ReturnOrderParentCustomer")
+  returnOrders         ReturnOrder[]         @relation("ReturnOrderCustomer")
+  parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
+  addresses            CustomerAddress[]
 
   @@map("customers")
+}
+
+model CustomerAddress {
+  id                  Int      @id @default(autoincrement())
+  customerId          Int
+  label               String?
+  receiver            String?
+  contactNumber       String?
+  address             String?
+
+  // Địa chỉ cũ (3 cấp - trước sáp nhập)
+  cityCode            String?
+  cityName            String?
+  districtCode        String?
+  districtName        String?
+  wardCode            String?
+  wardName            String?
+
+  // Địa chỉ mới (2 cấp - sau sáp nhập)
+  newCityCode         String?
+  newCityName         String?
+  newWardCode         String?
+  newWardName         String?
+
+  locationName        String?
+
+  // Thông tin xuất hóa đơn theo từng địa chỉ
+  invoiceBuyerName    String?
+  invoiceAddress      String?
+  invoiceCityCode     String?
+  invoiceCityName     String?
+  invoiceWardCode     String?
+  invoiceWardName     String?
+  invoiceCccdCmnd     String?
+  invoiceBankAccount  String?
+  invoiceEmail        String?
+  invoicePhone        String?
+  invoiceDvqhnsCode   String?
+
+  isDefault           Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  customer            Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("customer_addresses")
 }
 
 model CustomerGroupDetail {

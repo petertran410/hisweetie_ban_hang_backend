@@ -242,31 +242,29 @@ export class CustomersService {
         where,
         skip: currentItem,
         take: pageSize,
-        include: includeCustomerGroup
-          ? {
-              customerType: true,
-              branch: true,
-              customerGroupDetails: {
-                include: {
-                  customerGroup: { select: { id: true, name: true } },
+        include: {
+          customerType: true,
+          branch: true,
+          addresses: {
+            where: { isDefault: true },
+            take: 1,
+          },
+          ...(includeCustomerGroup
+            ? {
+                customerGroupDetails: {
+                  include: {
+                    customerGroup: { select: { id: true, name: true } },
+                  },
                 },
-              },
-            }
-          : {
-              customerType: true,
-              branch: true,
-            },
+              }
+            : {}),
+        },
         orderBy: { [orderBy]: orderDirection },
       }),
       this.prisma.customer.count({ where }),
     ]);
 
-    return {
-      data,
-      total,
-      pageSize,
-      currentItem,
-    };
+    return { data, total, pageSize, currentItem };
   }
 
   async findOne(id: number) {
@@ -275,19 +273,8 @@ export class CustomersService {
       include: {
         customerType: true,
         branch: true,
-        parent: {
-          select: { id: true, code: true, name: true },
-        },
-        children: {
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            districtName: true,
-            wardName: true,
-            address: true,
-            cityName: true,
-          },
+        addresses: {
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
         },
         customerGroupDetails: {
           include: {
@@ -295,17 +282,10 @@ export class CustomersService {
           },
         },
         orders: {
-          select: {
-            id: true,
-            grandTotal: true,
-            debtAmount: true,
-          },
+          select: { id: true, grandTotal: true, debtAmount: true },
         },
         invoices: {
-          select: {
-            id: true,
-            grandTotal: true,
-          },
+          select: { id: true, grandTotal: true },
         },
       },
     });
@@ -341,6 +321,9 @@ export class CustomersService {
       include: {
         customerType: true,
         branch: true,
+        addresses: {
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+        },
         customerGroupDetails: {
           include: {
             customerGroup: { select: { id: true, name: true } },
@@ -369,17 +352,15 @@ export class CustomersService {
     };
   }
 
-  async findParents(search?: string) {
-    const where: any = {
-      parentId: null,
-      isActive: true,
-    };
+  async searchCustomers(search?: string) {
+    const where: any = { isActive: true };
 
     if (search) {
       where.OR = [
         { name: { contains: search, mode: 'insensitive' } },
         { code: { contains: search, mode: 'insensitive' } },
         { contactNumber: { contains: search } },
+        { phone: { contains: search } },
       ];
     }
 
@@ -391,47 +372,29 @@ export class CustomersService {
         name: true,
         contactNumber: true,
         phone: true,
-        address: true,
-        cityName: true,
-        districtName: true,
-        wardName: true,
-        _count: {
-          select: { children: true },
+        email: true,
+        addresses: {
+          select: {
+            id: true,
+            label: true,
+            receiver: true,
+            contactNumber: true,
+            address: true,
+            cityCode: true,
+            cityName: true,
+            districtCode: true,
+            districtName: true,
+            wardCode: true,
+            wardName: true,
+            newCityCode: true,
+            newCityName: true,
+            newWardCode: true,
+            newWardName: true,
+            locationName: true,
+            isDefault: true,
+          },
+          orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
         },
-      },
-      orderBy: { name: 'asc' },
-      take: 50,
-    });
-
-    return { data };
-  }
-
-  async findChildren(parentId: number, search?: string) {
-    const where: any = {
-      parentId: parentId,
-      isActive: true,
-    };
-
-    if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { code: { contains: search, mode: 'insensitive' } },
-        { contactNumber: { contains: search } },
-      ];
-    }
-
-    const data = await this.prisma.customer.findMany({
-      where,
-      select: {
-        id: true,
-        code: true,
-        name: true,
-        contactNumber: true,
-        phone: true,
-        address: true,
-        cityName: true,
-        districtName: true,
-        wardName: true,
       },
       orderBy: { name: 'asc' },
       take: 50,
@@ -442,23 +405,9 @@ export class CustomersService {
 
   async create(dto: CreateCustomerDto, userId?: number) {
     const code = dto.code || (await this.generateCode());
+    const { groupIds, birthDate, addresses, ...customerData } = dto;
 
-    if (dto.parentId) {
-      const parentCustomer = await this.prisma.customer.findUnique({
-        where: { id: dto.parentId },
-        select: { id: true, parentId: true },
-      });
-      if (!parentCustomer) {
-        throw new BadRequestException('Tài khoản cha không tồn tại');
-      }
-      if (parentCustomer.parentId !== null) {
-        throw new BadRequestException(
-          'Không thể chọn tài khoản con làm tài khoản cha (chỉ hỗ trợ 1 cấp)',
-        );
-      }
-    }
-
-    const { groupIds, birthDate, ...customerData } = dto;
+    const normalizedAddresses = this.normalizeAddresses(addresses);
 
     const customer = await this.prisma.$transaction(async (tx) => {
       const newCustomer = await tx.customer.create({
@@ -466,10 +415,14 @@ export class CustomersService {
           ...customerData,
           code,
           birthDate: birthDate ? new Date(birthDate) : undefined,
+          addresses: {
+            create: normalizedAddresses.map(({ id: _, ...a }) => a),
+          },
         },
         include: {
           customerType: true,
           branch: true,
+          addresses: true,
         },
       });
 
@@ -548,12 +501,16 @@ export class CustomersService {
   }
 
   async update(id: number, dto: UpdateCustomerDto, userId?: number) {
-    const { groupIds, birthDate, ...customerData } = dto;
+    const { groupIds, birthDate, addresses, ...customerData } = dto;
 
     const existingCustomer = await this.prisma.customer.findUnique({
       where: { id },
       include: { customerType: true, branch: true },
     });
+
+    if (!existingCustomer) {
+      throw new NotFoundException(`Customer with id ${id} not found`);
+    }
 
     const customer = await this.prisma.$transaction(async (tx) => {
       const updatedCustomer = await tx.customer.update({
@@ -599,42 +556,52 @@ export class CustomersService {
         }
       }
 
+      if (addresses !== undefined) {
+        if (addresses.length === 0) {
+          throw new BadRequestException(
+            'Khách hàng phải có ít nhất 1 địa chỉ giao hàng',
+          );
+        }
+
+        const normalized = this.normalizeAddresses(addresses);
+
+        const existingAddresses = await tx.customerAddress.findMany({
+          where: { customerId: id },
+          select: { id: true },
+        });
+        const existingIds = new Set(existingAddresses.map((a) => a.id));
+        const incomingIds = new Set(
+          normalized.filter((a) => a.id).map((a) => a.id as number),
+        );
+
+        const toDelete = [...existingIds].filter(
+          (eid) => !incomingIds.has(eid),
+        );
+        if (toDelete.length > 0) {
+          await tx.customerAddress.deleteMany({
+            where: { id: { in: toDelete } },
+          });
+        }
+
+        for (const addr of normalized) {
+          const { id: addrId, ...addrData } = addr;
+          if (addrId && existingIds.has(addrId)) {
+            await tx.customerAddress.update({
+              where: { id: addrId },
+              data: addrData,
+            });
+          } else {
+            await tx.customerAddress.create({
+              data: { ...addrData, customerId: id },
+            });
+          }
+        }
+      }
+
       return updatedCustomer;
     });
 
-    if (dto.parentId !== undefined) {
-      if (dto.parentId !== null) {
-        if (dto.parentId === id) {
-          throw new BadRequestException(
-            'Không thể chọn chính mình làm tài khoản cha',
-          );
-        }
-
-        const hasChildren = await this.prisma.customer.count({
-          where: { parentId: id },
-        });
-        if (hasChildren > 0) {
-          throw new BadRequestException(
-            'Tài khoản đã có tài khoản con, không thể trở thành tài khoản con',
-          );
-        }
-
-        const parentCustomer = await this.prisma.customer.findUnique({
-          where: { id: dto.parentId },
-          select: { id: true, parentId: true },
-        });
-        if (!parentCustomer) {
-          throw new BadRequestException('Tài khoản cha không tồn tại');
-        }
-        if (parentCustomer.parentId !== null) {
-          throw new BadRequestException(
-            'Không thể chọn tài khoản con làm tài khoản cha (chỉ hỗ trợ 1 cấp)',
-          );
-        }
-      }
-    }
-
-    if (userId && existingCustomer) {
+    if (userId) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { name: true, email: true, branchId: true },
@@ -646,8 +613,6 @@ export class CustomersService {
           name: existingCustomer.name,
           contactNumber: existingCustomer.contactNumber,
           email: existingCustomer.email,
-          address: existingCustomer.address,
-          wardName: existingCustomer.wardName,
           taxCode: existingCustomer.taxCode,
           isActive: existingCustomer.isActive,
         },
@@ -655,8 +620,6 @@ export class CustomersService {
           name: customer.name,
           contactNumber: customer.contactNumber,
           email: customer.email,
-          address: customer.address,
-          wardName: customer.wardName,
           taxCode: customer.taxCode,
           isActive: customer.isActive,
         },
@@ -798,17 +761,14 @@ export class CustomersService {
 
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
-      select: { id: true, parentId: true },
+      select: { id: true },
     });
 
     if (!customer) {
       throw new NotFoundException('Không tìm thấy khách hàng');
     }
 
-    const invoiceCustomerIds =
-      customer.parentId === null
-        ? [customerId]
-        : [customerId, customer.parentId];
+    const invoiceCustomerIds = [customerId];
 
     const invoices = await this.prisma.invoice.findMany({
       where: {
@@ -851,21 +811,12 @@ export class CustomersService {
       });
     }
 
-    const cashFlowPartnerIds =
-      customer.parentId === null
-        ? [customerId]
-        : [customerId, customer.parentId];
+    const cashFlowPartnerIds = [customerId];
 
     const cashFlows = await this.prisma.cashFlow.findMany({
       where: {
-        // partnerType: 'C',
-        // partnerId: { in: cashFlowPartnerIds },
-        // // THÊM: Lấy cả phiếu thu (isReceipt = true) VÀ phiếu chi từ trả hàng (CHI-TH)
-        // OR: [{ isReceipt: true }, { code: { startsWith: 'CHI-TH' } }],
-
         partnerType: 'C',
         partnerId: { in: cashFlowPartnerIds },
-        // Lấy tất cả phiếu thu VÀ phiếu chi (PC, CHI-TH, ...) liên quan đến khách hàng
         status: { not: 2 },
       },
       select: {
@@ -907,10 +858,7 @@ export class CustomersService {
       });
     }
 
-    const returnOrderCustomerIds =
-      customer.parentId === null
-        ? [customerId, ...cashFlowPartnerIds]
-        : [customerId];
+    const returnOrderCustomerIds = [customerId];
 
     // THÊM: Lấy ReturnOrder với refundType = 'cash_refund' để hiển thị trong timeline
     const returnOrdersCashRefund = await this.prisma.returnOrder.findMany({
@@ -1082,8 +1030,6 @@ export class CustomersService {
       name: customer.name,
       contactNumber: customer.contactNumber,
       email: customer.email,
-      address: customer.address,
-      wardName: customer.wardName,
       taxCode: customer.taxCode,
       birthDate: customer.birthDate,
       isActive: customer.isActive,
@@ -1097,5 +1043,21 @@ export class CustomersService {
         : null,
       branch: customer.branch ? { name: customer.branch.name } : null,
     };
+  }
+
+  private normalizeAddresses(addresses: any[]) {
+    if (!addresses || addresses.length === 0) return [];
+
+    let lastDefaultIdx = -1;
+    addresses.forEach((a, i) => {
+      if (a.isDefault === true) lastDefaultIdx = i;
+    });
+
+    if (lastDefaultIdx === -1) lastDefaultIdx = 0;
+
+    return addresses.map((a, i) => ({
+      ...a,
+      isDefault: i === lastDefaultIdx,
+    }));
   }
 }

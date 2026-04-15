@@ -1,141 +1,31 @@
 import {
   IsString,
-  IsNumber,
   IsBoolean,
   IsOptional,
   IsDateString,
   IsEmail,
   IsArray,
   IsInt,
+  IsNumber,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { CustomerAddressDto } from './customer-address.dto';
 
 export class UpdateCustomerDto {
-  @IsOptional()
-  @IsString()
-  code?: string;
+  @IsOptional() @IsString() code?: string;
+  @IsOptional() @IsString() name?: string;
+  @IsOptional() @IsBoolean() gender?: boolean;
+  @IsOptional() @IsDateString() birthDate?: string;
+  @IsOptional() @IsString() contactNumber?: string;
+  @IsOptional() @IsString() phone?: string;
+  @IsOptional() @IsEmail() email?: string;
 
-  @IsOptional()
-  @IsString()
-  name?: string;
+  @IsOptional() @IsInt() @Type(() => Number) type?: number;
 
-  @IsOptional()
-  @IsBoolean()
-  gender?: boolean;
-
-  @IsOptional()
-  @IsDateString()
-  birthDate?: string;
-
-  @IsOptional()
-  @IsString()
-  contactNumber?: string;
-
-  @IsOptional()
-  @IsString()
-  phone?: string;
-
-  @IsOptional()
-  @IsEmail()
-  email?: string;
-
-  @IsOptional()
-  @IsString()
-  cityCode?: string;
-
-  @IsOptional()
-  @IsString()
-  cityName?: string;
-
-  @IsOptional()
-  @IsString()
-  districtCode?: string;
-
-  @IsOptional()
-  @IsString()
-  districtName?: string;
-
-  @IsOptional()
-  @IsString()
-  wardCode?: string;
-
-  @IsOptional()
-  @IsString()
-  wardName?: string;
-
-  @IsOptional()
-  @IsString()
-  address?: string;
-
-  @IsOptional()
-  @IsString()
-  locationName?: string;
-
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  type?: number;
-
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  parentId?: number;
-
-  @IsOptional()
-  @IsString()
-  organization?: string;
-
-  @IsOptional()
-  @IsString()
-  taxCode?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceBuyerName?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceCityCode?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceCityName?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceWardCode?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceWardName?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceAddress?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceCccdCmnd?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceBankAccount?: string;
-
-  @IsOptional()
-  @IsEmail()
-  invoiceEmail?: string;
-
-  @IsOptional()
-  @IsString()
-  invoicePhone?: string;
-
-  @IsOptional()
-  @IsString()
-  invoiceDvqhnsCode?: string;
-
-  @IsOptional()
-  @IsString()
-  comments?: string;
+  @IsOptional() @IsString() organization?: string;
+  @IsOptional() @IsString() taxCode?: string;
+  @IsOptional() @IsString() comments?: string;
 
   @IsOptional()
   @IsArray()
@@ -143,8 +33,13 @@ export class UpdateCustomerDto {
   @Type(() => Number)
   groupIds?: number[];
 
+  @IsOptional() @IsNumber() @Type(() => Number) branchId?: number;
+
+  @IsOptional() @IsBoolean() isActive?: boolean;
+
   @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  branchId?: number;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CustomerAddressDto)
+  addresses?: CustomerAddressDto[];
 }

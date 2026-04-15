@@ -36,28 +36,18 @@ export class CustomersController {
     return this.customersService.findAll(query, req.user.id);
   }
 
+  @Get('search')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Tìm kiếm khách hàng (dùng cho dropdown POS)' })
+  search(@Query('search') search?: string) {
+    return this.customersService.searchCustomers(search);
+  }
+
   @Get('code/:code')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo Code' })
   findByCode(@Param('code') code: string) {
     return this.customersService.findByCode(code);
-  }
-
-  @Get('parents')
-  @RequirePermissions('customers:view')
-  @ApiOperation({ summary: 'Lấy danh sách tài khoản cha (không có parentId)' })
-  findParents(@Query('search') search?: string) {
-    return this.customersService.findParents(search);
-  }
-
-  @Get('children/:parentId')
-  @RequirePermissions('customers:view')
-  @ApiOperation({ summary: 'Lấy danh sách tài khoản con theo parentId' })
-  findChildren(
-    @Param('parentId') parentId: string,
-    @Query('search') search?: string,
-  ) {
-    return this.customersService.findChildren(+parentId, search);
   }
 
   @Get(':id')
