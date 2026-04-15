@@ -156,7 +156,7 @@ export class ReturnOrdersService {
         where: { id: { in: dto.invoiceIds } },
         include: {
           details: true,
-          customer: { select: { id: true, parentId: true, name: true } },
+          customer: { select: { id: true, name: true } },
         },
       });
 
@@ -223,7 +223,7 @@ export class ReturnOrdersService {
 
       const firstInvoice = invoices[0];
       const customerId = dto.customerId || firstInvoice.customerId;
-      const parentCustomerId = firstInvoice.customer?.parentId || null;
+      const parentCustomerId = customerId;
 
       const detailsData = dto.details.map((d) => {
         const returnPrice =
@@ -320,7 +320,7 @@ export class ReturnOrdersService {
           details: true,
           invoice: { include: { details: true } },
           customer: {
-            select: { id: true, parentId: true, name: true, totalDebt: true },
+            select: { id: true, name: true, totalDebt: true },
           },
         },
       });
@@ -456,18 +456,15 @@ export class ReturnOrdersService {
 
       // Giảm nợ khách hàng
       if (returnOrder.customerId && refundAmount > 0) {
-        const debtHolderId =
-          returnOrder.customer?.parentId || returnOrder.customerId;
-
         const debtHolder = await tx.customer.findUnique({
-          where: { id: debtHolderId },
+          where: { id: returnOrder.customerId },
           select: { totalDebt: true },
         });
 
         const newDebt = Number(debtHolder?.totalDebt || 0) - refundAmount;
 
         await tx.customer.update({
-          where: { id: debtHolderId },
+          where: { id: returnOrder.customerId },
           data: { totalDebt: newDebt },
         });
 
@@ -528,7 +525,15 @@ export class ReturnOrdersService {
         include: {
           details: true,
           invoice: true,
-          customer: true,
+          customer: {
+            include: {
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
+            },
+          },
         },
       });
 
@@ -584,21 +589,13 @@ export class ReturnOrdersService {
       let actualCashRefund = 0;
       let finalDebtSnapshot: number | null = null;
 
-      const debtHolderId =
-        returnOrder.customer?.parentId || returnOrder.customerId!;
-
-      // ── Helper: lấy allCustomerIds
-      const childIds = await tx.customer.findMany({
-        where: { parentId: debtHolderId },
-        select: { id: true },
-      });
-      const allCustomerIds = [debtHolderId, ...childIds.map((c: any) => c.id)];
+      const debtHolderId = returnOrder.customerId!;
 
       const recalculateDebt = async (): Promise<number> => {
         const currentReturnOrderId = id;
 
         const allInvoices = await tx.invoice.findMany({
-          where: { customerId: { in: allCustomerIds }, status: { notIn: [2] } },
+          where: { customerId: debtHolderId, status: { notIn: [2] } },
           select: { grandTotal: true },
         });
         const totalGrandTotal = allInvoices.reduce(
@@ -608,7 +605,7 @@ export class ReturnOrdersService {
 
         const cashFlowsReceipt = await tx.cashFlow.findMany({
           where: {
-            partnerId: { in: allCustomerIds },
+            partnerId: debtHolderId,
             partnerType: 'C',
             isReceipt: true,
             status: { not: 2 },
@@ -623,7 +620,7 @@ export class ReturnOrdersService {
 
         const cashFlowsPayment = await tx.cashFlow.findMany({
           where: {
-            partnerId: { in: allCustomerIds },
+            partnerId: debtHolderId,
             partnerType: 'C',
             isReceipt: false,
             status: { not: 2 },
@@ -641,7 +638,7 @@ export class ReturnOrdersService {
         // - status=4 cash_refund: Bước 2 đã trừ refundAmount, Bước 3 chỉ cộng lại phần dư qua CHI-TH
         const existingDebtOffsets = await tx.returnOrder.findMany({
           where: {
-            customerId: { in: allCustomerIds },
+            customerId: debtHolderId,
             NOT: { id: currentReturnOrderId },
             OR: [
               { status: 2 },
@@ -707,7 +704,7 @@ export class ReturnOrdersService {
               partnerType: 'C',
               cashFlowGroupId: 7,
               contactNumber: returnOrder.customer?.contactNumber,
-              address: returnOrder.customer?.address,
+              address: returnOrder.customer?.addresses?.[0]?.address || null,
               partnerId: returnOrder.customerId,
               partnerName: returnOrder.customer?.name,
               description: `Chi hoàn tiền trả hàng ${returnOrder.code}`,
@@ -781,7 +778,7 @@ export class ReturnOrdersService {
         include: {
           details: true,
           customer: {
-            select: { id: true, parentId: true, totalDebt: true },
+            select: { id: true, totalDebt: true },
           },
         },
       });
@@ -821,11 +818,8 @@ export class ReturnOrdersService {
 
         const refundAmount = Number(returnOrder.refundAmount);
         if (returnOrder.customerId && refundAmount > 0) {
-          const debtHolderId =
-            returnOrder.customer?.parentId || returnOrder.customerId;
-
           await tx.customer.update({
-            where: { id: debtHolderId },
+            where: { id: returnOrder.customerId },
             data: {
               totalDebt: {
                 increment: refundAmount,
