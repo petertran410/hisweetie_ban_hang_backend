@@ -1062,8 +1062,12 @@ export class InvoicesService {
               id: true,
               name: true,
               contactNumber: true,
-              address: true,
               totalDebt: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
             },
           },
         },
@@ -1216,7 +1220,15 @@ export class InvoicesService {
           details: true,
           payments: true,
           delivery: true,
-          customer: true,
+          customer: {
+            include: {
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
+            },
+          },
           priceBook: true,
         },
       });
@@ -1256,7 +1268,7 @@ export class InvoicesService {
               partnerId: invoice.customerId,
               partnerName: invoice.customer?.name,
               contactNumber: invoice.customer?.contactNumber,
-              address: invoice.customer?.address,
+              address: invoice.customer?.addresses?.[0]?.address || null,
               description: `Thu tiền tạm ứng từ đơn hàng ${order.code} sang hóa đơn ${invoice.code}`,
               status: 0,
               statusValue: 'Đã thanh toán',
@@ -1304,7 +1316,7 @@ export class InvoicesService {
               partnerId: invoice.customerId,
               partnerName: invoice.customer?.name,
               contactNumber: invoice.customer?.contactNumber,
-              address: invoice.customer?.address,
+              address: invoice.customer?.addresses?.[0]?.address || null,
               description: `Thu tiền thanh toán thêm khi tạo hóa đơn ${invoice.code}`,
               status: 0,
               statusValue: 'Đã thanh toán',

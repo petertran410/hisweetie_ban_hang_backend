@@ -26,8 +26,12 @@ export class OrderPaymentsService {
               code: true,
               name: true,
               contactNumber: true,
-              address: true,
               totalDebt: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
             },
           },
         },
@@ -80,17 +84,9 @@ export class OrderPaymentsService {
         await this.recalculateCustomerDebt(order.customerId, tx);
       }
 
-      const orderCust = order.customerId
+      const updatedCustomer = order.customerId
         ? await tx.customer.findUnique({
             where: { id: order.customerId },
-            select: { id: true, parentId: true },
-          })
-        : null;
-
-      const debtHolderId = orderCust?.parentId || order.customerId;
-      const updatedCustomer = debtHolderId
-        ? await tx.customer.findUnique({
-            where: { id: debtHolderId },
             select: { totalDebt: true },
           })
         : null;
@@ -109,7 +105,7 @@ export class OrderPaymentsService {
           partnerId: order.customerId,
           partnerName: order.customer?.name,
           contactNumber: order.customer?.contactNumber,
-          address: order.customer?.address,
+          address: order.customer?.addresses?.[0]?.address || null,
           description:
             dto.description ||
             `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
