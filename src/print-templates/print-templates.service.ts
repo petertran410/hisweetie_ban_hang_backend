@@ -364,7 +364,15 @@ export class PrintTemplatesService {
       Dia_Chi_Khach_Hang: customer?.address || '',
       Ghi_Chu_Khach_Hang: customer?.comments || '',
       Phuong_Xa_Khach_Hang: customer?.wardName || '',
-      Khu_Vuc_Khach_Hang_QH_TP: customer?.districtCode || '',
+      Khu_Vuc_Khach_Hang_QH_TP: customer?.districtName || '',
+    };
+  }
+
+  private staffVars(soldBy: any, creator: any) {
+    return {
+      Nhan_Vien_Ban_Hang: soldBy?.name || creator?.name || '',
+      Nguoi_Lap: creator?.name || '',
+      Dien_Thoai_Nguoi_Ban: soldBy?.phone || creator?.phone || '',
     };
   }
 
@@ -386,9 +394,8 @@ export class PrintTemplatesService {
       ...this.storeVars(inv.branch),
       ...this.dateVars(inv.purchaseDate),
       ...this.customerVars(inv.customer),
+      ...this.staffVars(inv.soldBy, inv.creator),
       Ma_Hoa_Don: inv.code || '',
-      Nhan_Vien_Ban_Hang: inv.soldBy?.name || inv.creator?.name || '',
-      Nguoi_Lap: inv.creator?.name || '',
       Ghi_Chu: inv.description || '',
       Tong_Tien_Hang: this.money(inv.totalAmount),
       Chiet_Khau_Hoa_Don: this.money(inv.discount),

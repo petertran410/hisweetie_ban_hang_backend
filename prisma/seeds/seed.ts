@@ -130,7 +130,18 @@ const STAFF_VARS: VarDef[] = [
     group: 'Nhân viên',
     sortOrder: 40,
   },
-  { key: 'Nguoi_Lap', label: 'Người lập', group: 'Nhân viên', sortOrder: 41 },
+  {
+    key: 'Nguoi_Lap',
+    label: 'Người lập',
+    group: 'Nhân viên',
+    sortOrder: 41,
+  },
+  {
+    key: 'Dien_Thoai_Nguoi_Ban',
+    label: 'Số điện thoại người bán',
+    group: 'Nhân viên',
+    sortOrder: 42,
+  },
 ];
 
 const NOTE_VARS: VarDef[] = [
