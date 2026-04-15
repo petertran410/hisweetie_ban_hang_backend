@@ -5,7 +5,7 @@ const prisma = new PrismaClient();
 async function recalcCustomerDebt(targetCustomerId: number) {
   return prisma.$transaction(async (tx) => {
     const childIds = await tx.customer.findMany({
-      where: { parentId: targetCustomerId },
+      where: { id: targetCustomerId },
       select: { id: true },
     });
     const allCustomerIds = [targetCustomerId, ...childIds.map((c) => c.id)];
@@ -92,7 +92,7 @@ async function recalcCustomerDebt(targetCustomerId: number) {
 
 async function main() {
   const parents = await prisma.customer.findMany({
-    where: { parentId: null },
+    where: { isActive: true },
     select: { id: true, code: true, name: true },
   });
 

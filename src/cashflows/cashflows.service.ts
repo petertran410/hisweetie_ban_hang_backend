@@ -34,17 +34,12 @@ export class CashFlowsService {
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
         const customer = await tx.customer.findUnique({
           where: { id: dto.partnerId },
-          select: { id: true, parentId: true, totalDebt: true },
+          select: { id: true, totalDebt: true },
         });
 
         if (customer) {
-          const debtHolderId = customer.parentId || customer.id;
-          const debtHolder = customer.parentId
-            ? await tx.customer.findUnique({
-                where: { id: customer.parentId },
-                select: { totalDebt: true },
-              })
-            : customer;
+          const debtHolderId = customer.id;
+          const debtHolder = customer;
 
           const debtChange = dto.isReceipt ? -dto.amount : dto.amount;
           const newTotalDebt = Number(debtHolder?.totalDebt || 0) + debtChange;
@@ -571,7 +566,11 @@ export class CashFlowsService {
               id: true,
               name: true,
               contactNumber: true,
-              address: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
             },
           },
         },
@@ -604,7 +603,7 @@ export class CashFlowsService {
           partnerId: invoice.customerId,
           partnerName: invoice.customer?.name,
           contactNumber: invoice.customer?.contactNumber,
-          address: invoice.customer?.address,
+          address: invoice.customer?.addresses?.[0]?.address || null,
           description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
           status: 0,
           statusValue: 'Đã thanh toán',
@@ -681,14 +680,14 @@ export class CashFlowsService {
       if (invoice.customerId) {
         const customer = await tx.customer.findUnique({
           where: { id: invoice.customerId },
-          select: { id: true, parentId: true },
+          select: { id: true },
         });
 
         if (customer) {
-          const targetCustomerId = customer.parentId || customer.id;
+          const targetCustomerId = customer.id;
 
           const childIds = await tx.customer.findMany({
-            where: { parentId: targetCustomerId },
+            where: { id: targetCustomerId },
             select: { id: true },
           });
           const allCustomerIds = [
@@ -940,14 +939,17 @@ export class CashFlowsService {
           id: true,
           name: true,
           contactNumber: true,
-          address: true,
+          addresses: {
+            where: { isDefault: true },
+            take: 1,
+            select: { address: true },
+          },
           totalDebt: true,
-          parentId: true,
         },
       });
 
       const childIds = await tx.customer.findMany({
-        where: { parentId: dto.customerId },
+        where: { id: dto.customerId },
         select: { id: true },
       });
       const allCustomerIds = [
@@ -998,7 +1000,7 @@ export class CashFlowsService {
             partnerId: dto.customerId,
             partnerName: customer.name,
             contactNumber: customer.contactNumber,
-            address: customer.address,
+            address: customer.addresses?.[0]?.address || null,
             description: dto.description || 'Thu tiền khách hàng',
             status: 0,
             statusValue: 'Đã thanh toán',
@@ -1159,7 +1161,7 @@ export class CashFlowsService {
               code: ctnCode,
               invoiceId: debtOffset.invoiceId,
               customerId: dto.customerId,
-              parentCustomerId: customer.parentId || null,
+              parentCustomerId: customer.id || null,
               branchId: dto.branchId,
               status: 4,
               statusValue: 'Hoàn thành',
