@@ -231,7 +231,7 @@ const ITEM_VARS: VarDef[] = [
     sortOrder: 74,
   },
   {
-    key: 'Don_Gia_Sau_Chiet_Khau',
+    key: 'Giam_Gia_Don_Gia',
     label: 'Đơn giá sau CK',
     group: 'Hàng hóa',
     dataType: 'money',
