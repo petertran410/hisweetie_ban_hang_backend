@@ -418,7 +418,7 @@ export class PrintTemplatesService {
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
       Tong_Tien_Hang: this.money(o.totalAmount),
-      Chiet_Khau_Hoa_Don: this.money(o.discount),
+      Giam_Gia: this.money(o.discount),
       Tong_Can_Thanh_Toan: this.money(o.grandTotal),
       Da_Thanh_Toan: this.money(o.paidAmount),
       Con_Lai: this.money(o.debtAmount),
