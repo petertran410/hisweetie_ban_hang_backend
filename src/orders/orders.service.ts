@@ -523,6 +523,8 @@ export class OrdersService {
       toDate,
       soldById,
       saleChannelId,
+      paymentMethod,
+      bankAccountIds,
     } = query;
     const skip = (page - 1) * limit;
 
@@ -549,6 +551,14 @@ export class OrdersService {
         gte: new Date(fromDate),
         lte: new Date(toDate),
       };
+    }
+
+    if (paymentMethod) {
+      const paymentWhere: any = { paymentMethod };
+      if (bankAccountIds && bankAccountIds.length > 0) {
+        paymentWhere.accountId = { in: bankAccountIds };
+      }
+      where.payments = { some: paymentWhere };
     }
 
     const [data, total] = await Promise.all([

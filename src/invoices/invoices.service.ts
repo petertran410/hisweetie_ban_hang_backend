@@ -1176,7 +1176,7 @@ export class InvoicesService {
           customerId: order.customerId,
           parentCustomerId,
           branchId: order.branchId,
-          soldById: order.soldById,
+          soldById: dto.soldById ?? order.soldById,
           saleChannelId: order.saleChannelId,
           priceBookId: order.priceBookId,
           priceBookName: order.priceBookName,
