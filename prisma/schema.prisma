@@ -340,49 +340,35 @@ model Customer {
 }
 
 model CustomerAddress {
-  id                  Int      @id @default(autoincrement())
-  customerId          Int
-  label               String?
-  receiver            String?
-  contactNumber       String?
-  address             String?
+  id            Int     @id @default(autoincrement())
+  customerId    Int
+  label         String?
+  receiver      String?
+  contactNumber String?
+  address       String?
 
-  // Địa chỉ cũ (3 cấp - trước sáp nhập)
-  cityCode            String?
-  cityName            String?
-  districtCode        String?
-  districtName        String?
-  wardCode            String?
-  wardName            String?
+  // Địa chỉ cũ (3 cấp)
+  cityCode     String?
+  cityName     String?
+  districtCode String?
+  districtName String?
+  wardCode     String?
+  wardName     String?
 
-  // Địa chỉ mới (2 cấp - sau sáp nhập)
-  newCityCode         String?
-  newCityName         String?
-  newWardCode         String?
-  newWardName         String?
+  // Địa chỉ mới (2 cấp)
+  newCityCode  String?
+  newCityName  String?
+  newWardCode  String?
+  newWardName  String?
 
-  locationName        String?
+  locationName String?
 
-  // Thông tin xuất hóa đơn theo từng địa chỉ
-  invoiceBuyerName    String?
-  invoiceAddress      String?
-  invoiceCityCode     String?
-  invoiceCityName     String?
-  invoiceWardCode     String?
-  invoiceWardName     String?
-  invoiceCccdCmnd     String?
-  invoiceBankAccount  String?
-  invoiceEmail        String?
-  invoicePhone        String?
-  invoiceDvqhnsCode   String?
+  isDefault Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  isDefault           Boolean  @default(false)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  customer            Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@index([customerId])
   @@map("customer_addresses")
 }
 
