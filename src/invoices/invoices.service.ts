@@ -156,7 +156,13 @@ export class InvoicesService {
     const invoice = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            addresses: {
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+            },
+          },
+        },
         branch: true,
         soldBy: true,
         creator: true,

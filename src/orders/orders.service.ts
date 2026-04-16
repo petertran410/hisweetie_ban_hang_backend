@@ -576,7 +576,13 @@ export class OrdersService {
     return this.prisma.order.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            addresses: {
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
+            },
+          },
+        },
         branch: true,
         soldBy: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
