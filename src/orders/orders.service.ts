@@ -562,6 +562,7 @@ export class OrdersService {
           items: { include: { product: true } },
           payments: true,
           invoices: true,
+          delivery: true,
         },
         orderBy: { orderDate: 'desc' },
       }),

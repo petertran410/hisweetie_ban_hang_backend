@@ -241,10 +241,18 @@ export class PrintTemplatesService {
     const entity = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
         soldBy: true,
         creator: true,
         branch: true,
+        delivery: true,
         details: { include: { product: true } },
       },
     });
@@ -256,10 +264,18 @@ export class PrintTemplatesService {
     const entity = await this.prisma.order.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
         soldBy: true,
         creator: true,
         branch: true,
+        delivery: true,
         items: { include: { product: true } },
       },
     });
@@ -301,7 +317,14 @@ export class PrintTemplatesService {
     const entity = await this.prisma.returnOrder.findUnique({
       where: { id },
       include: {
-        customer: true,
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
         creator: true,
         branch: true,
         invoice: true,
@@ -356,15 +379,27 @@ export class PrintTemplatesService {
     };
   }
 
-  private customerVars(customer: any) {
+  private customerVars(customer: any, delivery?: any) {
+    // Ưu tiên lấy địa chỉ từ delivery (snapshot tại thời điểm tạo)
+    // Fallback lấy từ default address của customer
+    const defaultAddr = customer?.addresses?.[0];
+
     return {
       Ma_Khach_Hang: customer?.code || '',
       Khach_Hang: customer?.name || 'Khách lẻ',
       So_Dien_Thoai: customer?.contactNumber || '',
-      Dia_Chi_Khach_Hang: customer?.address || '',
+      Dia_Chi_Khach_Hang: delivery?.address || defaultAddr?.address || '',
       Ghi_Chu_Khach_Hang: customer?.comments || '',
-      Phuong_Xa_Khach_Hang: customer?.wardName || '',
-      Khu_Vuc_Khach_Hang_QH_TP: customer?.districtName || '',
+      Phuong_Xa_Khach_Hang:
+        delivery?.wardName ||
+        defaultAddr?.newWardName ||
+        defaultAddr?.wardName ||
+        '',
+      Khu_Vuc_Khach_Hang_QH_TP:
+        delivery?.locationName ||
+        defaultAddr?.newCityName ||
+        defaultAddr?.cityName ||
+        '',
     };
   }
 
@@ -393,7 +428,7 @@ export class PrintTemplatesService {
     return {
       ...this.storeVars(inv.branch),
       ...this.dateVars(inv.purchaseDate),
-      ...this.customerVars(inv.customer),
+      ...this.customerVars(inv.customer, inv.delivery),
       ...this.staffVars(inv.soldBy, inv.creator),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
@@ -413,7 +448,7 @@ export class PrintTemplatesService {
     return {
       ...this.storeVars(o.branch),
       ...this.dateVars(o.orderDate),
-      ...this.customerVars(o.customer),
+      ...this.customerVars(o.customer, o.delivery),
       ...this.staffVars(o.soldBy, o.creator),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
@@ -475,7 +510,7 @@ export class PrintTemplatesService {
     return {
       ...this.storeVars(ro.branch),
       ...this.dateVars(ro.createdAt),
-      ...this.customerVars(ro.customer),
+      ...this.customerVars(ro.customer, null),
       Ma_Tra_Hang: ro.code || '',
       Ma_Don_Hang_Goc: ro.invoice?.code || '',
       Nhan_Vien_Ban_Hang: ro.creator?.name || '',
