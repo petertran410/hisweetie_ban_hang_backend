@@ -146,6 +146,7 @@ export class CreateInvoiceFromOrderDto {
   @IsArray()
   payments?: Array<{ method: string; amount: number }>;
 
+  @IsOptional()
   @IsNumber()
   soldById?: number;
 
