@@ -230,6 +230,14 @@ export class OrderQueryDto {
   toDate?: string;
 
   @IsOptional()
+  @IsString()
+  fromCreatedDate?: string;
+
+  @IsOptional()
+  @IsString()
+  toCreatedDate?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   soldById?: number;

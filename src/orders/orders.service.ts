@@ -521,6 +521,8 @@ export class OrdersService {
       branchId,
       fromDate,
       toDate,
+      fromCreatedDate,
+      toCreatedDate,
       soldById,
       saleChannelId,
       paymentMethod,
@@ -551,6 +553,12 @@ export class OrdersService {
         gte: new Date(fromDate),
         lte: new Date(toDate),
       };
+    }
+
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
     }
 
     if (paymentMethod) {

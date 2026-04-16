@@ -45,6 +45,9 @@ export class InvoicesService {
       statusIds,
       fromDate,
       toDate,
+      deliveryStatus,
+      paymentMethod,
+      bankAccountIds,
       fromPurchaseDate,
       toPurchaseDate,
       fromCreatedDate,
@@ -91,6 +94,22 @@ export class InvoicesService {
       if (toDate) where.purchaseDate.lte = new Date(toDate);
       if (fromPurchaseDate) where.purchaseDate.gte = new Date(fromPurchaseDate);
       if (toPurchaseDate) where.purchaseDate.lte = new Date(toPurchaseDate);
+    }
+
+    if (deliveryStatus === 'none') {
+      where.delivery = { is: null };
+    } else if (deliveryStatus === 'pending') {
+      where.delivery = { is: { status: 1 } };
+    } else if (deliveryStatus === 'delivered') {
+      where.delivery = { is: { status: { not: 1 } } };
+    }
+
+    if (paymentMethod) {
+      const paymentWhere: any = { paymentMethod };
+      if (bankAccountIds && bankAccountIds.length > 0) {
+        paymentWhere.accountId = { in: bankAccountIds };
+      }
+      where.payments = { some: paymentWhere };
     }
 
     if (fromCreatedDate || toCreatedDate) {

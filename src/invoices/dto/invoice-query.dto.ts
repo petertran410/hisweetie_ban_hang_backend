@@ -4,6 +4,7 @@ import {
   IsString,
   IsDateString,
   IsArray,
+  IsIn,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -63,6 +64,22 @@ export class InvoiceQueryDto {
   @IsOptional()
   @IsDateString()
   toDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['none', 'pending', 'delivered'])
+  deliveryStatus?: 'none' | 'pending' | 'delivered';
+
+  @IsOptional()
+  @IsString()
+  paymentMethod?: string;
+
+  @IsOptional()
+  @IsArray()
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.split(',').map(Number) : value,
+  )
+  bankAccountIds?: number[];
 
   @IsOptional()
   @IsDateString()
