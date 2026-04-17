@@ -861,6 +861,66 @@ export class InvoicesService {
         updateData.statusValue = getStatusLabel(dto.status);
       }
 
+      // Xử lý items khi chỉ thay đổi giá (cùng sản phẩm, cùng số lượng)
+      if (
+        dto.items &&
+        (!dto.status || dto.status !== INVOICE_STATUS.CANCELLED)
+      ) {
+        await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
+
+        const totalAmount = dto.items.reduce(
+          (sum, item) => sum + item.totalPrice,
+          0,
+        );
+        const discountAmount = dto.discountAmount || 0;
+        const discountFromRatio =
+          (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+
+        const payments = await tx.invoicePayment.findMany({
+          where: { invoiceId: id },
+        });
+        const paidAmount = payments.reduce(
+          (sum, p) => sum + Number(p.amount),
+          0,
+        );
+        const debtAmount = grandTotal - paidAmount;
+
+        let status: number = currentInvoice.status;
+        if (
+          status !== INVOICE_STATUS.CANCELLED &&
+          status !== INVOICE_STATUS.FAILED_DELIVERY
+        ) {
+          status =
+            debtAmount <= 0
+              ? INVOICE_STATUS.COMPLETED
+              : INVOICE_STATUS.PROCESSING;
+        }
+
+        updateData.totalAmount = totalAmount;
+        updateData.discount = discountAmount;
+        updateData.discountRatio = dto.discountRatio || 0;
+        updateData.grandTotal = grandTotal;
+        updateData.debtAmount = debtAmount;
+        updateData.paidAmount = paidAmount;
+        updateData.status = status;
+        updateData.statusValue = getStatusLabel(status);
+
+        updateData.details = {
+          create: dto.items.map((item) => ({
+            productId: item.productId,
+            productCode: item.productCode,
+            productName: item.productName,
+            quantity: item.quantity,
+            price: item.price,
+            discount: item.discount || 0,
+            discountRatio: item.discountRatio || 0,
+            totalPrice: item.totalPrice,
+            note: item.note,
+          })),
+        };
+      }
+
       if (dto.delivery) {
         await tx.invoiceDelivery.deleteMany({
           where: { invoiceId: id },
@@ -970,6 +1030,11 @@ export class InvoicesService {
           where: { id: currentInvoice.customerId },
           data: { totalDebt: newCustomerDebt },
         });
+      }
+
+      // Cập nhật lại công nợ khách hàng khi items thay đổi giá
+      if (dto.items && !shouldUpdateCustomerDebt && currentInvoice.customerId) {
+        await this.updateCustomerTotals(currentInvoice.customerId, tx);
       }
 
       if (currentInvoice.orderId) {
