@@ -577,6 +577,24 @@ export class InvoicesService {
         const cancelCustomerId = dto.customerId ?? currentInvoice.customerId;
         const cancelParentCustomerId = cancelCustomerId;
 
+        // Xác định priceBook cho hóa đơn mới
+        let newPriceBookId = currentInvoice.priceBookId;
+        let newPriceBookName = currentInvoice.priceBookName;
+
+        if (dto.priceBookId !== undefined && dto.priceBookId !== null) {
+          if (dto.priceBookId > 0) {
+            const priceBook = await tx.priceBook.findFirst({
+              where: { id: dto.priceBookId, isActive: true },
+            });
+            newPriceBookId = priceBook?.id || null;
+            newPriceBookName = priceBook?.name || null;
+          } else {
+            // dto.priceBookId === 0 → "Bảng giá chung"
+            newPriceBookId = null;
+            newPriceBookName = null;
+          }
+        }
+
         const newInvoice = await tx.invoice.create({
           data: {
             code: newCode,
@@ -586,8 +604,8 @@ export class InvoicesService {
             branchId: dto.branchId ?? currentInvoice.branchId,
             soldById: dto.soldById ?? currentInvoice.soldById,
             saleChannelId: currentInvoice.saleChannelId,
-            priceBookId: currentInvoice.priceBookId,
-            priceBookName: currentInvoice.priceBookName,
+            priceBookId: newPriceBookId,
+            priceBookName: newPriceBookName,
             purchaseDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : currentInvoice.purchaseDate,
