@@ -881,57 +881,73 @@ export class InvoicesService {
         };
       }
 
-      const needRecalculatePriceBook =
-        (dto.customerId !== undefined &&
-          dto.customerId !== currentInvoice.customerId) ||
-        (dto.branchId !== undefined &&
-          dto.branchId !== currentInvoice.branchId) ||
-        (dto.soldById !== undefined &&
-          dto.soldById !== currentInvoice.soldById);
-
-      if (needRecalculatePriceBook) {
-        const branchId = dto.branchId ?? currentInvoice.branchId;
-        const customerId = dto.customerId ?? currentInvoice.customerId;
-
-        const orConditions: any[] = [{ isGlobal: true }];
-
-        if (branchId) {
-          orConditions.push({
-            priceBookBranches: {
-              some: { branchId },
-            },
+      if (dto.priceBookId !== undefined && dto.priceBookId !== null) {
+        // User chủ động chọn bảng giá từ dropdown
+        if (dto.priceBookId > 0) {
+          const priceBook = await tx.priceBook.findFirst({
+            where: { id: dto.priceBookId, isActive: true },
           });
+          updateData.priceBookId = priceBook?.id || null;
+          updateData.priceBookName = priceBook?.name || null;
+        } else {
+          // dto.priceBookId === 0 → "Bảng giá chung"
+          updateData.priceBookId = null;
+          updateData.priceBookName = null;
         }
+      } else {
+        // priceBookId không gửi → auto-detect nếu context thay đổi
+        const needRecalculatePriceBook =
+          (dto.customerId !== undefined &&
+            dto.customerId !== currentInvoice.customerId) ||
+          (dto.branchId !== undefined &&
+            dto.branchId !== currentInvoice.branchId) ||
+          (dto.soldById !== undefined &&
+            dto.soldById !== currentInvoice.soldById);
 
-        if (customerId) {
-          orConditions.push(
-            {
-              priceBookCustomerGroups: {
-                some: {
-                  customerGroup: {
-                    customerGroupDetails: {
-                      some: { customerId },
+        if (needRecalculatePriceBook) {
+          const branchId = dto.branchId ?? currentInvoice.branchId;
+          const customerId = dto.customerId ?? currentInvoice.customerId;
+
+          const orConditions: any[] = [{ isGlobal: true }];
+
+          if (branchId) {
+            orConditions.push({
+              priceBookBranches: {
+                some: { branchId },
+              },
+            });
+          }
+
+          if (customerId) {
+            orConditions.push(
+              {
+                priceBookCustomerGroups: {
+                  some: {
+                    customerGroup: {
+                      customerGroupDetails: {
+                        some: { customerId },
+                      },
                     },
                   },
                 },
               },
+              { forAllCusGroup: true },
+            );
+          }
+
+          const applicablePriceBooks = await tx.priceBook.findMany({
+            where: {
+              isActive: true,
+              OR: orConditions,
             },
-            { forAllCusGroup: true },
-          );
+            orderBy: { priority: 'desc' },
+            take: 1,
+          });
+
+          const priceBook = applicablePriceBooks[0] || null;
+          updateData.priceBookId = priceBook?.id || null;
+          updateData.priceBookName = priceBook?.name || null;
         }
-
-        const applicablePriceBooks = await tx.priceBook.findMany({
-          where: {
-            isActive: true,
-            OR: orConditions,
-          },
-          orderBy: { priority: 'desc' },
-          take: 1,
-        });
-
-        const priceBook = applicablePriceBooks[0] || null;
-        updateData.priceBookId = priceBook?.id || null;
-        updateData.priceBookName = priceBook?.name || null;
       }
 
       const updatedInvoice = await tx.invoice.update({
