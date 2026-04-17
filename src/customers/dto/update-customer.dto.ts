@@ -8,6 +8,7 @@ import {
   IsInt,
   IsNumber,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { CustomerAddressDto } from './customer-address.dto';
@@ -26,6 +27,23 @@ export class UpdateCustomerDto {
   @IsOptional() @IsString() organization?: string;
   @IsOptional() @IsString() taxCode?: string;
   @IsOptional() @IsString() comments?: string;
+
+  // Thông tin xuất hóa đơn
+  @IsOptional() @IsString() invoiceBuyerName?: string;
+  @IsOptional() @IsString() invoiceAddress?: string;
+  @IsOptional() @IsString() invoiceCityCode?: string;
+  @IsOptional() @IsString() invoiceCityName?: string;
+  @IsOptional() @IsString() invoiceWardCode?: string;
+  @IsOptional() @IsString() invoiceWardName?: string;
+  @IsOptional() @IsString() invoiceCccdCmnd?: string;
+  @IsOptional() @IsString() invoiceBankAccount?: string;
+
+  @ValidateIf((o) => o.invoiceEmail !== undefined && o.invoiceEmail !== '')
+  @IsEmail({}, { message: 'Email xuất hóa đơn không hợp lệ' })
+  invoiceEmail?: string;
+
+  @IsOptional() @IsString() invoicePhone?: string;
+  @IsOptional() @IsString() invoiceDvqhnsCode?: string;
 
   @IsOptional()
   @IsArray()
