@@ -88,36 +88,48 @@ export class OrdersService {
         }),
       );
 
-      const applicablePriceBooks = await this.prisma.priceBook.findMany({
-        where: {
-          isActive: true,
-          OR: [
-            { isGlobal: true },
-            { priceBookBranches: { some: { branchId: branchId } } },
-            ...(dto.customerId
-              ? [
-                  {
-                    priceBookCustomerGroups: {
-                      some: {
-                        customerGroup: {
-                          customerGroupDetails: {
-                            some: { customerId: dto.customerId },
+      let priceBook: any = null;
+
+      // Ưu tiên priceBookId từ frontend (user đã chọn trên dropdown)
+      if (dto.priceBookId) {
+        priceBook = await this.prisma.priceBook.findFirst({
+          where: { id: dto.priceBookId, isActive: true },
+        });
+      }
+
+      // Fallback: auto-detect nếu user chọn "Bảng giá chung" (null/0)
+      if (!priceBook && !dto.priceBookId) {
+        const applicablePriceBooks = await this.prisma.priceBook.findMany({
+          where: {
+            isActive: true,
+            OR: [
+              { isGlobal: true },
+              { priceBookBranches: { some: { branchId: branchId } } },
+              ...(dto.customerId
+                ? [
+                    {
+                      priceBookCustomerGroups: {
+                        some: {
+                          customerGroup: {
+                            customerGroupDetails: {
+                              some: { customerId: dto.customerId },
+                            },
                           },
                         },
                       },
                     },
-                  },
-                  { forAllCusGroup: true },
-                ]
-              : []),
-          ],
-        },
-        orderBy: { priority: 'desc' },
-        take: 1,
-      });
+                    { forAllCusGroup: true },
+                  ]
+                : []),
+            ],
+          },
+          orderBy: { priority: 'desc' },
+          take: 1,
+        });
+        priceBook = applicablePriceBooks[0] || null;
+      }
 
       const orderCode = await this.generateCode();
-      const priceBook = applicablePriceBooks[0] || null;
 
       const order = await tx.order.create({
         data: {

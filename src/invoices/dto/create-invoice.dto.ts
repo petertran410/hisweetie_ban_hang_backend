@@ -99,6 +99,10 @@ export class CreateInvoiceDto {
   saleChannelId?: number;
 
   @IsOptional()
+  @IsNumber()
+  priceBookId?: number;
+
+  @IsOptional()
   @IsDateString()
   purchaseDate?: string;
 

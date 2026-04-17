@@ -230,35 +230,44 @@ export class InvoicesService {
       const currentCustomerDebt = Number(customer?.totalDebt || 0);
       const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
-      const applicablePriceBooks = await tx.priceBook.findMany({
-        where: {
-          isActive: true,
-          OR: [
-            { isGlobal: true },
-            { priceBookBranches: { some: { branchId: dto.branchId } } },
-            ...(dto.customerId
-              ? [
-                  {
-                    priceBookCustomerGroups: {
-                      some: {
-                        customerGroup: {
-                          customerGroupDetails: {
-                            some: { customerId: dto.customerId },
+      let priceBook: any = null;
+
+      if (dto.priceBookId) {
+        priceBook = await tx.priceBook.findFirst({
+          where: { id: dto.priceBookId, isActive: true },
+        });
+      }
+
+      if (!priceBook && !dto.priceBookId) {
+        const applicablePriceBooks = await tx.priceBook.findMany({
+          where: {
+            isActive: true,
+            OR: [
+              { isGlobal: true },
+              { priceBookBranches: { some: { branchId: dto.branchId } } },
+              ...(dto.customerId
+                ? [
+                    {
+                      priceBookCustomerGroups: {
+                        some: {
+                          customerGroup: {
+                            customerGroupDetails: {
+                              some: { customerId: dto.customerId },
+                            },
                           },
                         },
                       },
                     },
-                  },
-                  { forAllCusGroup: true },
-                ]
-              : []),
-          ],
-        },
-        orderBy: { priority: 'desc' },
-        take: 1,
-      });
-
-      const priceBook = applicablePriceBooks[0] || null;
+                    { forAllCusGroup: true },
+                  ]
+                : []),
+            ],
+          },
+          orderBy: { priority: 'desc' },
+          take: 1,
+        });
+        priceBook = applicablePriceBooks[0] || null;
+      }
 
       const invoice = await tx.invoice.create({
         data: {

@@ -88,6 +88,10 @@ export class CreateOrderDto {
   @IsOptional()
   branchId?: number;
 
+  @IsInt()
+  @IsOptional()
+  priceBookId?: number;
+
   @IsDateString()
   @IsOptional()
   orderDate?: string;
@@ -143,6 +147,10 @@ export class UpdateOrderDto {
   @IsInt()
   @IsOptional()
   branchId?: number;
+
+  @IsInt()
+  @IsOptional()
+  priceBookId?: number;
 
   @IsDateString()
   @IsOptional()
