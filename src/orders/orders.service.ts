@@ -90,15 +90,13 @@ export class OrdersService {
 
       let priceBook: any = null;
 
-      // Ưu tiên priceBookId từ frontend (user đã chọn trên dropdown)
-      if (dto.priceBookId) {
+      if (dto.priceBookId && dto.priceBookId > 0) {
+        // User chọn bảng giá cụ thể từ dropdown
         priceBook = await this.prisma.priceBook.findFirst({
           where: { id: dto.priceBookId, isActive: true },
         });
-      }
-
-      // Fallback: auto-detect nếu user chọn "Bảng giá chung" (null/0)
-      if (!priceBook && !dto.priceBookId) {
+      } else if (dto.priceBookId === undefined || dto.priceBookId === null) {
+        // Frontend cũ không gửi field này → auto-detect (backward compatible)
         const applicablePriceBooks = await this.prisma.priceBook.findMany({
           where: {
             isActive: true,
@@ -128,6 +126,7 @@ export class OrdersService {
         });
         priceBook = applicablePriceBooks[0] || null;
       }
+      // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null → lưu basePrice
 
       const orderCode = await this.generateCode();
 

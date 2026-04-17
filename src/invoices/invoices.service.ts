@@ -232,13 +232,11 @@ export class InvoicesService {
 
       let priceBook: any = null;
 
-      if (dto.priceBookId) {
+      if (dto.priceBookId && dto.priceBookId > 0) {
         priceBook = await tx.priceBook.findFirst({
           where: { id: dto.priceBookId, isActive: true },
         });
-      }
-
-      if (!priceBook && !dto.priceBookId) {
+      } else if (dto.priceBookId === undefined || dto.priceBookId === null) {
         const applicablePriceBooks = await tx.priceBook.findMany({
           where: {
             isActive: true,
@@ -268,6 +266,7 @@ export class InvoicesService {
         });
         priceBook = applicablePriceBooks[0] || null;
       }
+      // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null
 
       const invoice = await tx.invoice.create({
         data: {
