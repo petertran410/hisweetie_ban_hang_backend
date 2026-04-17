@@ -50,6 +50,8 @@ export class CustomersService {
       createdDateTo,
       birthdayFrom,
       birthdayTo,
+      lastTransactionFrom,
+      lastTransactionTo,
       totalPurchasedFrom,
       totalPurchasedTo,
       debtFrom,
@@ -185,6 +187,21 @@ export class CustomersService {
         endDate.setHours(23, 59, 59, 999);
         where.createdAt.lte = endDate;
       }
+    }
+
+    if (lastTransactionFrom || lastTransactionTo) {
+      const invoiceWhere: any = {};
+      if (lastTransactionFrom) {
+        invoiceWhere.gte = new Date(lastTransactionFrom);
+      }
+      if (lastTransactionTo) {
+        const endDate = new Date(lastTransactionTo);
+        endDate.setHours(23, 59, 59, 999);
+        invoiceWhere.lte = endDate;
+      }
+      where.invoices = {
+        some: { purchaseDate: invoiceWhere },
+      };
     }
 
     if (birthdayFrom || birthdayTo) {
