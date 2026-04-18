@@ -19,6 +19,15 @@ class InvoiceAllocationDto {
   amount: number;
 }
 
+class DebtOffsetDto {
+  @IsInt()
+  @Type(() => Number)
+  invoiceId: number;
+
+  @IsNumber()
+  amount: number;
+}
+
 export class CreateCashFlowDto {
   @IsOptional()
   @IsString()
@@ -109,4 +118,10 @@ export class CreateCashFlowDto {
   @ValidateNested({ each: true })
   @Type(() => InvoiceAllocationDto)
   invoiceAllocations?: InvoiceAllocationDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DebtOffsetDto)
+  debtOffsets?: DebtOffsetDto[];
 }

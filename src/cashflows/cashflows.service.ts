@@ -124,6 +124,136 @@ export class CashFlowsService {
             });
           }
         }
+
+        if (
+          dto.allocateToInvoices &&
+          dto.debtOffsets &&
+          dto.debtOffsets.length > 0
+        ) {
+          const user = await tx.user.findUnique({
+            where: { id: userId },
+            select: { name: true },
+          });
+
+          for (const debtOffset of dto.debtOffsets) {
+            const invoiceData = await tx.invoice.findUnique({
+              where: { id: debtOffset.invoiceId },
+            });
+
+            if (!invoiceData) {
+              throw new Error(
+                `Không tìm thấy hóa đơn ID ${debtOffset.invoiceId}`,
+              );
+            }
+
+            const belongsToPartner =
+              invoiceData.customerId === dto.partnerId ||
+              invoiceData.parentCustomerId === dto.partnerId;
+
+            if (!belongsToPartner) {
+              throw new Error(`Hóa đơn không thuộc về khách hàng này`);
+            }
+
+            if (debtOffset.amount > Number(invoiceData.debtAmount)) {
+              throw new Error(
+                `Số tiền cấn trừ ${debtOffset.amount} vượt quá công nợ ${invoiceData.debtAmount} của hóa đơn ${invoiceData.code}`,
+              );
+            }
+
+            // Generate CTN code
+            const lastCtn = await tx.returnOrder.findFirst({
+              where: { refundType: 'manual_offset' },
+              orderBy: { id: 'desc' },
+              select: { code: true },
+            });
+            let nextCtnNum = 1;
+            if (lastCtn?.code?.startsWith('CTN')) {
+              nextCtnNum = parseInt(lastCtn.code.slice(3)) + 1;
+            }
+            const ctnCode = `CTN${nextCtnNum.toString().padStart(6, '0')}`;
+
+            // Update invoice
+            const newPaidAmount =
+              Number(invoiceData.paidAmount) + debtOffset.amount;
+            const newDebtAmount = Math.max(
+              0,
+              Number(invoiceData.debtAmount) - debtOffset.amount,
+            );
+            const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+
+            await tx.invoice.update({
+              where: { id: debtOffset.invoiceId },
+              data: {
+                paidAmount: newPaidAmount,
+                debtAmount: newDebtAmount,
+                status: invoiceStatus,
+                statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              },
+            });
+
+            // Create ReturnOrder record (CTN)
+            // Không trừ thêm customer.totalDebt vì credit đã được phản ánh
+            // từ các giao dịch trước. Phiếu CTN chỉ phân bổ credit vào hóa đơn cụ thể.
+            await tx.returnOrder.create({
+              data: {
+                code: ctnCode,
+                invoiceId: debtOffset.invoiceId,
+                customerId: dto.partnerId,
+                parentCustomerId: dto.partnerId,
+                branchId: dto.branchId,
+                status: 4,
+                statusValue: 'Hoàn thành',
+                totalReturnAmount: 0,
+                refundAmount: debtOffset.amount,
+                refundType: 'manual_offset',
+                refundConfirmedBy: userId,
+                refundConfirmedByName: user?.name || 'System',
+                refundConfirmedAt: dto.transDate
+                  ? new Date(dto.transDate)
+                  : new Date(),
+                customerDebtSnapshot: customerDebtSnapshot ?? 0,
+                createdBy: userId,
+                createdByName: user?.name || 'System',
+              },
+            });
+          }
+
+          // Consume credit từ các hóa đơn bị overpaid (debtAmount < 0)
+          let creditToConsume = dto.debtOffsets.reduce(
+            (sum: number, d: any) => sum + d.amount,
+            0,
+          );
+
+          if (creditToConsume > 0) {
+            const overpaidInvoices = await tx.invoice.findMany({
+              where: {
+                customerId: dto.partnerId,
+                debtAmount: { lt: 0 },
+                status: { not: 2 },
+              },
+              select: { id: true, debtAmount: true, status: true },
+              orderBy: { purchaseDate: 'asc' },
+            });
+
+            for (const inv of overpaidInvoices) {
+              if (creditToConsume <= 0) break;
+
+              const available = Math.abs(Number(inv.debtAmount));
+              const consume = Math.min(available, creditToConsume);
+
+              await tx.invoice.update({
+                where: { id: inv.id },
+                data: {
+                  debtAmount: Number(inv.debtAmount) + consume,
+                  status: 1,
+                  statusValue: 'Hoàn thành',
+                },
+              });
+
+              creditToConsume -= consume;
+            }
+          }
+        }
       }
 
       const cashFlow = await tx.cashFlow.create({
