@@ -1350,6 +1350,7 @@ export class CashFlowsService {
               customerDebtSnapshot: runningDebt,
               createdBy: userId,
               createdByName: user?.name || 'System',
+              cashFlowId: cashFlow?.id ?? null,
             },
           });
         }
