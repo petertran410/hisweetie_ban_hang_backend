@@ -791,30 +791,47 @@ export class CashFlowsService {
       throw new Error('Cash flow not found');
     }
 
-    const invoicePayments = await this.prisma.invoicePayment.findMany({
-      where: {
-        code: {
-          startsWith: cashFlow.code,
+    const [invoicePayments, orderPayments] = await Promise.all([
+      this.prisma.invoicePayment.findMany({
+        where: {
+          code: { startsWith: cashFlow.code },
         },
-      },
-      include: {
-        invoice: {
-          select: {
-            id: true,
-            code: true,
-            grandTotal: true,
-            paidAmount: true,
-            debtAmount: true,
-            status: true,
+        include: {
+          invoice: {
+            select: {
+              id: true,
+              code: true,
+              grandTotal: true,
+              paidAmount: true,
+              debtAmount: true,
+              status: true,
+            },
           },
         },
-      },
-      orderBy: {
-        paymentDate: 'desc',
-      },
-    });
+        orderBy: { paymentDate: 'desc' },
+      }),
+      this.prisma.orderPayment.findMany({
+        where: {
+          code: { startsWith: cashFlow.code },
+        },
+        include: {
+          order: {
+            select: {
+              id: true,
+              code: true,
+              grandTotal: true,
+              paidAmount: true,
+              debtAmount: true,
+              status: true,
+              orderStatus: true,
+            },
+          },
+        },
+        orderBy: { paymentDate: 'desc' },
+      }),
+    ]);
 
-    return invoicePayments;
+    return { invoicePayments, orderPayments };
   }
 
   private async generateManualCode(
