@@ -1378,6 +1378,7 @@ model CashFlow {
   creator        User            @relation("CashFlowCreator", fields: [createdBy], references: [id])
   collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
   invoicePayments InvoicePayment[]
+  returnOrders    ReturnOrder[]
 
   @@map("cash_flows")
 }
@@ -1788,6 +1789,7 @@ model ReturnOrder {
   refundConfirmedByName String?
   refundConfirmedAt   DateTime?
   customerDebtSnapshot Decimal? @db.Decimal(15, 2)
+  cashFlowId          Int?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
 
@@ -1800,6 +1802,7 @@ model ReturnOrder {
   confirmedByUser  User?             @relation("ReturnOrderConfirmer", fields: [confirmedBy], references: [id])
   refundConfirmedByUser User?        @relation("ReturnOrderRefundConfirmer", fields: [refundConfirmedBy], references: [id])
   details          ReturnOrderDetail[]
+    cashFlow         CashFlow?         @relation(fields: [cashFlowId], references: [id])
 
   @@index([invoiceId])
   @@index([customerId])

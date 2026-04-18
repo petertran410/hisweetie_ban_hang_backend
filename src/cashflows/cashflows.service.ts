@@ -30,6 +30,7 @@ export class CashFlowsService {
       const statusValue = dto.isReceipt ? 'Đã thanh toán' : 'Đã chi';
 
       let customerDebtSnapshot: number | null = null;
+      const createdCtnIds: number[] = []; // ← THÊM
 
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
         const customer = await tx.customer.findUnique({
@@ -160,7 +161,6 @@ export class CashFlowsService {
               );
             }
 
-            // Generate CTN code
             const lastCtn = await tx.returnOrder.findFirst({
               where: { refundType: 'manual_offset' },
               orderBy: { id: 'desc' },
@@ -172,7 +172,6 @@ export class CashFlowsService {
             }
             const ctnCode = `CTN${nextCtnNum.toString().padStart(6, '0')}`;
 
-            // Update invoice
             const newPaidAmount =
               Number(invoiceData.paidAmount) + debtOffset.amount;
             const newDebtAmount = Math.max(
@@ -191,10 +190,8 @@ export class CashFlowsService {
               },
             });
 
-            // Create ReturnOrder record (CTN)
-            // Không trừ thêm customer.totalDebt vì credit đã được phản ánh
-            // từ các giao dịch trước. Phiếu CTN chỉ phân bổ credit vào hóa đơn cụ thể.
-            await tx.returnOrder.create({
+            const ctn = await tx.returnOrder.create({
+              // ← SỬA: thêm const ctn =
               data: {
                 code: ctnCode,
                 invoiceId: debtOffset.invoiceId,
@@ -216,9 +213,9 @@ export class CashFlowsService {
                 createdByName: user?.name || 'System',
               },
             });
+            createdCtnIds.push(ctn.id); // ← THÊM
           }
 
-          // Consume credit từ các hóa đơn bị overpaid (debtAmount < 0)
           let creditToConsume = dto.debtOffsets.reduce(
             (sum: number, d: any) => sum + d.amount,
             0,
@@ -237,10 +234,8 @@ export class CashFlowsService {
 
             for (const inv of overpaidInvoices) {
               if (creditToConsume <= 0) break;
-
               const available = Math.abs(Number(inv.debtAmount));
               const consume = Math.min(available, creditToConsume);
-
               await tx.invoice.update({
                 where: { id: inv.id },
                 data: {
@@ -249,7 +244,6 @@ export class CashFlowsService {
                   statusValue: 'Hoàn thành',
                 },
               });
-
               creditToConsume -= consume;
             }
           }
@@ -282,36 +276,23 @@ export class CashFlowsService {
           customerDebtSnapshot,
         },
         include: {
-          branch: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          cashFlowGroup: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
+          branch: { select: { id: true, name: true } },
+          cashFlowGroup: { select: { id: true, name: true } },
           account: {
-            select: {
-              id: true,
-              bankName: true,
-              accountNumber: true,
-            },
+            select: { id: true, bankName: true, accountNumber: true },
           },
-          creator: {
-            select: {
-              id: true,
-              name: true,
-            },
-          },
-          collectionBranch: {
-            select: { id: true, name: true },
-          },
+          creator: { select: { id: true, name: true } },
+          collectionBranch: { select: { id: true, name: true } },
         },
       });
+
+      // ── Link CTN → CashFlow ── ← THÊM
+      if (createdCtnIds.length > 0) {
+        await tx.returnOrder.updateMany({
+          where: { id: { in: createdCtnIds } },
+          data: { cashFlowId: cashFlow.id },
+        });
+      }
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -476,6 +457,10 @@ export class CashFlowsService {
           collectionBranch: {
             select: { id: true, name: true },
           },
+          returnOrders: {
+            where: { refundType: 'manual_offset', status: { not: 5 } },
+            select: { id: true, refundAmount: true, status: true },
+          },
         },
         orderBy: { transDate: 'desc' },
         skip: currentItem,
@@ -490,6 +475,11 @@ export class CashFlowsService {
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
       collectionBranchName: cashFlow.collectionBranch?.name,
       creatorName: cashFlow.creator?.name,
+      debtOffsetTotal:
+        cashFlow.returnOrders?.reduce(
+          (sum: number, ro: any) => sum + Number(ro.refundAmount),
+          0,
+        ) || 0,
     }));
 
     return {
@@ -921,7 +911,7 @@ export class CashFlowsService {
       throw new Error('Cash flow not found');
     }
 
-    const [invoicePayments, orderPayments] = await Promise.all([
+    const [invoicePayments, orderPayments, debtOffsets] = await Promise.all([
       this.prisma.invoicePayment.findMany({
         where: {
           OR: [
@@ -944,9 +934,7 @@ export class CashFlowsService {
         orderBy: { paymentDate: 'desc' },
       }),
       this.prisma.orderPayment.findMany({
-        where: {
-          code: { startsWith: cashFlow.code },
-        },
+        where: { code: { startsWith: cashFlow.code } },
         include: {
           order: {
             select: {
@@ -962,9 +950,34 @@ export class CashFlowsService {
         },
         orderBy: { paymentDate: 'desc' },
       }),
+      this.prisma.returnOrder.findMany({
+        where: {
+          cashFlowId: cashFlowId,
+          refundType: 'manual_offset',
+        },
+        select: {
+          id: true,
+          code: true,
+          refundAmount: true,
+          status: true,
+          statusValue: true,
+          refundConfirmedAt: true,
+          invoice: {
+            select: {
+              id: true,
+              code: true,
+              grandTotal: true,
+              paidAmount: true,
+              debtAmount: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: { refundConfirmedAt: 'desc' },
+      }),
     ]);
 
-    return { invoicePayments, orderPayments };
+    return { invoicePayments, orderPayments, debtOffsets };
   }
 
   private async generateManualCode(
