@@ -794,7 +794,10 @@ export class CashFlowsService {
     const [invoicePayments, orderPayments] = await Promise.all([
       this.prisma.invoicePayment.findMany({
         where: {
-          code: { startsWith: cashFlow.code },
+          OR: [
+            { code: { startsWith: cashFlow.code } },
+            { cashFlowId: cashFlowId },
+          ],
         },
         include: {
           invoice: {
@@ -1086,7 +1089,7 @@ export class CashFlowsService {
                 dto.description ||
                 `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
               status: 1,
-              cashFlowId: cashFlow.id,
+              cashFlowId: cashFlow?.id ?? null,
             },
           });
 
