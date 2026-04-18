@@ -389,6 +389,7 @@ export class CashFlowsService {
           select: {
             id: true,
             bankName: true,
+            bankCode: true,
             accountNumber: true,
           },
         },
@@ -459,6 +460,7 @@ export class CashFlowsService {
         wardName: dto.wardName,
         usedForFinancialReporting: dto.usedForFinancialReporting,
         description: dto.description,
+        ...(dto.collectorId ? { createdBy: dto.collectorId } : {}),
       },
       include: {
         branch: {

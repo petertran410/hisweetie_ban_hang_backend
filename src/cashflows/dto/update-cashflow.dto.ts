@@ -68,4 +68,9 @@ export class UpdateCashFlowDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  collectorId?: number;
 }
