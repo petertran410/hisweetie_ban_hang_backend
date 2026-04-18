@@ -30,7 +30,8 @@ export class CashFlowsService {
       const statusValue = dto.isReceipt ? 'Đã thanh toán' : 'Đã chi';
 
       let customerDebtSnapshot: number | null = null;
-      const createdCtnIds: number[] = []; // ← THÊM
+      const createdCtnIds: number[] = [];
+      const createdInvoicePaymentIds: number[] = [];
 
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
         const customer = await tx.customer.findUnique({
@@ -85,7 +86,7 @@ export class CashFlowsService {
             const paymentSequence = existingPayments.length + 1;
             const paymentCode = `TT${invoice.code}-${paymentSequence}`;
 
-            await tx.invoicePayment.create({
+            const invPayment = await tx.invoicePayment.create({
               data: {
                 code: paymentCode,
                 invoiceId: allocation.invoiceId,
@@ -99,6 +100,7 @@ export class CashFlowsService {
                 status: 1,
               },
             });
+            createdInvoicePaymentIds.push(invPayment.id);
 
             const allPayments = await tx.invoicePayment.findMany({
               where: { invoiceId: allocation.invoiceId },
@@ -290,6 +292,13 @@ export class CashFlowsService {
       if (createdCtnIds.length > 0) {
         await tx.returnOrder.updateMany({
           where: { id: { in: createdCtnIds } },
+          data: { cashFlowId: cashFlow.id },
+        });
+      }
+
+      if (createdInvoicePaymentIds.length > 0) {
+        await tx.invoicePayment.updateMany({
+          where: { id: { in: createdInvoicePaymentIds } },
           data: { cashFlowId: cashFlow.id },
         });
       }
