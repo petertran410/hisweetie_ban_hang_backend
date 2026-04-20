@@ -53,6 +53,10 @@ export class ComponentDto {
   @IsNumber()
   @Type(() => Number)
   quantity: number;
+
+  @IsOptional()
+  @IsString()
+  inputMode?: string;
 }
 
 export class ProductComponentDto {
@@ -63,6 +67,10 @@ export class ProductComponentDto {
   @IsNumber()
   @Type(() => Number)
   quantity: number;
+
+  @IsOptional()
+  @IsString()
+  inputMode?: string;
 }
 
 export class CreateProductDto {

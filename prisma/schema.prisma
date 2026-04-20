@@ -554,6 +554,7 @@ model ProductComponent {
   comboProductId     Int
   componentProductId Int
   quantity           Decimal
+  inputMode          String   @default("gram")  // ← "gram" | "quantity"
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 

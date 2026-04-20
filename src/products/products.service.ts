@@ -425,6 +425,7 @@ export class ProductsService {
             comboProductId: product.id,
             componentProductId: comp.componentProductId,
             quantity: comp.quantity,
+            inputMode: comp.inputMode ?? 'gram',
           })),
         });
       }
@@ -818,6 +819,7 @@ export class ProductsService {
               comboProductId: id,
               componentProductId: comp.componentProductId,
               quantity: comp.quantity,
+              inputMode: comp.inputMode ?? 'gram',
             })),
           });
         }
