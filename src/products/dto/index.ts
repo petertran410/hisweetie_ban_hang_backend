@@ -191,6 +191,10 @@ export class CreateProductDto {
   isDirectSale?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  isPieceUnit?: boolean;
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
@@ -361,6 +365,10 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsOptional()
   @IsBoolean()
   isDirectSale?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  isPieceUnit?: boolean;
 
   @IsOptional()
   @IsNumber()

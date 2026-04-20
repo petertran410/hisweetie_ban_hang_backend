@@ -286,6 +286,7 @@ export class ProductsService {
           isRewardPoint: productData.isRewardPoint,
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
+          isPieceUnit: productData.isPieceUnit ?? false,
           masterUnitId: masterUnitId,
           ...(masterUnitId && { masterUnitId }),
           ...(tradeMarkId && {
@@ -544,6 +545,7 @@ export class ProductsService {
           ...(parentName !== undefined && { parentName: parentName || null }),
           ...(middleName !== undefined && { middleName: middleName || null }),
           ...(childName !== undefined && { childName: childName || null }),
+          isPieceUnit: dto.isPieceUnit ?? undefined,
           ...(tradeMarkId !== undefined && {
             tradeMark: tradeMarkId
               ? { connect: { id: tradeMarkId } }
