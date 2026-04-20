@@ -939,15 +939,28 @@ export class ProductsService {
     return { message: 'Xóa sản phẩm thành công' };
   }
 
-  async findInventoryLogs(productId: number, branchId?: number) {
+  async findInventoryLogs(
+    productId: number,
+    branchId?: number,
+    page = 1,
+    limit = 5,
+  ) {
     const where: any = { productId };
     if (branchId) where.branchId = branchId;
 
-    return this.prisma.inventoryLog.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-      take: 200,
-    });
+    const skip = (page - 1) * limit;
+
+    const [data, total] = await Promise.all([
+      this.prisma.inventoryLog.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.inventoryLog.count({ where }),
+    ]);
+
+    return { data, total };
   }
 
   async checkLowStock() {

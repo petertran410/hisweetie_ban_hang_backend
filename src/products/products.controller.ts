@@ -31,10 +31,14 @@ export class ProductsController {
   findInventoryLogs(
     @Param('id') id: string,
     @Query('branchId') branchId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
   ) {
     return this.productsService.findInventoryLogs(
       +id,
       branchId ? +branchId : undefined,
+      page ? +page : 1,
+      limit ? +limit : 5,
     );
   }
 
