@@ -5,8 +5,24 @@ import {
   IsNumber,
   IsDateString,
   IsBoolean,
+  IsArray,
+  ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+
+export class ProductionComponentDto {
+  @IsInt()
+  @Type(() => Number)
+  componentProductId: number;
+
+  @IsNumber()
+  @Type(() => Number)
+  formulaGrams: number;
+
+  @IsNumber()
+  @Type(() => Number)
+  actualGrams: number;
+}
 
 export class CreateProductionDto {
   @IsOptional()
@@ -46,11 +62,9 @@ export class CreateProductionDto {
   @IsBoolean()
   autoDeductComponents?: boolean;
 
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductionComponentDto)
   components?: ProductionComponentDto[];
-}
-
-export class ProductionComponentDto {
-  componentProductId: number;
-  formulaGrams: number;
-  actualGrams: number; // ← nhân viên nhập thực tế
 }
