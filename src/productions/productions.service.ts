@@ -245,7 +245,54 @@ export class ProductionsService {
     }
 
     return await this.prisma.$transaction(async (tx) => {
+      // ── Lưu components khi lưu tạm (status 1) ──────────────────────
+      // Chỉ lưu data, KHÔNG xử lý tồn kho
+      if (dto.status !== 2 && dto.components && dto.components.length > 0) {
+        const productForDraft = await tx.product.findUnique({
+          where: { id: production.productId },
+          include: {
+            comboComponents: {
+              include: { componentProduct: true },
+            },
+          },
+        });
+
+        if (productForDraft) {
+          await tx.productionComponent.deleteMany({
+            where: { productionId: id },
+          });
+
+          const draftComponentDetails = dto.components.map((c) => {
+            const comp = productForDraft.comboComponents.find(
+              (pc) => pc.componentProductId === c.componentProductId,
+            );
+            const componentProduct = comp?.componentProduct;
+            const weightInGrams =
+              componentProduct?.weightUnit === 'kg'
+                ? Number(componentProduct.weight) * 1000
+                : Number(componentProduct?.weight || 0);
+
+            return {
+              productionId: id,
+              componentProductId: c.componentProductId,
+              componentCode: componentProduct?.code || '',
+              componentName: componentProduct?.name || '',
+              formulaGrams: c.formulaGrams,
+              actualGrams: c.actualGrams,
+              unitsDeducted:
+                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+            };
+          });
+
+          await tx.productionComponent.createMany({
+            data: draftComponentDetails,
+          });
+        }
+      }
+      // ───────────────────────────────────────────────────────────────
+
       // Trường hợp 1: Phiếu tạm (1) → Hoàn thành (2)
+      // Xử lý tồn kho + lưu components
       if (dto.status === 2 && production.status !== 2) {
         const product = await tx.product.findUnique({
           where: { id: production.productId },
@@ -263,13 +310,11 @@ export class ProductionsService {
             production.sourceBranchId,
             production.destinationBranchId,
             Number(dto.quantity ?? production.quantity),
-            dto.components, // ← truyền actualComponents
+            dto.components,
           );
         }
 
-        // Lưu ProductionComponent nếu có
         if (dto.components && dto.components.length > 0 && product) {
-          // Xóa cũ nếu tồn tại (trường hợp update lại)
           await tx.productionComponent.deleteMany({
             where: { productionId: id },
           });
