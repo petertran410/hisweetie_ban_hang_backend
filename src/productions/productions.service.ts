@@ -457,6 +457,14 @@ export class ProductionsService {
       });
 
       if (inventory) {
+        // ─── PIECE MODE ─────────────────────────────────────────────
+        if (comp.inputMode === 'piece') {
+          const totalPieces = Number(comp.quantity) * Number(quantity);
+          totalCost += Number(inventory.cost) * totalPieces;
+          continue;
+        }
+        // ─────────────────────────────────────────────────────────────
+
         const componentWeight = comp.componentProduct.weight
           ? Number(comp.componentProduct.weight)
           : 0;
@@ -494,19 +502,80 @@ export class ProductionsService {
       const weightInGrams =
         componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
 
+      const actual = actualComponents?.find(
+        (a) => a.componentProductId === comp.componentProductId,
+      );
+
+      // ─── PIECE MODE: trừ kho theo số chiếc trực tiếp ───────────────
+      if (comp.inputMode === 'piece') {
+        const totalPiecesToDeduct = actual
+          ? actual.actualGrams // field này chứa số chiếc thực tế khi piece mode
+          : Number(comp.quantity) * Number(quantity);
+
+        const sourceInventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: comp.componentProductId,
+              branchId: sourceBranchId,
+            },
+          },
+        });
+
+        if (!sourceInventory) {
+          throw new NotFoundException(
+            `Inventory for component ${componentProduct.name} not found at source branch`,
+          );
+        }
+
+        if (Number(sourceInventory.onHand) < totalPiecesToDeduct) {
+          throw new BadRequestException(
+            `Insufficient inventory for component ${componentProduct.name}. Required: ${totalPiecesToDeduct}, Available: ${sourceInventory.onHand}`,
+          );
+        }
+
+        const newOnHand = Number(sourceInventory.onHand) - totalPiecesToDeduct;
+        const newTotalWeight = newOnHand * weightInGrams;
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: comp.componentProductId,
+              branchId: sourceBranchId,
+            },
+          },
+          data: { onHand: newOnHand, totalWeight: newTotalWeight },
+        });
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: comp.componentProductId,
+            productCode: componentProduct.code,
+            productName: componentProduct.name,
+            branchId: sourceBranchId,
+            branchName: '',
+            transactionType: 'PRODUCTION_OUT',
+            refCode: '',
+            refType: 'production',
+            refId: 0,
+            quantity: -totalPiecesToDeduct,
+            costPrice: Number(sourceInventory.cost),
+            transactionPrice: null,
+          },
+        });
+        continue; // ← skip gram logic bên dưới
+      }
+      // ───────────────────────────────────────────────────────────────
+
+      // GRAM MODE (logic gốc)
       if (weightInGrams === 0) {
         throw new BadRequestException(
           `Component ${componentProduct.name} must have weight defined`,
         );
       }
 
-      // ← KEY: nếu có actualComponents thì dùng, không thì fallback về công thức
-      const actual = actualComponents?.find(
-        (a) => a.componentProductId === comp.componentProductId,
-      );
       const totalGramsToDeduct = actual
-        ? actual.actualGrams // thực tế nhân viên nhập
-        : Number(comp.quantity) * Number(quantity); // công thức tính
+        ? actual.actualGrams
+        : Number(comp.quantity) * Number(quantity);
 
       const unitsToDeduct = totalGramsToDeduct / weightInGrams;
 
@@ -541,10 +610,7 @@ export class ProductionsService {
             branchId: sourceBranchId,
           },
         },
-        data: {
-          onHand: newOnHand,
-          totalWeight: newTotalWeight,
-        },
+        data: { onHand: newOnHand, totalWeight: newTotalWeight },
       });
 
       await tx.inventoryLog.create({
@@ -637,6 +703,42 @@ export class ProductionsService {
       const weightInGrams =
         componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
 
+      // ─── PIECE MODE ─────────────────────────────────────────────────
+      if (comp.inputMode === 'piece') {
+        const totalPiecesToRestore = Number(comp.quantity) * Number(quantity);
+
+        const sourceInventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: comp.componentProductId,
+              branchId: sourceBranchId,
+            },
+          },
+        });
+
+        if (!sourceInventory) {
+          throw new NotFoundException(
+            `Inventory for component ${componentProduct.name} not found at source branch`,
+          );
+        }
+
+        const newOnHand = Number(sourceInventory.onHand) + totalPiecesToRestore;
+        const newTotalWeight = newOnHand * weightInGrams;
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: comp.componentProductId,
+              branchId: sourceBranchId,
+            },
+          },
+          data: { onHand: newOnHand, totalWeight: newTotalWeight },
+        });
+        continue; // ← skip gram logic
+      }
+      // ─────────────────────────────────────────────────────────────────
+
+      // GRAM MODE (logic gốc)
       if (weightInGrams === 0) {
         throw new BadRequestException(
           `Component ${componentProduct.name} must have weight defined`,
@@ -671,10 +773,7 @@ export class ProductionsService {
             branchId: sourceBranchId,
           },
         },
-        data: {
-          onHand: newOnHand,
-          totalWeight: newTotalWeight,
-        },
+        data: { onHand: newOnHand, totalWeight: newTotalWeight },
       });
     }
 
