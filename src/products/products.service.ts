@@ -252,6 +252,7 @@ export class ProductsService {
       variantId,
       masterProductId,
       masterUnitId,
+      manualCostOverride,
       ...productData
     } = dto;
 
@@ -527,6 +528,7 @@ export class ProductsService {
       variantId,
       masterProductId,
       masterUnitId,
+      manualCostOverride,
       ...productData
     } = dto;
 
