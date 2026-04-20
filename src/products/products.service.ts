@@ -346,6 +346,7 @@ export class ProductsService {
 
           let branchCost = cost;
           if (
+            !dto.manualCostOverride &&
             (dto.type === 1 || dto.type === 4) &&
             components &&
             components.length > 0
@@ -416,6 +417,7 @@ export class ProductsService {
       }
 
       if (
+        !dto.manualCostOverride &&
         (dto.type === 1 || dto.type === 4) &&
         components &&
         components.length > 0
@@ -625,6 +627,7 @@ export class ProductsService {
           let branchCost = cost;
 
           if (
+            !dto.manualCostOverride &&
             (currentProduct.type === 1 || currentProduct.type === 4) &&
             components &&
             components.length > 0
@@ -723,6 +726,7 @@ export class ProductsService {
           let branchCost = cost;
 
           if (
+            !dto.manualCostOverride &&
             (currentProduct.type === 1 || currentProduct.type === 4) &&
             components &&
             components.length > 0

@@ -231,6 +231,10 @@ export class CreateProductDto {
   @IsNumber()
   @Type(() => Number)
   masterUnitId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  manualCostOverride?: boolean;
 }
 
 export class UpdateProductDto extends PartialType(CreateProductDto) {
