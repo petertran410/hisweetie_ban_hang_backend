@@ -82,6 +82,7 @@ export class ProductionsService {
   async findOne(id: number) {
     const production = await this.prisma.production.findUnique({
       where: { id },
+      include: { components: true },
     });
 
     if (!production) {
