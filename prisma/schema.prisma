@@ -543,8 +543,10 @@ model Product {
   orderSupplierItems OrderSupplierItem[]
   returnOrderDetails  ReturnOrderDetail[]
   inventoryLogs      InventoryLog[]
+  productionComponents ProductionComponent[]
 
   @@map("products")
+  @@index([id, name])
 }
 
 model ProductComponent {
@@ -611,6 +613,7 @@ model Production {
   destinationBranch Branch  @relation("ProductionDestination", fields: [destinationBranchId], references: [id])
   product           Product @relation(fields: [productId], references: [id])
   creator           User    @relation("ProductionCreator", fields: [createdById], references: [id])
+  components ProductionComponent[]
 
   @@index([sourceBranchId])
   @@index([destinationBranchId])
@@ -619,6 +622,24 @@ model Production {
   @@index([manufacturedDate])
   @@map("productions")
 }
+
+model ProductionComponent {
+  id                 Int     @id @default(autoincrement())
+  productionId       Int
+  componentProductId Int
+  componentCode      String
+  componentName      String
+  formulaGrams       Decimal @db.Decimal(18, 4)  // gram theo công thức
+  actualGrams        Decimal @db.Decimal(18, 4)  // gram thực tế nhân viên nhập
+  unitsDeducted      Decimal @db.Decimal(18, 4)  // số đơn vị thực tế trừ kho
+
+  production       Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  componentProduct Product    @relation(fields: [componentProductId], references: [id])
+
+  @@index([productionId])
+  @@map("production_components")
+}
+
 
 model Inventory {
   id          Int      @id @default(autoincrement())

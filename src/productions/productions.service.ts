@@ -96,23 +96,17 @@ export class ProductionsService {
       where: { id: dto.productId },
       include: {
         comboComponents: {
-          include: {
-            componentProduct: true,
-          },
+          include: { componentProduct: true },
         },
       },
     });
 
-    if (!product) {
-      throw new NotFoundException('Product not found');
-    }
-
+    if (!product) throw new NotFoundException('Product not found');
     if (product.type !== 4) {
       throw new BadRequestException(
         'Product must be a manufacturing product (type = 4)',
       );
     }
-
     if (!product.weight) {
       throw new BadRequestException(
         'Manufacturing product must have weight defined',
@@ -122,22 +116,15 @@ export class ProductionsService {
     const sourceBranch = await this.prisma.branch.findUnique({
       where: { id: dto.sourceBranchId },
     });
-
-    if (!sourceBranch) {
-      throw new NotFoundException('Source branch not found');
-    }
+    if (!sourceBranch) throw new NotFoundException('Source branch not found');
 
     const destinationBranch = await this.prisma.branch.findUnique({
       where: { id: dto.destinationBranchId },
     });
-
-    if (!destinationBranch) {
+    if (!destinationBranch)
       throw new NotFoundException('Destination branch not found');
-    }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-    });
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
 
     const lastProduction = await this.prisma.production.findFirst({
       orderBy: { id: 'desc' },
@@ -147,13 +134,10 @@ export class ProductionsService {
     let nextNumber = 1;
     if (lastProduction?.code) {
       const match = lastProduction.code.match(/\d+$/);
-      if (match) {
-        nextNumber = parseInt(match[0]) + 1;
-      }
+      if (match) nextNumber = parseInt(match[0]) + 1;
     }
 
     const code = dto.code || `SX${String(nextNumber).padStart(6, '0')}`;
-
     const totalCost = this.calculateTotalCost(
       product.comboComponents,
       dto.sourceBranchId,
@@ -191,7 +175,36 @@ export class ProductionsService {
           dto.sourceBranchId,
           dto.destinationBranchId,
           dto.quantity,
+          dto.components, // ← truyền actualComponents
         );
+      }
+
+      if (dto.components && dto.components.length > 0) {
+        const componentDetails = await Promise.all(
+          dto.components.map(async (c) => {
+            const comp = product.comboComponents.find(
+              (pc) => pc.componentProductId === c.componentProductId,
+            );
+            const componentProduct = comp?.componentProduct;
+            const weightInGrams =
+              componentProduct?.weightUnit === 'kg'
+                ? Number(componentProduct.weight) * 1000
+                : Number(componentProduct?.weight || 0);
+
+            return {
+              productionId: production.id,
+              componentProductId: c.componentProductId,
+              componentCode: componentProduct?.code || '',
+              componentName: componentProduct?.name || '',
+              formulaGrams: c.formulaGrams,
+              actualGrams: c.actualGrams,
+              unitsDeducted:
+                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+            };
+          }),
+        );
+
+        await tx.productionComponent.createMany({ data: componentDetails });
       }
 
       await this.auditLogsService.create({
@@ -220,7 +233,6 @@ export class ProductionsService {
     const production = await this.findOne(id);
 
     const updateData: any = {};
-
     if (dto.quantity !== undefined) updateData.quantity = dto.quantity;
     if (dto.note !== undefined) updateData.note = dto.note;
     if (dto.status !== undefined) updateData.status = dto.status;
@@ -232,15 +244,13 @@ export class ProductionsService {
     }
 
     return await this.prisma.$transaction(async (tx) => {
-      // Trường hợp 1: Chuyển từ Phiếu tạm (1) sang Hoàn thành (2)
+      // Trường hợp 1: Phiếu tạm (1) → Hoàn thành (2)
       if (dto.status === 2 && production.status !== 2) {
         const product = await tx.product.findUnique({
           where: { id: production.productId },
           include: {
             comboComponents: {
-              include: {
-                componentProduct: true,
-              },
+              include: { componentProduct: true },
             },
           },
         });
@@ -251,20 +261,53 @@ export class ProductionsService {
             product,
             production.sourceBranchId,
             production.destinationBranchId,
-            Number(production.quantity),
+            Number(dto.quantity ?? production.quantity),
+            dto.components, // ← truyền actualComponents
           );
+        }
+
+        // Lưu ProductionComponent nếu có
+        if (dto.components && dto.components.length > 0 && product) {
+          // Xóa cũ nếu tồn tại (trường hợp update lại)
+          await tx.productionComponent.deleteMany({
+            where: { productionId: id },
+          });
+
+          const componentDetails = await Promise.all(
+            dto.components.map(async (c) => {
+              const comp = product.comboComponents.find(
+                (pc) => pc.componentProductId === c.componentProductId,
+              );
+              const componentProduct = comp?.componentProduct;
+              const weightInGrams =
+                componentProduct?.weightUnit === 'kg'
+                  ? Number(componentProduct.weight) * 1000
+                  : Number(componentProduct?.weight || 0);
+
+              return {
+                productionId: id,
+                componentProductId: c.componentProductId,
+                componentCode: componentProduct?.code || '',
+                componentName: componentProduct?.name || '',
+                formulaGrams: c.formulaGrams,
+                actualGrams: c.actualGrams,
+                unitsDeducted:
+                  weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+              };
+            }),
+          );
+
+          await tx.productionComponent.createMany({ data: componentDetails });
         }
       }
 
-      // Trường hợp 2: Hủy phiếu đã Hoàn thành (2 -> 3)
+      // Trường hợp 2: Hoàn thành (2) → Hủy (3)
       if (dto.status === 3 && production.status === 2) {
         const product = await tx.product.findUnique({
           where: { id: production.productId },
           include: {
             comboComponents: {
-              include: {
-                componentProduct: true,
-              },
+              include: { componentProduct: true },
             },
           },
         });
@@ -394,6 +437,7 @@ export class ProductionsService {
     sourceBranchId: number,
     destinationBranchId: number,
     quantity: number,
+    actualComponents?: { componentProductId: number; actualGrams: number }[],
   ) {
     for (const comp of product.comboComponents) {
       const componentProduct = comp.componentProduct;
@@ -410,8 +454,15 @@ export class ProductionsService {
         );
       }
 
-      const requiredGrams = Number(comp.quantity) * Number(quantity);
-      const unitsToDeduct = requiredGrams / weightInGrams;
+      // ← KEY: nếu có actualComponents thì dùng, không thì fallback về công thức
+      const actual = actualComponents?.find(
+        (a) => a.componentProductId === comp.componentProductId,
+      );
+      const totalGramsToDeduct = actual
+        ? actual.actualGrams // thực tế nhân viên nhập
+        : Number(comp.quantity) * Number(quantity); // công thức tính
+
+      const unitsToDeduct = totalGramsToDeduct / weightInGrams;
 
       const sourceInventory = await tx.inventory.findUnique({
         where: {

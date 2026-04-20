@@ -45,4 +45,12 @@ export class CreateProductionDto {
   @IsOptional()
   @IsBoolean()
   autoDeductComponents?: boolean;
+
+  components?: ProductionComponentDto[];
+}
+
+export class ProductionComponentDto {
+  componentProductId: number;
+  formulaGrams: number;
+  actualGrams: number; // ← nhân viên nhập thực tế
 }
