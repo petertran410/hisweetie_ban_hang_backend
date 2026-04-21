@@ -55,6 +55,10 @@ export class InvoicesService {
       invoiceCodeSearch,
       productSearch,
       customerSearch,
+      deliveryCodeSearch,
+      orderCodeSearch,
+      descriptionSearch,
+      productNoteSearch,
     } = query;
 
     const effectiveLimit = pageSize || limit;
@@ -80,17 +84,6 @@ export class InvoicesService {
       where.code = { contains: invoiceCodeSearch };
     }
 
-    if (productSearch) {
-      where.details = {
-        some: {
-          OR: [
-            { productCode: { contains: productSearch } },
-            { productName: { contains: productSearch } },
-          ],
-        },
-      };
-    }
-
     if (customerSearch) {
       where.customer = {
         OR: [
@@ -99,6 +92,37 @@ export class InvoicesService {
           { contactNumber: { contains: customerSearch } },
         ],
       };
+    }
+
+    if (deliveryCodeSearch) {
+      where.delivery = {
+        ...where.delivery,
+        deliveryCode: { contains: deliveryCodeSearch },
+      };
+    }
+
+    if (orderCodeSearch) {
+      where.order = {
+        code: { contains: orderCodeSearch },
+      };
+    }
+
+    if (descriptionSearch) {
+      where.description = { contains: descriptionSearch };
+    }
+
+    const detailsConditions: any = {};
+    if (productSearch) {
+      detailsConditions.OR = [
+        { productCode: { contains: productSearch } },
+        { productName: { contains: productSearch } },
+      ];
+    }
+    if (productNoteSearch) {
+      detailsConditions.note = { contains: productNoteSearch };
+    }
+    if (Object.keys(detailsConditions).length > 0) {
+      where.details = { some: detailsConditions };
     }
 
     if (customerIds && customerIds.length > 0) {

@@ -108,4 +108,28 @@ export class InvoiceQueryDto {
   @IsOptional()
   @IsString()
   customerSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  orderBy?: string;
+
+  @IsOptional()
+  @IsString()
+  orderDirection?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryCodeSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  orderCodeSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  descriptionSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  productNoteSearch?: string;
 }
