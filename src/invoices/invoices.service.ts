@@ -367,6 +367,7 @@ export class InvoicesService {
                 discountRatio: item.discountRatio || 0,
                 totalPrice: item.totalPrice,
                 note: item.note,
+                conditionType: item.conditionType || 'normal',
               })),
             },
           },
@@ -455,13 +456,22 @@ export class InvoicesService {
       });
 
       for (const item of dto.items) {
+        const condition = item.conditionType || 'normal';
         const invSnapshot = await tx.inventory.findFirst({
           where: { productId: item.productId, branchId: dto.branchId },
         });
 
+        await this.validateConditionQuantity(
+          tx,
+          item.productId,
+          dto.branchId,
+          item.quantity,
+          condition,
+        );
+
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: dto.branchId },
-          data: { onHand: { decrement: item.quantity } },
+          data: this.buildInventoryDeductData(item.quantity, condition),
         });
 
         await tx.inventoryLog.create({
@@ -602,9 +612,10 @@ export class InvoicesService {
               productId: oldDetail.productId,
               branchId: currentInvoice.branchId || 1,
             },
-            data: {
-              onHand: { increment: Number(oldDetail.quantity) },
-            },
+            data: this.buildInventoryRestoreData(
+              Number(oldDetail.quantity),
+              (oldDetail as any).conditionType || 'normal',
+            ),
           });
         }
 
@@ -765,12 +776,20 @@ export class InvoicesService {
             },
           });
 
+          const condition = item.conditionType || 'normal';
+          await this.validateConditionQuantity(
+            tx,
+            item.productId,
+            newInvoice.branchId || 1,
+            item.quantity,
+            condition,
+          );
           await tx.inventory.updateMany({
             where: {
               productId: item.productId,
               branchId: newInvoice.branchId || 1,
             },
-            data: { onHand: { decrement: item.quantity } },
+            data: this.buildInventoryDeductData(item.quantity, condition),
           });
 
           await tx.inventoryLog.create({
@@ -889,9 +908,10 @@ export class InvoicesService {
                 productId: detail.productId,
                 branchId: currentInvoice.branchId,
               },
-              data: {
-                onHand: { increment: Number(detail.quantity) },
-              },
+              data: this.buildInventoryRestoreData(
+                Number(detail.quantity),
+                (detail as any).conditionType || 'normal',
+              ),
             });
           }
 
@@ -2099,5 +2119,78 @@ export class InvoicesService {
           }
         : null,
     };
+  }
+
+  /**
+   * Xây dựng data object để trừ kho dựa trên conditionType.
+   * Gộp onHand + damaged/nearExpiry vào 1 lần updateMany duy nhất.
+   */
+  private buildInventoryDeductData(
+    quantity: number,
+    conditionType?: string,
+  ): Record<string, any> {
+    const data: Record<string, any> = {
+      onHand: { decrement: quantity },
+    };
+    if (conditionType === 'damaged') {
+      data.damagedQuantity = { decrement: quantity };
+    } else if (conditionType === 'near_expiry') {
+      data.nearExpiryQuantity = { decrement: quantity };
+    }
+    return data;
+  }
+
+  /**
+   * Xây dựng data object để hoàn kho (khi hủy hóa đơn).
+   */
+  private buildInventoryRestoreData(
+    quantity: number,
+    conditionType?: string,
+  ): Record<string, any> {
+    const data: Record<string, any> = {
+      onHand: { increment: quantity },
+    };
+    if (conditionType === 'damaged') {
+      data.damagedQuantity = { increment: quantity };
+    } else if (conditionType === 'near_expiry') {
+      data.nearExpiryQuantity = { increment: quantity };
+    }
+    return data;
+  }
+
+  /**
+   * Validate số lượng damaged/nearExpiry trước khi trừ kho.
+   * Chỉ validate nếu conditionType !== 'normal'.
+   */
+  private async validateConditionQuantity(
+    tx: any,
+    productId: number,
+    branchId: number,
+    quantity: number,
+    conditionType?: string,
+  ): Promise<void> {
+    if (!conditionType || conditionType === 'normal') return;
+
+    const inventory = await tx.inventory.findUnique({
+      where: { productId_branchId: { productId, branchId } },
+    });
+
+    if (!inventory) return;
+
+    if (conditionType === 'damaged') {
+      const available = Number(inventory.damagedQuantity || 0);
+      if (quantity > available) {
+        throw new BadRequestException(
+          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng bục rách, không đủ ${quantity}`,
+        );
+      }
+    } else if (conditionType === 'near_expiry') {
+      const available = Number(inventory.nearExpiryQuantity || 0);
+      if (quantity > available) {
+        throw new BadRequestException(
+          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng cận date, không đủ ${quantity}`,
+        );
+      }
+    }
   }
 }

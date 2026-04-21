@@ -84,6 +84,7 @@ export class OrdersService {
             totalPrice: totalPrice,
             note: item.note || null,
             serialNumbers: item.serialNumbers || null,
+            conditionType: item.conditionType || 'normal',
           };
         }),
       );
@@ -268,6 +269,7 @@ export class OrdersService {
               totalPrice: totalPrice,
               note: item.note || null,
               serialNumbers: item.serialNumbers || null,
+              conditionType: item.conditionType || 'normal',
             };
           }),
         );
