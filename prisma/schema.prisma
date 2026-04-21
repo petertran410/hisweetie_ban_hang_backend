@@ -902,21 +902,22 @@ model OrderItem {
   productId     Int
   productCode   String
   productName   String
-  quantity      Decimal
-  price         Decimal 
-  appliedPrice  Decimal   // THÊM FIELD NÀY
-  discount      Decimal  @default(0)
-  discountRatio Decimal  @default(0)
-  totalPrice    Decimal 
+  quantity      Decimal  @db.Decimal(18, 4) @default(0)
+  price         Decimal  @db.Decimal(18, 2) @default(0)
+  appliedPrice  Decimal  @db.Decimal(18, 2) @default(0)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice    Decimal  @db.Decimal(18, 2) @default(0)
   note          String?
+  conditionType String   @default("normal")
   serialNumbers String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
+
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
-  
-  @@map("order_details")
+
+  @@map("order_items")
 }
 
 model OrderPayment {
