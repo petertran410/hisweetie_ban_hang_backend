@@ -1567,9 +1567,17 @@ export class InvoicesService {
           where: { productId: item.productId, branchId: order.branchId },
         });
 
+        const condition = item.conditionType || 'normal';
+        await this.validateConditionQuantity(
+          tx,
+          item.productId,
+          order.branchId,
+          item.quantity,
+          condition,
+        );
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
-          data: { onHand: { decrement: item.quantity } },
+          data: this.buildInventoryDeductData(item.quantity, condition),
         });
 
         await tx.inventoryLog.create({
