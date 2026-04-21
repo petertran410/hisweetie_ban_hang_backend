@@ -38,7 +38,6 @@ export class ProductQueryDto {
 
   @IsOptional()
   @IsArray()
-  @Type(() => Number)
   @Transform(({ value }) => {
     if (typeof value === 'string') {
       return value.split(',').map(Number);
@@ -48,13 +47,7 @@ export class ProductQueryDto {
   branchIds?: number[];
 
   @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  type?: number;
-
-  @IsOptional()
   @IsArray()
-  @Type(() => Number)
   @Transform(({ value }) => {
     if (typeof value === 'string') {
       return value.split(',').map(Number);
