@@ -52,6 +52,9 @@ export class InvoicesService {
       toPurchaseDate,
       fromCreatedDate,
       toCreatedDate,
+      invoiceCodeSearch,
+      productSearch,
+      customerSearch,
     } = query;
 
     const effectiveLimit = pageSize || limit;
@@ -70,6 +73,32 @@ export class InvoicesService {
         { customer: { name: { contains: search } } },
         { description: { contains: search } },
       ];
+    }
+
+    // ── Advanced search filters (AND logic) ──
+    if (invoiceCodeSearch) {
+      where.code = { contains: invoiceCodeSearch };
+    }
+
+    if (productSearch) {
+      where.details = {
+        some: {
+          OR: [
+            { productCode: { contains: productSearch } },
+            { productName: { contains: productSearch } },
+          ],
+        },
+      };
+    }
+
+    if (customerSearch) {
+      where.customer = {
+        OR: [
+          { name: { contains: customerSearch } },
+          { code: { contains: customerSearch } },
+          { contactNumber: { contains: customerSearch } },
+        ],
+      };
     }
 
     if (customerIds && customerIds.length > 0) {

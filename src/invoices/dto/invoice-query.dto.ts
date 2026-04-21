@@ -96,4 +96,16 @@ export class InvoiceQueryDto {
   @IsOptional()
   @IsDateString()
   toCreatedDate?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceCodeSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  productSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  customerSearch?: string;
 }
