@@ -189,4 +189,48 @@ export class InventoriesService {
       (inv) => Number(inv.onHand) <= Number(inv.minQuality),
     );
   }
+
+  async updateProductCondition(
+    productId: number,
+    branchId: number,
+    data: { damagedQuantity?: number; nearExpiryQuantity?: number },
+  ) {
+    const inventory = await this.prisma.inventory.findUnique({
+      where: {
+        productId_branchId: { productId, branchId },
+      },
+    });
+
+    if (!inventory) {
+      throw new Error(
+        `Inventory not found for product ${productId} at branch ${branchId}`,
+      );
+    }
+
+    const onHand = Number(inventory.onHand);
+    const newDamaged =
+      data.damagedQuantity ?? Number(inventory.damagedQuantity);
+    const newNearExpiry =
+      data.nearExpiryQuantity ?? Number(inventory.nearExpiryQuantity);
+
+    if (newDamaged + newNearExpiry > onHand) {
+      throw new Error(
+        `Tổng hàng bục rách (${newDamaged}) + cận date (${newNearExpiry}) = ${newDamaged + newNearExpiry} vượt quá tồn kho (${onHand})`,
+      );
+    }
+
+    return this.prisma.inventory.update({
+      where: {
+        productId_branchId: { productId, branchId },
+      },
+      data: {
+        ...(data.damagedQuantity !== undefined && {
+          damagedQuantity: data.damagedQuantity,
+        }),
+        ...(data.nearExpiryQuantity !== undefined && {
+          nearExpiryQuantity: data.nearExpiryQuantity,
+        }),
+      },
+    });
+  }
 }

@@ -644,21 +644,23 @@ model ProductionComponent {
 
 
 model Inventory {
-  id          Int      @id @default(autoincrement())
-  productId   Int
-  productCode String
-  productName String
-  branchId    Int
-  branchName  String
-  cost        Decimal  @default(0)
-  onHand      Decimal  @default(0)
-  reserved    Decimal  @default(0)
-  onOrder     Decimal  @default(0)
-  minQuality  Decimal  @default(0)
-  maxQuality  Decimal  @default(0)
-  totalWeight Decimal? @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id               Int      @id @default(autoincrement())
+  productId        Int
+  productCode      String
+  productName      String
+  branchId         Int
+  branchName       String
+  cost             Decimal  @default(0)
+  onHand           Decimal  @default(0)
+  reserved         Decimal  @default(0)
+  onOrder          Decimal  @default(0)
+  minQuality       Decimal  @default(0)
+  maxQuality       Decimal  @default(0)
+  totalWeight      Decimal? @default(0)
+  damagedQuantity  Decimal  @default(0)
+  nearExpiryQuantity Decimal @default(0)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
   branch  Branch  @relation(fields: [branchId], references: [id])

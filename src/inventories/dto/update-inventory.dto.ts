@@ -37,4 +37,16 @@ export class UpdateInventoryDto {
   @Min(0)
   @Type(() => Number)
   maxQuality?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  damagedQuantity?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  nearExpiryQuantity?: number;
 }
