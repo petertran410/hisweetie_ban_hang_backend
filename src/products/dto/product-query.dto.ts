@@ -47,6 +47,11 @@ export class ProductQueryDto {
   branchIds?: number[];
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  type?: number;
+
+  @IsOptional()
   @IsArray()
   @Transform(({ value }) => {
     if (typeof value === 'string') {
