@@ -464,7 +464,7 @@ export class InvoicesService {
         await this.validateConditionQuantity(
           tx,
           item.productId,
-          dto.branchId,
+          dto.branchId!,
           item.quantity,
           condition,
         );
@@ -1355,6 +1355,7 @@ export class InvoicesService {
                 (Number(item.price) - Number(item.discount)) *
                 item.remainingQuantity,
               note: item.note,
+              conditionType: (item as any).conditionType || 'normal',
             }));
 
       const totalAmount = itemsToInvoice.reduce(
