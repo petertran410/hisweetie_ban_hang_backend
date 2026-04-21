@@ -73,23 +73,23 @@ export class InvoicesService {
 
     if (search) {
       where.OR = [
-        { code: { contains: search } },
-        { customer: { name: { contains: search } } },
-        { description: { contains: search } },
+        { code: { contains: search, mode: 'insensitive' } },
+        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { description: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    // ── Advanced search filters (AND logic) ──
+    // ── Advanced search filters ──
     if (invoiceCodeSearch) {
-      where.code = { contains: invoiceCodeSearch };
+      where.code = { contains: invoiceCodeSearch, mode: 'insensitive' };
     }
 
     if (customerSearch) {
       where.customer = {
         OR: [
-          { name: { contains: customerSearch } },
-          { code: { contains: customerSearch } },
-          { contactNumber: { contains: customerSearch } },
+          { name: { contains: customerSearch, mode: 'insensitive' } },
+          { code: { contains: customerSearch, mode: 'insensitive' } },
+          { contactNumber: { contains: customerSearch, mode: 'insensitive' } },
         ],
       };
     }
@@ -97,29 +97,32 @@ export class InvoicesService {
     if (deliveryCodeSearch) {
       where.delivery = {
         ...where.delivery,
-        deliveryCode: { contains: deliveryCodeSearch },
+        deliveryCode: { contains: deliveryCodeSearch, mode: 'insensitive' },
       };
     }
 
     if (orderCodeSearch) {
       where.order = {
-        code: { contains: orderCodeSearch },
+        code: { contains: orderCodeSearch, mode: 'insensitive' },
       };
     }
 
     if (descriptionSearch) {
-      where.description = { contains: descriptionSearch };
+      where.description = { contains: descriptionSearch, mode: 'insensitive' };
     }
 
     const detailsConditions: any = {};
     if (productSearch) {
       detailsConditions.OR = [
-        { productCode: { contains: productSearch } },
-        { productName: { contains: productSearch } },
+        { productCode: { contains: productSearch, mode: 'insensitive' } },
+        { productName: { contains: productSearch, mode: 'insensitive' } },
       ];
     }
     if (productNoteSearch) {
-      detailsConditions.note = { contains: productNoteSearch };
+      detailsConditions.note = {
+        contains: productNoteSearch,
+        mode: 'insensitive',
+      };
     }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
@@ -152,9 +155,15 @@ export class InvoicesService {
     if (deliveryStatus === 'none') {
       where.delivery = { is: null };
     } else if (deliveryStatus === 'pending') {
-      where.delivery = { is: { status: 1 } };
+      where.delivery = {
+        ...where.delivery,
+        status: 1,
+      };
     } else if (deliveryStatus === 'delivered') {
-      where.delivery = { is: { status: { not: 1 } } };
+      where.delivery = {
+        ...where.delivery,
+        status: { not: 1 },
+      };
     }
 
     if (paymentMethod) {
