@@ -77,6 +77,11 @@ export class OrderItemDto {
 
   @IsString()
   @IsOptional()
+  @IsIn(['normal', 'damaged', 'near_expiry'])
+  conditionType?: string; // "normal" | "damaged" | "near_expiry"
+
+  @IsString()
+  @IsOptional()
   serialNumbers?: string;
 }
 

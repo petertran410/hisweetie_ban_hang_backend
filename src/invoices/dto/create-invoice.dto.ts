@@ -7,6 +7,7 @@ import {
   IsArray,
   ValidateNested,
   IsNumber,
+  IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -40,6 +41,11 @@ class CreateInvoiceDetailDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['normal', 'damaged', 'near_expiry'])
+  conditionType?: string; // "normal" | "damaged" | "near_expiry"
 }
 
 class CreateInvoiceDeliveryDto {
@@ -166,5 +172,6 @@ export class CreateInvoiceFromOrderDto {
     discountRatio: number;
     totalPrice: number;
     note?: string;
+    conditionType?: string; // "normal" | "damaged" | "near_expiry"
   }[];
 }
