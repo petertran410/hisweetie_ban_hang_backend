@@ -57,6 +57,7 @@ model User {
   receivedReturnOrders   ReturnOrder[] @relation("ReturnOrderReceiver")
   confirmedReturnOrders  ReturnOrder[] @relation("ReturnOrderConfirmer")
   refundConfirmedReturnOrders ReturnOrder[] @relation("ReturnOrderRefundConfirmer")
+  createdInventoryChecks InventoryCheck[] @relation("InventoryCheckCreator")
 
   @@map("users")
 }
@@ -234,6 +235,7 @@ model Branch {
   userBranchPermissions UserBranchPermission[]
   returnOrders    ReturnOrder[]
   inventoryLogs      InventoryLog[]
+  inventoryChecks InventoryCheck[]
 
   @@map("branches")
 }
@@ -545,6 +547,7 @@ model Product {
   returnOrderDetails  ReturnOrderDetail[]
   inventoryLogs      InventoryLog[]
   productionComponents ProductionComponent[]
+  inventoryCheckDetails InventoryCheckDetail[]
 
   @@map("products")
   @@index([id, name])
@@ -667,6 +670,48 @@ model Inventory {
 
   @@unique([productId, branchId])
   @@map("inventories")
+}
+
+model InventoryCheck {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique
+  branchId      Int
+  branchName    String
+  checkDate     DateTime  @default(now())
+  note          String?
+  createdById   Int
+  createdByName String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  branch  Branch               @relation(fields: [branchId], references: [id])
+  creator User                 @relation("InventoryCheckCreator", fields: [createdById], references: [id])
+  details InventoryCheckDetail[]
+
+  @@index([branchId])
+  @@index([checkDate])
+  @@map("inventory_checks")
+}
+
+model InventoryCheckDetail {
+  id                  Int      @id @default(autoincrement())
+  inventoryCheckId    Int
+  productId           Int
+  productCode         String
+  productName         String
+  currentOnHand       Decimal  @default(0)
+  previousDamaged     Decimal  @default(0)
+  previousNearExpiry  Decimal  @default(0)
+  damagedQuantity     Decimal  @default(0)
+  nearExpiryQuantity  Decimal  @default(0)
+  note                String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  inventoryCheck InventoryCheck @relation(fields: [inventoryCheckId], references: [id], onDelete: Cascade)
+  product        Product        @relation(fields: [productId], references: [id])
+
+  @@map("inventory_check_details")
 }
 
 model InventoryLog {
