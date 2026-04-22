@@ -24,4 +24,8 @@ export class InventoryCheckQueryDto {
   @IsOptional()
   @IsString()
   toDate?: string;
+
+  @IsOptional()
+  @IsString()
+  creatorId?: string;
 }

@@ -29,6 +29,10 @@ export class InventoryChecksService {
       where.branchId = branchId;
     }
 
+    if (query.creatorId) {
+      where.createdById = +query.creatorId;
+    }
+
     if (query.fromDate || query.toDate) {
       where.checkDate = {};
       if (query.fromDate) where.checkDate.gte = new Date(query.fromDate);
