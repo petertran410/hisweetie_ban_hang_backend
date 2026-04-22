@@ -1413,6 +1413,7 @@ export class InvoicesService {
               discountRatio: item.discountRatio,
               totalPrice: item.totalPrice,
               note: item.note,
+              conditionType: item.conditionType || 'normal',
             })),
           },
           ...(order.delivery && {
