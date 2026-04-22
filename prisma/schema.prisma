@@ -683,6 +683,7 @@ model InventoryCheck {
   createdByName String
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
+  status        Int       @default(1)
 
   branch  Branch               @relation(fields: [branchId], references: [id])
   creator User                 @relation("InventoryCheckCreator", fields: [createdById], references: [id])

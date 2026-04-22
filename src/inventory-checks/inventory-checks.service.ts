@@ -201,30 +201,82 @@ export class InventoryChecksService {
     });
   }
 
-  async remove(id: number) {
+  async cancel(id: number) {
     const check = await this.prisma.inventoryCheck.findUnique({
       where: { id },
       include: { details: true },
     });
 
     if (!check) throw new NotFoundException('Phiếu kiểm không tồn tại');
+    if (check.status === 2) {
+      throw new BadRequestException('Phiếu kiểm đã bị hủy trước đó');
+    }
 
-    // Rollback: khôi phục giá trị cũ vào Inventory
-    await this.prisma.$transaction(async (tx) => {
+    return this.prisma.$transaction(async (tx) => {
+      // Validate + rollback theo delta
       for (const detail of check.details) {
-        await tx.inventory.updateMany({
-          where: { productId: detail.productId, branchId: check.branchId },
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: check.branchId,
+            },
+          },
+        });
+
+        if (!inventory) continue;
+
+        const damagedDelta =
+          Number(detail.damagedQuantity) - Number(detail.previousDamaged);
+        const nearExpiryDelta =
+          Number(detail.nearExpiryQuantity) - Number(detail.previousNearExpiry);
+
+        const newDamaged = Number(inventory.damagedQuantity) - damagedDelta;
+        const newNearExpiry =
+          Number(inventory.nearExpiryQuantity) - nearExpiryDelta;
+
+        if (newDamaged < 0) {
+          throw new BadRequestException(
+            `Không thể hủy: ${detail.productName} đã bán ${Math.abs(newDamaged)} hàng loại B kể từ phiếu kiểm này. Hàng loại B hiện tại (${Number(inventory.damagedQuantity)}) không đủ để rollback delta (${damagedDelta}).`,
+          );
+        }
+
+        if (newNearExpiry < 0) {
+          throw new BadRequestException(
+            `Không thể hủy: ${detail.productName} đã bán ${Math.abs(newNearExpiry)} hàng cận date kể từ phiếu kiểm này. Cận date hiện tại (${Number(inventory.nearExpiryQuantity)}) không đủ để rollback delta (${nearExpiryDelta}).`,
+          );
+        }
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: check.branchId,
+            },
+          },
           data: {
-            damagedQuantity: Number(detail.previousDamaged),
-            nearExpiryQuantity: Number(detail.previousNearExpiry),
+            damagedQuantity: newDamaged,
+            nearExpiryQuantity: newNearExpiry,
           },
         });
       }
 
-      await tx.inventoryCheck.delete({ where: { id } });
+      return tx.inventoryCheck.update({
+        where: { id },
+        data: { status: 2 },
+        include: {
+          branch: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          details: {
+            include: {
+              product: {
+                select: { id: true, code: true, name: true, unit: true },
+              },
+            },
+          },
+        },
+      });
     });
-
-    return { message: 'Xóa phiếu kiểm thành công' };
   }
 
   private async generateCode(): Promise<string> {

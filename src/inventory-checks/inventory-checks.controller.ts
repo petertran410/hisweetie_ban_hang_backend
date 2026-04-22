@@ -7,6 +7,7 @@ import {
   Param,
   Query,
   UseGuards,
+  Put,
 } from '@nestjs/common';
 import { InventoryChecksService } from './inventory-checks.service';
 import { CreateInventoryCheckDto, InventoryCheckQueryDto } from './dto';
@@ -40,9 +41,9 @@ export class InventoryChecksController {
     return this.service.create(dto, user.id);
   }
 
-  @Delete(':id')
-  @RequirePermissions('inventory_checks:delete')
-  remove(@Param('id') id: string) {
-    return this.service.remove(+id);
+  @Put(':id/cancel')
+  @RequirePermissions('inventory_checks:update')
+  cancel(@Param('id') id: string) {
+    return this.service.cancel(+id);
   }
 }
