@@ -264,6 +264,7 @@ export class ReturnOrdersService {
           note: dto.note,
           createdBy: userId,
           createdByName: user?.name || 'System',
+          images: dto.images ? JSON.stringify(dto.images) : null,
           details: {
             create: detailsData,
           },
@@ -329,9 +330,13 @@ export class ReturnOrdersService {
         throw new NotFoundException('Không tìm thấy phiếu trả hàng');
       }
 
-      if (returnOrder.status !== RETURN_ORDER_STATUS.REQUEST) {
+      // CHO PHÉP cả status REQUEST (1) và STOCK_DRAFT (6)
+      if (
+        returnOrder.status !== RETURN_ORDER_STATUS.REQUEST &&
+        returnOrder.status !== RETURN_ORDER_STATUS.STOCK_DRAFT
+      ) {
         throw new BadRequestException(
-          'Phiếu trả hàng không ở trạng thái yêu cầu',
+          'Phiếu trả hàng không ở trạng thái cho phép nhập hàng',
         );
       }
 
@@ -355,22 +360,81 @@ export class ReturnOrdersService {
           );
         }
 
-        if (confirmDetail.confirmedQuantity > Number(detail.requestQuantity)) {
+        const goodQty = confirmDetail.goodQuantity || 0;
+        const damagedQty = confirmDetail.damagedQuantity || 0;
+        const nearExpiryQty = confirmDetail.nearExpiryQuantity || 0;
+        const totalConfirmed = goodQty + damagedQty + nearExpiryQty;
+
+        if (totalConfirmed > Number(detail.requestQuantity)) {
           throw new BadRequestException(
-            `Sản phẩm ${detail.productName}: Số lượng xác nhận (${confirmDetail.confirmedQuantity}) vượt quá số lượng yêu cầu (${detail.requestQuantity})`,
+            `Sản phẩm ${detail.productName}: Tổng thực nhận (${totalConfirmed}) vượt quá số lượng yêu cầu (${detail.requestQuantity})`,
           );
         }
 
         await tx.returnOrderDetail.update({
           where: { id: confirmDetail.detailId },
           data: {
-            confirmedQuantity: confirmDetail.confirmedQuantity,
-            totalAmount:
-              confirmDetail.confirmedQuantity * Number(detail.returnPrice),
+            confirmedQuantity: totalConfirmed,
+            goodQuantity: goodQty,
+            damagedQuantity: damagedQty,
+            nearExpiryQuantity: nearExpiryQty,
+            totalAmount: totalConfirmed * Number(detail.returnPrice),
           },
         });
+      }
 
-        if (confirmDetail.confirmedQuantity > 0) {
+      // Lưu stockImages + note
+      const updateData: any = {
+        note: dto.note ?? returnOrder.note,
+        stockImages: dto.stockImages
+          ? JSON.stringify(dto.stockImages)
+          : returnOrder.stockImages,
+      };
+
+      // ===== NẾU LÀ PHIẾU TẠM =====
+      if (dto.isDraft) {
+        updateData.status = RETURN_ORDER_STATUS.STOCK_DRAFT;
+        updateData.statusValue =
+          RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.STOCK_DRAFT];
+
+        await tx.returnOrder.update({
+          where: { id },
+          data: updateData,
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'RETURN_ORDER_STOCK_DRAFT',
+          entityType: 'return_orders',
+          entityId: id.toString(),
+          entityCode: returnOrder.code,
+          category: 'return_order',
+          severity: 'info',
+          snapshot: { code: returnOrder.code },
+          message: `Lưu phiếu tạm nhập hàng trả ${returnOrder.code}`,
+          messageTemplate: 'RETURN_ORDER_STOCK_DRAFT',
+          userId,
+          userName: user?.name || 'System',
+          branchId: returnOrder.branchId,
+        });
+
+        return this.findOne(id);
+      }
+
+      // ===== HOÀN THÀNH NHẬP HÀNG =====
+      // Cộng kho + phân loại damaged/nearExpiry
+      for (const confirmDetail of dto.details) {
+        const detail = returnOrder.details.find(
+          (d) => d.id === confirmDetail.detailId,
+        );
+        if (!detail) continue;
+
+        const goodQty = confirmDetail.goodQuantity || 0;
+        const damagedQty = confirmDetail.damagedQuantity || 0;
+        const nearExpiryQty = confirmDetail.nearExpiryQuantity || 0;
+        const totalConfirmed = goodQty + damagedQty + nearExpiryQty;
+
+        if (totalConfirmed > 0) {
           await tx.inventory.upsert({
             where: {
               productId_branchId: {
@@ -379,9 +443,13 @@ export class ReturnOrdersService {
               },
             },
             update: {
-              onHand: {
-                increment: confirmDetail.confirmedQuantity,
-              },
+              onHand: { increment: totalConfirmed },
+              ...(damagedQty > 0 && {
+                damagedQuantity: { increment: damagedQty },
+              }),
+              ...(nearExpiryQty > 0 && {
+                nearExpiryQuantity: { increment: nearExpiryQty },
+              }),
             },
             create: {
               productId: detail.productId,
@@ -389,7 +457,9 @@ export class ReturnOrdersService {
               productName: detail.productName,
               branchId: returnOrder.branchId,
               branchName: branch?.name || '',
-              onHand: confirmDetail.confirmedQuantity,
+              onHand: totalConfirmed,
+              damagedQuantity: damagedQty,
+              nearExpiryQuantity: nearExpiryQty,
             },
           });
 
@@ -404,7 +474,7 @@ export class ReturnOrdersService {
               refCode: returnOrder.code,
               refType: 'return_order',
               refId: returnOrder.id,
-              quantity: Number(confirmDetail.confirmedQuantity),
+              quantity: Number(totalConfirmed),
               costPrice: 0,
               transactionPrice: Number(detail.returnPrice),
               partnerId: returnOrder.customerId || null,
@@ -446,45 +516,36 @@ export class ReturnOrdersService {
             data: {
               debtAmount: newDebtAmount,
               status: invoiceStatus,
-              statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              statusValue:
+                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
             },
           });
         }
       }
 
-      let customerDebtSnapshot: number | null = null;
-
-      // Giảm nợ khách hàng
       if (returnOrder.customerId && refundAmount > 0) {
-        const debtHolder = await tx.customer.findUnique({
-          where: { id: returnOrder.customerId },
-          select: { totalDebt: true },
-        });
-
-        const newDebt = Number(debtHolder?.totalDebt || 0) - refundAmount;
-
         await tx.customer.update({
           where: { id: returnOrder.customerId },
-          data: { totalDebt: newDebt },
+          data: {
+            totalDebt: { decrement: refundAmount },
+          },
         });
-
-        customerDebtSnapshot = newDebt;
       }
+
+      updateData.status = RETURN_ORDER_STATUS.STOCK_RECEIVED;
+      updateData.statusValue =
+        RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.STOCK_RECEIVED];
+      updateData.totalReturnAmount = newTotalReturnAmount;
+      updateData.refundAmount = refundAmount;
+      updateData.receivedById = userId;
+      updateData.receivedByName = user?.name || 'System';
+      updateData.confirmedBy = userId;
+      updateData.confirmedByName = user?.name || 'System';
+      updateData.confirmedAt = new Date();
 
       await tx.returnOrder.update({
         where: { id },
-        data: {
-          status: RETURN_ORDER_STATUS.STOCK_RECEIVED,
-          statusValue:
-            RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.STOCK_RECEIVED],
-          totalReturnAmount: newTotalReturnAmount,
-          refundAmount,
-          confirmedBy: userId,
-          confirmedByName: user?.name || 'System',
-          confirmedAt: new Date(),
-          customerDebtSnapshot,
-          note: dto.note || returnOrder.note,
-        },
+        data: updateData,
       });
 
       await this.auditLogsService.create({
@@ -498,16 +559,9 @@ export class ReturnOrdersService {
         snapshot: {
           code: returnOrder.code,
           refundAmount,
-          customerDebtSnapshot,
-          details: updatedDetails.map((d) => ({
-            productCode: d.productCode,
-            productName: d.productName,
-            requestQuantity: Number(d.requestQuantity),
-            confirmedQuantity: Number(d.confirmedQuantity),
-            returnPrice: Number(d.returnPrice),
-          })),
+          totalReturnAmount: newTotalReturnAmount,
         },
-        message: `Xác nhận nhập hàng trả ${returnOrder.code} - Giảm công nợ ${refundAmount}`,
+        message: `Xác nhận nhập hàng trả ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_STOCK_RECEIVED',
         userId,
         userName: user?.name || 'System',
@@ -799,7 +853,22 @@ export class ReturnOrdersService {
 
       if (returnOrder.status === RETURN_ORDER_STATUS.STOCK_RECEIVED) {
         for (const detail of returnOrder.details) {
-          if (Number(detail.confirmedQuantity) > 0) {
+          const confirmedQty = Number(detail.confirmedQuantity);
+          if (confirmedQty > 0) {
+            const rollbackData: any = {
+              onHand: { decrement: confirmedQty },
+            };
+
+            const damagedQty = Number(detail.damagedQuantity || 0);
+            const nearExpiryQty = Number(detail.nearExpiryQuantity || 0);
+
+            if (damagedQty > 0) {
+              rollbackData.damagedQuantity = { decrement: damagedQty };
+            }
+            if (nearExpiryQty > 0) {
+              rollbackData.nearExpiryQuantity = { decrement: nearExpiryQty };
+            }
+
             await tx.inventory.update({
               where: {
                 productId_branchId: {
@@ -807,11 +876,7 @@ export class ReturnOrdersService {
                   branchId: returnOrder.branchId,
                 },
               },
-              data: {
-                onHand: {
-                  decrement: Number(detail.confirmedQuantity),
-                },
-              },
+              data: rollbackData,
             });
           }
         }

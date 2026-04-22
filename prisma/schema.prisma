@@ -1864,6 +1864,8 @@ model ReturnOrder {
   cashFlowId          Int?
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
+  images              String?
+  stockImages         String?
 
   invoice          Invoice?          @relation(fields: [invoiceId], references: [id])
   customer         Customer?         @relation("ReturnOrderCustomer", fields: [customerId], references: [id])
@@ -1900,6 +1902,9 @@ model ReturnOrderDetail {
   note            String?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
+  goodQuantity        Decimal   @default(0)
+  damagedQuantity     Decimal   @default(0)
+  nearExpiryQuantity  Decimal   @default(0)
 
   returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
   invoice     Invoice     @relation(fields: [invoiceId], references: [id])

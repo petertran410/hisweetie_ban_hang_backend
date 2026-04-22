@@ -59,6 +59,10 @@ export class CreateReturnOrderDto {
   @IsOptional()
   note?: string;
 
+  @IsOptional()
+  @IsArray()
+  images?: string[];
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ReturnOrderDetailDto)
@@ -74,6 +78,13 @@ export class ConfirmStockReceivedDto {
   @IsString()
   @IsOptional()
   note?: string;
+
+  @IsOptional()
+  isDraft?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  stockImages?: string[];
 }
 
 export class ConfirmDetailDto {
@@ -83,6 +94,21 @@ export class ConfirmDetailDto {
   @IsNumber()
   @Min(0)
   confirmedQuantity: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  goodQuantity?: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  damagedQuantity?: number;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  nearExpiryQuantity?: number;
 }
 
 export class ConfirmRefundDto {
@@ -162,6 +188,7 @@ export const RETURN_ORDER_STATUS = {
   REFUND_REQUESTED: 3,
   COMPLETED: 4,
   CANCELLED: 5,
+  STOCK_DRAFT: 6,
 };
 
 export const RETURN_ORDER_STATUS_LABELS: Record<number, string> = {
@@ -170,4 +197,5 @@ export const RETURN_ORDER_STATUS_LABELS: Record<number, string> = {
   3: 'Yêu cầu hoàn tiền',
   4: 'Hoàn thành',
   5: 'Đã hủy',
+  6: 'Đang nhập hàng (tạm)',
 };
