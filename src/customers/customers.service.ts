@@ -1170,6 +1170,13 @@ export class CustomersService {
           if (parsed) birthDate = parsed;
         }
 
+        // Parse createdAt                               ← THÊM
+        let createdAt: Date | undefined;
+        if (row.createdAt?.trim()) {
+          const parsed = this.parseImportDateTime(row.createdAt.trim());
+          if (parsed) createdAt = parsed;
+        }
+
         // Parse group names → groupIds (tạo mới nếu chưa tồn tại)
         const groupIds: number[] = [];
         if (row.groups?.trim()) {
@@ -1260,6 +1267,7 @@ export class CustomersService {
             totalPurchasedValue,
             totalRevenueValue,
             branchId,
+            createdAt,
           );
           results.created++;
 
@@ -1317,6 +1325,7 @@ export class CustomersService {
     totalPurchasedValue: number | undefined,
     totalRevenueValue: number | undefined,
     branchId?: number,
+    createdAt?: Date,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const customer = await tx.customer.create({
@@ -1341,6 +1350,7 @@ export class CustomersService {
           ...(totalRevenueValue !== undefined
             ? { totalRevenue: totalRevenueValue }
             : {}),
+          ...(createdAt ? { createdAt } : {}),
           addresses: {
             create: [
               {
@@ -1500,5 +1510,20 @@ export class CustomersService {
     }
 
     return null;
+  }
+
+  private parseImportDateTime(value: string): Date | null {
+    // Format: "23/4/2026 11:53:56" hoặc "23/04/2026 11:53:56"
+    const match = value.match(
+      /^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})$/,
+    );
+    if (match) {
+      const [, d, m, y, hh, mm, ss] = match;
+      const date = new Date(+y, +m - 1, +d, +hh, +mm, +ss);
+      if (!isNaN(date.getTime())) return date;
+    }
+
+    // Fallback: chỉ có ngày, không có giờ → dùng parseImportDate
+    return this.parseImportDate(value);
   }
 }

@@ -25,6 +25,7 @@ export class ImportCustomerRowDto {
   @IsOptional() @IsString() comments?: string;
   @IsOptional() @IsNumber() totalDebt?: number;
   @IsOptional() @IsString() branchName?: string;
+  @IsOptional() @IsString() createdAt?: string;
   @IsOptional() @IsString() cccd?: string;
   @IsOptional() @IsNumber() totalPurchased?: number;
   @IsOptional() @IsNumber() totalRevenue?: number;
