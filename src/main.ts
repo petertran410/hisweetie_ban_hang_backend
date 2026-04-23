@@ -8,6 +8,8 @@ import { existsSync, mkdirSync } from 'fs';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
+  app.useBodyParser('json', { limit: '20mb' });
+
   app.enableCors({
     origin: (origin, callback) => {
       const allowedOrigins =
