@@ -10,6 +10,7 @@ import {
   CustomerQueryDto,
   BulkCreateCustomerDto,
   BulkUpdateCustomerDto,
+  ImportCustomersDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -1076,5 +1077,363 @@ export class CustomersService {
       ...a,
       isDefault: i === lastDefaultIdx,
     }));
+  }
+
+  async importCustomers(dto: ImportCustomersDto, userId?: number) {
+    const { rows, updateDebt = false } = dto;
+
+    const results = {
+      created: 0,
+      updated: 0,
+      errors: [] as { row: number; name: string; message: string }[],
+    };
+
+    // 1. Pre-load tất cả customer groups để map tên → id
+    const allGroups = await this.prisma.customerGroup.findMany({
+      select: { id: true, name: true },
+    });
+    const groupNameMap = new Map(
+      allGroups.map((g) => [g.name.trim().toLowerCase(), g.id]),
+    );
+
+    // 2. Pre-load tất cả existing codes để batch lookup
+    const incomingCodes = rows
+      .map((r) => r.code?.trim())
+      .filter((c): c is string => !!c);
+
+    const existingCustomers =
+      incomingCodes.length > 0
+        ? await this.prisma.customer.findMany({
+            where: { code: { in: incomingCodes } },
+            select: { id: true, code: true },
+          })
+        : [];
+
+    const existingCodeMap = new Map(
+      existingCustomers.map((c) => [c.code!, c.id]),
+    );
+
+    // 3. Lấy user info cho audit log
+    const user = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true, branchId: true },
+        })
+      : null;
+
+    // 4. Xử lý từng row
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const rowIndex = i + 2; // +2 vì Excel row 1 = header, data bắt đầu từ row 2
+
+      try {
+        // Validate name bắt buộc
+        if (!row.name?.trim()) {
+          results.errors.push({
+            row: rowIndex,
+            name: '',
+            message: 'Tên khách hàng không được để trống',
+          });
+          continue;
+        }
+
+        // Parse gender
+        const gender =
+          row.gender?.trim().toLowerCase() === 'nam'
+            ? true
+            : row.gender?.trim().toLowerCase() === 'nữ'
+              ? false
+              : undefined;
+
+        // Parse birthDate
+        let birthDate: Date | undefined;
+        if (row.birthDate?.trim()) {
+          const parsed = this.parseImportDate(row.birthDate.trim());
+          if (parsed) birthDate = parsed;
+        }
+
+        // Parse group names → groupIds
+        const groupIds: number[] = [];
+        if (row.groups?.trim()) {
+          const groupNames = row.groups.split(',').map((g) => g.trim());
+          for (const gName of groupNames) {
+            if (!gName) continue;
+            const gId = groupNameMap.get(gName.toLowerCase());
+            if (gId) groupIds.push(gId);
+            // Nhóm không tồn tại → bỏ qua im lặng
+          }
+        }
+
+        // Parse totalDebt
+        const debtValue =
+          updateDebt && row.totalDebt != null
+            ? Number(row.totalDebt)
+            : undefined;
+
+        const code = row.code?.trim() || undefined;
+        const existingId = code ? existingCodeMap.get(code) : undefined;
+
+        if (existingId) {
+          // ── UPDATE ──
+          await this.importUpdateCustomer(
+            existingId,
+            row,
+            gender,
+            birthDate,
+            groupIds,
+            debtValue,
+          );
+          results.updated++;
+
+          if (userId && user) {
+            await this.auditLogsService.create({
+              actionType: 'PUT',
+              actionCode: 'CUSTOMER_UPDATE',
+              entityType: 'customers',
+              entityId: existingId.toString(),
+              entityCode: code || '',
+              category: getCategoryFromActionCode('CUSTOMER_UPDATE'),
+              severity: getSeverityFromActionCode('CUSTOMER_UPDATE'),
+              snapshot: { importRow: rowIndex },
+              message: renderAuditMessage('CUSTOMER_UPDATE', {
+                customerName: row.name.trim(),
+                customerCode: code,
+              }),
+              messageTemplate: 'CUSTOMER_UPDATE',
+              userId,
+              userName: user.name || user.email || 'System',
+              branchId: user.branchId || undefined,
+            });
+          }
+        } else {
+          // ── CREATE ──
+          const newCode = code || (await this.generateCode());
+          const newCustomer = await this.importCreateCustomer(
+            newCode,
+            row,
+            gender,
+            birthDate,
+            groupIds,
+            debtValue,
+          );
+          results.created++;
+
+          // Cập nhật map để tránh trùng code trong cùng batch
+          if (newCustomer.code) {
+            existingCodeMap.set(newCustomer.code, newCustomer.id);
+          }
+
+          if (userId && user) {
+            await this.auditLogsService.create({
+              actionType: 'POST',
+              actionCode: 'CUSTOMER_CREATE',
+              entityType: 'customers',
+              entityId: newCustomer.id.toString(),
+              entityCode: newCustomer.code || '',
+              category: getCategoryFromActionCode('CUSTOMER_CREATE'),
+              severity: getSeverityFromActionCode('CUSTOMER_CREATE'),
+              snapshot: { importRow: rowIndex },
+              message: renderAuditMessage('CUSTOMER_CREATE', {
+                customerName: row.name.trim(),
+                customerCode: newCustomer.code,
+                contactNumber: row.contactNumber || 'N/A',
+              }),
+              messageTemplate: 'CUSTOMER_CREATE',
+              userId,
+              userName: user.name || user.email || 'System',
+              branchId: user.branchId || undefined,
+            });
+          }
+        }
+      } catch (error) {
+        results.errors.push({
+          row: rowIndex,
+          name: row.name || '',
+          message: error.message || 'Lỗi không xác định',
+        });
+      }
+    }
+
+    return {
+      message: `Import hoàn tất: ${results.created} tạo mới, ${results.updated} cập nhật, ${results.errors.length} lỗi`,
+      ...results,
+    };
+  }
+
+  // ── Private helpers cho import ──
+
+  private async importCreateCustomer(
+    code: string,
+    row: any,
+    gender: boolean | undefined,
+    birthDate: Date | undefined,
+    groupIds: number[],
+    debtValue: number | undefined,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.create({
+        data: {
+          code,
+          name: row.name.trim(),
+          contactNumber: row.contactNumber?.trim() || undefined,
+          phone: row.phone?.trim() || undefined,
+          email: row.email?.trim() || undefined,
+          gender,
+          birthDate,
+          organization: row.organization?.trim() || undefined,
+          taxCode: row.taxCode?.trim() || undefined,
+          comments: row.comments?.trim() || undefined,
+          type: row.organization?.trim() ? 1 : 0,
+          ...(debtValue !== undefined ? { totalDebt: debtValue } : {}),
+          addresses: {
+            create: [
+              {
+                address: row.address?.trim() || undefined,
+                locationName: row.locationName?.trim() || undefined,
+                wardName: row.wardName?.trim() || undefined,
+                receiver: row.name.trim(),
+                contactNumber: row.contactNumber?.trim() || undefined,
+                isDefault: true,
+              },
+            ],
+          },
+        },
+      });
+
+      if (groupIds.length > 0) {
+        await tx.customerGroupDetail.createMany({
+          data: groupIds.map((gId) => ({
+            customerId: customer.id,
+            customerGroupId: gId,
+          })),
+        });
+
+        const groups = await tx.customerGroup.findMany({
+          where: { id: { in: groupIds } },
+          select: { name: true },
+        });
+
+        await tx.customer.update({
+          where: { id: customer.id },
+          data: { groups: groups.map((g) => g.name).join('|') },
+        });
+      }
+
+      return customer;
+    });
+  }
+
+  private async importUpdateCustomer(
+    id: number,
+    row: any,
+    gender: boolean | undefined,
+    birthDate: Date | undefined,
+    groupIds: number[],
+    debtValue: number | undefined,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      // Build update data — chỉ update field có giá trị, không ghi đè field cũ bằng null
+      const updateData: any = {};
+      if (row.name?.trim()) updateData.name = row.name.trim();
+      if (row.contactNumber?.trim())
+        updateData.contactNumber = row.contactNumber.trim();
+      if (row.phone?.trim()) updateData.phone = row.phone.trim();
+      if (row.email?.trim()) updateData.email = row.email.trim();
+      if (gender !== undefined) updateData.gender = gender;
+      if (birthDate) updateData.birthDate = birthDate;
+      if (row.organization?.trim())
+        updateData.organization = row.organization.trim();
+      if (row.taxCode?.trim()) updateData.taxCode = row.taxCode.trim();
+      if (row.comments?.trim()) updateData.comments = row.comments.trim();
+      if (debtValue !== undefined) updateData.totalDebt = debtValue;
+
+      await tx.customer.update({
+        where: { id },
+        data: updateData,
+      });
+
+      // Update address — chỉ cập nhật địa chỉ default nếu có data mới
+      const hasAddressData =
+        row.address?.trim() || row.locationName?.trim() || row.wardName?.trim();
+      if (hasAddressData) {
+        const defaultAddr = await tx.customerAddress.findFirst({
+          where: { customerId: id, isDefault: true },
+        });
+
+        const addrData: any = {};
+        if (row.address?.trim()) addrData.address = row.address.trim();
+        if (row.locationName?.trim())
+          addrData.locationName = row.locationName.trim();
+        if (row.wardName?.trim()) addrData.wardName = row.wardName.trim();
+        if (row.contactNumber?.trim())
+          addrData.contactNumber = row.contactNumber.trim();
+
+        if (defaultAddr) {
+          await tx.customerAddress.update({
+            where: { id: defaultAddr.id },
+            data: addrData,
+          });
+        } else {
+          await tx.customerAddress.create({
+            data: {
+              customerId: id,
+              ...addrData,
+              receiver: row.name?.trim(),
+              isDefault: true,
+            },
+          });
+        }
+      }
+
+      // Update groups — replace toàn bộ nếu có data nhóm
+      if (groupIds.length > 0) {
+        await tx.customerGroupDetail.deleteMany({
+          where: { customerId: id },
+        });
+
+        await tx.customerGroupDetail.createMany({
+          data: groupIds.map((gId) => ({
+            customerId: id,
+            customerGroupId: gId,
+          })),
+        });
+
+        const groups = await tx.customerGroup.findMany({
+          where: { id: { in: groupIds } },
+          select: { name: true },
+        });
+
+        await tx.customer.update({
+          where: { id },
+          data: { groups: groups.map((g) => g.name).join('|') },
+        });
+      }
+    });
+  }
+
+  private parseImportDate(value: string): Date | null {
+    // Hỗ trợ: dd/MM/yyyy, dd-MM-yyyy, yyyy-MM-dd
+    const ddmmyyyy = value.match(/^(\d{1,2})[/\-](\d{1,2})[/\-](\d{4})$/);
+    if (ddmmyyyy) {
+      const [, d, m, y] = ddmmyyyy;
+      const date = new Date(+y, +m - 1, +d);
+      if (!isNaN(date.getTime())) return date;
+    }
+
+    const iso = value.match(/^(\d{4})[/\-](\d{1,2})[/\-](\d{1,2})$/);
+    if (iso) {
+      const [, y, m, d] = iso;
+      const date = new Date(+y, +m - 1, +d);
+      if (!isNaN(date.getTime())) return date;
+    }
+
+    // Fallback: Excel serial number (nếu xlsx parse ra number dạng string)
+    const num = Number(value);
+    if (!isNaN(num) && num > 30000 && num < 60000) {
+      const date = new Date((num - 25569) * 86400000);
+      if (!isNaN(date.getTime())) return date;
+    }
+
+    return null;
   }
 }

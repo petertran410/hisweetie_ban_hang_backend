@@ -17,6 +17,7 @@ import {
   CustomerQueryDto,
   BulkCreateCustomerDto,
   BulkUpdateCustomerDto,
+  ImportCustomersDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -79,6 +80,14 @@ export class CustomersController {
   @ApiOperation({ summary: 'Thêm mới danh sách khách hàng' })
   bulkCreate(@Body() dto: BulkCreateCustomerDto) {
     return this.customersService.bulkCreate(dto);
+  }
+
+  @Post('import')
+  @RequirePermissions('customers:create')
+  @ApiOperation({ summary: 'Import khách hàng từ file Excel' })
+  importCustomers(@Body() dto: ImportCustomersDto, @Req() req: any) {
+    const userId = req.user?.id;
+    return this.customersService.importCustomers(dto, userId);
   }
 
   @Put('listupdatecustomers')
