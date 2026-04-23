@@ -1096,6 +1096,14 @@ export class CustomersService {
       allGroups.map((g) => [g.name.trim().toLowerCase(), g.id]),
     );
 
+    // 1b. Pre-load tất cả branches để map tên → id       ← THÊM BLOCK NÀY
+    const allBranches = await this.prisma.branch.findMany({
+      select: { id: true, name: true },
+    });
+    const branchNameMap = new Map(
+      allBranches.map((b) => [b.name.trim().toLowerCase(), b.id]),
+    );
+
     // 2. Pre-load tất cả existing codes để batch lookup
     const incomingCodes = rows
       .map((r) => r.code?.trim())
@@ -1137,6 +1145,16 @@ export class CustomersService {
           continue;
         }
 
+        // Validate contactNumber bắt buộc              ← THÊM ĐOẠN NÀY
+        if (!row.contactNumber?.trim()) {
+          results.errors.push({
+            row: rowIndex,
+            name: row.name.trim(),
+            message: 'Số điện thoại không được để trống',
+          });
+          continue;
+        }
+
         // Parse gender
         const gender =
           row.gender?.trim().toLowerCase() === 'nam'
@@ -1152,22 +1170,43 @@ export class CustomersService {
           if (parsed) birthDate = parsed;
         }
 
-        // Parse group names → groupIds
+        // Parse group names → groupIds (tạo mới nếu chưa tồn tại)
         const groupIds: number[] = [];
         if (row.groups?.trim()) {
-          const groupNames = row.groups.split(',').map((g) => g.trim());
+          const groupNames = row.groups.split('|').map((g) => g.trim());
           for (const gName of groupNames) {
             if (!gName) continue;
-            const gId = groupNameMap.get(gName.toLowerCase());
-            if (gId) groupIds.push(gId);
-            // Nhóm không tồn tại → bỏ qua im lặng
+            let gId = groupNameMap.get(gName.toLowerCase());
+            if (!gId) {
+              const newGroup = await this.prisma.customerGroup.create({
+                data: { name: gName, createdBy: userId || undefined },
+              });
+              gId = newGroup.id;
+              groupNameMap.set(gName.toLowerCase(), gId);
+            }
+            groupIds.push(gId);
           }
+        }
+
+        // Parse branch name → branchId                    ← THÊM ĐOẠN NÀY
+        let branchId: number | undefined;
+        if (row.branchName?.trim()) {
+          branchId = branchNameMap.get(row.branchName.trim().toLowerCase());
         }
 
         // Parse totalDebt
         const debtValue =
           updateDebt && row.totalDebt != null
             ? Number(row.totalDebt)
+            : undefined;
+
+        const totalPurchasedValue =
+          updateDebt && row.totalPurchased != null
+            ? Number(row.totalPurchased)
+            : undefined;
+        const totalRevenueValue =
+          updateDebt && row.totalRevenue != null
+            ? Number(row.totalRevenue)
             : undefined;
 
         const code = row.code?.trim() || undefined;
@@ -1182,6 +1221,9 @@ export class CustomersService {
             birthDate,
             groupIds,
             debtValue,
+            totalPurchasedValue,
+            totalRevenueValue,
+            branchId,
           );
           results.updated++;
 
@@ -1215,6 +1257,9 @@ export class CustomersService {
             birthDate,
             groupIds,
             debtValue,
+            totalPurchasedValue,
+            totalRevenueValue,
+            branchId,
           );
           results.created++;
 
@@ -1269,6 +1314,9 @@ export class CustomersService {
     birthDate: Date | undefined,
     groupIds: number[],
     debtValue: number | undefined,
+    totalPurchasedValue: number | undefined,
+    totalRevenueValue: number | undefined,
+    branchId?: number,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const customer = await tx.customer.create({
@@ -1284,7 +1332,15 @@ export class CustomersService {
           taxCode: row.taxCode?.trim() || undefined,
           comments: row.comments?.trim() || undefined,
           type: row.organization?.trim() ? 1 : 0,
+          branchId: branchId || undefined,
+          invoiceCccdCmnd: row.cccd?.trim() || undefined,
           ...(debtValue !== undefined ? { totalDebt: debtValue } : {}),
+          ...(totalPurchasedValue !== undefined
+            ? { totalPurchased: totalPurchasedValue }
+            : {}),
+          ...(totalRevenueValue !== undefined
+            ? { totalRevenue: totalRevenueValue }
+            : {}),
           addresses: {
             create: [
               {
@@ -1330,6 +1386,9 @@ export class CustomersService {
     birthDate: Date | undefined,
     groupIds: number[],
     debtValue: number | undefined,
+    totalPurchasedValue: number | undefined,
+    totalRevenueValue: number | undefined,
+    branchId?: number,
   ) {
     return this.prisma.$transaction(async (tx) => {
       // Build update data — chỉ update field có giá trị, không ghi đè field cũ bằng null
@@ -1346,6 +1405,12 @@ export class CustomersService {
       if (row.taxCode?.trim()) updateData.taxCode = row.taxCode.trim();
       if (row.comments?.trim()) updateData.comments = row.comments.trim();
       if (debtValue !== undefined) updateData.totalDebt = debtValue;
+      if (totalPurchasedValue !== undefined)
+        updateData.totalPurchased = totalPurchasedValue;
+      if (totalRevenueValue !== undefined)
+        updateData.totalRevenue = totalRevenueValue;
+      if (branchId) updateData.branchId = branchId;
+      if (row.cccd?.trim()) updateData.invoiceCccdCmnd = row.cccd.trim();
 
       await tx.customer.update({
         where: { id },

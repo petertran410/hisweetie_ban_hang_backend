@@ -24,6 +24,10 @@ export class ImportCustomerRowDto {
   @IsOptional() @IsString() groups?: string; // "VIP, Đại lý"
   @IsOptional() @IsString() comments?: string;
   @IsOptional() @IsNumber() totalDebt?: number;
+  @IsOptional() @IsString() branchName?: string;
+  @IsOptional() @IsString() cccd?: string;
+  @IsOptional() @IsNumber() totalPurchased?: number;
+  @IsOptional() @IsNumber() totalRevenue?: number;
 }
 
 export class ImportCustomersDto {
