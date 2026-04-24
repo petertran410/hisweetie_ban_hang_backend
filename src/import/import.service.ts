@@ -131,9 +131,19 @@ export class ImportService {
         if (childName) await this.ensureCategory(childName, 'child');
 
         // --- FIX LỖI 2,7: Resolve tradeMarkId từ tên ---
-        const tradeMarkId = row.tradeMarkName
-          ? tradeMarkCache.get(row.tradeMarkName.toLowerCase()) || null
-          : null;
+        let tradeMarkId: number | null = null;
+        if (row.tradeMarkName) {
+          const cached = tradeMarkCache.get(row.tradeMarkName.toLowerCase());
+          if (cached) {
+            tradeMarkId = cached;
+          } else {
+            const newTm = await this.prisma.tradeMark.create({
+              data: { name: row.tradeMarkName },
+            });
+            tradeMarkCache.set(row.tradeMarkName.toLowerCase(), newTm.id);
+            tradeMarkId = newTm.id;
+          }
+        }
 
         // --- FIX LỖI 5: Generate fullName giống products.service.ts ---
         const fullName = this.buildFullName(row.name, row.attributesText);
