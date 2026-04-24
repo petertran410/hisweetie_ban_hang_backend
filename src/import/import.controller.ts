@@ -7,6 +7,7 @@ import {
   UseGuards,
   Res,
   BadRequestException,
+  Query,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
@@ -14,6 +15,7 @@ import { ImportService } from './import.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { ImportProductsOptionsDto } from './dto/import-products.dto';
 
 @ApiTags('Import')
 @ApiBearerAuth()
@@ -26,7 +28,10 @@ export class ImportController {
   @RequirePermissions('products.create')
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Import products from Excel' })
-  async importProducts(@UploadedFile() file: Express.Multer.File) {
+  async importProducts(
+    @UploadedFile() file: Express.Multer.File,
+    @Query() options: ImportProductsOptionsDto,
+  ) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
     }
@@ -40,7 +45,12 @@ export class ImportController {
       throw new BadRequestException('Only Excel files are allowed');
     }
 
-    return this.importService.importProducts(file);
+    return this.importService.importProducts(file, {
+      updateStock: options.updateStock ?? false,
+      updateDescription: options.updateDescription ?? false,
+      updateCost: options.updateCost ?? false,
+      branchId: options.branchId,
+    });
   }
 
   @Post('customers')
