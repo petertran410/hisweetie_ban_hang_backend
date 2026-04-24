@@ -251,6 +251,17 @@ export class InvoicesService {
         payments: true,
         delivery: true,
         _count: { select: { returnOrders: true } },
+        returnOrders: {
+          where: { code: { startsWith: 'TH' } },
+          select: {
+            id: true,
+            code: true,
+            status: true,
+            refundAmount: true,
+            refundedAmount: true,
+            refundType: true,
+          },
+        },
       },
     });
 
@@ -258,7 +269,19 @@ export class InvoicesService {
       throw new NotFoundException(`Invoice with ID ${id} not found`);
     }
 
-    return invoice;
+    const returnSummary = this.calculateReturnSummary(
+      invoice.returnOrders,
+      Number(invoice.grandTotal),
+      Number(invoice.paidAmount),
+    );
+
+    return {
+      ...invoice,
+      returnOrderAmount: returnSummary.returnOrderAmount,
+      cashRefundAmount: returnSummary.cashRefundAmount,
+      debtOffsetAmount: returnSummary.debtOffsetAmount,
+      remainingAmount: returnSummary.remainingAmount,
+    };
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
