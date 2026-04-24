@@ -1888,10 +1888,7 @@ export class InvoicesService {
       },
     };
 
-    if (branchId) {
-      where.branchId = branchId;
-    }
-
+    if (branchId) where.branchId = branchId;
     if (search) {
       where.OR = [
         { code: { contains: search } },
@@ -1915,26 +1912,41 @@ export class InvoicesService {
 
     const invoiceIds = invoices.map((inv) => inv.id);
 
+    // ── Lấy tất cả phiếu trả hàng (trừ đã hủy) liên quan đến các hóa đơn này
     const existingReturns = await this.prisma.returnOrder.findMany({
       where: {
-        status: { notIn: [5] },
+        status: { notIn: [5] }, // 5 = CANCELLED
         details: {
           some: { invoiceId: { in: invoiceIds } },
         },
       },
       select: {
+        status: true,
         details: {
           where: { invoiceId: { in: invoiceIds } },
-          select: { invoiceId: true, productId: true, requestQuantity: true },
+          select: {
+            invoiceId: true,
+            productId: true,
+            requestQuantity: true,
+            confirmedQuantity: true,
+          },
         },
       },
     });
 
+    // ── Status đã nhập kho (bước 2 trở lên): dùng confirmedQuantity (số thực tế nhập)
+    // ── Status chưa nhập kho (bước 1, draft):  dùng requestQuantity (để block double-submit)
+    const CONFIRMED_STATUSES = new Set([2, 3, 4]); // STOCK_RECEIVED, REFUND_REQUESTED, COMPLETED
+
     const returnedMap: Record<string, number> = {};
     existingReturns.forEach((ro) => {
+      const useConfirmed = CONFIRMED_STATUSES.has(ro.status);
       ro.details.forEach((d) => {
         const key = `${d.invoiceId}-${d.productId}`;
-        returnedMap[key] = (returnedMap[key] || 0) + Number(d.requestQuantity);
+        const qty = useConfirmed
+          ? Number(d.confirmedQuantity ?? 0)
+          : Number(d.requestQuantity ?? 0);
+        returnedMap[key] = (returnedMap[key] || 0) + qty;
       });
     });
 
