@@ -1905,6 +1905,9 @@ model ReturnOrderDetail {
   goodQuantity        Decimal   @default(0)
   damagedQuantity     Decimal   @default(0)
   nearExpiryQuantity  Decimal   @default(0)
+  saleGoodQuantity        Decimal   @default(0)
+  saleDamagedQuantity     Decimal   @default(0)
+  saleNearExpiryQuantity  Decimal   @default(0)
 
   returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
   invoice     Invoice     @relation(fields: [invoiceId], references: [id])

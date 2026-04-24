@@ -17,6 +17,7 @@ import {
   ReturnOrderQueryDto,
   RETURN_ORDER_STATUS,
   RETURN_ORDER_STATUS_LABELS,
+  UpdateStep1Dto,
 } from './dto';
 import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 
@@ -243,6 +244,9 @@ export class ReturnOrdersService {
           returnPrice,
           totalAmount: returnPrice * d.requestQuantity,
           note: d.note,
+          saleGoodQuantity: d.saleGoodQuantity || 0,
+          saleDamagedQuantity: d.saleDamagedQuantity || 0,
+          saleNearExpiryQuantity: d.saleNearExpiryQuantity || 0,
         };
       });
 
@@ -251,6 +255,10 @@ export class ReturnOrdersService {
         0,
       );
 
+      const status = dto.isDraft
+        ? RETURN_ORDER_STATUS.REQUEST_DRAFT
+        : RETURN_ORDER_STATUS.REQUEST;
+
       const returnOrder = await tx.returnOrder.create({
         data: {
           code,
@@ -258,8 +266,8 @@ export class ReturnOrdersService {
           customerId,
           parentCustomerId,
           branchId: dto.branchId,
-          status: RETURN_ORDER_STATUS.REQUEST,
-          statusValue: RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.REQUEST],
+          status,
+          statusValue: RETURN_ORDER_STATUS_LABELS[status],
           totalReturnAmount,
           note: dto.note,
           createdBy: userId,
@@ -919,6 +927,120 @@ export class ReturnOrdersService {
         snapshot: { code: returnOrder.code },
         message: `Hủy phiếu trả hàng ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_CANCEL',
+        userId,
+        userName: user?.name || 'System',
+        branchId: returnOrder.branchId,
+      });
+
+      return this.findOne(id);
+    });
+  }
+
+  async updateStep1(id: number, dto: UpdateStep1Dto, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const returnOrder = await tx.returnOrder.findUnique({
+        where: { id },
+        include: { details: true },
+      });
+
+      if (!returnOrder) {
+        throw new NotFoundException('Không tìm thấy phiếu trả hàng');
+      }
+
+      if (
+        returnOrder.status !== RETURN_ORDER_STATUS.REQUEST_DRAFT &&
+        returnOrder.status !== RETURN_ORDER_STATUS.REQUEST
+      ) {
+        throw new BadRequestException(
+          'Phiếu trả hàng không ở trạng thái cho phép chỉnh sửa bước 1',
+        );
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, email: true },
+      });
+
+      // Cập nhật từng detail
+      for (const d of dto.details) {
+        const detail = returnOrder.details.find((x) => x.id === d.detailId);
+        if (!detail) {
+          throw new BadRequestException(
+            `Không tìm thấy chi tiết trả hàng ID ${d.detailId}`,
+          );
+        }
+
+        const saleGood = d.saleGoodQuantity || 0;
+        const saleDamaged = d.saleDamagedQuantity || 0;
+        const saleNearExpiry = d.saleNearExpiryQuantity || 0;
+        const saleTotal = saleGood + saleDamaged + saleNearExpiry;
+
+        if (saleTotal > d.requestQuantity) {
+          throw new BadRequestException(
+            `Sản phẩm ${detail.productName}: Tổng phân loại (${saleTotal}) vượt quá SL trả (${d.requestQuantity})`,
+          );
+        }
+
+        const returnPrice =
+          d.returnPrice !== undefined && d.returnPrice !== null
+            ? d.returnPrice
+            : Number(detail.returnPrice);
+
+        await tx.returnOrderDetail.update({
+          where: { id: d.detailId },
+          data: {
+            requestQuantity: d.requestQuantity,
+            returnPrice,
+            totalAmount: returnPrice * d.requestQuantity,
+            saleGoodQuantity: saleGood,
+            saleDamagedQuantity: saleDamaged,
+            saleNearExpiryQuantity: saleNearExpiry,
+            note: d.note ?? detail.note,
+          },
+        });
+      }
+
+      // Tính lại totalReturnAmount
+      const updatedDetails = await tx.returnOrderDetail.findMany({
+        where: { returnOrderId: id },
+      });
+      const totalReturnAmount = updatedDetails.reduce(
+        (sum, d) => sum + Number(d.totalAmount),
+        0,
+      );
+
+      const newStatus = dto.isDraft
+        ? RETURN_ORDER_STATUS.REQUEST_DRAFT
+        : RETURN_ORDER_STATUS.REQUEST;
+
+      await tx.returnOrder.update({
+        where: { id },
+        data: {
+          status: newStatus,
+          statusValue: RETURN_ORDER_STATUS_LABELS[newStatus],
+          totalReturnAmount,
+          note: dto.note ?? returnOrder.note,
+          images: dto.images ? JSON.stringify(dto.images) : returnOrder.images,
+        },
+      });
+
+      const actionCode = dto.isDraft
+        ? 'RETURN_ORDER_REQUEST_DRAFT'
+        : 'RETURN_ORDER_REQUEST_COMPLETE';
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode,
+        entityType: 'return_orders',
+        entityId: id.toString(),
+        entityCode: returnOrder.code,
+        category: 'return_order',
+        severity: 'info',
+        snapshot: { code: returnOrder.code, totalReturnAmount },
+        message: dto.isDraft
+          ? `Lưu phiếu tạm bước 1 trả hàng ${returnOrder.code}`
+          : `Hoàn thành bước 1 trả hàng ${returnOrder.code}`,
+        messageTemplate: actionCode,
         userId,
         userName: user?.name || 'System',
         branchId: returnOrder.branchId,

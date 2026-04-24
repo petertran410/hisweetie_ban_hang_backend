@@ -42,6 +42,18 @@ export class ReturnOrderDetailDto {
   @IsString()
   @IsOptional()
   note?: string;
+
+  @IsNumber()
+  @IsOptional()
+  saleGoodQuantity?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleDamagedQuantity?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleNearExpiryQuantity?: number;
 }
 
 export class CreateReturnOrderDto {
@@ -62,6 +74,9 @@ export class CreateReturnOrderDto {
   @IsOptional()
   @IsArray()
   images?: string[];
+
+  @IsOptional()
+  isDraft?: boolean;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -182,6 +197,53 @@ export class ReturnOrderQueryDto {
   refundType?: string;
 }
 
+export class UpdateStep1DetailDto {
+  @IsInt()
+  detailId: number;
+
+  @IsNumber()
+  @Min(0)
+  requestQuantity: number;
+
+  @IsNumber()
+  @IsOptional()
+  returnPrice?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleGoodQuantity?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleDamagedQuantity?: number;
+
+  @IsNumber()
+  @IsOptional()
+  saleNearExpiryQuantity?: number;
+
+  @IsString()
+  @IsOptional()
+  note?: string;
+}
+
+export class UpdateStep1Dto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UpdateStep1DetailDto)
+  details: UpdateStep1DetailDto[];
+
+  @IsString()
+  @IsOptional()
+  note?: string;
+
+  @IsOptional()
+  @IsArray()
+  images?: string[];
+
+  @IsOptional()
+  isDraft?: boolean;
+}
+
 export const RETURN_ORDER_STATUS = {
   REQUEST: 1,
   STOCK_RECEIVED: 2,
@@ -189,6 +251,7 @@ export const RETURN_ORDER_STATUS = {
   COMPLETED: 4,
   CANCELLED: 5,
   STOCK_DRAFT: 6,
+  REQUEST_DRAFT: 7,
 };
 
 export const RETURN_ORDER_STATUS_LABELS: Record<number, string> = {
@@ -198,4 +261,5 @@ export const RETURN_ORDER_STATUS_LABELS: Record<number, string> = {
   4: 'Hoàn thành',
   5: 'Đã hủy',
   6: 'Đang nhập hàng (tạm)',
+  7: 'Phiếu tạm (Sale)',
 };

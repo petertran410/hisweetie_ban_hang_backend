@@ -15,6 +15,7 @@ import {
   ConfirmStockReceivedDto,
   ConfirmRefundDto,
   ReturnOrderQueryDto,
+  UpdateStep1Dto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -64,6 +65,16 @@ export class ReturnOrdersController {
     @CurrentUser() user: any,
   ) {
     return this.returnOrdersService.confirmRefund(id, dto, user.id);
+  }
+
+  @Put(':id/update-step1')
+  @RequirePermissions('return_orders:update')
+  updateStep1(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateStep1Dto,
+    @CurrentUser() user: any,
+  ) {
+    return this.returnOrdersService.updateStep1(id, dto, user.id);
   }
 
   @Put(':id/cancel')
