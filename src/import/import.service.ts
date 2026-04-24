@@ -24,70 +24,168 @@ export class ImportService {
       throw new BadRequestException('Excel file is empty');
     }
 
-    // --- 1. Lấy branch info ---
-    let branch: { id: number; name: string } | null = null;
-    if (options.branchId) {
-      branch = await this.prisma.branch.findUnique({
-        where: { id: options.branchId },
-        select: { id: true, name: true },
-      });
-    }
-    if (!branch) {
-      const firstBranch = await this.prisma.branch.findFirst({
-        select: { id: true, name: true },
-      });
-      if (!firstBranch) {
-        throw new BadRequestException('No branch found in system');
-      }
-      branch = firstBranch;
+    // --- 1. Lookup tất cả branches ---
+    const branches = await this.prisma.branch.findMany({
+      select: { id: true, name: true },
+      orderBy: { id: 'asc' },
+    });
+    const branchMap = new Map(branches.map((b) => [b.id, b.name]));
+
+    if (branches.length === 0) {
+      throw new BadRequestException('No branch found in system');
     }
 
-    // --- 2. Parse rows ---
+    // --- 2. Parse header row → build column map ---
+    const headerRow = worksheet.getRow(1);
+    const columnMap: Record<string, number> = {};
+    const branchColumnMap: {
+      colIndex: number;
+      branchId: number;
+      field: 'onHand' | 'cost';
+    }[] = [];
+
+    headerRow.eachCell((cell, colNumber) => {
+      const header = cell.value?.toString()?.trim() || '';
+      const headerLower = header.toLowerCase();
+
+      // Fixed columns
+      if (headerLower === 'loại hàng') columnMap['typeText'] = colNumber;
+      else if (
+        headerLower.includes('nhóm hàng') ||
+        headerLower.includes('nhom hang')
+      )
+        columnMap['categoryText'] = colNumber;
+      else if (headerLower === 'mã hàng' || headerLower === 'ma hang')
+        columnMap['code'] = colNumber;
+      else if (headerLower === 'tên hàng' || headerLower === 'ten hang')
+        columnMap['name'] = colNumber;
+      else if (headerLower === 'thương hiệu' || headerLower === 'thuong hieu')
+        columnMap['tradeMarkName'] = colNumber;
+      else if (headerLower === 'giá bán' || headerLower === 'gia ban')
+        columnMap['basePrice'] = colNumber;
+      else if (
+        headerLower === 'tồn ít nhất' ||
+        headerLower === 'tồn nhỏ nhất' ||
+        headerLower === 'ton it nhat'
+      )
+        columnMap['minQuality'] = colNumber;
+      else if (
+        headerLower === 'tồn nhiều nhất' ||
+        headerLower === 'tồn lớn nhất' ||
+        headerLower === 'ton nhieu nhat'
+      )
+        columnMap['maxQuality'] = colNumber;
+      else if (
+        headerLower === 'đơn vị tính' ||
+        headerLower === 'don vi tinh' ||
+        headerLower === 'đvt'
+      )
+        columnMap['unit'] = colNumber;
+      else if (
+        headerLower.includes('thuộc tính') ||
+        headerLower.includes('thuoc tinh')
+      )
+        columnMap['attributesText'] = colNumber;
+      else if (
+        headerLower.includes('mã hàng cha') ||
+        headerLower.includes('mã hh liên quan')
+      )
+        columnMap['relatedCode'] = colNumber;
+      else if (headerLower.includes('ảnh') || headerLower.includes('hình ảnh'))
+        columnMap['imageUrls'] = colNumber;
+      else if (headerLower === 'trọng lượng' || headerLower === 'trong luong')
+        columnMap['weight'] = colNumber;
+      else if (
+        headerLower.includes('bán trực tiếp') ||
+        headerLower.includes('ban truc tiep')
+      )
+        columnMap['isDirectSale'] = colNumber;
+      else if (headerLower === 'mô tả' || headerLower === 'mo ta')
+        columnMap['description'] = colNumber;
+      else if (
+        headerLower.includes('thành phần') ||
+        headerLower.includes('thanh phan') ||
+        headerLower.includes('hàng thành phần')
+      )
+        columnMap['componentsText'] = colNumber;
+
+      // Dynamic branch columns: "Tồn kho - {branchName}" / "Giá vốn - {branchName}"
+      for (const b of branches) {
+        if (header === `Tồn kho - ${b.name}`) {
+          branchColumnMap.push({
+            colIndex: colNumber,
+            branchId: b.id,
+            field: 'onHand',
+          });
+        } else if (header === `Giá vốn - ${b.name}`) {
+          branchColumnMap.push({
+            colIndex: colNumber,
+            branchId: b.id,
+            field: 'cost',
+          });
+        }
+      }
+    });
+
+    // Helper to read cell by mapped column
+    const getCellStr = (row: ExcelJS.Row, key: string): string => {
+      const col = columnMap[key];
+      if (!col) return '';
+      return row.getCell(col).value?.toString()?.trim() || '';
+    };
+    const getCellNum = (row: ExcelJS.Row, key: string): number => {
+      const col = columnMap[key];
+      if (!col) return 0;
+      return this.parseNumber(row.getCell(col).value);
+    };
+
+    // --- 3. Parse rows ---
     const rawRows: any[] = [];
     worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber <= 1) return; // skip header
+      if (rowNumber <= 1) return;
 
-      const typeText = row.getCell(1).value?.toString()?.trim() || '';
-      const categoryText = row.getCell(2).value?.toString()?.trim() || '';
-      const code = row.getCell(3).value?.toString()?.trim() || '';
-      const name = row.getCell(4).value?.toString()?.trim() || '';
-      const tradeMarkName = row.getCell(5).value?.toString()?.trim() || '';
-      const basePrice = this.parseNumber(row.getCell(6).value);
-      const cost = this.parseNumber(row.getCell(7).value);
-      const onHand = this.parseNumber(row.getCell(8).value);
-      const minQuality = this.parseNumber(row.getCell(9).value);
-      const maxQuality = this.parseNumber(row.getCell(10).value);
-      const unit = row.getCell(11).value?.toString()?.trim() || '';
-      const attributesText = row.getCell(12).value?.toString()?.trim() || '';
-      const relatedCode = row.getCell(13).value?.toString()?.trim() || '';
-      const imageUrls = row.getCell(14).value?.toString()?.trim() || '';
-      const weight = this.parseNumber(row.getCell(15).value);
-      const isDirectSale = row.getCell(16).value?.toString()?.trim() === '1';
-      const description = row.getCell(17).value?.toString()?.trim() || '';
-      const componentsText = row.getCell(18).value?.toString()?.trim() || '';
-
+      const code = getCellStr(row, 'code');
+      const name = getCellStr(row, 'name');
       if (!code || !name) return;
+
+      // Parse branch inventories
+      const branchInventories: {
+        branchId: number;
+        onHand: number;
+        cost: number;
+      }[] = [];
+      const branchDataMap = new Map<number, { onHand: number; cost: number }>();
+
+      for (const col of branchColumnMap) {
+        const val = this.parseNumber(row.getCell(col.colIndex).value);
+        if (!branchDataMap.has(col.branchId)) {
+          branchDataMap.set(col.branchId, { onHand: 0, cost: 0 });
+        }
+        branchDataMap.get(col.branchId)![col.field] = val;
+      }
+      branchDataMap.forEach((data, branchId) => {
+        branchInventories.push({ branchId, ...data });
+      });
 
       rawRows.push({
         rowNumber,
-        typeText,
-        categoryText,
+        typeText: getCellStr(row, 'typeText'),
+        categoryText: getCellStr(row, 'categoryText'),
         code,
         name,
-        tradeMarkName,
-        basePrice,
-        cost,
-        onHand,
-        minQuality,
-        maxQuality,
-        unit,
-        attributesText,
-        relatedCode,
-        imageUrls,
-        weight,
-        isDirectSale,
-        description,
-        componentsText,
+        tradeMarkName: getCellStr(row, 'tradeMarkName'),
+        basePrice: getCellNum(row, 'basePrice'),
+        minQuality: getCellNum(row, 'minQuality'),
+        maxQuality: getCellNum(row, 'maxQuality'),
+        unit: getCellStr(row, 'unit'),
+        attributesText: getCellStr(row, 'attributesText'),
+        relatedCode: getCellStr(row, 'relatedCode'),
+        imageUrls: getCellStr(row, 'imageUrls'),
+        weight: getCellNum(row, 'weight'),
+        isDirectSale: getCellStr(row, 'isDirectSale') === '1',
+        description: getCellStr(row, 'description'),
+        componentsText: getCellStr(row, 'componentsText'),
+        branchInventories,
       });
     });
 
@@ -95,7 +193,7 @@ export class ImportService {
       throw new BadRequestException('No valid data rows found');
     }
 
-    // --- 3. Batch lookup: existing products, trademarks ---
+    // --- 4. Batch lookup: existing products, trademarks ---
     const allCodes = rawRows.map((r) => r.code);
     const existingProducts = await this.prisma.product.findMany({
       where: { code: { in: allCodes } },
@@ -105,7 +203,6 @@ export class ImportService {
       existingProducts.map((p) => [p.code, p.id]),
     );
 
-    // Lookup all trademarks → build cache name→id
     const tradeMarkCache = new Map<string, number>();
     const allTradeMarks = await this.prisma.tradeMark.findMany({
       select: { id: true, name: true },
@@ -114,7 +211,7 @@ export class ImportService {
       tradeMarkCache.set(tm.name.toLowerCase(), tm.id),
     );
 
-    // --- 4. Process each row ---
+    // --- 5. Process each row ---
     const imported: any[] = [];
     const updated: any[] = [];
     const errors: any[] = [];
@@ -130,7 +227,7 @@ export class ImportService {
         if (middleName) await this.ensureCategory(middleName, 'middle');
         if (childName) await this.ensureCategory(childName, 'child');
 
-        // --- FIX LỖI 2,7: Resolve tradeMarkId từ tên ---
+        // Resolve tradeMarkId
         let tradeMarkId: number | null = null;
         if (row.tradeMarkName) {
           const cached = tradeMarkCache.get(row.tradeMarkName.toLowerCase());
@@ -145,15 +242,11 @@ export class ImportService {
           }
         }
 
-        // --- FIX LỖI 5: Generate fullName giống products.service.ts ---
         const fullName = this.buildFullName(row.name, row.attributesText);
-
         const existingId = existingProductMap.get(row.code);
 
         if (existingId) {
           // --- UPDATE existing product ---
-          // FIX LỖI 1,3: Xóa categoryId (Product không có field này),
-          // dùng parentName/middleName/childName thay thế
           const updateData: any = {
             name: row.name,
             fullName,
@@ -168,7 +261,6 @@ export class ImportService {
             attributesText: row.attributesText || undefined,
           };
 
-          // Chỉ set tradeMarkId nếu có giá trị
           if (tradeMarkId) {
             updateData.tradeMarkId = tradeMarkId;
           }
@@ -182,15 +274,24 @@ export class ImportService {
             data: updateData,
           });
 
-          // Update inventory
-          await this.upsertInventory(
-            existingId,
-            row.code,
-            row.name,
-            branch,
-            row,
-            options,
-          );
+          // Update inventory cho từng branch
+          for (const inv of row.branchInventories) {
+            const bName = branchMap.get(inv.branchId) || '';
+            await this.upsertInventory(
+              existingId,
+              row.code,
+              row.name,
+              { id: inv.branchId, name: bName },
+              {
+                cost: inv.cost,
+                onHand: inv.onHand,
+                minQuality: row.minQuality,
+                maxQuality: row.maxQuality,
+                weight: row.weight,
+              },
+              options,
+            );
+          }
 
           // Update images
           if (row.imageUrls) {
@@ -202,7 +303,7 @@ export class ImportService {
             await this.syncProductComponents(existingId, row.componentsText);
           }
 
-          // --- FIX LỖI 7 bổ sung: Xử lý masterProductId khi UPDATE ---
+          // masterProductId
           if (row.relatedCode) {
             const masterId = existingProductMap.get(row.relatedCode);
             if (masterId) {
@@ -237,23 +338,29 @@ export class ImportService {
 
           existingProductMap.set(row.code, product.id);
 
-          // --- FIX LỖI 9: Thêm reserved, onOrder, totalWeight ---
-          await this.prisma.inventory.create({
-            data: {
-              productId: product.id,
-              productCode: row.code,
-              productName: row.name,
-              branchId: branch.id,
-              branchName: branch.name,
-              cost: row.cost,
-              onHand: row.onHand,
-              reserved: 0,
-              onOrder: 0,
-              minQuality: row.minQuality,
-              maxQuality: row.maxQuality,
-              totalWeight: this.calculateTotalWeight(row.weight, row.onHand),
-            },
-          });
+          // Create inventory cho từng branch
+          for (const inv of row.branchInventories) {
+            // Bỏ qua branch không có dữ liệu
+            if (inv.onHand === 0 && inv.cost === 0) continue;
+
+            const bName = branchMap.get(inv.branchId) || '';
+            await this.prisma.inventory.create({
+              data: {
+                productId: product.id,
+                productCode: row.code,
+                productName: row.name,
+                branchId: inv.branchId,
+                branchName: bName,
+                cost: inv.cost,
+                onHand: inv.onHand,
+                reserved: 0,
+                onOrder: 0,
+                minQuality: row.minQuality,
+                maxQuality: row.maxQuality,
+                totalWeight: this.calculateTotalWeight(row.weight, inv.onHand),
+              },
+            });
+          }
 
           // Create images
           if (row.imageUrls) {
@@ -580,12 +687,18 @@ export class ImportService {
 
   // ========== TEMPLATES ==========
 
-  // --- FIX LỖI 4: Template khớp với 18 cột import ---
   async generateProductsTemplate() {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('ProductTemplate');
 
-    worksheet.columns = [
+    // Lookup tất cả branches
+    const branches = await this.prisma.branch.findMany({
+      select: { id: true, name: true },
+      orderBy: { id: 'asc' },
+    });
+
+    // Cột cố định trước inventory
+    const fixedBefore = [
       { header: 'Loại hàng', key: 'typeText', width: 15 },
       {
         header: 'Nhóm hàng (Cha >> Giữa >> Con)',
@@ -596,8 +709,16 @@ export class ImportService {
       { header: 'Tên hàng', key: 'name', width: 30 },
       { header: 'Thương hiệu', key: 'tradeMarkName', width: 20 },
       { header: 'Giá bán', key: 'basePrice', width: 15 },
-      { header: 'Giá vốn', key: 'cost', width: 15 },
-      { header: 'Tồn kho', key: 'onHand', width: 12 },
+    ];
+
+    // Cột động: Tồn kho + Giá vốn cho mỗi branch
+    const branchCols = branches.flatMap((b) => [
+      { header: `Tồn kho - ${b.name}`, key: `onHand_${b.id}`, width: 18 },
+      { header: `Giá vốn - ${b.name}`, key: `cost_${b.id}`, width: 18 },
+    ]);
+
+    // Cột cố định sau inventory
+    const fixedAfter = [
       { header: 'Tồn ít nhất', key: 'minQuality', width: 12 },
       { header: 'Tồn nhiều nhất', key: 'maxQuality', width: 15 },
       { header: 'Đơn vị tính', key: 'unit', width: 12 },
@@ -618,21 +739,33 @@ export class ImportService {
       },
     ];
 
+    worksheet.columns = [...fixedBefore, ...branchCols, ...fixedAfter];
+
     // Style header
     const headerRow = worksheet.getRow(1);
     headerRow.font = { bold: true };
     headerRow.alignment = { horizontal: 'center' };
 
-    // Sample data rows
-    worksheet.addRow({
+    // Tô màu header cột branch để phân biệt
+    const fixedBeforeCount = fixedBefore.length;
+    const branchColCount = branchCols.length;
+    for (let i = 0; i < branchColCount; i++) {
+      const cell = headerRow.getCell(fixedBeforeCount + 1 + i);
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE2EFDA' }, // xanh lá nhạt
+      };
+    }
+
+    // Sample data row 1
+    const sampleRow1: any = {
       typeText: 'Hàng hóa',
       categoryText: 'Nguyên liệu >> Bột >> Bột mì',
       code: 'HH000001',
       name: 'Bột mì đa dụng',
       tradeMarkName: 'Meizan',
       basePrice: 150000,
-      cost: 100000,
-      onHand: 50,
       minQuality: 10,
       maxQuality: 200,
       unit: 'Bao',
@@ -643,17 +776,21 @@ export class ImportService {
       isDirectSale: '0',
       description: 'Bột mì đa dụng 25kg',
       componentsText: '',
-    });
+    };
+    if (branches.length > 0) {
+      sampleRow1[`onHand_${branches[0].id}`] = 50;
+      sampleRow1[`cost_${branches[0].id}`] = 100000;
+    }
+    worksheet.addRow(sampleRow1);
 
-    worksheet.addRow({
+    // Sample data row 2
+    const sampleRow2: any = {
       typeText: 'Hàng sản xuất',
       categoryText: 'Thành phẩm',
       code: 'HH000002',
       name: 'Trà sữa trân châu',
       tradeMarkName: '',
       basePrice: 35000,
-      cost: 0,
-      onHand: 0,
       minQuality: 0,
       maxQuality: 0,
       unit: 'Ly',
@@ -664,7 +801,8 @@ export class ImportService {
       isDirectSale: '1',
       description: '',
       componentsText: 'HH000001:0.5:gram,HH000003:2:quantity',
-    });
+    };
+    worksheet.addRow(sampleRow2);
 
     const buffer = await workbook.xlsx.writeBuffer();
     return buffer;
