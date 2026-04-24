@@ -687,12 +687,13 @@ export class ImportService {
 
   // ========== TEMPLATES ==========
 
-  async generateProductsTemplate() {
+  async generateProductsTemplate(branchId?: number) {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('ProductTemplate');
 
-    // Lookup tất cả branches
+    // Lookup branches — filter theo branchId nếu có
     const branches = await this.prisma.branch.findMany({
+      where: branchId ? { id: branchId } : undefined,
       select: { id: true, name: true },
       orderBy: { id: 'asc' },
     });

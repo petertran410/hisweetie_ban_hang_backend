@@ -25,7 +25,7 @@ export class ImportController {
   constructor(private importService: ImportService) {}
 
   @Post('products')
-  @RequirePermissions('products.create')
+  @RequirePermissions('products:create')
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Import products from Excel' })
   async importProducts(
@@ -54,7 +54,7 @@ export class ImportController {
   }
 
   @Post('customers')
-  @RequirePermissions('customers.create')
+  @RequirePermissions('customers:create')
   @UseInterceptors(FileInterceptor('file'))
   @ApiOperation({ summary: 'Import customers from Excel' })
   async importCustomers(@UploadedFile() file: Express.Multer.File) {
@@ -76,8 +76,13 @@ export class ImportController {
 
   @Get('templates/products')
   @ApiOperation({ summary: 'Download products import template' })
-  async downloadProductsTemplate(@Res() res: Response) {
-    const buffer = await this.importService.generateProductsTemplate();
+  async downloadProductsTemplate(
+    @Query('branchId') branchId: string,
+    @Res() res: Response,
+  ) {
+    const buffer = await this.importService.generateProductsTemplate(
+      branchId ? parseInt(branchId) : undefined,
+    );
 
     res.setHeader(
       'Content-Type',
