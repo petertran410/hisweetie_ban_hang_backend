@@ -1904,6 +1904,8 @@ export class InvoicesService {
       include: {
         details: true,
         customer: { select: { id: true, name: true, code: true } },
+        soldBy: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -1936,14 +1938,27 @@ export class InvoicesService {
       });
     });
 
-    return invoices.filter((inv) => {
-      if (!inv.details || inv.details.length === 0) return false;
-      return inv.details.some((d) => {
-        const key = `${inv.id}-${d.productId}`;
-        const returned = returnedMap[key] || 0;
-        return Number(d.quantity) - returned > 0;
-      });
-    });
+    return invoices
+      .map((inv) => {
+        const mappedDetails = inv.details
+          .map((d) => {
+            const key = `${inv.id}-${d.productId}`;
+            const returned = returnedMap[key] || 0;
+            const remaining = Number(d.quantity) - returned;
+            return {
+              ...d,
+              alreadyReturned: returned,
+              remainingQuantity: remaining,
+            };
+          })
+          .filter((d) => d.remainingQuantity > 0);
+
+        return {
+          ...inv,
+          details: mappedDetails,
+        };
+      })
+      .filter((inv) => inv.details.length > 0);
   }
 
   private buildProductChangesLog(
