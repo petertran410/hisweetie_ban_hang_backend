@@ -95,7 +95,7 @@ export class ImportService {
       throw new BadRequestException('No valid data rows found');
     }
 
-    // --- 3. Batch lookup: existing products, categories, trademarks ---
+    // --- 3. Batch lookup: existing products, trademarks ---
     const allCodes = rawRows.map((r) => r.code);
     const existingProducts = await this.prisma.product.findMany({
       where: { code: { in: allCodes } },
@@ -105,15 +105,7 @@ export class ImportService {
       existingProducts.map((p) => [p.code, p.id]),
     );
 
-    // Lookup all categories
-    const categoryCache = new Map<string, number>();
-    const allCategories: {
-      id: number;
-      name: string;
-      parentId: number | null;
-    }[] = await this.prisma.category.findMany();
-
-    // Lookup all trademarks
+    // Lookup all trademarks → build cache name→id
     const tradeMarkCache = new Map<string, number>();
     const allTradeMarks = await this.prisma.tradeMark.findMany({
       select: { id: true, name: true },
@@ -138,21 +130,38 @@ export class ImportService {
         if (middleName) await this.ensureCategory(middleName, 'middle');
         if (childName) await this.ensureCategory(childName, 'child');
 
+        // --- FIX LỖI 2,7: Resolve tradeMarkId từ tên ---
+        const tradeMarkId = row.tradeMarkName
+          ? tradeMarkCache.get(row.tradeMarkName.toLowerCase()) || null
+          : null;
+
+        // --- FIX LỖI 5: Generate fullName giống products.service.ts ---
+        const fullName = this.buildFullName(row.name, row.attributesText);
+
         const existingId = existingProductMap.get(row.code);
 
         if (existingId) {
           // --- UPDATE existing product ---
+          // FIX LỖI 1,3: Xóa categoryId (Product không có field này),
+          // dùng parentName/middleName/childName thay thế
           const updateData: any = {
             name: row.name,
+            fullName,
             type: productType,
-            categoryId,
-            tradeMarkId,
+            parentName,
+            middleName,
+            childName,
             basePrice: row.basePrice,
             unit: row.unit || undefined,
             weight: row.weight || undefined,
             isDirectSale: row.isDirectSale,
             attributesText: row.attributesText || undefined,
           };
+
+          // Chỉ set tradeMarkId nếu có giá trị
+          if (tradeMarkId) {
+            updateData.tradeMarkId = tradeMarkId;
+          }
 
           if (options.updateDescription) {
             updateData.description = row.description || null;
@@ -183,6 +192,17 @@ export class ImportService {
             await this.syncProductComponents(existingId, row.componentsText);
           }
 
+          // --- FIX LỖI 7 bổ sung: Xử lý masterProductId khi UPDATE ---
+          if (row.relatedCode) {
+            const masterId = existingProductMap.get(row.relatedCode);
+            if (masterId) {
+              await this.prisma.product.update({
+                where: { id: existingId },
+                data: { masterProductId: masterId },
+              });
+            }
+          }
+
           updated.push({ code: row.code, id: existingId });
         } else {
           // --- CREATE new product ---
@@ -190,23 +210,24 @@ export class ImportService {
             data: {
               code: row.code,
               name: row.name,
+              fullName,
               type: productType,
               parentName,
               middleName,
               childName,
-              tradeMarkId,
+              ...(tradeMarkId && { tradeMarkId }),
               basePrice: row.basePrice,
               unit: row.unit || undefined,
               weight: row.weight || undefined,
               isDirectSale: row.isDirectSale,
               description: row.description || undefined,
               attributesText: row.attributesText || undefined,
-            } as any,
+            },
           });
 
           existingProductMap.set(row.code, product.id);
 
-          // Create inventory
+          // --- FIX LỖI 9: Thêm reserved, onOrder, totalWeight ---
           await this.prisma.inventory.create({
             data: {
               productId: product.id,
@@ -216,8 +237,11 @@ export class ImportService {
               branchName: branch.name,
               cost: row.cost,
               onHand: row.onHand,
+              reserved: 0,
+              onOrder: 0,
               minQuality: row.minQuality,
               maxQuality: row.maxQuality,
+              totalWeight: this.calculateTotalWeight(row.weight, row.onHand),
             },
           });
 
@@ -262,6 +286,8 @@ export class ImportService {
     };
   }
 
+  // ========== PRIVATE HELPERS ==========
+
   private parseNumber(value: any): number {
     if (value === null || value === undefined || value === '') return 0;
     const num = Number(value.toString().replace(/,/g, ''));
@@ -276,6 +302,28 @@ export class ImportService {
       'hàng sản xuất': 4,
     };
     return map[text.toLowerCase()] ?? 2;
+  }
+
+  // --- FIX LỖI 5: Thêm buildFullName giống products.service.ts ---
+  private buildFullName(name: string, attributesText: string | null): string {
+    if (!attributesText) return name;
+    const attrs = attributesText
+      .split('|')
+      .map((attr) => {
+        const [, value] = attr.split(':');
+        return value?.trim() || '';
+      })
+      .filter(Boolean);
+    if (attrs.length === 0) return name;
+    return `${name} - ${attrs.join(' - ')}`;
+  }
+
+  // --- FIX LỖI 9: Tính totalWeight giống products.service.ts ---
+  private calculateTotalWeight(weight: any, onHand: any): number {
+    const w = weight ? Number(weight) : 0;
+    const q = onHand ? Number(onHand) : 0;
+    if (w === 0) return 0;
+    return w * q;
   }
 
   private parseCategoryText(categoryText: string): {
@@ -315,6 +363,7 @@ export class ImportService {
       onHand: number;
       minQuality: number;
       maxQuality: number;
+      weight: number;
     },
     options: { updateStock?: boolean; updateCost?: boolean },
   ) {
@@ -324,11 +373,17 @@ export class ImportService {
 
     if (existing) {
       const updateData: any = {
+        productCode,
+        productName,
         minQuality: row.minQuality,
         maxQuality: row.maxQuality,
       };
       if (options.updateStock) {
         updateData.onHand = row.onHand;
+        updateData.totalWeight = this.calculateTotalWeight(
+          row.weight,
+          row.onHand,
+        );
       }
       if (options.updateCost) {
         updateData.cost = row.cost;
@@ -347,8 +402,11 @@ export class ImportService {
           branchName: branch.name,
           cost: row.cost,
           onHand: row.onHand,
+          reserved: 0,
+          onOrder: 0,
           minQuality: row.minQuality,
           maxQuality: row.maxQuality,
+          totalWeight: this.calculateTotalWeight(row.weight, row.onHand),
         },
       });
     }
@@ -362,34 +420,41 @@ export class ImportService {
 
     if (urls.length === 0) return;
 
-    // Delete old images and recreate
     await this.prisma.productImage.deleteMany({ where: { productId } });
     await this.prisma.productImage.createMany({
       data: urls.map((url) => ({ productId, image: url })),
     });
   }
 
+  // --- FIX LỖI 6: Thêm inputMode vào component ---
   private async syncProductComponents(
     productId: number,
     componentsText: string,
   ) {
-    // Format: "HH000023:1,HH000016:2"
+    // Format: "HH000023:1,HH000016:2" hoặc "HH000023:1:gram,HH000016:2:quantity"
     const parts = componentsText
       .split(',')
       .map((p) => p.trim())
       .filter(Boolean);
-    const components: { code: string; quantity: number }[] = [];
+    const components: { code: string; quantity: number; inputMode: string }[] =
+      [];
 
     for (const part of parts) {
-      const [code, qty] = part.split(':');
+      const segments = part.split(':');
+      const code = segments[0]?.trim();
+      const qty = segments[1]?.trim();
+      const mode = segments[2]?.trim() || 'gram';
       if (code && qty) {
-        components.push({ code: code.trim(), quantity: parseFloat(qty) || 1 });
+        components.push({
+          code,
+          quantity: parseFloat(qty) || 1,
+          inputMode: mode,
+        });
       }
     }
 
     if (components.length === 0) return;
 
-    // Lookup component products
     const codes = components.map((c) => c.code);
     const products = await this.prisma.product.findMany({
       where: { code: { in: codes } },
@@ -397,7 +462,6 @@ export class ImportService {
     });
     const productMap = new Map(products.map((p) => [p.code, p.id]));
 
-    // Delete old components and recreate
     await this.prisma.productComponent.deleteMany({
       where: { comboProductId: productId },
     });
@@ -408,12 +472,15 @@ export class ImportService {
         comboProductId: productId,
         componentProductId: productMap.get(c.code)!,
         quantity: c.quantity,
+        inputMode: c.inputMode,
       }));
 
     if (createData.length > 0) {
       await this.prisma.productComponent.createMany({ data: createData });
     }
   }
+
+  // ========== IMPORT CUSTOMERS (KHÔNG THAY ĐỔI) ==========
 
   async importCustomers(file: Express.Multer.File) {
     const workbook = new ExcelJS.Workbook();
@@ -501,36 +568,92 @@ export class ImportService {
     };
   }
 
+  // ========== TEMPLATES ==========
+
+  // --- FIX LỖI 4: Template khớp với 18 cột import ---
   async generateProductsTemplate() {
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Products');
+    const worksheet = workbook.addWorksheet('ProductTemplate');
 
     worksheet.columns = [
-      { header: 'Code', key: 'code', width: 15 },
-      { header: 'Name', key: 'name', width: 30 },
-      { header: 'Description', key: 'description', width: 40 },
-      { header: 'Category ID', key: 'categoryId', width: 12 },
-      { header: 'Variant ID', key: 'variantId', width: 12 },
-      { header: 'Purchase Price', key: 'purchasePrice', width: 15 },
-      { header: 'Retail Price', key: 'basePrice', width: 15 },
-      { header: 'Collaborator Price', key: 'collaboratorPrice', width: 18 },
-      { header: 'Stock Quantity', key: 'stockQuantity', width: 15 },
-      { header: 'Min Stock Alert', key: 'minStockAlert', width: 15 },
-      { header: 'Is Active', key: 'isActive', width: 10 },
+      { header: 'Loại hàng', key: 'typeText', width: 15 },
+      {
+        header: 'Nhóm hàng (Cha >> Giữa >> Con)',
+        key: 'categoryText',
+        width: 35,
+      },
+      { header: 'Mã hàng', key: 'code', width: 15 },
+      { header: 'Tên hàng', key: 'name', width: 30 },
+      { header: 'Thương hiệu', key: 'tradeMarkName', width: 20 },
+      { header: 'Giá bán', key: 'basePrice', width: 15 },
+      { header: 'Giá vốn', key: 'cost', width: 15 },
+      { header: 'Tồn kho', key: 'onHand', width: 12 },
+      { header: 'Tồn ít nhất', key: 'minQuality', width: 12 },
+      { header: 'Tồn nhiều nhất', key: 'maxQuality', width: 15 },
+      { header: 'Đơn vị tính', key: 'unit', width: 12 },
+      {
+        header: 'Thuộc tính (Tên:Giá trị|...)',
+        key: 'attributesText',
+        width: 30,
+      },
+      { header: 'Mã hàng cha (đơn vị)', key: 'relatedCode', width: 18 },
+      { header: 'Ảnh (url1,url2,...)', key: 'imageUrls', width: 30 },
+      { header: 'Trọng lượng', key: 'weight', width: 12 },
+      { header: 'Bán trực tiếp (0/1)', key: 'isDirectSale', width: 18 },
+      { header: 'Mô tả', key: 'description', width: 40 },
+      {
+        header: 'Thành phần (Mã:SL:mode,...)',
+        key: 'componentsText',
+        width: 35,
+      },
     ];
 
+    // Style header
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.alignment = { horizontal: 'center' };
+
+    // Sample data rows
     worksheet.addRow({
-      code: 'SP001',
-      name: 'Sample Product',
-      description: 'Product description',
-      categoryId: 1,
-      variantId: 1,
-      purchasePrice: 100000,
+      typeText: 'Hàng hóa',
+      categoryText: 'Nguyên liệu >> Bột >> Bột mì',
+      code: 'HH000001',
+      name: 'Bột mì đa dụng',
+      tradeMarkName: 'Meizan',
       basePrice: 150000,
-      collaboratorPrice: 120000,
-      stockQuantity: 100,
-      minStockAlert: 10,
-      isActive: 'true',
+      cost: 100000,
+      onHand: 50,
+      minQuality: 10,
+      maxQuality: 200,
+      unit: 'Bao',
+      attributesText: 'Khối lượng:25kg',
+      relatedCode: '',
+      imageUrls: '',
+      weight: 25,
+      isDirectSale: '0',
+      description: 'Bột mì đa dụng 25kg',
+      componentsText: '',
+    });
+
+    worksheet.addRow({
+      typeText: 'Hàng sản xuất',
+      categoryText: 'Thành phẩm',
+      code: 'HH000002',
+      name: 'Trà sữa trân châu',
+      tradeMarkName: '',
+      basePrice: 35000,
+      cost: 0,
+      onHand: 0,
+      minQuality: 0,
+      maxQuality: 0,
+      unit: 'Ly',
+      attributesText: '',
+      relatedCode: '',
+      imageUrls: '',
+      weight: 0,
+      isDirectSale: '1',
+      description: '',
+      componentsText: 'HH000001:0.5:gram,HH000003:2:quantity',
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
