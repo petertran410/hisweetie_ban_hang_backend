@@ -107,9 +107,11 @@ export class ImportService {
 
     // Lookup all categories
     const categoryCache = new Map<string, number>();
-    const allCategories = await this.prisma.category.findMany({
-      select: { id: true, name: true, parentId: true },
-    });
+    const allCategories: {
+      id: number;
+      name: string;
+      parentId: number | null;
+    }[] = await this.prisma.category.findMany();
 
     // Lookup all trademarks
     const tradeMarkCache = new Map<string, number>();
@@ -128,15 +130,13 @@ export class ImportService {
     for (const row of rawRows) {
       try {
         const productType = this.mapProductType(row.typeText);
-        const categoryId = await this.resolveCategory(
+        const { parentName, middleName, childName } = this.parseCategoryText(
           row.categoryText,
-          allCategories,
-          categoryCache,
         );
-        const tradeMarkId = await this.resolveTradeMark(
-          row.tradeMarkName,
-          tradeMarkCache,
-        );
+
+        if (parentName) await this.ensureCategory(parentName, 'parent');
+        if (middleName) await this.ensureCategory(middleName, 'middle');
+        if (childName) await this.ensureCategory(childName, 'child');
 
         const existingId = existingProductMap.get(row.code);
 
@@ -191,7 +191,9 @@ export class ImportService {
               code: row.code,
               name: row.name,
               type: productType,
-              categoryId,
+              parentName,
+              middleName,
+              childName,
               tradeMarkId,
               basePrice: row.basePrice,
               unit: row.unit || undefined,
@@ -199,7 +201,7 @@ export class ImportService {
               isDirectSale: row.isDirectSale,
               description: row.description || undefined,
               attributesText: row.attributesText || undefined,
-            },
+            } as any,
           });
 
           existingProductMap.set(row.code, product.id);
@@ -276,83 +278,31 @@ export class ImportService {
     return map[text.toLowerCase()] ?? 2;
   }
 
-  private async resolveCategory(
-    categoryText: string,
-    allCategories: { id: number; name: string; parentId: number | null }[],
-    cache: Map<string, number>,
-  ): Promise<number | null> {
-    if (!categoryText) return null;
-
-    const cacheKey = categoryText.toLowerCase();
-    if (cache.has(cacheKey)) return cache.get(cacheKey)!;
-
-    // Hỗ trợ 3 cấp: "Dịch vụ>>Gói quà" hoặc "Kẹo bánh"
+  private parseCategoryText(categoryText: string): {
+    parentName: string | null;
+    middleName: string | null;
+    childName: string | null;
+  } {
+    if (!categoryText)
+      return { parentName: null, middleName: null, childName: null };
     const parts = categoryText.split('>>').map((p) => p.trim());
-    let parentId: number | null = null;
-
-    for (const partName of parts) {
-      let found = allCategories.find(
-        (c) =>
-          c.name.toLowerCase() === partName.toLowerCase() &&
-          c.parentId === parentId,
-      );
-
-      if (!found) {
-        // Auto-create category
-        const created = await this.prisma.category.create({
-          data: {
-            name: partName,
-            parentId,
-            hasChild: false,
-          },
-        });
-
-        // Update parent hasChild
-        if (parentId) {
-          await this.prisma.category.update({
-            where: { id: parentId },
-            data: { hasChild: true },
-          });
-        }
-
-        allCategories.push({
-          id: created.id,
-          name: created.name,
-          parentId: created.parentId,
-        });
-        found = {
-          id: created.id,
-          name: created.name,
-          parentId: created.parentId,
-        };
-      }
-
-      parentId = found.id;
-    }
-
-    cache.set(cacheKey, parentId!);
-    return parentId;
+    return {
+      parentName: parts[0] || null,
+      middleName: parts[1] || null,
+      childName: parts[2] || null,
+    };
   }
 
-  private async resolveTradeMark(
-    name: string,
-    cache: Map<string, number>,
-  ): Promise<number | null> {
-    if (!name) return null;
-
-    const key = name.toLowerCase();
-    if (cache.has(key)) return cache.get(key)!;
-
-    let tm = await this.prisma.tradeMark.findFirst({
-      where: { name: { equals: name, mode: 'insensitive' } },
+  private async ensureCategory(name: string, type: string) {
+    if (!name) return;
+    const existing = await this.prisma.category.findUnique({
+      where: { type_name: { type, name } },
     });
-
-    if (!tm) {
-      tm = await this.prisma.tradeMark.create({ data: { name } });
+    if (!existing) {
+      await this.prisma.category.create({
+        data: { name, type } as any,
+      });
     }
-
-    cache.set(key, tm.id);
-    return tm.id;
   }
 
   private async upsertInventory(
