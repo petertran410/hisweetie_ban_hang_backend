@@ -1,6 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
+import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 
 @Injectable()
 export class ImportService {
@@ -1108,47 +1109,17 @@ export class ImportService {
       throw new BadRequestException('Excel file is empty');
     }
 
-    // --- 1. Parse header row → build column map ---
-    const headerRow = worksheet.getRow(1);
-    // Row 1 là merge header group, Row 2 là actual column headers
-    // Kiểm tra xem row 2 có data không (template có 2 dòng header)
-    const actualHeaderRow = worksheet.getRow(2);
-    const firstCellRow2 = actualHeaderRow.getCell(1).value?.toString()?.trim();
-
-    let dataStartRow = 2;
+    // --- 1. Tìm header row và build column map ---
     let colMap: Record<string, number> = {};
+    let dataStartRow = 2;
 
-    // Nếu row 2 chứa header text (không phải data), thì header ở row 2, data từ row 3
-    const headerCandidates = [
-      'mã hóa đơn',
-      'ma hoa don',
-      'thời gian',
-      'thoi gian',
-    ];
-    if (
-      firstCellRow2 &&
-      headerCandidates.some((h) =>
-        firstCellRow2.toLowerCase().includes(h.replace(/\s+/g, '')),
-      )
-    ) {
-      dataStartRow = 3;
-      this.buildInvoiceColumnMap(actualHeaderRow, colMap);
-    } else {
-      // Fallback: try row 1
-      this.buildInvoiceColumnMap(headerRow, colMap);
-    }
-
-    // Nếu vẫn không tìm thấy column map hợp lệ, thử scan tất cả rows
-    if (!colMap['invoiceCode']) {
-      for (let r = 1; r <= Math.min(5, worksheet.rowCount); r++) {
-        const row = worksheet.getRow(r);
-        const testMap: Record<string, number> = {};
-        this.buildInvoiceColumnMap(row, testMap);
-        if (testMap['invoiceCode']) {
-          colMap = testMap;
-          dataStartRow = r + 1;
-          break;
-        }
+    for (let r = 1; r <= Math.min(5, worksheet.rowCount); r++) {
+      const testMap: Record<string, number> = {};
+      this.buildInvoiceColumnMap(worksheet.getRow(r), testMap);
+      if (testMap['invoiceCode'] && testMap['productCode']) {
+        colMap = testMap;
+        dataStartRow = r + 1;
+        break;
       }
     }
 
@@ -1158,7 +1129,7 @@ export class ImportService {
       );
     }
 
-    // --- 2. Parse data rows & group by invoice code ---
+    // --- 2. Parse data rows ---
     interface RawRow {
       invoiceCode: string;
       purchaseDate: any;
@@ -1191,7 +1162,6 @@ export class ImportService {
       const invoiceCode = this.getCellString(row, colMap['invoiceCode']);
       const productCode = this.getCellString(row, colMap['productCode']);
 
-      // Skip completely empty rows
       if (!invoiceCode && !productCode) continue;
 
       if (!productCode) {
@@ -1200,10 +1170,8 @@ export class ImportService {
       }
 
       rawRows.push({
-        invoiceCode: invoiceCode || '',
-        purchaseDate: colMap['purchaseDate']
-          ? this.getCellValue(row, colMap['purchaseDate'])
-          : null,
+        invoiceCode,
+        purchaseDate: this.getCellValue(row, colMap['purchaseDate']),
         sellerName: this.getCellString(row, colMap['sellerName']),
         customerCode: this.getCellString(row, colMap['customerCode']),
         customerName: this.getCellString(row, colMap['customerName']),
@@ -1228,8 +1196,7 @@ export class ImportService {
       });
     }
 
-    // --- 3. Group rows by invoice code ---
-    // Dòng có invoiceCode = header dòng mới, dòng không có = thuộc invoice trước
+    // --- 3. Group rows theo mã hóa đơn ---
     interface InvoiceGroup {
       header: RawRow;
       items: RawRow[];
@@ -1240,7 +1207,6 @@ export class ImportService {
 
     for (const row of rawRows) {
       if (row.invoiceCode) {
-        // Check if this code already exists in groups (same invoice, separate blocks)
         const existing = groups.find(
           (g) => g.header.invoiceCode === row.invoiceCode,
         );
@@ -1261,7 +1227,7 @@ export class ImportService {
       }
     }
 
-    // --- 4. Lookup products, customers, sellers, priceBooks ---
+    // --- 4. Lookup batch: products, customers, sellers, priceBooks ---
     const allProductCodes = [
       ...new Set(rawRows.map((r) => r.productCode).filter(Boolean)),
     ];
@@ -1282,7 +1248,6 @@ export class ImportService {
       : [];
     const customerMap = new Map(customers.map((c) => [c.code, c]));
 
-    // Lookup sellers by name hoặc email
     const allSellerNames = [
       ...new Set(groups.map((g) => g.header.sellerName).filter(Boolean)),
     ];
@@ -1297,25 +1262,25 @@ export class ImportService {
           select: { id: true, name: true, email: true },
         })
       : [];
-    const sellerMap = new Map<string, { id: number }>([]);
+    const sellerMap = new Map<string, { id: number }>();
     for (const s of sellers) {
       sellerMap.set(s.name.toLowerCase(), s);
       sellerMap.set(s.email.toLowerCase(), s);
     }
 
-    // Lookup priceBooks
     const allPBNames = [
       ...new Set(groups.map((g) => g.header.priceBookName).filter(Boolean)),
     ];
-    const priceBooks = allPBNames.length
-      ? await this.prisma.priceBook.findMany({
-          where: { name: { in: allPBNames }, isActive: true },
-          select: { id: true, name: true },
-        })
-      : [];
+    const priceBooks =
+      allPBNames.length > 0
+        ? await this.prisma.priceBook.findMany({
+            where: { name: { in: allPBNames }, isActive: true },
+            select: { id: true, name: true },
+          })
+        : [];
     const pbMap = new Map(priceBooks.map((p) => [p.name, p]));
 
-    // --- 5. Create invoices ---
+    // --- 5. Tạo hóa đơn ---
     const imported: any[] = [];
     const failed: { invoiceCode: string; error: string }[] = [];
 
@@ -1323,7 +1288,7 @@ export class ImportService {
       try {
         const h = group.header;
 
-        // Validate all product codes exist
+        // Validate product codes
         const missingProducts = group.items
           .filter((item) => !productMap.has(item.productCode))
           .map((item) => item.productCode);
@@ -1335,14 +1300,14 @@ export class ImportService {
           continue;
         }
 
-        // Build items
+        // Build invoice details
         const invoiceItems = group.items.map((item) => {
           const product = productMap.get(item.productCode)!;
           const price = item.price || Number(product.basePrice);
           const quantity = item.quantity;
           const itemDiscount =
-            item.discount || (price * item.discountRatio) / 100;
-          const totalPrice = quantity * price - itemDiscount;
+            item.discount || (price * quantity * item.discountRatio) / 100;
+          const totalPrice = Math.max(0, quantity * price - itemDiscount);
 
           return {
             productId: product.id,
@@ -1352,11 +1317,12 @@ export class ImportService {
             price,
             discount: itemDiscount,
             discountRatio: item.discountRatio,
-            totalPrice: Math.max(0, totalPrice),
+            totalPrice,
+            conditionType: 'normal' as const,
           };
         });
 
-        // Calculate totals
+        // Tính toán tổng hóa đơn
         const totalAmount = invoiceItems.reduce((s, i) => s + i.totalPrice, 0);
         const invoiceDiscountAmount =
           h.invoiceDiscount || (totalAmount * h.invoiceDiscountRatio) / 100;
@@ -1382,7 +1348,6 @@ export class ImportService {
           if (h.purchaseDate instanceof Date) {
             purchaseDate = h.purchaseDate;
           } else if (typeof h.purchaseDate === 'number') {
-            // Excel serial date
             const excelEpoch = new Date(1899, 11, 30);
             purchaseDate = new Date(
               excelEpoch.getTime() + h.purchaseDate * 86400000,
@@ -1393,15 +1358,19 @@ export class ImportService {
           }
         }
 
-        // Determine status
-        const status = debtAmount <= 0 ? 2 : 3; // COMPLETED : PROCESSING
+        // Status
+        const status =
+          debtAmount <= 0
+            ? INVOICE_STATUS.COMPLETED
+            : INVOICE_STATUS.PROCESSING;
 
-        // Generate code
+        // Code
         const invoiceCount = await this.prisma.invoice.count();
         const code =
-          h.invoiceCode || `HDIP${String(invoiceCount + 1).padStart(6, '0')}`;
+          h.invoiceCode ||
+          `HDIP${String(invoiceCount + imported.length + 1).padStart(6, '0')}`;
 
-        // Check if code already exists
+        // Kiểm tra trùng mã
         const existing = await this.prisma.invoice.findUnique({
           where: { code },
         });
@@ -1413,11 +1382,13 @@ export class ImportService {
           continue;
         }
 
+        // Tạo invoice + details + payments trong 1 transaction
         const invoice = await this.prisma.$transaction(async (tx) => {
           const inv = await tx.invoice.create({
             data: {
               code,
               customerId: customer?.id || null,
+              parentCustomerId: customer?.id || null,
               branchId: options.branchId || null,
               soldById: seller?.id || null,
               priceBookId: priceBook?.id || null,
@@ -1429,8 +1400,10 @@ export class ImportService {
               grandTotal,
               paidAmount,
               debtAmount,
+              customerDebtSnapshot: null,
               status,
-              statusValue: status === 2 ? 'Hoàn thành' : 'Đang xử lý',
+              statusValue: getStatusLabel(status),
+              usingCod: false,
               description: h.description || null,
               createdBy: options.userId,
               details: {
@@ -1444,6 +1417,7 @@ export class ImportService {
                     discount: item.discount,
                     discountRatio: item.discountRatio,
                     totalPrice: item.totalPrice,
+                    conditionType: item.conditionType,
                   })),
                 },
               },
@@ -1451,7 +1425,7 @@ export class ImportService {
             include: { details: true },
           });
 
-          // Create payments if any
+          // Tạo payments (thuộc về hóa đơn)
           if (h.cashAmount > 0) {
             await tx.invoicePayment.create({
               data: {
@@ -1459,11 +1433,14 @@ export class ImportService {
                 invoiceId: inv.id,
                 amount: h.cashAmount,
                 paymentMethod: 'cash',
+                paymentDate: purchaseDate,
                 status: 1,
+                statusValue: 'Đã thanh toán',
                 description: 'Import - Tiền mặt',
               },
             });
           }
+
           if (h.transferAmount > 0) {
             await tx.invoicePayment.create({
               data: {
@@ -1471,38 +1448,11 @@ export class ImportService {
                 invoiceId: inv.id,
                 amount: h.transferAmount,
                 paymentMethod: 'transfer',
+                paymentDate: purchaseDate,
                 status: 1,
+                statusValue: 'Đã thanh toán',
                 description: 'Import - Chuyển khoản',
               },
-            });
-          }
-
-          // Trừ tồn kho
-          for (const item of invoiceItems) {
-            if (options.branchId) {
-              await tx.inventory.updateMany({
-                where: {
-                  productId: item.productId,
-                  branchId: options.branchId,
-                },
-                data: { onHand: { decrement: item.quantity } },
-              });
-            }
-          }
-
-          // Cập nhật công nợ khách hàng
-          if (customer?.id) {
-            const allInvoices = await tx.invoice.findMany({
-              where: { customerId: customer.id },
-              select: { debtAmount: true },
-            });
-            const totalDebt = allInvoices.reduce(
-              (s, i) => s + Number(i.debtAmount),
-              0,
-            );
-            await tx.customer.update({
-              where: { id: customer.id },
-              data: { totalDebt },
             });
           }
 
@@ -1527,70 +1477,70 @@ export class ImportService {
     };
   }
 
-  // --- Helper: build column map for invoice ---
+  // --- Helper: build column map cho invoice ---
   private buildInvoiceColumnMap(
     row: ExcelJS.Row,
     colMap: Record<string, number>,
   ) {
     row.eachCell((cell, colNumber) => {
-      const header = cell.value?.toString()?.trim()?.toLowerCase() || '';
-      if (!header) return;
+      const raw = cell.value?.toString()?.trim() || '';
+      if (!raw) return;
+      const h = raw.toLowerCase();
 
-      if (header.includes('mã hóa đơn') || header.includes('ma hoa don'))
+      if (h.includes('mã hóa đơn') || h.includes('ma hoa don'))
         colMap['invoiceCode'] = colNumber;
-      else if (header.includes('thời gian') || header.includes('thoi gian'))
+      else if (h.includes('thời gian') || h.includes('thoi gian'))
         colMap['purchaseDate'] = colNumber;
-      else if (header.includes('người bán') || header.includes('nguoi ban'))
+      else if (h.includes('người bán') || h.includes('nguoi ban'))
         colMap['sellerName'] = colNumber;
-      else if (header.includes('mã khách') || header.includes('ma khach'))
+      else if (h.includes('mã khách') || h.includes('ma khach'))
         colMap['customerCode'] = colNumber;
-      else if (header.includes('tên khách') || header.includes('ten khach'))
+      else if (h.includes('tên khách') || h.includes('ten khach'))
         colMap['customerName'] = colNumber;
-      else if (header.includes('điện thoại') || header.includes('dien thoai'))
+      else if (h.includes('điện thoại') || h.includes('dien thoai'))
         colMap['customerPhone'] = colNumber;
-      else if (header.includes('địa chỉ') && header.includes('khách'))
+      else if (h.includes('địa chỉ') && h.includes('khách'))
         colMap['customerAddress'] = colNumber;
-      else if (header.includes('khu vực') && header.includes('khách'))
+      else if (h.includes('khu vực') && h.includes('khách'))
         colMap['locationName'] = colNumber;
-      else if (header.includes('phường') || header.includes('xã'))
+      else if (
+        h.includes('phường') ||
+        (h.includes('xã') && h.includes('khách'))
+      )
         colMap['wardName'] = colNumber;
-      else if (header.includes('bảng giá') || header.includes('bang gia'))
+      else if (h.includes('bảng giá') || h.includes('bang gia'))
         colMap['priceBookName'] = colNumber;
-      else if (header.includes('mã hàng') || header.includes('ma hang'))
+      else if (h.includes('mã hàng') || h.includes('ma hang'))
         colMap['productCode'] = colNumber;
-      else if (header.includes('số lượng') || header.includes('so luong'))
+      else if (h.includes('số lượng') || h.includes('so luong'))
         colMap['quantity'] = colNumber;
-      else if (header.includes('đơn giá') || header.includes('don gia'))
+      else if (h.includes('đơn giá') || h.includes('don gia'))
         colMap['price'] = colNumber;
       else if (
-        header.includes('giảm giá') &&
-        header.includes('%') &&
-        !header.includes('hóa đơn')
+        h.includes('giảm giá') &&
+        h.includes('%') &&
+        !h.includes('hóa đơn')
       )
         colMap['discountRatio'] = colNumber;
       else if (
-        header.includes('giảm giá') &&
-        !header.includes('%') &&
-        !header.includes('hóa đơn')
+        h.includes('giảm giá') &&
+        !h.includes('%') &&
+        !h.includes('hóa đơn')
       )
         colMap['discount'] = colNumber;
-      else if (header.includes('giảm giá hóa đơn') && !header.includes('%'))
+      else if (h.includes('giảm giá hóa đơn') && !h.includes('%'))
         colMap['invoiceDiscount'] = colNumber;
-      else if (header.includes('giảm giá hóa đơn') && header.includes('%'))
+      else if (h.includes('giảm giá hóa đơn') && h.includes('%'))
         colMap['invoiceDiscountRatio'] = colNumber;
-      else if (header.includes('tiền mặt') || header.includes('tien mat'))
+      else if (h.includes('tiền mặt') || h.includes('tien mat'))
         colMap['cashAmount'] = colNumber;
-      else if (
-        header.includes('chuyển khoản') ||
-        header.includes('chuyen khoan')
-      )
+      else if (h.includes('chuyển khoản') || h.includes('chuyen khoan'))
         colMap['transferAmount'] = colNumber;
-      else if (header.includes('ghi chú') || header.includes('ghi chu'))
+      else if (h.includes('ghi chú') || h.includes('ghi chu'))
         colMap['description'] = colNumber;
     });
   }
 
-  // --- Helpers ---
   private getCellString(row: ExcelJS.Row, colIndex?: number): string {
     if (!colIndex) return '';
     const val = row.getCell(colIndex).value;
@@ -1639,33 +1589,20 @@ export class ImportService {
       { header: 'Ghi chú', key: 'description', width: 25 },
     ];
 
-    // Style header
     const headerRowExcel = worksheet.getRow(1);
     headerRowExcel.font = { bold: true };
     headerRowExcel.alignment = { horizontal: 'center' };
 
-    // Sample data
     worksheet.addRow({
       invoiceCode: 'HDIP00001',
       purchaseDate: new Date(),
       sellerName: 'ndduy',
-      customerCode: '',
-      customerName: '',
       customerPhone: '0945756611',
-      customerAddress: '',
-      locationName: '',
-      wardName: '',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000001',
       quantity: 5,
       price: 100000,
-      discountRatio: '',
-      discount: '',
-      invoiceDiscount: '',
-      invoiceDiscountRatio: '',
       cashAmount: 2589000,
-      transferAmount: '',
-      description: '',
     });
 
     worksheet.addRow({
