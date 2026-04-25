@@ -1152,7 +1152,6 @@ export class ImportService {
       transferAmount: number;
       description: string;
       rowNumber: number;
-      // --- Giá trị tính sẵn từ Excel ---
       lineTotal: number;
       excelTotalAmount: number;
       excelGrandTotal: number;
@@ -1212,7 +1211,6 @@ export class ImportService {
         transferAmount: this.getCellNumber(row, colMap['transferAmount']) || 0,
         description: this.getCellString(row, colMap['description']),
         rowNumber: r,
-        // --- Giá trị tính sẵn từ Excel ---
         lineTotal: this.getCellNumber(row, colMap['lineTotal']) || 0,
         excelTotalAmount: this.getCellNumber(row, colMap['totalAmount']) || 0,
         excelGrandTotal: this.getCellNumber(row, colMap['grandTotal']) || 0,
@@ -1265,7 +1263,7 @@ export class ImportService {
       }
     }
 
-    // --- 4. Lookup batch: products, customers, sellers, priceBooks ---
+    // --- 4. Batch lookups ---
     const allProductCodes = [
       ...new Set(rawRows.map((r) => r.productCode).filter(Boolean)),
     ];
@@ -1292,21 +1290,32 @@ export class ImportService {
     const sellers = allSellerNames.length
       ? await this.prisma.user.findMany({
           where: {
-            OR: [
-              { name: { in: allSellerNames } },
-              { email: { in: allSellerNames } },
-            ],
+            name: { in: allSellerNames, mode: 'insensitive' },
           },
-          select: { id: true, name: true, email: true },
+          select: { id: true, name: true },
         })
       : [];
-    const sellerMap = new Map<string, { id: number }>();
-    for (const s of sellers) {
-      sellerMap.set(s.name.toLowerCase(), s);
-      sellerMap.set(s.email.toLowerCase(), s);
-    }
+    const sellerMap = new Map(sellers.map((u) => [u.name.toLowerCase(), u]));
 
-    // --- Lookup orders theo mã ---
+    const allPriceBookNames = [
+      ...new Set(
+        groups
+          .map((g) => g.header.priceBookName)
+          .filter((n) => n && n !== 'Bảng giá chung'),
+      ),
+    ];
+    const priceBooks = allPriceBookNames.length
+      ? await this.prisma.priceBook.findMany({
+          where: {
+            name: { in: allPriceBookNames, mode: 'insensitive' },
+            isActive: true,
+          },
+          select: { id: true, name: true },
+        })
+      : [];
+    const pbMap = new Map(priceBooks.map((pb) => [pb.name, pb]));
+
+    // Lookup orders theo mã
     const allOrderCodes = [
       ...new Set(groups.map((g) => g.header.orderCode).filter(Boolean)),
     ];
@@ -1318,7 +1327,7 @@ export class ImportService {
       : [];
     const orderCodeMap = new Map(orders.map((o) => [o.code, o]));
 
-    // --- Lookup creators theo tên ---
+    // Lookup creators theo tên
     const allCreatorNames = [
       ...new Set(groups.map((g) => g.header.creatorName).filter(Boolean)),
     ];
@@ -1334,20 +1343,7 @@ export class ImportService {
       creators.map((u) => [u.name.toLowerCase(), u]),
     );
 
-    const allPBNames = [
-      ...new Set(groups.map((g) => g.header.priceBookName).filter(Boolean)),
-    ];
-    const priceBooks =
-      allPBNames.length > 0
-        ? await this.prisma.priceBook.findMany({
-            where: { name: { in: allPBNames }, isActive: true },
-            select: { id: true, name: true },
-          })
-        : [];
-    const pbMap = new Map(priceBooks.map((p) => [p.name, p]));
-
-    // --- Lookup branches theo tên ---
-
+    // Lookup branches theo tên
     const allBranchNames = [
       ...new Set(groups.map((g) => g.header.branchName).filter(Boolean)),
     ];
@@ -1363,339 +1359,339 @@ export class ImportService {
       branchesFromExcel.map((b) => [b.name.toLowerCase(), b]),
     );
 
-    // --- 5. Tạo hóa đơn ---
+    // --- 5. Pre-fetch: invoice count + existing codes (tối ưu) ---
     const imported: any[] = [];
-    const failed: { invoiceCode: string; error: string }[] = [];
+    const failed: { invoiceCode?: string; error: string }[] = [];
 
-    for (const group of groups) {
-      try {
-        const h = group.header;
+    const invoiceCount = await this.prisma.invoice.count();
+    const allInvoiceCodes = groups
+      .map((g) => g.header.invoiceCode)
+      .filter(Boolean);
+    const existingInvoices = allInvoiceCodes.length
+      ? await this.prisma.invoice.findMany({
+          where: { code: { in: allInvoiceCodes } },
+          select: { code: true },
+        })
+      : [];
+    const existingCodeSet = new Set(existingInvoices.map((i) => i.code));
 
-        // Lọc mã HĐ: skip mã có chữ sau "HD" (HDSPE, HDTTS, HDIP, v.v.)
-        if (h.invoiceCode && /^HD[A-Za-z]/i.test(h.invoiceCode)) {
-          failed.push({
-            invoiceCode: h.invoiceCode,
-            error: `Mã hóa đơn "${h.invoiceCode}" không được phép import (chứa ký tự chữ sau HD)`,
-          });
-          continue;
-        }
-
-        // Resolve branchId từ Excel, fallback options.branchId
-        const excelBranch = h.branchName
-          ? branchNameMap.get(h.branchName.toLowerCase())
-          : null;
-        const invoiceBranchId = excelBranch?.id || options.branchId || null;
-
-        // Validate: phải có chi nhánh
-        if (!invoiceBranchId) {
-          failed.push({
-            invoiceCode: h.invoiceCode || `Row ${h.rowNumber}`,
-            error: `Không tìm thấy chi nhánh "${h.branchName || '(trống)'}" trong hệ thống`,
-          });
-          continue;
-        }
-
-        // Validate product codes
-        const missingProducts = group.items
-          .filter((item) => !productMap.has(item.productCode))
-          .map((item) => item.productCode);
-        if (missingProducts.length > 0) {
-          failed.push({
-            invoiceCode: h.invoiceCode,
-            error: `Mã hàng không tồn tại: ${missingProducts.join(', ')}`,
-          });
-          continue;
-        }
-
-        // Build invoice details — ưu tiên dùng "Thành tiền" từ Excel
-        const invoiceItems = group.items.map((item) => {
-          const product = productMap.get(item.productCode)!;
-          const price = item.price || Number(product.basePrice);
-          const quantity = item.quantity;
-          const itemDiscount =
-            item.discount || (price * item.discountRatio) / 100;
-
-          // Ưu tiên "Thành tiền" từ Excel, fallback tính đúng per-unit discount
-          const totalPrice =
-            item.lineTotal > 0
-              ? item.lineTotal
-              : Math.max(0, quantity * (price - itemDiscount));
-
-          return {
-            productId: product.id,
-            productCode: product.code,
-            productName: product.name,
-            quantity,
-            price,
-            discount: itemDiscount,
-            discountRatio: item.discountRatio,
-            totalPrice,
-            conditionType: 'normal' as const,
-            note: item.productNote || null,
-          };
-        });
-
-        // Tính toán tổng hóa đơn — ưu tiên giá trị từ Excel
-        const calcTotalAmount = invoiceItems.reduce(
-          (s, i) => s + i.totalPrice,
-          0,
-        );
-        const totalAmount =
-          h.excelTotalAmount > 0 ? h.excelTotalAmount : calcTotalAmount;
-
-        const invoiceDiscountAmount =
-          h.invoiceDiscount || (totalAmount * h.invoiceDiscountRatio) / 100;
-
-        const grandTotal =
-          h.excelGrandTotal > 0
-            ? h.excelGrandTotal
-            : Math.max(0, totalAmount - invoiceDiscountAmount);
-
-        const paidAmount =
-          h.customerPaid > 0 ? h.customerPaid : h.cashAmount + h.transferAmount;
-
-        const debtAmount = grandTotal - paidAmount;
-
-        // Resolve relations
-        const customer = h.customerCode
-          ? customerMap.get(h.customerCode)
-          : null;
-        const seller = h.sellerName
-          ? sellerMap.get(h.sellerName.toLowerCase())
-          : null;
-        const priceBook =
-          h.priceBookName && h.priceBookName !== 'Bảng giá chung'
-            ? pbMap.get(h.priceBookName)
-            : null;
-
-        // Parse date
-        let purchaseDate = new Date();
-        if (h.purchaseDate) {
-          if (h.purchaseDate instanceof Date) {
-            purchaseDate = h.purchaseDate;
-          } else if (typeof h.purchaseDate === 'number') {
-            const excelEpoch = new Date(1899, 11, 30);
-            purchaseDate = new Date(
-              excelEpoch.getTime() + h.purchaseDate * 86400000,
-            );
-          } else {
-            const parsed = new Date(h.purchaseDate);
-            if (!isNaN(parsed.getTime())) purchaseDate = parsed;
-          }
-        }
-
-        // Resolve orderId từ mã đặt hàng
-        const order = h.orderCode ? orderCodeMap.get(h.orderCode) : null;
-
-        // Resolve createdBy từ "Người tạo", fallback options.userId
-        const creator = h.creatorName
-          ? creatorNameMap.get(h.creatorName.toLowerCase())
-          : null;
-        const createdByUserId = creator?.id || options.userId;
-
-        // Parse createdAt / updatedAt từ Excel
-        const parseExcelDate = (val: any): Date | null => {
-          if (!val) return null;
-          if (val instanceof Date) return val;
-          if (typeof val === 'number') {
-            const excelEpoch = new Date(1899, 11, 30);
-            return new Date(excelEpoch.getTime() + val * 86400000);
-          }
-          const parsed = new Date(val);
-          return isNaN(parsed.getTime()) ? null : parsed;
-        };
-
-        const importCreatedAt =
-          parseExcelDate(h.createdAtExcel) || purchaseDate;
-        const importUpdatedAt =
-          parseExcelDate(h.updatedAtExcel) || importCreatedAt;
-
-        // COD
-        const usingCod = h.codAmount > 0;
-
-        // Status
-        const status =
-          debtAmount <= 0
-            ? INVOICE_STATUS.COMPLETED
-            : INVOICE_STATUS.PROCESSING;
-
-        // Code
-        const invoiceCount = await this.prisma.invoice.count();
-        const code =
-          h.invoiceCode ||
-          `HDIP${String(invoiceCount + imported.length + 1).padStart(6, '0')}`;
-
-        // Kiểm tra trùng mã
-        const existing = await this.prisma.invoice.findUnique({
-          where: { code },
-        });
-        if (existing) {
-          failed.push({
-            invoiceCode: code,
-            error: `Mã hóa đơn "${code}" đã tồn tại`,
-          });
-          continue;
-        }
-
-        // Tạo invoice + details + payments + cashflows trong 1 transaction
-        const invoice = await this.prisma.$transaction(async (tx) => {
-          const inv = await tx.invoice.create({
-            data: {
-              code,
-              orderId: order?.id || null, // ← SỬA: thêm orderId
-              customerId: customer?.id || null,
-              parentCustomerId: customer?.id || null,
-              branchId: invoiceBranchId,
-              soldById: seller?.id || null,
-              priceBookId: priceBook?.id || null,
-              priceBookName: priceBook?.name || null,
-              purchaseDate,
-              totalAmount,
-              discount: invoiceDiscountAmount,
-              discountRatio: h.invoiceDiscountRatio || 0,
-              grandTotal,
-              paidAmount,
-              debtAmount,
-              customerDebtSnapshot: null,
-              status,
-              statusValue: getStatusLabel(status),
-              usingCod, // ← SỬA: thay false bằng biến usingCod
-              description: h.description || null,
-              createdBy: createdByUserId, // ← SỬA: thay options.userId
-              createdAt: importCreatedAt, // ← THÊM
-              updatedAt: importUpdatedAt, // ← THÊM
-              details: {
-                createMany: {
-                  data: invoiceItems.map((item) => ({
-                    productId: item.productId,
-                    productCode: item.productCode,
-                    productName: item.productName,
-                    quantity: item.quantity,
-                    price: item.price,
-                    discount: item.discount,
-                    discountRatio: item.discountRatio,
-                    totalPrice: item.totalPrice,
-                    conditionType: item.conditionType,
-                    note: item.note, // ← THÊM
-                  })),
-                },
-              },
-              // ← THÊM: Tạo delivery nếu có người nhận
-              ...(h.receiverName && {
-                delivery: {
-                  create: {
-                    receiver: h.receiverName,
-                    contactNumber: h.receiverPhone || '',
-                    address: h.receiverAddress || '',
-                    locationName: h.receiverLocation || null,
-                    wardName: h.receiverWard || null,
-                    weight: h.weight || null,
-                    noteForDriver: h.deliveryNote || null,
-                    status: 1,
-                    statusValue: 'Đã giao',
-                  },
-                },
-              }),
-            },
-            include: { details: true },
-          });
-
-          // Tạo payments + CashFlow
-          if (h.cashAmount > 0) {
-            const cashPaymentCode = `TT${inv.code}-1`;
-
-            const cashFlow = await tx.cashFlow.create({
-              data: {
-                code: cashPaymentCode,
-                branchId: invoiceBranchId || 1,
-                cashFlowGroupId: 3,
-                isReceipt: true,
-                amount: h.cashAmount,
-                transDate: purchaseDate,
-                method: 'cash',
-                accountId: null,
-                partnerType: customer ? 'C' : 'O',
-                partnerId: customer?.id || null,
-                partnerName: customer?.name || h.customerName || null,
-                contactNumber: h.customerPhone || null,
-                address: h.customerAddress || null,
-                description: `Import - Tiền mặt - HĐ ${inv.code}`,
-                status: 0,
-                statusValue: 'Đã thanh toán',
-                createdBy: options.userId,
-                usedForFinancialReporting: 1,
-                customerDebtSnapshot: null,
-              },
-            });
-
-            await tx.invoicePayment.create({
-              data: {
-                code: cashPaymentCode,
-                invoiceId: inv.id,
-                amount: h.cashAmount,
-                paymentMethod: 'cash',
-                paymentDate: purchaseDate,
-                status: 1,
-                statusValue: 'Đã thanh toán',
-                description: 'Import - Tiền mặt',
-                cashFlowId: cashFlow.id,
-              },
-            });
-          }
-
-          if (h.transferAmount > 0) {
-            const transferPaymentCode = `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`;
-
-            const cashFlow = await tx.cashFlow.create({
-              data: {
-                code: transferPaymentCode,
-                branchId: invoiceBranchId || 1,
-                cashFlowGroupId: 3,
-                isReceipt: true,
-                amount: h.transferAmount,
-                transDate: purchaseDate,
-                method: 'transfer',
-                accountId: null,
-                partnerType: customer ? 'C' : 'O',
-                partnerId: customer?.id || null,
-                partnerName: customer?.name || h.customerName || null,
-                contactNumber: h.customerPhone || null,
-                address: h.customerAddress || null,
-                description: `Import - Chuyển khoản - HĐ ${inv.code}`,
-                status: 0,
-                statusValue: 'Đã thanh toán',
-                createdBy: options.userId,
-                usedForFinancialReporting: 1,
-                customerDebtSnapshot: null,
-              },
-            });
-
-            await tx.invoicePayment.create({
-              data: {
-                code: transferPaymentCode,
-                invoiceId: inv.id,
-                amount: h.transferAmount,
-                paymentMethod: 'transfer',
-                paymentDate: purchaseDate,
-                status: 1,
-                statusValue: 'Đã thanh toán',
-                description: 'Import - Chuyển khoản',
-                cashFlowId: cashFlow.id,
-              },
-            });
-          }
-
-          return inv;
-        });
-
-        imported.push(invoice);
-      } catch (error) {
-        failed.push({
-          invoiceCode:
-            group.header.invoiceCode || `Row ${group.header.rowNumber}`,
-          error: error.message,
-        });
+    // Helper: parse Excel date
+    const parseExcelDate = (val: any): Date | null => {
+      if (!val) return null;
+      if (val instanceof Date) return val;
+      if (typeof val === 'number') {
+        const excelEpoch = new Date(1899, 11, 30);
+        return new Date(excelEpoch.getTime() + val * 86400000);
       }
+      const parsed = new Date(val);
+      return isNaN(parsed.getTime()) ? null : parsed;
+    };
+
+    // --- 6. Batch processing ---
+    const BATCH_SIZE = 100;
+    let autoCodeIndex = 0;
+
+    for (
+      let batchStart = 0;
+      batchStart < groups.length;
+      batchStart += BATCH_SIZE
+    ) {
+      const batch = groups.slice(batchStart, batchStart + BATCH_SIZE);
+
+      const batchResults = await this.prisma.$transaction(
+        async (tx) => {
+          const batchImported: any[] = [];
+
+          for (const group of batch) {
+            try {
+              const h = group.header;
+
+              // Lọc mã HĐ: skip HDSPE, HDTTS, v.v.
+              if (h.invoiceCode && /^HD[A-Za-z]/i.test(h.invoiceCode)) {
+                failed.push({
+                  invoiceCode: h.invoiceCode,
+                  error: `Mã hóa đơn "${h.invoiceCode}" không được phép import (chứa ký tự chữ sau HD)`,
+                });
+                continue;
+              }
+
+              // Code
+              const code =
+                h.invoiceCode ||
+                `HDIP${String(invoiceCount + imported.length + batchImported.length + autoCodeIndex + 1).padStart(6, '0')}`;
+              if (!h.invoiceCode) autoCodeIndex++;
+
+              // Check trùng mã (dùng Set)
+              if (existingCodeSet.has(code)) {
+                failed.push({
+                  invoiceCode: code,
+                  error: `Mã hóa đơn "${code}" đã tồn tại`,
+                });
+                continue;
+              }
+              existingCodeSet.add(code);
+
+              // Resolve branch
+              const excelBranch = h.branchName
+                ? branchNameMap.get(h.branchName.toLowerCase())
+                : null;
+              const invoiceBranchId =
+                excelBranch?.id || options.branchId || null;
+
+              if (!invoiceBranchId) {
+                failed.push({
+                  invoiceCode: code,
+                  error: `Không tìm thấy chi nhánh "${h.branchName || '(trống)'}"`,
+                });
+                continue;
+              }
+
+              // Validate products
+              const missingProducts = group.items
+                .filter((item) => !productMap.has(item.productCode))
+                .map((item) => item.productCode);
+              if (missingProducts.length > 0) {
+                failed.push({
+                  invoiceCode: code,
+                  error: `Mã hàng không tồn tại: ${missingProducts.join(', ')}`,
+                });
+                continue;
+              }
+
+              // Build invoice details
+              const invoiceItems = group.items.map((item) => {
+                const product = productMap.get(item.productCode)!;
+                const price = item.price || Number(product.basePrice);
+                const quantity = item.quantity;
+                const itemDiscount =
+                  item.discount || (price * item.discountRatio) / 100;
+                const totalPrice =
+                  item.lineTotal > 0
+                    ? item.lineTotal
+                    : Math.max(0, quantity * (price - itemDiscount));
+
+                return {
+                  productId: product.id,
+                  productCode: product.code,
+                  productName: product.name,
+                  quantity,
+                  price,
+                  discount: itemDiscount,
+                  discountRatio: item.discountRatio,
+                  totalPrice,
+                  conditionType: 'normal' as const,
+                  note: item.productNote || null,
+                };
+              });
+
+              // Tính toán tổng
+              const calcTotalAmount = invoiceItems.reduce(
+                (s, i) => s + i.totalPrice,
+                0,
+              );
+              const totalAmount =
+                h.excelTotalAmount > 0 ? h.excelTotalAmount : calcTotalAmount;
+              const invoiceDiscountAmount =
+                h.invoiceDiscount ||
+                (totalAmount * h.invoiceDiscountRatio) / 100;
+              const grandTotal =
+                h.excelGrandTotal > 0
+                  ? h.excelGrandTotal
+                  : Math.max(0, totalAmount - invoiceDiscountAmount);
+              const paidAmount =
+                h.customerPaid > 0
+                  ? h.customerPaid
+                  : h.cashAmount + h.transferAmount;
+              const debtAmount = grandTotal - paidAmount;
+
+              // Resolve relations
+              const customer = h.customerCode
+                ? customerMap.get(h.customerCode)
+                : null;
+              const seller = h.sellerName
+                ? sellerMap.get(h.sellerName.toLowerCase())
+                : null;
+              const priceBook =
+                h.priceBookName && h.priceBookName !== 'Bảng giá chung'
+                  ? pbMap.get(h.priceBookName)
+                  : null;
+              const order = h.orderCode ? orderCodeMap.get(h.orderCode) : null;
+              const creator = h.creatorName
+                ? creatorNameMap.get(h.creatorName.toLowerCase())
+                : null;
+              const createdByUserId = creator?.id || options.userId;
+
+              // Parse dates
+              const purchaseDate = parseExcelDate(h.purchaseDate) || new Date();
+              const importCreatedAt =
+                parseExcelDate(h.createdAtExcel) || purchaseDate;
+              const importUpdatedAt =
+                parseExcelDate(h.updatedAtExcel) || importCreatedAt;
+
+              const usingCod = h.codAmount > 0;
+              const status =
+                debtAmount <= 0
+                  ? INVOICE_STATUS.COMPLETED
+                  : INVOICE_STATUS.PROCESSING;
+
+              // Tạo invoice
+              const inv = await tx.invoice.create({
+                data: {
+                  code,
+                  orderId: order?.id || null,
+                  customerId: customer?.id || null,
+                  parentCustomerId: customer?.id || null,
+                  branchId: invoiceBranchId,
+                  soldById: seller?.id || null,
+                  priceBookId: priceBook?.id || null,
+                  priceBookName: priceBook?.name || null,
+                  purchaseDate,
+                  totalAmount,
+                  discount: invoiceDiscountAmount,
+                  discountRatio: h.invoiceDiscountRatio || 0,
+                  grandTotal,
+                  paidAmount,
+                  debtAmount,
+                  customerDebtSnapshot: null,
+                  status,
+                  statusValue: getStatusLabel(status),
+                  usingCod,
+                  description: h.description || null,
+                  createdBy: createdByUserId,
+                  createdAt: importCreatedAt,
+                  updatedAt: importUpdatedAt,
+                  details: {
+                    createMany: {
+                      data: invoiceItems.map((item) => ({
+                        productId: item.productId,
+                        productCode: item.productCode,
+                        productName: item.productName,
+                        quantity: item.quantity,
+                        price: item.price,
+                        discount: item.discount,
+                        discountRatio: item.discountRatio,
+                        totalPrice: item.totalPrice,
+                        conditionType: item.conditionType,
+                        note: item.note,
+                      })),
+                    },
+                  },
+                  ...(h.receiverName && {
+                    delivery: {
+                      create: {
+                        receiver: h.receiverName,
+                        contactNumber: h.receiverPhone || '',
+                        address: h.receiverAddress || '',
+                        locationName: h.receiverLocation || null,
+                        wardName: h.receiverWard || null,
+                        weight: h.weight || null,
+                        noteForDriver: h.deliveryNote || null,
+                        status: 1,
+                        statusValue: 'Đã giao',
+                      },
+                    },
+                  }),
+                },
+              });
+
+              // Tạo CashFlow + Payment (tiền mặt)
+              if (h.cashAmount > 0) {
+                const cashPaymentCode = `TT${inv.code}-1`;
+                const cashFlow = await tx.cashFlow.create({
+                  data: {
+                    code: cashPaymentCode,
+                    branchId: invoiceBranchId || 1,
+                    cashFlowGroupId: 3,
+                    isReceipt: true,
+                    amount: h.cashAmount,
+                    transDate: purchaseDate,
+                    method: 'cash',
+                    accountId: null,
+                    partnerType: customer ? 'C' : 'O',
+                    partnerId: customer?.id || null,
+                    partnerName: customer?.name || h.customerName || null,
+                    contactNumber: h.customerPhone || null,
+                    address: h.customerAddress || null,
+                    description: `Import - Tiền mặt - HĐ ${inv.code}`,
+                    status: 0,
+                    statusValue: 'Đã thanh toán',
+                    createdBy: options.userId,
+                    usedForFinancialReporting: 1,
+                    customerDebtSnapshot: null,
+                  },
+                });
+                await tx.invoicePayment.create({
+                  data: {
+                    code: cashPaymentCode,
+                    invoiceId: inv.id,
+                    amount: h.cashAmount,
+                    paymentMethod: 'cash',
+                    paymentDate: purchaseDate,
+                    status: 1,
+                    statusValue: 'Đã thanh toán',
+                    description: 'Import - Tiền mặt',
+                    cashFlowId: cashFlow.id,
+                  },
+                });
+              }
+
+              // Tạo CashFlow + Payment (chuyển khoản)
+              if (h.transferAmount > 0) {
+                const transferPaymentCode = `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`;
+                const cashFlow = await tx.cashFlow.create({
+                  data: {
+                    code: transferPaymentCode,
+                    branchId: invoiceBranchId || 1,
+                    cashFlowGroupId: 3,
+                    isReceipt: true,
+                    amount: h.transferAmount,
+                    transDate: purchaseDate,
+                    method: 'transfer',
+                    accountId: null,
+                    partnerType: customer ? 'C' : 'O',
+                    partnerId: customer?.id || null,
+                    partnerName: customer?.name || h.customerName || null,
+                    contactNumber: h.customerPhone || null,
+                    address: h.customerAddress || null,
+                    description: `Import - Chuyển khoản - HĐ ${inv.code}`,
+                    status: 0,
+                    statusValue: 'Đã thanh toán',
+                    createdBy: options.userId,
+                    usedForFinancialReporting: 1,
+                    customerDebtSnapshot: null,
+                  },
+                });
+                await tx.invoicePayment.create({
+                  data: {
+                    code: transferPaymentCode,
+                    invoiceId: inv.id,
+                    amount: h.transferAmount,
+                    paymentMethod: 'transfer',
+                    paymentDate: purchaseDate,
+                    status: 1,
+                    statusValue: 'Đã thanh toán',
+                    description: 'Import - Chuyển khoản',
+                    cashFlowId: cashFlow.id,
+                  },
+                });
+              }
+
+              batchImported.push(inv);
+            } catch (error) {
+              failed.push({
+                invoiceCode:
+                  group.header.invoiceCode || `Row ${group.header.rowNumber}`,
+                error: error.message,
+              });
+            }
+          }
+
+          return batchImported;
+        },
+        { timeout: 120000 }, // 2 phút per batch
+      );
+
+      imported.push(...batchResults);
     }
 
     return {

@@ -7,7 +7,7 @@ import { ImportService } from './import.service';
   imports: [
     MulterModule.register({
       limits: {
-        fileSize: 20 * 1024 * 1024,
+        fileSize: 100 * 1024 * 1024,
       },
     }),
   ],

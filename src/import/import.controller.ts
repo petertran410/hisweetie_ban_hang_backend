@@ -154,7 +154,11 @@ export class ImportController {
 
   @Post('invoices')
   @RequirePermissions('invoices:create')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor('file', {
+      limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+    }),
+  )
   @ApiOperation({ summary: 'Import invoices from Excel' })
   async importInvoices(
     @UploadedFile() file: Express.Multer.File,
