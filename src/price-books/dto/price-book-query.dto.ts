@@ -86,6 +86,16 @@ export class ProductsWithPricesQueryDto {
   @Type(() => Number)
   @IsNumber()
   branchId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  page?: number = 1;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  limit?: number = 15;
 }
 
 export class ApplicablePriceBooksDto {

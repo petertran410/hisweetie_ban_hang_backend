@@ -63,6 +63,8 @@ export class PriceBooksController {
       query.search,
       query.categoryIds,
       query.branchId,
+      query.page,
+      query.limit,
     );
   }
 

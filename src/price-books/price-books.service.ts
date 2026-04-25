@@ -676,6 +676,8 @@ export class PriceBooksService {
     searchQuery?: string,
     categoryIds?: string,
     branchId?: number,
+    page: number = 1,
+    limit: number = 15,
   ) {
     const where: any = {
       isActive: true,
@@ -699,62 +701,46 @@ export class PriceBooksService {
       }
     }
 
-    const products = await this.prisma.product.findMany({
-      where,
-      select: {
-        id: true,
-        code: true,
-        name: true,
-        basePrice: true,
-        unit: true,
-        inventories: branchId
-          ? {
-              where: { branchId },
-              select: {
-                onHand: true,
-                cost: true,
-                branchId: true,
-                branchName: true,
-              },
-            }
-          : {
-              select: {
-                onHand: true,
-                cost: true,
-                branchId: true,
-                branchName: true,
-              },
+    const skip = (page - 1) * limit;
+
+    const [products, total] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        skip,
+        take: limit,
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          basePrice: true,
+          unit: true,
+          inventories: branchId
+            ? {
+                where: { branchId },
+                select: { onHand: true, cost: true, branchId: true },
+              }
+            : { select: { onHand: true, cost: true, branchId: true } },
+          priceBookDetails: {
+            where: {
+              priceBookId: { in: priceBookIds },
+              isActive: true,
             },
-      },
-      orderBy: { code: 'asc' },
-    });
+            select: {
+              priceBookId: true,
+              price: true,
+            },
+          },
+        },
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.product.count({ where }),
+    ]);
 
-    const priceBookDetails = await this.prisma.priceBookDetail.findMany({
-      where: {
-        priceBookId: { in: priceBookIds },
-        isActive: true,
-        productId: { in: products.map((p) => p.id) },
-      },
-      select: {
-        priceBookId: true,
-        productId: true,
-        price: true,
-      },
-    });
-
-    const result = products.map((product) => {
-      const priceMap: Record<number, number> = {};
-
-      priceBookDetails
-        .filter((detail) => detail.productId === product.id)
-        .forEach((detail) => {
-          priceMap[detail.priceBookId] = Number(detail.price);
-        });
-
-      const totalStock = product.inventories.reduce(
-        (sum, inv) => sum + Number(inv.onHand),
-        0,
-      );
+    const data = products.map((product) => {
+      const prices: Record<number, number> = {};
+      product.priceBookDetails.forEach((detail) => {
+        prices[detail.priceBookId] = Number(detail.price);
+      });
 
       return {
         id: product.id,
@@ -762,12 +748,15 @@ export class PriceBooksService {
         name: product.name,
         basePrice: Number(product.basePrice),
         unit: product.unit,
-        prices: priceMap,
-        stockQuantity: totalStock,
+        prices,
+        stockQuantity: product.inventories.reduce(
+          (sum, inv) => sum + Number(inv.onHand),
+          0,
+        ),
         inventories: product.inventories,
       };
     });
 
-    return result;
+    return { data, total, page, limit };
   }
 }
