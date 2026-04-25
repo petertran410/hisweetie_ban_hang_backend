@@ -840,4 +840,258 @@ export class ImportService {
     const buffer = await workbook.xlsx.writeBuffer();
     return buffer;
   }
+
+  async importPriceBooks(file: Express.Multer.File) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(file.buffer as any);
+
+    const worksheet = workbook.worksheets[0];
+    if (!worksheet) {
+      throw new BadRequestException('Excel file is empty');
+    }
+
+    // --- 1. Parse header row ---
+    const headerRow = worksheet.getRow(1);
+    const priceBookColumns: { colIndex: number; name: string }[] = [];
+    let codeCol = 0;
+
+    headerRow.eachCell((cell, colNumber) => {
+      const header = cell.value?.toString()?.trim() || '';
+      const headerLower = header.toLowerCase();
+
+      if (headerLower === 'mã hàng' || headerLower === 'ma hang') {
+        codeCol = colNumber;
+      } else if (
+        headerLower !== 'tên hàng' &&
+        headerLower !== 'ten hang' &&
+        header !== ''
+      ) {
+        // Từ cột 3 trở đi = tên bảng giá
+        priceBookColumns.push({ colIndex: colNumber, name: header });
+      }
+    });
+
+    if (codeCol === 0) {
+      throw new BadRequestException(
+        'Không tìm thấy cột "Mã hàng" trong file Excel',
+      );
+    }
+
+    if (priceBookColumns.length === 0) {
+      throw new BadRequestException(
+        'Không tìm thấy cột bảng giá nào trong file Excel',
+      );
+    }
+
+    // --- 2. Resolve price books: tìm hoặc tạo mới ---
+    const priceBookMap = new Map<
+      number,
+      { priceBookId: number | null; name: string; isBasePrice: boolean }
+    >();
+
+    for (const col of priceBookColumns) {
+      const nameLower = col.name.toLowerCase().trim();
+      const isBasePrice =
+        nameLower === 'bảng giá chung' || nameLower === 'bang gia chung';
+
+      if (isBasePrice) {
+        priceBookMap.set(col.colIndex, {
+          priceBookId: null,
+          name: col.name,
+          isBasePrice: true,
+        });
+      } else {
+        // Tìm bảng giá theo tên (case-insensitive)
+        let priceBook = await this.prisma.priceBook.findFirst({
+          where: { name: { equals: col.name, mode: 'insensitive' } },
+        });
+
+        // Nếu chưa tồn tại → tạo mới
+        if (!priceBook) {
+          priceBook = await this.prisma.priceBook.create({
+            data: {
+              name: col.name,
+              isActive: true,
+              isGlobal: true,
+              allowNonListedProducts: true,
+              warnNonListedProducts: false,
+            },
+          });
+        }
+
+        priceBookMap.set(col.colIndex, {
+          priceBookId: priceBook.id,
+          name: col.name,
+          isBasePrice: false,
+        });
+      }
+    }
+
+    // --- 3. Process rows ---
+    const errors: { row: number; code: string; error: string }[] = [];
+    let updatedCount = 0;
+    let createdCount = 0;
+    let totalRows = 0;
+
+    const rows: {
+      rowNumber: number;
+      code: string;
+      prices: Map<number, number>;
+    }[] = [];
+
+    worksheet.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return; // skip header
+      totalRows++;
+
+      const codeValue = row.getCell(codeCol).value?.toString()?.trim() || '';
+      if (!codeValue) {
+        errors.push({ row: rowNumber, code: '', error: 'Thiếu mã hàng' });
+        return;
+      }
+
+      const prices = new Map<number, number>();
+      for (const col of priceBookColumns) {
+        const cellValue = row.getCell(col.colIndex).value;
+        const price = this.parseNumber(cellValue);
+        // Set giá = 0 nếu trống/0
+        prices.set(col.colIndex, price);
+      }
+
+      rows.push({ rowNumber, code: codeValue, prices });
+    });
+
+    // --- 4. Batch lookup products ---
+    const allCodes = rows.map((r) => r.code);
+    const products = await this.prisma.product.findMany({
+      where: { code: { in: allCodes } },
+      select: { id: true, code: true },
+    });
+    const productMap = new Map(products.map((p) => [p.code, p.id]));
+
+    // --- 5. Process each row ---
+    for (const row of rows) {
+      const productId = productMap.get(row.code);
+      if (!productId) {
+        errors.push({
+          row: row.rowNumber,
+          code: row.code,
+          error: `Không tìm thấy sản phẩm với mã "${row.code}"`,
+        });
+        continue;
+      }
+
+      for (const [colIndex, price] of row.prices) {
+        const pbInfo = priceBookMap.get(colIndex);
+        if (!pbInfo) continue;
+
+        try {
+          if (pbInfo.isBasePrice) {
+            // Cập nhật Product.basePrice
+            await this.prisma.product.update({
+              where: { id: productId },
+              data: { basePrice: price },
+            });
+            updatedCount++;
+          } else {
+            // Upsert PriceBookDetail
+            const existing = await this.prisma.priceBookDetail.findUnique({
+              where: {
+                priceBookId_productId: {
+                  priceBookId: pbInfo.priceBookId!,
+                  productId,
+                },
+              },
+            });
+
+            if (existing) {
+              await this.prisma.priceBookDetail.update({
+                where: { id: existing.id },
+                data: { price },
+              });
+              updatedCount++;
+            } else {
+              await this.prisma.priceBookDetail.create({
+                data: {
+                  priceBookId: pbInfo.priceBookId!,
+                  productId,
+                  price,
+                  isActive: true,
+                },
+              });
+              createdCount++;
+            }
+          }
+        } catch (error: any) {
+          errors.push({
+            row: row.rowNumber,
+            code: row.code,
+            error: `Lỗi cập nhật "${pbInfo.name}": ${error.message}`,
+          });
+        }
+      }
+    }
+
+    return {
+      total: totalRows,
+      created: createdCount,
+      updated: updatedCount,
+      failed: errors.length,
+      priceBookColumns: priceBookColumns.map((c) => c.name),
+      errors,
+    };
+  }
+
+  // ========== TEMPLATE PRICE BOOKS ==========
+
+  async generatePriceBooksTemplate() {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('BangGia');
+
+    // Lấy danh sách bảng giá đang active
+    const priceBooks = await this.prisma.priceBook.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true },
+      orderBy: { id: 'asc' },
+    });
+
+    // Build columns: Mã hàng, Tên hàng, Bảng giá chung, ...các bảng giá
+    const columns: { header: string; key: string; width: number }[] = [
+      { header: 'Mã hàng', key: 'code', width: 20 },
+      { header: 'Tên hàng', key: 'name', width: 30 },
+      { header: 'Bảng giá chung', key: 'basePrice', width: 18 },
+    ];
+
+    for (const pb of priceBooks) {
+      columns.push({
+        header: pb.name,
+        key: `pb_${pb.id}`,
+        width: 18,
+      });
+    }
+
+    worksheet.columns = columns;
+
+    // Style header row
+    const headerRowExcel = worksheet.getRow(1);
+    headerRowExcel.font = { bold: true };
+    headerRowExcel.alignment = { horizontal: 'center' };
+
+    // Sample rows
+    worksheet.addRow({
+      code: 'SP001',
+      name: 'Sản phẩm mẫu 1',
+      basePrice: 100000,
+      ...Object.fromEntries(priceBooks.map((pb) => [`pb_${pb.id}`, 95000])),
+    });
+
+    worksheet.addRow({
+      code: 'SP002',
+      name: 'Sản phẩm mẫu 2',
+      basePrice: 200000,
+      ...Object.fromEntries(priceBooks.map((pb) => [`pb_${pb.id}`, 190000])),
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer;
+  }
 }

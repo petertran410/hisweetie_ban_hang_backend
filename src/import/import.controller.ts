@@ -112,4 +112,42 @@ export class ImportController {
 
     res.send(buffer);
   }
+
+  @Post('price-books')
+  @RequirePermissions('products:create')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Import price books from Excel' })
+  async importPriceBooks(@UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    if (
+      ![
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+      ].includes(file.mimetype)
+    ) {
+      throw new BadRequestException('Only Excel files are allowed');
+    }
+
+    return this.importService.importPriceBooks(file);
+  }
+
+  @Get('templates/price-books')
+  @ApiOperation({ summary: 'Download price books import template' })
+  async downloadPriceBooksTemplate(@Res() res: Response) {
+    const buffer = await this.importService.generatePriceBooksTemplate();
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=price_books_template.xlsx',
+    );
+
+    res.send(buffer);
+  }
 }
