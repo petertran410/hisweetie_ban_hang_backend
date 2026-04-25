@@ -1157,6 +1157,7 @@ export class ImportService {
       excelTotalAmount: number;
       excelGrandTotal: number;
       customerPaid: number;
+      branchName: string;
     }
 
     const rawRows: RawRow[] = [];
@@ -1203,6 +1204,7 @@ export class ImportService {
         excelTotalAmount: this.getCellNumber(row, colMap['totalAmount']) || 0,
         excelGrandTotal: this.getCellNumber(row, colMap['grandTotal']) || 0,
         customerPaid: this.getCellNumber(row, colMap['customerPaid']) || 0,
+        branchName: this.getCellString(row, colMap['branchName']),
       });
     }
 
@@ -1290,6 +1292,21 @@ export class ImportService {
         : [];
     const pbMap = new Map(priceBooks.map((p) => [p.name, p]));
 
+    const allBranchNames = [
+      ...new Set(groups.map((g) => g.header.branchName).filter(Boolean)),
+    ];
+    const branchesFromExcel = allBranchNames.length
+      ? await this.prisma.branch.findMany({
+          where: {
+            name: { in: allBranchNames, mode: 'insensitive' },
+          },
+          select: { id: true, name: true },
+        })
+      : [];
+    const branchNameMap = new Map(
+      branchesFromExcel.map((b) => [b.name.toLowerCase(), b]),
+    );
+
     // --- 5. Tạo hóa đơn ---
     const imported: any[] = [];
     const failed: { invoiceCode: string; error: string }[] = [];
@@ -1297,6 +1314,30 @@ export class ImportService {
     for (const group of groups) {
       try {
         const h = group.header;
+
+        // Lọc mã HĐ: skip mã có chữ sau "HD" (HDSPE, HDTTS, HDIP, v.v.)
+        if (h.invoiceCode && /^HD[A-Za-z]/i.test(h.invoiceCode)) {
+          failed.push({
+            invoiceCode: h.invoiceCode,
+            error: `Mã hóa đơn "${h.invoiceCode}" không được phép import (chứa ký tự chữ sau HD)`,
+          });
+          continue;
+        }
+
+        // Resolve branchId từ Excel, fallback options.branchId
+        const excelBranch = h.branchName
+          ? branchNameMap.get(h.branchName.toLowerCase())
+          : null;
+        const invoiceBranchId = excelBranch?.id || options.branchId || null;
+
+        // Validate: phải có chi nhánh
+        if (!invoiceBranchId) {
+          failed.push({
+            invoiceCode: h.invoiceCode || `Row ${h.rowNumber}`,
+            error: `Không tìm thấy chi nhánh "${h.branchName || '(trống)'}" trong hệ thống`,
+          });
+          continue;
+        }
 
         // Validate product codes
         const missingProducts = group.items
@@ -1417,7 +1458,7 @@ export class ImportService {
               code,
               customerId: customer?.id || null,
               parentCustomerId: customer?.id || null,
-              branchId: options.branchId || null,
+              branchId: invoiceBranchId,
               soldById: seller?.id || null,
               priceBookId: priceBook?.id || null,
               priceBookName: priceBook?.name || null,
@@ -1460,7 +1501,7 @@ export class ImportService {
             const cashFlow = await tx.cashFlow.create({
               data: {
                 code: cashPaymentCode,
-                branchId: options.branchId || 1,
+                branchId: invoiceBranchId || 1,
                 cashFlowGroupId: 3,
                 isReceipt: true,
                 amount: h.cashAmount,
@@ -1502,7 +1543,7 @@ export class ImportService {
             const cashFlow = await tx.cashFlow.create({
               data: {
                 code: transferPaymentCode,
-                branchId: options.branchId || 1,
+                branchId: invoiceBranchId || 1,
                 cashFlowGroupId: 3,
                 isReceipt: true,
                 amount: h.transferAmount,
@@ -1569,7 +1610,9 @@ export class ImportService {
       if (!raw) return;
       const h = raw.toLowerCase();
 
-      if (h.includes('mã hóa đơn') || h.includes('ma hoa don'))
+      if (h === 'chi nhánh' || h === 'chi nhanh')
+        colMap['branchName'] = colNumber;
+      else if (h.includes('mã hóa đơn') || h.includes('ma hoa don'))
         colMap['invoiceCode'] = colNumber;
       else if (
         h === 'thời gian' ||
@@ -1678,6 +1721,7 @@ export class ImportService {
     const worksheet = workbook.addWorksheet('InvoiceTemplate');
 
     worksheet.columns = [
+      { header: 'Chi nhánh', key: 'invoiceBranchId', width: 18 },
       { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
       { header: 'Thời gian', key: 'purchaseDate', width: 18 },
       { header: 'Người bán', key: 'sellerName', width: 15 },
