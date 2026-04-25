@@ -1957,14 +1957,47 @@ export class ImportService {
       description: 'Hóa đơn mẫu 1',
     });
 
-    // Dòng 2 cùng HĐ — chỉ điền sản phẩm
     worksheet.addRow({
+      branchName: 'Kho Sài Gòn',
+      invoiceCode: 'HD000001',
+      purchaseDate: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      orderCode: '',
+      sellerName: 'Nguyễn Văn A',
+      creatorName: 'Nguyễn Văn A',
+      customerCode: 'KH000001',
+      customerName: 'Anh Minh',
+      customerPhone: '0901234567',
+      customerAddress: '123 Nguyễn Huệ, Q.1',
+      locationName: 'TP.HCM - Quận 1',
+      wardName: 'Phường Bến Nghé',
+      receiverName: 'Anh Minh',
+      receiverPhone: '0901234567',
+      receiverAddress: '123 Nguyễn Huệ, Q.1',
+      receiverLocation: 'TP.HCM - Quận 1',
+      receiverWard: 'Phường Bến Nghé',
+      weight: 5000,
+      deliveryNote: 'Giao giờ hành chính',
+      priceBookName: 'Bảng giá chung',
+      // --- Chỉ khác phần sản phẩm ---
       productCode: 'SP000002',
       quantity: 1,
       price: 150000,
       discount: 0,
       discountRatio: 0,
       lineTotal: 150000,
+      productNote: 'Hàng khuyến mãi',
+      // --- Lặp lại tổng HĐ ---
+      invoiceDiscount: 0,
+      invoiceDiscountRatio: 0,
+      totalAmount: 650000,
+      grandTotal: 650000,
+      customerPaid: 650000,
+      cashAmount: 650000,
+      transferAmount: 0,
+      codAmount: 0,
+      description: 'Hóa đơn mẫu 1',
     });
 
     // === Sample: HĐ 2 — 1 sản phẩm, có giảm giá, trả chuyển khoản ===
