@@ -121,6 +121,10 @@ export class ProductsService {
       branchIds,
       type,
       types,
+      parentName,
+      middleName,
+      childName,
+      stockStatus,
     } = query;
     const skip = (page - 1) * limit;
 
@@ -141,12 +145,18 @@ export class ProductsService {
 
     if (isActive !== undefined) where.isActive = isActive;
 
-    if (type !== undefined) {
-      where.type = type;
-    }
+    if (type !== undefined) where.type = type;
 
-    if (types && types.length > 0) {
-      where.type = { in: types };
+    if (types && types.length > 0) where.type = { in: types };
+
+    if (parentName) where.parentName = parentName;
+    if (middleName) where.middleName = middleName;
+    if (childName) where.childName = childName;
+
+    if (stockStatus === 'instock') {
+      where.inventories = { some: { onHand: { gt: 0 } } };
+    } else if (stockStatus === 'outstock') {
+      where.inventories = { every: { onHand: { lte: 0 } } };
     }
 
     let inventoriesInclude: any = { include: { branch: true } };
@@ -157,7 +167,7 @@ export class ProductsService {
       };
     } else if (branchId) {
       inventoriesInclude = {
-        where: { branchId: branchId },
+        where: { branchId },
         include: { branch: true },
       };
     }
@@ -175,10 +185,7 @@ export class ProductsService {
           comboComponents: {
             include: {
               componentProduct: {
-                include: {
-                  images: true,
-                  inventories: true,
-                },
+                include: { images: true, inventories: true },
               },
             },
           },

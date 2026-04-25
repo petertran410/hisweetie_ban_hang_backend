@@ -452,4 +452,20 @@ export class ProductQueryDto {
     return Array.isArray(value) ? value.map(Number) : [Number(value)];
   })
   types?: number[];
+
+  @IsOptional()
+  @IsString()
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
+  middleName?: string;
+
+  @IsOptional()
+  @IsString()
+  childName?: string;
+
+  @IsOptional()
+  @IsString()
+  stockStatus?: string;
 }
