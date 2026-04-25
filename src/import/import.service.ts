@@ -1152,6 +1152,11 @@ export class ImportService {
       transferAmount: number;
       description: string;
       rowNumber: number;
+      // --- Giá trị tính sẵn từ Excel ---
+      lineTotal: number;
+      excelTotalAmount: number;
+      excelGrandTotal: number;
+      customerPaid: number;
     }
 
     const rawRows: RawRow[] = [];
@@ -1193,6 +1198,11 @@ export class ImportService {
         transferAmount: this.getCellNumber(row, colMap['transferAmount']) || 0,
         description: this.getCellString(row, colMap['description']),
         rowNumber: r,
+        // --- Giá trị tính sẵn từ Excel ---
+        lineTotal: this.getCellNumber(row, colMap['lineTotal']) || 0,
+        excelTotalAmount: this.getCellNumber(row, colMap['totalAmount']) || 0,
+        excelGrandTotal: this.getCellNumber(row, colMap['grandTotal']) || 0,
+        customerPaid: this.getCellNumber(row, colMap['customerPaid']) || 0,
       });
     }
 
@@ -1300,14 +1310,19 @@ export class ImportService {
           continue;
         }
 
-        // Build invoice details
+        // Build invoice details — ưu tiên dùng "Thành tiền" từ Excel
         const invoiceItems = group.items.map((item) => {
           const product = productMap.get(item.productCode)!;
           const price = item.price || Number(product.basePrice);
           const quantity = item.quantity;
           const itemDiscount =
-            item.discount || (price * quantity * item.discountRatio) / 100;
-          const totalPrice = Math.max(0, quantity * price - itemDiscount);
+            item.discount || (price * item.discountRatio) / 100;
+
+          // Ưu tiên "Thành tiền" từ Excel, fallback tính đúng per-unit discount
+          const totalPrice =
+            item.lineTotal > 0
+              ? item.lineTotal
+              : Math.max(0, quantity * (price - itemDiscount));
 
           return {
             productId: product.id,
@@ -1322,12 +1337,25 @@ export class ImportService {
           };
         });
 
-        // Tính toán tổng hóa đơn
-        const totalAmount = invoiceItems.reduce((s, i) => s + i.totalPrice, 0);
+        // Tính toán tổng hóa đơn — ưu tiên giá trị từ Excel
+        const calcTotalAmount = invoiceItems.reduce(
+          (s, i) => s + i.totalPrice,
+          0,
+        );
+        const totalAmount =
+          h.excelTotalAmount > 0 ? h.excelTotalAmount : calcTotalAmount;
+
         const invoiceDiscountAmount =
           h.invoiceDiscount || (totalAmount * h.invoiceDiscountRatio) / 100;
-        const grandTotal = Math.max(0, totalAmount - invoiceDiscountAmount);
-        const paidAmount = h.cashAmount + h.transferAmount;
+
+        const grandTotal =
+          h.excelGrandTotal > 0
+            ? h.excelGrandTotal
+            : Math.max(0, totalAmount - invoiceDiscountAmount);
+
+        const paidAmount =
+          h.customerPaid > 0 ? h.customerPaid : h.cashAmount + h.transferAmount;
+
         const debtAmount = grandTotal - paidAmount;
 
         // Resolve relations
@@ -1382,7 +1410,7 @@ export class ImportService {
           continue;
         }
 
-        // Tạo invoice + details + payments trong 1 transaction
+        // Tạo invoice + details + payments + cashflows trong 1 transaction
         const invoice = await this.prisma.$transaction(async (tx) => {
           const inv = await tx.invoice.create({
             data: {
@@ -1425,11 +1453,37 @@ export class ImportService {
             include: { details: true },
           });
 
-          // Tạo payments (thuộc về hóa đơn)
+          // Tạo payments + CashFlow
           if (h.cashAmount > 0) {
+            const cashPaymentCode = `TT${inv.code}-1`;
+
+            const cashFlow = await tx.cashFlow.create({
+              data: {
+                code: cashPaymentCode,
+                branchId: options.branchId || 1,
+                cashFlowGroupId: 3,
+                isReceipt: true,
+                amount: h.cashAmount,
+                transDate: purchaseDate,
+                method: 'cash',
+                accountId: null,
+                partnerType: customer ? 'C' : 'O',
+                partnerId: customer?.id || null,
+                partnerName: customer?.name || h.customerName || null,
+                contactNumber: h.customerPhone || null,
+                address: h.customerAddress || null,
+                description: `Import - Tiền mặt - HĐ ${inv.code}`,
+                status: 0,
+                statusValue: 'Đã thanh toán',
+                createdBy: options.userId,
+                usedForFinancialReporting: 1,
+                customerDebtSnapshot: null,
+              },
+            });
+
             await tx.invoicePayment.create({
               data: {
-                code: `TT${inv.code}-1`,
+                code: cashPaymentCode,
                 invoiceId: inv.id,
                 amount: h.cashAmount,
                 paymentMethod: 'cash',
@@ -1437,14 +1491,41 @@ export class ImportService {
                 status: 1,
                 statusValue: 'Đã thanh toán',
                 description: 'Import - Tiền mặt',
+                cashFlowId: cashFlow.id,
               },
             });
           }
 
           if (h.transferAmount > 0) {
+            const transferPaymentCode = `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`;
+
+            const cashFlow = await tx.cashFlow.create({
+              data: {
+                code: transferPaymentCode,
+                branchId: options.branchId || 1,
+                cashFlowGroupId: 3,
+                isReceipt: true,
+                amount: h.transferAmount,
+                transDate: purchaseDate,
+                method: 'transfer',
+                accountId: null,
+                partnerType: customer ? 'C' : 'O',
+                partnerId: customer?.id || null,
+                partnerName: customer?.name || h.customerName || null,
+                contactNumber: h.customerPhone || null,
+                address: h.customerAddress || null,
+                description: `Import - Chuyển khoản - HĐ ${inv.code}`,
+                status: 0,
+                statusValue: 'Đã thanh toán',
+                createdBy: options.userId,
+                usedForFinancialReporting: 1,
+                customerDebtSnapshot: null,
+              },
+            });
+
             await tx.invoicePayment.create({
               data: {
-                code: `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`,
+                code: transferPaymentCode,
                 invoiceId: inv.id,
                 amount: h.transferAmount,
                 paymentMethod: 'transfer',
@@ -1452,6 +1533,7 @@ export class ImportService {
                 status: 1,
                 statusValue: 'Đã thanh toán',
                 description: 'Import - Chuyển khoản',
+                cashFlowId: cashFlow.id,
               },
             });
           }
@@ -1489,7 +1571,15 @@ export class ImportService {
 
       if (h.includes('mã hóa đơn') || h.includes('ma hoa don'))
         colMap['invoiceCode'] = colNumber;
-      else if (h.includes('thời gian') || h.includes('thoi gian'))
+      else if (
+        h === 'thời gian' ||
+        h === 'thoi gian' ||
+        (h.includes('thời gian') &&
+          !h.includes('tạo') &&
+          !h.includes('cập nhật') &&
+          !h.includes('tao') &&
+          !h.includes('cap nhat'))
+      )
         colMap['purchaseDate'] = colNumber;
       else if (h.includes('người bán') || h.includes('nguoi ban'))
         colMap['sellerName'] = colNumber;
@@ -1497,15 +1587,19 @@ export class ImportService {
         colMap['customerCode'] = colNumber;
       else if (h.includes('tên khách') || h.includes('ten khach'))
         colMap['customerName'] = colNumber;
-      else if (h.includes('điện thoại') || h.includes('dien thoai'))
+      else if (
+        (h.includes('điện thoại') || h.includes('dien thoai')) &&
+        !h.includes('người nhận') &&
+        !h.includes('nguoi nhan')
+      )
         colMap['customerPhone'] = colNumber;
       else if (h.includes('địa chỉ') && h.includes('khách'))
         colMap['customerAddress'] = colNumber;
       else if (h.includes('khu vực') && h.includes('khách'))
         colMap['locationName'] = colNumber;
       else if (
-        h.includes('phường') ||
-        (h.includes('xã') && h.includes('khách'))
+        (h.includes('phường') || h.includes('xã')) &&
+        h.includes('khách')
       )
         colMap['wardName'] = colNumber;
       else if (h.includes('bảng giá') || h.includes('bang gia'))
@@ -1536,8 +1630,25 @@ export class ImportService {
         colMap['cashAmount'] = colNumber;
       else if (h.includes('chuyển khoản') || h.includes('chuyen khoan'))
         colMap['transferAmount'] = colNumber;
-      else if (h.includes('ghi chú') || h.includes('ghi chu'))
+      else if (
+        (h.includes('ghi chú') || h.includes('ghi chu')) &&
+        !h.includes('hàng hóa') &&
+        !h.includes('hang hoa') &&
+        !h.includes('giao hàng') &&
+        !h.includes('giao hang') &&
+        !h.includes('trạng thái') &&
+        !h.includes('trang thai')
+      )
         colMap['description'] = colNumber;
+      // --- Cột mới: giá trị tính sẵn từ Excel ---
+      else if (h.includes('thành tiền') || h.includes('thanh tien'))
+        colMap['lineTotal'] = colNumber;
+      else if (h.includes('tổng tiền hàng') || h.includes('tong tien hang'))
+        colMap['totalAmount'] = colNumber;
+      else if (h.includes('khách cần trả') || h.includes('khach can tra'))
+        colMap['grandTotal'] = colNumber;
+      else if (h.includes('khách đã trả') || h.includes('khach da tra'))
+        colMap['customerPaid'] = colNumber;
     });
   }
 
