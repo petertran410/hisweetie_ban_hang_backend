@@ -1157,6 +1157,19 @@ export class ImportService {
       excelTotalAmount: number;
       excelGrandTotal: number;
       customerPaid: number;
+      createdAtExcel: any;
+      updatedAtExcel: any;
+      orderCode: string;
+      creatorName: string;
+      receiverName: string;
+      receiverPhone: string;
+      receiverAddress: string;
+      receiverLocation: string;
+      receiverWard: string;
+      weight: number;
+      deliveryNote: string;
+      productNote: string;
+      codAmount: number;
       branchName: string;
     }
 
@@ -1204,6 +1217,19 @@ export class ImportService {
         excelTotalAmount: this.getCellNumber(row, colMap['totalAmount']) || 0,
         excelGrandTotal: this.getCellNumber(row, colMap['grandTotal']) || 0,
         customerPaid: this.getCellNumber(row, colMap['customerPaid']) || 0,
+        createdAtExcel: this.getCellValue(row, colMap['createdAtExcel']),
+        updatedAtExcel: this.getCellValue(row, colMap['updatedAtExcel']),
+        orderCode: this.getCellString(row, colMap['orderCode']),
+        creatorName: this.getCellString(row, colMap['creatorName']),
+        receiverName: this.getCellString(row, colMap['receiverName']),
+        receiverPhone: this.getCellString(row, colMap['receiverPhone']),
+        receiverAddress: this.getCellString(row, colMap['receiverAddress']),
+        receiverLocation: this.getCellString(row, colMap['receiverLocation']),
+        receiverWard: this.getCellString(row, colMap['receiverWard']),
+        weight: this.getCellNumber(row, colMap['weight']) || 0,
+        deliveryNote: this.getCellString(row, colMap['deliveryNote']),
+        productNote: this.getCellString(row, colMap['productNote']),
+        codAmount: this.getCellNumber(row, colMap['codAmount']) || 0,
         branchName: this.getCellString(row, colMap['branchName']),
       });
     }
@@ -1280,6 +1306,34 @@ export class ImportService {
       sellerMap.set(s.email.toLowerCase(), s);
     }
 
+    // --- Lookup orders theo mã ---
+    const allOrderCodes = [
+      ...new Set(groups.map((g) => g.header.orderCode).filter(Boolean)),
+    ];
+    const orders = allOrderCodes.length
+      ? await this.prisma.order.findMany({
+          where: { code: { in: allOrderCodes } },
+          select: { id: true, code: true },
+        })
+      : [];
+    const orderCodeMap = new Map(orders.map((o) => [o.code, o]));
+
+    // --- Lookup creators theo tên ---
+    const allCreatorNames = [
+      ...new Set(groups.map((g) => g.header.creatorName).filter(Boolean)),
+    ];
+    const creators = allCreatorNames.length
+      ? await this.prisma.user.findMany({
+          where: {
+            name: { in: allCreatorNames, mode: 'insensitive' },
+          },
+          select: { id: true, name: true },
+        })
+      : [];
+    const creatorNameMap = new Map(
+      creators.map((u) => [u.name.toLowerCase(), u]),
+    );
+
     const allPBNames = [
       ...new Set(groups.map((g) => g.header.priceBookName).filter(Boolean)),
     ];
@@ -1291,6 +1345,8 @@ export class ImportService {
           })
         : [];
     const pbMap = new Map(priceBooks.map((p) => [p.name, p]));
+
+    // --- Lookup branches theo tên ---
 
     const allBranchNames = [
       ...new Set(groups.map((g) => g.header.branchName).filter(Boolean)),
@@ -1375,6 +1431,7 @@ export class ImportService {
             discountRatio: item.discountRatio,
             totalPrice,
             conditionType: 'normal' as const,
+            note: item.productNote || null,
           };
         });
 
@@ -1427,6 +1484,35 @@ export class ImportService {
           }
         }
 
+        // Resolve orderId từ mã đặt hàng
+        const order = h.orderCode ? orderCodeMap.get(h.orderCode) : null;
+
+        // Resolve createdBy từ "Người tạo", fallback options.userId
+        const creator = h.creatorName
+          ? creatorNameMap.get(h.creatorName.toLowerCase())
+          : null;
+        const createdByUserId = creator?.id || options.userId;
+
+        // Parse createdAt / updatedAt từ Excel
+        const parseExcelDate = (val: any): Date | null => {
+          if (!val) return null;
+          if (val instanceof Date) return val;
+          if (typeof val === 'number') {
+            const excelEpoch = new Date(1899, 11, 30);
+            return new Date(excelEpoch.getTime() + val * 86400000);
+          }
+          const parsed = new Date(val);
+          return isNaN(parsed.getTime()) ? null : parsed;
+        };
+
+        const importCreatedAt =
+          parseExcelDate(h.createdAtExcel) || purchaseDate;
+        const importUpdatedAt =
+          parseExcelDate(h.updatedAtExcel) || importCreatedAt;
+
+        // COD
+        const usingCod = h.codAmount > 0;
+
         // Status
         const status =
           debtAmount <= 0
@@ -1456,6 +1542,7 @@ export class ImportService {
           const inv = await tx.invoice.create({
             data: {
               code,
+              orderId: order?.id || null, // ← SỬA: thêm orderId
               customerId: customer?.id || null,
               parentCustomerId: customer?.id || null,
               branchId: invoiceBranchId,
@@ -1472,9 +1559,11 @@ export class ImportService {
               customerDebtSnapshot: null,
               status,
               statusValue: getStatusLabel(status),
-              usingCod: false,
+              usingCod, // ← SỬA: thay false bằng biến usingCod
               description: h.description || null,
-              createdBy: options.userId,
+              createdBy: createdByUserId, // ← SỬA: thay options.userId
+              createdAt: importCreatedAt, // ← THÊM
+              updatedAt: importUpdatedAt, // ← THÊM
               details: {
                 createMany: {
                   data: invoiceItems.map((item) => ({
@@ -1487,9 +1576,26 @@ export class ImportService {
                     discountRatio: item.discountRatio,
                     totalPrice: item.totalPrice,
                     conditionType: item.conditionType,
+                    note: item.note, // ← THÊM
                   })),
                 },
               },
+              // ← THÊM: Tạo delivery nếu có người nhận
+              ...(h.receiverName && {
+                delivery: {
+                  create: {
+                    receiver: h.receiverName,
+                    contactNumber: h.receiverPhone || '',
+                    address: h.receiverAddress || '',
+                    locationName: h.receiverLocation || null,
+                    wardName: h.receiverWard || null,
+                    weight: h.weight || null,
+                    noteForDriver: h.deliveryNote || null,
+                    status: 1,
+                    statusValue: 'Đã giao',
+                  },
+                },
+              }),
             },
             include: { details: true },
           });
@@ -1692,6 +1798,56 @@ export class ImportService {
         colMap['grandTotal'] = colNumber;
       else if (h.includes('khách đã trả') || h.includes('khach da tra'))
         colMap['customerPaid'] = colNumber;
+      else if (
+        h === 'thời gian tạo' ||
+        h === 'thoi gian tao' ||
+        (h.includes('thời gian') && h.includes('tạo'))
+      )
+        colMap['createdAtExcel'] = colNumber;
+      else if (
+        h === 'thời gian cập nhật' ||
+        h === 'thoi gian cap nhat' ||
+        (h.includes('thời gian') && h.includes('cập nhật'))
+      )
+        colMap['updatedAtExcel'] = colNumber;
+      else if (h.includes('mã đặt hàng') || h.includes('ma dat hang'))
+        colMap['orderCode'] = colNumber;
+      else if (h.includes('người tạo') || h.includes('nguoi tao'))
+        colMap['creatorName'] = colNumber;
+      else if (h === 'người nhận' || h === 'nguoi nhan')
+        colMap['receiverName'] = colNumber;
+      else if (
+        (h.includes('điện thoại') || h.includes('dien thoai')) &&
+        (h.includes('người nhận') || h.includes('nguoi nhan'))
+      )
+        colMap['receiverPhone'] = colNumber;
+      else if (
+        h.includes('địa chỉ') &&
+        (h.includes('người nhận') || h.includes('nguoi nhan'))
+      )
+        colMap['receiverAddress'] = colNumber;
+      else if (
+        h.includes('khu vực') &&
+        (h.includes('người nhận') || h.includes('nguoi nhan'))
+      )
+        colMap['receiverLocation'] = colNumber;
+      else if (
+        (h.includes('phường') || h.includes('xã')) &&
+        (h.includes('người nhận') || h.includes('nguoi nhan'))
+      )
+        colMap['receiverWard'] = colNumber;
+      else if (h.includes('trọng lượng') || h.includes('trong luong'))
+        colMap['weight'] = colNumber;
+      else if (h === 'ghi chú giao hàng' || h === 'ghi chu giao hang')
+        colMap['deliveryNote'] = colNumber;
+      else if (h === 'ghi chú hàng hóa' || h === 'ghi chu hang hoa')
+        colMap['productNote'] = colNumber;
+      else if (
+        h.includes('còn cần thu') ||
+        h.includes('con can thu') ||
+        h === 'cod'
+      )
+        colMap['codAmount'] = colNumber;
     });
   }
 
@@ -1721,26 +1877,37 @@ export class ImportService {
     const worksheet = workbook.addWorksheet('InvoiceTemplate');
 
     worksheet.columns = [
+      // --- Thông tin hóa đơn (cấp HĐ - chỉ điền dòng đầu) ---
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
       { header: 'Thời gian', key: 'purchaseDate', width: 18 },
-      { header: 'Người bán', key: 'sellerName', width: 15 },
+      { header: 'Người bán', key: 'sellerName', width: 18 },
+      // --- Thông tin khách hàng (cấp HĐ) ---
       { header: 'Mã khách hàng', key: 'customerCode', width: 16 },
-      { header: 'Tên khách hàng', key: 'customerName', width: 20 },
-      { header: 'Điện thoại', key: 'customerPhone', width: 15 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Điện thoại (Khách hàng)', key: 'customerPhone', width: 22 },
       { header: 'Địa chỉ (Khách hàng)', key: 'customerAddress', width: 30 },
       { header: 'Khu vực (Khách hàng)', key: 'locationName', width: 25 },
       { header: 'Phường/Xã (Khách hàng)', key: 'wardName', width: 22 },
+      // --- Bảng giá ---
       { header: 'Bảng giá', key: 'priceBookName', width: 18 },
+      // --- Sản phẩm (cấp dòng - mỗi SP 1 dòng) ---
       { header: 'Mã hàng', key: 'productCode', width: 15 },
       { header: 'Số lượng', key: 'quantity', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 15 },
       { header: 'Giảm giá %', key: 'discountRatio', width: 12 },
       { header: 'Giảm giá', key: 'discount', width: 12 },
+      { header: 'Thành tiền', key: 'lineTotal', width: 15 },
+      // --- Tổng hóa đơn (cấp HĐ - chỉ điền dòng đầu) ---
       { header: 'Giảm giá hóa đơn', key: 'invoiceDiscount', width: 18 },
       { header: 'Giảm giá hóa đơn %', key: 'invoiceDiscountRatio', width: 18 },
+      { header: 'Tổng tiền hàng', key: 'totalAmount', width: 15 },
+      { header: 'Khách cần trả', key: 'grandTotal', width: 15 },
+      { header: 'Khách đã trả', key: 'customerPaid', width: 15 },
+      // --- Thanh toán (cấp HĐ - chỉ điền dòng đầu) ---
       { header: 'Tiền mặt', key: 'cashAmount', width: 15 },
       { header: 'Chuyển khoản', key: 'transferAmount', width: 15 },
+      // --- Ghi chú ---
       { header: 'Ghi chú', key: 'description', width: 25 },
     ];
 
@@ -1748,43 +1915,85 @@ export class ImportService {
     headerRowExcel.font = { bold: true };
     headerRowExcel.alignment = { horizontal: 'center' };
 
+    // Tô màu phân biệt: xanh cho cột cấp HĐ, trắng cho cột cấp sản phẩm
+    const invoiceLevelCols = [
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 18, 19, 20, 21, 22, 23, 24, 25,
+    ];
+    for (const colIdx of invoiceLevelCols) {
+      const cell = headerRowExcel.getCell(colIdx);
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE2EFDA' },
+      };
+    }
+
+    // === Sample: HĐ 1 — 2 sản phẩm, trả đủ bằng tiền mặt ===
     worksheet.addRow({
       branchName: 'Kho Sài Gòn',
-      invoiceCode: 'HDIP00001',
+      invoiceCode: 'HD000001',
       purchaseDate: new Date(),
-      sellerName: 'ndduy',
-      customerPhone: '0945756611',
+      sellerName: 'Nguyễn Văn A',
+      customerCode: 'KH000001',
+      customerName: 'Anh Minh',
+      customerPhone: '0901234567',
+      customerAddress: '123 Nguyễn Huệ, Q.1',
+      locationName: 'TP.HCM - Quận 1',
+      wardName: 'Phường Bến Nghé',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000001',
       quantity: 5,
       price: 100000,
-      cashAmount: 2589000,
+      discount: 0,
+      discountRatio: 0,
+      lineTotal: 500000,
+      invoiceDiscount: 0,
+      invoiceDiscountRatio: 0,
+      totalAmount: 650000,
+      grandTotal: 650000,
+      customerPaid: 650000,
+      cashAmount: 650000,
+      transferAmount: 0,
+      description: 'Hóa đơn mẫu 1',
     });
 
+    // Dòng 2 cùng HĐ — chỉ điền sản phẩm
     worksheet.addRow({
-      branchName: 'Kho Sài Gòn',
-      invoiceCode: 'HDIP00001',
       productCode: 'SP000002',
       quantity: 1,
       price: 150000,
-      cashAmount: 2589000,
+      discount: 0,
+      discountRatio: 0,
+      lineTotal: 150000,
     });
 
+    // === Sample: HĐ 2 — 1 sản phẩm, có giảm giá, trả chuyển khoản ===
     worksheet.addRow({
       branchName: 'Kho Hà Nội',
-      invoiceCode: 'HDIP00002',
+      invoiceCode: 'HD000002',
       purchaseDate: new Date(),
-      sellerName: 'nvhieu1',
+      sellerName: 'Trần Thị B',
       customerCode: 'KH000234',
-      customerName: 'Anh Minh',
-      customerAddress: 'Ngõ 60, đường Hoàng Mai',
-      locationName: 'Hà Nội - Quận Ba Đình',
-      wardName: 'Phường Vĩnh Phúc',
-      priceBookName: 'KM 20/10',
+      customerName: 'Chị Lan',
+      customerPhone: '0987654321',
+      customerAddress: 'Ngõ 60 Hoàng Mai',
+      locationName: 'Hà Nội - Quận Hoàng Mai',
+      wardName: 'Phường Hoàng Văn Thụ',
+      priceBookName: 'Bảng giá chung',
       productCode: 'SP000004',
-      quantity: 1,
-      price: 100000,
-      cashAmount: 100000,
+      quantity: 10,
+      price: 75000,
+      discount: 20000,
+      discountRatio: 0,
+      lineTotal: 550000,
+      invoiceDiscount: 50000,
+      invoiceDiscountRatio: 0,
+      totalAmount: 550000,
+      grandTotal: 500000,
+      customerPaid: 500000,
+      cashAmount: 0,
+      transferAmount: 500000,
+      description: '',
     });
 
     const buffer = await workbook.xlsx.writeBuffer();
