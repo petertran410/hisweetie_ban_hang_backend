@@ -8,6 +8,7 @@ import {
   Res,
   BadRequestException,
   Query,
+  Req,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
@@ -146,6 +147,53 @@ export class ImportController {
     res.setHeader(
       'Content-Disposition',
       'attachment; filename=price_books_template.xlsx',
+    );
+
+    res.send(buffer);
+  }
+
+  @Post('invoices')
+  @RequirePermissions('invoices:create')
+  @UseInterceptors(FileInterceptor('file'))
+  @ApiOperation({ summary: 'Import invoices from Excel' })
+  async importInvoices(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('branchId') branchId: string,
+    @Req() req: any,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No file uploaded');
+    }
+
+    if (
+      ![
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'application/vnd.ms-excel',
+      ].includes(file.mimetype)
+    ) {
+      throw new BadRequestException('Only Excel files are allowed');
+    }
+
+    const userId = req.user?.id || 1;
+
+    return this.importService.importInvoices(file, {
+      branchId: branchId ? parseInt(branchId) : undefined,
+      userId,
+    });
+  }
+
+  @Get('templates/invoices')
+  @ApiOperation({ summary: 'Download invoices import template' })
+  async downloadInvoicesTemplate(@Res() res: Response) {
+    const buffer = await this.importService.generateInvoicesTemplate();
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=invoices_template.xlsx',
     );
 
     res.send(buffer);

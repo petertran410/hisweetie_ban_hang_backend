@@ -1094,4 +1094,604 @@ export class ImportService {
     const buffer = await workbook.xlsx.writeBuffer();
     return buffer;
   }
+
+  async importInvoices(
+    file: Express.Multer.File,
+    options: { branchId?: number; userId: number },
+  ) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(file.buffer as any);
+
+    const worksheet =
+      workbook.getWorksheet('InvoiceTemplate') || workbook.worksheets[0];
+    if (!worksheet) {
+      throw new BadRequestException('Excel file is empty');
+    }
+
+    // --- 1. Parse header row → build column map ---
+    const headerRow = worksheet.getRow(1);
+    // Row 1 là merge header group, Row 2 là actual column headers
+    // Kiểm tra xem row 2 có data không (template có 2 dòng header)
+    const actualHeaderRow = worksheet.getRow(2);
+    const firstCellRow2 = actualHeaderRow.getCell(1).value?.toString()?.trim();
+
+    let dataStartRow = 2;
+    let colMap: Record<string, number> = {};
+
+    // Nếu row 2 chứa header text (không phải data), thì header ở row 2, data từ row 3
+    const headerCandidates = [
+      'mã hóa đơn',
+      'ma hoa don',
+      'thời gian',
+      'thoi gian',
+    ];
+    if (
+      firstCellRow2 &&
+      headerCandidates.some((h) =>
+        firstCellRow2.toLowerCase().includes(h.replace(/\s+/g, '')),
+      )
+    ) {
+      dataStartRow = 3;
+      this.buildInvoiceColumnMap(actualHeaderRow, colMap);
+    } else {
+      // Fallback: try row 1
+      this.buildInvoiceColumnMap(headerRow, colMap);
+    }
+
+    // Nếu vẫn không tìm thấy column map hợp lệ, thử scan tất cả rows
+    if (!colMap['invoiceCode']) {
+      for (let r = 1; r <= Math.min(5, worksheet.rowCount); r++) {
+        const row = worksheet.getRow(r);
+        const testMap: Record<string, number> = {};
+        this.buildInvoiceColumnMap(row, testMap);
+        if (testMap['invoiceCode']) {
+          colMap = testMap;
+          dataStartRow = r + 1;
+          break;
+        }
+      }
+    }
+
+    if (!colMap['invoiceCode'] || !colMap['productCode']) {
+      throw new BadRequestException(
+        'Không tìm thấy cột "Mã hóa đơn" hoặc "Mã hàng" trong file Excel',
+      );
+    }
+
+    // --- 2. Parse data rows & group by invoice code ---
+    interface RawRow {
+      invoiceCode: string;
+      purchaseDate: any;
+      sellerName: string;
+      customerCode: string;
+      customerName: string;
+      customerPhone: string;
+      customerAddress: string;
+      locationName: string;
+      wardName: string;
+      priceBookName: string;
+      productCode: string;
+      quantity: number;
+      price: number;
+      discountRatio: number;
+      discount: number;
+      invoiceDiscount: number;
+      invoiceDiscountRatio: number;
+      cashAmount: number;
+      transferAmount: number;
+      description: string;
+      rowNumber: number;
+    }
+
+    const rawRows: RawRow[] = [];
+    const parseErrors: { row: number; error: string }[] = [];
+
+    for (let r = dataStartRow; r <= worksheet.rowCount; r++) {
+      const row = worksheet.getRow(r);
+      const invoiceCode = this.getCellString(row, colMap['invoiceCode']);
+      const productCode = this.getCellString(row, colMap['productCode']);
+
+      // Skip completely empty rows
+      if (!invoiceCode && !productCode) continue;
+
+      if (!productCode) {
+        parseErrors.push({ row: r, error: 'Thiếu mã hàng' });
+        continue;
+      }
+
+      rawRows.push({
+        invoiceCode: invoiceCode || '',
+        purchaseDate: colMap['purchaseDate']
+          ? this.getCellValue(row, colMap['purchaseDate'])
+          : null,
+        sellerName: this.getCellString(row, colMap['sellerName']),
+        customerCode: this.getCellString(row, colMap['customerCode']),
+        customerName: this.getCellString(row, colMap['customerName']),
+        customerPhone: this.getCellString(row, colMap['customerPhone']),
+        customerAddress: this.getCellString(row, colMap['customerAddress']),
+        locationName: this.getCellString(row, colMap['locationName']),
+        wardName: this.getCellString(row, colMap['wardName']),
+        priceBookName: this.getCellString(row, colMap['priceBookName']),
+        productCode,
+        quantity: this.getCellNumber(row, colMap['quantity']) || 1,
+        price: this.getCellNumber(row, colMap['price']) || 0,
+        discountRatio: this.getCellNumber(row, colMap['discountRatio']) || 0,
+        discount: this.getCellNumber(row, colMap['discount']) || 0,
+        invoiceDiscount:
+          this.getCellNumber(row, colMap['invoiceDiscount']) || 0,
+        invoiceDiscountRatio:
+          this.getCellNumber(row, colMap['invoiceDiscountRatio']) || 0,
+        cashAmount: this.getCellNumber(row, colMap['cashAmount']) || 0,
+        transferAmount: this.getCellNumber(row, colMap['transferAmount']) || 0,
+        description: this.getCellString(row, colMap['description']),
+        rowNumber: r,
+      });
+    }
+
+    // --- 3. Group rows by invoice code ---
+    // Dòng có invoiceCode = header dòng mới, dòng không có = thuộc invoice trước
+    interface InvoiceGroup {
+      header: RawRow;
+      items: RawRow[];
+    }
+
+    const groups: InvoiceGroup[] = [];
+    let currentGroup: InvoiceGroup | null = null;
+
+    for (const row of rawRows) {
+      if (row.invoiceCode) {
+        // Check if this code already exists in groups (same invoice, separate blocks)
+        const existing = groups.find(
+          (g) => g.header.invoiceCode === row.invoiceCode,
+        );
+        if (existing) {
+          existing.items.push(row);
+          currentGroup = existing;
+        } else {
+          currentGroup = { header: row, items: [row] };
+          groups.push(currentGroup);
+        }
+      } else if (currentGroup) {
+        currentGroup.items.push(row);
+      } else {
+        parseErrors.push({
+          row: row.rowNumber,
+          error: 'Dòng sản phẩm không thuộc hóa đơn nào',
+        });
+      }
+    }
+
+    // --- 4. Lookup products, customers, sellers, priceBooks ---
+    const allProductCodes = [
+      ...new Set(rawRows.map((r) => r.productCode).filter(Boolean)),
+    ];
+    const products = await this.prisma.product.findMany({
+      where: { code: { in: allProductCodes } },
+      select: { id: true, code: true, name: true, basePrice: true },
+    });
+    const productMap = new Map(products.map((p) => [p.code, p]));
+
+    const allCustomerCodes = [
+      ...new Set(groups.map((g) => g.header.customerCode).filter(Boolean)),
+    ];
+    const customers = allCustomerCodes.length
+      ? await this.prisma.customer.findMany({
+          where: { code: { in: allCustomerCodes } },
+          select: { id: true, code: true, name: true },
+        })
+      : [];
+    const customerMap = new Map(customers.map((c) => [c.code, c]));
+
+    // Lookup sellers by name hoặc email
+    const allSellerNames = [
+      ...new Set(groups.map((g) => g.header.sellerName).filter(Boolean)),
+    ];
+    const sellers = allSellerNames.length
+      ? await this.prisma.user.findMany({
+          where: {
+            OR: [
+              { name: { in: allSellerNames } },
+              { email: { in: allSellerNames } },
+            ],
+          },
+          select: { id: true, name: true, email: true },
+        })
+      : [];
+    const sellerMap = new Map<string, { id: number }>([]);
+    for (const s of sellers) {
+      sellerMap.set(s.name.toLowerCase(), s);
+      sellerMap.set(s.email.toLowerCase(), s);
+    }
+
+    // Lookup priceBooks
+    const allPBNames = [
+      ...new Set(groups.map((g) => g.header.priceBookName).filter(Boolean)),
+    ];
+    const priceBooks = allPBNames.length
+      ? await this.prisma.priceBook.findMany({
+          where: { name: { in: allPBNames }, isActive: true },
+          select: { id: true, name: true },
+        })
+      : [];
+    const pbMap = new Map(priceBooks.map((p) => [p.name, p]));
+
+    // --- 5. Create invoices ---
+    const imported: any[] = [];
+    const failed: { invoiceCode: string; error: string }[] = [];
+
+    for (const group of groups) {
+      try {
+        const h = group.header;
+
+        // Validate all product codes exist
+        const missingProducts = group.items
+          .filter((item) => !productMap.has(item.productCode))
+          .map((item) => item.productCode);
+        if (missingProducts.length > 0) {
+          failed.push({
+            invoiceCode: h.invoiceCode,
+            error: `Mã hàng không tồn tại: ${missingProducts.join(', ')}`,
+          });
+          continue;
+        }
+
+        // Build items
+        const invoiceItems = group.items.map((item) => {
+          const product = productMap.get(item.productCode)!;
+          const price = item.price || Number(product.basePrice);
+          const quantity = item.quantity;
+          const itemDiscount =
+            item.discount || (price * item.discountRatio) / 100;
+          const totalPrice = quantity * price - itemDiscount;
+
+          return {
+            productId: product.id,
+            productCode: product.code,
+            productName: product.name,
+            quantity,
+            price,
+            discount: itemDiscount,
+            discountRatio: item.discountRatio,
+            totalPrice: Math.max(0, totalPrice),
+          };
+        });
+
+        // Calculate totals
+        const totalAmount = invoiceItems.reduce((s, i) => s + i.totalPrice, 0);
+        const invoiceDiscountAmount =
+          h.invoiceDiscount || (totalAmount * h.invoiceDiscountRatio) / 100;
+        const grandTotal = Math.max(0, totalAmount - invoiceDiscountAmount);
+        const paidAmount = h.cashAmount + h.transferAmount;
+        const debtAmount = grandTotal - paidAmount;
+
+        // Resolve relations
+        const customer = h.customerCode
+          ? customerMap.get(h.customerCode)
+          : null;
+        const seller = h.sellerName
+          ? sellerMap.get(h.sellerName.toLowerCase())
+          : null;
+        const priceBook =
+          h.priceBookName && h.priceBookName !== 'Bảng giá chung'
+            ? pbMap.get(h.priceBookName)
+            : null;
+
+        // Parse date
+        let purchaseDate = new Date();
+        if (h.purchaseDate) {
+          if (h.purchaseDate instanceof Date) {
+            purchaseDate = h.purchaseDate;
+          } else if (typeof h.purchaseDate === 'number') {
+            // Excel serial date
+            const excelEpoch = new Date(1899, 11, 30);
+            purchaseDate = new Date(
+              excelEpoch.getTime() + h.purchaseDate * 86400000,
+            );
+          } else {
+            const parsed = new Date(h.purchaseDate);
+            if (!isNaN(parsed.getTime())) purchaseDate = parsed;
+          }
+        }
+
+        // Determine status
+        const status = debtAmount <= 0 ? 2 : 3; // COMPLETED : PROCESSING
+
+        // Generate code
+        const invoiceCount = await this.prisma.invoice.count();
+        const code =
+          h.invoiceCode || `HDIP${String(invoiceCount + 1).padStart(6, '0')}`;
+
+        // Check if code already exists
+        const existing = await this.prisma.invoice.findUnique({
+          where: { code },
+        });
+        if (existing) {
+          failed.push({
+            invoiceCode: code,
+            error: `Mã hóa đơn "${code}" đã tồn tại`,
+          });
+          continue;
+        }
+
+        const invoice = await this.prisma.$transaction(async (tx) => {
+          const inv = await tx.invoice.create({
+            data: {
+              code,
+              customerId: customer?.id || null,
+              branchId: options.branchId || null,
+              soldById: seller?.id || null,
+              priceBookId: priceBook?.id || null,
+              priceBookName: priceBook?.name || null,
+              purchaseDate,
+              totalAmount,
+              discount: invoiceDiscountAmount,
+              discountRatio: h.invoiceDiscountRatio || 0,
+              grandTotal,
+              paidAmount,
+              debtAmount,
+              status,
+              statusValue: status === 2 ? 'Hoàn thành' : 'Đang xử lý',
+              description: h.description || null,
+              createdBy: options.userId,
+              details: {
+                createMany: {
+                  data: invoiceItems.map((item) => ({
+                    productId: item.productId,
+                    productCode: item.productCode,
+                    productName: item.productName,
+                    quantity: item.quantity,
+                    price: item.price,
+                    discount: item.discount,
+                    discountRatio: item.discountRatio,
+                    totalPrice: item.totalPrice,
+                  })),
+                },
+              },
+            },
+            include: { details: true },
+          });
+
+          // Create payments if any
+          if (h.cashAmount > 0) {
+            await tx.invoicePayment.create({
+              data: {
+                code: `TT${inv.code}-1`,
+                invoiceId: inv.id,
+                amount: h.cashAmount,
+                paymentMethod: 'cash',
+                status: 1,
+                description: 'Import - Tiền mặt',
+              },
+            });
+          }
+          if (h.transferAmount > 0) {
+            await tx.invoicePayment.create({
+              data: {
+                code: `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`,
+                invoiceId: inv.id,
+                amount: h.transferAmount,
+                paymentMethod: 'transfer',
+                status: 1,
+                description: 'Import - Chuyển khoản',
+              },
+            });
+          }
+
+          // Trừ tồn kho
+          for (const item of invoiceItems) {
+            if (options.branchId) {
+              await tx.inventory.updateMany({
+                where: {
+                  productId: item.productId,
+                  branchId: options.branchId,
+                },
+                data: { onHand: { decrement: item.quantity } },
+              });
+            }
+          }
+
+          // Cập nhật công nợ khách hàng
+          if (customer?.id) {
+            const allInvoices = await tx.invoice.findMany({
+              where: { customerId: customer.id },
+              select: { debtAmount: true },
+            });
+            const totalDebt = allInvoices.reduce(
+              (s, i) => s + Number(i.debtAmount),
+              0,
+            );
+            await tx.customer.update({
+              where: { id: customer.id },
+              data: { totalDebt },
+            });
+          }
+
+          return inv;
+        });
+
+        imported.push(invoice);
+      } catch (error) {
+        failed.push({
+          invoiceCode:
+            group.header.invoiceCode || `Row ${group.header.rowNumber}`,
+          error: error.message,
+        });
+      }
+    }
+
+    return {
+      total: groups.length,
+      imported: imported.length,
+      failed: failed.length,
+      errors: [...parseErrors, ...failed],
+    };
+  }
+
+  // --- Helper: build column map for invoice ---
+  private buildInvoiceColumnMap(
+    row: ExcelJS.Row,
+    colMap: Record<string, number>,
+  ) {
+    row.eachCell((cell, colNumber) => {
+      const header = cell.value?.toString()?.trim()?.toLowerCase() || '';
+      if (!header) return;
+
+      if (header.includes('mã hóa đơn') || header.includes('ma hoa don'))
+        colMap['invoiceCode'] = colNumber;
+      else if (header.includes('thời gian') || header.includes('thoi gian'))
+        colMap['purchaseDate'] = colNumber;
+      else if (header.includes('người bán') || header.includes('nguoi ban'))
+        colMap['sellerName'] = colNumber;
+      else if (header.includes('mã khách') || header.includes('ma khach'))
+        colMap['customerCode'] = colNumber;
+      else if (header.includes('tên khách') || header.includes('ten khach'))
+        colMap['customerName'] = colNumber;
+      else if (header.includes('điện thoại') || header.includes('dien thoai'))
+        colMap['customerPhone'] = colNumber;
+      else if (header.includes('địa chỉ') && header.includes('khách'))
+        colMap['customerAddress'] = colNumber;
+      else if (header.includes('khu vực') && header.includes('khách'))
+        colMap['locationName'] = colNumber;
+      else if (header.includes('phường') || header.includes('xã'))
+        colMap['wardName'] = colNumber;
+      else if (header.includes('bảng giá') || header.includes('bang gia'))
+        colMap['priceBookName'] = colNumber;
+      else if (header.includes('mã hàng') || header.includes('ma hang'))
+        colMap['productCode'] = colNumber;
+      else if (header.includes('số lượng') || header.includes('so luong'))
+        colMap['quantity'] = colNumber;
+      else if (header.includes('đơn giá') || header.includes('don gia'))
+        colMap['price'] = colNumber;
+      else if (
+        header.includes('giảm giá') &&
+        header.includes('%') &&
+        !header.includes('hóa đơn')
+      )
+        colMap['discountRatio'] = colNumber;
+      else if (
+        header.includes('giảm giá') &&
+        !header.includes('%') &&
+        !header.includes('hóa đơn')
+      )
+        colMap['discount'] = colNumber;
+      else if (header.includes('giảm giá hóa đơn') && !header.includes('%'))
+        colMap['invoiceDiscount'] = colNumber;
+      else if (header.includes('giảm giá hóa đơn') && header.includes('%'))
+        colMap['invoiceDiscountRatio'] = colNumber;
+      else if (header.includes('tiền mặt') || header.includes('tien mat'))
+        colMap['cashAmount'] = colNumber;
+      else if (
+        header.includes('chuyển khoản') ||
+        header.includes('chuyen khoan')
+      )
+        colMap['transferAmount'] = colNumber;
+      else if (header.includes('ghi chú') || header.includes('ghi chu'))
+        colMap['description'] = colNumber;
+    });
+  }
+
+  // --- Helpers ---
+  private getCellString(row: ExcelJS.Row, colIndex?: number): string {
+    if (!colIndex) return '';
+    const val = row.getCell(colIndex).value;
+    return val?.toString()?.trim() || '';
+  }
+
+  private getCellNumber(row: ExcelJS.Row, colIndex?: number): number {
+    if (!colIndex) return 0;
+    const val = row.getCell(colIndex).value;
+    if (val === null || val === undefined || val === '') return 0;
+    const num = Number(String(val).replace(/,/g, ''));
+    return isNaN(num) ? 0 : num;
+  }
+
+  private getCellValue(row: ExcelJS.Row, colIndex?: number): any {
+    if (!colIndex) return null;
+    return row.getCell(colIndex).value;
+  }
+
+  // ========== GENERATE INVOICES TEMPLATE ==========
+
+  async generateInvoicesTemplate() {
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('InvoiceTemplate');
+
+    worksheet.columns = [
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Người bán', key: 'sellerName', width: 15 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 16 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 20 },
+      { header: 'Điện thoại', key: 'customerPhone', width: 15 },
+      { header: 'Địa chỉ (Khách hàng)', key: 'customerAddress', width: 30 },
+      { header: 'Khu vực (Khách hàng)', key: 'locationName', width: 25 },
+      { header: 'Phường/Xã (Khách hàng)', key: 'wardName', width: 22 },
+      { header: 'Bảng giá', key: 'priceBookName', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 15 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Đơn giá', key: 'price', width: 15 },
+      { header: 'Giảm giá %', key: 'discountRatio', width: 12 },
+      { header: 'Giảm giá', key: 'discount', width: 12 },
+      { header: 'Giảm giá hóa đơn', key: 'invoiceDiscount', width: 18 },
+      { header: 'Giảm giá hóa đơn %', key: 'invoiceDiscountRatio', width: 18 },
+      { header: 'Tiền mặt', key: 'cashAmount', width: 15 },
+      { header: 'Chuyển khoản', key: 'transferAmount', width: 15 },
+      { header: 'Ghi chú', key: 'description', width: 25 },
+    ];
+
+    // Style header
+    const headerRowExcel = worksheet.getRow(1);
+    headerRowExcel.font = { bold: true };
+    headerRowExcel.alignment = { horizontal: 'center' };
+
+    // Sample data
+    worksheet.addRow({
+      invoiceCode: 'HDIP00001',
+      purchaseDate: new Date(),
+      sellerName: 'ndduy',
+      customerCode: '',
+      customerName: '',
+      customerPhone: '0945756611',
+      customerAddress: '',
+      locationName: '',
+      wardName: '',
+      priceBookName: 'Bảng giá chung',
+      productCode: 'SP000001',
+      quantity: 5,
+      price: 100000,
+      discountRatio: '',
+      discount: '',
+      invoiceDiscount: '',
+      invoiceDiscountRatio: '',
+      cashAmount: 2589000,
+      transferAmount: '',
+      description: '',
+    });
+
+    worksheet.addRow({
+      invoiceCode: 'HDIP00001',
+      productCode: 'SP000002',
+      quantity: 1,
+      price: 150000,
+    });
+
+    worksheet.addRow({
+      invoiceCode: 'HDIP00002',
+      purchaseDate: new Date(),
+      sellerName: 'nvhieu1',
+      customerCode: 'KH000234',
+      customerName: 'Anh Minh',
+      customerAddress: 'Ngõ 60, đường Hoàng Mai',
+      locationName: 'Hà Nội - Quận Ba Đình',
+      wardName: 'Phường Vĩnh Phúc',
+      priceBookName: 'KM 20/10',
+      productCode: 'SP000004',
+      quantity: 1,
+      price: 100000,
+      cashAmount: 100000,
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    return buffer;
+  }
 }
