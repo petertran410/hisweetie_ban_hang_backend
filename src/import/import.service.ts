@@ -1877,36 +1877,50 @@ export class ImportService {
     const worksheet = workbook.addWorksheet('InvoiceTemplate');
 
     worksheet.columns = [
-      // --- Thông tin hóa đơn (cấp HĐ - chỉ điền dòng đầu) ---
+      // --- Thông tin hóa đơn ---
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
       { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 18 }, // MỚI
+      { header: 'Thời gian cập nhật', key: 'updatedAt', width: 18 }, // MỚI
+      { header: 'Mã đặt hàng', key: 'orderCode', width: 16 }, // MỚI
       { header: 'Người bán', key: 'sellerName', width: 18 },
-      // --- Thông tin khách hàng (cấp HĐ) ---
+      { header: 'Người tạo', key: 'creatorName', width: 18 }, // MỚI
+      // --- Khách hàng ---
       { header: 'Mã khách hàng', key: 'customerCode', width: 16 },
       { header: 'Tên khách hàng', key: 'customerName', width: 22 },
       { header: 'Điện thoại (Khách hàng)', key: 'customerPhone', width: 22 },
       { header: 'Địa chỉ (Khách hàng)', key: 'customerAddress', width: 30 },
       { header: 'Khu vực (Khách hàng)', key: 'locationName', width: 25 },
       { header: 'Phường/Xã (Khách hàng)', key: 'wardName', width: 22 },
+      // --- Giao hàng ---
+      { header: 'Người nhận', key: 'receiverName', width: 20 }, // MỚI
+      { header: 'Điện thoại (Người nhận)', key: 'receiverPhone', width: 22 }, // MỚI
+      { header: 'Địa chỉ (Người nhận)', key: 'receiverAddress', width: 30 }, // MỚI
+      { header: 'Khu vực (Người nhận)', key: 'receiverLocation', width: 25 }, // MỚI
+      { header: 'Phường/Xã (Người nhận)', key: 'receiverWard', width: 22 }, // MỚI
+      { header: 'Trọng lượng (gram)', key: 'weight', width: 16 }, // MỚI
+      { header: 'Ghi chú giao hàng', key: 'deliveryNote', width: 25 }, // MỚI
       // --- Bảng giá ---
       { header: 'Bảng giá', key: 'priceBookName', width: 18 },
-      // --- Sản phẩm (cấp dòng - mỗi SP 1 dòng) ---
+      // --- Sản phẩm ---
       { header: 'Mã hàng', key: 'productCode', width: 15 },
       { header: 'Số lượng', key: 'quantity', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 15 },
       { header: 'Giảm giá %', key: 'discountRatio', width: 12 },
       { header: 'Giảm giá', key: 'discount', width: 12 },
       { header: 'Thành tiền', key: 'lineTotal', width: 15 },
-      // --- Tổng hóa đơn (cấp HĐ - chỉ điền dòng đầu) ---
+      { header: 'Ghi chú hàng hóa', key: 'productNote', width: 22 }, // MỚI
+      // --- Tổng hóa đơn ---
       { header: 'Giảm giá hóa đơn', key: 'invoiceDiscount', width: 18 },
       { header: 'Giảm giá hóa đơn %', key: 'invoiceDiscountRatio', width: 18 },
       { header: 'Tổng tiền hàng', key: 'totalAmount', width: 15 },
       { header: 'Khách cần trả', key: 'grandTotal', width: 15 },
       { header: 'Khách đã trả', key: 'customerPaid', width: 15 },
-      // --- Thanh toán (cấp HĐ - chỉ điền dòng đầu) ---
+      // --- Thanh toán ---
       { header: 'Tiền mặt', key: 'cashAmount', width: 15 },
       { header: 'Chuyển khoản', key: 'transferAmount', width: 15 },
+      { header: 'Còn cần thu (COD)', key: 'codAmount', width: 16 }, // MỚI
       // --- Ghi chú ---
       { header: 'Ghi chú', key: 'description', width: 25 },
     ];
@@ -1933,13 +1947,24 @@ export class ImportService {
       branchName: 'Kho Sài Gòn',
       invoiceCode: 'HD000001',
       purchaseDate: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      orderCode: '',
       sellerName: 'Nguyễn Văn A',
+      creatorName: 'Nguyễn Văn A',
       customerCode: 'KH000001',
       customerName: 'Anh Minh',
       customerPhone: '0901234567',
       customerAddress: '123 Nguyễn Huệ, Q.1',
       locationName: 'TP.HCM - Quận 1',
       wardName: 'Phường Bến Nghé',
+      receiverName: 'Anh Minh',
+      receiverPhone: '0901234567',
+      receiverAddress: '123 Nguyễn Huệ, Q.1',
+      receiverLocation: 'TP.HCM - Quận 1',
+      receiverWard: 'Phường Bến Nghé',
+      weight: 5000,
+      deliveryNote: 'Giao giờ hành chính',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000001',
       quantity: 5,
@@ -1947,6 +1972,7 @@ export class ImportService {
       discount: 0,
       discountRatio: 0,
       lineTotal: 500000,
+      productNote: '',
       invoiceDiscount: 0,
       invoiceDiscountRatio: 0,
       totalAmount: 650000,
@@ -1954,6 +1980,7 @@ export class ImportService {
       customerPaid: 650000,
       cashAmount: 650000,
       transferAmount: 0,
+      codAmount: 0,
       description: 'Hóa đơn mẫu 1',
     });
 
@@ -2005,13 +2032,24 @@ export class ImportService {
       branchName: 'Kho Hà Nội',
       invoiceCode: 'HD000002',
       purchaseDate: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      orderCode: 'DH000001',
       sellerName: 'Trần Thị B',
+      creatorName: 'Nguyễn Văn C',
       customerCode: 'KH000234',
       customerName: 'Chị Lan',
       customerPhone: '0987654321',
       customerAddress: 'Ngõ 60 Hoàng Mai',
       locationName: 'Hà Nội - Quận Hoàng Mai',
       wardName: 'Phường Hoàng Văn Thụ',
+      receiverName: '',
+      receiverPhone: '',
+      receiverAddress: '',
+      receiverLocation: '',
+      receiverWard: '',
+      weight: 0,
+      deliveryNote: '',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000004',
       quantity: 10,
@@ -2019,13 +2057,15 @@ export class ImportService {
       discount: 20000,
       discountRatio: 0,
       lineTotal: 550000,
+      productNote: '',
       invoiceDiscount: 50000,
       invoiceDiscountRatio: 0,
       totalAmount: 550000,
       grandTotal: 500000,
-      customerPaid: 500000,
+      customerPaid: 300000,
       cashAmount: 0,
-      transferAmount: 500000,
+      transferAmount: 300000,
+      codAmount: 200000,
       description: '',
     });
 
