@@ -1721,7 +1721,7 @@ export class ImportService {
     const worksheet = workbook.addWorksheet('InvoiceTemplate');
 
     worksheet.columns = [
-      { header: 'Chi nhánh', key: 'invoiceBranchId', width: 18 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
       { header: 'Thời gian', key: 'purchaseDate', width: 18 },
       { header: 'Người bán', key: 'sellerName', width: 15 },
@@ -1749,6 +1749,7 @@ export class ImportService {
     headerRowExcel.alignment = { horizontal: 'center' };
 
     worksheet.addRow({
+      branchName: 'Kho Sài Gòn',
       invoiceCode: 'HDIP00001',
       purchaseDate: new Date(),
       sellerName: 'ndduy',
@@ -1761,13 +1762,16 @@ export class ImportService {
     });
 
     worksheet.addRow({
+      branchName: 'Kho Sài Gòn',
       invoiceCode: 'HDIP00001',
       productCode: 'SP000002',
       quantity: 1,
       price: 150000,
+      cashAmount: 2589000,
     });
 
     worksheet.addRow({
+      branchName: 'Kho Hà Nội',
       invoiceCode: 'HDIP00002',
       purchaseDate: new Date(),
       sellerName: 'nvhieu1',
