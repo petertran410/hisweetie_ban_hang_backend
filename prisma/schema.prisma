@@ -58,6 +58,8 @@ model User {
   confirmedReturnOrders  ReturnOrder[] @relation("ReturnOrderConfirmer")
   refundConfirmedReturnOrders ReturnOrder[] @relation("ReturnOrderRefundConfirmer")
   createdInventoryChecks InventoryCheck[] @relation("InventoryCheckCreator")
+  stockAuditsCreated    StockAudit[] @relation("StockAuditCreator")
+  stockAuditsCompleted  StockAudit[] @relation("StockAuditCompleter")
 
   @@map("users")
 }
@@ -236,6 +238,7 @@ model Branch {
   returnOrders    ReturnOrder[]
   inventoryLogs      InventoryLog[]
   inventoryChecks InventoryCheck[]
+  stockAudits StockAudit[]
 
   @@map("branches")
 }
@@ -548,6 +551,7 @@ model Product {
   inventoryLogs      InventoryLog[]
   productionComponents ProductionComponent[]
   inventoryCheckDetails InventoryCheckDetail[]
+  stockAuditDetails StockAuditDetail[]
 
   @@map("products")
   @@index([id, name])
@@ -591,6 +595,57 @@ model ProductImage {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@map("product_images")
+}
+
+// ==================== STOCK AUDIT (Kiểm kho) ====================
+
+model StockAudit {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique
+  branchId        Int
+  branchName      String
+  checkDate       DateTime  @default(now())
+  note            String?
+  status          Int       @default(1) // 1=DRAFT, 2=COMPLETED, 3=CANCELLED
+  createdById     Int
+  createdByName   String
+  completedById   Int?
+  completedByName String?
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  branch  Branch             @relation(fields: [branchId], references: [id])
+  creator User               @relation("StockAuditCreator", fields: [createdById], references: [id])
+  completedBy User?          @relation("StockAuditCompleter", fields: [completedById], references: [id])
+  details StockAuditDetail[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([checkDate])
+  @@map("stock_audits")
+}
+
+model StockAuditDetail {
+  id              Int      @id @default(autoincrement())
+  stockAuditId    Int
+  productId       Int
+  productCode     String
+  productName     String
+  unit            String?
+  systemQuantity  Decimal  @default(0)
+  actualQuantity  Decimal  @default(0)
+  difference      Decimal  @default(0)
+  costAtCheck     Decimal  @default(0)
+  differenceValue Decimal  @default(0)
+  note            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  stockAudit StockAudit @relation(fields: [stockAuditId], references: [id], onDelete: Cascade)
+  product    Product    @relation(fields: [productId], references: [id])
+
+  @@map("stock_audit_details")
 }
 
 model Production {

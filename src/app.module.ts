@@ -56,6 +56,7 @@ import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
 import { ReturnOrdersModule } from './return-orders/return-orders.module';
 import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
+import { StockAuditsModule } from './stock-audits/stock-audits.module';
 
 @Module({
   imports: [
@@ -111,6 +112,7 @@ import { InventoryChecksModule } from './inventory-checks/inventory-checks.modul
     BankAccountsModule,
     ReturnOrdersModule,
     InventoryChecksModule,
+    StockAuditsModule,
     CashFlowCollectionBranchesModule,
   ],
   providers: [
