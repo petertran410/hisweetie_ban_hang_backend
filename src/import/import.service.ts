@@ -1757,6 +1757,7 @@ export class ImportService {
                   createdBy: pp.userId,
                   usedForFinancialReporting: 1,
                   customerDebtSnapshot: null,
+                  createdAt: pp.purchaseDate,
                 },
               });
               await tx.invoicePayment.create({
@@ -1770,6 +1771,7 @@ export class ImportService {
                   statusValue: 'Đã thanh toán',
                   description: `Import - ${m.label}`,
                   cashFlowId: cashFlow.id,
+                  createdAt: pp.purchaseDate,
                 },
               });
             }
