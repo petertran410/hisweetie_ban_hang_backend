@@ -1157,6 +1157,9 @@ export class ImportService {
       transferAmount: number;
       cardAmount: number;
       walletAmount: number;
+      pointAmount: number;
+      voucherAmount: number;
+      voucherCode: string;
       description: string;
       rowNumber: number;
       lineTotal: number;
@@ -1220,6 +1223,9 @@ export class ImportService {
         transferAmount: this.getCellNumber(row, colMap['transferAmount']) || 0,
         cardAmount: this.getCellNumber(row, colMap['cardAmount']),
         walletAmount: this.getCellNumber(row, colMap['walletAmount']),
+        pointAmount: this.getCellNumber(row, colMap['pointAmount']) || 0,
+        voucherAmount: this.getCellNumber(row, colMap['voucherAmount']) || 0,
+        voucherCode: this.getCellString(row, colMap['voucherCode']),
         description: this.getCellString(row, colMap['description']),
         rowNumber: r,
         lineTotal: this.getCellNumber(row, colMap['lineTotal']) || 0,
@@ -1242,6 +1248,11 @@ export class ImportService {
         branchName: this.getCellString(row, colMap['branchName']),
         statusText: this.getCellString(row, colMap['statusText']),
       });
+    }
+
+    // --- Cộng Điểm + Voucher vào Tiền mặt ---
+    for (const row of rawRows) {
+      row.cashAmount += row.pointAmount + row.voucherAmount;
     }
 
     // --- 3. Group rows theo mã hóa đơn ---
@@ -1942,6 +1953,12 @@ export class ImportService {
         h.includes('ví điện tử')
       )
         colMap['walletAmount'] = colNumber;
+      else if (h === 'điểm' || h === 'diem' || h === 'point')
+        colMap['pointAmount'] = colNumber;
+      else if (h === 'voucher' && !h.includes('mã'))
+        colMap['voucherAmount'] = colNumber;
+      else if (h.includes('mã voucher') || h.includes('ma voucher'))
+        colMap['voucherCode'] = colNumber;
       else if (
         (h.includes('ghi chú') || h.includes('ghi chu')) &&
         !h.includes('hàng hóa') &&
@@ -2092,6 +2109,9 @@ export class ImportService {
       { header: 'Chuyển khoản', key: 'transferAmount', width: 15 },
       { header: 'Thẻ', key: 'cardAmount', width: 15 },
       { header: 'Ví', key: 'walletAmount', width: 15 },
+      { header: 'Điểm', key: 'pointAmount', width: 12 },
+      { header: 'Voucher', key: 'voucherAmount', width: 12 },
+      { header: 'Mã Voucher', key: 'voucherCode', width: 15 },
       { header: 'Còn cần thu (COD)', key: 'codAmount', width: 16 }, // MỚI
       // --- Ghi chú ---
       { header: 'Ghi chú', key: 'description', width: 25 },
@@ -2155,6 +2175,9 @@ export class ImportService {
       transferAmount: 0,
       cardAmount: 0,
       walletAmount: 0,
+      pointAmount: 0,
+      voucherAmount: 0,
+      voucherCode: '',
       codAmount: 0,
       description: 'Hóa đơn mẫu 1',
     });
@@ -2201,6 +2224,9 @@ export class ImportService {
       transferAmount: 0,
       cardAmount: 0,
       walletAmount: 0,
+      pointAmount: 0,
+      voucherAmount: 0,
+      voucherCode: '',
       codAmount: 0,
       description: 'Hóa đơn mẫu 1',
     });
@@ -2246,6 +2272,9 @@ export class ImportService {
       transferAmount: 300000,
       cardAmount: 0,
       walletAmount: 0,
+      pointAmount: 0,
+      voucherAmount: 0,
+      voucherCode: '',
       codAmount: 200000,
       description: '',
     });
