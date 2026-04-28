@@ -1402,12 +1402,16 @@ export class ImportService {
     );
 
     // Helper: parse Excel date
+    const VN_OFFSET_MS = 7 * 60 * 60 * 1000; // UTC+7
+
     const parseExcelDate = (val: any): Date | null => {
       if (!val) return null;
-      if (val instanceof Date) return val;
+      if (val instanceof Date) {
+        return new Date(val.getTime() - VN_OFFSET_MS);
+      }
       if (typeof val === 'number') {
         const excelEpoch = new Date(1899, 11, 30);
-        return new Date(excelEpoch.getTime() + val * 86400000);
+        return new Date(excelEpoch.getTime() + val * 86400000 - VN_OFFSET_MS);
       }
       const parsed = new Date(val);
       return isNaN(parsed.getTime()) ? null : parsed;
@@ -1468,6 +1472,7 @@ export class ImportService {
             invoiceCode: string;
             branchId: number;
             purchaseDate: Date;
+            importCreatedAt: Date;
             customer: any;
             cashAmount: number;
             transferAmount: number;
@@ -1672,6 +1677,7 @@ export class ImportService {
                   invoiceCode: inv.code,
                   branchId: invoiceBranchId || 1,
                   purchaseDate,
+                  importCreatedAt,
                   customer,
                   cashAmount: h.cashAmount,
                   transferAmount: h.transferAmount,
@@ -1757,7 +1763,7 @@ export class ImportService {
                   createdBy: pp.userId,
                   usedForFinancialReporting: 1,
                   customerDebtSnapshot: null,
-                  createdAt: pp.purchaseDate,
+                  createdAt: pp.importCreatedAt,
                 },
               });
               await tx.invoicePayment.create({
@@ -1771,7 +1777,7 @@ export class ImportService {
                   statusValue: 'Đã thanh toán',
                   description: `Import - ${m.label}`,
                   cashFlowId: cashFlow.id,
-                  createdAt: pp.purchaseDate,
+                  createdAt: pp.importCreatedAt,
                 },
               });
             }
