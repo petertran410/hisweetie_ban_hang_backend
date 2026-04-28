@@ -342,6 +342,7 @@ export class CashFlowsService {
     const {
       branchIds,
       code,
+      search,
       userId,
       accountId,
       partnerType,
@@ -371,11 +372,14 @@ export class CashFlowsService {
 
     if (code && code.length > 0) {
       where.code = { in: code };
+    } else if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { partnerName: { contains: search, mode: 'insensitive' } },
+      ];
     } else {
       where.code = {
-        not: {
-          startsWith: 'TTTU',
-        },
+        not: { startsWith: 'TTTU' },
       };
     }
 

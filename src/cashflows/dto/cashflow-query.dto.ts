@@ -117,4 +117,8 @@ export class CashFlowQueryDto {
   @IsOptional()
   @IsString()
   sortOrder?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }
