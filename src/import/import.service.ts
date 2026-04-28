@@ -1142,6 +1142,7 @@ export class ImportService {
       wardName: string;
       priceBookName: string;
       productCode: string;
+      productName: string;
       quantity: number;
       price: number;
       discountRatio: number;
@@ -1199,6 +1200,7 @@ export class ImportService {
         wardName: this.getCellString(row, colMap['wardName']),
         priceBookName: this.getCellString(row, colMap['priceBookName']),
         productCode,
+        productName: this.getCellString(row, colMap['productName']),
         quantity: this.getCellNumber(row, colMap['quantity']) || 1,
         price: this.getCellNumber(row, colMap['price']) || 0,
         discountRatio: this.getCellNumber(row, colMap['discountRatio']) || 0,
@@ -1446,22 +1448,11 @@ export class ImportService {
                 continue;
               }
 
-              // Validate products
-              const missingProducts = group.items
-                .filter((item) => !productMap.has(item.productCode))
-                .map((item) => item.productCode);
-              if (missingProducts.length > 0) {
-                failed.push({
-                  invoiceCode: code,
-                  error: `Mã hàng không tồn tại: ${missingProducts.join(', ')}`,
-                });
-                continue;
-              }
-
-              // Build invoice details
+              // Build invoice details (cho phép SP không tồn tại trong DB)
               const invoiceItems = group.items.map((item) => {
-                const product = productMap.get(item.productCode)!;
-                const price = item.price || Number(product.basePrice);
+                const product = productMap.get(item.productCode);
+                const price =
+                  item.price || (product ? Number(product.basePrice) : 0);
                 const quantity = item.quantity;
                 const itemDiscount =
                   item.discount || (price * item.discountRatio) / 100;
@@ -1471,9 +1462,10 @@ export class ImportService {
                     : Math.max(0, quantity * (price - itemDiscount));
 
                 return {
-                  productId: product.id,
-                  productCode: product.code,
-                  productName: product.name,
+                  productId: product?.id || null,
+                  productCode: product?.code || item.productCode,
+                  productName:
+                    product?.name || item.productName || item.productCode,
                   quantity,
                   price,
                   discount: itemDiscount,
@@ -1751,6 +1743,8 @@ export class ImportService {
         colMap['priceBookName'] = colNumber;
       else if (h.includes('mã hàng') || h.includes('ma hang'))
         colMap['productCode'] = colNumber;
+      else if (h === 'tên hàng' || h === 'ten hang')
+        colMap['productName'] = colNumber;
       else if (h.includes('số lượng') || h.includes('so luong'))
         colMap['quantity'] = colNumber;
       else if (h.includes('đơn giá') || h.includes('don gia'))
@@ -1901,6 +1895,7 @@ export class ImportService {
       { header: 'Bảng giá', key: 'priceBookName', width: 18 },
       // --- Sản phẩm ---
       { header: 'Mã hàng', key: 'productCode', width: 15 },
+      { header: 'Tên hàng', key: 'productName', width: 25 },
       { header: 'Số lượng', key: 'quantity', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 15 },
       { header: 'Giảm giá %', key: 'discountRatio', width: 12 },
@@ -1963,6 +1958,7 @@ export class ImportService {
       deliveryNote: 'Giao giờ hành chính',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000001',
+      productName: 'Sản phẩm A',
       quantity: 5,
       price: 100000,
       discount: 0,
@@ -2005,6 +2001,7 @@ export class ImportService {
       priceBookName: 'Bảng giá chung',
       // --- Chỉ khác phần sản phẩm ---
       productCode: 'SP000002',
+      productName: 'Sản phẩm B',
       quantity: 1,
       price: 150000,
       discount: 0,
@@ -2048,6 +2045,7 @@ export class ImportService {
       deliveryNote: '',
       priceBookName: 'Bảng giá chung',
       productCode: 'SP000004',
+      productName: 'Sản phẩm C',
       quantity: 10,
       price: 75000,
       discount: 20000,

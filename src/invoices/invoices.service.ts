@@ -632,7 +632,9 @@ export class InvoicesService {
         for (const oldDetail of currentInvoice.details) {
           await tx.inventory.updateMany({
             where: {
-              productId: oldDetail.productId,
+              ...(oldDetail.productId != null && {
+                productId: oldDetail.productId,
+              }),
               branchId: currentInvoice.branchId || 1,
             },
             data: this.buildInventoryRestoreData(
@@ -928,7 +930,9 @@ export class InvoicesService {
           for (const detail of currentInvoice.details) {
             await tx.inventory.updateMany({
               where: {
-                productId: detail.productId,
+                ...(detail.productId != null && {
+                  productId: detail.productId,
+                }),
                 branchId: currentInvoice.branchId,
               },
               data: this.buildInventoryRestoreData(
@@ -1326,8 +1330,10 @@ export class InvoicesService {
       const invoicedQuantities: Record<number, number> = {};
       order.invoices.forEach((inv) => {
         inv.details.forEach((d) => {
-          invoicedQuantities[d.productId] =
-            (invoicedQuantities[d.productId] || 0) + Number(d.quantity);
+          if (d.productId != null) {
+            invoicedQuantities[d.productId] =
+              (invoicedQuantities[d.productId] || 0) + Number(d.quantity);
+          }
         });
       });
 
@@ -1632,8 +1638,10 @@ export class InvoicesService {
       });
       updatedInvoices.forEach((inv) => {
         inv.details.forEach((d) => {
-          allInvoicedQty[d.productId] =
-            (allInvoicedQty[d.productId] || 0) + Number(d.quantity);
+          if (d.productId != null) {
+            allInvoicedQty[d.productId] =
+              (allInvoicedQty[d.productId] || 0) + Number(d.quantity);
+          }
         });
       });
 

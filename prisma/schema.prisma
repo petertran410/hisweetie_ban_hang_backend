@@ -1140,7 +1140,7 @@ model Invoice {
 model InvoiceDetail {
   id            Int      @id @default(autoincrement())
   invoiceId     Int
-  productId     Int
+  productId     Int?
   productCode   String
   productName   String
   quantity      Decimal
@@ -1155,7 +1155,7 @@ model InvoiceDetail {
   updatedAt     DateTime @updatedAt
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  product Product? @relation(fields: [productId], references: [id])
 
   @@map("invoice_details")
 }
