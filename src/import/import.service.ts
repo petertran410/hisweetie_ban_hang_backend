@@ -1155,6 +1155,8 @@ export class ImportService {
       invoiceDiscountRatio: number;
       cashAmount: number;
       transferAmount: number;
+      cardAmount: number;
+      walletAmount: number;
       description: string;
       rowNumber: number;
       lineTotal: number;
@@ -1216,6 +1218,8 @@ export class ImportService {
           this.getCellNumber(row, colMap['invoiceDiscountRatio']) || 0,
         cashAmount: this.getCellNumber(row, colMap['cashAmount']) || 0,
         transferAmount: this.getCellNumber(row, colMap['transferAmount']) || 0,
+        cardAmount: this.getCellNumber(row, colMap['cardAmount']),
+        walletAmount: this.getCellNumber(row, colMap['walletAmount']),
         description: this.getCellString(row, colMap['description']),
         rowNumber: r,
         lineTotal: this.getCellNumber(row, colMap['lineTotal']) || 0,
@@ -1456,6 +1460,8 @@ export class ImportService {
             customer: any;
             cashAmount: number;
             transferAmount: number;
+            cardAmount: number;
+            walletAmount: number;
             customerName: string;
             customerPhone: string;
             customerAddress: string;
@@ -1658,6 +1664,8 @@ export class ImportService {
                   customer,
                   cashAmount: h.cashAmount,
                   transferAmount: h.transferAmount,
+                  cardAmount: h.cardAmount,
+                  walletAmount: h.walletAmount,
                   customerName: h.customerName,
                   customerPhone: h.customerPhone,
                   customerAddress: h.customerAddress,
@@ -1696,64 +1704,43 @@ export class ImportService {
 
           // === CREATE: CashFlows + Payments (sequential — cần cashFlowId) ===
           for (const pp of pendingPayments) {
-            if (pp.cashAmount > 0) {
-              const cashPaymentCode = `TT${pp.invoiceCode}-1`;
-              const cashFlow = await tx.cashFlow.create({
-                data: {
-                  code: cashPaymentCode,
-                  branchId: pp.branchId,
-                  cashFlowGroupId: 3,
-                  isReceipt: true,
-                  amount: pp.cashAmount,
-                  transDate: pp.purchaseDate,
-                  method: 'cash',
-                  accountId: null,
-                  partnerType: pp.customer ? 'C' : 'O',
-                  partnerId: pp.customer?.id || null,
-                  partnerName: pp.customer?.name || pp.customerName || null,
-                  contactNumber: pp.customerPhone || null,
-                  address: pp.customerAddress || null,
-                  description: `Import - Tiền mặt - HĐ ${pp.invoiceCode}`,
-                  status: 0,
-                  statusValue: 'Đã thanh toán',
-                  createdBy: pp.userId,
-                  usedForFinancialReporting: 1,
-                  customerDebtSnapshot: null,
-                },
-              });
-              await tx.invoicePayment.create({
-                data: {
-                  code: cashPaymentCode,
-                  invoiceId: pp.invoiceId,
-                  amount: pp.cashAmount,
-                  paymentMethod: 'cash',
-                  paymentDate: pp.purchaseDate,
-                  status: 1,
-                  statusValue: 'Đã thanh toán',
-                  description: 'Import - Tiền mặt',
-                  cashFlowId: cashFlow.id,
-                },
-              });
-            }
+            let paymentSeq = 0;
 
-            if (pp.transferAmount > 0) {
-              const transferPaymentCode = `TT${pp.invoiceCode}-${pp.cashAmount > 0 ? 2 : 1}`;
+            const methods = [
+              { amount: pp.cashAmount, method: 'cash', label: 'Tiền mặt' },
+              {
+                amount: pp.transferAmount,
+                method: 'transfer',
+                label: 'Chuyển khoản',
+              },
+              { amount: pp.cardAmount, method: 'card', label: 'Thẻ' },
+              {
+                amount: pp.walletAmount,
+                method: 'ewallet',
+                label: 'Ví điện tử',
+              },
+            ];
+
+            for (const m of methods) {
+              if (m.amount <= 0) continue;
+              paymentSeq++;
+              const paymentCode = `TT${pp.invoiceCode}-${paymentSeq}`;
               const cashFlow = await tx.cashFlow.create({
                 data: {
-                  code: transferPaymentCode,
+                  code: paymentCode,
                   branchId: pp.branchId,
                   cashFlowGroupId: 3,
                   isReceipt: true,
-                  amount: pp.transferAmount,
+                  amount: m.amount,
                   transDate: pp.purchaseDate,
-                  method: 'transfer',
+                  method: m.method,
                   accountId: null,
                   partnerType: pp.customer ? 'C' : 'O',
                   partnerId: pp.customer?.id || null,
                   partnerName: pp.customer?.name || pp.customerName || null,
                   contactNumber: pp.customerPhone || null,
                   address: pp.customerAddress || null,
-                  description: `Import - Chuyển khoản - HĐ ${pp.invoiceCode}`,
+                  description: `Import - ${m.label} - HĐ ${pp.invoiceCode}`,
                   status: 0,
                   statusValue: 'Đã thanh toán',
                   createdBy: pp.userId,
@@ -1763,14 +1750,14 @@ export class ImportService {
               });
               await tx.invoicePayment.create({
                 data: {
-                  code: transferPaymentCode,
+                  code: paymentCode,
                   invoiceId: pp.invoiceId,
-                  amount: pp.transferAmount,
-                  paymentMethod: 'transfer',
+                  amount: m.amount,
+                  paymentMethod: m.method,
                   paymentDate: pp.purchaseDate,
                   status: 1,
                   statusValue: 'Đã thanh toán',
-                  description: 'Import - Chuyển khoản',
+                  description: `Import - ${m.label}`,
                   cashFlowId: cashFlow.id,
                 },
               });
@@ -1946,6 +1933,15 @@ export class ImportService {
         colMap['cashAmount'] = colNumber;
       else if (h.includes('chuyển khoản') || h.includes('chuyen khoan'))
         colMap['transferAmount'] = colNumber;
+      else if (h.includes('thẻ') || h.includes('the') || h === 'card')
+        colMap['cardAmount'] = colNumber;
+      else if (
+        h.includes('ví') ||
+        h.includes('vi') ||
+        h === 'wallet' ||
+        h.includes('ví điện tử')
+      )
+        colMap['walletAmount'] = colNumber;
       else if (
         (h.includes('ghi chú') || h.includes('ghi chu')) &&
         !h.includes('hàng hóa') &&
@@ -2094,6 +2090,8 @@ export class ImportService {
       // --- Thanh toán ---
       { header: 'Tiền mặt', key: 'cashAmount', width: 15 },
       { header: 'Chuyển khoản', key: 'transferAmount', width: 15 },
+      { header: 'Thẻ', key: 'cardAmount', width: 15 },
+      { header: 'Ví', key: 'walletAmount', width: 15 },
       { header: 'Còn cần thu (COD)', key: 'codAmount', width: 16 }, // MỚI
       // --- Ghi chú ---
       { header: 'Ghi chú', key: 'description', width: 25 },
@@ -2155,6 +2153,8 @@ export class ImportService {
       customerPaid: 650000,
       cashAmount: 650000,
       transferAmount: 0,
+      cardAmount: 0,
+      walletAmount: 0,
       codAmount: 0,
       description: 'Hóa đơn mẫu 1',
     });
@@ -2199,6 +2199,8 @@ export class ImportService {
       customerPaid: 650000,
       cashAmount: 650000,
       transferAmount: 0,
+      cardAmount: 0,
+      walletAmount: 0,
       codAmount: 0,
       description: 'Hóa đơn mẫu 1',
     });
@@ -2242,6 +2244,8 @@ export class ImportService {
       customerPaid: 300000,
       cashAmount: 0,
       transferAmount: 300000,
+      cardAmount: 0,
+      walletAmount: 0,
       codAmount: 200000,
       description: '',
     });
