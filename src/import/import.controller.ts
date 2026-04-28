@@ -156,13 +156,14 @@ export class ImportController {
   @RequirePermissions('invoices:create')
   @UseInterceptors(
     FileInterceptor('file', {
-      limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+      limits: { fileSize: 100 * 1024 * 1024 },
     }),
   )
   @ApiOperation({ summary: 'Import invoices from Excel' })
   async importInvoices(
     @UploadedFile() file: Express.Multer.File,
     @Query('branchId') branchId: string,
+    @Query('recalculateCustomerDebt') recalculateCustomerDebt: string,
     @Req() req: any,
   ) {
     if (!file) {
@@ -183,6 +184,7 @@ export class ImportController {
     return this.importService.importInvoices(file, {
       branchId: branchId ? parseInt(branchId) : undefined,
       userId,
+      recalculateCustomerDebt: recalculateCustomerDebt === 'true',
     });
   }
 

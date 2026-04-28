@@ -1098,7 +1098,11 @@ export class ImportService {
 
   async importInvoices(
     file: Express.Multer.File,
-    options: { branchId?: number; userId: number },
+    options: {
+      branchId?: number;
+      userId: number;
+      recalculateCustomerDebt?: boolean;
+    },
   ) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer as any);
@@ -1315,7 +1319,7 @@ export class ImportService {
           select: { id: true, name: true },
         })
       : [];
-    const pbMap = new Map(priceBooks.map((pb) => [pb.name, pb]));
+    const priceBookMap = new Map(priceBooks.map((pb) => [pb.name, pb]));
 
     // Lookup orders theo mã
     const allOrderCodes = [
@@ -1393,8 +1397,9 @@ export class ImportService {
     };
 
     // --- 6. Batch processing ---
-    const BATCH_SIZE = 100;
+    const BATCH_SIZE = 500;
     let autoCodeIndex = 0;
+    const affectedCustomerIds = new Set<number>();
 
     for (
       let batchStart = 0;
@@ -1407,6 +1412,53 @@ export class ImportService {
         async (tx) => {
           const batchImported: any[] = [];
           const batchUpdated: any[] = [];
+
+          // === PRE-CLEANUP: Batch delete tất cả invoice cần update ===
+          const updateInvoiceIds = batch
+            .map((g) => existingInvoiceMap.get(g.header.invoiceCode))
+            .filter((id): id is number => !!id);
+
+          if (updateInvoiceIds.length > 0) {
+            const oldPayments = await tx.invoicePayment.findMany({
+              where: { invoiceId: { in: updateInvoiceIds } },
+              select: { cashFlowId: true },
+            });
+            const oldCashFlowIds = oldPayments
+              .map((p) => p.cashFlowId)
+              .filter((id): id is number => id != null);
+
+            await tx.invoicePayment.deleteMany({
+              where: { invoiceId: { in: updateInvoiceIds } },
+            });
+            if (oldCashFlowIds.length > 0) {
+              await tx.cashFlow.deleteMany({
+                where: { id: { in: oldCashFlowIds } },
+              });
+            }
+            await tx.invoiceDetail.deleteMany({
+              where: { invoiceId: { in: updateInvoiceIds } },
+            });
+            await tx.invoiceDelivery.deleteMany({
+              where: { invoiceId: { in: updateInvoiceIds } },
+            });
+          }
+
+          // === Collected data cho batch createMany ===
+          const allDetails: any[] = [];
+          const allDeliveries: any[] = [];
+          const pendingPayments: {
+            invoiceId: number;
+            invoiceCode: string;
+            branchId: number;
+            purchaseDate: Date;
+            customer: any;
+            cashAmount: number;
+            transferAmount: number;
+            customerName: string;
+            customerPhone: string;
+            customerAddress: string;
+            userId: number;
+          }[] = [];
 
           for (const group of batch) {
             try {
@@ -1421,17 +1473,14 @@ export class ImportService {
                 continue;
               }
 
-              // Code
               const code =
                 h.invoiceCode ||
                 `HDIP${String(invoiceCount + imported.length + batchImported.length + autoCodeIndex + 1).padStart(6, '0')}`;
               if (!h.invoiceCode) autoCodeIndex++;
 
-              // Check tồn tại → update hoặc create
               const existingInvoiceId = existingInvoiceMap.get(code);
               const isUpdate = !!existingInvoiceId;
 
-              // Resolve branch
               const excelBranch = h.branchName
                 ? branchNameMap.get(h.branchName.toLowerCase())
                 : null;
@@ -1446,7 +1495,7 @@ export class ImportService {
                 continue;
               }
 
-              // Build invoice details (cho phép SP không tồn tại trong DB)
+              // Build invoice details
               const invoiceItems = group.items.map((item) => {
                 const product = productMap.get(item.productCode);
                 const price =
@@ -1457,61 +1506,55 @@ export class ImportService {
                 const totalPrice =
                   item.lineTotal > 0
                     ? item.lineTotal
-                    : Math.max(0, quantity * (price - itemDiscount));
+                    : (price - itemDiscount) * quantity;
 
                 return {
                   productId: product?.id || null,
-                  productCode: product?.code || item.productCode,
+                  productCode: item.productCode,
                   productName:
-                    product?.name || item.productName || item.productCode,
+                    item.productName || product?.name || item.productCode,
                   quantity,
                   price,
                   discount: itemDiscount,
                   discountRatio: item.discountRatio,
                   totalPrice,
-                  conditionType: 'normal' as const,
-                  note: item.productNote || null,
+                  conditionType: 'normal',
+                  note: item.productNote || '',
                 };
               });
 
-              // Tính toán tổng
-              const calcTotalAmount = invoiceItems.reduce(
-                (s, i) => s + i.totalPrice,
-                0,
-              );
               const totalAmount =
-                h.excelTotalAmount > 0 ? h.excelTotalAmount : calcTotalAmount;
+                h.excelTotalAmount > 0
+                  ? h.excelTotalAmount
+                  : invoiceItems.reduce((s, i) => s + i.totalPrice, 0);
               const invoiceDiscountAmount =
                 h.invoiceDiscount ||
-                (totalAmount * h.invoiceDiscountRatio) / 100;
+                (totalAmount * (h.invoiceDiscountRatio || 0)) / 100;
               const grandTotal =
                 h.excelGrandTotal > 0
                   ? h.excelGrandTotal
-                  : Math.max(0, totalAmount - invoiceDiscountAmount);
+                  : totalAmount - invoiceDiscountAmount;
               const paidAmount =
                 h.customerPaid > 0
                   ? h.customerPaid
                   : h.cashAmount + h.transferAmount;
               const debtAmount = grandTotal - paidAmount;
 
-              // Resolve relations
               const customer = h.customerCode
                 ? customerMap.get(h.customerCode)
                 : null;
               const seller = h.sellerName
                 ? sellerMap.get(h.sellerName.toLowerCase())
                 : null;
-              const priceBook =
-                h.priceBookName && h.priceBookName !== 'Bảng giá chung'
-                  ? pbMap.get(h.priceBookName)
-                  : null;
+              const priceBook = h.priceBookName
+                ? priceBookMap.get(h.priceBookName.toLowerCase())
+                : null;
               const order = h.orderCode ? orderCodeMap.get(h.orderCode) : null;
               const creator = h.creatorName
                 ? creatorNameMap.get(h.creatorName.toLowerCase())
                 : null;
               const createdByUserId = creator?.id || options.userId;
 
-              // Parse dates
               const purchaseDate = parseExcelDate(h.purchaseDate) || new Date();
               const importCreatedAt =
                 parseExcelDate(h.createdAtExcel) || purchaseDate;
@@ -1524,33 +1567,6 @@ export class ImportService {
                   ? INVOICE_STATUS.COMPLETED
                   : INVOICE_STATUS.PROCESSING;
 
-              // === Nếu update: xóa dữ liệu cũ trước ===
-              if (isUpdate) {
-                const oldPayments = await tx.invoicePayment.findMany({
-                  where: { invoiceId: existingInvoiceId },
-                  select: { cashFlowId: true },
-                });
-                const oldCashFlowIds = oldPayments
-                  .map((p) => p.cashFlowId)
-                  .filter((id): id is number => id != null);
-
-                await tx.invoicePayment.deleteMany({
-                  where: { invoiceId: existingInvoiceId },
-                });
-                if (oldCashFlowIds.length > 0) {
-                  await tx.cashFlow.deleteMany({
-                    where: { id: { in: oldCashFlowIds } },
-                  });
-                }
-                await tx.invoiceDetail.deleteMany({
-                  where: { invoiceId: existingInvoiceId },
-                });
-                await tx.invoiceDelivery.deleteMany({
-                  where: { invoiceId: existingInvoiceId },
-                });
-              }
-
-              // === Invoice data chung cho cả create và update ===
               const invoiceData = {
                 orderId: order?.id || null,
                 customerId: customer?.id || null,
@@ -1576,7 +1592,7 @@ export class ImportService {
                 updatedAt: importUpdatedAt,
               };
 
-              // === Create hoặc Update invoice ===
+              // Create hoặc Update invoice
               const inv = isUpdate
                 ? await tx.invoice.update({
                     where: { id: existingInvoiceId },
@@ -1586,9 +1602,9 @@ export class ImportService {
                     data: { code, ...invoiceData },
                   });
 
-              // === Tạo details ===
-              await tx.invoiceDetail.createMany({
-                data: invoiceItems.map((item) => ({
+              // Collect details
+              for (const item of invoiceItems) {
+                allDetails.push({
                   invoiceId: inv.id,
                   productId: item.productId,
                   productCode: item.productCode,
@@ -1600,110 +1616,47 @@ export class ImportService {
                   totalPrice: item.totalPrice,
                   conditionType: item.conditionType,
                   note: item.note,
-                })),
-              });
+                });
+              }
 
-              // === Tạo delivery nếu có ===
+              // Collect delivery
               if (h.receiverName) {
-                await tx.invoiceDelivery.create({
-                  data: {
-                    invoiceId: inv.id,
-                    receiver: h.receiverName,
-                    contactNumber: h.receiverPhone || '',
-                    address: h.receiverAddress || '',
-                    locationName: h.receiverLocation || null,
-                    wardName: h.receiverWard || null,
-                    weight: h.weight || null,
-                    noteForDriver: h.deliveryNote || null,
-                    status: 1,
-                    statusValue: 'Đã giao',
-                  },
+                allDeliveries.push({
+                  invoiceId: inv.id,
+                  receiver: h.receiverName,
+                  contactNumber: h.receiverPhone || '',
+                  address: h.receiverAddress || '',
+                  locationName: h.receiverLocation || null,
+                  wardName: h.receiverWard || null,
+                  weight: h.weight || null,
+                  noteForDriver: h.deliveryNote || null,
+                  status: 1,
+                  statusValue: 'Đã giao',
                 });
               }
 
-              // === Tạo CashFlow + Payment (tiền mặt) ===
-              if (h.cashAmount > 0) {
-                const cashPaymentCode = `TT${inv.code}-1`;
-                const cashFlow = await tx.cashFlow.create({
-                  data: {
-                    code: cashPaymentCode,
-                    branchId: invoiceBranchId || 1,
-                    cashFlowGroupId: 3,
-                    isReceipt: true,
-                    amount: h.cashAmount,
-                    transDate: purchaseDate,
-                    method: 'cash',
-                    accountId: null,
-                    partnerType: customer ? 'C' : 'O',
-                    partnerId: customer?.id || null,
-                    partnerName: customer?.name || h.customerName || null,
-                    contactNumber: h.customerPhone || null,
-                    address: h.customerAddress || null,
-                    description: `Import - Tiền mặt - HĐ ${inv.code}`,
-                    status: 0,
-                    statusValue: 'Đã thanh toán',
-                    createdBy: options.userId,
-                    usedForFinancialReporting: 1,
-                    customerDebtSnapshot: null,
-                  },
-                });
-                await tx.invoicePayment.create({
-                  data: {
-                    code: cashPaymentCode,
-                    invoiceId: inv.id,
-                    amount: h.cashAmount,
-                    paymentMethod: 'cash',
-                    paymentDate: purchaseDate,
-                    status: 1,
-                    statusValue: 'Đã thanh toán',
-                    description: 'Import - Tiền mặt',
-                    cashFlowId: cashFlow.id,
-                  },
+              // Collect payment data
+              if (h.cashAmount > 0 || h.transferAmount > 0) {
+                pendingPayments.push({
+                  invoiceId: inv.id,
+                  invoiceCode: inv.code,
+                  branchId: invoiceBranchId || 1,
+                  purchaseDate,
+                  customer,
+                  cashAmount: h.cashAmount,
+                  transferAmount: h.transferAmount,
+                  customerName: h.customerName,
+                  customerPhone: h.customerPhone,
+                  customerAddress: h.customerAddress,
+                  userId: options.userId,
                 });
               }
 
-              // === Tạo CashFlow + Payment (chuyển khoản) ===
-              if (h.transferAmount > 0) {
-                const transferPaymentCode = `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`;
-                const cashFlow = await tx.cashFlow.create({
-                  data: {
-                    code: transferPaymentCode,
-                    branchId: invoiceBranchId || 1,
-                    cashFlowGroupId: 3,
-                    isReceipt: true,
-                    amount: h.transferAmount,
-                    transDate: purchaseDate,
-                    method: 'transfer',
-                    accountId: null,
-                    partnerType: customer ? 'C' : 'O',
-                    partnerId: customer?.id || null,
-                    partnerName: customer?.name || h.customerName || null,
-                    contactNumber: h.customerPhone || null,
-                    address: h.customerAddress || null,
-                    description: `Import - Chuyển khoản - HĐ ${inv.code}`,
-                    status: 0,
-                    statusValue: 'Đã thanh toán',
-                    createdBy: options.userId,
-                    usedForFinancialReporting: 1,
-                    customerDebtSnapshot: null,
-                  },
-                });
-                await tx.invoicePayment.create({
-                  data: {
-                    code: transferPaymentCode,
-                    invoiceId: inv.id,
-                    amount: h.transferAmount,
-                    paymentMethod: 'transfer',
-                    paymentDate: purchaseDate,
-                    status: 1,
-                    statusValue: 'Đã thanh toán',
-                    description: 'Import - Chuyển khoản',
-                    cashFlowId: cashFlow.id,
-                  },
-                });
+              // Track affected customers
+              if (customer?.id) {
+                affectedCustomerIds.add(customer.id);
               }
 
-              // === Push kết quả ===
               if (isUpdate) {
                 batchUpdated.push(inv);
               } else {
@@ -1718,13 +1671,122 @@ export class ImportService {
             }
           }
 
+          // === BATCH CREATE: Details ===
+          if (allDetails.length > 0) {
+            await tx.invoiceDetail.createMany({ data: allDetails });
+          }
+
+          // === BATCH CREATE: Deliveries ===
+          if (allDeliveries.length > 0) {
+            await tx.invoiceDelivery.createMany({ data: allDeliveries });
+          }
+
+          // === CREATE: CashFlows + Payments (sequential — cần cashFlowId) ===
+          for (const pp of pendingPayments) {
+            if (pp.cashAmount > 0) {
+              const cashPaymentCode = `TT${pp.invoiceCode}-1`;
+              const cashFlow = await tx.cashFlow.create({
+                data: {
+                  code: cashPaymentCode,
+                  branchId: pp.branchId,
+                  cashFlowGroupId: 3,
+                  isReceipt: true,
+                  amount: pp.cashAmount,
+                  transDate: pp.purchaseDate,
+                  method: 'cash',
+                  accountId: null,
+                  partnerType: pp.customer ? 'C' : 'O',
+                  partnerId: pp.customer?.id || null,
+                  partnerName: pp.customer?.name || pp.customerName || null,
+                  contactNumber: pp.customerPhone || null,
+                  address: pp.customerAddress || null,
+                  description: `Import - Tiền mặt - HĐ ${pp.invoiceCode}`,
+                  status: 0,
+                  statusValue: 'Đã thanh toán',
+                  createdBy: pp.userId,
+                  usedForFinancialReporting: 1,
+                  customerDebtSnapshot: null,
+                },
+              });
+              await tx.invoicePayment.create({
+                data: {
+                  code: cashPaymentCode,
+                  invoiceId: pp.invoiceId,
+                  amount: pp.cashAmount,
+                  paymentMethod: 'cash',
+                  paymentDate: pp.purchaseDate,
+                  status: 1,
+                  statusValue: 'Đã thanh toán',
+                  description: 'Import - Tiền mặt',
+                  cashFlowId: cashFlow.id,
+                },
+              });
+            }
+
+            if (pp.transferAmount > 0) {
+              const transferPaymentCode = `TT${pp.invoiceCode}-${pp.cashAmount > 0 ? 2 : 1}`;
+              const cashFlow = await tx.cashFlow.create({
+                data: {
+                  code: transferPaymentCode,
+                  branchId: pp.branchId,
+                  cashFlowGroupId: 3,
+                  isReceipt: true,
+                  amount: pp.transferAmount,
+                  transDate: pp.purchaseDate,
+                  method: 'transfer',
+                  accountId: null,
+                  partnerType: pp.customer ? 'C' : 'O',
+                  partnerId: pp.customer?.id || null,
+                  partnerName: pp.customer?.name || pp.customerName || null,
+                  contactNumber: pp.customerPhone || null,
+                  address: pp.customerAddress || null,
+                  description: `Import - Chuyển khoản - HĐ ${pp.invoiceCode}`,
+                  status: 0,
+                  statusValue: 'Đã thanh toán',
+                  createdBy: pp.userId,
+                  usedForFinancialReporting: 1,
+                  customerDebtSnapshot: null,
+                },
+              });
+              await tx.invoicePayment.create({
+                data: {
+                  code: transferPaymentCode,
+                  invoiceId: pp.invoiceId,
+                  amount: pp.transferAmount,
+                  paymentMethod: 'transfer',
+                  paymentDate: pp.purchaseDate,
+                  status: 1,
+                  statusValue: 'Đã thanh toán',
+                  description: 'Import - Chuyển khoản',
+                  cashFlowId: cashFlow.id,
+                },
+              });
+            }
+          }
+
           return { batchImported, batchUpdated };
         },
-        { timeout: 60000 }, // 1 phút per batch
+        { timeout: 300000 }, // 5 phút per batch
       );
 
       imported.push(...batchResults.batchImported);
       updated.push(...batchResults.batchUpdated);
+    }
+
+    // --- 7. Recalculate customer debt (nếu được yêu cầu) ---
+    if (options.recalculateCustomerDebt && affectedCustomerIds.size > 0) {
+      const customerIds = Array.from(affectedCustomerIds);
+      const CUSTOMER_BATCH = 100;
+
+      for (let i = 0; i < customerIds.length; i += CUSTOMER_BATCH) {
+        const batchIds = customerIds.slice(i, i + CUSTOMER_BATCH);
+
+        await this.prisma.$transaction(async (tx) => {
+          for (const customerId of batchIds) {
+            await this.recalculateCustomerTotals(customerId, tx);
+          }
+        });
+      }
     }
 
     return {
@@ -1734,6 +1796,66 @@ export class ImportService {
       failed: failed.length,
       errors: [...parseErrors, ...failed],
     };
+  }
+
+  private async recalculateCustomerTotals(customerId: number, tx: any) {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: { id: true },
+    });
+    if (!customer) return;
+
+    const invoices = await tx.invoice.findMany({
+      where: {
+        customerId,
+        status: { notIn: [2] }, // Exclude cancelled
+      },
+      select: { grandTotal: true },
+    });
+
+    const totalPurchased = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.grandTotal),
+      0,
+    );
+
+    const cashFlowsReceipt = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        code: { not: { startsWith: 'TTTUHD' } },
+      },
+      select: { amount: true },
+    });
+    const totalReceived = cashFlowsReceipt.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const cashFlowsPaidOut = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: false,
+        status: { not: 2 },
+      },
+      select: { amount: true },
+    });
+    const totalPaidOut = cashFlowsPaidOut.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const totalDebt = totalPurchased - totalReceived + totalPaidOut;
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: {
+        totalPurchased,
+        totalDebt,
+      },
+    });
   }
 
   // --- Helper: build column map cho invoice ---
