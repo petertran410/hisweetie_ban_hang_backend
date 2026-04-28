@@ -1001,10 +1001,20 @@ export class CustomersService {
     }
 
     // Tính lại debtSnapshot theo zigzag
-    timeline.sort(
-      (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
+    const calcOrder: Record<string, number> = {
+      invoice: 0,
+      expense: 1,
+      ctn_cancelled: 2,
+      return_order: 3,
+      debt_offset: 4,
+      payment: 5,
+    };
+    timeline.sort((a, b) => {
+      const timeDiff =
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (calcOrder[a.type] ?? 3) - (calcOrder[b.type] ?? 3);
+    });
 
     let runningDebt = 0;
     for (const item of timeline) {
