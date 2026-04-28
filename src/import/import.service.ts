@@ -1175,6 +1175,7 @@ export class ImportService {
       productNote: string;
       codAmount: number;
       branchName: string;
+      statusText: string;
     }
 
     const rawRows: RawRow[] = [];
@@ -1235,6 +1236,7 @@ export class ImportService {
         productNote: this.getCellString(row, colMap['productNote']),
         codAmount: this.getCellNumber(row, colMap['codAmount']) || 0,
         branchName: this.getCellString(row, colMap['branchName']),
+        statusText: this.getCellString(row, colMap['statusText']),
       });
     }
 
@@ -1562,10 +1564,21 @@ export class ImportService {
                 parseExcelDate(h.updatedAtExcel) || importCreatedAt;
 
               const usingCod = h.codAmount > 0;
-              const status =
-                debtAmount <= 0
+
+              // Xác định trạng thái từ Excel
+              const excelStatusText = h.statusText?.trim().toLowerCase();
+              const isCancelled =
+                excelStatusText === 'đã hủy' || excelStatusText === 'da huy';
+
+              const status = isCancelled
+                ? INVOICE_STATUS.CANCELLED
+                : debtAmount <= 0
                   ? INVOICE_STATUS.COMPLETED
                   : INVOICE_STATUS.PROCESSING;
+
+              // Nếu đã hủy: không tính tiền
+              const effectivePaidAmount = isCancelled ? 0 : paidAmount;
+              const effectiveDebtAmount = isCancelled ? 0 : debtAmount;
 
               const invoiceData = {
                 orderId: order?.id || null,
@@ -1580,8 +1593,8 @@ export class ImportService {
                 discount: invoiceDiscountAmount,
                 discountRatio: h.invoiceDiscountRatio || 0,
                 grandTotal,
-                paidAmount,
-                debtAmount,
+                paidAmount: effectivePaidAmount,
+                debtAmount: effectiveDebtAmount,
                 customerDebtSnapshot: null,
                 status,
                 statusValue: getStatusLabel(status),
@@ -1636,7 +1649,7 @@ export class ImportService {
               }
 
               // Collect payment data
-              if (h.cashAmount > 0 || h.transferAmount > 0) {
+              if (!isCancelled && (h.cashAmount > 0 || h.transferAmount > 0)) {
                 pendingPayments.push({
                   invoiceId: inv.id,
                   invoiceCode: inv.code,
@@ -2002,6 +2015,12 @@ export class ImportService {
         h === 'cod'
       )
         colMap['codAmount'] = colNumber;
+      else if (
+        (h === 'trạng thái' || h === 'trang thai') &&
+        !h.includes('ghi chú') &&
+        !h.includes('giao hàng')
+      )
+        colMap['statusText'] = colNumber;
     });
   }
 
