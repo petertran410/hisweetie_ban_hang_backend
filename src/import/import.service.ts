@@ -1361,8 +1361,9 @@ export class ImportService {
       branchesFromExcel.map((b) => [b.name.toLowerCase(), b]),
     );
 
-    // --- 5. Pre-fetch: invoice count + existing codes (tối ưu) ---
+    // --- 5. Pre-fetch: invoice count + existing invoices (tối ưu) ---
     const imported: any[] = [];
+    const updated: any[] = [];
     const failed: { invoiceCode?: string; error: string }[] = [];
 
     const invoiceCount = await this.prisma.invoice.count();
@@ -1372,10 +1373,12 @@ export class ImportService {
     const existingInvoices = allInvoiceCodes.length
       ? await this.prisma.invoice.findMany({
           where: { code: { in: allInvoiceCodes } },
-          select: { code: true },
+          select: { id: true, code: true },
         })
       : [];
-    const existingCodeSet = new Set(existingInvoices.map((i) => i.code));
+    const existingInvoiceMap = new Map(
+      existingInvoices.map((i) => [i.code, i.id]),
+    );
 
     // Helper: parse Excel date
     const parseExcelDate = (val: any): Date | null => {
@@ -1403,6 +1406,7 @@ export class ImportService {
       const batchResults = await this.prisma.$transaction(
         async (tx) => {
           const batchImported: any[] = [];
+          const batchUpdated: any[] = [];
 
           for (const group of batch) {
             try {
@@ -1423,15 +1427,9 @@ export class ImportService {
                 `HDIP${String(invoiceCount + imported.length + batchImported.length + autoCodeIndex + 1).padStart(6, '0')}`;
               if (!h.invoiceCode) autoCodeIndex++;
 
-              // Check trùng mã (dùng Set)
-              if (existingCodeSet.has(code)) {
-                failed.push({
-                  invoiceCode: code,
-                  error: `Mã hóa đơn "${code}" đã tồn tại`,
-                });
-                continue;
-              }
-              existingCodeSet.add(code);
+              // Check tồn tại → update hoặc create
+              const existingInvoiceId = existingInvoiceMap.get(code);
+              const isUpdate = !!existingInvoiceId;
 
               // Resolve branch
               const excelBranch = h.branchName
@@ -1526,67 +1524,104 @@ export class ImportService {
                   ? INVOICE_STATUS.COMPLETED
                   : INVOICE_STATUS.PROCESSING;
 
-              // Tạo invoice
-              const inv = await tx.invoice.create({
-                data: {
-                  code,
-                  orderId: order?.id || null,
-                  customerId: customer?.id || null,
-                  parentCustomerId: customer?.id || null,
-                  branchId: invoiceBranchId,
-                  soldById: seller?.id || null,
-                  priceBookId: priceBook?.id || null,
-                  priceBookName: priceBook?.name || null,
-                  purchaseDate,
-                  totalAmount,
-                  discount: invoiceDiscountAmount,
-                  discountRatio: h.invoiceDiscountRatio || 0,
-                  grandTotal,
-                  paidAmount,
-                  debtAmount,
-                  customerDebtSnapshot: null,
-                  status,
-                  statusValue: getStatusLabel(status),
-                  usingCod,
-                  description: h.description || null,
-                  createdBy: createdByUserId,
-                  createdAt: importCreatedAt,
-                  updatedAt: importUpdatedAt,
-                  details: {
-                    createMany: {
-                      data: invoiceItems.map((item) => ({
-                        productId: item.productId,
-                        productCode: item.productCode,
-                        productName: item.productName,
-                        quantity: item.quantity,
-                        price: item.price,
-                        discount: item.discount,
-                        discountRatio: item.discountRatio,
-                        totalPrice: item.totalPrice,
-                        conditionType: item.conditionType,
-                        note: item.note,
-                      })),
-                    },
-                  },
-                  ...(h.receiverName && {
-                    delivery: {
-                      create: {
-                        receiver: h.receiverName,
-                        contactNumber: h.receiverPhone || '',
-                        address: h.receiverAddress || '',
-                        locationName: h.receiverLocation || null,
-                        wardName: h.receiverWard || null,
-                        weight: h.weight || null,
-                        noteForDriver: h.deliveryNote || null,
-                        status: 1,
-                        statusValue: 'Đã giao',
-                      },
-                    },
-                  }),
-                },
+              // === Nếu update: xóa dữ liệu cũ trước ===
+              if (isUpdate) {
+                const oldPayments = await tx.invoicePayment.findMany({
+                  where: { invoiceId: existingInvoiceId },
+                  select: { cashFlowId: true },
+                });
+                const oldCashFlowIds = oldPayments
+                  .map((p) => p.cashFlowId)
+                  .filter((id): id is number => id != null);
+
+                await tx.invoicePayment.deleteMany({
+                  where: { invoiceId: existingInvoiceId },
+                });
+                if (oldCashFlowIds.length > 0) {
+                  await tx.cashFlow.deleteMany({
+                    where: { id: { in: oldCashFlowIds } },
+                  });
+                }
+                await tx.invoiceDetail.deleteMany({
+                  where: { invoiceId: existingInvoiceId },
+                });
+                await tx.invoiceDelivery.deleteMany({
+                  where: { invoiceId: existingInvoiceId },
+                });
+              }
+
+              // === Invoice data chung cho cả create và update ===
+              const invoiceData = {
+                orderId: order?.id || null,
+                customerId: customer?.id || null,
+                parentCustomerId: customer?.id || null,
+                branchId: invoiceBranchId,
+                soldById: seller?.id || null,
+                priceBookId: priceBook?.id || null,
+                priceBookName: priceBook?.name || null,
+                purchaseDate,
+                totalAmount,
+                discount: invoiceDiscountAmount,
+                discountRatio: h.invoiceDiscountRatio || 0,
+                grandTotal,
+                paidAmount,
+                debtAmount,
+                customerDebtSnapshot: null,
+                status,
+                statusValue: getStatusLabel(status),
+                usingCod,
+                description: h.description || null,
+                createdBy: createdByUserId,
+                createdAt: importCreatedAt,
+                updatedAt: importUpdatedAt,
+              };
+
+              // === Create hoặc Update invoice ===
+              const inv = isUpdate
+                ? await tx.invoice.update({
+                    where: { id: existingInvoiceId },
+                    data: invoiceData,
+                  })
+                : await tx.invoice.create({
+                    data: { code, ...invoiceData },
+                  });
+
+              // === Tạo details ===
+              await tx.invoiceDetail.createMany({
+                data: invoiceItems.map((item) => ({
+                  invoiceId: inv.id,
+                  productId: item.productId,
+                  productCode: item.productCode,
+                  productName: item.productName,
+                  quantity: item.quantity,
+                  price: item.price,
+                  discount: item.discount,
+                  discountRatio: item.discountRatio,
+                  totalPrice: item.totalPrice,
+                  conditionType: item.conditionType,
+                  note: item.note,
+                })),
               });
 
-              // Tạo CashFlow + Payment (tiền mặt)
+              // === Tạo delivery nếu có ===
+              if (h.receiverName) {
+                await tx.invoiceDelivery.create({
+                  data: {
+                    invoiceId: inv.id,
+                    receiver: h.receiverName,
+                    contactNumber: h.receiverPhone || '',
+                    address: h.receiverAddress || '',
+                    locationName: h.receiverLocation || null,
+                    wardName: h.receiverWard || null,
+                    weight: h.weight || null,
+                    noteForDriver: h.deliveryNote || null,
+                    status: 1,
+                    statusValue: 'Đã giao',
+                  },
+                });
+              }
+
+              // === Tạo CashFlow + Payment (tiền mặt) ===
               if (h.cashAmount > 0) {
                 const cashPaymentCode = `TT${inv.code}-1`;
                 const cashFlow = await tx.cashFlow.create({
@@ -1627,7 +1662,7 @@ export class ImportService {
                 });
               }
 
-              // Tạo CashFlow + Payment (chuyển khoản)
+              // === Tạo CashFlow + Payment (chuyển khoản) ===
               if (h.transferAmount > 0) {
                 const transferPaymentCode = `TT${inv.code}-${h.cashAmount > 0 ? 2 : 1}`;
                 const cashFlow = await tx.cashFlow.create({
@@ -1668,7 +1703,12 @@ export class ImportService {
                 });
               }
 
-              batchImported.push(inv);
+              // === Push kết quả ===
+              if (isUpdate) {
+                batchUpdated.push(inv);
+              } else {
+                batchImported.push(inv);
+              }
             } catch (error) {
               failed.push({
                 invoiceCode:
@@ -1678,17 +1718,19 @@ export class ImportService {
             }
           }
 
-          return batchImported;
+          return { batchImported, batchUpdated };
         },
-        { timeout: 120000 }, // 2 phút per batch
+        { timeout: 60000 }, // 1 phút per batch
       );
 
-      imported.push(...batchResults);
+      imported.push(...batchResults.batchImported);
+      updated.push(...batchResults.batchUpdated);
     }
 
     return {
       total: groups.length,
       imported: imported.length,
+      updated: updated.length,
       failed: failed.length,
       errors: [...parseErrors, ...failed],
     };
