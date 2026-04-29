@@ -79,7 +79,7 @@ export class OrdersController {
 
   @Delete(':id')
   @RequirePermissions('orders:delete')
-  remove(@Param('id') id: string) {
-    return this.ordersService.remove(+id);
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.ordersService.remove(+id, user.id);
   }
 }

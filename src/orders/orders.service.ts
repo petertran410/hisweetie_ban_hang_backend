@@ -749,11 +749,14 @@ export class OrdersService {
     return `DH${nextId.toString().padStart(6, '0')}`;
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
         where: { id },
-        include: { items: true },
+        include: {
+          items: true,
+          customer: { select: { id: true, code: true, name: true } },
+        },
       });
 
       if (!order) {
@@ -761,6 +764,34 @@ export class OrdersService {
       }
 
       await tx.order.delete({ where: { id } });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'ORDER_DELETE',
+        entityType: 'orders',
+        entityId: id.toString(),
+        entityCode: order.code,
+        category: getCategoryFromActionCode('ORDER_DELETE'),
+        severity: getSeverityFromActionCode('ORDER_DELETE'),
+        snapshot: {
+          code: order.code,
+          status: order.statusValue,
+          customerName: order.customer?.name || 'N/A',
+          grandTotal: Number(order.grandTotal),
+        },
+        message: renderAuditMessage('ORDER_DELETE', {
+          orderCode: order.code,
+        }),
+        messageTemplate: 'ORDER_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: order.branchId || user?.branchId || undefined,
+      });
     });
   }
 
