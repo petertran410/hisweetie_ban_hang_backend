@@ -144,6 +144,11 @@ export class PurchaseOrdersService {
         select: { name: true, email: true, branchId: true },
       });
 
+      const branch = await tx.branch.findUnique({
+        where: { id: dto.branchId },
+        select: { name: true },
+      });
+
       await this.auditLogsService.create({
         actionType: 'POST',
         actionCode: 'PURCHASE_ORDER_CREATE',
@@ -155,6 +160,7 @@ export class PurchaseOrdersService {
         snapshot: this.buildPurchaseOrderSnapshot(
           purchaseOrder,
           supplier?.name,
+          branch?.name,
         ),
         message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
           purchaseOrderCode: purchaseOrder.code,
@@ -408,14 +414,6 @@ export class PurchaseOrdersService {
       }
 
       if (userId) {
-        const updatedPO = await tx.purchaseOrder.findUnique({
-          where: { id },
-          include: {
-            supplier: { select: { id: true, name: true } },
-            items: true,
-          },
-        });
-
         const user = await tx.user.findUnique({
           where: { id: userId },
           select: { name: true, email: true, branchId: true },
@@ -424,6 +422,15 @@ export class PurchaseOrdersService {
         const supplierName = await tx.supplier.findUnique({
           where: { id: dto.supplierId },
           select: { name: true },
+        });
+
+        const updatedPO = await tx.purchaseOrder.findUnique({
+          where: { id },
+          include: {
+            supplier: { select: { id: true, name: true } },
+            branch: { select: { id: true, name: true } }, // THÊM
+            items: true,
+          },
         });
 
         await this.auditLogsService.create({
@@ -437,6 +444,7 @@ export class PurchaseOrdersService {
           snapshot: this.buildPurchaseOrderSnapshot(
             updatedPO || existing,
             supplierName?.name,
+            updatedPO?.branch?.name,
           ),
           message: renderAuditMessage('PURCHASE_ORDER_UPDATE', {
             purchaseOrderCode: updatedPO?.code || existing.code,
@@ -477,7 +485,10 @@ export class PurchaseOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
-        include: { items: true },
+        include: {
+          items: true,
+          branch: { select: { id: true, name: true } }, // THÊM
+        },
       });
 
       if (!purchaseOrder) {
@@ -505,7 +516,11 @@ export class PurchaseOrdersService {
           entityCode: purchaseOrder.code,
           category: getCategoryFromActionCode('PURCHASE_ORDER_DELETE'),
           severity: getSeverityFromActionCode('PURCHASE_ORDER_DELETE'),
-          snapshot: this.buildPurchaseOrderSnapshot(purchaseOrder),
+          snapshot: this.buildPurchaseOrderSnapshot(
+            purchaseOrder,
+            undefined,
+            purchaseOrder.branch?.name,
+          ),
           message: renderAuditMessage('PURCHASE_ORDER_DELETE', {
             purchaseOrderCode: purchaseOrder.code,
           }),
@@ -724,13 +739,18 @@ export class PurchaseOrdersService {
     throw new Error('Không thể tạo mã phiếu nhập hàng duy nhất');
   }
 
-  private buildPurchaseOrderSnapshot(po: any, supplierName?: any) {
+  private buildPurchaseOrderSnapshot(
+    po: any,
+    supplierName?: any,
+    branchName?: string,
+  ) {
     return {
       code: po.code,
       supplierId: po.supplierId,
       supplierName: supplierName,
       supplierDebt: po.supplierDebt,
       branchId: po.branchId,
+      branchName: branchName || po.branch?.name, // THÊM
       total: Number(po.total || 0),
       discount: Number(po.discount || 0),
       paidAmount: Number(po.paidAmount || 0),

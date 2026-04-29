@@ -520,6 +520,7 @@ export class OrderSuppliersService {
   async remove(id: number, userId: number) {
     const orderSupplier = await this.prisma.orderSupplier.findUnique({
       where: { id },
+      include: { branch: { select: { name: true } } }, // THÊM
     });
 
     if (!orderSupplier) {
@@ -695,6 +696,7 @@ export class OrderSuppliersService {
       supplierName: os.supplier?.name,
       supplierDebt: os.supplierDebt,
       branchId: os.branchId,
+      branchName: os.branch?.name,
       status: os.status,
       statusValue: os.statusValue,
       total: Number(os.total || 0),
