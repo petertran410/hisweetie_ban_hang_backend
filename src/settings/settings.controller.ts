@@ -1,4 +1,4 @@
-import { Controller, Get, Put, Body, UseGuards } from '@nestjs/common';
+import { Controller, Get, Put, Body, UseGuards, Req } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -19,9 +19,9 @@ export class SettingsController {
   }
 
   @Put()
-  @RequirePermissions('settings.update')
+  @RequirePermissions('settings:update')
   @ApiOperation({ summary: 'Update system settings' })
-  updateSettings(@Body() dto: UpdateSettingsDto) {
-    return this.settingsService.updateSettings(dto);
+  updateSettings(@Body() dto: UpdateSettingsDto, @Req() req: any) {
+    return this.settingsService.updateSettings(dto, req.user?.id);
   }
 }

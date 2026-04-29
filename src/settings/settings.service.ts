@@ -1,10 +1,19 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSettingsDto } from './dto';
+import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from 'src/audit-logs/audit-templates';
 
 @Injectable()
 export class SettingsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async getSettings() {
     let settings = await this.prisma.settings.findFirst();
@@ -23,10 +32,17 @@ export class SettingsService {
     return settings;
   }
 
-  async updateSettings(dto: UpdateSettingsDto) {
+  async updateSettings(dto: UpdateSettingsDto, userId?: number) {
     const settings = await this.getSettings();
 
-    return this.prisma.settings.update({
+    const before = {
+      managerCustomerByBranch: settings.managerCustomerByBranch,
+      allowOrderWhenOutStock: settings.allowOrderWhenOutStock,
+      allowSellWhenOrderOutStock: settings.allowSellWhenOrderOutStock,
+      allowSellWhenOutStock: settings.allowSellWhenOutStock,
+    };
+
+    const updated = await this.prisma.settings.update({
       where: { id: settings.id },
       data: {
         managerCustomerByBranch: dto.managerCustomerByBranch,
@@ -35,5 +51,29 @@ export class SettingsService {
         allowSellWhenOutStock: dto.allowSellWhenOutStock,
       },
     });
+
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'SETTINGS_UPDATE',
+        entityType: 'settings',
+        entityId: updated.id.toString(),
+        entityCode: 'system_settings',
+        category: getCategoryFromActionCode('SETTINGS_UPDATE'),
+        severity: getSeverityFromActionCode('SETTINGS_UPDATE'),
+        snapshot: { before, after: dto },
+        message: renderAuditMessage('SETTINGS_UPDATE', {}),
+        messageTemplate: 'SETTINGS_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+      });
+    }
+
+    return updated;
   }
 }

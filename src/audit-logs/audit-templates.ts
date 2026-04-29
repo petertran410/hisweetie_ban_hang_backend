@@ -19,6 +19,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'order',
     severity: 'warning',
   },
+  ORDER_CANCEL: {
+    template: 'Hủy đơn hàng {orderCode}, khách hàng: {customerName}',
+    category: 'order',
+    severity: 'warning',
+  },
 
   INVOICE_CREATE: {
     template:
@@ -382,6 +387,39 @@ export const AUDIT_TEMPLATES: Record<
   SETTINGS_UPDATE: {
     template: 'Cập nhật cài đặt hệ thống',
     category: 'setting',
+    severity: 'warning',
+  },
+
+  RETURN_ORDER_CREATE: {
+    template: 'Tạo phiếu trả hàng {returnOrderCode} từ hóa đơn {invoiceCodes}',
+    category: 'return_order',
+    severity: 'info',
+  },
+  RETURN_ORDER_REQUEST_DRAFT: {
+    template: 'Lưu phiếu tạm bước 1 trả hàng {returnOrderCode}',
+    category: 'return_order',
+    severity: 'info',
+  },
+  RETURN_ORDER_REQUEST_COMPLETE: {
+    template: 'Hoàn thành bước 1 trả hàng {returnOrderCode}',
+    category: 'return_order',
+    severity: 'info',
+  },
+  RETURN_ORDER_STOCK_RECEIVED: {
+    template:
+      'Xác nhận nhận hàng trả phiếu {returnOrderCode}, hoàn tiền: {refundAmount}',
+    category: 'return_order',
+    severity: 'info',
+  },
+  RETURN_ORDER_REFUND_CONFIRMED: {
+    template:
+      'Xác nhận hoàn tiền phiếu trả hàng {returnOrderCode} ({refundType})',
+    category: 'return_order',
+    severity: 'info',
+  },
+  RETURN_ORDER_CANCEL: {
+    template: 'Hủy phiếu trả hàng {returnOrderCode}',
+    category: 'return_order',
     severity: 'warning',
   },
 };

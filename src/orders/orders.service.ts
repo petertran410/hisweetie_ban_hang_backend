@@ -893,17 +893,16 @@ export class OrdersService {
         entityType: 'orders',
         entityId: id.toString(),
         entityCode: order.code,
-        category: getCategoryFromActionCode('ORDER_UPDATE'),
-        severity: getSeverityFromActionCode('ORDER_UPDATE'),
+        category: getCategoryFromActionCode('ORDER_CANCEL'),
+        severity: getSeverityFromActionCode('ORDER_CANCEL'),
         snapshot: this.buildOrderSnapshot(order),
-        message: renderAuditMessage('ORDER_UPDATE', {
+        message: renderAuditMessage('ORDER_CANCEL', {
           orderCode: order.code,
-          statusValue: 'Đã hủy',
           customerName: order.customer?.name || 'N/A',
         }),
-        messageTemplate: 'ORDER_UPDATE',
+        messageTemplate: 'ORDER_CANCEL',
         userId,
-        userName: user?.name || user?.email || 'System',
+        userName: user?.name || 'System',
         branchId: order.branchId || undefined,
       });
 
