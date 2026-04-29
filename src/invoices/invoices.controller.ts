@@ -88,12 +88,6 @@ export class InvoicesController {
     return this.invoicesService.update(+id, dto, user.id);
   }
 
-  @Delete(':id')
-  @RequirePermissions('invoices:delete')
-  remove(@Param('id') id: string) {
-    return this.invoicesService.remove(+id);
-  }
-
   @Post('from-order/:orderId')
   @RequirePermissions('invoices:update')
   createFromOrder(
@@ -102,5 +96,11 @@ export class InvoicesController {
     @CurrentUser() user: any,
   ) {
     return this.invoicesService.createFromOrder(+orderId, dto, user.id);
+  }
+
+  @Delete(':id')
+  @RequirePermissions('invoices:delete')
+  remove(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.invoicesService.remove(+id, user.id);
   }
 }

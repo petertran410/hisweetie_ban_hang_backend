@@ -1171,31 +1171,62 @@ export class InvoicesService {
         );
       }
 
+      const updatingUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'INVOICE_UPDATE',
+        entityType: 'invoices',
+        entityId: id.toString(),
+        entityCode: currentInvoice.code,
+        category: getCategoryFromActionCode('INVOICE_UPDATE'),
+        severity: getSeverityFromActionCode('INVOICE_UPDATE'),
+        snapshot: this.buildInvoiceSnapshot(updatedInvoice),
+        message: renderAuditMessage('INVOICE_UPDATE', {
+          invoiceCode: currentInvoice.code,
+        }),
+        messageTemplate: 'INVOICE_UPDATE',
+        userId: userId || currentInvoice.createdBy,
+        userName: updatingUser?.name || updatingUser?.email || 'System',
+        branchId: currentInvoice.branchId || undefined,
+      });
+
       return updatedInvoice;
     });
   }
 
-  async remove(id: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const invoice = await tx.invoice.findUnique({
-        where: { id },
-      });
+  async remove(id: number, userId: number) {
+    const invoice = await this.findOne(id);
 
-      if (!invoice) {
-        throw new NotFoundException(`Invoice with ID ${id} not found`);
-      }
+    await this.prisma.invoice.delete({ where: { id } });
 
-      await tx.invoice.delete({ where: { id } });
-
-      if (invoice.orderId) {
-        await this.ordersService['updateOrderStatusByInvoices'](
-          invoice.orderId,
-          tx,
-        );
-      }
-
-      return invoice;
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true, branchId: true },
     });
+
+    await this.auditLogsService.create({
+      actionType: 'DELETE',
+      actionCode: 'INVOICE_DELETE',
+      entityType: 'invoices',
+      entityId: id.toString(),
+      entityCode: (invoice as any).code,
+      category: getCategoryFromActionCode('INVOICE_DELETE'),
+      severity: getSeverityFromActionCode('INVOICE_DELETE'),
+      snapshot: this.buildInvoiceSnapshot(invoice),
+      message: renderAuditMessage('INVOICE_DELETE', {
+        invoiceCode: (invoice as any).code,
+      }),
+      messageTemplate: 'INVOICE_DELETE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: (invoice as any).branchId || user?.branchId || undefined,
+    });
+
+    return { message: 'Xóa hóa đơn thành công' };
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {
