@@ -128,10 +128,10 @@ export class PackingSlipsService {
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
 
-      const packingSlip = await tx.packingSlip.create({
+      const created = await tx.packingSlip.create({
         data: {
           code,
           branchId: dto.branchId,
@@ -147,33 +147,18 @@ export class PackingSlipsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds.map((invoiceId) => ({
-              invoiceId,
-            })),
+            create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
-            ? {
-                create: dto.imageUrls.map((url) => ({
-                  imageUrl: url,
-                })),
-              }
+            ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
             : undefined,
         },
         include: {
           branch: true,
           creator: true,
-          invoices: {
-            include: {
-              invoice: true,
-            },
-          },
+          invoices: { include: { invoice: true } },
           images: true,
         },
-      });
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
       });
 
       await tx.invoice.updateMany({
@@ -189,32 +174,40 @@ export class PackingSlipsService {
         },
       });
 
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'PACKING_SLIP_CREATE',
-        entityType: 'packing_slips',
-        entityId: packingSlip.id.toString(),
-        entityCode: packingSlip.code,
-        category: getCategoryFromActionCode('PACKING_SLIP_CREATE'),
-        severity: getSeverityFromActionCode('PACKING_SLIP_CREATE'),
-        snapshot: this.buildPackingSlipSnapshot(packingSlip),
-        message: renderAuditMessage('PACKING_SLIP_CREATE', {
-          packingCode: packingSlip.code,
-        }),
-        messageTemplate: 'PACKING_SLIP_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: packingSlip.branchId || undefined,
-      });
-
-      return packingSlip;
+      return created;
     });
+
+    // Audit log ngoài transaction
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PACKING_SLIP_CREATE',
+      entityType: 'packing_slips',
+      entityId: packingSlip.id.toString(),
+      entityCode: packingSlip.code,
+      category: getCategoryFromActionCode('PACKING_SLIP_CREATE'),
+      severity: getSeverityFromActionCode('PACKING_SLIP_CREATE'),
+      snapshot: this.buildPackingSlipSnapshot(packingSlip),
+      message: renderAuditMessage('PACKING_SLIP_CREATE', {
+        packingCode: packingSlip.code,
+      }),
+      messageTemplate: 'PACKING_SLIP_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: packingSlip.branchId || undefined,
+    });
+
+    return packingSlip;
   }
 
-  async update(id: number, dto: UpdatePackingSlipDto) {
+  async update(id: number, dto: UpdatePackingSlipDto, userId?: number) {
     const packingSlip = await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       const updateData: any = {
         branchId: dto.branchId,
         numberOfPackages: dto.numberOfPackages,
@@ -234,40 +227,54 @@ export class PackingSlipsService {
           where: { packingSlipId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({
-            invoiceId,
-          })),
+          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
       }
 
       if (dto.imageUrls) {
-        await tx.packingSlipImage.deleteMany({
-          where: { packingSlipId: id },
-        });
+        await tx.packingSlipImage.deleteMany({ where: { packingSlipId: id } });
         updateData.images = {
-          create: dto.imageUrls.map((url) => ({
-            imageUrl: url,
-          })),
+          create: dto.imageUrls.map((url) => ({ imageUrl: url })),
         };
       }
 
-      const updated = await tx.packingSlip.update({
+      return tx.packingSlip.update({
         where: { id },
         data: updateData,
         include: {
           branch: true,
           creator: true,
-          invoices: {
-            include: {
-              invoice: true,
-            },
-          },
+          invoices: { include: { invoice: true } },
           images: true,
         },
       });
-
-      return updated;
     });
+
+    // Audit log ngoài transaction
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'PACKING_SLIP_UPDATE',
+        entityType: 'packing_slips',
+        entityId: id.toString(),
+        entityCode: packingSlip.code,
+        category: getCategoryFromActionCode('PACKING_SLIP_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_SLIP_CREATE'),
+        snapshot: this.buildPackingSlipSnapshot(updated),
+        message: `Cập nhật phiếu đóng hàng ${packingSlip.code}`,
+        messageTemplate: 'PACKING_SLIP_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingSlip.branchId || undefined,
+      });
+    }
+
+    return updated;
   }
 
   async remove(id: number, userId?: number) {

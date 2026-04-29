@@ -87,6 +87,12 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  PACKING_SLIP_UPDATE: {
+    template: 'Cập nhật phiếu đóng hàng {packingCode}',
+    category: 'packing',
+    severity: 'info',
+  },
+
   CUSTOMER_CREATE: {
     template:
       'Thêm khách hàng {customerName} (Mã: {customerCode}), SĐT: {contactNumber}',

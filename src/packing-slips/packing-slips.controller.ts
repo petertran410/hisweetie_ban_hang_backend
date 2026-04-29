@@ -53,9 +53,13 @@ export class PackingSlipsController {
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Cập nhật báo đơn' })
-  update(@Param('id') id: string, @Body() dto: UpdatePackingSlipDto) {
-    return this.packingSlipsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePackingSlipDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.packingSlipsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
