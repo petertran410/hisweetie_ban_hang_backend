@@ -23,7 +23,7 @@ export class BranchesController {
   constructor(private branchesService: BranchesService) {}
 
   @Get()
-  @RequirePermissions('branches.view')
+  @RequirePermissions('branches:view')
   findAll(
     @Query('search') search?: string,
     @Query('isActive') isActive?: string,
@@ -53,26 +53,26 @@ export class BranchesController {
   }
 
   @Get(':id')
-  @RequirePermissions('branches.view')
+  @RequirePermissions('branches:view')
   findOne(@Param('id') id: string) {
     return this.branchesService.findOne(+id);
   }
 
   @Post()
   @RequirePermissions('branches.create')
-  create(@Body() data: any) {
-    return this.branchesService.create(data);
+  create(@Body() data: any, @CurrentUser() user: any) {
+    return this.branchesService.create(data, user.id);
   }
 
   @Put(':id')
   @RequirePermissions('branches.update')
-  update(@Param('id') id: string, @Body() data: any) {
-    return this.branchesService.update(+id, data);
+  update(@Param('id') id: string, @Body() data: any, @CurrentUser() user: any) {
+    return this.branchesService.update(+id, data, user.id);
   }
 
   @Delete(':id')
   @RequirePermissions('branches.delete')
-  delete(@Param('id') id: string) {
-    return this.branchesService.delete(+id);
+  delete(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.branchesService.delete(+id, user.id);
   }
 }
