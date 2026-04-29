@@ -5,10 +5,19 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
+import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from 'src/audit-logs/audit-templates';
 
 @Injectable()
 export class UsersService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(filters?: {
     search?: string;
@@ -137,18 +146,21 @@ export class UsersService {
     };
   }
 
-  async create(data: {
-    name: string;
-    email: string;
-    password: string;
-    phone?: string;
-    branchId?: number;
-    roleIds?: number[];
-    permissionIds?: number[];
-    denyPermissionIds?: number[];
-    branchIds?: number[];
-    isActive?: boolean;
-  }) {
+  async create(
+    data: {
+      name: string;
+      email: string;
+      password: string;
+      phone?: string;
+      branchId?: number;
+      roleIds?: number[];
+      permissionIds?: number[];
+      denyPermissionIds?: number[];
+      branchIds?: number[];
+      isActive?: boolean;
+    },
+    performedByUserId?: number,
+  ) {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: data.email },
     });
@@ -225,7 +237,34 @@ export class UsersService {
       return user.id;
     });
 
-    return this.findOne(userId);
+    const newUser = await this.findOne(userId); // userId = user mới tạo
+
+    // Thêm block này sau:
+    if (performedByUserId) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: performedByUserId }, // actor = admin thực hiện
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'USER_CREATE',
+        entityType: 'users',
+        entityId: newUser.id.toString(),
+        category: getCategoryFromActionCode('USER_CREATE'),
+        severity: getSeverityFromActionCode('USER_CREATE'),
+        snapshot: { name: newUser.name, email: newUser.email },
+        message: renderAuditMessage('USER_CREATE', {
+          userName: newUser.name,
+          userEmail: newUser.email,
+        }),
+        messageTemplate: 'USER_CREATE',
+        userId: performedByUserId, // người thực hiện
+        userName: actor?.name || actor?.email || 'System',
+      });
+    }
+
+    return newUser;
   }
 
   async update(
@@ -243,6 +282,7 @@ export class UsersService {
       branchIds?: number[];
       canViewOtherStaffData?: boolean;
     },
+    performedByUserId?: number,
   ) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
@@ -358,14 +398,61 @@ export class UsersService {
       }
     });
 
-    return this.findOne(id);
+    const updatedUser = await this.findOne(id);
+
+    if (performedByUserId) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: performedByUserId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'USER_UPDATE',
+        entityType: 'users',
+        entityId: id.toString(),
+        category: getCategoryFromActionCode('USER_UPDATE'),
+        severity: getSeverityFromActionCode('USER_UPDATE'),
+        snapshot: { name: updatedUser.name, email: updatedUser.email },
+        message: renderAuditMessage('USER_UPDATE', {
+          userName: updatedUser.name,
+        }),
+        messageTemplate: 'USER_UPDATE',
+        userId: performedByUserId,
+        userName: actor?.name || actor?.email || 'System',
+      });
+    }
+
+    return updatedUser;
   }
 
-  async delete(id: number) {
+  async delete(id: number, performedByUserId?: number) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
 
     await this.prisma.user.delete({ where: { id } });
+
+    if (performedByUserId) {
+      const actor = await this.prisma.user.findUnique({
+        where: { id: performedByUserId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'USER_DELETE',
+        entityType: 'users',
+        entityId: id.toString(),
+        category: getCategoryFromActionCode('USER_DELETE'),
+        severity: getSeverityFromActionCode('USER_DELETE'),
+        snapshot: { name: user.name, email: user.email },
+        message: renderAuditMessage('USER_DELETE', { userName: user.name }),
+        messageTemplate: 'USER_DELETE',
+        userId: performedByUserId,
+        userName: actor?.name || actor?.email || 'System',
+      });
+    }
+
     return { message: 'User deleted successfully' };
   }
 

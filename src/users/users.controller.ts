@@ -90,8 +90,10 @@ export class UsersController {
       branchIds?: number[];
       isActive?: boolean;
     },
+    @Req() req: any,
   ) {
-    return this.usersService.create(data);
+    const performedByUserId = req.user?.id;
+    return this.usersService.create(data, performedByUserId);
   }
 
   @Put(':id/branch-permissions')
@@ -130,15 +132,18 @@ export class UsersController {
       denyPermissionIds?: number[];
       branchIds?: number[];
     },
+    @Req() req: any,
   ) {
-    return this.usersService.update(parseInt(id), data);
+    const performedByUserId = req.user?.id;
+    return this.usersService.update(parseInt(id), data, performedByUserId);
   }
 
   @Delete(':id')
   @RequirePermissions('users:delete')
   @ApiOperation({ summary: 'Delete user' })
-  delete(@Param('id') id: string) {
-    return this.usersService.delete(parseInt(id));
+  delete(@Param('id') id: string, @Req() req: any) {
+    const performedByUserId = req.user?.id;
+    return this.usersService.delete(parseInt(id), performedByUserId);
   }
 
   @Put(':id/permissions')
