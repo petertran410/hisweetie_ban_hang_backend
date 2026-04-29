@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
   Header,
+  Req,
 } from '@nestjs/common';
 import { PriceBooksService } from './price-books.service';
 import {
@@ -88,8 +89,8 @@ export class PriceBooksController {
   @Post()
   @RequirePermissions('price_books:create')
   @ApiOperation({ summary: 'Create new price book' })
-  async create(@Body() dto: CreatePriceBookDto) {
-    const result = await this.priceBooksService.create(dto);
+  async create(@Body() dto: CreatePriceBookDto, @Req() req: any) {
+    const result = await this.priceBooksService.create(dto, req.user?.id);
     return result;
   }
 
@@ -99,15 +100,24 @@ export class PriceBooksController {
   addProducts(
     @Param('id') id: string,
     @Body() body: { products: { productId: number; price: number }[] },
+    @Req() req: any,
   ) {
-    return this.priceBooksService.addProductsToPriceBook(+id, body.products);
+    return this.priceBooksService.addProductsToPriceBook(
+      +id,
+      body.products,
+      req.user?.id,
+    );
   }
 
   @Put(':id')
   @RequirePermissions('price_books:update')
   @ApiOperation({ summary: 'Update price book' })
-  update(@Param('id') id: string, @Body() dto: UpdatePriceBookDto) {
-    return this.priceBooksService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePriceBookDto,
+    @Req() req: any,
+  ) {
+    return this.priceBooksService.update(+id, dto, req.user?.id);
   }
 
   @Put(':id/products/:productId')
@@ -117,19 +127,21 @@ export class PriceBooksController {
     @Param('id') id: string,
     @Param('productId') productId: string,
     @Body() body: { price: number },
+    @Req() req: any,
   ) {
     return this.priceBooksService.updateProductPrice(
       +id,
       +productId,
       body.price,
+      req.user?.id,
     );
   }
 
   @Delete(':id')
   @RequirePermissions('price_books:delete')
   @ApiOperation({ summary: 'Delete price book' })
-  remove(@Param('id') id: string) {
-    return this.priceBooksService.remove(+id);
+  remove(@Param('id') id: string, @Req() req: any) {
+    return this.priceBooksService.remove(+id, req.user?.id);
   }
 
   @Delete(':id/products')
@@ -138,10 +150,12 @@ export class PriceBooksController {
   removeProducts(
     @Param('id') id: string,
     @Body() body: { productIds: number[] },
+    @Req() req: any,
   ) {
     return this.priceBooksService.removeProductsFromPriceBook(
       +id,
       body.productIds,
+      req.user?.id,
     );
   }
 }

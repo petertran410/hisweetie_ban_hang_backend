@@ -11,10 +11,19 @@ import {
   ApplicablePriceBooksDto,
   ProductPriceDto,
 } from './dto';
+import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from 'src/audit-logs/audit-templates';
 
 @Injectable()
 export class PriceBooksService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async findAll(query: PriceBookQueryDto) {
     const { page = 1, limit = 10, search, isActive, branchId } = query;
@@ -155,7 +164,7 @@ export class PriceBooksService {
     return priceBook;
   }
 
-  async create(dto: CreatePriceBookDto) {
+  async create(dto: CreatePriceBookDto, userId?: number) {
     return this.prisma.$transaction(async (tx) => {
       const priceBook = await tx.priceBook.create({
         data: {
@@ -274,11 +283,35 @@ export class PriceBooksService {
         },
       });
 
+      if (userId && result) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'PRICE_BOOK_CREATE',
+          entityType: 'price_books',
+          entityId: result.id.toString(),
+          entityCode: result.name,
+          category: getCategoryFromActionCode('PRICE_BOOK_CREATE'),
+          severity: getSeverityFromActionCode('PRICE_BOOK_CREATE'),
+          snapshot: { name: result.name, isActive: result.isActive },
+          message: renderAuditMessage('PRICE_BOOK_CREATE', {
+            priceBookName: result.name,
+          }),
+          messageTemplate: 'PRICE_BOOK_CREATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+        });
+      }
+
       return result;
     });
   }
 
-  async update(id: number, dto: UpdatePriceBookDto) {
+  async update(id: number, dto: UpdatePriceBookDto, userId?: number) {
     return this.prisma.$transaction(async (tx) => {
       await tx.priceBook.update({
         where: { id },
@@ -384,12 +417,73 @@ export class PriceBooksService {
         }
       }
 
+      if (userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const updatedPriceBook = await tx.priceBook.findUnique({
+          where: { id },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'PRICE_BOOK_UPDATE',
+          entityType: 'price_books',
+          entityId: id.toString(),
+          entityCode: updatedPriceBook?.name || '',
+          category: getCategoryFromActionCode('PRICE_BOOK_UPDATE'),
+          severity: getSeverityFromActionCode('PRICE_BOOK_UPDATE'),
+          snapshot: {
+            name: updatedPriceBook?.name,
+            isActive: updatedPriceBook?.isActive,
+          },
+          message: renderAuditMessage('PRICE_BOOK_UPDATE', {
+            priceBookName: updatedPriceBook?.name || '',
+          }),
+          messageTemplate: 'PRICE_BOOK_UPDATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+        });
+      }
+
       return this.findOne(id);
     });
   }
 
-  async remove(id: number) {
-    return this.prisma.priceBook.delete({ where: { id } });
+  async remove(id: number, userId?: number) {
+    // THÊM userId?
+    // THÊM: lấy thông tin trước khi xóa
+    const priceBook = await this.prisma.priceBook.findUnique({ where: { id } });
+
+    const result = await this.prisma.priceBook.delete({ where: { id } });
+
+    // THÊM ĐOẠN NÀY sau delete
+    if (userId && priceBook) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PRICE_BOOK_DELETE',
+        entityType: 'price_books',
+        entityId: id.toString(),
+        entityCode: priceBook.name,
+        category: getCategoryFromActionCode('PRICE_BOOK_DELETE'),
+        severity: getSeverityFromActionCode('PRICE_BOOK_DELETE'),
+        snapshot: { name: priceBook.name, isActive: priceBook.isActive },
+        message: renderAuditMessage('PRICE_BOOK_DELETE', {
+          priceBookName: priceBook.name,
+        }),
+        messageTemplate: 'PRICE_BOOK_DELETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+      });
+    }
+
+    return result;
   }
 
   async getApplicablePriceBooks(params: ApplicablePriceBooksDto) {
@@ -574,6 +668,7 @@ export class PriceBooksService {
   async addProductsToPriceBook(
     priceBookId: number,
     products: { productId: number; price: number }[],
+    userId?: number,
   ) {
     if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
       throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
@@ -620,11 +715,43 @@ export class PriceBooksService {
         });
       }
 
+      if (userId && newProducts.length > 0) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'PRICE_BOOK_ADD_PRODUCTS',
+          entityType: 'price_books',
+          entityId: priceBookId.toString(),
+          entityCode: priceBook.name,
+          category: getCategoryFromActionCode('PRICE_BOOK_ADD_PRODUCTS'),
+          severity: getSeverityFromActionCode('PRICE_BOOK_ADD_PRODUCTS'),
+          snapshot: {
+            priceBookName: priceBook.name,
+            addedCount: newProducts.length,
+          },
+          message: renderAuditMessage('PRICE_BOOK_ADD_PRODUCTS', {
+            productCount: newProducts.length,
+            priceBookName: priceBook.name,
+          }),
+          messageTemplate: 'PRICE_BOOK_ADD_PRODUCTS',
+          userId,
+          userName: user?.name || user?.email || 'System',
+        });
+      }
+
       return this.findOne(priceBookId);
     });
   }
 
-  async removeProductsFromPriceBook(priceBookId: number, productIds: number[]) {
+  async removeProductsFromPriceBook(
+    priceBookId: number,
+    productIds: number[],
+    userId?: number,
+  ) {
     if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
       throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
     }
@@ -634,11 +761,42 @@ export class PriceBooksService {
     }
 
     await this.prisma.priceBookDetail.deleteMany({
-      where: {
-        priceBookId,
-        productId: { in: productIds },
-      },
+      where: { priceBookId, productId: { in: productIds } },
     });
+
+    if (userId) {
+      const [user, priceBook] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        }),
+        this.prisma.priceBook.findUnique({
+          where: { id: priceBookId },
+          select: { name: true },
+        }),
+      ]);
+
+      await this.auditLogsService.create({
+        actionType: 'DELETE',
+        actionCode: 'PRICE_BOOK_REMOVE_PRODUCTS',
+        entityType: 'price_books',
+        entityId: priceBookId.toString(),
+        entityCode: priceBook?.name || '',
+        category: getCategoryFromActionCode('PRICE_BOOK_REMOVE_PRODUCTS'),
+        severity: getSeverityFromActionCode('PRICE_BOOK_REMOVE_PRODUCTS'),
+        snapshot: {
+          priceBookName: priceBook?.name,
+          removedCount: productIds.length,
+        },
+        message: renderAuditMessage('PRICE_BOOK_REMOVE_PRODUCTS', {
+          productCount: productIds.length,
+          priceBookName: priceBook?.name || '',
+        }),
+        messageTemplate: 'PRICE_BOOK_REMOVE_PRODUCTS',
+        userId,
+        userName: user?.name || user?.email || 'System',
+      });
+    }
 
     return this.findOne(priceBookId);
   }
@@ -647,6 +805,7 @@ export class PriceBooksService {
     priceBookId: number,
     productId: number,
     price: number,
+    userId?: number,
   ) {
     if (!priceBookId || isNaN(priceBookId) || priceBookId <= 0) {
       throw new BadRequestException(`Invalid price book ID: ${priceBookId}`);
@@ -660,13 +819,53 @@ export class PriceBooksService {
       throw new BadRequestException(`Invalid price: ${price}`);
     }
 
+    const existingDetail = await this.prisma.priceBookDetail.findUnique({
+      where: { priceBookId_productId: { priceBookId, productId } },
+      select: { price: true, product: { select: { name: true } } },
+    });
+
     await this.prisma.priceBookDetail.updateMany({
-      where: {
-        priceBookId,
-        productId,
-      },
+      where: { priceBookId, productId },
       data: { price },
     });
+
+    if (userId) {
+      const [user, priceBook] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        }),
+        this.prisma.priceBook.findUnique({
+          where: { id: priceBookId },
+          select: { name: true },
+        }),
+      ]);
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'PRICE_BOOK_UPDATE_PRODUCT_PRICE',
+        entityType: 'price_books',
+        entityId: priceBookId.toString(),
+        entityCode: priceBook?.name || '',
+        category: getCategoryFromActionCode('PRICE_BOOK_UPDATE_PRODUCT_PRICE'),
+        severity: getSeverityFromActionCode('PRICE_BOOK_UPDATE_PRODUCT_PRICE'),
+        snapshot: {
+          priceBookName: priceBook?.name,
+          productName: existingDetail?.product?.name,
+          oldPrice: Number(existingDetail?.price ?? 0),
+          newPrice: price,
+        },
+        message: renderAuditMessage('PRICE_BOOK_UPDATE_PRODUCT_PRICE', {
+          productName: existingDetail?.product?.name || `ID:${productId}`,
+          priceBookName: priceBook?.name || '',
+          oldPrice: Number(existingDetail?.price ?? 0),
+          newPrice: price,
+        }),
+        messageTemplate: 'PRICE_BOOK_UPDATE_PRODUCT_PRICE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+      });
+    }
 
     return this.findOne(priceBookId);
   }

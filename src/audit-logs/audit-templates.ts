@@ -362,6 +362,22 @@ export const AUDIT_TEMPLATES: Record<
     category: 'setting',
     severity: 'warning',
   },
+  PRICE_BOOK_ADD_PRODUCTS: {
+    template: 'Thêm {productCount} sản phẩm vào bảng giá {priceBookName}',
+    category: 'setting',
+    severity: 'info',
+  },
+  PRICE_BOOK_REMOVE_PRODUCTS: {
+    template: 'Xóa {productCount} sản phẩm khỏi bảng giá {priceBookName}',
+    category: 'setting',
+    severity: 'warning',
+  },
+  PRICE_BOOK_UPDATE_PRODUCT_PRICE: {
+    template:
+      'Cập nhật giá sản phẩm {productName} trong bảng giá {priceBookName}: {oldPrice} → {newPrice}',
+    category: 'setting',
+    severity: 'info',
+  },
 
   SETTINGS_UPDATE: {
     template: 'Cập nhật cài đặt hệ thống',
