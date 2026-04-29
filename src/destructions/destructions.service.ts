@@ -112,8 +112,8 @@ export class DestructionsService {
       totalValue += Number(detail.quantity) * Number(detail.price);
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      const destruction = await tx.destruction.create({
+    const destruction = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.destruction.create({
         data: {
           code,
           branchId: dto.branchId,
@@ -143,29 +143,31 @@ export class DestructionsService {
       });
 
       if (!isDraft) {
-        await this.decrementInventory(destruction.id, tx);
+        await this.decrementInventory(created.id, tx);
       }
 
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'DESTRUCTION_CREATE',
-        entityType: 'destructions',
-        entityId: destruction.id.toString(),
-        entityCode: destruction.code,
-        category: getCategoryFromActionCode('DESTRUCTION_CREATE'),
-        severity: getSeverityFromActionCode('DESTRUCTION_CREATE'),
-        snapshot: this.buildDestructionSnapshot(destruction),
-        message: renderAuditMessage('DESTRUCTION_CREATE', {
-          destructionCode: destruction.code,
-        }),
-        messageTemplate: 'DESTRUCTION_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: destruction.branchId || undefined,
-      });
-
-      return destruction;
+      return created;
     });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'DESTRUCTION_CREATE',
+      entityType: 'destructions',
+      entityId: destruction.id.toString(),
+      entityCode: destruction.code,
+      category: getCategoryFromActionCode('DESTRUCTION_CREATE'),
+      severity: getSeverityFromActionCode('DESTRUCTION_CREATE'),
+      snapshot: this.buildDestructionSnapshot(destruction),
+      message: renderAuditMessage('DESTRUCTION_CREATE', {
+        destructionCode: destruction.code,
+      }),
+      messageTemplate: 'DESTRUCTION_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: destruction.branchId || undefined,
+    });
+
+    return destruction;
   }
 
   async update(id: number, dto: UpdateDestructionDto, userId: number) {
@@ -224,7 +226,7 @@ export class DestructionsService {
       updateData.totalValue = totalValue;
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.destructionDetails) {
         await tx.destructionDetail.deleteMany({ where: { destructionId: id } });
         await tx.destructionDetail.createMany({
@@ -244,7 +246,7 @@ export class DestructionsService {
         });
       }
 
-      const updated = await tx.destruction.update({
+      const result = await tx.destruction.update({
         where: { id },
         data: updateData,
         include: { details: true },
@@ -254,8 +256,33 @@ export class DestructionsService {
         await this.decrementInventory(id, tx);
       }
 
-      return updated;
+      return result;
     });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'DESTRUCTION_UPDATE',
+      entityType: 'destructions',
+      entityId: id.toString(),
+      entityCode: destruction.code,
+      category: getCategoryFromActionCode('DESTRUCTION_UPDATE'),
+      severity: getSeverityFromActionCode('DESTRUCTION_UPDATE'),
+      snapshot: this.buildDestructionSnapshot(destruction),
+      message: renderAuditMessage('DESTRUCTION_UPDATE', {
+        destructionCode: destruction.code,
+      }),
+      messageTemplate: 'DESTRUCTION_UPDATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: destruction.branchId || undefined,
+    });
+
+    return updated;
   }
 
   async remove(id: number, userId: number) {
@@ -268,6 +295,30 @@ export class DestructionsService {
     }
 
     await this.prisma.destruction.delete({ where: { id } });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'DELETE',
+      actionCode: 'DESTRUCTION_DELETE',
+      entityType: 'destructions',
+      entityId: id.toString(),
+      entityCode: destruction.code,
+      category: getCategoryFromActionCode('DESTRUCTION_DELETE'),
+      severity: getSeverityFromActionCode('DESTRUCTION_DELETE'),
+      snapshot: this.buildDestructionSnapshot(destruction),
+      message: renderAuditMessage('DESTRUCTION_DELETE', {
+        destructionCode: destruction.code,
+      }),
+      messageTemplate: 'DESTRUCTION_DELETE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: destruction.branchId || undefined,
+    });
+
     return { message: 'Destruction deleted successfully' };
   }
 
