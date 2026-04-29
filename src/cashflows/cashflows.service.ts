@@ -673,19 +673,51 @@ export class CashFlowsService {
     };
   }
 
-  async cancel(id: number) {
-    const cashFlow = await this.prisma.cashFlow.findUnique({ where: { id } });
+  async cancel(id: number, userId: number) {
+    const cashFlow = await this.prisma.cashFlow.findUnique({
+      where: { id },
+      include: {
+        branch: { select: { id: true, name: true } },
+      },
+    });
+
     if (!cashFlow) {
       throw new Error('Không tìm thấy phiếu thu/chi');
     }
 
-    return this.prisma.cashFlow.update({
+    const updated = await this.prisma.cashFlow.update({
       where: { id },
       data: {
         status: 2,
         statusValue: 'Đã hủy',
       },
     });
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'DELETE',
+      actionCode: 'CASHFLOW_DELETE',
+      entityType: 'cashflows',
+      entityId: id.toString(),
+      entityCode: cashFlow.code,
+      category: getCategoryFromActionCode('CASHFLOW_DELETE'),
+      severity: getSeverityFromActionCode('CASHFLOW_DELETE'),
+      snapshot: this.buildCashFlowSnapshot(cashFlow),
+      message: renderAuditMessage('CASHFLOW_DELETE', {
+        flowType: cashFlow.isReceipt ? 'Thu' : 'Chi',
+        cashflowCode: cashFlow.code,
+      }),
+      messageTemplate: 'CASHFLOW_DELETE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: cashFlow.branchId || undefined,
+    });
+
+    return updated;
   }
 
   async createPaymentFromInvoice(

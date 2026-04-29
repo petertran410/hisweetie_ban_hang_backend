@@ -99,7 +99,8 @@ export class CashFlowsController {
   @Delete(':id')
   @RequirePermissions('cash_flows:delete')
   @ApiOperation({ summary: 'Cancel cash flow' })
-  cancel(@Param('id') id: string) {
-    return this.cashFlowsService.cancel(+id);
+  cancel(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.cashFlowsService.cancel(+id, userId);
   }
 }
