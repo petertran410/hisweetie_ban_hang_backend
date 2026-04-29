@@ -1171,28 +1171,30 @@ export class InvoicesService {
         );
       }
 
-      const updatingUser = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
-      });
+      if (dto.status !== INVOICE_STATUS.CANCELLED) {
+        const updatingUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
 
-      await this.auditLogsService.create({
-        actionType: 'PUT',
-        actionCode: 'INVOICE_UPDATE',
-        entityType: 'invoices',
-        entityId: id.toString(),
-        entityCode: currentInvoice.code,
-        category: getCategoryFromActionCode('INVOICE_UPDATE'),
-        severity: getSeverityFromActionCode('INVOICE_UPDATE'),
-        snapshot: this.buildInvoiceSnapshot(updatedInvoice),
-        message: renderAuditMessage('INVOICE_UPDATE', {
-          invoiceCode: currentInvoice.code,
-        }),
-        messageTemplate: 'INVOICE_UPDATE',
-        userId: userId || currentInvoice.createdBy,
-        userName: updatingUser?.name || updatingUser?.email || 'System',
-        branchId: currentInvoice.branchId || undefined,
-      });
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'INVOICE_UPDATE',
+          entityType: 'invoices',
+          entityId: id.toString(),
+          entityCode: currentInvoice.code,
+          category: getCategoryFromActionCode('INVOICE_UPDATE'),
+          severity: getSeverityFromActionCode('INVOICE_UPDATE'),
+          snapshot: this.buildInvoiceSnapshot(updatedInvoice),
+          message: renderAuditMessage('INVOICE_UPDATE', {
+            invoiceCode: currentInvoice.code,
+          }),
+          messageTemplate: 'INVOICE_UPDATE',
+          userId: userId || currentInvoice.createdBy,
+          userName: updatingUser?.name || updatingUser?.email || 'System',
+          branchId: currentInvoice.branchId || undefined,
+        });
+      }
 
       return updatedInvoice;
     });
