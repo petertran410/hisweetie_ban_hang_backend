@@ -3,9 +3,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderPaymentDto } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
-  renderAuditMessage,
   getCategoryFromActionCode,
   getSeverityFromActionCode,
+  renderAuditMessage,
 } from '../audit-logs/audit-templates';
 
 @Injectable()
@@ -171,7 +171,7 @@ export class OrderPaymentsService {
     });
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const payment = await tx.orderPayment.findUnique({
         where: { id },
@@ -201,6 +201,11 @@ export class OrderPaymentsService {
 
       const order = await tx.order.findUnique({
         where: { id: payment.orderId },
+      });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
       });
 
       await tx.order.update({
@@ -238,8 +243,8 @@ export class OrderPaymentsService {
           orderCode: payment.order.code,
         }),
         messageTemplate: 'ORDER_PAYMENT_DELETE',
-        userId: payment.creator?.id || 1,
-        userName: payment.creator?.name || 'System',
+        userId: userId,
+        userName: user?.name || user?.email || 'System',
         branchId: order?.branchId || undefined,
       });
 

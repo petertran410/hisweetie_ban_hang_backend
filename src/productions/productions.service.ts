@@ -408,14 +408,20 @@ export class ProductionsService {
   }
 
   async remove(id: number, userId?: number) {
-    const production = await this.findOne(id);
+    const production = await this.prisma.production.findUnique({
+      where: { id },
+    });
+
+    if (!production) {
+      throw new NotFoundException(`Production with id ${id} not found`);
+    }
 
     await this.prisma.production.delete({ where: { id } });
 
     if (userId) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { name: true },
+        select: { name: true, email: true },
       });
 
       await this.auditLogsService.create({
@@ -432,7 +438,8 @@ export class ProductionsService {
         }),
         messageTemplate: 'PRODUCTION_DELETE',
         userId,
-        userName: user?.name || 'System',
+        userName: user?.name || user?.email || 'System',
+        branchId: production.sourceBranchId || undefined,
       });
     }
 
