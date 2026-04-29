@@ -97,6 +97,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'packing',
     severity: 'info',
   },
+  PACKING_LOADING_UPDATE: {
+    template: 'Cập nhật phiếu xếp hàng lên xe {packingCode}',
+    category: 'packing',
+    severity: 'info',
+  },
 
   CUSTOMER_CREATE: {
     template:

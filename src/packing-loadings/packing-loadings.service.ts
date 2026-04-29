@@ -134,16 +134,10 @@ export class PackingLoadingsService {
   }
 
   async create(dto: CreatePackingLoadingDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const packingLoading = await this.prisma.$transaction(async (tx) => {
       const invoices = await tx.invoice.findMany({
-        where: {
-          id: { in: dto.invoiceIds },
-        },
-        select: {
-          id: true,
-          branchId: true,
-          orderId: true,
-        },
+        where: { id: { in: dto.invoiceIds } },
+        select: { id: true, branchId: true, orderId: true },
       });
 
       if (invoices.length === 0) {
@@ -161,7 +155,7 @@ export class PackingLoadingsService {
 
       const code = await this.generateCode(tx);
 
-      const packingLoading = await tx.packingLoading.create({
+      const created = await tx.packingLoading.create({
         data: {
           code,
           branchId: dto.branchId,
@@ -170,34 +164,19 @@ export class PackingLoadingsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds.map((invoiceId) => ({
-              invoiceId,
-            })),
+            create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
-            ? {
-                create: dto.imageUrls.map((url) => ({
-                  imageUrl: url,
-                })),
-              }
+            ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
             : undefined,
         },
         include: {
           branch: true,
           creator: true,
           loadingBy: true,
-          invoices: {
-            include: {
-              invoice: true,
-            },
-          },
+          invoices: { include: { invoice: true } },
           images: true,
         },
-      });
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
       });
 
       await tx.invoice.updateMany({
@@ -223,10 +202,7 @@ export class PackingLoadingsService {
 
       if (orderIds.length > 0) {
         await tx.order.updateMany({
-          where: {
-            id: { in: orderIds },
-            status: { notIn: [4] },
-          },
+          where: { id: { in: orderIds }, status: { notIn: [4] } },
           data: {
             status: 2,
             statusValue: 'Đang giao hàng',
@@ -235,41 +211,44 @@ export class PackingLoadingsService {
         });
       }
 
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'PACKING_LOADING_CREATE',
-        entityType: 'packing_loadings',
-        entityId: packingLoading.id.toString(),
-        entityCode: packingLoading.code,
-        category: getCategoryFromActionCode('PACKING_LOADING_CREATE'),
-        severity: getSeverityFromActionCode('PACKING_LOADING_CREATE'),
-        snapshot: this.buildPackingLoadingSnapshot(packingLoading),
-        message: renderAuditMessage('PACKING_LOADING_CREATE', {
-          packingCode: packingLoading.code,
-        }),
-        messageTemplate: 'PACKING_LOADING_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: packingLoading.branchId || undefined,
-      });
-
-      return packingLoading;
+      return created;
     });
+
+    // Audit log ngoài transaction
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PACKING_LOADING_CREATE',
+      entityType: 'packing_loadings',
+      entityId: packingLoading.id.toString(),
+      entityCode: packingLoading.code,
+      category: getCategoryFromActionCode('PACKING_LOADING_CREATE'),
+      severity: getSeverityFromActionCode('PACKING_LOADING_CREATE'),
+      snapshot: this.buildPackingLoadingSnapshot(packingLoading),
+      message: renderAuditMessage('PACKING_LOADING_CREATE', {
+        packingCode: packingLoading.code,
+      }),
+      messageTemplate: 'PACKING_LOADING_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: packingLoading.branchId || undefined,
+    });
+
+    return packingLoading;
   }
 
-  async update(id: number, dto: UpdatePackingLoadingDto) {
-    await this.findOne(id);
+  async update(id: number, dto: UpdatePackingLoadingDto, userId?: number) {
+    const packingLoading = await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.invoiceIds) {
         const invoices = await tx.invoice.findMany({
-          where: {
-            id: { in: dto.invoiceIds },
-          },
-          select: {
-            id: true,
-            branchId: true,
-          },
+          where: { id: { in: dto.invoiceIds } },
+          select: { id: true, branchId: true },
         });
 
         const firstBranchId = invoices[0].branchId;
@@ -294,9 +273,7 @@ export class PackingLoadingsService {
           where: { packingLoadingId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({
-            invoiceId,
-          })),
+          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
       }
 
@@ -305,30 +282,48 @@ export class PackingLoadingsService {
           where: { packingLoadingId: id },
         });
         updateData.images = {
-          create: dto.imageUrls.map((url) => ({
-            imageUrl: url,
-          })),
+          create: dto.imageUrls.map((url) => ({ imageUrl: url })),
         };
       }
 
-      const updated = await tx.packingLoading.update({
+      return tx.packingLoading.update({
         where: { id },
         data: updateData,
         include: {
           branch: true,
           creator: true,
           loadingBy: true,
-          invoices: {
-            include: {
-              invoice: true,
-            },
-          },
+          invoices: { include: { invoice: true } },
           images: true,
         },
       });
-
-      return updated;
     });
+
+    // Audit log ngoài transaction
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'PACKING_LOADING_UPDATE',
+        entityType: 'packing_loadings',
+        entityId: id.toString(),
+        entityCode: packingLoading.code,
+        category: getCategoryFromActionCode('PACKING_LOADING_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_LOADING_CREATE'),
+        snapshot: this.buildPackingLoadingSnapshot(updated),
+        message: `Cập nhật phiếu xếp hàng lên xe ${packingLoading.code}`,
+        messageTemplate: 'PACKING_LOADING_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingLoading.branchId || undefined,
+      });
+    }
+
+    return updated;
   }
 
   async remove(id: number, userId?: number) {

@@ -54,8 +54,13 @@ export class PackingLoadingsController {
 
   @Put(':id')
   @ApiOperation({ summary: 'Cập nhật loading' })
-  update(@Param('id') id: string, @Body() dto: UpdatePackingLoadingDto) {
-    return this.packingLoadingsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdatePackingLoadingDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.packingLoadingsService.update(+id, dto, userId);
   }
 
   @Delete(':id')
