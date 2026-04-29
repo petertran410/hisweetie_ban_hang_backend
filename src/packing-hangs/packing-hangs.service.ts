@@ -132,7 +132,7 @@ export class PackingHangsService {
   }
 
   async create(dto: CreatePackingHangDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const packingHang = await this.prisma.$transaction(async (tx) => {
       const invoices = await tx.invoice.findMany({
         where: {
           id: { in: dto.invoiceIds },
@@ -158,7 +158,7 @@ export class PackingHangsService {
 
       const code = await this.generateCode(tx);
 
-      const packingHang = await tx.packingHang.create({
+      const created = await tx.packingHang.create({
         data: {
           code,
           branchId: dto.branchId,
@@ -190,11 +190,6 @@ export class PackingHangsService {
         },
       });
 
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
-      });
-
       await tx.invoice.updateMany({
         where: {
           id: { in: dto.invoiceIds },
@@ -208,41 +203,44 @@ export class PackingHangsService {
         },
       });
 
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'PACKING_HANG_CREATE',
-        entityType: 'packing_hangs',
-        entityId: packingHang.id.toString(),
-        entityCode: packingHang.code,
-        category: getCategoryFromActionCode('PACKING_HANG_CREATE'),
-        severity: getSeverityFromActionCode('PACKING_HANG_CREATE'),
-        snapshot: this.buildPackingHangSnapshot(packingHang),
-        message: renderAuditMessage('PACKING_HANG_CREATE', {
-          packingCode: packingHang.code,
-        }),
-        messageTemplate: 'PACKING_HANG_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: packingHang.branchId || undefined,
-      });
-
-      return packingHang;
+      return created;
     });
+
+    // Audit log ngoài transaction
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PACKING_HANG_CREATE',
+      entityType: 'packing_hangs',
+      entityId: packingHang.id.toString(),
+      entityCode: packingHang.code,
+      category: getCategoryFromActionCode('PACKING_HANG_CREATE'),
+      severity: getSeverityFromActionCode('PACKING_HANG_CREATE'),
+      snapshot: this.buildPackingHangSnapshot(packingHang),
+      message: renderAuditMessage('PACKING_HANG_CREATE', {
+        packingCode: packingHang.code,
+      }),
+      messageTemplate: 'PACKING_HANG_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: packingHang.branchId || undefined,
+    });
+
+    return packingHang;
   }
 
-  async update(id: number, dto: UpdatePackingHangDto) {
-    await this.findOne(id);
+  async update(id: number, dto: UpdatePackingHangDto, userId?: number) {
+    const packingHang = await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
+    const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.invoiceIds) {
         const invoices = await tx.invoice.findMany({
-          where: {
-            id: { in: dto.invoiceIds },
-          },
-          select: {
-            id: true,
-            branchId: true,
-          },
+          where: { id: { in: dto.invoiceIds } },
+          select: { id: true, branchId: true },
         });
 
         const firstBranchId = invoices[0].branchId;
@@ -266,40 +264,54 @@ export class PackingHangsService {
           where: { packingHangId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({
-            invoiceId,
-          })),
+          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
       }
 
       if (dto.imageUrls) {
-        await tx.packingHangImage.deleteMany({
-          where: { packingHangId: id },
-        });
+        await tx.packingHangImage.deleteMany({ where: { packingHangId: id } });
         updateData.images = {
-          create: dto.imageUrls.map((url) => ({
-            imageUrl: url,
-          })),
+          create: dto.imageUrls.map((url) => ({ imageUrl: url })),
         };
       }
 
-      const updated = await tx.packingHang.update({
+      return tx.packingHang.update({
         where: { id },
         data: updateData,
         include: {
           branch: true,
           creator: true,
-          invoices: {
-            include: {
-              invoice: true,
-            },
-          },
+          invoices: { include: { invoice: true } },
           images: true,
         },
       });
-
-      return updated;
     });
+
+    // Audit log ngoài transaction
+    if (userId) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'PACKING_HANG_UPDATE',
+        entityType: 'packing_hangs',
+        entityId: id.toString(),
+        entityCode: packingHang.code,
+        category: getCategoryFromActionCode('PACKING_HANG_CREATE'),
+        severity: getSeverityFromActionCode('PACKING_HANG_CREATE'),
+        snapshot: this.buildPackingHangSnapshot(updated),
+        message: `Cập nhật phiếu treo hàng ${packingHang.code}`,
+        messageTemplate: 'PACKING_HANG_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: packingHang.branchId || undefined,
+      });
+    }
+
+    return updated;
   }
 
   async remove(id: number, userId?: number) {
