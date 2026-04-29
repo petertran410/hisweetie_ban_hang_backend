@@ -823,6 +823,33 @@ export class TransfersService {
         },
       });
 
+      // THÊM ĐOẠN NÀY trước return
+      if (userId) {
+        const user = await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'TRANSFER_CANCEL',
+          entityType: 'transfers',
+          entityId: id.toString(),
+          entityCode: transfer.code,
+          category: getCategoryFromActionCode('TRANSFER_CANCEL'),
+          severity: getSeverityFromActionCode('TRANSFER_CANCEL'),
+          snapshot: this.buildTransferSnapshot(transfer),
+          message: renderAuditMessage('TRANSFER_CANCEL', {
+            transferCode: transfer.code,
+            cancelReason: dto.cancelReason || 'Không có lý do',
+          }),
+          messageTemplate: 'TRANSFER_CANCEL',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: transfer.fromBranchId,
+        });
+      }
+
       return { message: 'Hủy phiếu chuyển hàng thành công' };
     }
 
@@ -889,18 +916,22 @@ export class TransfersService {
       });
 
       await this.auditLogsService.create({
-        actionType: 'DELETE',
-        actionCode: 'TRANSFER_DELETE',
+        actionType: 'PUT',
+        actionCode: 'TRANSFER_CANCEL',
         entityType: 'transfers',
         entityId: id.toString(),
         entityCode: transfer.code,
-        category: getCategoryFromActionCode('TRANSFER_DELETE'),
-        severity: getSeverityFromActionCode('TRANSFER_DELETE'),
+        category: getCategoryFromActionCode('TRANSFER_CANCEL'),
+        severity: getSeverityFromActionCode('TRANSFER_CANCEL'),
         snapshot: this.buildTransferSnapshot(transfer),
-        message: `Hủy phiếu chuyển kho ${transfer.code}${dto.cancelReason ? ` - Lý do: ${dto.cancelReason}` : ''}`,
-        messageTemplate: 'TRANSFER_DELETE',
+        message: renderAuditMessage('TRANSFER_CANCEL', {
+          // ✅ sửa từ hardcode string
+          transferCode: transfer.code,
+          cancelReason: dto.cancelReason || 'Không có lý do',
+        }),
+        messageTemplate: 'TRANSFER_CANCEL',
         userId,
-        userName: user?.name || 'System',
+        userName: user?.name || user?.email || 'System',
         branchId: transfer.fromBranchId,
       });
     }

@@ -164,6 +164,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'transfer',
     severity: 'warning',
   },
+  TRANSFER_CANCEL: {
+    template: 'Hủy phiếu chuyển kho {transferCode} ({cancelReason})',
+    category: 'transfer',
+    severity: 'warning',
+  },
 
   PURCHASE_ORDER_CREATE: {
     template: 'Tạo phiếu nhập hàng {purchaseOrderCode} từ NCC {supplierName}',
