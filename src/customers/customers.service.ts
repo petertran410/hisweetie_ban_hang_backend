@@ -405,6 +405,7 @@ export class CustomersService {
         contactNumber: true,
         phone: true,
         email: true,
+        parentId: true,
         addresses: {
           select: {
             id: true,
@@ -809,7 +810,7 @@ export class CustomersService {
     return `KH${String(count + 1).padStart(6, '0')}`;
   }
 
-  async getDebtTimeline(customerId: number) {
+  async getDebtTimeline(customerId: number, includeChildren = false) {
     const timeline: any[] = [];
 
     const customer = await this.prisma.customer.findUnique({
@@ -821,7 +822,16 @@ export class CustomersService {
       throw new NotFoundException('Không tìm thấy khách hàng');
     }
 
-    const invoiceCustomerIds = [customerId];
+    let allCustomerIds = [customerId];
+    if (includeChildren) {
+      const children = await this.prisma.customer.findMany({
+        where: { parentId: customerId },
+        select: { id: true },
+      });
+      allCustomerIds = [customerId, ...children.map((c) => c.id)];
+    }
+
+    const invoiceCustomerIds = allCustomerIds;
 
     const invoices = await this.prisma.invoice.findMany({
       where: {
@@ -864,7 +874,7 @@ export class CustomersService {
       });
     }
 
-    const cashFlowPartnerIds = [customerId];
+    const cashFlowPartnerIds = allCustomerIds;
 
     const cashFlows = await this.prisma.cashFlow.findMany({
       where: {
@@ -911,7 +921,7 @@ export class CustomersService {
       });
     }
 
-    const returnOrderCustomerIds = [customerId];
+    const returnOrderCustomerIds = allCustomerIds;
 
     // THÊM: Lấy ReturnOrder với refundType = 'cash_refund' để hiển thị trong timeline
     const returnOrdersCashRefund = await this.prisma.returnOrder.findMany({

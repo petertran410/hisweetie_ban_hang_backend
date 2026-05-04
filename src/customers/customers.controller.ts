@@ -60,11 +60,15 @@ export class CustomersController {
 
   @Get(':id/debt-timeline')
   @RequirePermissions('customers:view')
-  @ApiOperation({
-    summary: 'Get customer debt timeline (invoices + cashflows)',
-  })
-  getDebtTimeline(@Param('id') id: string) {
-    return this.customersService.getDebtTimeline(+id);
+  @ApiOperation({ summary: 'Get customer debt timeline' })
+  getDebtTimeline(
+    @Param('id') id: string,
+    @Query('includeChildren') includeChildren?: string,
+  ) {
+    return this.customersService.getDebtTimeline(
+      +id,
+      includeChildren === 'true',
+    );
   }
 
   @Post()
