@@ -893,6 +893,7 @@ export class CustomersService {
         createdAt: true,
         branchId: true,
         createdBy: true,
+        partnerName: true,
         branch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
       },

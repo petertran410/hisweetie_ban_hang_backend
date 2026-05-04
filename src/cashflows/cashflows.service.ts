@@ -1156,91 +1156,39 @@ export class CashFlowsService {
         where: { parentId: dto.customerId },
         select: { id: true },
       });
-
       const allCustomerIds = [
         dto.customerId,
         ...childIds.map((c: any) => c.id),
       ];
 
-      if (!customer) {
-        throw new Error('Không tìm thấy khách hàng');
-      }
-
-      if (!dto.branchId) {
-        throw new Error('Vui lòng chọn chi nhánh');
-      }
+      if (!customer) throw new Error('Không tìm thấy khách hàng');
+      if (!dto.branchId) throw new Error('Vui lòng chọn chi nhánh');
 
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { id: true, name: true },
       });
 
-      const currentCustomerDebt = Number(customer.totalDebt);
-      let runningDebt = currentCustomerDebt;
-
-      let cashFlow: any = null;
-      if (dto.totalAmount > 0) {
-        runningDebt -= dto.totalAmount;
-
-        await tx.customer.update({
-          where: { id: dto.customerId },
-          data: { totalDebt: runningDebt },
-        });
-
-        const customerDebtSnapshot = runningDebt;
-
-        const code = await this.generateSafeCashFlowCode(true, tx);
-
-        cashFlow = await tx.cashFlow.create({
-          data: {
-            code,
-            branchId: dto.branchId,
-            cashFlowGroupId: 1,
-            isReceipt: true,
-            amount: dto.totalAmount,
-            transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
-            method: dto.method || 'cash',
-            accountId: dto.accountId,
-            partnerType: 'C',
-            partnerId: dto.customerId,
-            partnerName: customer.name,
-            contactNumber: customer.contactNumber,
-            address: customer.addresses?.[0]?.address || null,
-            description: dto.description || 'Thu tiền khách hàng',
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            collectorUserId: dto.collectorUserId || userId,
-            usedForFinancialReporting: 1,
-            customerDebtSnapshot,
-          },
-        });
-      }
-
+      // ── 1. Xử lý invoice allocations — CHƯA tạo cashflow ──
       const invoicePayments: any[] = [];
+      const amountPerCustomer = new Map<number, number>(); // ← THÊM: gom tiền theo customer
+      const paymentIdsByCustomer = new Map<number, number[]>(); // ← THÊM: gom payment IDs theo customer
 
-      if (
-        cashFlow &&
-        dto.allocateToInvoices &&
-        dto.invoices &&
-        dto.invoices.length > 0
-      ) {
+      if (dto.allocateToInvoices && dto.invoices && dto.invoices.length > 0) {
         for (const invoice of dto.invoices) {
           const invoiceData = await tx.invoice.findUnique({
             where: { id: invoice.invoiceId },
-            include: {
-              payments: true,
-            },
+            include: { payments: true },
           });
 
           if (!invoiceData) {
             throw new Error(`Không tìm thấy hóa đơn ID ${invoice.invoiceId}`);
           }
 
-          const belongsToCustomer =
-            invoiceData.customerId === dto.customerId ||
-            invoiceData.parentCustomerId === dto.customerId;
-
+          // ← SỬA: dùng allCustomerIds
+          const belongsToCustomer = allCustomerIds.includes(
+            invoiceData.customerId!,
+          );
           if (!belongsToCustomer) {
             throw new Error(
               `Hóa đơn ${invoiceData.code} không thuộc về khách hàng này`,
@@ -1272,34 +1220,42 @@ export class CashFlowsService {
                 dto.description ||
                 `Thu tiền hóa đơn ${invoiceData.code} - Lần ${paymentSequence}`,
               status: 1,
-              cashFlowId: cashFlow?.id ?? null,
+              cashFlowId: null, // ← SỬA: gán sau khi tạo cashflow
             },
           });
 
           invoicePayments.push(payment);
 
+          // ← THÊM: gom theo customer
+          const invCustId = invoiceData.customerId!;
+          amountPerCustomer.set(
+            invCustId,
+            (amountPerCustomer.get(invCustId) || 0) + invoice.amount,
+          );
+          const ids = paymentIdsByCustomer.get(invCustId) || [];
+          ids.push(payment.id);
+          paymentIdsByCustomer.set(invCustId, ids);
+
+          // Update invoice (GIỮ NGUYÊN)
           const newPaidAmount = Number(invoiceData.paidAmount) + invoice.amount;
           const newDebtAmount = Math.max(
             0,
             Number(invoiceData.debtAmount) - invoice.amount,
           );
-          let status = 3;
-          if (newDebtAmount <= 0) {
-            status = 1;
-          }
 
           await tx.invoice.update({
             where: { id: invoice.invoiceId },
             data: {
               paidAmount: newPaidAmount,
               debtAmount: newDebtAmount,
-              status,
-              statusValue: status === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              status: newDebtAmount <= 0 ? 1 : 3,
+              statusValue: newDebtAmount <= 0 ? 'Hoàn thành' : 'Đang xử lý',
             },
           });
         }
       }
 
+      // ── 2. Xử lý debt offsets — GIỮ NGUYÊN logic, chỉ sửa belongsToCustomer + customerId trên CTN ──
       if (dto.debtOffsets && dto.debtOffsets.length > 0) {
         for (const debtOffset of dto.debtOffsets) {
           const invoiceData = await tx.invoice.findUnique({
@@ -1312,10 +1268,10 @@ export class CashFlowsService {
             );
           }
 
-          const belongsToCustomer =
-            invoiceData.customerId === dto.customerId ||
-            invoiceData.parentCustomerId === dto.customerId;
-
+          // ← SỬA: dùng allCustomerIds
+          const belongsToCustomer = allCustomerIds.includes(
+            invoiceData.customerId!,
+          );
           if (!belongsToCustomer) {
             throw new Error(`Hóa đơn không thuộc về khách hàng này`);
           }
@@ -1326,7 +1282,6 @@ export class CashFlowsService {
             );
           }
 
-          // Generate CTN code
           const lastCtn = await tx.returnOrder.findFirst({
             where: { refundType: 'manual_offset' },
             orderBy: { id: 'desc' },
@@ -1338,7 +1293,6 @@ export class CashFlowsService {
           }
           const ctnCode = `CTN${nextCtnNum.toString().padStart(6, '0')}`;
 
-          // Update invoice
           const newPaidAmount =
             Number(invoiceData.paidAmount) + debtOffset.amount;
           const newDebtAmount = Math.max(
@@ -1357,16 +1311,12 @@ export class CashFlowsService {
             },
           });
 
-          // Create ReturnOrder record
-          // Không trừ thêm customer.totalDebt vì credit đã được phản ánh
-          // từ các giao dịch trước (return order / payment). Phiếu CTN chỉ
-          // phân bổ credit đó vào từng hóa đơn cụ thể.
           await tx.returnOrder.create({
             data: {
               code: ctnCode,
               invoiceId: debtOffset.invoiceId,
-              customerId: dto.customerId,
-              parentCustomerId: customer.id || null,
+              customerId: invoiceData.customerId!, // ← SỬA: dùng chủ hóa đơn, không phải dto.customerId
+              parentCustomerId: dto.customerId,
               branchId: dto.branchId,
               status: 4,
               statusValue: 'Hoàn thành',
@@ -1378,19 +1328,18 @@ export class CashFlowsService {
               refundConfirmedAt: dto.transDate
                 ? new Date(dto.transDate)
                 : new Date(),
-              customerDebtSnapshot: runningDebt,
+              customerDebtSnapshot: 0, // sẽ được cập nhật sau recalculate
               createdBy: userId,
               createdByName: user?.name || 'System',
-              cashFlowId: cashFlow?.id ?? null,
             },
           });
         }
 
+        // Consume overpaid invoices (GIỮ NGUYÊN logic)
         let creditToConsume = dto.debtOffsets.reduce(
           (sum: number, d: any) => sum + d.amount,
           0,
         );
-
         if (creditToConsume > 0) {
           const overpaidInvoices = await tx.invoice.findMany({
             where: {
@@ -1399,31 +1348,222 @@ export class CashFlowsService {
               status: { not: 2 },
             },
             select: { id: true, debtAmount: true, status: true },
-            orderBy: { purchaseDate: 'asc' }, // oldest first
+            orderBy: { purchaseDate: 'asc' },
           });
 
           for (const inv of overpaidInvoices) {
             if (creditToConsume <= 0) break;
-
-            const available = Math.abs(Number(inv.debtAmount)); // e.g. 10k
+            const available = Math.abs(Number(inv.debtAmount));
             const consume = Math.min(available, creditToConsume);
-
             await tx.invoice.update({
               where: { id: inv.id },
               data: {
-                debtAmount: Number(inv.debtAmount) + consume, // -10k + 10k = 0
-                status: 1, // COMPLETED
+                debtAmount: Number(inv.debtAmount) + consume,
+                status: 1,
                 statusValue: 'Hoàn thành',
               },
             });
-
             creditToConsume -= consume;
           }
         }
       }
 
+      // ── 3. Tạo cashflow(s) — TÁCH THEO CUSTOMER ──
+      const cashFlows: any[] = [];
+
+      if (dto.totalAmount > 0) {
+        if (
+          amountPerCustomer.size <= 1 &&
+          (amountPerCustomer.size === 0 ||
+            amountPerCustomer.has(dto.customerId))
+        ) {
+          // Case đơn giản: tất cả invoice thuộc 1 customer (hoặc không allocate) → 1 cashflow
+          const code = await this.generateSafeCashFlowCode(true, tx);
+          const cf = await tx.cashFlow.create({
+            data: {
+              code,
+              branchId: dto.branchId,
+              cashFlowGroupId: 1,
+              isReceipt: true,
+              amount: dto.totalAmount,
+              transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+              method: dto.method || 'cash',
+              accountId: dto.accountId,
+              partnerType: 'C',
+              partnerId: dto.customerId,
+              partnerName: customer.name,
+              contactNumber: customer.contactNumber,
+              address: customer.addresses?.[0]?.address || null,
+              description: dto.description || 'Thu tiền khách hàng',
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              collectorUserId: dto.collectorUserId || userId,
+              usedForFinancialReporting: 1,
+              customerDebtSnapshot: 0,
+            },
+          });
+          cashFlows.push(cf);
+
+          // Link tất cả invoice payments vào cashflow này
+          const allPaymentIds = invoicePayments.map((p: any) => p.id);
+          if (allPaymentIds.length > 0) {
+            await tx.invoicePayment.updateMany({
+              where: { id: { in: allPaymentIds } },
+              data: { cashFlowId: cf.id },
+            });
+          }
+        } else {
+          // Case mixed: invoice thuộc nhiều customer → tách cashflow per customer
+          for (const [custId, custAmount] of amountPerCustomer) {
+            const custData =
+              custId === dto.customerId
+                ? customer
+                : await tx.customer.findUnique({
+                    where: { id: custId },
+                    select: {
+                      name: true,
+                      contactNumber: true,
+                      addresses: {
+                        where: { isDefault: true },
+                        take: 1,
+                        select: { address: true },
+                      },
+                    },
+                  });
+
+            const code = await this.generateSafeCashFlowCode(true, tx);
+            const cf = await tx.cashFlow.create({
+              data: {
+                code,
+                branchId: dto.branchId,
+                cashFlowGroupId: 1,
+                isReceipt: true,
+                amount: custAmount,
+                transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+                method: dto.method || 'cash',
+                accountId: dto.accountId,
+                partnerType: 'C',
+                partnerId: custId, // ← partnerId = chủ hóa đơn
+                partnerName: custData?.name || customer.name,
+                contactNumber: custData?.contactNumber || null,
+                address: (custData as any)?.addresses?.[0]?.address || null,
+                description: dto.description || `Thu tiền khách hàng`,
+                status: 0,
+                statusValue: 'Đã thanh toán',
+                createdBy: userId,
+                collectorUserId: dto.collectorUserId || userId,
+                usedForFinancialReporting: 1,
+                customerDebtSnapshot: 0,
+              },
+            });
+            cashFlows.push(cf);
+
+            // Link invoice payments of this customer to this cashflow
+            const paymentIds = paymentIdsByCustomer.get(custId) || [];
+            if (paymentIds.length > 0) {
+              await tx.invoicePayment.updateMany({
+                where: { id: { in: paymentIds } },
+                data: { cashFlowId: cf.id },
+              });
+            }
+          }
+        }
+      }
+
+      // ── 4. Recalculate debt cho tất cả customer bị ảnh hưởng ──
+      const affectedCustomerIds = new Set<number>([dto.customerId]);
+      for (const custId of amountPerCustomer.keys()) {
+        affectedCustomerIds.add(custId);
+      }
+      if (dto.debtOffsets) {
+        for (const offset of dto.debtOffsets) {
+          const invData = await tx.invoice.findUnique({
+            where: { id: offset.invoiceId },
+            select: { customerId: true },
+          });
+          if (invData?.customerId) affectedCustomerIds.add(invData.customerId);
+        }
+      }
+
+      for (const cid of affectedCustomerIds) {
+        const custInvoices = await tx.invoice.findMany({
+          where: { customerId: cid, status: { notIn: [2] } },
+          select: { grandTotal: true },
+        });
+        const totalGrandTotal = custInvoices.reduce(
+          (sum: number, inv: any) => sum + Number(inv.grandTotal),
+          0,
+        );
+
+        const cashFlowsReceipt = await tx.cashFlow.findMany({
+          where: {
+            partnerId: cid,
+            partnerType: 'C',
+            isReceipt: true,
+            status: { not: 2 },
+            code: { not: { startsWith: 'TTTUHD' } },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowReceived = cashFlowsReceipt.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        const cashFlowsPaidOut = await tx.cashFlow.findMany({
+          where: {
+            partnerId: cid,
+            partnerType: 'C',
+            isReceipt: false,
+            status: { not: 2 },
+          },
+          select: { amount: true },
+        });
+        const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
+          (sum: number, cf: any) => sum + Number(cf.amount),
+          0,
+        );
+
+        const debtOffsets = await tx.returnOrder.findMany({
+          where: {
+            customerId: cid,
+            OR: [
+              { status: 2 },
+              { status: 4, refundType: 'debt_offset' },
+              { status: 4, refundType: 'cash_refund' },
+            ],
+          },
+          select: { refundAmount: true },
+        });
+        const totalDebtOffsets = debtOffsets.reduce(
+          (sum: number, ro: any) => sum + Number(ro.refundAmount),
+          0,
+        );
+
+        const newDebt =
+          totalGrandTotal -
+          totalCashFlowReceived +
+          totalCashFlowPaidOut -
+          totalDebtOffsets;
+
+        await tx.customer.update({
+          where: { id: cid },
+          data: { totalDebt: newDebt },
+        });
+
+        // Update customerDebtSnapshot trên cashflow vừa tạo
+        const cfForCust = cashFlows.find((cf: any) => cf.partnerId === cid);
+        if (cfForCust) {
+          await tx.cashFlow.update({
+            where: { id: cfForCust.id },
+            data: { customerDebtSnapshot: newDebt },
+          });
+        }
+      }
+
       return {
-        cashFlow,
+        cashFlow: cashFlows[0] || null,
         invoicePayments,
       };
     });
