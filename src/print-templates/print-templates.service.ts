@@ -228,6 +228,10 @@ export class PrintTemplatesService {
       case 'cash_flow_receipt':
       case 'cash_flow_payment':
         return this.mapCashFlow(await this.loadCashFlow(entityId));
+      case 'order_delivery':
+        return this.mapOrder(await this.loadOrder(entityId));
+      case 'invoice_delivery':
+        return this.mapInvoice(await this.loadInvoice(entityId));
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
@@ -403,6 +407,18 @@ export class PrintTemplatesService {
     };
   }
 
+  private deliveryVars(delivery: any) {
+    return {
+      Nguoi_Nhan: delivery?.receiver || '',
+      Dien_Thoai_Nhan: delivery?.contactNumber || '',
+      Dia_Chi_Giao_Hang: delivery?.address || '',
+      Phuong_Xa_Giao_Hang: delivery?.wardName || '',
+      Khu_Vuc_Giao_Hang: delivery?.locationName || '',
+      Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
+      Trang_Thai_Giao_Hang: delivery?.statusValue || '',
+    };
+  }
+
   private staffVars(soldBy: any, creator: any) {
     return {
       Nhan_Vien_Ban_Hang: soldBy?.name || creator?.name || '',
@@ -430,6 +446,7 @@ export class PrintTemplatesService {
       ...this.dateVars(inv.purchaseDate),
       ...this.customerVars(inv.customer, inv.delivery),
       ...this.staffVars(inv.soldBy, inv.creator),
+      ...this.deliveryVars(inv.delivery),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
       Tong_Tien_Hang: this.money(inv.totalAmount),
@@ -450,6 +467,7 @@ export class PrintTemplatesService {
       ...this.dateVars(o.orderDate),
       ...this.customerVars(o.customer, o.delivery),
       ...this.staffVars(o.soldBy, o.creator),
+      ...this.deliveryVars(o.delivery),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
       Tong_Tien_Hang: this.money(o.totalAmount),
