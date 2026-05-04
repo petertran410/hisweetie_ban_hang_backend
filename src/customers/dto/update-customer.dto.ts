@@ -21,14 +21,10 @@ export class UpdateCustomerDto {
   @IsOptional() @IsString() contactNumber?: string;
   @IsOptional() @IsString() phone?: string;
   @IsOptional() @IsEmail() email?: string;
-
   @IsOptional() @IsInt() @Type(() => Number) type?: number;
-
   @IsOptional() @IsString() organization?: string;
   @IsOptional() @IsString() taxCode?: string;
   @IsOptional() @IsString() comments?: string;
-
-  // Thông tin xuất hóa đơn
   @IsOptional() @IsString() invoiceBuyerName?: string;
   @IsOptional() @IsString() invoiceAddress?: string;
   @IsOptional() @IsString() invoiceCityCode?: string;
@@ -37,24 +33,19 @@ export class UpdateCustomerDto {
   @IsOptional() @IsString() invoiceWardName?: string;
   @IsOptional() @IsString() invoiceCccdCmnd?: string;
   @IsOptional() @IsString() invoiceBankAccount?: string;
-
   @ValidateIf((o) => o.invoiceEmail !== undefined && o.invoiceEmail !== '')
   @IsEmail({}, { message: 'Email xuất hóa đơn không hợp lệ' })
   invoiceEmail?: string;
-
   @IsOptional() @IsString() invoicePhone?: string;
   @IsOptional() @IsString() invoiceDvqhnsCode?: string;
-
   @IsOptional()
   @IsArray()
   @IsInt({ each: true })
   @Type(() => Number)
   groupIds?: number[];
-
   @IsOptional() @IsNumber() @Type(() => Number) branchId?: number;
-
+  @IsOptional() @IsInt() @Type(() => Number) parentId?: number;
   @IsOptional() @IsBoolean() isActive?: boolean;
-
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })

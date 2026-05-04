@@ -854,9 +854,10 @@ export class CashFlowsService {
           const targetCustomerId = customer.id;
 
           const childIds = await tx.customer.findMany({
-            where: { id: targetCustomerId },
+            where: { parentId: targetCustomerId },
             select: { id: true },
           });
+
           const allCustomerIds = [
             targetCustomerId,
             ...childIds.map((c: any) => c.id),
@@ -925,13 +926,6 @@ export class CashFlowsService {
             where: { id: targetCustomerId },
             data: { totalDebt },
           });
-
-          if (childIds.length > 0) {
-            await tx.customer.updateMany({
-              where: { id: { in: childIds.map((c: any) => c.id) } },
-              data: { totalDebt: 0 },
-            });
-          }
         }
       }
 
@@ -1159,9 +1153,10 @@ export class CashFlowsService {
       });
 
       const childIds = await tx.customer.findMany({
-        where: { id: dto.customerId },
+        where: { parentId: dto.customerId },
         select: { id: true },
       });
+
       const allCustomerIds = [
         dto.customerId,
         ...childIds.map((c: any) => c.id),

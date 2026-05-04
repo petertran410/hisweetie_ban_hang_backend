@@ -291,6 +291,20 @@ export class CustomersService {
       include: {
         customerType: true,
         branch: true,
+        parent: {
+          select: { id: true, code: true, name: true },
+        },
+        children: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            contactNumber: true,
+            totalDebt: true,
+            isActive: true,
+          },
+          orderBy: { code: 'asc' },
+        },
         addresses: {
           orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
         },
@@ -422,7 +436,28 @@ export class CustomersService {
   }
 
   async create(dto: CreateCustomerDto, userId?: number) {
-    const code = dto.code || (await this.generateCode());
+    let code: string;
+    if (dto.code) {
+      code = dto.code;
+    } else if (dto.parentId) {
+      code = await this.generateChildCode(dto.parentId);
+    } else {
+      code = await this.generateCode();
+    }
+
+    if (dto.parentId) {
+      const parentCustomer = await this.prisma.customer.findUnique({
+        where: { id: dto.parentId },
+        select: { id: true, parentId: true },
+      });
+      if (!parentCustomer) {
+        throw new BadRequestException('Khách hàng cha không tồn tại');
+      }
+      if (parentCustomer.parentId) {
+        throw new BadRequestException('Không hỗ trợ tạo khách hàng quá 1 cấp');
+      }
+    }
+
     const { groupIds, birthDate, addresses, ...customerData } = dto;
 
     const normalizedAddresses = this.normalizeAddresses(addresses);
@@ -1535,5 +1570,34 @@ export class CustomersService {
 
     // Fallback: chỉ có ngày, không có giờ → dùng parseImportDate
     return this.parseImportDate(value);
+  }
+
+  private async generateChildCode(parentId: number): Promise<string> {
+    const parent = await this.prisma.customer.findUnique({
+      where: { id: parentId },
+      select: { code: true },
+    });
+
+    if (!parent?.code) {
+      throw new BadRequestException('Khách hàng cha không có mã');
+    }
+
+    // Tìm code con lớn nhất hiện tại: KH000001.1, KH000001.2...
+    const existingChildren = await this.prisma.customer.findMany({
+      where: { parentId },
+      select: { code: true },
+      orderBy: { code: 'desc' },
+    });
+
+    let nextSeq = 1;
+    for (const child of existingChildren) {
+      if (!child.code) continue;
+      const match = child.code.match(/\.(\d+)$/);
+      if (match) {
+        nextSeq = Math.max(nextSeq, parseInt(match[1]) + 1);
+      }
+    }
+
+    return `${parent.code}.${nextSeq}`;
   }
 }

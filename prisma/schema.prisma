@@ -321,6 +321,7 @@ model Customer {
   comments       String?
   customerTypeId Int?
   branchId       Int?
+  parentId       Int?
   totalPurchased Decimal   @default(0)
   totalDebt      Decimal   @default(0)
   totalInvoiced  Decimal   @default(0)
@@ -345,6 +346,8 @@ model Customer {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
+  parent               Customer?             @relation("CustomerHierarchy", fields: [parentId], references: [id])
+  children             Customer[]            @relation("CustomerHierarchy")
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
   branch               Branch?               @relation(fields: [branchId], references: [id])
   customerGroupDetails CustomerGroupDetail[]
