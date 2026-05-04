@@ -1034,11 +1034,11 @@ export class CashFlowsService {
 
     if (isReceipt) {
       if (method === 'cash') {
-        prefix = 'TTM';
+        prefix = 'TT';
       } else if (method === 'transfer') {
-        prefix = 'TTNH';
+        prefix = 'TT';
       } else if (method === 'ewallet') {
-        prefix = 'TTVDT';
+        prefix = 'TT';
       } else {
         prefix = 'TT';
       }
