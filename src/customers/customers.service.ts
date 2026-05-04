@@ -893,12 +893,25 @@ export class CustomersService {
         createdAt: true,
         branchId: true,
         createdBy: true,
+        partnerId: true,
         partnerName: true,
         branch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
       },
       orderBy: { transDate: 'desc' },
     });
+
+    const partnerIds = [
+      ...new Set(cashFlows.map((cf) => cf.partnerId).filter(Boolean)),
+    ] as number[];
+    const partnerCustomers =
+      partnerIds.length > 0
+        ? await this.prisma.customer.findMany({
+            where: { id: { in: partnerIds } },
+            select: { id: true, code: true },
+          })
+        : [];
+    const partnerCodeMap = new Map(partnerCustomers.map((c) => [c.id, c.code]));
 
     for (const cf of cashFlows) {
       timeline.push({
@@ -917,8 +930,10 @@ export class CustomersService {
         statusValue: cf.isReceipt ? 'Đã thanh toán' : 'Đã chi',
         branch: cf.branch,
         user: cf.creator,
-        customerName: null,
-        customerCode: null,
+        customerName: cf.partnerName || null,
+        customerCode: cf.partnerId
+          ? partnerCodeMap.get(cf.partnerId) || null
+          : null,
       });
     }
 
