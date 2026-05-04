@@ -406,6 +406,9 @@ export class CustomersService {
         phone: true,
         email: true,
         parentId: true,
+        parent: {
+          select: { code: true, name: true },
+        },
         addresses: {
           select: {
             id: true,
