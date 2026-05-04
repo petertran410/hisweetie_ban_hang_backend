@@ -1,4 +1,4 @@
-import { IsInt, IsNotEmpty, IsString } from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class GetVariablesDto {
@@ -17,4 +17,8 @@ export class RenderPreviewDto {
   @IsInt()
   @IsNotEmpty()
   entityId: number;
+
+  @IsString()
+  @IsOptional()
+  entityType?: string;
 }

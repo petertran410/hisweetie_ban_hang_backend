@@ -192,17 +192,24 @@ export class PrintTemplatesService {
 
   // ==================== DISPATCHER ====================
 
-  async renderPreview(templateId: number, entityId: number) {
+  async renderPreview(
+    templateId: number,
+    entityId: number,
+    entityType?: string,
+  ) {
     const template = await this.prisma.printTemplate.findUnique({
       where: { id: templateId },
     });
     if (!template) throw new NotFoundException('Template not found');
 
-    const data = await this.loadEntityData(template.templateFor, entityId);
+    // entityType override khi dùng chung template (e.g. 'delivery' template cho cả order lẫn invoice)
+    const resolvedType = entityType ?? template.templateFor;
+
+    const data = await this.loadEntityData(resolvedType, entityId);
     const content = await this.replaceVariables(
       template.content,
       data,
-      template.templateFor,
+      resolvedType,
     );
 
     return { content, data };

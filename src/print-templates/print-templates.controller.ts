@@ -60,6 +60,7 @@ export class PrintTemplatesController {
     return this.printTemplatesService.renderPreview(
       dto.templateId,
       dto.entityId,
+      dto.entityType,
     );
   }
 
