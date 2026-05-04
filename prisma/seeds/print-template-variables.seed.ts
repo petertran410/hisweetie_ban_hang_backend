@@ -457,6 +457,14 @@ const VARIABLES = [
     sortOrder: 6,
     isItemVariable: false,
   },
+  {
+    templateFor: 'delivery',
+    key: 'Khoi_Luong',
+    label: 'Khối lượng',
+    group: 'Giao hàng',
+    sortOrder: 8,
+    isItemVariable: false,
+  },
 
   // Sản phẩm (item variables)
   {

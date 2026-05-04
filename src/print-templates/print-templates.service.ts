@@ -423,6 +423,7 @@ export class PrintTemplatesService {
       Khu_Vuc_Giao_Hang: delivery?.locationName || '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
+      Khoi_Luong: delivery?.weight ? Number(delivery.weight).toString() : '',
     };
   }
 
