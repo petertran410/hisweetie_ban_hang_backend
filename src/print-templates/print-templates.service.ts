@@ -202,14 +202,15 @@ export class PrintTemplatesService {
     });
     if (!template) throw new NotFoundException('Template not found');
 
-    // entityType override khi dùng chung template (e.g. 'delivery' template cho cả order lẫn invoice)
     const resolvedType = entityType ?? template.templateFor;
-
     const data = await this.loadEntityData(resolvedType, entityId);
+
+    // ← Dùng template.templateFor (ví dụ 'delivery') thay vì resolvedType ('invoice_delivery')
+    // để getItemVariableKeys query đúng bảng variables
     const content = await this.replaceVariables(
       template.content,
       data,
-      resolvedType,
+      template.templateFor,
     );
 
     return { content, data };
@@ -237,8 +238,13 @@ export class PrintTemplatesService {
         return this.mapCashFlow(await this.loadCashFlow(entityId));
       case 'order_delivery':
         return this.mapOrder(await this.loadOrder(entityId));
-      case 'invoice_delivery':
-        return this.mapInvoice(await this.loadInvoice(entityId));
+      case 'invoice_delivery': {
+        const inv = await this.loadInvoice(entityId);
+        return {
+          ...this.mapInvoice(inv),
+          Ma_Don_Hang: inv.code || '',
+        };
+      }
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
