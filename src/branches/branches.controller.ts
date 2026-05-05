@@ -40,12 +40,14 @@ export class BranchesController {
   }
 
   @Get('my-branches')
+  @RequirePermissions('branches:view')
   @ApiOperation({ summary: 'Get branches accessible by current user' })
   async getMyBranches(@CurrentUser() user: any) {
     return this.branchesService.findByUser(user.id);
   }
 
   @Get('all')
+  @RequirePermissions('branches:view')
   @ApiOperation({ summary: 'Get all branches as array' })
   async getAllBranches() {
     const result = await this.branchesService.findAll();
@@ -59,19 +61,19 @@ export class BranchesController {
   }
 
   @Post()
-  @RequirePermissions('branches.create')
+  @RequirePermissions('branches:create')
   create(@Body() data: any, @CurrentUser() user: any) {
     return this.branchesService.create(data, user.id);
   }
 
   @Put(':id')
-  @RequirePermissions('branches.update')
+  @RequirePermissions('branches:update')
   update(@Param('id') id: string, @Body() data: any, @CurrentUser() user: any) {
     return this.branchesService.update(+id, data, user.id);
   }
 
   @Delete(':id')
-  @RequirePermissions('branches.delete')
+  @RequirePermissions('branches:delete')
   delete(@Param('id') id: string, @CurrentUser() user: any) {
     return this.branchesService.delete(+id, user.id);
   }
