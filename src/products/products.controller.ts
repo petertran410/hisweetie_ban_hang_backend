@@ -49,12 +49,14 @@ export class ProductsController {
   }
 
   @Post()
+  @RequirePermissions('products:create')
   create(@Body() dto: CreateProductDto, @Req() req: any) {
     const userId = req.user?.id;
     return this.productsService.create(dto, userId);
   }
 
   @Put(':id')
+  @RequirePermissions('products:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateProductDto,
@@ -65,6 +67,7 @@ export class ProductsController {
   }
 
   @Delete(':id')
+  @RequirePermissions('products:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.productsService.remove(+id, userId);

@@ -55,6 +55,7 @@ export class SuppliersController {
   }
 
   @Put(':id')
+  @RequirePermissions('suppliers:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateSupplierDto,
@@ -65,6 +66,7 @@ export class SuppliersController {
   }
 
   @Delete(':id')
+  @RequirePermissions('suppliers:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.suppliersService.remove(+id, userId);
