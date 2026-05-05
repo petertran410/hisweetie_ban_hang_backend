@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRoleDto, UpdateRoleDto } from './dto';
+import { PermissionCacheService } from 'src/permission-cache/permission-cache.service';
 
 @Injectable()
 export class RolesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private permissionCache: PermissionCacheService,
+  ) {}
 
   async findAll() {
     return this.prisma.role.findMany({
@@ -95,6 +99,7 @@ export class RolesService {
 
   async remove(id: number) {
     await this.findOne(id);
+    await this.bumpUsersOfRole(id);
     return this.prisma.role.delete({ where: { id } });
   }
 
@@ -114,6 +119,16 @@ export class RolesService {
       });
     }
 
+    await this.bumpUsersOfRole(id);
+
     return this.findOne(id);
+  }
+
+  private async bumpUsersOfRole(roleId: number): Promise<void> {
+    await this.prisma.user.updateMany({
+      where: { userRoles: { some: { roleId } } },
+      data: { permissionVersion: { increment: 1 } },
+    });
+    this.permissionCache.invalidateAll();
   }
 }

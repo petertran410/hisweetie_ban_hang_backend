@@ -57,6 +57,7 @@ import { ReturnOrdersModule } from './return-orders/return-orders.module';
 import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
+import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { StockAuditsModule } from './stock-audits/stock-audits.module';
       envFilePath: '.env',
     }),
     PrismaModule,
+    PermissionCacheModule,
     AuthModule,
     UsersModule,
     RolesModule,

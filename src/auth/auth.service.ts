@@ -85,8 +85,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       name: user.name,
-      roles,
-      permissions,
+      pv: user.permissionVersion,
     };
     const accessToken = this.jwtService.sign(payload);
 
@@ -220,8 +219,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       name: user.name,
-      roles,
-      permissions,
+      pv: user.permissionVersion,
     };
     const accessToken = this.jwtService.sign(payload);
 
@@ -284,8 +282,7 @@ export class AuthService {
       sub: user.id,
       email: user.email,
       name: user.name,
-      roles: ['User'],
-      permissions: [],
+      pv: 1,
     };
     const accessToken = this.jwtService.sign(payload);
 
@@ -383,6 +380,7 @@ export class AuthService {
       branchId: user.branchId,
       branchIds,
       canViewOtherStaffData: user.canViewOtherStaffData,
+      permissionVersion: user.permissionVersion,
     };
   }
 

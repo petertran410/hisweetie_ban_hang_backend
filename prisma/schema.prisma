@@ -21,6 +21,7 @@ model User {
   updatedAt DateTime @updatedAt
 
   canViewOtherStaffData Boolean @default(false) @map("can_view_other_staff_data")
+  permissionVersion     Int     @default(1) @map("permission_version")
 
   branch                Branch?         @relation(fields: [branchId], references: [id])
   userBranches          UserBranch[]

@@ -11,12 +11,14 @@ import {
   getSeverityFromActionCode,
   renderAuditMessage,
 } from 'src/audit-logs/audit-templates';
+import { PermissionCacheService } from 'src/permission-cache/permission-cache.service';
 
 @Injectable()
 export class UsersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private permissionCache: PermissionCacheService,
   ) {}
 
   async findAll(filters?: {
@@ -423,12 +425,23 @@ export class UsersService {
       });
     }
 
+    if (
+      data.roleIds ||
+      data.permissionIds ||
+      data.denyPermissionIds ||
+      data.isActive !== undefined
+    ) {
+      await this.bumpPermissionVersion(id);
+    }
+
     return updatedUser;
   }
 
   async delete(id: number, performedByUserId?: number) {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException('User not found');
+
+    this.permissionCache.invalidateUser(id);
 
     await this.prisma.user.delete({ where: { id } });
 
@@ -473,7 +486,17 @@ export class UsersService {
       });
     }
 
+    await this.bumpPermissionVersion(id);
+
     return this.findOne(id);
+  }
+
+  private async bumpPermissionVersion(userId: number): Promise<void> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { permissionVersion: { increment: 1 } },
+    });
+    this.permissionCache.invalidateUser(userId);
   }
 
   async findAllForFilter() {
@@ -524,6 +547,8 @@ export class UsersService {
     if (records.length > 0) {
       await this.prisma.userBranchPermission.createMany({ data: records });
     }
+
+    await this.bumpPermissionVersion(userId);
 
     return { success: true };
   }

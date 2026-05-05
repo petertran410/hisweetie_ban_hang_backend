@@ -2,15 +2,17 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
-import { AuthService } from '../auth.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { PermissionCacheService } from '../../permission-cache/permission-cache.service';
+
+const SUPER_ADMIN_ROLE = 'Super Admin';
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(
-    private authService: AuthService,
     private configService: ConfigService,
     private prisma: PrismaService,
+    private permissionCache: PermissionCacheService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -21,67 +23,116 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    const userId: number = payload.sub;
+    const tokenPv: number = payload.pv;
+
+    // 1. Cache hit → zero query
+    const cached = this.permissionCache.get(userId);
+    if (cached) return cached;
+
+    // 2. Cache miss → lightweight query check isActive + permissionVersion
     const user = await this.prisma.user.findUnique({
-      where: { id: payload.sub },
-      include: {
+      where: { id: userId },
+      select: {
+        id: true,
+        isActive: true,
+        permissionVersion: true,
+      },
+    });
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Tài khoản không hợp lệ');
+    }
+
+    // 3. pv mismatch → quyền đã thay đổi → buộc đăng nhập lại
+    if (tokenPv !== undefined && user.permissionVersion !== tokenPv) {
+      throw new UnauthorizedException(
+        'Quyền của bạn đã được thay đổi. Vui lòng đăng nhập lại.',
+      );
+    }
+
+    // 4. pv khớp → query full permissions (chỉ chạy 1 lần mỗi 60s)
+    const fullUser = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        branchId: true,
+        canViewOtherStaffData: true,
+        userBranches: { select: { branchId: true } },
         userRoles: {
-          include: {
+          select: {
             role: {
-              include: {
+              select: {
+                name: true,
                 rolePermissions: {
-                  include: { permission: true },
+                  select: {
+                    permission: {
+                      select: { resource: true, action: true },
+                    },
+                  },
                 },
               },
             },
           },
         },
         userPermissions: {
-          include: { permission: true },
-        },
-        userBranches: {
-          include: { branch: { select: { id: true, name: true } } },
+          select: {
+            type: true,
+            permission: {
+              select: { resource: true, action: true },
+            },
+          },
         },
       },
     });
 
-    if (!user || !user.isActive) {
+    if (!fullUser) {
       throw new UnauthorizedException();
     }
 
-    const roles = user.userRoles.map((ur) => ur.role.name);
+    const roles = fullUser.userRoles.map((ur) => ur.role.name);
 
-    const rolePermissions = user.userRoles.flatMap((ur) =>
-      ur.role.rolePermissions.map((rp) => rp.permission.name),
-    );
-
-    const grantPermissions = user.userPermissions
-      .filter((up) => up.type === 'grant')
-      .map((up) => up.permission.name);
-
-    const denyPermissions = new Set(
-      user.userPermissions
-        .filter((up) => up.type === 'deny')
-        .map((up) => up.permission.name),
-    );
-
-    const permissions = [
-      ...new Set([...rolePermissions, ...grantPermissions]),
-    ].filter((p) => !denyPermissions.has(p));
-
-    const branchIds = user.userBranches.map((ub) => ub.branchId);
-    if (user.branchId && !branchIds.includes(user.branchId)) {
-      branchIds.push(user.branchId);
+    let permissions: string[] = [];
+    if (!roles.includes(SUPER_ADMIN_ROLE)) {
+      const rolePerms = fullUser.userRoles.flatMap((ur) =>
+        ur.role.rolePermissions.map(
+          (rp) => `${rp.permission.resource}:${rp.permission.action}`,
+        ),
+      );
+      const grantPerms = fullUser.userPermissions
+        .filter((up) => up.type === 'grant')
+        .map((up) => `${up.permission.resource}:${up.permission.action}`);
+      const denyKeys = new Set(
+        fullUser.userPermissions
+          .filter((up) => up.type === 'deny')
+          .map((up) => `${up.permission.resource}:${up.permission.action}`),
+      );
+      permissions = [...new Set([...rolePerms, ...grantPerms])].filter(
+        (p) => !denyKeys.has(p),
+      );
     }
 
-    return {
-      id: user.id,
-      email: user.email,
-      name: user.name,
+    const branchIds = fullUser.userBranches.map((ub) => ub.branchId);
+    if (fullUser.branchId && !branchIds.includes(fullUser.branchId)) {
+      branchIds.push(fullUser.branchId);
+    }
+
+    const result = {
+      id: fullUser.id,
+      email: fullUser.email,
+      name: fullUser.name,
       roles,
       permissions,
-      branchId: user.branchId,
+      branchId: fullUser.branchId,
       branchIds,
-      canViewOtherStaffData: user.canViewOtherStaffData,
+      canViewOtherStaffData: fullUser.canViewOtherStaffData,
     };
+
+    // 5. Cache 60s
+    this.permissionCache.set(userId, result);
+
+    return result;
   }
 }
