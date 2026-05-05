@@ -1078,6 +1078,7 @@ model OrderDelivery {
   weight            Decimal?
   length            Decimal?
   width             Decimal?
+  weightUnit        String?   @default("g")
   height            Decimal?
   noteForDriver     String?
   partnerDeliveryId Int?
@@ -1217,6 +1218,7 @@ model InvoiceDelivery {
   weight            Decimal?
   length            Decimal?
   width             Decimal?
+  weightUnit        String?   @default("g")
   height            Decimal?
   partnerDeliveryId Int?
   noteForDriver     String?

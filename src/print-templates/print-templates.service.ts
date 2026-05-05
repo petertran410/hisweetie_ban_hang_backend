@@ -421,6 +421,12 @@ export class PrintTemplatesService {
   }
 
   private deliveryVars(delivery: any) {
+    const weight = delivery?.weight ? Number(delivery.weight) : 0;
+    const unit = delivery?.weightUnit || 'g';
+    const formatted = weight
+      ? `${new Intl.NumberFormat('en-US').format(weight)} ${unit}`
+      : '';
+
     return {
       Nguoi_Nhan: delivery?.receiver || '',
       Dien_Thoai_Nhan: delivery?.contactNumber || '',
@@ -429,7 +435,7 @@ export class PrintTemplatesService {
       Khu_Vuc_Giao_Hang: delivery?.locationName || '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
-      Khoi_Luong: delivery?.weight ? Number(delivery.weight).toString() : '',
+      Khoi_Luong: formatted,
     };
   }
 

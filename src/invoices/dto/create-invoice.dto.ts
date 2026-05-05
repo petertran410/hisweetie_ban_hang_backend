@@ -71,6 +71,10 @@ class CreateInvoiceDeliveryDto {
   weight?: number;
 
   @IsOptional()
+  @IsString()
+  weightUnit?: string;
+
+  @IsOptional()
   @IsNumber()
   length?: number;
 

@@ -36,6 +36,10 @@ export class DeliveryInfoDto {
   @IsOptional()
   weight?: number;
 
+  @IsString()
+  @IsOptional()
+  weightUnit?: string;
+
   @IsNumber()
   @IsOptional()
   length?: number;
