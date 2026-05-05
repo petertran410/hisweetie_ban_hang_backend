@@ -9,6 +9,8 @@ import { Reflector } from '@nestjs/core';
 import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
 import { AuthService } from '../auth.service';
 
+const SUPER_ADMIN_ROLE = 'Super Admin';
+
 @Injectable()
 export class PermissionsGuard implements CanActivate {
   private readonly logger = new Logger(PermissionsGuard.name);
@@ -33,6 +35,10 @@ export class PermissionsGuard implements CanActivate {
 
     if (!user || !user.id) {
       throw new ForbiddenException('Không có quyền truy cập');
+    }
+
+    if (user.roles?.includes(SUPER_ADMIN_ROLE)) {
+      return true;
     }
 
     const branchIdRaw =

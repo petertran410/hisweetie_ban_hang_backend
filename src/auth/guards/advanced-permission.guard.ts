@@ -9,6 +9,8 @@ import { PermissionsService } from '../../permissions/permissions.service';
 
 export const ADVANCED_PERMISSION_KEY = 'advancedPermission';
 
+const SUPER_ADMIN_ROLE = 'Super Admin';
+
 @Injectable()
 export class AdvancedPermissionGuard implements CanActivate {
   constructor(
@@ -31,6 +33,11 @@ export class AdvancedPermissionGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest();
     const user = request.user;
+
+    if (user.roles?.includes(SUPER_ADMIN_ROLE)) {
+      return true;
+    }
+
     const data = request.body || request.params;
 
     const hasPermission = await this.permissionsService.checkPermission(

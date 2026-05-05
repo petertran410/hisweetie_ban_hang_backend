@@ -2,6 +2,8 @@ import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ROLES_KEY } from '../decorators/roles.decorator';
 
+const SUPER_ADMIN_ROLE = 'Super Admin';
+
 @Injectable()
 export class RolesGuard implements CanActivate {
   constructor(private reflector: Reflector) {}
@@ -15,6 +17,11 @@ export class RolesGuard implements CanActivate {
       return true;
     }
     const { user } = context.switchToHttp().getRequest();
+
+    if (user.roles?.includes(SUPER_ADMIN_ROLE)) {
+      return true;
+    }
+
     return requiredRoles.some((role) => user.roles?.includes(role));
   }
 }
