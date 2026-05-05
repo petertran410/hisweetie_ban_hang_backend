@@ -19,6 +19,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Packing Slips')
 @ApiBearerAuth()
@@ -28,31 +29,32 @@ export class PackingSlipsController {
   constructor(private packingSlipsService: PackingSlipsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách báo đơn' })
+  @RequirePermissions('packing_slips:view')
   findAll(@Query() query: PackingSlipQueryDto) {
     return this.packingSlipsService.findAll(query);
   }
 
   @Post('check-invoices')
-  @ApiOperation({ summary: 'Kiểm tra hóa đơn đã có giao hàng chưa' })
+  @RequirePermissions('packing_slips:view')
   checkInvoices(@Body() dto: CheckInvoicesDto) {
     return this.packingSlipsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết báo đơn theo ID' })
+  @RequirePermissions('packing_slips:view')
   findOne(@Param('id') id: string) {
     return this.packingSlipsService.findOne(+id);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Tạo mới báo đơn' })
+  @RequirePermissions('packing_slips:create')
   create(@Body() dto: CreatePackingSlipDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingSlipsService.create(dto, userId);
   }
 
   @Put(':id')
+  @RequirePermissions('packing_slips:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdatePackingSlipDto,
@@ -63,7 +65,7 @@ export class PackingSlipsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa báo đơn' })
+  @RequirePermissions('packing_slips:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingSlipsService.remove(+id, userId);

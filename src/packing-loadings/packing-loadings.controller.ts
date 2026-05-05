@@ -19,6 +19,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Packing Loadings')
 @ApiBearerAuth()
@@ -28,32 +29,32 @@ export class PackingLoadingsController {
   constructor(private packingLoadingsService: PackingLoadingsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách loading' })
+  @RequirePermissions('packing_loadings:view')
   findAll(@Query() query: PackingLoadingQueryDto) {
     return this.packingLoadingsService.findAll(query);
   }
 
   @Post('check-invoices')
-  @ApiOperation({ summary: 'Kiểm tra hóa đơn đã có loading chưa' })
+  @RequirePermissions('packing_loadings:view')
   checkInvoices(@Body() dto: CheckInvoicesDto) {
     return this.packingLoadingsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết loading theo ID' })
+  @RequirePermissions('packing_loadings:view')
   findOne(@Param('id') id: string) {
     return this.packingLoadingsService.findOne(+id);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Tạo mới loading' })
+  @RequirePermissions('packing_loadings:create')
   create(@Body() dto: CreatePackingLoadingDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingLoadingsService.create(dto, userId);
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Cập nhật loading' })
+  @RequirePermissions('packing_loadings:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdatePackingLoadingDto,
@@ -64,7 +65,7 @@ export class PackingLoadingsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa loading' })
+  @RequirePermissions('packing_loadings:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingLoadingsService.remove(+id, userId);

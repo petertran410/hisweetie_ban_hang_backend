@@ -12,6 +12,7 @@ import { InventoriesService } from './inventories.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { UpdateInventoryDto } from './dto';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Inventories')
 @ApiBearerAuth()
@@ -21,6 +22,7 @@ export class InventoriesController {
   constructor(private inventoriesService: InventoriesService) {}
 
   @Get('by-branch')
+  @RequirePermissions('inventory:view')
   @ApiOperation({ summary: 'Get inventory by branch' })
   getInventoryByBranch(
     @Query('branchId') branchId: string,
@@ -36,6 +38,7 @@ export class InventoriesController {
   }
 
   @Get('product/:productId/branches')
+  @RequirePermissions('inventory:view')
   @ApiOperation({ summary: 'Get product inventory across all branches' })
   getProductInventoryAcrossBranches(@Query('productId') productId: string) {
     return this.inventoriesService.getProductInventoryAcrossBranches(
@@ -44,6 +47,7 @@ export class InventoriesController {
   }
 
   @Put(':productId/:branchId/condition')
+  @RequirePermissions('inventory:update')
   @ApiOperation({
     summary: 'Update damaged/near-expiry quantity for a product at a branch',
   })

@@ -19,6 +19,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Packing Hangs')
 @ApiBearerAuth()
@@ -28,32 +29,32 @@ export class PackingHangsController {
   constructor(private packingHangsService: PackingHangsService) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách đóng hàng' })
+  @RequirePermissions('packing_hangs:view')
   findAll(@Query() query: PackingHangQueryDto) {
     return this.packingHangsService.findAll(query);
   }
 
   @Post('check-invoices')
-  @ApiOperation({ summary: 'Kiểm tra hóa đơn đã có đóng hàng chưa' })
+  @RequirePermissions('packing_hangs:view')
   checkInvoices(@Body() dto: CheckInvoicesDto) {
     return this.packingHangsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết đóng hàng theo ID' })
+  @RequirePermissions('packing_hangs:view')
   findOne(@Param('id') id: string) {
     return this.packingHangsService.findOne(+id);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Tạo mới đóng hàng' })
+  @RequirePermissions('packing_hangs:create')
   create(@Body() dto: CreatePackingHangDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingHangsService.create(dto, userId);
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Cập nhật đóng hàng' })
+  @RequirePermissions('packing_hangs:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdatePackingHangDto,
@@ -64,7 +65,7 @@ export class PackingHangsController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa đóng hàng' })
+  @RequirePermissions('packing_hangs:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.packingHangsService.remove(+id, userId);

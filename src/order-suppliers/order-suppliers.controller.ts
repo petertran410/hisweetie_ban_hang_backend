@@ -20,6 +20,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Order Suppliers')
 @ApiBearerAuth()
@@ -32,26 +33,26 @@ export class OrderSuppliersController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:view')
   findAll(@Query() query: OrderSupplierQueryDto) {
     return this.orderSuppliersService.findAll(query);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết đặt hàng nhập theo ID' })
+  @RequirePermissions('order_suppliers:view')
   findOne(@Param('id') id: string) {
     return this.orderSuppliersService.findOne(+id);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Tạo mới đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:create')
   create(@Body() dto: CreateOrderSupplierDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.create(dto, userId);
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Cập nhật đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateOrderSupplierDto,
@@ -62,14 +63,14 @@ export class OrderSuppliersController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.remove(+id, userId);
   }
 
   @Post(':id/payments')
-  @ApiOperation({ summary: 'Tạo thanh toán cho đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:update')
   createPayment(
     @Param('id') id: string,
     @Body() dto: CreateOrderSupplierPaymentDto,
@@ -81,13 +82,13 @@ export class OrderSuppliersController {
   }
 
   @Get(':id/payments')
-  @ApiOperation({ summary: 'Lấy danh sách thanh toán của đặt hàng nhập' })
+  @RequirePermissions('order_suppliers:view')
   getPayments(@Param('id') id: string) {
     return this.orderSupplierPaymentsService.findAllByOrderSupplier(+id);
   }
 
   @Delete('payments/:paymentId')
-  @ApiOperation({ summary: 'Xóa thanh toán' })
+  @RequirePermissions('order_suppliers:delete')
   removePayment(@Param('paymentId') paymentId: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.orderSupplierPaymentsService.remove(+paymentId, userId);

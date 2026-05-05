@@ -19,6 +19,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
 
 @ApiTags('Purchase Orders')
 @ApiBearerAuth()
@@ -31,26 +32,26 @@ export class PurchaseOrdersController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lấy danh sách nhập hàng' })
+  @RequirePermissions('purchase_orders:view')
   findAll(@Query() query: PurchaseOrderQueryDto) {
     return this.purchaseOrdersService.findAll(query);
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Lấy chi tiết nhập hàng theo ID' })
+  @RequirePermissions('purchase_orders:view')
   findOne(@Param('id') id: string) {
     return this.purchaseOrdersService.findOne(+id);
   }
 
   @Post()
-  @ApiOperation({ summary: 'Tạo mới nhập hàng' })
+  @RequirePermissions('purchase_orders:create')
   create(@Body() dto: CreatePurchaseOrderDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.purchaseOrdersService.create(dto, userId);
   }
 
   @Put(':id')
-  @ApiOperation({ summary: 'Cập nhật nhập hàng' })
+  @RequirePermissions('purchase_orders:update')
   update(
     @Param('id') id: string,
     @Body() dto: UpdatePurchaseOrderDto,
@@ -61,14 +62,14 @@ export class PurchaseOrdersController {
   }
 
   @Delete(':id')
-  @ApiOperation({ summary: 'Xóa nhập hàng' })
+  @RequirePermissions('purchase_orders:delete')
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.purchaseOrdersService.remove(+id, userId);
   }
 
   @Post(':id/payments')
-  @ApiOperation({ summary: 'Tạo thanh toán cho nhập hàng' })
+  @RequirePermissions('purchase_orders:update')
   createPayment(@Param('id') id: string, @Body() dto: any, @Req() req: any) {
     dto.purchaseOrderId = +id;
     const userId = req.user?.id || 1;
@@ -76,13 +77,13 @@ export class PurchaseOrdersController {
   }
 
   @Get(':id/payments')
-  @ApiOperation({ summary: 'Lấy danh sách thanh toán của nhập hàng' })
+  @RequirePermissions('purchase_orders:view')
   getPayments(@Param('id') id: string) {
     return this.purchaseOrderPaymentsService.findAllByPurchaseOrder(+id);
   }
 
   @Delete('payments/:paymentId')
-  @ApiOperation({ summary: 'Xóa thanh toán' })
+  @RequirePermissions('purchase_orders:delete')
   removePayment(@Param('paymentId') paymentId: string, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.purchaseOrderPaymentsService.remove(+paymentId, userId);
