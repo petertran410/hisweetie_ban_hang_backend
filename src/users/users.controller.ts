@@ -9,11 +9,23 @@ import {
   Query,
   UseGuards,
   Req,
+  ForbiddenException,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+
+const SUPER_ADMIN_ROLE = 'Super Admin';
+
+function assertNotSelfPermissionEdit(req: any, targetUserId: number): void {
+  const actor = req.user;
+  if (actor.id === targetUserId && !actor.roles?.includes(SUPER_ADMIN_ROLE)) {
+    throw new ForbiddenException(
+      'Bạn không thể tự thay đổi quyền của chính mình. Vui lòng liên hệ Super Admin.',
+    );
+  }
+}
 
 @ApiTags('Users')
 @ApiBearerAuth()
@@ -106,7 +118,9 @@ export class UsersController {
       grantPermissionIds: number[];
       denyPermissionIds: number[];
     },
+    @Req() req: any,
   ) {
+    assertNotSelfPermissionEdit(req, parseInt(id));
     return this.usersService.assignBranchPermissions(
       parseInt(id),
       data.branchId,
@@ -134,6 +148,10 @@ export class UsersController {
     },
     @Req() req: any,
   ) {
+    if (data.roleIds || data.permissionIds || data.denyPermissionIds) {
+      assertNotSelfPermissionEdit(req, parseInt(id));
+    }
+
     const performedByUserId = req.user?.id;
     return this.usersService.update(parseInt(id), data, performedByUserId);
   }
@@ -152,7 +170,9 @@ export class UsersController {
   assignPermissions(
     @Param('id') id: string,
     @Body() data: { permissionIds: number[] },
+    @Req() req: any,
   ) {
+    assertNotSelfPermissionEdit(req, parseInt(id));
     return this.usersService.assignPermissions(
       parseInt(id),
       data.permissionIds,
