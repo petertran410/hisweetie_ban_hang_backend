@@ -51,6 +51,16 @@ export class BranchesService {
     return { data, total, page, limit };
   }
 
+  async findByIds(ids: number[]) {
+    return this.prisma.branch.findMany({
+      where: {
+        id: { in: ids },
+        isActive: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
   async findByUser(userId: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

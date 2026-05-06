@@ -7,6 +7,7 @@ import {
   Post,
   Put,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { BranchesService } from './branches.service';
@@ -40,10 +41,18 @@ export class BranchesController {
   }
 
   @Get('my-branches')
-  @RequirePermissions('branches:view')
-  @ApiOperation({ summary: 'Get branches accessible by current user' })
-  async getMyBranches(@CurrentUser() user: any) {
-    return this.branchesService.findByUser(user.id);
+  @ApiOperation({
+    summary: 'Get branches assigned to current user (no permission required)',
+  })
+  async getMyBranches(@Req() req: any) {
+    const user = req.user;
+    const branchIds: number[] = user.branchIds || [];
+
+    if (branchIds.length === 0) {
+      return this.branchesService.findAll();
+    }
+
+    return this.branchesService.findByIds(branchIds);
   }
 
   @Get('all')
