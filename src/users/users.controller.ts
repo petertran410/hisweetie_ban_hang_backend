@@ -16,13 +16,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 
-const SUPER_ADMIN_ROLE = 'Super Admin';
-
 function assertNotSelfPermissionEdit(req: any, targetUserId: number): void {
   const actor = req.user;
-  if (actor.id === targetUserId && !actor.roles?.includes(SUPER_ADMIN_ROLE)) {
+  if (actor.id === targetUserId) {
     throw new ForbiddenException(
-      'Bạn không thể tự thay đổi quyền của chính mình. Vui lòng liên hệ Super Admin.',
+      'Bạn không thể tự thay đổi quyền của chính mình.',
     );
   }
 }
