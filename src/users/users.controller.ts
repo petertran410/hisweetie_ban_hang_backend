@@ -53,7 +53,6 @@ export class UsersController {
   }
 
   @Get('all')
-  @RequirePermissions('users:view')
   @ApiOperation({ summary: 'Get all active users (simplified)' })
   getUsers() {
     return this.usersService.getUsers();

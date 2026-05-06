@@ -56,7 +56,6 @@ export class BranchesController {
   }
 
   @Get('all')
-  @RequirePermissions('branches:view')
   @ApiOperation({ summary: 'Get all branches as array' })
   async getAllBranches() {
     const result = await this.branchesService.findAll();
