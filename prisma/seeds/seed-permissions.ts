@@ -56,6 +56,15 @@ const permissionsData: PermissionData[] = [
     category: 'Sản phẩm',
   },
 
+  // Products - Granular
+  {
+    name: 'products:view_cost_price',
+    resource: 'products',
+    action: 'view_cost_price',
+    description: 'Xem giá vốn sản phẩm',
+    category: 'Sản phẩm',
+  },
+
   // Categories
   {
     name: 'categories:view',
@@ -310,6 +319,29 @@ const permissionsData: PermissionData[] = [
     category: 'Bán hàng',
   },
 
+  // Orders - Granular
+  {
+    name: 'orders:view_other_staff',
+    resource: 'orders',
+    action: 'view_other_staff',
+    description: 'Xem đơn hàng của nhân viên khác',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:export',
+    resource: 'orders',
+    action: 'export',
+    description: 'Xuất Excel đơn hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'orders:print',
+    resource: 'orders',
+    action: 'print',
+    description: 'In đơn hàng',
+    category: 'Bán hàng',
+  },
+
   // Invoices
   {
     name: 'invoices:view',
@@ -344,6 +376,43 @@ const permissionsData: PermissionData[] = [
     resource: 'invoices',
     action: 'print',
     description: 'In hóa đơn',
+    category: 'Bán hàng',
+  },
+
+  // Invoices - Granular
+  {
+    name: 'invoices:view_cost_price',
+    resource: 'invoices',
+    action: 'view_cost_price',
+    description: 'Xem giá vốn trên hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:view_profit',
+    resource: 'invoices',
+    action: 'view_profit',
+    description: 'Xem lợi nhuận trên hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:view_other_staff',
+    resource: 'invoices',
+    action: 'view_other_staff',
+    description: 'Xem hóa đơn của nhân viên khác',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:export',
+    resource: 'invoices',
+    action: 'export',
+    description: 'Xuất Excel hóa đơn',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'invoices:cancel',
+    resource: 'invoices',
+    action: 'cancel',
+    description: 'Hủy hóa đơn',
     category: 'Bán hàng',
   },
 
@@ -388,6 +457,15 @@ const permissionsData: PermissionData[] = [
     resource: 'customers',
     action: 'export',
     description: 'Export khách hàng',
+    category: 'Khách hàng',
+  },
+
+  // Customers - Granular
+  {
+    name: 'customers:view_debt',
+    resource: 'customers',
+    action: 'view_debt',
+    description: 'Xem công nợ khách hàng',
     category: 'Khách hàng',
   },
 
@@ -511,6 +589,22 @@ const permissionsData: PermissionData[] = [
     category: 'Nhà cung cấp',
   },
 
+  // Purchase Orders - Granular
+  {
+    name: 'purchase_orders:view_price',
+    resource: 'purchase_orders',
+    action: 'view_price',
+    description: 'Xem giá nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'purchase_orders:cancel',
+    resource: 'purchase_orders',
+    action: 'cancel',
+    description: 'Hủy phiếu nhập hàng',
+    category: 'Nhà cung cấp',
+  },
+
   // Packing Slips
   {
     name: 'packing_slips:view',
@@ -628,6 +722,43 @@ const permissionsData: PermissionData[] = [
     resource: 'cash_flows',
     action: 'delete',
     description: 'Xóa phiếu thu/chi',
+    category: 'Tài chính',
+  },
+
+  // Cash Flows - Granular
+  {
+    name: 'cash_flows:view_balance',
+    resource: 'cash_flows',
+    action: 'view_balance',
+    description: 'Xem số dư quỹ',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:view_other_staff',
+    resource: 'cash_flows',
+    action: 'view_other_staff',
+    description: 'Xem phiếu thu/chi của nhân viên khác',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:print',
+    resource: 'cash_flows',
+    action: 'print',
+    description: 'In phiếu thu/chi',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:export',
+    resource: 'cash_flows',
+    action: 'export',
+    description: 'Xuất Excel sổ quỹ',
+    category: 'Tài chính',
+  },
+  {
+    name: 'cash_flows:cancel',
+    resource: 'cash_flows',
+    action: 'cancel',
+    description: 'Hủy phiếu thu/chi',
     category: 'Tài chính',
   },
 
@@ -829,43 +960,60 @@ const permissionsData: PermissionData[] = [
     resource: 'return_orders',
     action: 'view',
     description: 'Xem trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
   {
     name: 'return_orders:create',
     resource: 'return_orders',
     action: 'create',
     description: 'Tạo trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
   {
     name: 'return_orders:update',
     resource: 'return_orders',
     action: 'update',
     description: 'Cập nhật trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
   {
     name: 'return_orders:delete',
     resource: 'return_orders',
     action: 'delete',
     description: 'Hủy trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
   {
     name: 'return_orders_price:view',
     resource: 'return_orders_price',
     action: 'view',
     description: 'Xem giá nhập lại trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
   {
     name: 'return_orders_total_prices:view',
     resource: 'return_orders_total_prices',
     action: 'view',
     description: 'Xem tổng tiền hàng trả hàng',
-    category: 'Quản trị',
+    category: 'Bán hàng',
   },
+
+  // Return Orders - Granular
+  {
+    name: 'return_orders:approve',
+    resource: 'return_orders',
+    action: 'approve',
+    description: 'Duyệt trả hàng (xác nhận kho)',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'return_orders:cancel',
+    resource: 'return_orders',
+    action: 'cancel',
+    description: 'Hủy trả hàng',
+    category: 'Bán hàng',
+  },
+
   // POS - Trang bán hàng
   {
     name: 'pos_inventory:view',
@@ -908,6 +1056,22 @@ const permissionsData: PermissionData[] = [
     action: 'update',
     description: 'Sửa phần thanh toán của khách',
     category: 'Bán hàng',
+  },
+
+  // Settings
+  {
+    name: 'settings:view',
+    resource: 'settings',
+    action: 'view',
+    description: 'Xem cài đặt hệ thống',
+    category: 'Cấu hình',
+  },
+  {
+    name: 'settings:update',
+    resource: 'settings',
+    action: 'update',
+    description: 'Sửa cài đặt hệ thống',
+    category: 'Cấu hình',
   },
 ];
 
