@@ -866,11 +866,57 @@ const permissionsData: PermissionData[] = [
     description: 'Xem tổng tiền hàng trả hàng',
     category: 'Quản trị',
   },
+  // POS - Trang bán hàng
+  {
+    name: 'pos_inventory:view',
+    resource: 'pos_inventory',
+    action: 'view',
+    description: 'Xem tồn kho khi bán hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'pos_price:update',
+    resource: 'pos_price',
+    action: 'update',
+    description: 'Sửa đơn giá sản phẩm khi bán hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'pos_discount:update',
+    resource: 'pos_discount',
+    action: 'update',
+    description: 'Sửa giảm giá hóa đơn khi bán hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'pos_seller:update',
+    resource: 'pos_seller',
+    action: 'update',
+    description: 'Sửa người bán khi bán hàng',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'pos_payment:view',
+    resource: 'pos_payment',
+    action: 'view',
+    description: 'Xem phần thanh toán của khách',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'pos_payment:update',
+    resource: 'pos_payment',
+    action: 'update',
+    description: 'Sửa phần thanh toán của khách',
+    category: 'Bán hàng',
+  },
 ];
 
 async function seedPermissions() {
   console.log('🌱 Seeding permissions...');
 
+  await prisma.userBranchPermission.deleteMany({});
+  await prisma.userPermission.deleteMany({});
+  await prisma.rolePermission.deleteMany({});
   await prisma.permission.deleteMany({});
 
   for (const perm of permissionsData) {
