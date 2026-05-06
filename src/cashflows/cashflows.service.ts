@@ -368,6 +368,8 @@ export class CashFlowsService {
 
     if (currentUser && !currentUser.canViewOtherStaffData) {
       where.createdBy = currentUser.id;
+    } else if (userId) {
+      where.createdBy = userId;
     }
 
     if (branchIds && branchIds.length > 0) {
@@ -385,10 +387,6 @@ export class CashFlowsService {
       where.code = {
         not: { startsWith: 'TTTU' },
       };
-    }
-
-    if (userId) {
-      where.createdBy = userId;
     }
 
     if (accountId) {
