@@ -21,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 
 @ApiTags('Cash Flows')
 @ApiBearerAuth()
@@ -39,8 +40,8 @@ export class CashFlowsController {
   @Get()
   @RequirePermissions('cash_flows:view')
   @ApiOperation({ summary: 'Get all cash flows' })
-  findAll(@Query() query: CashFlowQueryDto) {
-    return this.cashFlowsService.findAll(query);
+  findAll(@Query() query: CashFlowQueryDto, @CurrentUser() user: any) {
+    return this.cashFlowsService.findAll(query, user);
   }
 
   @Get(':id')

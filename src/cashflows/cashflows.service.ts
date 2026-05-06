@@ -338,7 +338,7 @@ export class CashFlowsService {
     });
   }
 
-  async findAll(query: CashFlowQueryDto) {
+  async findAll(query: CashFlowQueryDto, currentUser?: any) {
     const {
       branchIds,
       code,
@@ -365,6 +365,10 @@ export class CashFlowsService {
     const take = limit || pageSize;
 
     const where: any = {};
+
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      where.createdBy = currentUser.id;
+    }
 
     if (branchIds && branchIds.length > 0) {
       where.branchId = { in: branchIds };
