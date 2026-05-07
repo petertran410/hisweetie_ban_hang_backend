@@ -66,6 +66,10 @@ export class SyncOrderService extends BaseSyncService {
       await this.prisma.order.update({
         where: { id: existing.id },
         data: {
+          customerId: customer?.id || existing.customerId,
+          branchId: branch?.id || existing.branchId,
+          soldById: soldBy?.id || existing.soldById,
+          saleChannelId: saleChannel?.id || existing.saleChannelId,
           status: record.status ?? existing.status,
           statusValue: record.statusValue || null,
           kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
@@ -233,7 +237,7 @@ export class SyncOrderService extends BaseSyncService {
       }
 
       // 1. Tạo CashFlow (phiếu thu tạm ứng)
-      const cashFlow = await this.prisma.cashFlow.create({
+      await this.prisma.cashFlow.create({
         data: {
           code,
           branchId: order?.branchId || 1,

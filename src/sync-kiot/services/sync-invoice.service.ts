@@ -46,6 +46,13 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
+    const order = record.orderCode
+      ? await this.prisma.order.findFirst({
+          where: { code: record.orderCode },
+          select: { id: true },
+        })
+      : null;
+
     // sync_kiot: total = tổng trước giảm, totalPayment = tổng phải trả
     // hisweetie: totalAmount = tổng trước giảm, grandTotal = sau giảm
     const totalAmount = Number(record.total || 0);
@@ -60,14 +67,24 @@ export class SyncInvoiceService extends BaseSyncService {
     const debtAmount = grandTotal - paidAmount;
 
     if (existing) {
-      // Chỉ update status và kiotVietId, KHÔNG ghi đè paidAmount/debtAmount
-      // vì hisweetie tự tính theo Formula A
       await this.prisma.invoice.update({
         where: { id: existing.id },
         data: {
+          customerId: customer?.id || existing.customerId,
+          branchId: branch?.id || existing.branchId,
+          orderId: order?.id || existing.orderId,
+          soldById: soldBy?.id || existing.soldById,
           status: record.status,
           statusValue: record.statusValue || null,
           kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+          totalAmount,
+          discount,
+          discountRatio: record.discountRatio || 0,
+          grandTotal,
+          paidAmount,
+          debtAmount: Math.max(debtAmount, 0),
+          usingCod: record.usingCod ?? false,
+          description: record.description || null,
           lastSyncedAt: new Date(),
         },
       });
@@ -82,6 +99,7 @@ export class SyncInvoiceService extends BaseSyncService {
         code: record.code,
         customerId: customer?.id || null,
         branchId: branch?.id || null,
+        orderId: order?.id || null,
         soldById: soldBy?.id || null,
         purchaseDate: new Date(record.purchaseDate),
         totalAmount,
