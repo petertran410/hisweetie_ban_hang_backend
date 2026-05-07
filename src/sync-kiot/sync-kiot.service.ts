@@ -205,6 +205,14 @@ export class SyncKiotService {
         return this.syncSupplier.syncByCode(code);
       case 'cash_flow':
         return this.syncCashFlow.syncByCode(code);
+      case 'transfer':
+        return this.syncTransfer.syncByCode(code);
+      case 'purchase_order':
+        return this.syncPurchaseOrder.syncByCode(code);
+      case 'order_supplier':
+        return this.syncOrderSupplier.syncByCode(code);
+      case 'return_order':
+        return this.syncReturnOrder.syncByCode(code);
       default:
         this.logger.warn(`⚠️ Unknown entity type: ${entityType}`);
         return null;

@@ -233,4 +233,10 @@ export class SyncPurchaseOrderService extends BaseSyncService {
       });
     }
   }
+
+  async syncByCode(code: string): Promise<any> {
+    const record = await this.api.fetchByCode('purchase-orders', code);
+    if (!record) return null;
+    return this.upsertRecord(record);
+  }
 }

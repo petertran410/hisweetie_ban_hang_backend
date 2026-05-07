@@ -108,7 +108,7 @@ export class SyncReturnOrderService extends BaseSyncService {
     });
 
     if (record.details?.length) {
-      await this.syncDetails(ro.id, invoice?.id, record.details);
+      await this.syncDetails(ro.id, invoice?.id ?? null, record.details);
     }
 
     return 'created';
@@ -157,5 +157,11 @@ export class SyncReturnOrderService extends BaseSyncService {
         },
       });
     }
+  }
+
+  async syncByCode(code: string): Promise<any> {
+    const record = await this.api.fetchByCode('returns', code);
+    if (!record) return null;
+    return this.upsertRecord(record);
   }
 }

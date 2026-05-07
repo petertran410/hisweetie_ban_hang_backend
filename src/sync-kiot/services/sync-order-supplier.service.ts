@@ -114,10 +114,16 @@ export class SyncOrderSupplierService extends BaseSyncService {
           quantity: d.quantity || 0,
           price: d.price || 0,
           discount: d.discount || 0,
-          totalPrice: Number(d.subTotal || 0),
+          subTotal: Number(d.subTotal || 0),
           description: d.description || null,
         },
       });
     }
+  }
+
+  async syncByCode(code: string): Promise<any> {
+    const record = await this.api.fetchByCode('order-suppliers', code);
+    if (!record) return null;
+    return this.upsertRecord(record);
   }
 }

@@ -105,4 +105,10 @@ export class SyncTransferService extends BaseSyncService {
       });
     }
   }
+
+  async syncByCode(code: string): Promise<any> {
+    const record = await this.api.fetchByCode('transfers', code);
+    if (!record) return null;
+    return this.upsertRecord(record);
+  }
 }
