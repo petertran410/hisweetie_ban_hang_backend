@@ -10,6 +10,8 @@ datasource db {
 model User {
   id        Int      @id @default(autoincrement())
   name      String
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   email     String   @unique
   password  String?
   phone     String?
@@ -203,6 +205,7 @@ model Branch {
   id               Int      @id @default(autoincrement())
   name             String
   code             String?  @unique
+  kiotVietId       Int?     @unique @map("kiot_viet_id")
   contactNumber    String?
   subContactNumber String?
   email            String?
@@ -213,6 +216,7 @@ model Branch {
   isLock           Boolean  @default(false)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+  lastSyncedAt DateTime? @map("last_synced_at")
 
   location                   Location?         @relation(fields: [locationId], references: [id])
   users                      User[]
@@ -291,6 +295,8 @@ model CustomerType {
 model CustomerGroup {
   id                Int      @id @default(autoincrement())
   name              String
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   description       String?
   discount          Decimal?
   createdBy         Int?
@@ -309,6 +315,8 @@ model CustomerGroup {
 model Customer {
   id             Int       @id @default(autoincrement())
   code           String?   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   name           String
   gender         Boolean?
   birthDate      DateTime?
@@ -410,6 +418,8 @@ model CustomerGroupDetail {
 model Supplier {
   id            Int      @id @default(autoincrement())
   code          String?  @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   name          String
   contactNumber String?
   email         String?
@@ -468,6 +478,8 @@ model SupplierGroupDetail {
 model TradeMark {
   id        Int      @id @default(autoincrement())
   name      String
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -505,6 +517,8 @@ model ProductVariant {
 model Product {
   id              Int      @id @default(autoincrement())
   code            String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   name            String
   fullName        String?
   description     String?
@@ -807,6 +821,8 @@ model InventoryLog {
 model PriceBook {
   id                     Int       @id @default(autoincrement())
   name                   String
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   isActive               Boolean   @default(true)
   isGlobal               Boolean   @default(false)
   startDate              DateTime?
@@ -893,6 +909,8 @@ model PriceBookUser {
 model SaleChannel {
   id         Int      @id @default(autoincrement())
   name       String
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   position   Int      @default(0)
   isActivate Boolean  @default(true)
   createdAt  DateTime @default(now())
@@ -907,6 +925,8 @@ model SaleChannel {
 model Surcharge {
   id         Int      @id @default(autoincrement())
   code       String   @unique
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   name       String
   valueRatio Decimal?
   value      Decimal?
@@ -924,6 +944,8 @@ model Surcharge {
 model BankAccount {
   id              Int      @id @default(autoincrement())
   accountNumber   String
+  kiotVietId   Int?      @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   bankCode        String
   bankName        String
   accountHolder   String
@@ -961,6 +983,8 @@ model PartnerDelivery {
 model Order {
   id            Int      @id @default(autoincrement())
   code          String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   customerId    Int?
   branchId      Int?
   soldById      Int?
@@ -1097,6 +1121,8 @@ model OrderDelivery {
 model Invoice {
   id                   Int      @id @default(autoincrement())
   code                 String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   orderId              Int?
   customerId           Int?
   parentCustomerId     Int?
@@ -1238,6 +1264,8 @@ model InvoiceDelivery {
 model PurchaseOrder {
   id                  Int      @id @default(autoincrement())
   code                String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   orderSupplierId     Int?
   supplierId          Int
   branchId            Int?
@@ -1405,6 +1433,8 @@ model Settings {
 model Transfer {
   id                Int      @id @default(autoincrement())
   code              String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   fromBranchId      Int
   toBranchId        Int
   status            Int      @default(1)
@@ -1480,6 +1510,8 @@ model CashFlowGroup {
 model CashFlow {
   id                         Int       @id @default(autoincrement())
   code                       String    @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   branchId                   Int
   cashFlowGroupId            Int?
   collectionBranchId         Int?
@@ -1562,6 +1594,8 @@ model DestructionDetail {
 model OrderSupplier {
   id                    Int      @id @default(autoincrement())
   code                  String   @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   orderDate             DateTime @default(now())
   branchId              Int?
   supplierId            Int
@@ -1900,6 +1934,8 @@ model AuditLog {
 model ReturnOrder {
   id                  Int       @id @default(autoincrement())
   code                String    @unique
+  kiotVietId   BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt DateTime? @map("last_synced_at")
   invoiceId           Int?
   customerId          Int?
   parentCustomerId    Int?
@@ -1975,4 +2011,18 @@ model ReturnOrderDetail {
   product     Product     @relation(fields: [productId], references: [id])
 
   @@map("return_order_details")
+}
+
+model SyncControl {
+  id          Int       @id @default(autoincrement())
+  entityType  String    @unique @map("entity_type")
+  lastSyncAt  DateTime? @map("last_sync_at")
+  status      String    @default("idle")
+  isRunning   Boolean   @default(false)
+  error       String?
+  totalSynced Int?      @default(0) @map("total_synced")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("sync_controls")
 }
