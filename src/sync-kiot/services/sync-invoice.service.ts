@@ -48,6 +48,13 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
+    const saleChannel = record.saleChannel?.kiotVietId
+      ? await this.prisma.saleChannel.findFirst({
+          where: { kiotVietId: record.saleChannel.kiotVietId },
+          select: { id: true },
+        })
+      : null;
+
     const order = record.orderCode
       ? await this.prisma.order.findFirst({
           where: { code: record.orderCode },
@@ -55,18 +62,15 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
-    const totalAmount = Number(record.total ?? record.totalAmount ?? 0);
+    const totalAmount = Number(record.total ?? 0);
     const discount = Number(record.discount ?? 0);
-    const grandTotal = Number(
-      record.totalPayment ?? record.grandTotal ?? totalAmount - discount,
-    );
-
-    // Tính paidAmount từ payments
-    const paidAmount = (record.payments || []).reduce(
-      (sum: number, p: any) => sum + Number(p.amount || 0),
-      0,
-    );
-    const debtAmount = grandTotal - paidAmount;
+    const discountRatio = Number(record.discountRatio ?? 0);
+    const grandTotal =
+      discountRatio > 0
+        ? totalAmount - (totalAmount * discountRatio) / 100
+        : totalAmount - discount;
+    const paidAmount = Number(record.totalPayment ?? 0);
+    const debtAmount = Math.max(grandTotal - paidAmount, 0);
 
     if (existing) {
       await this.prisma.invoice.update({
@@ -76,17 +80,16 @@ export class SyncInvoiceService extends BaseSyncService {
           branchId: branch?.id || existing.branchId,
           orderId: order?.id || existing.orderId,
           soldById: soldBy?.id || existing.soldById,
-          status: record.status,
-          statusValue: record.statusValue || null,
-          kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+          saleChannelId: saleChannel?.id || existing.saleChannelId,
           totalAmount,
           discount,
-          discountRatio: record.discountRatio || 0,
+          discountRatio: Number(record.discountRatio || 0),
           grandTotal,
           paidAmount,
           debtAmount: Math.max(debtAmount, 0),
-          usingCod: record.usingCod ?? false,
-          description: record.description || null,
+          status: record.status,
+          statusValue: record.statusValue || null,
+          kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
           lastSyncedAt: new Date(),
         },
       });
@@ -96,6 +99,19 @@ export class SyncInvoiceService extends BaseSyncService {
       });
       if (existingDetails === 0 && record.invoiceDetails?.length) {
         await this.syncInvoiceDetails(existing.id, record.invoiceDetails);
+      }
+
+      if (record.invoiceDelivery) {
+        const existingDelivery = await this.prisma.invoiceDelivery.findUnique({
+          where: { invoiceId: existing.id },
+        });
+        if (!existingDelivery) {
+          await this.syncInvoiceDelivery(existing.id, record.invoiceDelivery);
+        }
+      }
+
+      if (record.payments?.length) {
+        await this.syncInvoicePayments(existing.id, record.payments);
       }
 
       return 'updated';

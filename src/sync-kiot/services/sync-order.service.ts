@@ -75,15 +75,15 @@ export class SyncOrderService extends BaseSyncService {
       : null;
 
     // sync_kiot: total = trước giảm, totalPayment = sau giảm
-    const totalAmount = Number(record.total ?? record.totalAmount ?? 0);
+    const totalAmount = Number(record.total ?? 0);
     const discount = Number(record.discount ?? 0);
-    const grandTotal = Number(
-      record.totalPayment ?? record.grandTotal ?? totalAmount - discount,
-    );
-    const paidAmount = (record.payments || []).reduce(
-      (sum: number, p: any) => sum + Number(p.amount || 0),
-      0,
-    );
+    const discountRatio = Number(record.discountRatio ?? 0);
+    const grandTotal =
+      discountRatio > 0
+        ? totalAmount - (totalAmount * discountRatio) / 100
+        : totalAmount - discount;
+    const paidAmount = Number(record.totalPayment ?? 0);
+    const debtAmount = Math.max(grandTotal - paidAmount, 0);
 
     if (existing) {
       await this.prisma.order.update({
@@ -93,6 +93,12 @@ export class SyncOrderService extends BaseSyncService {
           branchId: branch?.id || existing.branchId,
           soldById: soldBy?.id || existing.soldById,
           saleChannelId: saleChannel?.id || existing.saleChannelId,
+          totalAmount,
+          discount,
+          discountRatio: Number(record.discountRatio || 0),
+          grandTotal,
+          paidAmount,
+          debtAmount: Math.max(debtAmount, 0),
           status: record.status ?? existing.status,
           statusValue: record.statusValue || null,
           orderStatus: mapKiotStatusToOrderStatus(record.status ?? 1),
