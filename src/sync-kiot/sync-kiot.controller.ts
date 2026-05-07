@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Get, Logger, Param } from '@nestjs/common';
 import { SyncKiotService } from './sync-kiot.service';
 import { ApiTags } from '@nestjs/swagger';
 
@@ -49,5 +49,17 @@ export class SyncKiotController {
     return this.syncService['prisma'].syncControl.findMany({
       orderBy: { entityType: 'asc' },
     });
+  }
+
+  @Post('entity/:entityType')
+  async syncEntity(@Param('entityType') entityType: string) {
+    this.logger.log(`📨 Manual sync triggered for: ${entityType}`);
+    const result = await this.syncService.syncEntity(entityType);
+    return {
+      success: true,
+      entityType,
+      result,
+      timestamp: new Date().toISOString(),
+    };
   }
 }

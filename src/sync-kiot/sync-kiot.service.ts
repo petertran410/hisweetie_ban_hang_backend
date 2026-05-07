@@ -199,4 +199,31 @@ export class SyncKiotService {
       },
     });
   }
+
+  async syncEntity(entityType: string): Promise<any> {
+    const serviceMap: Record<string, () => Promise<any>> = {
+      branch: () => this.syncBranch.syncAll(),
+      user: () => this.syncUser.syncAll(),
+      sale_channel: () => this.syncSaleChannel.syncAll(),
+      surcharge: () => this.syncSurcharge.syncAll(),
+      bank_account: () => this.syncBankAccount.syncAll(),
+      trade_mark: () => this.syncTradeMark.syncAll(),
+      customer_group: () => this.syncCustomerGroup.syncAll(),
+      customer: () => this.syncCustomer.syncAll(),
+      product: () => this.syncProduct.syncAll(),
+      supplier: () => this.syncSupplier.syncAll(),
+      price_book: () => this.syncPriceBook.syncAll(),
+      order: () => this.syncOrder.syncAll(),
+      invoice: () => this.syncInvoice.syncAll(),
+    };
+
+    const fn = serviceMap[entityType];
+    if (!fn) {
+      throw new Error(
+        `Unknown entity type: ${entityType}. Available: ${Object.keys(serviceMap).join(', ')}`,
+      );
+    }
+
+    return this.safeSync(entityType, fn);
+  }
 }
