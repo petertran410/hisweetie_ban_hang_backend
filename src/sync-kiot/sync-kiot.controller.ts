@@ -1,8 +1,10 @@
 import { Controller, Post, Body, Get, Logger, Param } from '@nestjs/common';
 import { SyncKiotService } from './sync-kiot.service';
 import { ApiTags } from '@nestjs/swagger';
+import { Public } from '../auth/decorators/public.decorator';
 
 @ApiTags('Sync KiotViet')
+@Public()
 @Controller('sync-kiot')
 export class SyncKiotController {
   private readonly logger = new Logger(SyncKiotController.name);
