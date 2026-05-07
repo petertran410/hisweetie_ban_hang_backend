@@ -40,7 +40,7 @@ export class SyncTransferService extends BaseSyncService {
 
     const kiotOwnedData = {
       status: record.status ?? 1,
-      description: record.description || null,
+      noteBySource: record.description || null,
       kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
       lastSyncedAt: new Date(),
     };
@@ -68,7 +68,10 @@ export class SyncTransferService extends BaseSyncService {
           : null,
         createdById: 1,
         createdByName: '',
-        ...kiotOwnedData,
+        noteBySource: record.description || null,
+        status: record.status ?? 1,
+        kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+        lastSyncedAt: new Date(),
       },
     });
 
