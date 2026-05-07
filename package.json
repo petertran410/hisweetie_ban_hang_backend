@@ -26,6 +26,7 @@
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts"
   },
   "dependencies": {
+    "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^3.2.3",
     "@nestjs/core": "^11.0.1",
@@ -33,6 +34,7 @@
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/platform-socket.io": "^11.1.9",
+    "@nestjs/schedule": "^6.1.3",
     "@nestjs/serve-static": "^5.0.4",
     "@nestjs/swagger": "^7.4.0",
     "@nestjs/websockets": "^11.1.9",

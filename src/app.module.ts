@@ -58,6 +58,8 @@ import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
 
 @Module({
   imports: [
@@ -65,6 +67,7 @@ import { PermissionCacheModule } from './permission-cache/permission-cache.modul
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ScheduleModule.forRoot(),
     PrismaModule,
     PermissionCacheModule,
     AuthModule,
@@ -116,6 +119,7 @@ import { PermissionCacheModule } from './permission-cache/permission-cache.modul
     InventoryChecksModule,
     StockAuditsModule,
     CashFlowCollectionBranchesModule,
+    SyncKiotModule,
   ],
   providers: [
     {
