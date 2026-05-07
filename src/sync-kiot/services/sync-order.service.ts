@@ -100,6 +100,14 @@ export class SyncOrderService extends BaseSyncService {
           lastSyncedAt: new Date(),
         },
       });
+
+      const existingItems = await this.prisma.orderItem.count({
+        where: { orderId: existing.id },
+      });
+      if (existingItems === 0 && record.orderDetails?.length) {
+        await this.syncOrderItems(existing.id, record.orderDetails);
+      }
+
       return 'updated';
     }
 

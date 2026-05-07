@@ -90,6 +90,14 @@ export class SyncInvoiceService extends BaseSyncService {
           lastSyncedAt: new Date(),
         },
       });
+
+      const existingDetails = await this.prisma.invoiceDetail.count({
+        where: { invoiceId: existing.id },
+      });
+      if (existingDetails === 0 && record.invoiceDetails?.length) {
+        await this.syncInvoiceDetails(existing.id, record.invoiceDetails);
+      }
+
       return 'updated';
     }
 
