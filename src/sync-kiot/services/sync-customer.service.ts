@@ -26,11 +26,10 @@ export class SyncCustomerService extends BaseSyncService {
       where: { code: record.code },
     });
 
-    // Resolve branchId qua kiotVietId
     let branchId: number | null = null;
-    if (record.branchId) {
+    if (record.branch?.kiotVietId) {
       const branch = await this.prisma.branch.findFirst({
-        where: { kiotVietId: record.branchId },
+        where: { kiotVietId: record.branch.kiotVietId },
         select: { id: true },
       });
       branchId = branch?.id || null;
@@ -56,6 +55,10 @@ export class SyncCustomerService extends BaseSyncService {
       isActive: record.isActive ?? true,
       branchId,
       kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+      createdAt: record.createdDate ? new Date(record.createdDate) : new Date(),
+      updatedAt: record.modifiedDate
+        ? new Date(record.modifiedDate)
+        : new Date(),
       lastSyncedAt: new Date(),
     };
 

@@ -51,6 +51,10 @@ export class SyncSupplierService extends BaseSyncService {
       totalInvoicedWithoutReturn: record.totalInvoicedWithoutReturn || 0,
       branchId,
       kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+      createdAt: record.createdDate ? new Date(record.createdDate) : new Date(),
+      updatedAt: record.modifiedDate
+        ? new Date(record.modifiedDate)
+        : new Date(),
       lastSyncedAt: new Date(),
     };
 

@@ -25,17 +25,16 @@ export class SyncInvoiceService extends BaseSyncService {
       where: { code: record.code },
     });
 
-    // Resolve FK bằng kiotVietId
-    const customer = record.customerId
+    const customer = record.customer?.code
       ? await this.prisma.customer.findFirst({
-          where: { kiotVietId: BigInt(record.customerId) },
+          where: { code: record.customer.code },
           select: { id: true },
         })
       : null;
 
-    const branch = record.branchId
+    const branch = record.branch?.kiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branchId },
+          where: { kiotVietId: record.branch.kiotVietId },
           select: { id: true },
         })
       : null;
@@ -97,6 +96,12 @@ export class SyncInvoiceService extends BaseSyncService {
         description: record.description || null,
         createdBy: createdById,
         kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+        createdAt: record.createdDate
+          ? new Date(record.createdDate)
+          : new Date(),
+        updatedAt: record.modifiedDate
+          ? new Date(record.modifiedDate)
+          : new Date(),
         lastSyncedAt: new Date(),
       },
     });
@@ -104,6 +109,18 @@ export class SyncInvoiceService extends BaseSyncService {
     // Sync invoice details
     if (record.invoiceDetails?.length) {
       await this.syncInvoiceDetails(invoice.id, record.invoiceDetails);
+    }
+
+    if (record.invoiceDelivery) {
+      await this.syncInvoiceDelivery(invoice.id, record.invoiceDelivery);
+    }
+
+    if (record.invoiceSurcharges?.length) {
+      await this.syncInvoiceSurcharges(invoice.id, record.invoiceSurcharges);
+    }
+
+    if (record.payments?.length) {
+      await this.syncInvoicePayments(invoice.id, record.payments);
     }
 
     return 'created';
@@ -132,6 +149,88 @@ export class SyncInvoiceService extends BaseSyncService {
           totalPrice:
             detail.subTotal || Number(detail.quantity) * Number(detail.price),
           note: detail.note || null,
+        },
+      });
+    }
+  }
+
+  private async syncInvoiceDelivery(invoiceId: number, delivery: any) {
+    const existing = await this.prisma.invoiceDelivery.findUnique({
+      where: { invoiceId },
+    });
+    if (existing) return;
+
+    await this.prisma.invoiceDelivery.create({
+      data: {
+        invoiceId,
+        deliveryCode: delivery.deliveryCode || null,
+        type: delivery.type || null,
+        status: delivery.status || 1,
+        price: delivery.price || null,
+        receiver: delivery.receiver || '',
+        contactNumber: delivery.contactNumber || '',
+        address: delivery.address || '',
+        locationName: delivery.locationName || null,
+        wardName: delivery.wardName || null,
+        weight: delivery.weight || null,
+        length: delivery.length || null,
+        width: delivery.width || null,
+        height: delivery.height || null,
+      },
+    });
+  }
+
+  private async syncInvoiceSurcharges(invoiceId: number, surcharges: any[]) {
+    for (const sc of surcharges) {
+      let surchargeId: number | null = null;
+      if (sc.surchargeId) {
+        const surcharge = await this.prisma.surcharge.findFirst({
+          where: { kiotVietId: sc.surchargeId },
+          select: { id: true },
+        });
+        surchargeId = surcharge?.id || null;
+      }
+
+      await this.prisma.invoiceSurcharge.create({
+        data: {
+          invoiceId,
+          surchargeId,
+          surchargeName: sc.surchargeName || sc.name || '',
+          surValue: sc.surValue || null,
+          price: sc.price || null,
+        },
+      });
+    }
+  }
+
+  private async syncInvoicePayments(invoiceId: number, payments: any[]) {
+    for (const pm of payments) {
+      const code = pm.code || `PM-${invoiceId}-${Date.now()}`;
+
+      const existing = await this.prisma.invoicePayment.findFirst({
+        where: { code },
+      });
+      if (existing) continue;
+
+      let accountId: number | null = null;
+      if (pm.accountId) {
+        const account = await this.prisma.bankAccount.findFirst({
+          where: { kiotVietId: pm.accountId },
+          select: { id: true },
+        });
+        accountId = account?.id || null;
+      }
+
+      await this.prisma.invoicePayment.create({
+        data: {
+          code,
+          invoiceId,
+          amount: pm.amount || 0,
+          paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+          status: pm.status ?? 1,
+          paymentMethod: pm.method || 'cash',
+          accountId,
+          description: pm.description || null,
         },
       });
     }

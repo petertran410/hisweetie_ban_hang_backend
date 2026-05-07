@@ -32,6 +32,10 @@ export class SyncBranchService extends BaseSyncService {
       isActive: record.isActive ?? true,
       isLock: record.isLock ?? false,
       kiotVietId: record.kiotVietId,
+      createdAt: record.createdDate ? new Date(record.createdDate) : new Date(),
+      updatedAt: record.modifiedDate
+        ? new Date(record.modifiedDate)
+        : new Date(),
       lastSyncedAt: new Date(),
     };
 

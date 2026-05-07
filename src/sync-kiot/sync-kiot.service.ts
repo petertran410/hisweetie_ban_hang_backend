@@ -14,6 +14,8 @@ import { SyncCustomerGroupService } from './services/sync-customer-group.service
 import { SyncPriceBookService } from './services/sync-price-book.service';
 import { SyncOrderService } from './services/sync-order.service';
 import { SyncInvoiceService } from './services/sync-invoice.service';
+import { SyncCashFlowService } from './services/sync-cashflow.service';
+import { SyncTransferService } from './services/sync-transfer.service';
 
 @Injectable()
 export class SyncKiotService {
@@ -34,6 +36,8 @@ export class SyncKiotService {
     private readonly syncPriceBook: SyncPriceBookService,
     private readonly syncOrder: SyncOrderService,
     private readonly syncInvoice: SyncInvoiceService,
+    private readonly syncCashFlow: SyncCashFlowService,
+    private readonly syncTransfer: SyncTransferService,
   ) {}
 
   /**
@@ -86,6 +90,13 @@ export class SyncKiotService {
       this.syncInvoice.syncAll(),
     );
 
+    results.transfers = await this.safeSync('transfer', () =>
+      this.syncTransfer.syncAll(),
+    );
+    results.cashFlows = await this.safeSync('cash_flow', () =>
+      this.syncCashFlow.syncAll(),
+    );
+
     this.logger.log('✅ FULL sync completed');
     return results;
   }
@@ -128,6 +139,13 @@ export class SyncKiotService {
       this.syncInvoice.syncIncremental(),
     );
 
+    results.transfers = await this.safeSync('transfer', () =>
+      this.syncTransfer.syncIncremental(),
+    );
+    results.cashFlows = await this.safeSync('cash_flow', () =>
+      this.syncCashFlow.syncIncremental(),
+    );
+
     this.logger.log('✅ INCREMENTAL sync completed');
     return results;
   }
@@ -147,6 +165,8 @@ export class SyncKiotService {
         return this.syncInvoice.syncByCode(code);
       case 'supplier':
         return this.syncSupplier.syncByCode(code);
+      case 'cash_flow':
+        return this.syncCashFlow.syncByCode(code);
       default:
         this.logger.warn(`⚠️ Unknown entity type: ${entityType}`);
         return null;
@@ -215,6 +235,8 @@ export class SyncKiotService {
       price_book: () => this.syncPriceBook.syncAll(),
       order: () => this.syncOrder.syncAll(),
       invoice: () => this.syncInvoice.syncAll(),
+      transfer: () => this.syncTransfer.syncAll(),
+      cash_flow: () => this.syncCashFlow.syncAll(),
     };
 
     const fn = serviceMap[entityType];

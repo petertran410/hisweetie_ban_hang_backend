@@ -25,17 +25,16 @@ export class SyncOrderService extends BaseSyncService {
       where: { code: record.code },
     });
 
-    // Resolve FKs qua kiotVietId
-    const customer = record.customerId
+    const customer = record.customer?.code
       ? await this.prisma.customer.findFirst({
-          where: { kiotVietId: BigInt(record.customerId) },
+          where: { code: record.customer.code },
           select: { id: true },
         })
       : null;
 
-    const branch = record.branchId
+    const branch = record.branch?.kiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branchId },
+          where: { kiotVietId: record.branch.kiotVietId },
           select: { id: true },
         })
       : null;
@@ -47,9 +46,9 @@ export class SyncOrderService extends BaseSyncService {
         })
       : null;
 
-    const saleChannel = record.saleChannelId
+    const saleChannel = record.saleChannel?.kiotVietId
       ? await this.prisma.saleChannel.findFirst({
-          where: { kiotVietId: record.saleChannelId },
+          where: { kiotVietId: record.saleChannel.kiotVietId },
           select: { id: true },
         })
       : null;
@@ -98,6 +97,12 @@ export class SyncOrderService extends BaseSyncService {
         description: record.description || null,
         createdBy: createdById,
         kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+        createdAt: record.createdDate
+          ? new Date(record.createdDate)
+          : new Date(),
+        updatedAt: record.modifiedDate
+          ? new Date(record.modifiedDate)
+          : new Date(),
         lastSyncedAt: new Date(),
       },
     });
@@ -110,6 +115,10 @@ export class SyncOrderService extends BaseSyncService {
     // Sync order delivery
     if (record.orderDelivery) {
       await this.syncOrderDelivery(order.id, record.orderDelivery);
+    }
+
+    if (record.orderSurcharges?.length) {
+      await this.syncOrderSurcharges(order.id, record.orderSurcharges);
     }
 
     return 'created';
@@ -161,5 +170,28 @@ export class SyncOrderService extends BaseSyncService {
         height: delivery.height || null,
       },
     });
+  }
+
+  private async syncOrderSurcharges(orderId: number, surcharges: any[]) {
+    for (const sc of surcharges) {
+      let surchargeId: number | null = null;
+      if (sc.surchargeId) {
+        const surcharge = await this.prisma.surcharge.findFirst({
+          where: { kiotVietId: sc.surchargeId },
+          select: { id: true },
+        });
+        surchargeId = surcharge?.id || null;
+      }
+
+      await this.prisma.orderSurcharge.create({
+        data: {
+          orderId,
+          surchargeId,
+          surchargeName: sc.surchargeName || '',
+          surValue: sc.surValue || null,
+          price: sc.price || null,
+        },
+      });
+    }
   }
 }
