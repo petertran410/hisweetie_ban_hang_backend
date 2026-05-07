@@ -107,18 +107,20 @@ export class SyncOrderService extends BaseSyncService {
       },
     });
 
-    // Sync order details
     if (record.orderDetails?.length) {
       await this.syncOrderItems(order.id, record.orderDetails);
     }
 
-    // Sync order delivery
     if (record.orderDelivery) {
       await this.syncOrderDelivery(order.id, record.orderDelivery);
     }
 
     if (record.orderSurcharges?.length) {
       await this.syncOrderSurcharges(order.id, record.orderSurcharges);
+    }
+
+    if (record.payments?.length) {
+      await this.syncOrderPayments(order.id, record.payments);
     }
 
     return 'created';
@@ -190,6 +192,83 @@ export class SyncOrderService extends BaseSyncService {
           surchargeName: sc.surchargeName || '',
           surValue: sc.surValue || null,
           price: sc.price || null,
+        },
+      });
+    }
+  }
+
+  private async syncOrderPayments(orderId: number, payments: any[]) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        code: true,
+        branchId: true,
+        customerId: true,
+        customer: {
+          select: {
+            name: true,
+            contactNumber: true,
+            addresses: { where: { isDefault: true }, take: 1 },
+          },
+        },
+      },
+    });
+
+    for (const pm of payments) {
+      const code = pm.code || `TTDH${order?.code}-${Date.now()}`;
+
+      const existing = await this.prisma.orderPayment.findFirst({
+        where: { code },
+      });
+      if (existing) continue;
+
+      let accountId: number | null = null;
+      if (pm.accountId) {
+        const account = await this.prisma.bankAccount.findFirst({
+          where: { kiotVietId: pm.accountId },
+          select: { id: true },
+        });
+        accountId = account?.id || null;
+      }
+
+      // 1. Tạo CashFlow (phiếu thu tạm ứng)
+      const cashFlow = await this.prisma.cashFlow.create({
+        data: {
+          code,
+          branchId: order?.branchId || 1,
+          cashFlowGroupId: 3,
+          isReceipt: true,
+          amount: pm.amount || 0,
+          transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+          method: pm.method || 'cash',
+          accountId,
+          partnerType: 'C',
+          partnerId: order?.customerId || null,
+          partnerName: order?.customer?.name || null,
+          contactNumber: order?.customer?.contactNumber || null,
+          address: order?.customer?.addresses?.[0]?.address || null,
+          description: pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: 1,
+          usedForFinancialReporting: 1,
+          createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+        },
+      });
+
+      // 2. Tạo OrderPayment
+      await this.prisma.orderPayment.create({
+        data: {
+          code,
+          orderId,
+          amount: pm.amount || 0,
+          paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+          paymentMethod: pm.method || 'cash',
+          accountId,
+          description: pm.description || null,
+          status: pm.status ?? 1,
+          createdBy: 1,
         },
       });
     }

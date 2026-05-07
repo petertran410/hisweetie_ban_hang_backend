@@ -16,6 +16,9 @@ import { SyncOrderService } from './services/sync-order.service';
 import { SyncInvoiceService } from './services/sync-invoice.service';
 import { SyncCashFlowService } from './services/sync-cashflow.service';
 import { SyncTransferService } from './services/sync-transfer.service';
+import { SyncOrderSupplierService } from './services/sync-order-supplier.service';
+import { SyncPurchaseOrderService } from './services/sync-purchase-order.service';
+import { SyncReturnOrderService } from './services/sync-return-order.service';
 
 @Injectable()
 export class SyncKiotService {
@@ -38,6 +41,9 @@ export class SyncKiotService {
     private readonly syncInvoice: SyncInvoiceService,
     private readonly syncCashFlow: SyncCashFlowService,
     private readonly syncTransfer: SyncTransferService,
+    private readonly syncPurchaseOrder: SyncPurchaseOrderService,
+    private readonly syncOrderSupplier: SyncOrderSupplierService,
+    private readonly syncReturnOrder: SyncReturnOrderService,
   ) {}
 
   /**
@@ -90,6 +96,22 @@ export class SyncKiotService {
       this.syncInvoice.syncAll(),
     );
 
+    results.purchaseOrders = await this.safeSync('purchase_order', () =>
+      this.syncPurchaseOrder.syncAll(),
+    );
+    results.orderSuppliers = await this.safeSync('order_supplier', () =>
+      this.syncOrderSupplier.syncAll(),
+    );
+    results.transfers = await this.safeSync('transfer', () =>
+      this.syncTransfer.syncAll(),
+    );
+    results.cashFlows = await this.safeSync('cash_flow', () =>
+      this.syncCashFlow.syncAll(),
+    );
+    results.returnOrders = await this.safeSync('return_order', () =>
+      this.syncReturnOrder.syncAll(),
+    );
+
     results.transfers = await this.safeSync('transfer', () =>
       this.syncTransfer.syncAll(),
     );
@@ -137,6 +159,22 @@ export class SyncKiotService {
     );
     results.invoices = await this.safeSync('invoice', () =>
       this.syncInvoice.syncIncremental(),
+    );
+
+    results.purchaseOrders = await this.safeSync('purchase_order', () =>
+      this.syncPurchaseOrder.syncIncremental(),
+    );
+    results.orderSuppliers = await this.safeSync('order_supplier', () =>
+      this.syncOrderSupplier.syncIncremental(),
+    );
+    results.transfers = await this.safeSync('transfer', () =>
+      this.syncTransfer.syncIncremental(),
+    );
+    results.cashFlows = await this.safeSync('cash_flow', () =>
+      this.syncCashFlow.syncIncremental(),
+    );
+    results.returnOrders = await this.safeSync('return_order', () =>
+      this.syncReturnOrder.syncIncremental(),
     );
 
     results.transfers = await this.safeSync('transfer', () =>
@@ -237,6 +275,9 @@ export class SyncKiotService {
       invoice: () => this.syncInvoice.syncAll(),
       transfer: () => this.syncTransfer.syncAll(),
       cash_flow: () => this.syncCashFlow.syncAll(),
+      purchase_order: () => this.syncPurchaseOrder.syncAll(),
+      order_supplier: () => this.syncOrderSupplier.syncAll(),
+      return_order: () => this.syncReturnOrder.syncAll(),
     };
 
     const fn = serviceMap[entityType];

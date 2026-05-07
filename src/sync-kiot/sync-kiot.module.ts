@@ -23,6 +23,9 @@ import { SyncOrderService } from './services/sync-order.service';
 import { SyncInvoiceService } from './services/sync-invoice.service';
 import { SyncCashFlowService } from './services/sync-cashflow.service';
 import { SyncTransferService } from './services/sync-transfer.service';
+import { SyncOrderSupplierService } from './services/sync-order-supplier.service';
+import { SyncPurchaseOrderService } from './services/sync-purchase-order.service';
+import { SyncReturnOrderService } from './services/sync-return-order.service';
 
 @Module({
   imports: [
@@ -50,6 +53,9 @@ import { SyncTransferService } from './services/sync-transfer.service';
     SyncInvoiceService,
     SyncCashFlowService,
     SyncTransferService,
+    SyncPurchaseOrderService,
+    SyncOrderSupplierService,
+    SyncReturnOrderService,
   ],
   exports: [SyncKiotService],
 })

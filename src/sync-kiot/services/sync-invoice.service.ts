@@ -204,8 +204,25 @@ export class SyncInvoiceService extends BaseSyncService {
   }
 
   private async syncInvoicePayments(invoiceId: number, payments: any[]) {
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: {
+        id: true,
+        code: true,
+        branchId: true,
+        customerId: true,
+        customer: {
+          select: {
+            name: true,
+            contactNumber: true,
+            addresses: { where: { isDefault: true }, take: 1 },
+          },
+        },
+      },
+    });
+
     for (const pm of payments) {
-      const code = pm.code || `PM-${invoiceId}-${Date.now()}`;
+      const code = pm.code || `TT${invoice?.code}-${Date.now()}`;
 
       const existing = await this.prisma.invoicePayment.findFirst({
         where: { code },
@@ -221,6 +238,32 @@ export class SyncInvoiceService extends BaseSyncService {
         accountId = account?.id || null;
       }
 
+      // 1. Tạo CashFlow (phiếu thu)
+      const cashFlow = await this.prisma.cashFlow.create({
+        data: {
+          code,
+          branchId: invoice?.branchId || 1,
+          cashFlowGroupId: 3, // Thu tiền bán hàng
+          isReceipt: true,
+          amount: pm.amount || 0,
+          transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+          method: pm.method || 'cash',
+          accountId,
+          partnerType: 'C',
+          partnerId: invoice?.customerId || null,
+          partnerName: invoice?.customer?.name || null,
+          contactNumber: invoice?.customer?.contactNumber || null,
+          address: invoice?.customer?.addresses?.[0]?.address || null,
+          description: pm.description || `Thu tiền hóa đơn ${invoice?.code}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: 1,
+          usedForFinancialReporting: 1,
+          createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+        },
+      });
+
+      // 2. Tạo InvoicePayment gắn với CashFlow
       await this.prisma.invoicePayment.create({
         data: {
           code,
@@ -231,6 +274,7 @@ export class SyncInvoiceService extends BaseSyncService {
           paymentMethod: pm.method || 'cash',
           accountId,
           description: pm.description || null,
+          cashFlowId: cashFlow.id,
         },
       });
     }

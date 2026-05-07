@@ -21,6 +21,25 @@ export class SyncCashFlowService extends BaseSyncService {
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
+    const existingByCode = await this.prisma.cashFlow.findFirst({
+      where: { code: record.code },
+    });
+
+    if (existingByCode) {
+      // Chỉ update kiotVietId nếu chưa có
+      if (!existingByCode.kiotVietId && record.kiotVietId) {
+        await this.prisma.cashFlow.update({
+          where: { id: existingByCode.id },
+          data: {
+            kiotVietId: BigInt(record.kiotVietId),
+            lastSyncedAt: new Date(),
+          },
+        });
+        return 'updated';
+      }
+      return 'skipped';
+    }
+
     const existing = await this.prisma.cashFlow.findFirst({
       where: { code: record.code },
     });
@@ -32,17 +51,47 @@ export class SyncCashFlowService extends BaseSyncService {
         })
       : null;
 
-    // Xác định isReceipt từ amount hoặc cashFlowGroupId
+    // Resolve partnerId → customerId/supplierId trong hisweetie
+    let partnerId: number | null = null;
+    if (record.partnerId && record.partnerType) {
+      if (record.partnerType === 'Customer' || record.partnerType === '1') {
+        const customer = await this.prisma.customer.findFirst({
+          where: { kiotVietId: BigInt(record.partnerId) },
+          select: { id: true },
+        });
+        partnerId = customer?.id || null;
+      } else if (
+        record.partnerType === 'Supplier' ||
+        record.partnerType === '2'
+      ) {
+        const supplier = await this.prisma.supplier.findFirst({
+          where: { kiotVietId: BigInt(record.partnerId) },
+          select: { id: true },
+        });
+        partnerId = supplier?.id || null;
+      }
+    }
+
     const amount = Number(record.amount || 0);
     const isReceipt = amount >= 0;
 
+    let createdBy = 1;
+    if (record.createdBy) {
+      const user = await this.prisma.user.findFirst({
+        where: { kiotVietId: BigInt(record.createdBy) },
+        select: { id: true },
+      });
+      if (user) createdBy = user.id;
+    }
+
     const kiotOwnedData = {
-      amount: Math.abs(amount),
+      branchId: branch?.id || 1,
       isReceipt,
+      amount: Math.abs(amount),
       transDate: record.transDate ? new Date(record.transDate) : new Date(),
       method: record.method || null,
       partnerType: record.partnerType || null,
-      partnerId: record.partnerId ? Number(record.partnerId) : null,
+      partnerId,
       partnerName: record.partnerName || null,
       contactNumber: record.contactNumber || null,
       address: record.address || null,
@@ -63,20 +112,9 @@ export class SyncCashFlowService extends BaseSyncService {
       return 'updated';
     }
 
-    // Resolve createdBy — cần 1 user mặc định
-    let createdBy = 1;
-    if (record.createdBy) {
-      const user = await this.prisma.user.findFirst({
-        where: { kiotVietId: BigInt(record.createdBy) },
-        select: { id: true },
-      });
-      if (user) createdBy = user.id;
-    }
-
     await this.prisma.cashFlow.create({
       data: {
         code: record.code,
-        branchId: branch?.id || 1,
         createdBy,
         ...kiotOwnedData,
         createdAt: record.transDate ? new Date(record.transDate) : new Date(),
