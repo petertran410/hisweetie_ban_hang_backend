@@ -222,10 +222,10 @@ export class SyncOrderService extends BaseSyncService {
     for (const pm of payments) {
       const code = pm.code || `TTDH${order?.code}-${Date.now()}`;
 
-      const existing = await this.prisma.orderPayment.findFirst({
+      const existingPayment = await this.prisma.orderPayment.findFirst({
         where: { code },
       });
-      if (existing) continue;
+      if (existingPayment) continue;
 
       let accountId: number | null = null;
       if (pm.accountId) {
@@ -236,30 +236,37 @@ export class SyncOrderService extends BaseSyncService {
         accountId = account?.id || null;
       }
 
-      // 1. Tạo CashFlow (phiếu thu tạm ứng)
-      await this.prisma.cashFlow.create({
-        data: {
-          code,
-          branchId: order?.branchId || 1,
-          cashFlowGroupId: 3,
-          isReceipt: true,
-          amount: pm.amount || 0,
-          transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-          method: pm.method || 'cash',
-          accountId,
-          partnerType: 'C',
-          partnerId: order?.customerId || null,
-          partnerName: order?.customer?.name || null,
-          contactNumber: order?.customer?.contactNumber || null,
-          address: order?.customer?.addresses?.[0]?.address || null,
-          description: pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
-          status: 0,
-          statusValue: 'Đã thanh toán',
-          createdBy: 1,
-          usedForFinancialReporting: 1,
-          createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
-        },
+      // 1. Tìm hoặc tạo CashFlow
+      let cashFlow = await this.prisma.cashFlow.findFirst({
+        where: { code },
       });
+
+      if (!cashFlow) {
+        cashFlow = await this.prisma.cashFlow.create({
+          data: {
+            code,
+            branchId: order?.branchId || 1,
+            cashFlowGroupId: 3,
+            isReceipt: true,
+            amount: pm.amount || 0,
+            transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+            method: pm.method || 'cash',
+            accountId,
+            partnerType: 'C',
+            partnerId: order?.customerId || null,
+            partnerName: order?.customer?.name || null,
+            contactNumber: order?.customer?.contactNumber || null,
+            address: order?.customer?.addresses?.[0]?.address || null,
+            description:
+              pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: 1,
+            usedForFinancialReporting: 1,
+            createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+          },
+        });
+      }
 
       // 2. Tạo OrderPayment
       await this.prisma.orderPayment.create({

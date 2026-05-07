@@ -242,10 +242,11 @@ export class SyncInvoiceService extends BaseSyncService {
     for (const pm of payments) {
       const code = pm.code || `TT${invoice?.code}-${Date.now()}`;
 
-      const existing = await this.prisma.invoicePayment.findFirst({
+      // Skip nếu InvoicePayment đã tồn tại
+      const existingPayment = await this.prisma.invoicePayment.findFirst({
         where: { code },
       });
-      if (existing) continue;
+      if (existingPayment) continue;
 
       let accountId: number | null = null;
       if (pm.accountId) {
@@ -256,32 +257,37 @@ export class SyncInvoiceService extends BaseSyncService {
         accountId = account?.id || null;
       }
 
-      // 1. Tạo CashFlow (phiếu thu)
-      const cashFlow = await this.prisma.cashFlow.create({
-        data: {
-          code,
-          branchId: invoice?.branchId || 1,
-          cashFlowGroupId: 3, // Thu tiền bán hàng
-          isReceipt: true,
-          amount: pm.amount || 0,
-          transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-          method: pm.method || 'cash',
-          accountId,
-          partnerType: 'C',
-          partnerId: invoice?.customerId || null,
-          partnerName: invoice?.customer?.name || null,
-          contactNumber: invoice?.customer?.contactNumber || null,
-          address: invoice?.customer?.addresses?.[0]?.address || null,
-          description: pm.description || `Thu tiền hóa đơn ${invoice?.code}`,
-          status: 0,
-          statusValue: 'Đã thanh toán',
-          createdBy: 1,
-          usedForFinancialReporting: 1,
-          createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
-        },
+      // Check CashFlow đã tồn tại chưa (có thể từ sync trước hoặc standalone)
+      let cashFlow = await this.prisma.cashFlow.findFirst({
+        where: { code },
       });
 
-      // 2. Tạo InvoicePayment gắn với CashFlow
+      if (!cashFlow) {
+        cashFlow = await this.prisma.cashFlow.create({
+          data: {
+            code,
+            branchId: invoice?.branchId || 1,
+            cashFlowGroupId: 3,
+            isReceipt: true,
+            amount: pm.amount || 0,
+            transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+            method: pm.method || 'cash',
+            accountId,
+            partnerType: 'C',
+            partnerId: invoice?.customerId || null,
+            partnerName: invoice?.customer?.name || null,
+            contactNumber: invoice?.customer?.contactNumber || null,
+            address: invoice?.customer?.addresses?.[0]?.address || null,
+            description: pm.description || `Thu tiền hóa đơn ${invoice?.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: 1,
+            usedForFinancialReporting: 1,
+            createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+          },
+        });
+      }
+
       await this.prisma.invoicePayment.create({
         data: {
           code,
