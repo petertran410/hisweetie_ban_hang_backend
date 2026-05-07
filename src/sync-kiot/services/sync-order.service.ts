@@ -3,6 +3,25 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
 
+function mapKiotStatusToOrderStatus(status: number): string {
+  switch (status) {
+    case 1:
+      return 'pending'; // Phiếu tạm
+    case 2:
+      return 'processing'; // Đang giao hàng
+    case 3:
+      return 'completed'; // Hoàn thành
+    case 4:
+      return 'cancelled'; // Đã hủy
+    case 5:
+      return 'completed'; // Hoàn thành (đã giao)
+    case 6:
+      return 'partially_invoiced';
+    default:
+      return 'pending';
+  }
+}
+
 @Injectable()
 export class SyncOrderService extends BaseSyncService {
   protected readonly entityName = 'order';
@@ -32,9 +51,11 @@ export class SyncOrderService extends BaseSyncService {
         })
       : null;
 
-    const branch = record.branch?.kiotVietId
+    const branchKiotVietId =
+      record.branch?.kiotVietId ?? record.branchId ?? null;
+    const branch = branchKiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branch.kiotVietId },
+          where: { kiotVietId: branchKiotVietId },
           select: { id: true },
         })
       : null;
@@ -54,9 +75,11 @@ export class SyncOrderService extends BaseSyncService {
       : null;
 
     // sync_kiot: total = trước giảm, totalPayment = sau giảm
-    const totalAmount = Number(record.total || 0);
-    const discount = Number(record.discount || 0);
-    const grandTotal = Number(record.totalPayment || 0);
+    const totalAmount = Number(record.total ?? record.totalAmount ?? 0);
+    const discount = Number(record.discount ?? 0);
+    const grandTotal = Number(
+      record.totalPayment ?? record.grandTotal ?? totalAmount - discount,
+    );
     const paidAmount = (record.payments || []).reduce(
       (sum: number, p: any) => sum + Number(p.amount || 0),
       0,
@@ -72,6 +95,7 @@ export class SyncOrderService extends BaseSyncService {
           saleChannelId: saleChannel?.id || existing.saleChannelId,
           status: record.status ?? existing.status,
           statusValue: record.statusValue || null,
+          orderStatus: mapKiotStatusToOrderStatus(record.status ?? 1),
           kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
           lastSyncedAt: new Date(),
         },
@@ -97,6 +121,7 @@ export class SyncOrderService extends BaseSyncService {
         debtAmount: Math.max(grandTotal - paidAmount, 0),
         status: record.status ?? 1,
         statusValue: record.statusValue || null,
+        orderStatus: mapKiotStatusToOrderStatus(record.status ?? 1),
         usingCod: record.usingCod ?? false,
         description: record.description || null,
         createdBy: createdById,
@@ -132,11 +157,29 @@ export class SyncOrderService extends BaseSyncService {
 
   private async syncOrderItems(orderId: number, details: any[]) {
     for (const detail of details) {
-      const product = await this.prisma.product.findFirst({
-        where: { kiotVietId: BigInt(detail.productId) },
-        select: { id: true, code: true, name: true },
-      });
-      if (!product) continue;
+      const productKiotId =
+        detail.product?.kiotVietId ?? detail.productKiotVietId;
+
+      let product = productKiotId
+        ? await this.prisma.product.findFirst({
+            where: { kiotVietId: BigInt(productKiotId) },
+            select: { id: true, code: true, name: true },
+          })
+        : null;
+
+      if (!product && detail.productCode) {
+        product = await this.prisma.product.findFirst({
+          where: { code: detail.productCode },
+          select: { id: true, code: true, name: true },
+        });
+      }
+
+      if (!product) {
+        this.logger.warn(
+          `⚠️ Order ${orderId}: product not found (kiotId: ${productKiotId}, code: ${detail.productCode})`,
+        );
+        continue;
+      }
 
       await this.prisma.orderItem.create({
         data: {

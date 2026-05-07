@@ -32,9 +32,11 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
-    const branch = record.branch?.kiotVietId
+    const branchKiotVietId =
+      record.branch?.kiotVietId ?? record.branchId ?? null;
+    const branch = branchKiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branch.kiotVietId },
+          where: { kiotVietId: branchKiotVietId },
           select: { id: true },
         })
       : null;
@@ -53,11 +55,11 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
-    // sync_kiot: total = tổng trước giảm, totalPayment = tổng phải trả
-    // hisweetie: totalAmount = tổng trước giảm, grandTotal = sau giảm
-    const totalAmount = Number(record.total || 0);
-    const discount = Number(record.discount || 0);
-    const grandTotal = Number(record.totalPayment || 0);
+    const totalAmount = Number(record.total ?? record.totalAmount ?? 0);
+    const discount = Number(record.discount ?? 0);
+    const grandTotal = Number(
+      record.totalPayment ?? record.grandTotal ?? totalAmount - discount,
+    );
 
     // Tính paidAmount từ payments
     const paidAmount = (record.payments || []).reduce(
@@ -146,13 +148,29 @@ export class SyncInvoiceService extends BaseSyncService {
 
   private async syncInvoiceDetails(invoiceId: number, details: any[]) {
     for (const detail of details) {
-      const product = await this.prisma.product.findFirst({
-        where: {
-          kiotVietId: BigInt(detail.productId || detail.productKiotVietId),
-        },
-        select: { id: true, code: true, name: true },
-      });
-      if (!product) continue;
+      const productKiotId =
+        detail.product?.kiotVietId ?? detail.productKiotVietId;
+
+      let product = productKiotId
+        ? await this.prisma.product.findFirst({
+            where: { kiotVietId: BigInt(productKiotId) },
+            select: { id: true, code: true, name: true },
+          })
+        : null;
+
+      if (!product && detail.productCode) {
+        product = await this.prisma.product.findFirst({
+          where: { code: detail.productCode },
+          select: { id: true, code: true, name: true },
+        });
+      }
+
+      if (!product) {
+        this.logger.warn(
+          `⚠️ Invoice ${invoiceId}: product not found (kiotId: ${productKiotId}, code: ${detail.productCode})`,
+        );
+        continue;
+      }
 
       await this.prisma.invoiceDetail.create({
         data: {
