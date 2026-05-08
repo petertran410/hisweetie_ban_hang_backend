@@ -19,7 +19,6 @@ export class SyncReturnOrderService extends BaseSyncService {
       where: { code: record.code },
     });
 
-    // Resolve invoice bằng kiotVietId
     const invoice = record.invoiceId
       ? await this.prisma.invoice.findFirst({
           where: { kiotVietId: BigInt(record.invoiceId) },
@@ -27,7 +26,6 @@ export class SyncReturnOrderService extends BaseSyncService {
         })
       : null;
 
-    // Resolve customer bằng code hoặc kiotVietId
     const customer = record.customerCode
       ? await this.prisma.customer.findFirst({
           where: { code: record.customerCode },
@@ -58,18 +56,42 @@ export class SyncReturnOrderService extends BaseSyncService {
       receivedById = user?.id || null;
     }
 
-    const kiotOwnedData = {
-      status: record.status ?? 1,
-      statusValue: record.statusValue || null,
-      kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
-      lastSyncedAt: new Date(),
-    };
+    const hisweetieStatus = record.status === 1 ? 5 : (record.status ?? 1);
+
+    const returnDate = record.returnDate
+      ? new Date(record.returnDate)
+      : record.createdDate
+        ? new Date(record.createdDate)
+        : new Date();
 
     if (existing) {
+      // ── UPDATE: cập nhật đầy đủ fields + re-sync details ──
       await this.prisma.returnOrder.update({
         where: { id: existing.id },
-        data: kiotOwnedData,
+        data: {
+          status: hisweetieStatus,
+          statusValue: record.statusValue || null,
+          totalReturnAmount: record.returnTotal || 0,
+          refundAmount: record.returnTotal || 0,
+          refundedAmount: record.totalPayment || 0,
+          refundType: existing.refundType || 'debt_offset',
+          confirmedAt: returnDate,
+          refundConfirmedAt: returnDate,
+          kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
+          lastSyncedAt: new Date(),
+        },
       });
+
+      // Re-sync details nếu chưa có
+      const existingDetailsCount = await this.prisma.returnOrderDetail.count({
+        where: { returnOrderId: existing.id },
+      });
+
+      if (existingDetailsCount === 0 && record.details?.length) {
+        const invoiceId = existing.invoiceId ?? invoice?.id ?? null;
+        await this.syncDetails(existing.id, invoiceId, record.details);
+      }
+
       return 'updated';
     }
 
@@ -77,11 +99,6 @@ export class SyncReturnOrderService extends BaseSyncService {
       this.logger.warn(`⚠️ ReturnOrder ${record.code}: branch not found`);
       return 'skipped';
     }
-
-    // sync_kiot status mapping → hisweetie 3-step:
-    // sync_kiot status 1 = đã trả → hisweetie status 5 (REFUND_CONFIRMED)
-    // Vì data từ KiotViet đã hoàn tất flow
-    const hisweetieStatus = record.status === 1 ? 5 : record.status;
 
     const ro = await this.prisma.returnOrder.create({
       data: {
@@ -92,15 +109,15 @@ export class SyncReturnOrderService extends BaseSyncService {
         status: hisweetieStatus,
         statusValue: record.statusValue || null,
         totalReturnAmount: record.returnTotal || 0,
-        // ── FIX: dùng returnTotal thay vì totalPayment ──
-        // returnTotal = toàn bộ giá trị hàng trả (2,080,000) → khớp KiotViet zigzag
-        // totalPayment = tiền mặt đã trả khách (40,000) → chỉ là phần chênh lệch
         refundAmount: record.returnTotal || 0,
         refundedAmount: record.totalPayment || 0,
+        refundType: 'debt_offset',
         receivedById,
         receivedByName: record.soldByName || null,
         createdBy: receivedById || 1,
         createdByName: record.soldByName || '',
+        confirmedAt: returnDate,
+        refundConfirmedAt: returnDate,
         kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
         lastSyncedAt: new Date(),
         createdAt: record.createdDate
@@ -159,6 +176,7 @@ export class SyncReturnOrderService extends BaseSyncService {
           totalAmount:
             d.subTotal || Number(d.quantity || 0) * Number(d.price || 0),
           goodQuantity: d.quantity || 0,
+          note: d.note || null, // ← THÊM
         },
       });
     }

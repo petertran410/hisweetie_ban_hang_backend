@@ -991,7 +991,7 @@ export class CustomersService {
       where: {
         customerId: { in: returnOrderCustomerIds },
         code: { startsWith: 'TH' },
-        status: { in: [2, 3, 4, 5] },
+        status: { in: [1, 2, 3, 4, 5] },
         NOT: {
           AND: [{ status: 4 }, { refundType: 'cash_refund' }],
         },
