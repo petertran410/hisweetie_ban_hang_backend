@@ -40,9 +40,11 @@ export class SyncReturnOrderService extends BaseSyncService {
           })
         : null;
 
-    const branch = record.branchId
+    const branchKiotVietId =
+      record.branch?.kiotVietId ?? record.branchId ?? null;
+    const branch = branchKiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branchId },
+          where: { kiotVietId: branchKiotVietId },
           select: { id: true },
         })
       : null;
