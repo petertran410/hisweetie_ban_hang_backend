@@ -142,15 +142,20 @@ export class SyncReturnOrderService extends BaseSyncService {
     details: any[],
   ) {
     for (const d of details) {
-      const product = d.productId
+      const product = d.productCode
         ? await this.prisma.product.findFirst({
-            where: { kiotVietId: BigInt(d.productId) },
+            where: { code: d.productCode },
             select: { id: true, code: true, name: true },
           })
         : null;
-      if (!product) continue;
 
-      // Tìm invoice code
+      if (!product) {
+        this.logger.warn(
+          `⚠️ ReturnOrderDetail: product not found (code: ${d.productCode})`,
+        );
+        continue;
+      }
+
       let invoiceCode = '';
       if (invoiceId) {
         const inv = await this.prisma.invoice.findUnique({
@@ -176,7 +181,7 @@ export class SyncReturnOrderService extends BaseSyncService {
           totalAmount:
             d.subTotal || Number(d.quantity || 0) * Number(d.price || 0),
           goodQuantity: d.quantity || 0,
-          note: d.note || null, // ← THÊM
+          note: d.note || null,
         },
       });
     }
