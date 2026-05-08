@@ -22,6 +22,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 
 @ApiTags('Customers')
 @ApiBearerAuth()
@@ -92,6 +93,13 @@ export class CustomersController {
   importCustomers(@Body() dto: ImportCustomersDto, @Req() req: any) {
     const userId = req.user?.id;
     return this.customersService.importCustomers(dto, userId);
+  }
+
+  @Post('import-balance-adjustments')
+  @RequirePermissions('customers:create')
+  @ApiOperation({ summary: 'Import phiếu cân bằng nợ từ Excel' })
+  importBalanceAdjustments(@Body() dto: ImportBalanceAdjustmentsDto) {
+    return this.customersService.importBalanceAdjustments(dto);
   }
 
   @Put('listupdatecustomers')

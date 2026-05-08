@@ -1843,7 +1843,10 @@ export class ImportService {
         partnerType: 'C',
         isReceipt: true,
         status: { not: 2 },
-        code: { not: { startsWith: 'TTTUHD' } },
+        NOT: [
+          { code: { startsWith: 'TTTUHD' } },
+          { code: { startsWith: 'CB' } },
+        ],
       },
       select: { amount: true },
     });

@@ -12,6 +12,12 @@ export class SyncPriceBookService extends BaseSyncService {
     super(prisma, api);
   }
 
+  async syncByCode(code: string): Promise<any> {
+    const record = await this.api.fetchByCode('price-books', code);
+    if (!record) return null;
+    return this.upsertRecord(record);
+  }
+
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {

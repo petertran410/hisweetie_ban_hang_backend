@@ -19,6 +19,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 
 @Injectable()
 export class CustomersService {
@@ -818,7 +819,7 @@ export class CustomersService {
 
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
-      select: { id: true },
+      select: { id: true, totalDebt: true },
     });
 
     if (!customer) {
@@ -1089,13 +1090,29 @@ export class CustomersService {
       } else if (item.type === 'expense') {
         runningDebt += item.amount;
       } else if (item.type === 'ctn_cancelled') {
-        // ✅ THÊM: Hủy CTN → Cộng lại (hoàn lại dư nợ)
         runningDebt += item.amount;
       } else {
-        // payment, debt_offset: trừ đi
         runningDebt -= item.amount;
       }
       item.debtSnapshot = runningDebt;
+    }
+
+    let actualTotalDebt = Number(customer.totalDebt || 0);
+    if (includeChildren) {
+      const childrenDebts = await this.prisma.customer.findMany({
+        where: { parentId: customerId },
+        select: { totalDebt: true },
+      });
+      actualTotalDebt += childrenDebts.reduce(
+        (sum, c) => sum + Number(c.totalDebt || 0),
+        0,
+      );
+    }
+    const debtOffset = actualTotalDebt - runningDebt;
+    if (debtOffset !== 0) {
+      for (const item of timeline) {
+        item.debtSnapshot += debtOffset;
+      }
     }
 
     // Sắp xếp giảm dần
@@ -1628,5 +1645,94 @@ export class CustomersService {
     }
 
     return `${parent.code}.${nextSeq}`;
+  }
+
+  async importBalanceAdjustments(dto: ImportBalanceAdjustmentsDto) {
+    const results = {
+      created: 0,
+      skipped: 0,
+      errors: [] as { row: number; code: string; message: string }[],
+    };
+
+    for (let i = 0; i < dto.rows.length; i++) {
+      const row = dto.rows[i];
+      try {
+        // 1. Tìm customer bằng contactNumber
+        const customer = await this.prisma.customer.findFirst({
+          where: {
+            OR: [
+              { contactNumber: row.contactNumber },
+              { phone: row.contactNumber },
+            ],
+          },
+          select: { id: true, name: true, contactNumber: true },
+        });
+
+        if (!customer) {
+          results.errors.push({
+            row: i + 1,
+            code: row.code,
+            message: `Không tìm thấy khách hàng với SĐT ${row.contactNumber}`,
+          });
+          continue;
+        }
+
+        // 2. Check trùng code
+        const existing = await this.prisma.cashFlow.findFirst({
+          where: { code: row.code },
+        });
+
+        if (existing) {
+          results.skipped++;
+          continue;
+        }
+
+        // 3. Xác định isReceipt: dương = tăng nợ (expense), âm = giảm nợ (receipt)
+        const isReceipt = row.amount < 0;
+        const absAmount = Math.abs(row.amount);
+
+        // 4. Parse transDate
+        let transDate = new Date();
+        if (row.transDate) {
+          const parsed = new Date(row.transDate);
+          if (!isNaN(parsed.getTime())) transDate = parsed;
+        }
+
+        // 5. Tạo CashFlow
+        await this.prisma.cashFlow.create({
+          data: {
+            code: row.code,
+            branchId: 1,
+            isReceipt,
+            amount: absAmount,
+            transDate,
+            method: null,
+            partnerType: 'C',
+            partnerId: customer.id,
+            partnerName: customer.name,
+            contactNumber: customer.contactNumber,
+            description: `Cân bằng nợ ${row.code}`,
+            status: 0,
+            statusValue: isReceipt ? 'Đã thanh toán' : 'Đã chi',
+            createdBy: 1,
+            usedForFinancialReporting: 1,
+            customerDebtSnapshot: 0,
+          },
+        });
+
+        results.created++;
+      } catch (error: any) {
+        results.errors.push({
+          row: i + 1,
+          code: row.code,
+          message: error.message,
+        });
+      }
+    }
+
+    return {
+      message: `Import ${results.created} phiếu cân bằng nợ, bỏ qua ${results.skipped} trùng`,
+      ...results,
+    };
   }
 }
