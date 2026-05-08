@@ -1023,22 +1023,12 @@ export class CustomersService {
       let description: string;
 
       if (ro.status === 5 && ro.refundType === 'manual_offset') {
-        // CTN đã hủy
         itemType = 'ctn_cancelled';
         description = `Hủy cấn trừ nợ ${ro.code}`;
+      } else {
+        itemType = 'return_order';
+        description = `Trả hàng ${ro.code}`;
       }
-
-      itemType = 'return_order';
-      description = `Trả hàng ${ro.code}`;
-
-      // else if (ro.status === 4 && ro.refundType === 'debt_offset') {
-      //   itemType = 'debt_offset';
-      //   description = `Cấn trừ công nợ từ trả hàng ${ro.code}`;
-      // }
-      // else {
-      //   itemType = 'return_order';
-      //   description = `Trả hàng ${ro.code}`;
-      // }
 
       timeline.push({
         type: itemType,
@@ -1051,12 +1041,6 @@ export class CustomersService {
         description,
         debtSnapshot: 0,
         status: ro.status,
-        // statusValue:
-        //   ro.status === 5
-        //     ? 'Đã hủy'
-        //     : ro.status === 4 && ro.refundType === 'debt_offset'
-        //       ? 'Cấn trừ công nợ'
-        //       : 'Trả hàng',
         statusValue: ro.status === 5 ? 'Đã hủy' : 'Trả hàng',
         branch: ro.branch,
         user: null,
