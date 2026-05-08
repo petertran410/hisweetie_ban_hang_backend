@@ -112,13 +112,6 @@ export class SyncKiotService {
       this.syncReturnOrder.syncAll(),
     );
 
-    results.transfers = await this.safeSync('transfer', () =>
-      this.syncTransfer.syncAll(),
-    );
-    results.cashFlows = await this.safeSync('cash_flow', () =>
-      this.syncCashFlow.syncAll(),
-    );
-
     this.logger.log('✅ FULL sync completed');
     return results;
   }
@@ -175,13 +168,6 @@ export class SyncKiotService {
     );
     results.returnOrders = await this.safeSync('return_order', () =>
       this.syncReturnOrder.syncIncremental(),
-    );
-
-    results.transfers = await this.safeSync('transfer', () =>
-      this.syncTransfer.syncIncremental(),
-    );
-    results.cashFlows = await this.safeSync('cash_flow', () =>
-      this.syncCashFlow.syncIncremental(),
     );
 
     this.logger.log('✅ INCREMENTAL sync completed');

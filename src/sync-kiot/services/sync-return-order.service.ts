@@ -90,7 +90,10 @@ export class SyncReturnOrderService extends BaseSyncService {
         status: hisweetieStatus,
         statusValue: record.statusValue || null,
         totalReturnAmount: record.returnTotal || 0,
-        refundAmount: record.totalPayment || 0,
+        // ── FIX: dùng returnTotal thay vì totalPayment ──
+        // returnTotal = toàn bộ giá trị hàng trả (2,080,000) → khớp KiotViet zigzag
+        // totalPayment = tiền mặt đã trả khách (40,000) → chỉ là phần chênh lệch
+        refundAmount: record.returnTotal || 0,
         refundedAmount: record.totalPayment || 0,
         receivedById,
         receivedByName: record.soldByName || null,
