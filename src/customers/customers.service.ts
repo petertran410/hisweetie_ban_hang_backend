@@ -1090,29 +1090,13 @@ export class CustomersService {
       } else if (item.type === 'expense') {
         runningDebt += item.amount;
       } else if (item.type === 'ctn_cancelled') {
+        // ✅ THÊM: Hủy CTN → Cộng lại (hoàn lại dư nợ)
         runningDebt += item.amount;
       } else {
+        // payment, debt_offset: trừ đi
         runningDebt -= item.amount;
       }
       item.debtSnapshot = runningDebt;
-    }
-
-    let actualTotalDebt = Number(customer.totalDebt || 0);
-    if (includeChildren) {
-      const childrenDebts = await this.prisma.customer.findMany({
-        where: { parentId: customerId },
-        select: { totalDebt: true },
-      });
-      actualTotalDebt += childrenDebts.reduce(
-        (sum, c) => sum + Number(c.totalDebt || 0),
-        0,
-      );
-    }
-    const debtOffset = actualTotalDebt - runningDebt;
-    if (debtOffset !== 0) {
-      for (const item of timeline) {
-        item.debtSnapshot += debtOffset;
-      }
     }
 
     // Sắp xếp giảm dần
