@@ -1075,8 +1075,7 @@ export class CustomersService {
       payment: 5,
     };
     timeline.sort((a, b) => {
-      const timeDiff =
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (timeDiff !== 0) return timeDiff;
       return (calcOrder[a.type] ?? 3) - (calcOrder[b.type] ?? 3);
     });
@@ -1108,8 +1107,7 @@ export class CustomersService {
       invoice: 4,
     };
     timeline.sort((a, b) => {
-      const timeDiff =
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
       if (timeDiff !== 0) return timeDiff;
       return (typeOrder[a.type] ?? 5) - (typeOrder[b.type] ?? 5);
     });
@@ -1661,30 +1659,37 @@ export class CustomersService {
           continue;
         }
 
-        // 2. Check trùng code
-        const existing = await this.prisma.cashFlow.findFirst({
-          where: { code: row.code },
-        });
-
-        if (existing) {
-          results.skipped++;
-          continue;
-        }
-
-        // 3. Xác định isReceipt: dương = tăng nợ (expense), âm = giảm nợ (receipt)
+        // 2. Parse transDate trước để dùng chung cho cả create lẫn update
         const isReceipt = row.amount < 0;
         const absAmount = Math.abs(row.amount);
 
-        // 4. Parse transDate
         let transDate = new Date();
         if (row.transDate) {
-          const parsed = new Date(row.transDate);
-          if (!isNaN(parsed.getTime())) transDate = parsed;
+          const match = row.transDate.match(
+            /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+          );
+          if (match) {
+            const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
+            const parsed = new Date(+y, +m - 1, +d, +hh, +mm, +ss);
+            if (!isNaN(parsed.getTime())) transDate = parsed;
+          } else {
+            const parsed = new Date(row.transDate);
+            if (!isNaN(parsed.getTime())) transDate = parsed;
+          }
         }
 
-        // 5. Tạo CashFlow
-        await this.prisma.cashFlow.create({
-          data: {
+        // 3. Upsert CashFlow theo code
+        await this.prisma.cashFlow.upsert({
+          where: { code: row.code },
+          update: {
+            isReceipt,
+            amount: absAmount,
+            transDate,
+            partnerId: customer.id,
+            partnerName: customer.name,
+            contactNumber: customer.contactNumber,
+          },
+          create: {
             code: row.code,
             branchId: 1,
             isReceipt,

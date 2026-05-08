@@ -18,6 +18,10 @@ export class BalanceAdjustmentRow {
   @IsString()
   transDate?: string;
 
+  @IsOptional()
+  @IsString()
+  type?: string;
+
   @IsNumber()
   amount: number;
 }
