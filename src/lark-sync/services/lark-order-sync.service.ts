@@ -215,68 +215,65 @@ export class LarkOrderSyncService {
     let failed = 0;
 
     // =============================================
-    // BATCH UPDATE — có fallback khi recordId không hợp lệ
+    // BATCH UPDATE — pre-verify + batch update
     // =============================================
     if (toUpdate.length > 0) {
-      try {
-        const updateRecords = toUpdate.map((o) => ({
-          record_id: o.larkRecordId!,
-          fields: this.mapOrderToLarkFields(o),
-        }));
+      // Bước 1: Verify record IDs nào còn tồn tại trên Lark
+      const allRecordIds = toUpdate.map((o) => o.larkRecordId!);
+      const existingIds = await this.larkBase.verifyRecordIds(
+        this.tableId,
+        allRecordIds,
+      );
 
-        await this.larkBase.batchUpdateRecords(this.tableId, updateRecords);
+      const validOrders = toUpdate.filter((o) =>
+        existingIds.has(o.larkRecordId!),
+      );
+      const staleOrders = toUpdate.filter(
+        (o) => !existingIds.has(o.larkRecordId!),
+      );
 
-        await this.prisma.order.updateMany({
-          where: { id: { in: toUpdate.map((o) => o.id) } },
-          data: {
-            larkSyncStatus: 'SYNCED',
-            larkSyncedAt: new Date(),
-            larkSyncRetries: 0,
-          },
-        });
-
-        success += toUpdate.length;
-        this.logger.log(`✅ Batch updated ${toUpdate.length} orders`);
-      } catch (error) {
+      // Bước 2: Batch reset stale records (1 lệnh DB duy nhất)
+      if (staleOrders.length > 0) {
         this.logger.warn(
-          `⚠️ Batch update failed, falling back to individual updates: ${error.message}`,
+          `⚠️ ${staleOrders.length} records deleted on Lark, resetting: ${staleOrders.map((o) => o.code).join(', ')}`,
         );
+        await this.prisma.order.updateMany({
+          where: { id: { in: staleOrders.map((o) => o.id) } },
+          data: { larkRecordId: null },
+        });
+        // Đẩy sang toCreate để search + create
+        toCreate = [
+          ...toCreate,
+          ...staleOrders.map((o) => ({ ...o, larkRecordId: null })),
+        ];
+      }
 
-        // Fallback: update từng record, chỉ reset record nào thực sự lỗi
-        for (const order of toUpdate) {
-          try {
-            await this.larkBase.updateRecord(
-              this.tableId,
-              order.larkRecordId!,
-              this.mapOrderToLarkFields(order),
-            );
-            await this.prisma.order.update({
-              where: { id: order.id },
-              data: {
-                larkSyncStatus: 'SYNCED',
-                larkSyncedAt: new Date(),
-                larkSyncRetries: 0,
-              },
-            });
-            success++;
-          } catch (individualError) {
-            if (this.isRecordNotFound(individualError)) {
-              this.logger.warn(
-                `⚠️ Record ${order.larkRecordId} not found on Lark, resetting order ${order.code}`,
-              );
-              await this.prisma.order.update({
-                where: { id: order.id },
-                data: { larkRecordId: null },
-              });
-              // Đẩy sang toCreate để search + create
-              toCreate.push({ ...order, larkRecordId: null });
-            } else {
-              this.logger.error(
-                `❌ Individual update order ${order.code} failed: ${(individualError as Error).message}`,
-              );
-              failed++;
-            }
-          }
+      // Bước 3: Batch update chỉ valid records
+      if (validOrders.length > 0) {
+        try {
+          const updateRecords = validOrders.map((o) => ({
+            record_id: o.larkRecordId!,
+            fields: this.mapOrderToLarkFields(o),
+          }));
+
+          await this.larkBase.batchUpdateRecords(this.tableId, updateRecords);
+
+          await this.prisma.order.updateMany({
+            where: { id: { in: validOrders.map((o) => o.id) } },
+            data: {
+              larkSyncStatus: 'SYNCED',
+              larkSyncedAt: new Date(),
+              larkSyncRetries: 0,
+            },
+          });
+
+          success += validOrders.length;
+          this.logger.log(`✅ Batch updated ${validOrders.length} orders`);
+        } catch (error) {
+          this.logger.error(
+            `❌ Batch update failed after verify: ${error.message}`,
+          );
+          failed += validOrders.length;
         }
       }
     }
@@ -286,46 +283,75 @@ export class LarkOrderSyncService {
     // =============================================
     if (toCreate.length > 0) {
       this.logger.log(
-        `📝 Processing ${toCreate.length} orders (search + create)...`,
+        `📝 Processing ${toCreate.length} orders (fetch all + match)...`,
       );
+
+      // Bước 1: Fetch TẤT CẢ records từ Lark 1 lần (paginate 500/page)
+      const larkCodeMap = await this.larkBase.fetchAllRecords(this.tableId, [
+        LARK_ORDER_FIELDS.MA_DON_HANG,
+      ]);
+      this.logger.log(
+        `📋 Fetched ${larkCodeMap.size} existing records from Lark`,
+      );
+
+      // Bước 2: Tách thành 2 nhóm bằng so sánh local (O(n), không gọi API)
+      const toMatchUpdate: Array<{
+        order: (typeof toCreate)[0];
+        larkRecordId: string;
+      }> = [];
       const reallyNew: typeof toCreate = [];
 
       for (const order of toCreate) {
-        try {
-          const existingRecordId = await this.larkBase.searchRecord(
-            this.tableId,
-            LARK_ORDER_FIELDS.MA_DON_HANG,
-            order.code,
-          );
-
-          if (existingRecordId) {
-            await this.larkBase.updateRecord(
-              this.tableId,
-              existingRecordId,
-              this.mapOrderToLarkFields(order),
-            );
-            await this.prisma.order.update({
-              where: { id: order.id },
-              data: {
-                larkRecordId: existingRecordId,
-                larkSyncStatus: 'SYNCED',
-                larkSyncedAt: new Date(),
-                larkSyncRetries: 0,
-              },
-            });
-            success++;
-          } else {
-            reallyNew.push(order);
-          }
-        } catch (error) {
-          this.logger.error(
-            `❌ Search order ${order.code} failed: ${error.message}`,
-          );
+        const existingRecordId = larkCodeMap.get(order.code);
+        if (existingRecordId) {
+          toMatchUpdate.push({ order, larkRecordId: existingRecordId });
+        } else {
           reallyNew.push(order);
         }
       }
 
-      // Batch create những order thực sự chưa có trên Lark
+      this.logger.log(
+        `🔍 Matched: ${toMatchUpdate.length} existing, ${reallyNew.length} new`,
+      );
+
+      // Bước 3: Batch update orders đã tồn tại trên Lark
+      if (toMatchUpdate.length > 0) {
+        try {
+          const updateRecords = toMatchUpdate.map((m) => ({
+            record_id: m.larkRecordId,
+            fields: this.mapOrderToLarkFields(m.order),
+          }));
+
+          await this.larkBase.batchUpdateRecords(this.tableId, updateRecords);
+
+          // Batch lưu larkRecordId vào DB — dùng transaction cho nhanh
+          await this.prisma.$transaction(
+            toMatchUpdate.map((m) =>
+              this.prisma.order.update({
+                where: { id: m.order.id },
+                data: {
+                  larkRecordId: m.larkRecordId,
+                  larkSyncStatus: 'SYNCED',
+                  larkSyncedAt: new Date(),
+                  larkSyncRetries: 0,
+                },
+              }),
+            ),
+          );
+
+          success += toMatchUpdate.length;
+          this.logger.log(
+            `✅ Batch updated ${toMatchUpdate.length} matched orders`,
+          );
+        } catch (error) {
+          this.logger.error(
+            `❌ Batch update matched orders failed: ${error.message}`,
+          );
+          failed += toMatchUpdate.length;
+        }
+      }
+
+      // Bước 4: Batch create orders thực sự mới
       if (reallyNew.length > 0) {
         this.logger.log(`🆕 Batch creating ${reallyNew.length} new orders...`);
         try {
@@ -338,10 +364,12 @@ export class LarkOrderSyncService {
             createRecords,
           );
 
-          for (let i = 0; i < reallyNew.length; i++) {
-            if (newRecordIds[i]) {
-              await this.prisma.order.update({
-                where: { id: reallyNew[i].id },
+          // Batch lưu larkRecordId mới vào DB
+          const updateOps = reallyNew
+            .map((order, i) => {
+              if (!newRecordIds[i]) return null;
+              return this.prisma.order.update({
+                where: { id: order.id },
                 data: {
                   larkRecordId: newRecordIds[i],
                   larkSyncStatus: 'SYNCED',
@@ -349,13 +377,16 @@ export class LarkOrderSyncService {
                   larkSyncRetries: 0,
                 },
               });
-              success++;
-            } else {
-              failed++;
-            }
+            })
+            .filter((op): op is NonNullable<typeof op> => op !== null);
+
+          if (updateOps.length > 0) {
+            await this.prisma.$transaction(updateOps);
           }
 
-          this.logger.log(`✅ Batch created ${reallyNew.length} orders`);
+          success += updateOps.length;
+          failed += reallyNew.length - updateOps.length;
+          this.logger.log(`✅ Batch created ${updateOps.length} orders`);
         } catch (error) {
           this.logger.error(`❌ Batch create failed: ${error.message}`);
           failed += reallyNew.length;

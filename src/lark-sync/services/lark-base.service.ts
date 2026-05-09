@@ -35,6 +35,14 @@ export class LarkBaseService {
         data: { fields },
       });
 
+      if (res?.code && res.code !== 0) {
+        const err: any = new Error(
+          res.msg || `Lark API error code: ${res.code}`,
+        );
+        err.code = res.code;
+        throw err;
+      }
+
       return res?.data?.record?.record_id || null;
     } catch (error) {
       this.logger.error(`Create record failed: ${error.message}`);
@@ -51,7 +59,7 @@ export class LarkBaseService {
     fields: Record<string, any>,
   ): Promise<void> {
     try {
-      await this.client.bitable.appTableRecord.update({
+      const res = await this.client.bitable.appTableRecord.update({
         path: {
           app_token: this.baseToken,
           table_id: tableId,
@@ -59,6 +67,14 @@ export class LarkBaseService {
         },
         data: { fields },
       });
+
+      if (res?.code && res.code !== 0) {
+        const err: any = new Error(
+          res.msg || `Lark API error code: ${res.code}`,
+        );
+        err.code = res.code;
+        throw err;
+      }
     } catch (error) {
       this.logger.error(`Update record ${recordId} failed: ${error.message}`);
       throw error;
@@ -112,10 +128,18 @@ export class LarkBaseService {
 
     for (const chunk of chunks) {
       try {
-        await this.client.bitable.appTableRecord.batchUpdate({
+        const res = await this.client.bitable.appTableRecord.batchUpdate({
           path: { app_token: this.baseToken, table_id: tableId },
           data: { records: chunk },
         });
+
+        if (res?.code && res.code !== 0) {
+          const err: any = new Error(
+            res.msg || `Lark API error code: ${res.code}`,
+          );
+          err.code = res.code;
+          throw err;
+        }
       } catch (error) {
         this.logger.error(`Batch update failed: ${error.message}`);
         throw error;
@@ -196,6 +220,51 @@ export class LarkBaseService {
     }
 
     return codeToRecordId;
+  }
+
+  /**
+   * Kiểm tra record IDs nào còn tồn tại trên Lark (batch, tối đa 100/lần)
+   * Trả về Set<string> chứa các ID còn tồn tại
+   */
+  async verifyRecordIds(
+    tableId: string,
+    recordIds: string[],
+  ): Promise<Set<string>> {
+    const existingIds = new Set<string>();
+    const chunks = this.chunkArray(recordIds, 100);
+
+    for (const chunk of chunks) {
+      try {
+        const res = await this.client.bitable.appTableRecord.batchGet({
+          path: { app_token: this.baseToken, table_id: tableId },
+          data: { record_ids: chunk },
+        });
+
+        if (res?.code && res.code !== 0) {
+          this.logger.warn(`batchGet returned code ${res.code}: ${res.msg}`);
+          // Nếu API lỗi, giả định tất cả tồn tại để không mất data
+          chunk.forEach((id) => existingIds.add(id));
+          continue;
+        }
+
+        const records = res?.data?.records || [];
+        for (const record of records) {
+          if (record.record_id) {
+            existingIds.add(record.record_id);
+          }
+        }
+      } catch (error) {
+        this.logger.error(`Verify records failed: ${error.message}`);
+        // Fallback an toàn: giả định tồn tại
+        chunk.forEach((id) => existingIds.add(id));
+      }
+
+      if (chunks.length > 1) {
+        await this.delay(300);
+      }
+    }
+
+    return existingIds;
   }
 
   private chunkArray<T>(array: T[], size: number): T[][] {
