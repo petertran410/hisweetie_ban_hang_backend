@@ -37,10 +37,11 @@ export class LarkOrderSyncService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
   ) {
-    this.tableId = this.config.get<string>('LARK_ORDER_TABLE_ID');
-    if (!this.tableId) {
+    const tableId = this.config.get<string>('LARK_ORDER_TABLE_ID');
+    if (!tableId) {
       throw new Error('LARK_ORDER_TABLE_ID must be configured');
     }
+    this.tableId = tableId;
   }
 
   // =============================================
@@ -120,10 +121,31 @@ export class LarkOrderSyncService {
       }
     } catch (error) {
       this.logger.error(`❌ Sync order #${orderId} failed: ${error.message}`);
-      await this.prisma.order.update({
+
+      const order = await this.prisma.order.findUnique({
         where: { id: orderId },
-        data: { larkSyncStatus: 'FAILED' },
+        select: { larkSyncRetries: true },
       });
+
+      const currentRetries = order?.larkSyncRetries ?? 0;
+
+      if (currentRetries < this.MAX_RETRIES) {
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { larkSyncRetries: { increment: 1 } },
+        });
+        this.logger.warn(
+          `🔄 Order #${orderId} retry ${currentRetries + 1}/${this.MAX_RETRIES}`,
+        );
+      } else {
+        await this.prisma.order.update({
+          where: { id: orderId },
+          data: { larkSyncStatus: 'FAILED' },
+        });
+        this.logger.error(
+          `⛔ Order #${orderId} exceeded max retries, marked FAILED`,
+        );
+      }
     }
   }
 

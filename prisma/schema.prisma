@@ -1009,9 +1009,10 @@ model Order {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  larkRecordId   String?
-  larkSyncStatus String    @default("PENDING")
-  larkSyncedAt   DateTime?
+  larkRecordId     String?
+  larkSyncStatus   String    @default("PENDING")
+  larkSyncRetries  Int       @default(0)
+  larkSyncedAt     DateTime?
 
   customer    Customer?        @relation(fields: [customerId], references: [id])
   branch      Branch?          @relation(fields: [branchId], references: [id])

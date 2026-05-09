@@ -219,7 +219,9 @@ export class OrdersService {
         branchId: finalOrder?.branchId || undefined,
       });
 
-      this.larkOrderSync.syncSingleAsync(finalOrder.id);
+      if (finalOrder) {
+        this.larkOrderSync.syncSingleAsync(finalOrder.id);
+      }
 
       return { order: finalOrder, warnings };
     });
@@ -530,7 +532,7 @@ export class OrdersService {
         branchId: updatedOrderBeforeCalc.branchId || undefined,
       });
 
-      this.larkOrderSync.syncSingleAsync(order.id);
+      this.larkOrderSync.syncSingleAsync(id);
 
       return tx.order.findUnique({
         where: { id },

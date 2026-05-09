@@ -12,7 +12,11 @@ export class LarkBaseService {
     @Inject(LARK_CLIENT) private readonly client: lark.Client,
     private readonly config: ConfigService,
   ) {
-    this.baseToken = this.config.get<string>('LARK_BASE_TOKEN');
+    const token = this.config.get<string>('LARK_BASE_TOKEN');
+    if (!token) {
+      throw new Error('LARK_BASE_TOKEN must be configured');
+    }
+    this.baseToken = token;
     if (!this.baseToken) {
       throw new Error('LARK_BASE_TOKEN must be configured');
     }
@@ -79,7 +83,9 @@ export class LarkBaseService {
         });
 
         const ids =
-          res?.data?.records?.map((r) => r.record_id).filter(Boolean) || [];
+          res?.data?.records
+            ?.map((r) => r.record_id)
+            .filter((id): id is string => !!id) || [];
         recordIds.push(...ids);
       } catch (error) {
         this.logger.error(`Batch create failed: ${error.message}`);
@@ -144,7 +150,7 @@ export class LarkBaseService {
       });
 
       const items = res?.data?.items || [];
-      return items.length > 0 ? items[0].record_id : null;
+      return items.length > 0 ? (items[0].record_id ?? null) : null;
     } catch (error) {
       this.logger.error(`Search record failed: ${error.message}`);
       return null;
@@ -164,10 +170,9 @@ export class LarkBaseService {
 
     while (hasMore) {
       try {
-        const res = await this.client.bitable.appTableRecord.search({
+        const res = await this.client.bitable.appTableRecord.list({
           path: { app_token: this.baseToken, table_id: tableId },
-          data: {
-            field_names: fieldNames,
+          params: {
             page_size: 500,
             ...(pageToken ? { page_token: pageToken } : {}),
           },
@@ -176,8 +181,9 @@ export class LarkBaseService {
         const items = res?.data?.items || [];
         for (const item of items) {
           const code = item.fields?.[fieldNames[0]];
-          if (code && typeof code === 'string') {
-            codeToRecordId.set(code, item.record_id);
+          const recordId = item.record_id;
+          if (code && typeof code === 'string' && recordId) {
+            codeToRecordId.set(code, recordId);
           }
         }
 
