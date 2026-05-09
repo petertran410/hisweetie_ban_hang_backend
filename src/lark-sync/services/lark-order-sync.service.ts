@@ -85,14 +85,32 @@ export class LarkOrderSyncService {
       });
 
       const fields = this.mapOrderToLarkFields(order);
+      let needSearchCreate = !order.larkRecordId;
 
       if (order.larkRecordId) {
-        await this.larkBase.updateRecord(
-          this.tableId,
-          order.larkRecordId,
-          fields,
-        );
-      } else {
+        try {
+          await this.larkBase.updateRecord(
+            this.tableId,
+            order.larkRecordId,
+            fields,
+          );
+        } catch (updateError) {
+          if (this.isRecordNotFound(updateError)) {
+            this.logger.warn(
+              `⚠️ Record ${order.larkRecordId} deleted on Lark, re-creating order ${order.code}`,
+            );
+            await this.prisma.order.update({
+              where: { id: orderId },
+              data: { larkRecordId: null },
+            });
+            needSearchCreate = true;
+          } else {
+            throw updateError;
+          }
+        }
+      }
+
+      if (needSearchCreate) {
         let recordId = await this.larkBase.searchRecord(
           this.tableId,
           LARK_ORDER_FIELDS.MA_DON_HANG,
@@ -221,20 +239,45 @@ export class LarkOrderSyncService {
         this.logger.log(`✅ Batch updated ${toUpdate.length} orders`);
       } catch (error) {
         this.logger.warn(
-          `⚠️ Batch update failed, resetting ${toUpdate.length} recordIds: ${error.message}`,
+          `⚠️ Batch update failed, falling back to individual updates: ${error.message}`,
         );
 
-        // Reset larkRecordId cũ không hợp lệ
-        await this.prisma.order.updateMany({
-          where: { id: { in: toUpdate.map((o) => o.id) } },
-          data: { larkRecordId: null },
-        });
-
-        // Đẩy sang toCreate để search + create
-        toCreate = [
-          ...toCreate,
-          ...toUpdate.map((o) => ({ ...o, larkRecordId: null })),
-        ];
+        // Fallback: update từng record, chỉ reset record nào thực sự lỗi
+        for (const order of toUpdate) {
+          try {
+            await this.larkBase.updateRecord(
+              this.tableId,
+              order.larkRecordId!,
+              this.mapOrderToLarkFields(order),
+            );
+            await this.prisma.order.update({
+              where: { id: order.id },
+              data: {
+                larkSyncStatus: 'SYNCED',
+                larkSyncedAt: new Date(),
+                larkSyncRetries: 0,
+              },
+            });
+            success++;
+          } catch (individualError) {
+            if (this.isRecordNotFound(individualError)) {
+              this.logger.warn(
+                `⚠️ Record ${order.larkRecordId} not found on Lark, resetting order ${order.code}`,
+              );
+              await this.prisma.order.update({
+                where: { id: order.id },
+                data: { larkRecordId: null },
+              });
+              // Đẩy sang toCreate để search + create
+              toCreate.push({ ...order, larkRecordId: null });
+            } else {
+              this.logger.error(
+                `❌ Individual update order ${order.code} failed: ${(individualError as Error).message}`,
+              );
+              failed++;
+            }
+          }
+        }
       }
     }
 
@@ -383,5 +426,11 @@ export class LarkOrderSyncService {
       [LARK_ORDER_FIELDS.TEN_KHACH_HANG]: order.customer?.name || '',
       [LARK_ORDER_FIELDS.GHI_CHU]: order.description || '',
     };
+  }
+
+  private isRecordNotFound(error: any): boolean {
+    // Lark SDK: error.code hoặc error.response.data.code
+    const code = error?.code ?? error?.response?.data?.code ?? error?.errCode;
+    return code === 1254043;
   }
 }
