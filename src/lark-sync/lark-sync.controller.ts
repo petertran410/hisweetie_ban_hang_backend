@@ -2,6 +2,7 @@ import { Controller, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
+import { Public } from 'src/auth/decorators/public.decorator';
 
 @ApiTags('Lark Sync')
 @ApiBearerAuth()
@@ -24,6 +25,7 @@ export class LarkSyncController {
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
 
+  @Public()
   @Post('orders/sync-now')
   @ApiOperation({
     summary: 'Sync tất cả orders lên Lark ngay lập tức (3 tháng)',
