@@ -81,9 +81,6 @@ export class LarkBaseService {
     }
   }
 
-  /**
-   * Batch tạo records — dùng cho cron/full sync (tối đa 500/lần)
-   */
   async batchCreateRecords(
     tableId: string,
     records: Array<{ fields: Record<string, any> }>,
@@ -98,17 +95,29 @@ export class LarkBaseService {
           data: { records: chunk },
         });
 
+        if (res?.code && res.code !== 0) {
+          const err: any = new Error(
+            res.msg || `Lark API error code: ${res.code}`,
+          );
+          err.code = res.code;
+          throw err;
+        }
+
         const ids =
           res?.data?.records
             ?.map((r) => r.record_id)
             .filter((id): id is string => !!id) || [];
+
+        this.logger.log(
+          `Batch created chunk: ${chunk.length} input → ${ids.length} IDs returned`,
+        );
+
         recordIds.push(...ids);
       } catch (error) {
         this.logger.error(`Batch create failed: ${error.message}`);
         throw error;
       }
 
-      // Tránh rate limit
       if (chunks.length > 1) {
         await this.delay(500);
       }

@@ -364,7 +364,16 @@ export class LarkOrderSyncService {
             createRecords,
           );
 
-          // Batch lưu larkRecordId mới vào DB
+          this.logger.log(
+            `📋 batchCreate returned ${newRecordIds.length} IDs for ${reallyNew.length} orders`,
+          );
+
+          if (newRecordIds.length !== reallyNew.length) {
+            this.logger.warn(
+              `⚠️ ID count mismatch: ${newRecordIds.length} IDs vs ${reallyNew.length} orders`,
+            );
+          }
+
           const updateOps = reallyNew
             .map((order, i) => {
               if (!newRecordIds[i]) return null;
@@ -379,6 +388,10 @@ export class LarkOrderSyncService {
               });
             })
             .filter((op): op is NonNullable<typeof op> => op !== null);
+
+          this.logger.log(
+            `💾 Saving ${updateOps.length} larkRecordIds to DB...`,
+          );
 
           if (updateOps.length > 0) {
             await this.prisma.$transaction(updateOps);
