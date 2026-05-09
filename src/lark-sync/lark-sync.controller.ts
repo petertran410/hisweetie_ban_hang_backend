@@ -23,4 +23,13 @@ export class LarkSyncController {
     const result = await this.orderSync.syncPendingAndFailed();
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
+
+  @Post('orders/sync-now')
+  @ApiOperation({
+    summary: 'Sync tất cả orders lên Lark ngay lập tức (3 tháng)',
+  })
+  async syncNow() {
+    const result = await this.orderSync.syncPendingAndFailed();
+    return { ok: true, ...result, timestamp: new Date().toISOString() };
+  }
 }
