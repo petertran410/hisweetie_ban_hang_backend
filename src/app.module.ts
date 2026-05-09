@@ -57,6 +57,7 @@ import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
+import { LarkSyncModule } from './lark-sync/lark-sync.module';
 
 @Module({
   imports: [
@@ -117,6 +118,7 @@ import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
     StockAuditsModule,
     CashFlowCollectionBranchesModule,
     SyncKiotModule,
+    LarkSyncModule,
   ],
   providers: [
     {

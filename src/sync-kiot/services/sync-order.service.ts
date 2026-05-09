@@ -34,6 +34,7 @@ export class SyncOrderService extends BaseSyncService {
   async syncByCode(code: string): Promise<any> {
     const record = await this.api.fetchByCode('orders', code);
     if (!record) return null;
+
     return this.upsertRecord(record);
   }
 

@@ -68,8 +68,15 @@ export class SyncKiotApiService {
 
         if (allData.length >= total) break;
       } catch (error) {
+        const status = error.response?.status;
+        const responseData = error.response?.data;
+        const errorCode = error.code;
+
         this.logger.error(
-          `❌ Failed to fetch ${endpoint} at offset ${currentItem}: ${error.message}`,
+          `❌ Failed to fetch ${endpoint} at offset ${currentItem}: ` +
+            `code=${errorCode}, status=${status}, ` +
+            `message=${error.message}, ` +
+            `data=${JSON.stringify(responseData)}`,
         );
         throw error;
       }

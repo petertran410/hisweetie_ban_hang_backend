@@ -20,6 +20,7 @@ import {
 import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 import { INVOICE_STATUS } from 'src/invoices/dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
+import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 
 @Injectable()
 export class OrdersService {
@@ -27,6 +28,7 @@ export class OrdersService {
     private prisma: PrismaService,
     private priceBooksService: PriceBooksService,
     private auditLogsService: AuditLogsService,
+    private larkOrderSync: LarkOrderSyncService,
   ) {}
 
   async create(dto: CreateOrderDto, userId: number) {
@@ -216,6 +218,8 @@ export class OrdersService {
         userName: user?.name || user?.email || 'System',
         branchId: finalOrder?.branchId || undefined,
       });
+
+      this.larkOrderSync.syncSingleAsync(finalOrder.id);
 
       return { order: finalOrder, warnings };
     });
@@ -525,6 +529,8 @@ export class OrdersService {
         userName: user.name || user.email,
         branchId: updatedOrderBeforeCalc.branchId || undefined,
       });
+
+      this.larkOrderSync.syncSingleAsync(order.id);
 
       return tx.order.findUnique({
         where: { id },

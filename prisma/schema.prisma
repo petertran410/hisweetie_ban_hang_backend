@@ -1009,6 +1009,10 @@ model Order {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  larkRecordId   String?
+  larkSyncStatus String    @default("PENDING")
+  larkSyncedAt   DateTime?
+
   customer    Customer?        @relation(fields: [customerId], references: [id])
   branch      Branch?          @relation(fields: [branchId], references: [id])
   soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
@@ -1021,6 +1025,7 @@ model Order {
   surcharges  OrderSurcharge[]
   delivery    OrderDelivery?
 
+  @@index([larkSyncStatus])
   @@map("orders")
 }
 
