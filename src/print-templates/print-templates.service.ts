@@ -222,20 +222,17 @@ export class PrintTemplatesService {
     });
     if (!template) throw new NotFoundException('Template not found');
 
-    // Map data theo templateFor (dùng lại các hàm map hiện có)
+    // Ưu tiên _templateFor từ client (cho delivery sandbox), fallback về template.templateFor
+    const resolvedType = entityData._templateFor || template.templateFor;
+
     let mapped: any;
-    switch (template.templateFor) {
+    switch (resolvedType) {
       case 'order':
+      case 'order_delivery':
         mapped = this.mapOrder(entityData);
         break;
       case 'invoice':
         mapped = this.mapInvoice(entityData);
-        break;
-      case 'return_order':
-        mapped = this.mapReturnOrder(entityData);
-        break;
-      case 'order_delivery':
-        mapped = this.mapOrder(entityData);
         break;
       case 'invoice_delivery':
         mapped = {
@@ -243,8 +240,10 @@ export class PrintTemplatesService {
           Ma_Don_Hang: entityData.code || '',
         };
         break;
+      case 'return_order':
+        mapped = this.mapReturnOrder(entityData);
+        break;
       default:
-        // Fallback: dùng data trực tiếp nếu chưa có mapper
         mapped = entityData;
     }
 
