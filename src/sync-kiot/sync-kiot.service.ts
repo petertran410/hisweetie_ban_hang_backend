@@ -23,6 +23,7 @@ import { SyncReturnOrderService } from './services/sync-return-order.service';
 @Injectable()
 export class SyncKiotService {
   private readonly logger = new Logger(SyncKiotService.name);
+  private syncEnabled = true;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,6 +46,19 @@ export class SyncKiotService {
     private readonly syncOrderSupplier: SyncOrderSupplierService,
     private readonly syncReturnOrder: SyncReturnOrderService,
   ) {}
+
+  async isSyncEnabled(): Promise<boolean> {
+    const settings = await this.prisma.settings.findFirst({
+      select: { syncKiotEnabled: true },
+    });
+    return settings?.syncKiotEnabled ?? true;
+  }
+
+  toggleSync(enabled: boolean): { syncEnabled: boolean } {
+    this.syncEnabled = enabled;
+    this.logger.log(`🔄 Sync ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    return { syncEnabled: this.syncEnabled };
+  }
 
   /**
    * Full sync — chạy 1 lần ban đầu hoặc khi cần reset

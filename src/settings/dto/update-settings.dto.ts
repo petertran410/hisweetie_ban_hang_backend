@@ -16,4 +16,8 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   allowSellWhenOutStock?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  syncKiotEnabled?: boolean;
 }

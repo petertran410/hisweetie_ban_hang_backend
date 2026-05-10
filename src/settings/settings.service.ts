@@ -25,6 +25,7 @@ export class SettingsService {
           allowOrderWhenOutStock: true,
           allowSellWhenOrderOutStock: true,
           allowSellWhenOutStock: true,
+          syncKiotEnabled: true,
         },
       });
     }
@@ -40,6 +41,7 @@ export class SettingsService {
       allowOrderWhenOutStock: settings.allowOrderWhenOutStock,
       allowSellWhenOrderOutStock: settings.allowSellWhenOrderOutStock,
       allowSellWhenOutStock: settings.allowSellWhenOutStock,
+      syncKiotEnabled: settings.syncKiotEnabled,
     };
 
     const updated = await this.prisma.settings.update({
@@ -49,6 +51,7 @@ export class SettingsService {
         allowOrderWhenOutStock: dto.allowOrderWhenOutStock,
         allowSellWhenOrderOutStock: dto.allowSellWhenOrderOutStock,
         allowSellWhenOutStock: dto.allowSellWhenOutStock,
+        syncKiotEnabled: dto.syncKiotEnabled,
       },
     });
 

@@ -13,6 +13,11 @@ export class SyncKiotScheduler {
     timeZone: 'Asia/Ho_Chi_Minh',
   })
   async handleDailySync() {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn('⏭️ Sync disabled, skipping daily cron');
+      return;
+    }
+
     this.logger.log('⏰ Daily incremental sync started (23:30)...');
 
     try {

@@ -1430,6 +1430,7 @@ model Settings {
   allowOrderWhenOutStock    Boolean  @default(true)
   allowSellWhenOrderOutStock Boolean @default(true)
   allowSellWhenOutStock     Boolean  @default(true)
+  syncKiotEnabled            Boolean  @default(true)
   createdAt                 DateTime @default(now())
   updatedAt                 DateTime @updatedAt
 

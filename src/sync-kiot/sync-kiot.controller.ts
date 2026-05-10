@@ -13,6 +13,10 @@ export class SyncKiotController {
 
   @Post('full')
   async triggerFullSync() {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn('⏭️ Sync disabled, skipping full sync');
+      return { success: false, reason: 'Sync is disabled' };
+    }
     this.logger.log('📨 Manual full sync triggered');
     const results = await this.syncService.runFullSync();
     return { success: true, results, timestamp: new Date().toISOString() };
@@ -20,34 +24,37 @@ export class SyncKiotController {
 
   @Post('incremental')
   async triggerIncrementalSync() {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn('⏭️ Sync disabled, skipping incremental sync');
+      return { success: false, reason: 'Sync is disabled' };
+    }
     this.logger.log('📨 Manual incremental sync triggered');
     const results = await this.syncService.runIncrementalSync();
     return { success: true, results, timestamp: new Date().toISOString() };
   }
 
-  /**
-   * Webhook receiver — sync_kiot_data gọi sau khi upsert
-   */
   @Post('webhook')
   async handleWebhook(
     @Body() body: { entityType: string; code: string; action: string },
   ) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn(
+        `⏭️ Sync disabled, skipping webhook: ${body.entityType} ${body.code}`,
+      );
+      return { success: false, reason: 'Sync is disabled' };
+    }
     this.logger.log(
       `📨 Webhook: ${body.entityType} ${body.code} (${body.action})`,
     );
-
     const result = await this.syncService.syncSingleEntity(
       body.entityType,
       body.code,
     );
-
     return { success: true, result };
   }
 
   @Get('status')
   async getSyncStatus() {
-    const { PrismaService } = await import('../prisma/prisma.service');
-    // Dùng trực tiếp từ syncService
     return this.syncService['prisma'].syncControl.findMany({
       orderBy: { entityType: 'asc' },
     });
@@ -55,6 +62,10 @@ export class SyncKiotController {
 
   @Post('entity/:entityType')
   async syncEntity(@Param('entityType') entityType: string) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn(`⏭️ Sync disabled, skipping entity: ${entityType}`);
+      return { success: false, reason: 'Sync is disabled' };
+    }
     this.logger.log(`📨 Manual sync triggered for: ${entityType}`);
     const result = await this.syncService.syncEntity(entityType);
     return {
