@@ -216,6 +216,47 @@ export class PrintTemplatesService {
     return { content, data };
   }
 
+  async renderWithData(templateId: number, entityData: any) {
+    const template = await this.prisma.printTemplate.findUnique({
+      where: { id: templateId },
+    });
+    if (!template) throw new NotFoundException('Template not found');
+
+    // Map data theo templateFor (dùng lại các hàm map hiện có)
+    let mapped: any;
+    switch (template.templateFor) {
+      case 'order':
+        mapped = this.mapOrder(entityData);
+        break;
+      case 'invoice':
+        mapped = this.mapInvoice(entityData);
+        break;
+      case 'return_order':
+        mapped = this.mapReturnOrder(entityData);
+        break;
+      case 'order_delivery':
+        mapped = this.mapOrder(entityData);
+        break;
+      case 'invoice_delivery':
+        mapped = {
+          ...this.mapInvoice(entityData),
+          Ma_Don_Hang: entityData.code || '',
+        };
+        break;
+      default:
+        // Fallback: dùng data trực tiếp nếu chưa có mapper
+        mapped = entityData;
+    }
+
+    const content = await this.replaceVariables(
+      template.content,
+      mapped,
+      template.templateFor,
+    );
+
+    return { content, data: mapped };
+  }
+
   private async loadEntityData(
     templateFor: string,
     entityId: number,

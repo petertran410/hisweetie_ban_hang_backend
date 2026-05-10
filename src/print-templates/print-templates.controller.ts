@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
   Req,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { PrintTemplatesService } from './print-templates.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -62,6 +63,14 @@ export class PrintTemplatesController {
       dto.entityId,
       dto.entityType,
     );
+  }
+
+  @Post(':id/render-with-data')
+  async renderWithData(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() body: { data: any },
+  ) {
+    return this.printTemplatesService.renderWithData(id, body.data);
   }
 
   @Get(':id')
