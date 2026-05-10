@@ -213,4 +213,111 @@ export class DashboardService {
       paymentStatus: order.paymentStatus,
     }));
   }
+
+  // ======== THÊM MỚI: 3 methods bên dưới ========
+
+  async getTodayStats() {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const [todayRevenue, todayOrders, todayReturns, todayInvoices] =
+      await Promise.all([
+        this.prisma.order.aggregate({
+          where: {
+            orderDate: { gte: today },
+            orderStatus: { not: 'cancelled' },
+          },
+          _sum: { grandTotal: true },
+        }),
+        this.prisma.order.count({
+          where: {
+            orderDate: { gte: today },
+            orderStatus: { not: 'cancelled' },
+          },
+        }),
+        this.prisma.returnOrder.aggregate({
+          where: {
+            createdAt: { gte: today },
+            status: { not: 0 },
+          },
+          _sum: { refundAmount: true },
+          _count: true,
+        }),
+        this.prisma.invoice.aggregate({
+          where: {
+            purchaseDate: { gte: today },
+            status: { not: 0 },
+          },
+          _sum: { grandTotal: true },
+          _count: true,
+        }),
+      ]);
+
+    const revenue = Number(todayRevenue._sum.grandTotal || 0);
+    const returns = Number(todayReturns._sum.refundAmount || 0);
+    const invoiceRevenue = Number(todayInvoices._sum.grandTotal || 0);
+
+    return {
+      todayRevenue: revenue,
+      todayOrders,
+      todayReturns: returns,
+      todayReturnCount: todayReturns._count || 0,
+      todayNetRevenue: revenue - returns,
+      todayInvoiceRevenue: invoiceRevenue,
+      todayInvoiceCount: todayInvoices._count || 0,
+    };
+  }
+
+  async getTopProducts(limit: number = 10) {
+    const currentMonthStart = new Date();
+    currentMonthStart.setDate(1);
+    currentMonthStart.setHours(0, 0, 0, 0);
+
+    const products = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        oi."productId",
+        oi."productCode",
+        oi."productName",
+        SUM(oi.quantity)::numeric     AS "totalQuantity",
+        SUM(oi."totalPrice")::numeric AS "totalRevenue"
+      FROM order_items oi
+      INNER JOIN orders o ON oi."orderId" = o.id
+      WHERE o."orderDate" >= ${currentMonthStart}
+        AND o."orderStatus" != 'cancelled'
+      GROUP BY oi."productId", oi."productCode", oi."productName"
+      ORDER BY SUM(oi."totalPrice") DESC
+      LIMIT ${limit}
+    `;
+
+    return products.map((p) => ({
+      productId: Number(p.productId),
+      code: p.productCode,
+      name: p.productName,
+      totalQuantity: Number(p.totalQuantity),
+      totalRevenue: Number(p.totalRevenue),
+    }));
+  }
+
+  async getRecentActivities(limit: number = 15) {
+    const orders = await this.prisma.order.findMany({
+      take: limit,
+      orderBy: { createdAt: 'desc' },
+      where: { orderStatus: { not: 'cancelled' } },
+      select: {
+        id: true,
+        code: true,
+        grandTotal: true,
+        createdAt: true,
+        customer: { select: { name: true } },
+      },
+    });
+
+    return orders.map((order) => ({
+      id: order.id,
+      code: order.code,
+      customerName: order.customer?.name || 'Khách vãng lai',
+      grandTotal: Number(order.grandTotal),
+      createdAt: order.createdAt,
+    }));
+  }
 }

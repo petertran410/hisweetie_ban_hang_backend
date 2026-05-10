@@ -62,4 +62,30 @@ export class DashboardController {
   ) {
     return this.dashboardService.getRecentOrders(limit || 10);
   }
+
+  // ======== THÊM MỚI: 3 endpoints ========
+
+  @Get('today-stats')
+  @ApiOperation({ summary: 'Get today sales stats' })
+  getTodayStats() {
+    return this.dashboardService.getTodayStats();
+  }
+
+  @Get('top-products')
+  @ApiOperation({ summary: 'Get top selling products this month' })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  getTopProducts(
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+  ) {
+    return this.dashboardService.getTopProducts(limit || 10);
+  }
+
+  @Get('recent-activities')
+  @ApiOperation({ summary: 'Get recent order activities' })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  getRecentActivities(
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+  ) {
+    return this.dashboardService.getRecentActivities(limit || 15);
+  }
 }
