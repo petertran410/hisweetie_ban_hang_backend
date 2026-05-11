@@ -62,13 +62,14 @@ export class SyncInvoiceService extends BaseSyncService {
         })
       : null;
 
-    const totalAmount = Number(record.total ?? 0);
     const discount = Number(record.discount ?? 0);
     const discountRatio = Number(record.discountRatio ?? 0);
-    const grandTotal =
+    const totalAmount =
       discountRatio > 0
-        ? totalAmount - (totalAmount * discountRatio) / 100
-        : totalAmount - discount;
+        ? Number(record.total ?? 0) +
+          (Number(record.total ?? 0) * Number(record.discountRatio ?? 0)) / 100
+        : Number(record.total ?? 0) + Number(record.discount ?? 0);
+    const grandTotal = Number(record.total ?? 0);
     const paidAmount = Number(record.totalPayment ?? 0);
     const debtAmount = Math.max(grandTotal - paidAmount, 0);
 
