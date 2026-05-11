@@ -31,6 +31,11 @@ export class SyncCashFlowService extends BaseSyncService {
     return raw;
   }
 
+  private mapKiotStatus(kiotStatus: number | null | undefined): number {
+    if (kiotStatus === 1) return 2; // KiotViet hủy (1) → HiSweetie hủy (2)
+    return kiotStatus ?? 0; // Còn lại giữ nguyên, fallback về 0
+  }
+
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
@@ -91,7 +96,7 @@ export class SyncCashFlowService extends BaseSyncService {
       address: record.address || null,
       wardName: record.wardName || null,
       description: record.description || null,
-      status: record.status ?? 0,
+      status: this.mapKiotStatus(record.status),
       statusValue: record.statusValue || null,
       usedForFinancialReporting: record.usedForFinancialReporting || null,
       kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,

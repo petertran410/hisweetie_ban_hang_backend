@@ -148,6 +148,9 @@ export class SyncKiotService {
     results.surcharges = await this.safeSync('surcharge', () =>
       this.syncSurcharge.syncAll(),
     );
+    results.customerGroups = await this.safeSync('customer_group', () =>
+      this.syncCustomerGroup.syncAll(),
+    );
 
     // Layer 2
     results.customers = await this.safeSync('customer', () =>

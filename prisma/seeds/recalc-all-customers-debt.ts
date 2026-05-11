@@ -30,7 +30,7 @@ async function recalcCustomerDebt(targetCustomerId: number) {
         isReceipt: true,
         status: { not: 2 },
         NOT: [
-          { code: { startsWith: 'TTTUHD' } },
+          // { code: { startsWith: 'TTTUHD' } },
           { code: { startsWith: 'CB' } },
         ],
       },

@@ -372,7 +372,7 @@ export class CashFlowsService {
       where.createdBy = userId;
     }
 
-    if (branchIds && branchIds.length > 0) {
+    if (!code?.length && branchIds && branchIds.length > 0) {
       where.branchId = { in: branchIds };
     }
 
@@ -421,7 +421,7 @@ export class CashFlowsService {
       where.isReceipt = isReceipt;
     }
 
-    if (startDate || endDate) {
+    if (!code?.length && (startDate || endDate)) {
       where.transDate = {};
       if (startDate) {
         where.transDate.gte = new Date(startDate);

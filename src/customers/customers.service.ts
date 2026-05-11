@@ -885,6 +885,7 @@ export class CustomersService {
         partnerType: 'C',
         partnerId: { in: cashFlowPartnerIds },
         status: { not: 2 },
+        NOT: [{ code: { startsWith: 'TTTUHD' } }],
       },
       select: {
         id: true,

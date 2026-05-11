@@ -42,7 +42,14 @@ export class SyncOrderService extends BaseSyncService {
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
     const existing = await this.prisma.order.findFirst({
-      where: { code: record.code },
+      where: {
+        OR: [
+          { code: record.code },
+          ...(record.kiotVietId
+            ? [{ kiotVietId: BigInt(record.kiotVietId) }]
+            : []),
+        ],
+      },
     });
 
     const customer = record.customer?.code

@@ -16,7 +16,14 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
     const existing = await this.prisma.purchaseOrder.findFirst({
-      where: { code: record.code },
+      where: {
+        OR: [
+          { code: record.code },
+          ...(record.kiotVietId
+            ? [{ kiotVietId: BigInt(record.kiotVietId) }]
+            : []),
+        ],
+      },
     });
 
     const supplier = record.supplierCode
