@@ -7,8 +7,6 @@ import * as ExcelJS from 'exceljs';
 import { Response } from 'express';
 
 // Giới hạn tối đa (ms)
-const MAX_RANGE_SALES = 6 * 30 * 24 * 60 * 60 * 1000; // ~6 tháng
-const MAX_RANGE_PRODUCT = 3 * 30 * 24 * 60 * 60 * 1000; // ~3 tháng
 const BATCH_SIZE = 1000;
 
 @Injectable()
@@ -45,38 +43,16 @@ export class ReportsService {
     return where;
   }
 
-  private validateDateRange(query: ReportQueryDto, maxRange: number) {
-    if (query.fromDate && query.toDate) {
-      const diff =
-        new Date(query.toDate).getTime() - new Date(query.fromDate).getTime();
-      const maxMonths = Math.round(maxRange / (30 * 24 * 60 * 60 * 1000));
-      if (diff > maxRange) {
-        throw new BadRequestException(
-          `Khoảng thời gian tối đa là ${maxMonths} tháng. Vui lòng thu hẹp khoảng thời gian.`,
-        );
-      }
-    }
-  }
-
   // ═══════════════════════════════════════════════════════════════════════════
   // SHARED: Build return amount map — query 1 lần duy nhất
   // ═══════════════════════════════════════════════════════════════════════════
   private async buildReturnAmountMap(where: any): Promise<Map<number, number>> {
-    // Lấy tất cả invoiceId matching filter
-    const invoiceIds = await this.prisma.invoice.findMany({
-      where,
-      select: { id: true },
-    });
-
-    const ids = invoiceIds.map((i) => i.id);
-    if (ids.length === 0) return new Map();
-
-    // Query ReturnOrderDetail group by invoiceId
-    // Chỉ lấy return orders đã hoàn thành (STOCK_RECEIVED, COMPLETED)
+    // Dùng nested relation filter thay vì IN(...ids)
+    // Prisma sẽ sinh subquery: WHERE "invoiceId" IN (SELECT id FROM invoices WHERE ...)
     const results = await this.prisma.returnOrderDetail.groupBy({
       by: ['invoiceId'],
       where: {
-        invoiceId: { in: ids },
+        invoice: where,
         returnOrder: {
           status: {
             in: [
@@ -91,7 +67,9 @@ export class ReportsService {
 
     const map = new Map<number, number>();
     for (const r of results) {
-      map.set(r.invoiceId, Number(r._sum.totalAmount) || 0);
+      if (r.invoiceId) {
+        map.set(r.invoiceId, Number(r._sum.totalAmount) || 0);
+      }
     }
     return map;
   }
@@ -173,31 +151,22 @@ export class ReportsService {
       _count: true,
     });
 
-    // Tổng trả hàng toàn bộ
-    const allInvoiceIds = await this.prisma.invoice.findMany({
-      where,
-      select: { id: true },
-    });
-    const allIds = allInvoiceIds.map((i) => i.id);
-
-    let totalReturn = 0;
-    if (allIds.length > 0) {
-      const returnAgg = await this.prisma.returnOrderDetail.aggregate({
-        where: {
-          invoiceId: { in: allIds },
-          returnOrder: {
-            status: {
-              in: [
-                RETURN_ORDER_STATUS.STOCK_RECEIVED,
-                RETURN_ORDER_STATUS.COMPLETED,
-              ],
-            },
+    // Tổng trả hàng toàn bộ — dùng nested filter, không truyền mảng IDs
+    const returnAgg = await this.prisma.returnOrderDetail.aggregate({
+      where: {
+        invoice: where,
+        returnOrder: {
+          status: {
+            in: [
+              RETURN_ORDER_STATUS.STOCK_RECEIVED,
+              RETURN_ORDER_STATUS.COMPLETED,
+            ],
           },
         },
-        _sum: { totalAmount: true },
-      });
-      totalReturn = Number(returnAgg._sum.totalAmount) || 0;
-    }
+      },
+      _sum: { totalAmount: true },
+    });
+    const totalReturn = Number(returnAgg._sum.totalAmount) || 0;
 
     return {
       data: data.map((inv) => ({
@@ -229,7 +198,6 @@ export class ReportsService {
   // BÁO CÁO 1: Bán hàng — Export Excel (streaming)
   // ═══════════════════════════════════════════════════════════════════════════
   async exportCustomerSales(query: ReportQueryDto, res: Response) {
-    this.validateDateRange(query, MAX_RANGE_SALES);
     const where = this.buildInvoiceWhere(query);
 
     // Query 1: Aggregate tổng kết
@@ -500,7 +468,6 @@ export class ReportsService {
   // BÁO CÁO 2: Hàng bán theo khách — Export Excel (streaming)
   // ═══════════════════════════════════════════════════════════════════════════
   async exportProductByCustomer(query: ReportQueryDto, res: Response) {
-    this.validateDateRange(query, MAX_RANGE_PRODUCT);
     const where = this.buildInvoiceWhere(query);
     const detailWhere: any = { invoice: where };
 
