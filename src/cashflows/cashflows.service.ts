@@ -1584,52 +1584,31 @@ export class CashFlowsService {
   ): Promise<string> {
     const prefix = isReceipt ? 'TT' : 'PC';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
-    let attempts = 0;
-    const maxAttempts = 10;
 
-    while (attempts < maxAttempts) {
-      const allCashFlows = await tx.cashFlow.findMany({
-        where: {
-          code: {
-            startsWith: prefix,
-          },
-          isReceipt,
-        },
-        select: {
-          code: true,
-        },
-        orderBy: {
-          id: 'desc',
-        },
-      });
+    const allCashFlows = await tx.cashFlow.findMany({
+      where: {
+        code: { startsWith: prefix },
+        isReceipt,
+      },
+      select: { code: true },
+    });
 
-      const validCodes = allCashFlows
-        .map((cf: any) => cf.code)
-        .filter((code: string) => regex.test(code));
+    const numbers = allCashFlows
+      .map((cf: any) => cf.code)
+      .filter((code: string) => regex.test(code))
+      .map((code: string) => parseInt(code.replace(prefix, ''), 10));
 
-      let nextNumber = 1;
-      if (validCodes.length > 0) {
-        const lastCode = validCodes[0];
-        const match = lastCode.match(/\d+$/);
-        if (match) {
-          nextNumber = parseInt(match[0]) + 1;
-        }
-      }
+    const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+    const nextNumber = maxNumber + 1;
+    const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
 
-      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
-
-      const exists = await tx.cashFlow.findFirst({
-        where: { code },
-      });
-
-      if (!exists) {
-        return code;
-      }
-
-      attempts++;
+    // Safety check
+    const exists = await tx.cashFlow.findFirst({ where: { code } });
+    if (exists) {
+      throw new Error('Không thể tạo mã phiếu thu/chi duy nhất');
     }
 
-    throw new Error('Không thể tạo mã phiếu thu/chi duy nhất');
+    return code;
   }
 
   private buildCashFlowSnapshot(cashFlow: any) {

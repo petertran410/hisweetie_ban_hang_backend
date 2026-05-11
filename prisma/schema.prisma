@@ -1171,6 +1171,9 @@ model Invoice {
   returnOrders    ReturnOrder[]
   returnOrderDetails ReturnOrderDetail[]
 
+  @@index([purchaseDate])
+  @@index([customerId, purchaseDate])
+  @@index([branchId, purchaseDate])
   @@map("invoices")
 }
 
@@ -1194,6 +1197,7 @@ model InvoiceDetail {
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product Product? @relation(fields: [productId], references: [id])
 
+  @@index([invoiceId])
   @@map("invoice_details")
 }
 
@@ -2017,6 +2021,7 @@ model ReturnOrderDetail {
   invoice     Invoice     @relation(fields: [invoiceId], references: [id])
   product     Product     @relation(fields: [productId], references: [id])
 
+  @@index([invoiceId])
   @@map("return_order_details")
 }
 

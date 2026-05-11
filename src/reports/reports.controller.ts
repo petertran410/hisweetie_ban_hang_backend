@@ -1,67 +1,60 @@
-// import { Controller, Get, Query } from '@nestjs/common';
-// import { ReportsService } from './reports.service';
+import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
+import { Response } from 'express';
+import { ReportsService } from './reports.service';
+import { ReportQueryDto } from './dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 
-// @Controller('reports')
-// export class ReportsController {
-//   constructor(private reportsService: ReportsService) {}
+@ApiTags('Reports')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('reports')
+export class ReportsController {
+  constructor(private reportsService: ReportsService) {}
 
-//   @Get('sales')
-//   getSalesReport(
-//     @Query('dateFrom') dateFrom: string,
-//     @Query('dateTo') dateTo: string,
-//   ) {
-//     return this.reportsService.getSalesReport(
-//       new Date(dateFrom),
-//       new Date(dateTo),
-//     );
-//   }
+  // ── Báo cáo 1: Preview ──
+  @Get('customer-sales')
+  @ApiOperation({ summary: 'Preview báo cáo bán hàng theo hóa đơn' })
+  getCustomerSalesPreview(@Query() query: ReportQueryDto) {
+    return this.reportsService.getCustomerSalesPreview(query);
+  }
 
-//   @Get('products')
-//   getProductReport(
-//     @Query('dateFrom') dateFrom?: string,
-//     @Query('dateTo') dateTo?: string,
-//   ) {
-//     if (dateFrom && dateTo) {
-//       return this.reportsService.getProductReport(
-//         new Date(dateFrom),
-//         new Date(dateTo),
-//       );
-//     }
-//     return this.reportsService.getProductReport();
-//   }
+  // ── Báo cáo 1: Export Excel ──
+  @Get('customer-sales/export')
+  @ApiOperation({ summary: 'Xuất Excel báo cáo bán hàng' })
+  async exportCustomerSales(
+    @Query() query: ReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `bao-cao-ban-hang_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.reportsService.exportCustomerSales(query, res);
+  }
 
-//   @Get('customers')
-//   getCustomerReport(
-//     @Query('dateFrom') dateFrom?: string,
-//     @Query('dateTo') dateTo?: string,
-//   ) {
-//     if (dateFrom && dateTo) {
-//       return this.reportsService.getCustomerReport(
-//         new Date(dateFrom),
-//         new Date(dateTo),
-//       );
-//     }
-//     return this.reportsService.getCustomerReport();
-//   }
+  // ── Báo cáo 2: Preview ──
+  @Get('product-by-customer')
+  @ApiOperation({ summary: 'Preview báo cáo hàng bán theo khách' })
+  getProductByCustomerPreview(@Query() query: ReportQueryDto) {
+    return this.reportsService.getProductByCustomerPreview(query);
+  }
 
-//   @Get('inventory')
-//   getInventoryReport() {
-//     return this.reportsService.getInventoryReport();
-//   }
-
-//   @Get('financial')
-//   getFinancialReport(
-//     @Query('dateFrom') dateFrom: string,
-//     @Query('dateTo') dateTo: string,
-//   ) {
-//     return this.reportsService.getFinancialReport(
-//       new Date(dateFrom),
-//       new Date(dateTo),
-//     );
-//   }
-
-//   @Get('dashboard')
-//   getDashboardStats() {
-//     return this.reportsService.getDashboardStats();
-//   }
-// }
+  // ── Báo cáo 2: Export Excel ──
+  @Get('product-by-customer/export')
+  @ApiOperation({ summary: 'Xuất Excel hàng bán theo khách' })
+  async exportProductByCustomer(
+    @Query() query: ReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `hang-ban-theo-khach_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.reportsService.exportProductByCustomer(query, res);
+  }
+}

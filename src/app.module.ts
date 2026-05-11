@@ -1,3 +1,4 @@
+import { ReportsModule } from './reports/reports.module';
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_FILTER, APP_PIPE, APP_INTERCEPTOR } from '@nestjs/core';
@@ -89,7 +90,7 @@ import { LarkSyncModule } from './lark-sync/lark-sync.module';
     InvoicesModule,
     PurchaseOrdersModule,
     PriceBooksModule,
-    // ReportsModule,
+    ReportsModule,
     UploadModule,
     // ExportModule,
     ImportModule,
