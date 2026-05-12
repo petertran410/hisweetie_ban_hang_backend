@@ -628,7 +628,11 @@ export class ReturnOrdersService {
         );
       } else if (returnOrder.details.length > 0) {
         const invoiceIds = [
-          ...new Set(returnOrder.details.map((d) => d.invoiceId)),
+          ...new Set(
+            returnOrder.details
+              .map((d) => d.invoiceId)
+              .filter((id): id is number => id !== null),
+          ),
         ];
         const invoices = await tx.invoice.findMany({
           where: { id: { in: invoiceIds } },

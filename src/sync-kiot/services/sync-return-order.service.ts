@@ -141,6 +141,16 @@ export class SyncReturnOrderService extends BaseSyncService {
     invoiceId: number | null,
     details: any[],
   ) {
+    // Lookup invoiceCode 1 lần duy nhất thay vì trong loop
+    let invoiceCode = '';
+    if (invoiceId) {
+      const inv = await this.prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { code: true },
+      });
+      invoiceCode = inv?.code || '';
+    }
+
     for (const d of details) {
       const product = d.productCode
         ? await this.prisma.product.findFirst({
@@ -156,19 +166,10 @@ export class SyncReturnOrderService extends BaseSyncService {
         continue;
       }
 
-      let invoiceCode = '';
-      if (invoiceId) {
-        const inv = await this.prisma.invoice.findUnique({
-          where: { id: invoiceId },
-          select: { code: true },
-        });
-        invoiceCode = inv?.code || '';
-      }
-
       await this.prisma.returnOrderDetail.create({
         data: {
           returnOrderId,
-          invoiceId: invoiceId || 0,
+          invoiceId: invoiceId ?? null,
           invoiceCode,
           productId: product.id,
           productCode: d.productCode || product.code,

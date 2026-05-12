@@ -135,7 +135,9 @@ export class ReportsService {
 
     const returnMap = new Map<number, number>();
     for (const r of returnResults) {
-      returnMap.set(r.invoiceId, Number(r._sum.totalAmount) || 0);
+      if (r.invoiceId !== null) {
+        returnMap.set(r.invoiceId, Number(r._sum.totalAmount) || 0);
+      }
     }
 
     // Summary aggregate cho toàn bộ filter (không phân trang)

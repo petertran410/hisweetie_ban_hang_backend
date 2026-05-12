@@ -2014,7 +2014,7 @@ model ReturnOrder {
 model ReturnOrderDetail {
   id              Int      @id @default(autoincrement())
   returnOrderId   Int
-  invoiceId       Int
+  invoiceId       Int?
   invoiceCode     String
   productId       Int
   productCode     String
@@ -2036,7 +2036,7 @@ model ReturnOrderDetail {
   saleNearExpiryQuantity  Decimal   @default(0)
 
   returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
-  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
+  invoice     Invoice?    @relation(fields: [invoiceId], references: [id])
   product     Product     @relation(fields: [productId], references: [id])
 
   @@index([invoiceId])
