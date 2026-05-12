@@ -65,4 +65,27 @@ export class RolesController {
   ) {
     return this.rolesService.assignPermissions(+id, body.permissionIds);
   }
+
+  @Get(':id/branch-permissions/:branchId')
+  @RequirePermissions('roles:view')
+  getRoleBranchPermissions(
+    @Param('id') id: string,
+    @Param('branchId') branchId: string,
+  ) {
+    return this.rolesService.getRoleBranchPermissions(+id, +branchId);
+  }
+
+  @Put(':id/branch-permissions/:branchId')
+  @RequirePermissions('roles:update')
+  assignRoleBranchPermissions(
+    @Param('id') id: string,
+    @Param('branchId') branchId: string,
+    @Body() data: { permissionIds: number[] },
+  ) {
+    return this.rolesService.assignRoleBranchPermissions(
+      +id,
+      +branchId,
+      data.permissionIds,
+    );
+  }
 }

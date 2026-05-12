@@ -131,4 +131,38 @@ export class RolesService {
     });
     this.permissionCache.invalidateAll();
   }
+
+  async getRoleBranchPermissions(
+    roleId: number,
+    branchId: number,
+  ): Promise<number[]> {
+    const records = await this.prisma.roleBranchPermission.findMany({
+      where: { roleId, branchId },
+      select: { permissionId: true },
+    });
+    return records.map((r) => r.permissionId);
+  }
+
+  async assignRoleBranchPermissions(
+    roleId: number,
+    branchId: number,
+    permissionIds: number[],
+  ): Promise<void> {
+    await this.prisma.$transaction([
+      this.prisma.roleBranchPermission.deleteMany({
+        where: { roleId, branchId },
+      }),
+      ...(permissionIds.length > 0
+        ? [
+            this.prisma.roleBranchPermission.createMany({
+              data: permissionIds.map((permissionId) => ({
+                roleId,
+                branchId,
+                permissionId,
+              })),
+            }),
+          ]
+        : []),
+    ]);
+  }
 }

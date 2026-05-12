@@ -87,8 +87,9 @@ model Role {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  userRoles       UserRole[]
-  rolePermissions RolePermission[]
+  userRoles             UserRole[]
+  rolePermissions       RolePermission[]
+  roleBranchPermissions RoleBranchPermission[]
 
   @@map("roles")
 }
@@ -108,6 +109,7 @@ model Permission {
   rolePermissions RolePermission[]
   userPermissions UserPermission[]
   userBranchPermissions UserBranchPermission[]
+  roleBranchPermissions RoleBranchPermission[]
 
   @@unique([resource, action, scope, field])
   @@index([resource])
@@ -187,6 +189,21 @@ model RolePermission {
   @@map("role_permissions")
 }
 
+model RoleBranchPermission {
+  id           Int      @id @default(autoincrement())
+  roleId       Int
+  branchId     Int
+  permissionId Int
+  createdAt    DateTime @default(now())
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  branch     Branch     @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, branchId, permissionId])
+  @@map("role_branch_permissions")
+}
+
 model UserPermission {
   userId       Int
   permissionId Int
@@ -244,6 +261,7 @@ model Branch {
   inventoryLogs      InventoryLog[]
   inventoryChecks InventoryCheck[]
   stockAudits StockAudit[]
+  roleBranchPermissions RoleBranchPermission[]
 
   @@map("branches")
 }

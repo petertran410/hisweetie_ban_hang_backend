@@ -446,7 +446,9 @@ export class AuthService {
           include: {
             role: {
               include: {
-                rolePermissions: {
+                rolePermissions: { include: { permission: true } },
+                roleBranchPermissions: {
+                  where: { branchId },
                   include: { permission: true },
                 },
               },
@@ -461,10 +463,15 @@ export class AuthService {
 
     if (!user) return [];
 
-    const rolePermKeys = new Set<string>();
+    const basePermKeys = new Set<string>();
     for (const ur of user.userRoles) {
-      for (const rp of ur.role.rolePermissions) {
-        rolePermKeys.add(`${rp.permission.resource}:${rp.permission.action}`);
+      const { roleBranchPermissions, rolePermissions } = ur.role;
+      const source =
+        roleBranchPermissions.length > 0
+          ? roleBranchPermissions
+          : rolePermissions;
+      for (const rp of source) {
+        basePermKeys.add(`${rp.permission.resource}:${rp.permission.action}`);
       }
     }
 
@@ -472,50 +479,24 @@ export class AuthService {
     const denyKeys = new Set<string>();
     for (const up of user.userPermissions) {
       const key = `${up.permission.resource}:${up.permission.action}`;
-      if (up.type === 'grant') {
-        grantKeys.add(key);
-      } else if (up.type === 'deny') {
-        denyKeys.add(key);
-      }
+      if (up.type === 'grant') grantKeys.add(key);
+      else if (up.type === 'deny') denyKeys.add(key);
     }
 
-    let basePermissions = new Set([...rolePermKeys, ...grantKeys]);
-    for (const dk of denyKeys) {
-      basePermissions.delete(dk);
-    }
-
-    if (!branchId) {
-      return Array.from(basePermissions);
-    }
+    let permissions = new Set([...basePermKeys, ...grantKeys]);
+    for (const dk of denyKeys) permissions.delete(dk);
 
     const branchOverrides = await this.prisma.userBranchPermission.findMany({
       where: { userId, branchId },
       include: { permission: true },
     });
 
-    if (branchOverrides.length === 0) {
-      return Array.from(basePermissions);
-    }
-
-    const branchGrants = new Set<string>();
-    const branchDenies = new Set<string>();
-
     for (const bp of branchOverrides) {
       const key = `${bp.permission.resource}:${bp.permission.action}`;
-      if (bp.granted) {
-        branchGrants.add(key);
-      } else {
-        branchDenies.add(key);
-      }
+      if (bp.granted) permissions.add(key);
+      else permissions.delete(key);
     }
 
-    for (const bg of branchGrants) {
-      basePermissions.add(bg);
-    }
-    for (const bd of branchDenies) {
-      basePermissions.delete(bd);
-    }
-
-    return Array.from(basePermissions);
+    return Array.from(permissions);
   }
 }
