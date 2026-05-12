@@ -15,12 +15,21 @@ export class SyncBranchService extends BaseSyncService {
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
-    // sync_kiot Branch không có code, match bằng name
-    const existing = await this.prisma.branch.findFirst({
-      where: {
-        OR: [{ kiotVietId: record.kiotVietId }, { name: record.name }],
-      },
+    // Bước 1: ưu tiên match bằng kiotVietId (chính xác nhất)
+    let existing = await this.prisma.branch.findFirst({
+      where: { kiotVietId: record.kiotVietId },
     });
+
+    // Bước 2: fallback match bằng name, nhưng CHỈ khi branch đó chưa được gắn kiotVietId
+    // → tránh trường hợp overwrite kiotVietId của branch khác
+    if (!existing) {
+      existing = await this.prisma.branch.findFirst({
+        where: {
+          name: record.name,
+          kiotVietId: null,
+        },
+      });
+    }
 
     const data = {
       name: record.name,
@@ -29,7 +38,7 @@ export class SyncBranchService extends BaseSyncService {
       email: record.email || null,
       address: record.address || null,
       wardName: record.wardName || null,
-      isActive: record.isActive ?? true,
+      // isActive: record.isActive ?? true,
       isLock: record.isLock ?? false,
       kiotVietId: record.kiotVietId,
       createdAt: record.createdDate ? new Date(record.createdDate) : new Date(),

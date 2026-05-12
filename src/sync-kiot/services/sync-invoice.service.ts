@@ -97,6 +97,13 @@ export class SyncInvoiceService extends BaseSyncService {
           debtAmount: Math.max(debtAmount, 0),
           status: record.status,
           statusValue: record.statusValue || null,
+          description: record.description || null,
+          purchaseDate: record.purchaseDate
+            ? new Date(record.purchaseDate)
+            : existing.purchaseDate,
+          updatedAt: record.modifiedDate
+            ? new Date(record.modifiedDate)
+            : new Date(),
           kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
           lastSyncedAt: new Date(),
         },

@@ -108,8 +108,12 @@ export class SyncOrderService extends BaseSyncService {
           paidAmount,
           debtAmount: Math.max(debtAmount, 0),
           status: record.status ?? existing.status,
-          statusValue: record.statusValue || null,
+          statusValue: mapKiotStatusToOrderStatus(record.status ?? 1),
           orderStatus: mapKiotStatusToOrderStatus(record.status ?? 1),
+          description: record.description || null,
+          updatedAt: record.modifiedDate
+            ? new Date(record.modifiedDate)
+            : new Date(),
           kiotVietId: record.kiotVietId ? BigInt(record.kiotVietId) : null,
           lastSyncedAt: new Date(),
         },

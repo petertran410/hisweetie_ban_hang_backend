@@ -121,6 +121,8 @@ export class SyncProductService extends BaseSyncService {
           onHand: inv.onHand || 0,
           reserved: inv.reserved || 0,
           onOrder: inv.onOrder || 0,
+          productCode,
+          productName,
         },
         create: {
           productId,
