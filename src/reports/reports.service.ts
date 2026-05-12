@@ -448,8 +448,7 @@ export class ReportsService {
         productName: d.productName,
         unit: d.product?.unit || '',
         quantity: Number(d.quantity),
-        price: Number(d.price),
-        discount: Number(d.discount),
+        sellingPrice: Number(d.price) - Number(d.discount),
         totalPrice: Number(d.totalPrice),
         conditionType: d.conditionType,
       })),
@@ -497,9 +496,8 @@ export class ReportsService {
       { header: 'Tên SP', key: 'productName', width: 30 },
       { header: 'ĐVT', key: 'unit', width: 8 },
       { header: 'Số lượng', key: 'quantity', width: 10 },
-      { header: 'Đơn giá', key: 'price', width: 14 },
-      { header: 'Giảm giá', key: 'discount', width: 14 },
-      { header: 'Thành tiền SP', key: 'totalPrice', width: 16 },
+      { header: 'Giá bán', key: 'sellingPrice', width: 14 },
+      { header: 'Thành tiền', key: 'totalPrice', width: 16 },
       { header: 'Tình trạng SP', key: 'conditionType', width: 14 },
     ];
 
@@ -573,8 +571,7 @@ export class ReportsService {
             productName: d.productName,
             unit: d.product?.unit || '',
             quantity: Number(d.quantity),
-            price: Number(d.price),
-            discount: Number(d.discount),
+            sellingPrice: Number(d.price) - Number(d.discount),
             totalPrice: Number(d.totalPrice),
             conditionType: conditionLabels[d.conditionType] || d.conditionType,
           })
@@ -599,8 +596,7 @@ export class ReportsService {
       productName: `${summaryAgg._count} dòng`,
       unit: '',
       quantity: Number(summaryAgg._sum.quantity) || 0,
-      price: '',
-      discount: '',
+      sellingPrice: '',
       totalPrice: Number(summaryAgg._sum.totalPrice) || 0,
       conditionType: '',
     });
