@@ -324,8 +324,8 @@ export class SyncOrderService extends BaseSyncService {
             address: order?.customer?.addresses?.[0]?.address || null,
             description:
               pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
+            status: pm.status === 1 ? 2 : 0,
+            statusValue: pm.status === 1 ? 'Đã hủy' : 'Đã thanh toán',
             createdBy: 1,
             usedForFinancialReporting: 1,
             createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
