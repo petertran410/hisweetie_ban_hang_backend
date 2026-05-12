@@ -41,15 +41,20 @@ export class BranchesController {
   }
 
   @Get('my-branches')
-  @ApiOperation({
-    summary: 'Get branches assigned to current user (no permission required)',
-  })
   async getMyBranches(@Req() req: any) {
     const user = req.user;
+
+    // Super Admin thấy toàn bộ chi nhánh active
+    if (user.roles?.includes('Super Admin')) {
+      const result = await this.branchesService.findAll({ isActive: true });
+      return result.data;
+    }
+
     const branchIds: number[] = user.branchIds || [];
 
     if (branchIds.length === 0) {
-      return this.branchesService.findAll();
+      const result = await this.branchesService.findAll({ isActive: true });
+      return result.data;
     }
 
     return this.branchesService.findByIds(branchIds);
