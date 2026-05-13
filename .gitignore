@@ -7,6 +7,9 @@
 Dockerfile
 docker-compose.yml
 deploy.sh
+deploy-app.sh
+deploy-full.sh
+nginx
 
 /uploads
 

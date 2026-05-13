@@ -40,7 +40,7 @@ export class SyncKiotApiService {
   ): Promise<T[]> {
     const allData: T[] = [];
     let currentItem = 0;
-    const pageSize = 500;
+    const pageSize = 1000;
 
     while (true) {
       const params: Record<string, string> = {
