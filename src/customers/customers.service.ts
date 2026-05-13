@@ -989,13 +989,27 @@ export class CustomersService {
 
     // ✅ Query DUY NHẤT cho tất cả ReturnOrder
     const allReturnOrders = await this.prisma.returnOrder.findMany({
+      // where: {
+      //   customerId: { in: returnOrderCustomerIds },
+      //   code: { startsWith: 'TH' },
+      //   status: { in: [1, 2, 3, 4, 5] },
+      //   NOT: {
+      //     AND: [{ status: 4 }, { refundType: 'cash_refund' }],
+      //   },
+      // },
       where: {
         customerId: { in: returnOrderCustomerIds },
         code: { startsWith: 'TH' },
-        status: { in: [1, 2, 3, 4, 5] },
-        NOT: {
-          AND: [{ status: 4 }, { refundType: 'cash_refund' }],
-        },
+        OR: [
+          {
+            status: { in: [1, 2, 3, 4] },
+            NOT: { AND: [{ status: 4 }, { refundType: 'cash_refund' }] },
+          },
+          {
+            status: 5,
+            refundType: 'manual_offset',
+          },
+        ],
       },
       select: {
         id: true,
