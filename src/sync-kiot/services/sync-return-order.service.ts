@@ -3,6 +3,17 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
 
+function mapKiotReturnStatusToHisweetie(status: number): number {
+  switch (status) {
+    case 1:
+      return 4; // KiotViet "Đã trả"  → COMPLETED
+    case 2:
+      return 5; // KiotViet "Đã hủy"  → CANCELLED
+    default:
+      return 1; // fallback           → REQUEST
+  }
+}
+
 @Injectable()
 export class SyncReturnOrderService extends BaseSyncService {
   protected readonly entityName = 'return_order';
@@ -56,7 +67,7 @@ export class SyncReturnOrderService extends BaseSyncService {
       receivedById = user?.id || null;
     }
 
-    const hisweetieStatus = record.status === 1 ? 5 : (record.status ?? 1);
+    const hisweetieStatus = mapKiotReturnStatusToHisweetie(record.status ?? 0);
 
     const returnDate = record.returnDate
       ? new Date(record.returnDate)
