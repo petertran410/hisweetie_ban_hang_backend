@@ -33,6 +33,17 @@ export class SyncKiotController {
     return { success: true, results, timestamp: new Date().toISOString() };
   }
 
+  @Post('recent')
+  async triggerRecentSync(@Body() body?: { daysBack?: number }) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      return { success: false, reason: 'Sync is disabled' };
+    }
+    const daysBack = body?.daysBack ?? 3;
+    this.logger.log(`📨 Manual recent sync triggered (last ${daysBack} days)`);
+    const results = await this.syncService.runRecentSync(daysBack);
+    return { success: true, results, timestamp: new Date().toISOString() };
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Body() body: { entityType: string; code: string; action: string },

@@ -192,6 +192,52 @@ export class SyncKiotService {
   }
 
   /**
+   * Rolling window sync — chỉ sync 4 entity trong N ngày gần đây
+   * Không update SyncControl.lastSyncAt (tránh conflict với incremental)
+   */
+  async runRecentSync(daysBack: number = 3): Promise<Record<string, any>> {
+    const fromDate = new Date(
+      Date.now() - daysBack * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    this.logger.log(
+      `📦 Starting RECENT sync (last ${daysBack} days, since ${fromDate})...`,
+    );
+
+    const results: Record<string, any> = {};
+
+    results.customers = await this.safeSync('customer', () =>
+      this.syncCustomer.syncWindow(fromDate),
+    );
+
+    const [invoiceResult, orderResult] = await Promise.allSettled([
+      this.safeSync('invoice', () => this.syncInvoice.syncWindow(fromDate)),
+      this.safeSync('order', () => this.syncOrder.syncWindow(fromDate)),
+    ]);
+
+    results.invoices =
+      invoiceResult.status === 'fulfilled'
+        ? invoiceResult.value
+        : { error: invoiceResult.reason?.message };
+    results.orders =
+      orderResult.status === 'fulfilled'
+        ? orderResult.value
+        : { error: orderResult.reason?.message };
+
+    results.returnOrders = await this.safeSync('return_order', () =>
+      this.syncReturnOrder.syncWindow(fromDate),
+    );
+
+    // Thêm cashflow — chạy song song với returnOrders cũng được nhưng để tuần tự cho dễ debug
+    results.cashFlows = await this.safeSync('cash_flow', () =>
+      this.syncCashFlow.syncWindow(fromDate),
+    );
+
+    this.logger.log(`✅ RECENT sync completed: ${JSON.stringify(results)}`);
+    return results;
+  }
+
+  /**
    * Sync 1 entity cụ thể (dùng cho webhook)
    */
   async syncSingleEntity(entityType: string, code: string): Promise<any> {

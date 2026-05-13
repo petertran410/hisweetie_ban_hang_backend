@@ -40,6 +40,12 @@ export abstract class BaseSyncService {
     return this.processRecords(data);
   }
 
+  async syncWindow(fromDate: string): Promise<SyncResult> {
+    this.logger.log(`🔄 Window sync ${this.entityName} since ${fromDate}...`);
+    const data = await this.api.fetchAll(this.endpoint, fromDate);
+    return this.processRecords(data);
+  }
+
   protected async processRecords(records: any[]): Promise<SyncResult> {
     let created = 0,
       updated = 0,

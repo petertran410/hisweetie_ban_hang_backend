@@ -28,4 +28,25 @@ export class SyncKiotScheduler {
       this.logger.error(`❌ Daily sync failed: ${error.message}`);
     }
   }
+
+  @Cron('0 */1 * * *', {
+    name: 'hourly_recent_sync',
+    timeZone: 'Asia/Ho_Chi_Minh',
+  })
+  async handleRecentSync() {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn('⏭️ Sync disabled, skipping recent sync');
+      return;
+    }
+
+    this.logger.log('⏰ Hourly recent sync started (last 3 days)...');
+
+    try {
+      const results = await this.syncService.runRecentSync(3);
+      this.logger.log('✅ Recent sync completed');
+      this.logger.log(JSON.stringify(results, null, 2));
+    } catch (error) {
+      this.logger.error(`❌ Recent sync failed: ${error.message}`);
+    }
+  }
 }
