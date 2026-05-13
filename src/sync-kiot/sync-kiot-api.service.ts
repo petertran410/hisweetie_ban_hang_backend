@@ -62,7 +62,7 @@ export class SyncKiotApiService {
         if (!data || data.length === 0) break;
 
         allData.push(...data);
-        currentItem += pageSize;
+        currentItem += data.length;
 
         this.logger.log(`📄 ${endpoint}: ${allData.length}/${total} fetched`);
 
