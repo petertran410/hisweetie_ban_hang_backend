@@ -15,11 +15,12 @@ export class SyncProductService extends BaseSyncService {
   async syncByCode(code: string): Promise<any> {
     const record = await this.api.fetchByCode('products', code);
     if (!record) return null;
-    return this.upsertRecord(record);
+    return this.upsertRecord(record, true);
   }
 
   protected async upsertRecord(
     record: any,
+    withImages = false,
   ): Promise<'created' | 'updated' | 'skipped'> {
     const existing = await this.prisma.product.findFirst({
       where: { code: record.code },
@@ -64,7 +65,6 @@ export class SyncProductService extends BaseSyncService {
       });
       productId = existing.id;
 
-      // Sync inventory cho product đã tồn tại
       if (record.inventories?.length) {
         await this.syncInventories(
           productId,
@@ -72,6 +72,10 @@ export class SyncProductService extends BaseSyncService {
           record.name,
           record.inventories,
         );
+      }
+
+      if (withImages && record.images?.length) {
+        await this.syncImages(productId, record.images);
       }
 
       return 'updated';
@@ -82,7 +86,6 @@ export class SyncProductService extends BaseSyncService {
     });
     productId = created.id;
 
-    // Sync inventory cho product mới
     if (record.inventories?.length) {
       await this.syncInventories(
         productId,
@@ -90,6 +93,10 @@ export class SyncProductService extends BaseSyncService {
         record.name,
         record.inventories,
       );
+    }
+
+    if (withImages && record.images?.length) {
+      await this.syncImages(productId, record.images);
     }
 
     return 'created';
@@ -102,19 +109,18 @@ export class SyncProductService extends BaseSyncService {
     inventories: any[],
   ) {
     for (const inv of inventories) {
-      // inv.branchId là kiotVietId của Branch trong sync_kiot_data
+      const kiotVietId = inv.branchKiotVietId ?? inv.branchId;
+      if (!kiotVietId) continue;
+
       const branch = await this.prisma.branch.findFirst({
-        where: { kiotVietId: inv.branchId },
+        where: { kiotVietId },
         select: { id: true, name: true },
       });
       if (!branch) continue;
 
       await this.prisma.inventory.upsert({
         where: {
-          productId_branchId: {
-            productId,
-            branchId: branch.id,
-          },
+          productId_branchId: { productId, branchId: branch.id },
         },
         update: {
           cost: inv.cost || 0,
@@ -135,6 +141,30 @@ export class SyncProductService extends BaseSyncService {
           reserved: inv.reserved || 0,
           onOrder: inv.onOrder || 0,
         },
+      });
+    }
+  }
+
+  private async syncImages(productId: number, images: any[]) {
+    // Delete existing rồi recreate — images không có stable unique key ngoài productId+lineNumber
+    await this.prisma.productImage.deleteMany({ where: { productId } });
+
+    for (const img of images) {
+      // sync_kiot_data imageUrl là Json? — handle nhiều case
+      let imageUrl: string | null = null;
+
+      if (typeof img.imageUrl === 'string') {
+        imageUrl = img.imageUrl;
+      } else if (img.imageUrl && typeof img.imageUrl === 'object') {
+        // Thử các key phổ biến
+        imageUrl =
+          img.imageUrl.url ?? img.imageUrl.imageUrl ?? img.imageUrl.src ?? null;
+      }
+
+      if (!imageUrl) continue;
+
+      await this.prisma.productImage.create({
+        data: { productId, image: imageUrl },
       });
     }
   }
