@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -441,6 +442,8 @@ export class CustomersService {
   }
 
   async create(dto: CreateCustomerDto, userId?: number) {
+    await this.checkPhoneDuplicate(dto.contactNumber, dto.phone);
+
     let code: string;
     if (dto.code) {
       code = dto.code;
@@ -559,6 +562,8 @@ export class CustomersService {
   }
 
   async update(id: number, dto: UpdateCustomerDto, userId?: number) {
+    await this.checkPhoneDuplicate(dto.contactNumber, dto.phone, id);
+
     const { groupIds, birthDate, addresses, ...customerData } = dto;
 
     const existingCustomer = await this.prisma.customer.findUnique({
@@ -1722,5 +1727,38 @@ export class CustomersService {
       message: `Import ${results.created} phiếu cân bằng nợ, bỏ qua ${results.skipped} trùng`,
       ...results,
     };
+  }
+
+  private async checkPhoneDuplicate(
+    contactNumber?: string,
+    phone?: string,
+    excludeId?: number,
+  ): Promise<void> {
+    const numbers = [contactNumber, phone].filter(Boolean) as string[];
+    if (numbers.length === 0) return;
+
+    const where: any = {
+      OR: numbers.flatMap((num) => [{ contactNumber: num }, { phone: num }]),
+    };
+
+    if (excludeId) {
+      where.id = { not: excludeId };
+    }
+
+    const existing = await this.prisma.customer.findFirst({
+      where,
+      select: { id: true, name: true, contactNumber: true, phone: true },
+    });
+
+    if (!existing) return;
+
+    const matched =
+      numbers.find(
+        (num) => num === existing.contactNumber || num === existing.phone,
+      ) || '';
+
+    throw new ConflictException(
+      `Số điện thoại "${matched}" đã được sử dụng bởi khách hàng "${existing.name}"`,
+    );
   }
 }
