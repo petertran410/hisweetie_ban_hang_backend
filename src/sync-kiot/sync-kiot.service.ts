@@ -159,6 +159,9 @@ export class SyncKiotService {
     results.products = await this.safeSync('product', () =>
       this.syncProduct.syncIncremental(),
     );
+    results.priceBooks = await this.safeSync('price_book', () =>
+      this.syncPriceBook.syncIncremental(),
+    );
     results.suppliers = await this.safeSync('supplier', () =>
       this.syncSupplier.syncIncremental(),
     );
