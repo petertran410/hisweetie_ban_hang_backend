@@ -574,7 +574,50 @@ export class PriceBooksService {
   }
 
   async getPriceForProduct(params: ProductPriceDto) {
-    const { productId, branchId, customerId, userId } = params;
+    const { productId, branchId, customerId, userId, priceBookId } = params;
+
+    if (priceBookId && priceBookId > 0) {
+      const detail = await this.prisma.priceBookDetail.findUnique({
+        where: { priceBookId_productId: { priceBookId, productId } },
+        include: {
+          priceBook: {
+            select: {
+              id: true,
+              name: true,
+              allowNonListedProducts: true,
+              warnNonListedProducts: true,
+            },
+          },
+          product: { select: { basePrice: true } },
+        },
+      });
+
+      if (detail && detail.isActive) {
+        return {
+          priceBookId: detail.priceBook.id,
+          priceBookName: detail.priceBook.name,
+          price: Number(detail.price),
+          allowNonListedProducts: detail.priceBook.allowNonListedProducts,
+          warnNonListedProducts: detail.priceBook.warnNonListedProducts,
+          originalPrice: Number(detail.product.basePrice),
+        };
+      }
+
+      // Sản phẩm không có trong bảng giá được chọn → trả về basePrice
+      const product = await this.prisma.product.findUnique({
+        where: { id: productId },
+        select: { basePrice: true },
+      });
+
+      return {
+        priceBookId: null,
+        priceBookName: null,
+        price: product ? Number(product.basePrice) : 0,
+        allowNonListedProducts: true,
+        warnNonListedProducts: false,
+        originalPrice: product ? Number(product.basePrice) : 0,
+      };
+    }
 
     const priceBooks = await this.getApplicablePriceBooks({
       branchId,
