@@ -11,6 +11,7 @@ docker-compose.db.yml
 deploy.sh
 deploy-app.sh
 deploy-full.sh
+deploy-sandbox.sh
 nginx
 
 /uploads
