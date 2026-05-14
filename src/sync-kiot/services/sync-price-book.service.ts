@@ -87,9 +87,17 @@ export class SyncPriceBookService extends BaseSyncService {
 
   private async syncDetails(priceBookId: number, details: any[]) {
     for (const detail of details) {
-      // sync_kiot PriceBookDetail.productId → resolve qua kiotVietId
+      // productId là internal ID của sync_kiot_data → không dùng được
+      // chỉ dùng productKiotId (KiotViet ID thực)
+      if (!detail.productKiotId) {
+        this.logger.warn(
+          `⚠️ PriceBookDetail missing productKiotId, skipping (productId: ${detail.productId})`,
+        );
+        continue;
+      }
+
       const product = await this.prisma.product.findFirst({
-        where: { kiotVietId: BigInt(detail.productId || detail.productKiotId) },
+        where: { kiotVietId: BigInt(detail.productKiotId) },
         select: { id: true },
       });
       if (!product) continue;
