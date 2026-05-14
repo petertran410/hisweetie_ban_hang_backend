@@ -81,10 +81,38 @@ export class SyncProductService extends BaseSyncService {
       return 'updated';
     }
 
-    const created = await this.prisma.product.create({
-      data: { code: record.code, ...kiotOwnedData },
-    });
-    productId = created.id;
+    try {
+      const created = await this.prisma.product.create({
+        data: { code: record.code, ...kiotOwnedData },
+      });
+      productId = created.id;
+    } catch (e) {
+      if (e?.code === 'P2002') {
+        // Race condition: webhook hoặc process khác đã create cùng lúc → fallback update
+        this.logger.warn(
+          `⚠️ Race condition on product ${record.code}, retrying as update...`,
+        );
+        const retryExisting = await this.prisma.product.findFirst({
+          where: {
+            OR: [
+              { code: record.code },
+              ...(record.kiotVietId
+                ? [{ kiotVietId: BigInt(record.kiotVietId) }]
+                : []),
+            ],
+          },
+          select: { id: true },
+        });
+        if (!retryExisting) throw e;
+        await this.prisma.product.update({
+          where: { id: retryExisting.id },
+          data: kiotOwnedData,
+        });
+        productId = retryExisting.id;
+      } else {
+        throw e;
+      }
+    }
 
     if (record.inventories?.length) {
       await this.syncInventories(
