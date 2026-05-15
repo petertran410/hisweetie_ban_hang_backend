@@ -442,34 +442,60 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
+        userBranchRoles: {
+          ...(branchId ? { where: { branchId } } : {}),
+          include: {
+            role: {
+              include: {
+                rolePermissions: { include: { permission: true } },
+                ...(branchId
+                  ? {
+                      roleBranchPermissions: {
+                        where: { branchId },
+                        include: { permission: true },
+                      },
+                    }
+                  : {}),
+              },
+            },
+          },
+        },
         userRoles: {
           include: {
             role: {
               include: {
                 rolePermissions: { include: { permission: true } },
-                roleBranchPermissions: {
-                  where: { branchId },
-                  include: { permission: true },
-                },
+                ...(branchId
+                  ? {
+                      roleBranchPermissions: {
+                        where: { branchId },
+                        include: { permission: true },
+                      },
+                    }
+                  : {}),
               },
             },
           },
         },
-        userPermissions: {
-          include: { permission: true },
-        },
+        userPermissions: { include: { permission: true } },
       },
     });
 
     if (!user) return [];
 
     const basePermKeys = new Set<string>();
-    for (const ur of user.userRoles) {
-      const { roleBranchPermissions, rolePermissions } = ur.role;
+
+    // Ưu tiên branch-specific role, fallback về global roles
+    const userBranchRoles = (user as any).userBranchRoles || [];
+    const rolesSource =
+      branchId && userBranchRoles.length > 0
+        ? userBranchRoles.map((ubr: any) => ubr.role)
+        : user.userRoles.map((ur) => ur.role);
+
+    for (const role of rolesSource) {
+      const branchPerms = (role as any).roleBranchPermissions || [];
       const source =
-        roleBranchPermissions.length > 0
-          ? roleBranchPermissions
-          : rolePermissions;
+        branchPerms.length > 0 ? branchPerms : role.rolePermissions;
       for (const rp of source) {
         basePermKeys.add(`${rp.permission.resource}:${rp.permission.action}`);
       }
@@ -486,15 +512,16 @@ export class AuthService {
     let permissions = new Set([...basePermKeys, ...grantKeys]);
     for (const dk of denyKeys) permissions.delete(dk);
 
-    const branchOverrides = await this.prisma.userBranchPermission.findMany({
-      where: { userId, branchId },
-      include: { permission: true },
-    });
-
-    for (const bp of branchOverrides) {
-      const key = `${bp.permission.resource}:${bp.permission.action}`;
-      if (bp.granted) permissions.add(key);
-      else permissions.delete(key);
+    if (branchId) {
+      const branchOverrides = await this.prisma.userBranchPermission.findMany({
+        where: { userId, branchId },
+        include: { permission: true },
+      });
+      for (const bp of branchOverrides) {
+        const key = `${bp.permission.resource}:${bp.permission.action}`;
+        if (bp.granted) permissions.add(key);
+        else permissions.delete(key);
+      }
     }
 
     return Array.from(permissions);

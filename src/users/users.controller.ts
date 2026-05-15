@@ -64,6 +64,27 @@ export class UsersController {
     return this.usersService.findAllForFilter();
   }
 
+  @Get(':id/branch-roles')
+  @RequirePermissions('users:view')
+  getUserBranchRoles(@Param('id') id: string) {
+    return this.usersService.getUserBranchRoles(parseInt(id));
+  }
+
+  @Put(':id/branch-roles')
+  @RequirePermissions('users:update')
+  setUserBranchRole(
+    @Param('id') id: string,
+    @Body() data: { branchId: number; roleId: number | null },
+    @Req() req: any,
+  ) {
+    assertNotSelfPermissionEdit(req, parseInt(id));
+    return this.usersService.setUserBranchRole(
+      parseInt(id),
+      data.branchId,
+      data.roleId,
+    );
+  }
+
   @Get(':id/branch-permissions/:branchId')
   @RequirePermissions('users:view')
   getBranchPermissions(

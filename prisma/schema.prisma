@@ -63,6 +63,7 @@ model User {
   createdInventoryChecks InventoryCheck[] @relation("InventoryCheckCreator")
   stockAuditsCreated    StockAudit[] @relation("StockAuditCreator")
   stockAuditsCompleted  StockAudit[] @relation("StockAuditCompleter")
+  userBranchRoles UserBranchRole[]
 
   @@map("users")
 }
@@ -80,6 +81,20 @@ model UserBranch {
   @@map("user_branches")
 }
 
+model UserBranchRole {
+  userId    Int
+  branchId  Int
+  roleId    Int
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, branchId])
+  @@map("user_branch_roles")
+}
+
 model Role {
   id          Int      @id @default(autoincrement())
   name        String   @unique
@@ -90,6 +105,7 @@ model Role {
   userRoles             UserRole[]
   rolePermissions       RolePermission[]
   roleBranchPermissions RoleBranchPermission[]
+  userBranchRoles UserBranchRole[]
 
   @@map("roles")
 }
@@ -262,6 +278,7 @@ model Branch {
   inventoryChecks InventoryCheck[]
   stockAudits StockAudit[]
   roleBranchPermissions RoleBranchPermission[]
+  userBranchRoles UserBranchRole[]
 
   @@map("branches")
 }

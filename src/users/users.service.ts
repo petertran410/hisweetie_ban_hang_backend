@@ -118,6 +118,11 @@ export class UsersService {
         userPermissions: {
           include: { permission: true },
         },
+        userBranchRoles: {
+          include: {
+            role: { select: { id: true, name: true } },
+          },
+        },
       },
     });
 
@@ -145,6 +150,7 @@ export class UsersService {
       individualPermissions: grantPermissions,
       denyPermissions,
       assignedBranches,
+      userBranchRoles: (user as any).userBranchRoles || [],
     };
   }
 
@@ -489,6 +495,35 @@ export class UsersService {
     await this.bumpPermissionVersion(id);
 
     return this.findOne(id);
+  }
+
+  async getUserBranchRoles(userId: number) {
+    return this.prisma.userBranchRole.findMany({
+      where: { userId },
+      include: {
+        role: { select: { id: true, name: true } },
+      },
+    });
+  }
+
+  async setUserBranchRole(
+    userId: number,
+    branchId: number,
+    roleId: number | null,
+  ) {
+    if (roleId === null) {
+      await this.prisma.userBranchRole.deleteMany({
+        where: { userId, branchId },
+      });
+    } else {
+      await this.prisma.userBranchRole.upsert({
+        where: { userId_branchId: { userId, branchId } },
+        create: { userId, branchId, roleId },
+        update: { roleId },
+      });
+    }
+    await this.bumpPermissionVersion(userId);
+    return { success: true };
   }
 
   private async bumpPermissionVersion(userId: number): Promise<void> {
