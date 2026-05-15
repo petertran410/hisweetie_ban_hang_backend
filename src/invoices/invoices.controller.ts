@@ -89,7 +89,7 @@ export class InvoicesController {
   }
 
   @Post('from-order/:orderId')
-  @RequirePermissions('invoices:update')
+  @RequirePermissions('invoices:create')
   createFromOrder(
     @Param('orderId') orderId: string,
     @Body() dto: CreateInvoiceFromOrderDto,
