@@ -49,8 +49,15 @@ export class RolesService {
   }
 
   async create(dto: CreateRoleDto) {
+    const lastRole = await this.prisma.role.findFirst({
+      orderBy: { id: 'desc' },
+      select: { id: true },
+    });
+    const nextId = lastRole ? lastRole.id + 1 : 1;
+
     const role = await this.prisma.role.create({
       data: {
+        id: nextId,
         name: dto.name,
         description: dto.description,
       },
