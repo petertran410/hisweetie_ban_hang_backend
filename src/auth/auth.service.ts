@@ -19,42 +19,34 @@ export class AuthService {
           include: {
             role: {
               include: {
-                rolePermissions: {
-                  include: { permission: true },
-                },
+                rolePermissions: { include: { permission: true } },
               },
             },
           },
         },
-        userPermissions: {
-          include: { permission: true },
-        },
+        userPermissions: { include: { permission: true } },
       },
     });
 
-    if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    if (!user.password) {
+    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user.password)
       throw new UnauthorizedException('Please login with Google');
-    }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
+    if (!isPasswordValid)
       throw new UnauthorizedException('Invalid credentials');
-    }
-
-    if (!user.isActive) {
-      throw new UnauthorizedException('Account is inactive');
-    }
+    if (!user.isActive) throw new UnauthorizedException('Account is inactive');
 
     const roles = user.userRoles.map((ur) => ur.role.name);
 
-    let permissions: string[];
+    const effectiveBranchId = branchId ?? user.branchId ?? undefined;
 
-    if (branchId) {
-      permissions = await this.getPermissionsForBranch(user.id, branchId);
+    let permissions: string[];
+    if (effectiveBranchId) {
+      permissions = await this.getPermissionsForBranch(
+        user.id,
+        effectiveBranchId,
+      );
     } else {
       const rolePermissions = user.userRoles.flatMap((ur) =>
         ur.role.rolePermissions.map((rp) => rp.permission.name),
