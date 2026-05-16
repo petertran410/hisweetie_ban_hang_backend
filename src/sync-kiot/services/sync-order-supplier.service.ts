@@ -68,6 +68,11 @@ export class SyncOrderSupplierService extends BaseSyncService {
         data: kiotOwnedData,
       });
 
+      // ← Thêm log này
+      this.logger.log(
+        `OrderSupplier ${record.code} - orderSupplierDetails: ${JSON.stringify(record.orderSupplierDetails)}`,
+      );
+
       if (record.orderSupplierDetails?.length) {
         await this.syncItems(existing.id, record.orderSupplierDetails);
       }
