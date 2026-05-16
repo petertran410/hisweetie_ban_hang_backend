@@ -199,6 +199,7 @@ export class PurchaseOrdersService {
       purchaseById,
       createdDateFrom,
       createdDateTo,
+      status,
     } = query;
 
     const where: any = {};
@@ -210,6 +211,13 @@ export class PurchaseOrdersService {
     if (branchId) where.branchId = branchId;
     if (createdById) where.createdBy = createdById;
     if (purchaseById) where.purchaseById = purchaseById;
+    if (status !== undefined) where.status = status;
+
+    if (createdDateFrom || createdDateTo) {
+      where.createdAt = {};
+      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
+      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
+    }
 
     if (createdDateFrom || createdDateTo) {
       where.createdAt = {};

@@ -209,6 +209,11 @@ export class PurchaseOrderQueryDto {
   @IsString()
   @IsOptional()
   createdDateTo?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  status?: number;
 }
 
 export class CreatePurchaseOrderFromOrderSupplierDto {
