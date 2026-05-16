@@ -67,6 +67,11 @@ export class SyncOrderSupplierService extends BaseSyncService {
         where: { id: existing.id },
         data: kiotOwnedData,
       });
+
+      if (record.orderSupplierDetails?.length) {
+        await this.syncItems(existing.id, record.orderSupplierDetails);
+      }
+
       return 'updated';
     }
 
@@ -104,16 +109,38 @@ export class SyncOrderSupplierService extends BaseSyncService {
 
   private async syncItems(orderSupplierId: number, details: any[]) {
     for (const d of details) {
-      const product = d.productId
-        ? await this.prisma.product.findFirst({
-            where: { kiotVietId: BigInt(d.productId) },
-            select: { id: true, code: true, name: true },
-          })
-        : null;
-      if (!product) continue;
+      if (!d.productCode) continue;
 
-      await this.prisma.orderSupplierItem.create({
-        data: {
+      const product = await this.prisma.product.findFirst({
+        where: { code: d.productCode }, // ← fix: dùng productCode thay vì kiotVietId
+        select: { id: true, code: true, name: true },
+      });
+
+      if (!product) {
+        this.logger.warn(
+          `⚠️ OrderSupplier ${orderSupplierId}: product not found (code: ${d.productCode})`,
+        );
+        continue;
+      }
+
+      await this.prisma.orderSupplierItem.upsert({
+        where: {
+          orderSupplierId_productId: {
+            orderSupplierId,
+            productId: product.id,
+          },
+        },
+        update: {
+          productCode: d.productCode || product.code,
+          productName: d.productName || product.name,
+          quantity: d.quantity || 0,
+          price: d.price || 0,
+          discount: d.discount || 0,
+          subTotal: Number(d.subTotal || 0),
+          description: d.description || null,
+          orderByNumber: d.orderByNumber || null,
+        },
+        create: {
           orderSupplierId,
           productId: product.id,
           productCode: d.productCode || product.code,
@@ -123,6 +150,7 @@ export class SyncOrderSupplierService extends BaseSyncService {
           discount: d.discount || 0,
           subTotal: Number(d.subTotal || 0),
           description: d.description || null,
+          orderByNumber: d.orderByNumber || null,
         },
       });
     }
