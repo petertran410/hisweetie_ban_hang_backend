@@ -1,5 +1,5 @@
-import { IsOptional, IsInt, IsString } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsOptional, IsInt, IsString, IsArray } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 
 export class OrderSupplierQueryDto {
   @IsOptional()
@@ -13,9 +13,14 @@ export class OrderSupplierQueryDto {
   supplierId?: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  status?: number;
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    const arr = Array.isArray(value) ? value : [value];
+    return arr.map(Number);
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  status?: number[];
 
   @IsOptional()
   @Type(() => Number)

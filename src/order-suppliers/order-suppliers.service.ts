@@ -36,7 +36,9 @@ export class OrderSuppliersService {
 
     if (branchId) where.branchId = branchId;
     if (supplierId) where.supplierId = supplierId;
-    if (status !== undefined) where.status = status;
+    if (status !== undefined && status.length > 0) {
+      where.status = status.length === 1 ? status[0] : { in: status };
+    }
     if (createdById) where.createdBy = createdById;
     if (userId) where.userId = userId;
 
