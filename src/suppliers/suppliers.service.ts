@@ -586,4 +586,126 @@ export class SuppliersService {
       creator: supplier.creator ? { name: supplier.creator.name } : null,
     };
   }
+
+  async getDebtTimeline(supplierId: number) {
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { id: supplierId },
+      select: { id: true, debt: true },
+    });
+
+    if (!supplier) {
+      throw new NotFoundException(`Supplier with id ${supplierId} not found`);
+    }
+
+    const timeline: any[] = [];
+
+    // 1. Lấy purchase orders → cộng nợ
+    const purchaseOrders = await this.prisma.purchaseOrder.findMany({
+      where: { supplierId, isDraft: false },
+      select: {
+        id: true,
+        code: true,
+        purchaseDate: true,
+        total: true,
+        discount: true,
+        subTotal: true,
+        createdAt: true,
+        branchId: true,
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+      },
+      orderBy: { purchaseDate: 'asc' },
+    });
+
+    for (const po of purchaseOrders) {
+      timeline.push({
+        type: 'purchase',
+        id: po.id,
+        code: po.code,
+        date: po.purchaseDate,
+        createdAt: po.createdAt,
+        amount: Number(po.subTotal),
+        description: `Nhập hàng ${po.code}`,
+        debtSnapshot: 0,
+        branch: po.branch,
+        user: po.creator,
+      });
+    }
+
+    // 2. Lấy cashflows → trừ nợ (phiếu chi cho NCC)
+    const cashFlows = await this.prisma.cashFlow.findMany({
+      where: {
+        partnerType: 'S',
+        partnerId: supplierId,
+        isReceipt: false,
+        status: { not: 2 }, // bỏ qua đã hủy
+      },
+      select: {
+        id: true,
+        code: true,
+        amount: true,
+        transDate: true,
+        method: true,
+        description: true,
+        createdAt: true,
+        branchId: true,
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+      },
+      orderBy: { transDate: 'asc' },
+    });
+
+    for (const cf of cashFlows) {
+      timeline.push({
+        type: 'payment',
+        id: cf.id,
+        code: cf.code,
+        date: cf.transDate,
+        createdAt: cf.createdAt,
+        amount: Number(cf.amount),
+        method: cf.method,
+        description: cf.description || `Thanh toán ${cf.code}`,
+        debtSnapshot: 0,
+        branch: cf.branch,
+        user: cf.creator,
+      });
+    }
+
+    // 3. Sort tăng dần theo ngày để tính zigzag
+    const calcOrder: Record<string, number> = {
+      purchase: 0,
+      payment: 1,
+    };
+
+    timeline.sort((a, b) => {
+      const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (calcOrder[a.type] ?? 0) - (calcOrder[b.type] ?? 0);
+    });
+
+    // 4. Tính debtSnapshot theo zigzag
+    let runningDebt = 0;
+    for (const item of timeline) {
+      if (item.type === 'purchase') {
+        runningDebt += item.amount;
+      } else if (item.type === 'payment') {
+        runningDebt -= item.amount;
+      }
+      item.debtSnapshot = runningDebt;
+    }
+
+    // 5. Sort giảm dần để hiển thị
+    const typeOrder: Record<string, number> = {
+      payment: 0,
+      purchase: 1,
+    };
+
+    timeline.sort((a, b) => {
+      const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
+      if (timeDiff !== 0) return timeDiff;
+      return (typeOrder[a.type] ?? 1) - (typeOrder[b.type] ?? 1);
+    });
+
+    return { data: timeline };
+  }
 }

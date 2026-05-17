@@ -30,6 +30,13 @@ export class SuppliersController {
     return this.suppliersService.findAll(query);
   }
 
+  @Get(':id/debt-timeline')
+  @RequirePermissions('suppliers:view')
+  @ApiOperation({ summary: 'Lấy lịch sử công nợ nhà cung cấp' })
+  getDebtTimeline(@Param('id') id: string) {
+    return this.suppliersService.getDebtTimeline(+id);
+  }
+
   @Get(':id')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy chi tiết nhà cung cấp theo ID' })
