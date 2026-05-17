@@ -70,11 +70,24 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     if (existing) {
       await this.prisma.purchaseOrder.update({
         where: { id: existing.id },
-        data: kiotOwnedData,
+        data: {
+          ...kiotOwnedData,
+          paidAmount: Number(record.paidAmount || 0),
+          debtAmount: Math.max(
+            Number(record.total || 0) -
+              Number(record.discount || 0) -
+              Number(record.paidAmount || 0),
+            0,
+          ),
+        },
       });
 
       if (record.details?.length) {
         await this.syncItems(existing.id, record.details);
+      }
+
+      if (record.payments?.length) {
+        await this.syncPayments(existing.id, record.payments);
       }
 
       return 'updated';

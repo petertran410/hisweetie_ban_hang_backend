@@ -65,13 +65,12 @@ export class SyncOrderSupplierService extends BaseSyncService {
     if (existing) {
       await this.prisma.orderSupplier.update({
         where: { id: existing.id },
-        data: kiotOwnedData,
+        data: {
+          ...kiotOwnedData,
+          paidAmount: Number(record.paidAmount || 0),
+          supplierDebt: Number(record.supplierDebt || 0),
+        },
       });
-
-      // ← Thêm log này
-      this.logger.log(
-        `OrderSupplier ${record.code} - orderSupplierDetails: ${JSON.stringify(record.orderSupplierDetails)}`,
-      );
 
       if (record.orderSupplierDetails?.length) {
         await this.syncItems(existing.id, record.orderSupplierDetails);
