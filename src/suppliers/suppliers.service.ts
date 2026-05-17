@@ -783,7 +783,7 @@ export class SuppliersService {
           }
         }
 
-        // 3. Upsert — idempotent (import nhiều lần không bị duplicate)
+        // 3. Upsert
         const existing = await this.prisma.cashFlow.findUnique({
           where: { code: row.code },
           select: { id: true },
@@ -821,15 +821,10 @@ export class SuppliersService {
         });
 
         if (existing) {
-          results.skipped++; // skipped ở đây nghĩa là "đã tồn tại → updated"
+          results.updated++; // ← fix bug 2: đúng counter
         } else {
           results.created++;
         }
-
-        return {
-          message: `Import ${results.created} mới, cập nhật ${results.updated} phiếu`,
-          ...results,
-        };
       } catch (error: any) {
         results.errors.push({
           row: i + 1,
@@ -840,7 +835,7 @@ export class SuppliersService {
     }
 
     return {
-      message: `Import ${results.created} phiếu cân bằng nợ, bỏ qua ${results.skipped} trùng`,
+      message: `Import ${results.created} mới, cập nhật ${results.updated} phiếu`,
       ...results,
     };
   }
