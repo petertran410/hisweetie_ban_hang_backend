@@ -1371,7 +1371,7 @@ model PurchaseOrderItem {
 
 model PurchaseOrderPayment {
   id              Int      @id @default(autoincrement())
-  code            String   @unique
+  code            String
   purchaseOrderId Int
   amount          Decimal
   paymentDate     DateTime @default(now())
@@ -1386,8 +1386,10 @@ model PurchaseOrderPayment {
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   account       BankAccount?  @relation(fields: [accountId], references: [id])
 
+  @@unique([code, purchaseOrderId]) 
   @@map("purchase_order_payments")
 }
+
 
 model PurchaseOrderSurcharge {
   id                Int      @id @default(autoincrement())

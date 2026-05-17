@@ -226,23 +226,15 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     for (const pm of payments) {
       const code = pm.code || `PNPC${po?.code}-${Date.now()}`;
 
+      // ← SỬA: check theo cặp code + purchaseOrderId thay vì chỉ code
       const existingPayment = await this.prisma.purchaseOrderPayment.findFirst({
-        where: { code },
+        where: {
+          code,
+          purchaseOrderId,
+        },
       });
 
-      if (existingPayment) {
-        // ← THÊM: nếu link sai PO thì update lại
-        if (existingPayment.purchaseOrderId !== purchaseOrderId) {
-          await this.prisma.purchaseOrderPayment.update({
-            where: { id: existingPayment.id },
-            data: { purchaseOrderId },
-          });
-          this.logger.warn(
-            `⚠️ Payment ${code} was linked to wrong PO, re-linked to ${purchaseOrderId}`,
-          );
-        }
-        continue;
-      }
+      if (existingPayment) continue;
 
       let accountId: number | null = null;
       if (pm.accountId) {
