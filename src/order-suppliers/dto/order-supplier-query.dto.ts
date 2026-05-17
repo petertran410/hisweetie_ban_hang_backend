@@ -49,4 +49,8 @@ export class OrderSupplierQueryDto {
   @Type(() => Number)
   @IsInt()
   currentItem?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

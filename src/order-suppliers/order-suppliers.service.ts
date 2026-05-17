@@ -30,10 +30,17 @@ export class OrderSuppliersService {
       createdDateTo,
       pageSize = 15,
       currentItem = 0,
+      search,
     } = query;
 
     const where: any = {};
 
+    if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { supplier: { name: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
     if (branchId) where.branchId = branchId;
     if (supplierId) where.supplierId = supplierId;
     if (status !== undefined && status.length > 0) {
