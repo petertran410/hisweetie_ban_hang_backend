@@ -146,10 +146,60 @@ export class OrderSupplierPaymentsService {
   }
 
   async findAllByOrderSupplier(orderSupplierId: number) {
-    return this.prisma.orderSupplierPayment.findMany({
+    // 1. Payments trực tiếp trên order supplier (PDNPC)
+    const directPayments = await this.prisma.orderSupplierPayment.findMany({
       where: { orderSupplierId },
       orderBy: { paymentDate: 'desc' },
     });
+
+    // 2. Payments từ các purchase order liên kết (PNPC)
+    const purchaseOrders = await this.prisma.purchaseOrder.findMany({
+      where: { orderSupplierId },
+      select: {
+        id: true,
+        code: true,
+        payments: {
+          select: {
+            id: true,
+            code: true,
+            amount: true,
+            paymentDate: true,
+            paymentMethod: true,
+            description: true,
+            status: true,
+            statusValue: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    // 3. Flatten payments từ purchase orders
+    const purchaseOrderPayments = purchaseOrders.flatMap((po) =>
+      po.payments.map((p) => ({
+        ...p,
+        orderSupplierId,
+        accountId: null,
+        source: 'purchase_order' as const,
+        purchaseOrderCode: po.code,
+      })),
+    );
+
+    // 4. Gộp + sort theo ngày giảm dần
+    const allPayments = [
+      ...directPayments.map((p) => ({
+        ...p,
+        source: 'order_supplier' as const,
+        purchaseOrderCode: null,
+      })),
+      ...purchaseOrderPayments,
+    ].sort(
+      (a, b) =>
+        new Date(b.paymentDate).getTime() - new Date(a.paymentDate).getTime(),
+    );
+
+    return allPayments;
   }
 
   async remove(id: number, userId: number) {

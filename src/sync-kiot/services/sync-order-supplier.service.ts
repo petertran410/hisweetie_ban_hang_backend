@@ -76,6 +76,11 @@ export class SyncOrderSupplierService extends BaseSyncService {
         await this.syncItems(existing.id, record.orderSupplierDetails);
       }
 
+      // ← THÊM: link purchase orders từ purchaseOrderCodes
+      if (record.purchaseOrderCodes) {
+        await this.linkPurchaseOrders(existing.id, record.purchaseOrderCodes);
+      }
+
       return 'updated';
     }
 
@@ -108,7 +113,36 @@ export class SyncOrderSupplierService extends BaseSyncService {
       await this.syncItems(os.id, record.orderSupplierDetails);
     }
 
+    // ← THÊM: link purchase orders từ purchaseOrderCodes
+    if (record.purchaseOrderCodes) {
+      await this.linkPurchaseOrders(os.id, record.purchaseOrderCodes);
+    }
+
     return 'created';
+  }
+
+  private async linkPurchaseOrders(
+    orderSupplierId: number,
+    purchaseOrderCodes: string,
+  ): Promise<void> {
+    const codes = purchaseOrderCodes
+      .split(',')
+      .map((c) => c.trim())
+      .filter(Boolean);
+
+    if (!codes.length) return;
+
+    await this.prisma.purchaseOrder.updateMany({
+      where: {
+        code: { in: codes },
+        orderSupplierId: null, // chỉ update những cái chưa có link
+      },
+      data: { orderSupplierId },
+    });
+
+    this.logger.log(
+      `🔗 Linked ${codes.length} purchase orders [${codes.join(', ')}] → order supplier ${orderSupplierId}`,
+    );
   }
 
   private async syncItems(orderSupplierId: number, details: any[]) {
@@ -116,7 +150,7 @@ export class SyncOrderSupplierService extends BaseSyncService {
       if (!d.productCode) continue;
 
       const product = await this.prisma.product.findFirst({
-        where: { code: d.productCode }, // ← fix: dùng productCode thay vì kiotVietId
+        where: { code: d.productCode },
         select: { id: true, code: true, name: true },
       });
 
