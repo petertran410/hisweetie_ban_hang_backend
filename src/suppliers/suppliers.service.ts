@@ -730,6 +730,7 @@ export class SuppliersService {
   async importBalanceAdjustments(dto: ImportSupplierBalanceAdjustmentsDto) {
     const results = {
       created: 0,
+      updated: 0,
       skipped: 0,
       errors: [] as { row: number; code: string; message: string }[],
     };
@@ -752,38 +753,54 @@ export class SuppliersService {
           continue;
         }
 
-        // 2. Parse transDate (giống customer)
-        // amount > 0 = ta nợ NCC → isReceipt:true (NGƯỢC customer)
+        // 2. Parse transDate — có xử lý Excel serial number
         const isReceipt = row.amount > 0;
         const absAmount = Math.abs(row.amount);
 
         let transDate = new Date();
         if (row.transDate) {
-          const match = row.transDate.match(
-            /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
-          );
-          if (match) {
-            const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
-            const parsed = new Date(+y, +m - 1, +d, +hh, +mm, +ss);
+          const raw = String(row.transDate).trim();
+
+          const serial = Number(raw);
+          if (!isNaN(serial) && serial > 30000 && serial < 60000) {
+            // safety net nếu frontend vẫn gửi serial string
+            const parsed = new Date(
+              Math.round((serial - 25569) * 86400 * 1000),
+            );
             if (!isNaN(parsed.getTime())) transDate = parsed;
           } else {
-            const parsed = new Date(row.transDate);
-            if (!isNaN(parsed.getTime())) transDate = parsed;
+            const match = raw.match(
+              /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+            );
+            if (match) {
+              const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
+              const parsed = new Date(+y, +m - 1, +d, +hh, +mm, +ss);
+              if (!isNaN(parsed.getTime())) transDate = parsed;
+            } else {
+              const parsed = new Date(raw);
+              if (!isNaN(parsed.getTime())) transDate = parsed;
+            }
           }
         }
 
-        // 3. Upsert CashFlow theo code (idempotent)
-        const existing = await this.prisma.cashFlow.findFirst({
+        // 3. Upsert — idempotent (import nhiều lần không bị duplicate)
+        const existing = await this.prisma.cashFlow.findUnique({
           where: { code: row.code },
+          select: { id: true },
         });
 
-        if (existing) {
-          results.skipped++;
-          continue;
-        }
-
-        await this.prisma.cashFlow.create({
-          data: {
+        await this.prisma.cashFlow.upsert({
+          where: { code: row.code },
+          update: {
+            isReceipt,
+            amount: absAmount,
+            transDate,
+            partnerId: supplier.id,
+            partnerName: supplier.name,
+            contactNumber: supplier.contactNumber,
+            address: supplier.address,
+          },
+          create: {
             code: row.code,
             branchId: 1,
             isReceipt,
@@ -803,7 +820,16 @@ export class SuppliersService {
           },
         });
 
-        results.created++;
+        if (existing) {
+          results.skipped++; // skipped ở đây nghĩa là "đã tồn tại → updated"
+        } else {
+          results.created++;
+        }
+
+        return {
+          message: `Import ${results.created} mới, cập nhật ${results.updated} phiếu`,
+          ...results,
+        };
       } catch (error: any) {
         results.errors.push({
           row: i + 1,
