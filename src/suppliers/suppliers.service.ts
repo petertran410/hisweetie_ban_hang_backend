@@ -601,7 +601,12 @@ export class SuppliersService {
 
     // 1. Lấy purchase orders → cộng nợ
     const purchaseOrders = await this.prisma.purchaseOrder.findMany({
-      where: { supplierId, isDraft: false },
+      where: {
+        supplierId,
+        isDraft: false,
+        status: { not: 2 },
+        NOT: { code: { contains: '{DEL}' } },
+      },
       select: {
         id: true,
         code: true,
@@ -638,7 +643,7 @@ export class SuppliersService {
         partnerType: 'S',
         partnerId: supplierId,
         isReceipt: false,
-        status: { not: 2 }, // bỏ qua đã hủy
+        status: { not: 2 },
       },
       select: {
         id: true,
