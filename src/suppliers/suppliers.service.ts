@@ -9,6 +9,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 
 @Injectable()
 export class SuppliersService {
@@ -644,12 +645,12 @@ export class SuppliersService {
       where: {
         partnerType: 'S',
         partnerId: supplierId,
-        isReceipt: false,
         status: { not: 2 },
       },
       select: {
         id: true,
         code: true,
+        isReceipt: true,
         amount: true,
         transDate: true,
         method: true,
@@ -664,24 +665,27 @@ export class SuppliersService {
 
     for (const cf of cashFlows) {
       timeline.push({
-        type: 'payment',
+        type: cf.isReceipt ? 'balance_adjustment' : 'payment',
         id: cf.id,
         code: cf.code,
         date: cf.transDate,
         createdAt: cf.createdAt,
         amount: Number(cf.amount),
         method: cf.method,
-        description: cf.description || `Thanh toán ${cf.code}`,
+        description:
+          cf.description ||
+          (cf.isReceipt ? `Cân bằng nợ ${cf.code}` : `Thanh toán ${cf.code}`),
         debtSnapshot: 0,
         branch: cf.branch,
         user: cf.creator,
       });
     }
 
-    // 3. Sort tăng dần theo ngày để tính zigzag
+    // 3. Sort tăng dần
     const calcOrder: Record<string, number> = {
       purchase: 0,
-      payment: 1,
+      balance_adjustment: 1,
+      payment: 2,
     };
 
     timeline.sort((a, b) => {
@@ -689,14 +693,15 @@ export class SuppliersService {
       if (timeDiff !== 0) return timeDiff;
       const typeDiff = (calcOrder[a.type] ?? 0) - (calcOrder[b.type] ?? 0);
       if (typeDiff !== 0) return typeDiff;
-      // ← THÊM: cùng date + cùng type → sort theo createdAt tăng dần
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
 
-    // 4. Tính debtSnapshot (KHÔNG ĐỔI)
+    // 4. Tính debtSnapshot
     let runningDebt = 0;
     for (const item of timeline) {
       if (item.type === 'purchase') {
+        runningDebt += item.amount;
+      } else if (item.type === 'balance_adjustment') {
         runningDebt += item.amount;
       } else if (item.type === 'payment') {
         runningDebt -= item.amount;
@@ -704,21 +709,113 @@ export class SuppliersService {
       item.debtSnapshot = runningDebt;
     }
 
-    // 5. Sort giảm dần để hiển thị
+    // 5. Sort giảm dần
     const typeOrder: Record<string, number> = {
       payment: 0,
-      purchase: 1,
+      balance_adjustment: 1,
+      purchase: 2,
     };
 
     timeline.sort((a, b) => {
       const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
       if (timeDiff !== 0) return timeDiff;
-      const typeDiff = (typeOrder[a.type] ?? 1) - (typeOrder[b.type] ?? 1);
+      const typeDiff = (typeOrder[a.type] ?? 2) - (typeOrder[b.type] ?? 2);
       if (typeDiff !== 0) return typeDiff;
-      // ← THÊM: cùng date + cùng type → sort theo createdAt giảm dần (mới nhất lên đầu)
       return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
 
     return { data: timeline };
+  }
+
+  async importBalanceAdjustments(dto: ImportSupplierBalanceAdjustmentsDto) {
+    const results = {
+      created: 0,
+      skipped: 0,
+      errors: [] as { row: number; code: string; message: string }[],
+    };
+
+    for (let i = 0; i < dto.rows.length; i++) {
+      const row = dto.rows[i];
+      try {
+        // 1. Lookup supplier by code
+        const supplier = await this.prisma.supplier.findFirst({
+          where: { code: row.supplierCode },
+          select: { id: true, name: true, contactNumber: true, address: true },
+        });
+
+        if (!supplier) {
+          results.errors.push({
+            row: i + 1,
+            code: row.code,
+            message: `Không tìm thấy NCC với mã ${row.supplierCode}`,
+          });
+          continue;
+        }
+
+        // 2. Parse transDate (giống customer)
+        // amount > 0 = ta nợ NCC → isReceipt:true (NGƯỢC customer)
+        const isReceipt = row.amount > 0;
+        const absAmount = Math.abs(row.amount);
+
+        let transDate = new Date();
+        if (row.transDate) {
+          const match = row.transDate.match(
+            /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/,
+          );
+          if (match) {
+            const [, d, m, y, hh = '0', mm = '0', ss = '0'] = match;
+            const parsed = new Date(+y, +m - 1, +d, +hh, +mm, +ss);
+            if (!isNaN(parsed.getTime())) transDate = parsed;
+          } else {
+            const parsed = new Date(row.transDate);
+            if (!isNaN(parsed.getTime())) transDate = parsed;
+          }
+        }
+
+        // 3. Upsert CashFlow theo code (idempotent)
+        const existing = await this.prisma.cashFlow.findFirst({
+          where: { code: row.code },
+        });
+
+        if (existing) {
+          results.skipped++;
+          continue;
+        }
+
+        await this.prisma.cashFlow.create({
+          data: {
+            code: row.code,
+            branchId: 1,
+            isReceipt,
+            amount: absAmount,
+            transDate,
+            method: null,
+            partnerType: 'S',
+            partnerId: supplier.id,
+            partnerName: supplier.name,
+            contactNumber: supplier.contactNumber,
+            address: supplier.address,
+            description: `Cân bằng nợ ${row.code}`,
+            status: 0,
+            statusValue: isReceipt ? 'Cân bằng nợ' : 'Đã chi',
+            createdBy: 1,
+            usedForFinancialReporting: 1,
+          },
+        });
+
+        results.created++;
+      } catch (error: any) {
+        results.errors.push({
+          row: i + 1,
+          code: row.code,
+          message: error.message,
+        });
+      }
+    }
+
+    return {
+      message: `Import ${results.created} phiếu cân bằng nợ, bỏ qua ${results.skipped} trùng`,
+      ...results,
+    };
   }
 }

@@ -15,6 +15,7 @@ import { CreateSupplierDto, UpdateSupplierDto, SupplierQueryDto } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 
 @ApiTags('Suppliers')
 @ApiBearerAuth()
@@ -28,6 +29,13 @@ export class SuppliersController {
   @ApiOperation({ summary: 'Lấy danh sách nhà cung cấp' })
   findAll(@Query() query: SupplierQueryDto) {
     return this.suppliersService.findAll(query);
+  }
+
+  @Post('import-balance-adjustments')
+  @RequirePermissions('suppliers:create')
+  @ApiOperation({ summary: 'Import phiếu cân bằng nợ NCC từ Excel' })
+  importBalanceAdjustments(@Body() dto: ImportSupplierBalanceAdjustmentsDto) {
+    return this.suppliersService.importBalanceAdjustments(dto);
   }
 
   @Get(':id/debt-timeline')

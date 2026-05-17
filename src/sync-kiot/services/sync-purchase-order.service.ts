@@ -12,6 +12,22 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     super(prisma, api);
   }
 
+  private mapKiotStatus(kiotStatus: number): {
+    status: number;
+    isDraft: boolean;
+  } {
+    switch (kiotStatus) {
+      case 1:
+        return { status: 0, isDraft: true }; // Phiếu tạm → draft
+      case 3:
+        return { status: 1, isDraft: false }; // Đã nhập hàng → completed
+      case 4:
+        return { status: 2, isDraft: false }; // Đã hủy → cancelled
+      default:
+        return { status: 0, isDraft: false };
+    }
+  }
+
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
@@ -58,8 +74,13 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     const discount = Number(record.discount || 0);
     const paidAmount = Number(record.paidAmount || 0);
 
+    const { status: mappedStatus, isDraft } = this.mapKiotStatus(
+      record.status ?? 1,
+    );
+
     const kiotOwnedData = {
-      status: record.status ?? 0,
+      status: mappedStatus,
+      isDraft,
       statusValue: record.statusValue || null,
       description: record.description || null,
       partnerType: record.partnerType || null,
