@@ -605,7 +605,7 @@ export class SuppliersService {
       where: {
         supplierId,
         isDraft: false,
-        status: { not: 2 },
+        status: { notIn: [2, 4] },
         NOT: { code: { contains: '{DEL}' } },
       },
       select: {
