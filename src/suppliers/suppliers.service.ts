@@ -687,10 +687,13 @@ export class SuppliersService {
     timeline.sort((a, b) => {
       const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (timeDiff !== 0) return timeDiff;
-      return (calcOrder[a.type] ?? 0) - (calcOrder[b.type] ?? 0);
+      const typeDiff = (calcOrder[a.type] ?? 0) - (calcOrder[b.type] ?? 0);
+      if (typeDiff !== 0) return typeDiff;
+      // ← THÊM: cùng date + cùng type → sort theo createdAt tăng dần
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
 
-    // 4. Tính debtSnapshot theo zigzag
+    // 4. Tính debtSnapshot (KHÔNG ĐỔI)
     let runningDebt = 0;
     for (const item of timeline) {
       if (item.type === 'purchase') {
@@ -710,7 +713,10 @@ export class SuppliersService {
     timeline.sort((a, b) => {
       const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
       if (timeDiff !== 0) return timeDiff;
-      return (typeOrder[a.type] ?? 1) - (typeOrder[b.type] ?? 1);
+      const typeDiff = (typeOrder[a.type] ?? 1) - (typeOrder[b.type] ?? 1);
+      if (typeDiff !== 0) return typeDiff;
+      // ← THÊM: cùng date + cùng type → sort theo createdAt giảm dần (mới nhất lên đầu)
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
     });
 
     return { data: timeline };
