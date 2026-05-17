@@ -135,14 +135,10 @@ export class SyncOrderSupplierService extends BaseSyncService {
     await this.prisma.purchaseOrder.updateMany({
       where: {
         code: { in: codes },
-        orderSupplierId: null, // chỉ update những cái chưa có link
+        orderSupplierId: null,
       },
       data: { orderSupplierId },
     });
-
-    this.logger.log(
-      `🔗 Linked ${codes.length} purchase orders [${codes.join(', ')}] → order supplier ${orderSupplierId}`,
-    );
   }
 
   private async syncItems(orderSupplierId: number, details: any[]) {

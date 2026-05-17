@@ -226,7 +226,6 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     for (const pm of payments) {
       const code = pm.code || `PNPC${po?.code}-${Date.now()}`;
 
-      // ← SỬA: check theo cặp code + purchaseOrderId thay vì chỉ code
       const existingPayment = await this.prisma.purchaseOrderPayment.findFirst({
         where: {
           code,
