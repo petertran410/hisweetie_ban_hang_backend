@@ -12,6 +12,7 @@ import {
   SupplierReturnQueryDto,
   SUPPLIER_RETURN_STATUS,
   SUPPLIER_RETURN_STATUS_LABELS,
+  UpdateStep1Dto,
 } from './dto';
 
 @Injectable()
@@ -359,6 +360,160 @@ export class SupplierReturnsService {
     });
   }
 
+  async updateStep1(id: number, dto: UpdateStep1Dto, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const supplierReturn = await tx.supplierReturn.findUnique({
+        where: { id },
+        include: { details: true },
+      });
+
+      if (!supplierReturn)
+        throw new NotFoundException('Không tìm thấy phiếu trả hàng nhập');
+
+      if (supplierReturn.status !== SUPPLIER_RETURN_STATUS.DRAFT) {
+        throw new BadRequestException(
+          'Chỉ có thể chỉnh sửa phiếu ở trạng thái Phiếu tạm',
+        );
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true },
+      });
+
+      // ── Validate lại theo mode ────────────────────────────────────────────
+      if (
+        supplierReturn.mode === 'by_purchase_order' &&
+        supplierReturn.purchaseOrderId
+      ) {
+        const po = await tx.purchaseOrder.findUnique({
+          where: { id: supplierReturn.purchaseOrderId },
+          include: { items: true },
+        });
+
+        if (!po) throw new NotFoundException('Không tìm thấy phiếu nhập hàng');
+
+        const existingReturns = await tx.supplierReturn.findMany({
+          where: {
+            purchaseOrderId: supplierReturn.purchaseOrderId,
+            status: { not: SUPPLIER_RETURN_STATUS.CANCELLED },
+            id: { not: id }, // ← exclude phiếu hiện tại
+          },
+          include: { details: true },
+        });
+
+        const returnedQtyMap = new Map<number, number>();
+        existingReturns.forEach((sr) => {
+          sr.details.forEach((d) => {
+            const prev = returnedQtyMap.get(d.productId) || 0;
+            returnedQtyMap.set(d.productId, prev + Number(d.requestQuantity));
+          });
+        });
+
+        const poItemMap = new Map(po.items.map((i: any) => [i.productId, i]));
+
+        for (const detail of dto.details) {
+          const poItem = poItemMap.get(detail.productId);
+          if (!poItem) {
+            throw new BadRequestException(
+              `Sản phẩm ${detail.productCode} không có trong phiếu nhập`,
+            );
+          }
+          const alreadyReturned = returnedQtyMap.get(detail.productId) || 0;
+          const maxReturnable = Number(poItem.quantity) - alreadyReturned;
+          if (detail.requestQuantity > maxReturnable) {
+            throw new BadRequestException(
+              `Sản phẩm ${detail.productName}: Số lượng trả (${detail.requestQuantity}) vượt quá có thể trả (${maxReturnable})`,
+            );
+          }
+        }
+      } else if (supplierReturn.mode === 'by_product') {
+        for (const detail of dto.details) {
+          const inv = await tx.inventory.findFirst({
+            where: {
+              productId: detail.productId,
+              branchId: supplierReturn.branchId,
+            },
+          });
+          const onHand = Number(inv?.onHand || 0);
+          if (detail.requestQuantity > onHand) {
+            throw new BadRequestException(
+              `Sản phẩm ${detail.productName}: Số lượng trả (${detail.requestQuantity}) vượt quá tồn kho (${onHand})`,
+            );
+          }
+        }
+      }
+
+      // ── Xóa details cũ → tạo lại ─────────────────────────────────────────
+      await tx.supplierReturnDetail.deleteMany({
+        where: { supplierReturnId: id },
+      });
+
+      const detailsData = dto.details
+        .filter((d) => d.requestQuantity > 0)
+        .map((d) => ({
+          purchaseOrderId:
+            d.purchaseOrderId || supplierReturn.purchaseOrderId || null,
+          purchaseOrderCode: d.purchaseOrderCode || null,
+          productId: d.productId,
+          productCode: d.productCode,
+          productName: d.productName,
+          purchaseQuantity: d.purchaseQuantity,
+          purchasePrice: d.purchasePrice,
+          requestQuantity: d.requestQuantity,
+          confirmedQuantity: 0,
+          returnPrice: d.returnPrice,
+          totalAmount: d.returnPrice * d.requestQuantity,
+          note: d.note,
+        }));
+
+      await tx.supplierReturnDetail.createMany({
+        data: detailsData.map((d) => ({ ...d, supplierReturnId: id })),
+      });
+
+      const totalReturnAmount = detailsData.reduce(
+        (sum, d) => sum + d.totalAmount,
+        0,
+      );
+
+      const newStatus = dto.isDraft
+        ? SUPPLIER_RETURN_STATUS.DRAFT
+        : SUPPLIER_RETURN_STATUS.REQUEST;
+
+      await tx.supplierReturn.update({
+        where: { id },
+        data: {
+          status: newStatus,
+          statusValue: SUPPLIER_RETURN_STATUS_LABELS[newStatus],
+          totalReturnAmount,
+          note: dto.note ?? supplierReturn.note,
+        },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'SUPPLIER_RETURN_UPDATE_STEP1',
+        entityType: 'supplier_returns',
+        entityId: id.toString(),
+        entityCode: supplierReturn.code,
+        category: 'supplier_return',
+        severity: 'info',
+        snapshot: {
+          code: supplierReturn.code,
+          totalReturnAmount,
+          status: SUPPLIER_RETURN_STATUS_LABELS[newStatus],
+        },
+        message: `Cập nhật phiếu trả hàng nhập ${supplierReturn.code}`,
+        messageTemplate: 'SUPPLIER_RETURN_UPDATE_STEP1',
+        userId,
+        userName: user?.name || 'System',
+        branchId: supplierReturn.branchId,
+      });
+
+      return this.findOne(id);
+    });
+  }
+
   // ─── confirmExport (Bước 2) ──────────────────────────────────────────────────
 
   async confirmExport(id: number, dto: ConfirmExportDto, userId: number) {
@@ -377,7 +532,8 @@ export class SupplierReturnsService {
 
       if (
         supplierReturn.status !== SUPPLIER_RETURN_STATUS.REQUEST &&
-        supplierReturn.status !== SUPPLIER_RETURN_STATUS.DRAFT
+        supplierReturn.status !== SUPPLIER_RETURN_STATUS.DRAFT &&
+        supplierReturn.status !== SUPPLIER_RETURN_STATUS.STOCK_EXPORT_DRAFT
       ) {
         throw new BadRequestException(
           'Phiếu trả hàng không ở trạng thái cho phép xuất kho',
@@ -393,9 +549,11 @@ export class SupplierReturnsService {
         await tx.supplierReturn.update({
           where: { id },
           data: {
-            status: SUPPLIER_RETURN_STATUS.DRAFT,
+            status: SUPPLIER_RETURN_STATUS.STOCK_EXPORT_DRAFT,
             statusValue:
-              SUPPLIER_RETURN_STATUS_LABELS[SUPPLIER_RETURN_STATUS.DRAFT],
+              SUPPLIER_RETURN_STATUS_LABELS[
+                SUPPLIER_RETURN_STATUS.STOCK_EXPORT_DRAFT
+              ],
           },
         });
         return this.findOne(id);

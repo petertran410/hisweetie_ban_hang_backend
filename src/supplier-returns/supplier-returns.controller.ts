@@ -15,6 +15,7 @@ import {
   ConfirmExportDto,
   ConfirmRefundDto,
   SupplierReturnQueryDto,
+  UpdateStep1Dto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -44,6 +45,16 @@ export class SupplierReturnsController {
   @RequirePermissions('supplier_returns:create')
   create(@Body() dto: CreateSupplierReturnDto, @CurrentUser() user: any) {
     return this.supplierReturnsService.create(dto, user.id);
+  }
+
+  @Put(':id/update-step1')
+  @RequirePermissions('supplier_returns:update')
+  updateStep1(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateStep1Dto,
+    @CurrentUser() user: any,
+  ) {
+    return this.supplierReturnsService.updateStep1(id, dto, user.id);
   }
 
   @Put(':id/confirm-export')

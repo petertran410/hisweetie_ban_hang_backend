@@ -17,6 +17,7 @@ export const SUPPLIER_RETURN_STATUS = {
   COMPLETED: 3,
   CANCELLED: 4,
   DRAFT: 5,
+  STOCK_EXPORT_DRAFT: 6,
 } as const;
 
 export const SUPPLIER_RETURN_STATUS_LABELS: Record<number, string> = {
@@ -25,6 +26,7 @@ export const SUPPLIER_RETURN_STATUS_LABELS: Record<number, string> = {
   3: 'Hoàn thành',
   4: 'Đã hủy',
   5: 'Phiếu tạm',
+  6: 'Đang xuất kho (tạm)',
 };
 
 // ─── Create ───────────────────────────────────────────────────────────────────
@@ -203,4 +205,58 @@ export class SupplierReturnQueryDto {
   @Type(() => Number)
   @IsInt()
   createdBy?: number;
+}
+
+export class UpdateStep1DetailDto {
+  @IsInt()
+  productId: number;
+
+  @IsOptional()
+  @IsInt()
+  purchaseOrderId?: number;
+
+  @IsOptional()
+  @IsString()
+  purchaseOrderCode?: string;
+
+  @IsString()
+  productCode: string;
+
+  @IsString()
+  productName: string;
+
+  @IsNumber()
+  @Min(0)
+  purchaseQuantity: number;
+
+  @IsNumber()
+  @Min(0)
+  purchasePrice: number;
+
+  @IsNumber()
+  @Min(0)
+  requestQuantity: number;
+
+  @IsNumber()
+  @Min(0)
+  returnPrice: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class UpdateStep1Dto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UpdateStep1DetailDto)
+  details: UpdateStep1DetailDto[];
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isDraft?: boolean;
 }
