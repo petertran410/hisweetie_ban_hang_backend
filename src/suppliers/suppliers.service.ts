@@ -632,7 +632,7 @@ export class SuppliersService {
         code: po.code,
         date: po.purchaseDate,
         createdAt: po.createdAt,
-        amount: Number(po.debtAmount),
+        amount: Number(po.subTotal),
         description: `Nhập hàng ${po.code}`,
         debtSnapshot: 0,
         branch: po.branch,
