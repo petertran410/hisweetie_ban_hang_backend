@@ -681,11 +681,58 @@ export class SuppliersService {
       });
     }
 
+    // 3. Lấy supplier returns đã hoàn thành → trừ nợ
+    const supplierReturns = await this.prisma.supplierReturn.findMany({
+      where: {
+        supplierId,
+        status: 3, // COMPLETED
+      },
+      select: {
+        id: true,
+        code: true,
+        mode: true,
+        refundType: true,
+        refundAmount: true,
+        refundedAmount: true,
+        refundConfirmedAt: true,
+        createdAt: true,
+        branchId: true,
+        branch: { select: { id: true, name: true } },
+        refundConfirmer: { select: { id: true, name: true } },
+        purchaseOrder: { select: { id: true, code: true } },
+      },
+      orderBy: { refundConfirmedAt: 'asc' },
+    });
+
+    for (const sr of supplierReturns) {
+      const displayDate = sr.refundConfirmedAt || sr.createdAt;
+      const description =
+        sr.refundType === 'debt_offset'
+          ? `Cấn trừ nợ ${sr.code}${sr.purchaseOrder ? ` (${sr.purchaseOrder.code})` : ''}`
+          : `Trả hàng nhập ${sr.code}`;
+
+      timeline.push({
+        type: 'supplier_return',
+        id: sr.id,
+        code: sr.code,
+        date: displayDate,
+        createdAt: sr.createdAt,
+        amount: Number(sr.refundedAmount),
+        refundType: sr.refundType,
+        method: null,
+        description,
+        debtSnapshot: 0,
+        branch: sr.branch,
+        user: sr.refundConfirmer,
+      });
+    }
+
     // 3. Sort tăng dần
     const calcOrder: Record<string, number> = {
       purchase: 0,
       balance_adjustment: 1,
-      payment: 2,
+      supplier_return: 2,
+      payment: 3,
     };
 
     timeline.sort((a, b) => {
@@ -703,6 +750,8 @@ export class SuppliersService {
         runningDebt += item.amount;
       } else if (item.type === 'balance_adjustment') {
         runningDebt += item.amount;
+      } else if (item.type === 'supplier_return') {
+        runningDebt -= item.amount; // ← trả hàng giảm nợ
       } else if (item.type === 'payment') {
         runningDebt -= item.amount;
       }
@@ -712,8 +761,9 @@ export class SuppliersService {
     // 5. Sort giảm dần
     const typeOrder: Record<string, number> = {
       payment: 0,
-      balance_adjustment: 1,
-      purchase: 2,
+      supplier_return: 1,
+      balance_adjustment: 2,
+      purchase: 3,
     };
 
     timeline.sort((a, b) => {
