@@ -59,7 +59,7 @@ export class SupplierReturnsController {
   }
 
   @Put(':id/confirm-export')
-  @RequirePermissions('supplier_returns:update')
+  @RequirePermissions('supplier_returns:confirm_export')
   confirmExport(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ConfirmExportDto,
@@ -69,7 +69,7 @@ export class SupplierReturnsController {
   }
 
   @Put(':id/confirm-refund')
-  @RequirePermissions('supplier_returns:update')
+  @RequirePermissions('supplier_returns:confirm_refund')
   confirmRefund(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: ConfirmRefundDto,
