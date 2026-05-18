@@ -260,3 +260,77 @@ export class UpdateStep1Dto {
   @IsBoolean()
   isDraft?: boolean;
 }
+
+export class ImportSupplierReturnDetailDto {
+  @IsString()
+  productCode: string;
+
+  @IsString()
+  productName: string;
+
+  @IsNumber()
+  @Min(0)
+  quantity: number;
+
+  @IsNumber()
+  @Min(0)
+  returnPrice: number;
+
+  @IsNumber()
+  @Min(0)
+  totalAmount: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+}
+
+export class ImportSupplierReturnItemDto {
+  @IsString()
+  code: string;
+
+  @IsString()
+  branchName: string;
+
+  @IsString()
+  supplierCode: string;
+
+  @IsString()
+  supplierName: string;
+
+  @IsOptional()
+  @IsString()
+  returnedAt?: string;
+
+  @IsOptional()
+  @IsString()
+  exportedByName?: string;
+
+  @IsOptional()
+  @IsString()
+  createdByName?: string;
+
+  @IsNumber()
+  @Min(0)
+  totalReturnAmount: number;
+
+  @IsOptional()
+  @IsString()
+  statusText?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ImportSupplierReturnDetailDto)
+  details: ImportSupplierReturnDetailDto[];
+}
+
+export class ImportSupplierReturnsDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ImportSupplierReturnItemDto)
+  items: ImportSupplierReturnItemDto[];
+}

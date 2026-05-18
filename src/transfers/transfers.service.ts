@@ -584,8 +584,25 @@ export class TransfersService {
 
   private async generateTransferCode(): Promise<string> {
     const prefix = 'TRF';
-    const count = await this.prisma.transfer.count();
-    return `${prefix}${String(count + 1).padStart(6, '0')}`;
+
+    const last = await this.prisma.transfer.findFirst({
+      where: { code: { startsWith: prefix } },
+      orderBy: { code: 'desc' },
+      select: { code: true },
+    });
+
+    const lastNumber = last ? parseInt(last.code.replace(prefix, ''), 10) : 0;
+
+    let nextNumber = lastNumber + 1;
+    let code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+
+    // Đảm bảo không trùng trong trường hợp edge case
+    while (await this.prisma.transfer.findUnique({ where: { code } })) {
+      nextNumber++;
+      code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+    }
+
+    return code;
   }
 
   private async decrementInventoryFromBranch(transferId: number) {

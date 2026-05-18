@@ -16,6 +16,7 @@ import {
   ConfirmRefundDto,
   SupplierReturnQueryDto,
   UpdateStep1Dto,
+  ImportSupplierReturnsDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -75,6 +76,15 @@ export class SupplierReturnsController {
     @CurrentUser() user: any,
   ) {
     return this.supplierReturnsService.confirmRefund(id, dto, user.id);
+  }
+
+  @Post('import')
+  @RequirePermissions('supplier_returns:create')
+  importFromExcel(
+    @Body() dto: ImportSupplierReturnsDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.supplierReturnsService.importFromExcel(dto, user.id);
   }
 
   @Put(':id/cancel')

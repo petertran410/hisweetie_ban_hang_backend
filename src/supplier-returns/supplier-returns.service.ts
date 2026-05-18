@@ -11,8 +11,9 @@ import {
   ConfirmRefundDto,
   SupplierReturnQueryDto,
   SUPPLIER_RETURN_STATUS,
-  SUPPLIER_RETURN_STATUS_LABELS,
   UpdateStep1Dto,
+  ImportSupplierReturnsDto,
+  SUPPLIER_RETURN_STATUS_LABELS,
 } from './dto';
 
 @Injectable()
@@ -889,5 +890,141 @@ export class SupplierReturnsService {
 
       return this.findOne(id);
     });
+  }
+
+  async importFromExcel(dto: ImportSupplierReturnsDto, userId: number) {
+    const results = {
+      total: dto.items.length,
+      imported: 0,
+      updated: 0,
+      failed: 0,
+      errors: [] as { code: string; error: string }[],
+    };
+
+    for (const item of dto.items) {
+      try {
+        let wasUpdate = false;
+
+        await this.prisma.$transaction(async (tx) => {
+          const existing = await tx.supplierReturn.findFirst({
+            where: { code: item.code },
+          });
+
+          const supplier = await tx.supplier.findFirst({
+            where: {
+              OR: [{ code: item.supplierCode }, { name: item.supplierName }],
+            },
+          });
+          if (!supplier)
+            throw new Error(`NCC "${item.supplierName}" không tìm thấy`);
+
+          const branch = await tx.branch.findFirst({
+            where: {
+              name: { contains: item.branchName, mode: 'insensitive' },
+            },
+          });
+          if (!branch)
+            throw new Error(`Chi nhánh "${item.branchName}" không tìm thấy`);
+
+          const isCompleted = item.statusText !== 'Đã hủy';
+          const status = isCompleted
+            ? SUPPLIER_RETURN_STATUS.COMPLETED
+            : SUPPLIER_RETURN_STATUS.CANCELLED;
+          const refundType = isCompleted ? 'debt_offset' : null;
+          const refundedAmount = isCompleted ? item.totalReturnAmount : 0;
+          const returnedAt = item.returnedAt
+            ? new Date(item.returnedAt)
+            : new Date();
+
+          const detailsData: any[] = [];
+          for (const d of item.details) {
+            const product = await tx.product.findFirst({
+              where: { code: d.productCode },
+            });
+            if (!product)
+              throw new Error(`Sản phẩm "${d.productCode}" không tìm thấy`);
+            detailsData.push({
+              productId: product.id,
+              productCode: d.productCode,
+              productName: d.productName,
+              purchaseQuantity: d.quantity,
+              purchasePrice: d.returnPrice,
+              requestQuantity: d.quantity,
+              confirmedQuantity: d.quantity,
+              returnPrice: d.returnPrice,
+              totalAmount: d.totalAmount,
+              note: d.note || null,
+            });
+          }
+
+          if (existing) {
+            wasUpdate = true;
+            await tx.supplierReturnDetail.deleteMany({
+              where: { supplierReturnId: existing.id },
+            });
+            await tx.supplierReturn.update({
+              where: { id: existing.id },
+              data: {
+                mode: 'by_product',
+                supplierId: supplier.id,
+                branchId: branch.id,
+                status,
+                statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
+                totalReturnAmount: item.totalReturnAmount,
+                refundAmount: item.totalReturnAmount,
+                refundedAmount,
+                refundType,
+                note: item.note || null,
+                createdByName:
+                  item.createdByName || item.exportedByName || 'Import',
+                exportedByName: item.exportedByName || null,
+                exportedAt: returnedAt,
+                refundConfirmedByName: item.createdByName || null,
+                refundConfirmedAt: isCompleted ? returnedAt : null,
+                createdAt: returnedAt,
+                details: { create: detailsData },
+              },
+            });
+          } else {
+            await tx.supplierReturn.create({
+              data: {
+                code: item.code,
+                mode: 'by_product',
+                supplierId: supplier.id,
+                branchId: branch.id,
+                status,
+                statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
+                totalReturnAmount: item.totalReturnAmount,
+                refundAmount: item.totalReturnAmount,
+                refundedAmount,
+                refundType,
+                note: item.note || null,
+                createdBy: userId,
+                createdByName:
+                  item.createdByName || item.exportedByName || 'Import',
+                exportedByName: item.exportedByName || null,
+                exportedAt: returnedAt,
+                refundConfirmedByName: item.createdByName || null,
+                refundConfirmedAt: isCompleted ? returnedAt : null,
+                createdAt: returnedAt,
+                details: { create: detailsData },
+              },
+            });
+          }
+        });
+
+        // ✅ Increment SAU KHI transaction thành công, NGOÀI transaction callback
+        if (wasUpdate) {
+          results.updated++;
+        } else {
+          results.imported++;
+        }
+      } catch (e: any) {
+        results.failed++;
+        results.errors.push({ code: item.code, error: e.message });
+      }
+    }
+
+    return results; // ✅ Ngoài for loop
   }
 }
