@@ -761,7 +761,7 @@ export class ReturnOrdersService {
           });
           finalDebtSnapshot = Number(updatedDebtHolder?.totalDebt || 0);
 
-          const cashFlowCode = `CHI-TH-${returnOrder.code}`;
+          const cashFlowCode = await this.generateSafePCCode(tx);
           await tx.cashFlow.create({
             data: {
               code: cashFlowCode,
@@ -1056,5 +1056,28 @@ export class ReturnOrdersService {
 
       return this.findOne(id);
     });
+  }
+
+  private async generateSafePCCode(tx: any): Promise<string> {
+    const prefix = 'PC';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+
+    const allCashFlows = await tx.cashFlow.findMany({
+      where: { code: { startsWith: prefix }, isReceipt: false },
+      select: { code: true },
+    });
+
+    const numbers = allCashFlows
+      .map((cf: any) => cf.code)
+      .filter((code: string) => regex.test(code))
+      .map((code: string) => parseInt(code.replace(prefix, ''), 10));
+
+    const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+    const code = `${prefix}${String(maxNumber + 1).padStart(6, '0')}`;
+
+    const exists = await tx.cashFlow.findFirst({ where: { code } });
+    if (exists) throw new Error('Không thể tạo mã phiếu chi duy nhất');
+
+    return code;
   }
 }

@@ -64,6 +64,9 @@ model User {
   stockAuditsCreated    StockAudit[] @relation("StockAuditCreator")
   stockAuditsCompleted  StockAudit[] @relation("StockAuditCompleter")
   userBranchRoles UserBranchRole[]
+  createdSupplierReturns         SupplierReturn[] @relation("SupplierReturnCreator")
+  exportedSupplierReturns        SupplierReturn[] @relation("SupplierReturnExporter")
+  refundConfirmedSupplierReturns SupplierReturn[] @relation("SupplierReturnRefundConfirmer")
 
   @@map("users")
 }
@@ -280,6 +283,7 @@ model Branch {
   roleBranchPermissions RoleBranchPermission[]
   userBranchRoles UserBranchRole[]
 
+  supplierReturns SupplierReturn[]
   @@map("branches")
 }
 
@@ -481,6 +485,7 @@ model Supplier {
   supplierGroupDetails SupplierGroupDetail[]
   orderSuppliers OrderSupplier[]
 
+  supplierReturns SupplierReturn[]
   @@map("suppliers")
 }
 
@@ -508,6 +513,76 @@ model SupplierGroupDetail {
 
   @@unique([supplierId, supplierGroupId])
   @@map("supplier_group_details")
+}
+
+model SupplierReturn {
+  id                    Int       @id @default(autoincrement())
+  code                  String    @unique
+  mode                  String    @default("by_purchase_order") // 'by_purchase_order' | 'by_product'
+  purchaseOrderId       Int?
+  supplierId            Int
+  branchId              Int
+  status                Int       @default(1)
+  statusValue           String?
+  totalReturnAmount     Decimal   @default(0)
+  refundAmount          Decimal   @default(0)
+  refundType            String?                                 // 'cash_refund' | 'debt_offset'
+  refundedAmount        Decimal   @default(0)
+  note                  String?
+  exportedById          Int?
+  exportedByName        String?
+  exportedAt            DateTime?
+  refundConfirmedBy     Int?
+  refundConfirmedByName String?
+  refundConfirmedAt     DateTime?
+  cashFlowId            Int?
+  createdBy             Int
+  createdByName         String?
+  images                String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  purchaseOrder PurchaseOrder?       @relation(fields: [purchaseOrderId], references: [id])
+  supplier      Supplier             @relation(fields: [supplierId], references: [id])
+  branch        Branch               @relation(fields: [branchId], references: [id])
+  creator       User                 @relation("SupplierReturnCreator", fields: [createdBy], references: [id])
+  exporter      User?                @relation("SupplierReturnExporter", fields: [exportedById], references: [id])
+  refundConfirmer User?              @relation("SupplierReturnRefundConfirmer", fields: [refundConfirmedBy], references: [id])
+  cashFlow      CashFlow?            @relation(fields: [cashFlowId], references: [id])
+  details       SupplierReturnDetail[]
+
+  @@index([supplierId])
+  @@index([purchaseOrderId])
+  @@index([branchId])
+  @@index([status])
+  @@map("supplier_returns")
+}
+
+model SupplierReturnDetail {
+  id               Int      @id @default(autoincrement())
+  supplierReturnId Int
+  purchaseOrderId  Int?
+  purchaseOrderCode String?
+  productId        Int
+  productCode      String
+  productName      String
+  purchaseQuantity Decimal  @default(0)
+  purchasePrice    Decimal  @default(0)
+  requestQuantity  Decimal
+  confirmedQuantity Decimal @default(0)
+  returnPrice      Decimal
+  totalAmount      Decimal
+  note             String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  supplierReturn SupplierReturn @relation(fields: [supplierReturnId], references: [id], onDelete: Cascade)
+  purchaseOrder  PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+  product        Product        @relation(fields: [productId], references: [id])
+
+  @@index([supplierReturnId])
+  @@index([purchaseOrderId])
+  @@map("supplier_return_details")
 }
 
 model TradeMark {
@@ -605,6 +680,7 @@ model Product {
   productionComponents ProductionComponent[]
   inventoryCheckDetails InventoryCheckDetail[]
   stockAuditDetails StockAuditDetail[]
+  supplierReturnDetails SupplierReturnDetail[]
 
   @@map("products")
   @@index([id, name])
@@ -1342,6 +1418,8 @@ model PurchaseOrder {
   items         PurchaseOrderItem[]
   payments      PurchaseOrderPayment[]
   surcharges    PurchaseOrderSurcharge[]
+  supplierReturns       SupplierReturn[]
+  supplierReturnDetails SupplierReturnDetail[]
 
   @@map("purchase_orders")
 }
@@ -1593,7 +1671,8 @@ model CashFlow {
   collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
   invoicePayments InvoicePayment[]
   returnOrders    ReturnOrder[]
-
+  supplierReturns SupplierReturn[]
+  
   @@map("cash_flows")
 }
 
