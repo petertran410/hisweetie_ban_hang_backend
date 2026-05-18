@@ -1605,6 +1605,7 @@ model TransferDetail {
   transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
   product  Product  @relation(fields: [productId], references: [id])
 
+  @@unique([transferId, productId])
   @@map("transfer_details")
 }
 

@@ -8,6 +8,21 @@ export class SyncTransferService extends BaseSyncService {
   protected readonly entityName = 'transfer';
   protected readonly endpoint = 'transfers';
 
+  private computeTotals(details: any[]): {
+    totalTransfer: number;
+    totalReceive: number;
+  } {
+    return details.reduce(
+      (acc, d) => ({
+        totalTransfer:
+          acc.totalTransfer + (d.sendQuantity || 0) * (d.sendPrice || 0),
+        totalReceive:
+          acc.totalReceive + (d.receivedQuantity || 0) * (d.receivePrice || 0),
+      }),
+      { totalTransfer: 0, totalReceive: 0 },
+    );
+  }
+
   constructor(prisma: PrismaService, api: SyncKiotApiService) {
     super(prisma, api);
   }
@@ -50,6 +65,18 @@ export class SyncTransferService extends BaseSyncService {
         where: { id: existing.id },
         data: kiotOwnedData,
       });
+
+      if (record.details?.length) {
+        await this.syncDetails(existing.id, record.details);
+        const { totalTransfer, totalReceive } = this.computeTotals(
+          record.details,
+        );
+        await this.prisma.transfer.update({
+          where: { id: existing.id },
+          data: { totalTransfer, totalReceive },
+        });
+      }
+
       return 'updated';
     }
 
@@ -77,6 +104,13 @@ export class SyncTransferService extends BaseSyncService {
 
     if (record.details?.length) {
       await this.syncDetails(transfer.id, record.details);
+      const { totalTransfer, totalReceive } = this.computeTotals(
+        record.details,
+      );
+      await this.prisma.transfer.update({
+        where: { id: transfer.id },
+        data: { totalTransfer, totalReceive },
+      });
     }
 
     return 'created';
@@ -84,16 +118,39 @@ export class SyncTransferService extends BaseSyncService {
 
   private async syncDetails(transferId: number, details: any[]) {
     for (const d of details) {
-      const product = d.productId
-        ? await this.prisma.product.findFirst({
-            where: { kiotVietId: BigInt(d.productId) },
-            select: { id: true, code: true, name: true },
-          })
-        : null;
-      if (!product) continue;
+      // FIX Bug 2: Dùng productCode thay vì kiotVietId(d.productId là internal ID của sync_kiot_data)
+      if (!d.productCode) continue;
 
-      await this.prisma.transferDetail.create({
-        data: {
+      const product = await this.prisma.product.findFirst({
+        where: { code: d.productCode },
+        select: { id: true, code: true, name: true },
+      });
+
+      if (!product) {
+        this.logger.warn(
+          `⚠️ TransferDetail: product not found (code: ${d.productCode}), skipping`,
+        );
+        continue;
+      }
+
+      await this.prisma.transferDetail.upsert({
+        where: {
+          transferId_productId: {
+            transferId,
+            productId: product.id,
+          },
+        },
+        update: {
+          productCode: d.productCode || product.code,
+          productName: d.productName || product.name,
+          sendQuantity: d.sendQuantity || 0,
+          receivedQuantity: d.receivedQuantity || 0,
+          sendPrice: d.sendPrice || 0,
+          receivePrice: d.receivePrice || 0,
+          totalTransfer: (d.sendQuantity || 0) * (d.sendPrice || 0),
+          totalReceive: (d.receivedQuantity || 0) * (d.receivePrice || 0),
+        },
+        create: {
           transferId,
           productId: product.id,
           productCode: d.productCode || product.code,
