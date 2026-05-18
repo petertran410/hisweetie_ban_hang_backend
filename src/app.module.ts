@@ -60,6 +60,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { HealthController } from './health/health.controller';
+import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
 
 @Module({
   controllers: [HealthController],
@@ -122,6 +123,7 @@ import { HealthController } from './health/health.controller';
     CashFlowCollectionBranchesModule,
     SyncKiotModule,
     LarkSyncModule,
+    SupplierReturnsModule,
   ],
   providers: [
     {
