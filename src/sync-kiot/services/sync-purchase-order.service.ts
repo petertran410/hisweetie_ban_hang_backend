@@ -70,9 +70,12 @@ export class SyncPurchaseOrderService extends BaseSyncService {
       purchaseById = user?.id || null;
     }
 
-    const total = Number(record.total || 0);
+    const netTotal = Number(record.total || 0);
     const discount = Number(record.discount || 0);
+    const grossTotal = netTotal + discount; // reconstruct gross = net + discount
     const paidAmount = Number(record.paidAmount || 0);
+    const subTotal = netTotal; // net = gross - discount
+    const debtAmount = Math.max(subTotal - paidAmount, 0);
 
     const { status: mappedStatus, isDraft } = this.mapKiotStatus(
       record.status ?? 1,
@@ -93,13 +96,13 @@ export class SyncPurchaseOrderService extends BaseSyncService {
         where: { id: existing.id },
         data: {
           ...kiotOwnedData,
-          paidAmount: Number(record.paidAmount || 0),
-          debtAmount: Math.max(
-            Number(record.total || 0) -
-              Number(record.discount || 0) -
-              Number(record.paidAmount || 0),
-            0,
-          ),
+          total: grossTotal,
+          totalAmount: grossTotal,
+          discount,
+          discountRatio: record.discountRatio || 0,
+          subTotal,
+          paidAmount,
+          debtAmount,
         },
       });
 
@@ -128,13 +131,13 @@ export class SyncPurchaseOrderService extends BaseSyncService {
         purchaseDate: record.purchaseDate
           ? new Date(record.purchaseDate)
           : new Date(),
-        total,
-        totalAmount: total,
+        total: grossTotal,
+        totalAmount: grossTotal,
         discount,
         discountRatio: record.discountRatio || 0,
-        subTotal: total - discount,
+        subTotal,
         paidAmount,
-        debtAmount: Math.max(total - discount - paidAmount, 0),
+        debtAmount,
         createdBy: purchaseById || 1,
         ...kiotOwnedData,
         createdAt: record.createdDate
