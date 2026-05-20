@@ -119,10 +119,7 @@ export class SyncOrderService extends BaseSyncService {
         },
       });
 
-      const existingItems = await this.prisma.orderItem.count({
-        where: { orderId: existing.id },
-      });
-      if (existingItems === 0 && record.orderDetails?.length) {
+      if (record.orderDetails?.length) {
         await this.syncOrderItems(existing.id, record.orderDetails);
       }
 
@@ -181,8 +178,11 @@ export class SyncOrderService extends BaseSyncService {
     return 'created';
   }
 
-  private async syncOrderItems(orderId: number, details: any[]) {
-    for (const detail of details) {
+  private async syncOrderItems(orderId: number, details: any[]): Promise<void> {
+    for (let i = 0; i < details.length; i++) {
+      const detail = details[i];
+      const lineNumber = i + 1;
+
       const productKiotId =
         detail.product?.kiotVietId ?? detail.productKiotVietId;
 
@@ -207,19 +207,40 @@ export class SyncOrderService extends BaseSyncService {
         continue;
       }
 
-      await this.prisma.orderItem.create({
-        data: {
-          orderId,
+      const price = Number(detail.price ?? 0);
+      const discount = Number(detail.discount ?? 0);
+      const discountRatio = Number(detail.discountRatio ?? 0);
+      const appliedPrice = price - discount - (price * discountRatio) / 100;
+      const totalPrice = detail.subTotal || Number(detail.quantity) * price;
+
+      await this.prisma.orderItem.upsert({
+        where: {
+          orderId_lineNumber: { orderId, lineNumber },
+        },
+        update: {
           productId: product.id,
           productCode: detail.productCode || product.code,
           productName: detail.productName || product.name,
           quantity: detail.quantity,
           price: detail.price,
-          appliedPrice: detail.price,
+          appliedPrice,
           discount: detail.discount || 0,
           discountRatio: detail.discountRatio || 0,
-          totalPrice:
-            detail.subTotal || Number(detail.quantity) * Number(detail.price),
+          totalPrice,
+          note: detail.note || null,
+        },
+        create: {
+          orderId,
+          lineNumber,
+          productId: product.id,
+          productCode: detail.productCode || product.code,
+          productName: detail.productName || product.name,
+          quantity: detail.quantity,
+          price: detail.price,
+          appliedPrice,
+          discount: detail.discount || 0,
+          discountRatio: detail.discountRatio || 0,
+          totalPrice,
           note: detail.note || null,
         },
       });

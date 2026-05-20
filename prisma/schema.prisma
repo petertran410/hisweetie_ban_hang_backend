@@ -1158,10 +1158,12 @@ model OrderItem {
   serialNumbers String?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+  lineNumber    Int?
 
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product Product @relation(fields: [productId], references: [id])
 
+  @@unique([orderId, lineNumber]) 
   @@map("order_items")
 }
 

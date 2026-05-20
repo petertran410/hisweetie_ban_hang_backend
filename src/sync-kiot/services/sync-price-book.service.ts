@@ -33,7 +33,7 @@ export class SyncPriceBookService extends BaseSyncService {
     const kiotOwnedData = {
       name: record.name,
       isActive: record.isActive ?? true,
-      isGlobal: record.isGlobal ?? false,
+      // isGlobal: record.isGlobal ?? false,
       startDate: record.startDate ? new Date(record.startDate) : null,
       endDate: record.endDate ? new Date(record.endDate) : null,
       forAllCusGroup: record.forAllCusGroup ?? false,
