@@ -81,17 +81,9 @@ export class OrderPaymentsService {
         },
       });
 
-      if (order.customerId) {
-        await this.recalculateCustomerDebt(order.customerId, tx);
-      }
-
-      const updatedCustomer = order.customerId
-        ? await tx.customer.findUnique({
-            where: { id: order.customerId },
-            select: { totalDebt: true },
-          })
-        : null;
-
+      // [Reorder fix] Tạo CashFlow TRƯỚC khi recalculate
+      // để Formula A query thấy cả payment vừa tạo.
+      // Snapshot tạm null, sẽ update sau ở bước cuối.
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
@@ -114,11 +106,25 @@ export class OrderPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
-          customerDebtSnapshot: updatedCustomer
-            ? Number(updatedCustomer.totalDebt)
-            : null,
+          customerDebtSnapshot: null,
         },
       });
+
+      if (order.customerId) {
+        await this.recalculateCustomerDebt(order.customerId, tx);
+
+        // Sau khi recalculate, đọc lại totalDebt và update snapshot cho CashFlow vừa tạo
+        const updatedCustomer = await tx.customer.findUnique({
+          where: { id: order.customerId },
+          select: { totalDebt: true },
+        });
+        if (updatedCustomer) {
+          await tx.cashFlow.update({
+            where: { id: cashFlow.id },
+            data: { customerDebtSnapshot: Number(updatedCustomer.totalDebt) },
+          });
+        }
+      }
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -282,27 +288,67 @@ export class OrderPaymentsService {
   private async recalculateCustomerDebt(customerId: number, tx: any) {
     const invoices = await tx.invoice.findMany({
       where: { customerId, status: { notIn: [2] } },
+      select: { grandTotal: true },
     });
-    const debtFromInvoices = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.debtAmount),
+    const totalGrandTotal = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
 
-    const orders = await tx.order.findMany({
+    const cashFlowsReceipt = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        NOT: [
+          { code: { startsWith: 'TTTUHD' } },
+          { code: { startsWith: 'CB' } },
+        ],
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowReceived = cashFlowsReceipt.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const cashFlowsPaidOut = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: false,
+        status: { not: 2 },
+        NOT: [{ code: { startsWith: 'CB' } }],
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const debtOffsets = await tx.returnOrder.findMany({
       where: {
         customerId,
-        orderStatus: { not: 'cancelled' },
-        invoices: { none: {} },
+        OR: [
+          { status: 2 },
+          { status: 4, refundType: 'debt_offset' },
+          { status: 4, refundType: 'cash_refund' },
+        ],
       },
-      include: { payments: true },
+      select: { refundAmount: true },
     });
-    const paidFromOrders = orders.reduce((sum: number, o: any) => {
-      return (
-        sum + o.payments.reduce((s: number, p: any) => s + Number(p.amount), 0)
-      );
-    }, 0);
+    const totalDebtOffsets = debtOffsets.reduce(
+      (sum: number, ro: any) => sum + Number(ro.refundAmount),
+      0,
+    );
 
-    const totalDebt = debtFromInvoices - paidFromOrders;
+    const totalDebt =
+      totalGrandTotal -
+      totalCashFlowReceived +
+      totalCashFlowPaidOut -
+      totalDebtOffsets;
 
     await tx.customer.update({
       where: { id: customerId },
