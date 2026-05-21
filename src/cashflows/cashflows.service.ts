@@ -574,59 +574,61 @@ export class CashFlowsService {
   }
 
   async update(id: number, dto: UpdateCashFlowDto, userId?: number) {
-    const existingCashFlow = await this.prisma.cashFlow.findUnique({
-      where: { id },
+    const result = await this.prisma.$transaction(async (tx) => {
+      const existingCashFlow = await tx.cashFlow.findUnique({
+        where: { id },
+      });
+
+      if (!existingCashFlow) {
+        throw new Error('Không tìm thấy phiếu thu/chi');
+      }
+
+      const cashFlow = await tx.cashFlow.update({
+        where: { id },
+        data: {
+          branchId: dto.branchId,
+          cashFlowGroupId: dto.cashFlowGroupId,
+          amount: dto.amount,
+          transDate: dto.transDate ? new Date(dto.transDate) : undefined,
+          method: dto.method,
+          accountId: dto.accountId,
+          partnerType: dto.partnerType,
+          partnerId: dto.partnerId,
+          partnerName: dto.partnerName,
+          contactNumber: dto.contactNumber,
+          address: dto.address,
+          wardName: dto.wardName,
+          usedForFinancialReporting: dto.usedForFinancialReporting,
+          description: dto.description,
+          ...(dto.collectorId ? { createdBy: dto.collectorId } : {}),
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+          cashFlowGroup: { select: { id: true, name: true } },
+          account: {
+            select: { id: true, bankName: true, accountNumber: true },
+          },
+          creator: { select: { id: true, name: true } },
+        },
+      });
+
+      // [Fix] Recalc customer.totalDebt cho cả OLD và NEW customer (nếu khác nhau)
+      // Xử lý cả case đổi partnerId, đổi partnerType, hoặc giữ nguyên
+      const customerIdsToRecalc = new Set<number>();
+      if (existingCashFlow.partnerType === 'C' && existingCashFlow.partnerId) {
+        customerIdsToRecalc.add(existingCashFlow.partnerId);
+      }
+      if (cashFlow.partnerType === 'C' && cashFlow.partnerId) {
+        customerIdsToRecalc.add(cashFlow.partnerId);
+      }
+      for (const cid of customerIdsToRecalc) {
+        await this.recalcCustomerDebt(cid, tx);
+      }
+
+      return { existingCashFlow, cashFlow };
     });
 
-    const cashFlow = await this.prisma.cashFlow.update({
-      where: { id },
-      data: {
-        branchId: dto.branchId,
-        cashFlowGroupId: dto.cashFlowGroupId,
-        amount: dto.amount,
-        transDate: dto.transDate ? new Date(dto.transDate) : undefined,
-        method: dto.method,
-        accountId: dto.accountId,
-        partnerType: dto.partnerType,
-        partnerId: dto.partnerId,
-        partnerName: dto.partnerName,
-        contactNumber: dto.contactNumber,
-        address: dto.address,
-        wardName: dto.wardName,
-        usedForFinancialReporting: dto.usedForFinancialReporting,
-        description: dto.description,
-        ...(dto.collectorId ? { createdBy: dto.collectorId } : {}),
-      },
-      include: {
-        branch: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        cashFlowGroup: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-        account: {
-          select: {
-            id: true,
-            bankName: true,
-            accountNumber: true,
-          },
-        },
-        creator: {
-          select: {
-            id: true,
-            name: true,
-          },
-        },
-      },
-    });
-
-    if (userId && existingCashFlow) {
+    if (userId && result.existingCashFlow) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         select: { name: true, email: true },
@@ -635,14 +637,14 @@ export class CashFlowsService {
       const changes = buildChanges(
         'cashflows',
         {
-          amount: Number(existingCashFlow.amount),
-          description: existingCashFlow.description,
-          status: existingCashFlow.status,
+          amount: Number(result.existingCashFlow.amount),
+          description: result.existingCashFlow.description,
+          status: result.existingCashFlow.status,
         },
         {
-          amount: Number(cashFlow.amount),
-          description: cashFlow.description,
-          status: cashFlow.status,
+          amount: Number(result.cashFlow.amount),
+          description: result.cashFlow.description,
+          status: result.cashFlow.status,
         },
       );
 
@@ -651,48 +653,53 @@ export class CashFlowsService {
         actionCode: 'CASHFLOW_UPDATE',
         entityType: 'cashflows',
         entityId: id.toString(),
-        entityCode: cashFlow.code,
+        entityCode: result.cashFlow.code,
         category: getCategoryFromActionCode('CASHFLOW_UPDATE'),
         severity: getSeverityFromActionCode('CASHFLOW_UPDATE'),
-        snapshot: this.buildCashFlowSnapshot(cashFlow),
+        snapshot: this.buildCashFlowSnapshot(result.cashFlow),
         changes: changes.length > 0 ? changes : null,
         message: renderAuditMessage('CASHFLOW_UPDATE', {
-          flowType: cashFlow.isReceipt ? 'Thu' : 'Chi',
-          cashflowCode: cashFlow.code,
+          flowType: result.cashFlow.isReceipt ? 'Thu' : 'Chi',
+          cashflowCode: result.cashFlow.code,
         }),
         messageTemplate: 'CASHFLOW_UPDATE',
         userId,
         userName: user?.name || 'System',
-        branchId: cashFlow.branchId,
+        branchId: result.cashFlow.branchId,
       });
     }
 
     return {
-      ...cashFlow,
-      branchName: cashFlow.branch?.name,
-      cashFlowGroupName: cashFlow.cashFlowGroup?.name,
-      creatorName: cashFlow.creator?.name,
+      ...result.cashFlow,
+      branchName: result.cashFlow.branch?.name,
+      cashFlowGroupName: result.cashFlow.cashFlowGroup?.name,
+      creatorName: result.cashFlow.creator?.name,
     };
   }
 
   async cancel(id: number, userId: number) {
-    const cashFlow = await this.prisma.cashFlow.findUnique({
-      where: { id },
-      include: {
-        branch: { select: { id: true, name: true } },
-      },
-    });
+    const result = await this.prisma.$transaction(async (tx) => {
+      const cashFlow = await tx.cashFlow.findUnique({
+        where: { id },
+        include: { branch: { select: { id: true, name: true } } },
+      });
 
-    if (!cashFlow) {
-      throw new Error('Không tìm thấy phiếu thu/chi');
-    }
+      if (!cashFlow) {
+        throw new Error('Không tìm thấy phiếu thu/chi');
+      }
 
-    const updated = await this.prisma.cashFlow.update({
-      where: { id },
-      data: {
-        status: 2,
-        statusValue: 'Đã hủy',
-      },
+      const updated = await tx.cashFlow.update({
+        where: { id },
+        data: { status: 2, statusValue: 'Đã hủy' },
+      });
+
+      // [Fix] Sau khi hủy, recalc customer.totalDebt nếu cashflow thuộc về customer
+      // Formula A đã exclude status=2 nên cashflow vừa hủy sẽ không được tính
+      if (cashFlow.partnerType === 'C' && cashFlow.partnerId) {
+        await this.recalcCustomerDebt(cashFlow.partnerId, tx);
+      }
+
+      return { cashFlow, updated };
     });
 
     const user = await this.prisma.user.findUnique({
@@ -705,21 +712,21 @@ export class CashFlowsService {
       actionCode: 'CASHFLOW_DELETE',
       entityType: 'cashflows',
       entityId: id.toString(),
-      entityCode: cashFlow.code,
+      entityCode: result.cashFlow.code,
       category: getCategoryFromActionCode('CASHFLOW_DELETE'),
       severity: getSeverityFromActionCode('CASHFLOW_DELETE'),
-      snapshot: this.buildCashFlowSnapshot(cashFlow),
+      snapshot: this.buildCashFlowSnapshot(result.cashFlow),
       message: renderAuditMessage('CASHFLOW_DELETE', {
-        flowType: cashFlow.isReceipt ? 'Thu' : 'Chi',
-        cashflowCode: cashFlow.code,
+        flowType: result.cashFlow.isReceipt ? 'Thu' : 'Chi',
+        cashflowCode: result.cashFlow.code,
       }),
       messageTemplate: 'CASHFLOW_DELETE',
       userId,
       userName: user?.name || user?.email || 'System',
-      branchId: cashFlow.branchId || undefined,
+      branchId: result.cashFlow.branchId || undefined,
     });
 
-    return updated;
+    return result.updated;
   }
 
   async createPaymentFromInvoice(
@@ -1575,6 +1582,78 @@ export class CashFlowsService {
         cashFlow: cashFlows[0] || null,
         invoicePayments,
       };
+    });
+  }
+
+  // Formula A — chuẩn cho mọi nơi recalc customer.totalDebt trong file này
+  private async recalcCustomerDebt(customerId: number, tx: any) {
+    const invoices = await tx.invoice.findMany({
+      where: { customerId, status: { notIn: [2] } },
+      select: { grandTotal: true },
+    });
+    const totalGrandTotal = invoices.reduce(
+      (sum: number, inv: any) => sum + Number(inv.grandTotal),
+      0,
+    );
+
+    const cashFlowsReceipt = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: true,
+        status: { not: 2 },
+        NOT: [
+          { code: { startsWith: 'TTTUHD' } },
+          { code: { startsWith: 'CB' } },
+        ],
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowReceived = cashFlowsReceipt.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const cashFlowsPaidOut = await tx.cashFlow.findMany({
+      where: {
+        partnerId: customerId,
+        partnerType: 'C',
+        isReceipt: false,
+        status: { not: 2 },
+        NOT: [{ code: { startsWith: 'CB' } }],
+      },
+      select: { amount: true },
+    });
+    const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
+      (sum: number, cf: any) => sum + Number(cf.amount),
+      0,
+    );
+
+    const debtOffsets = await tx.returnOrder.findMany({
+      where: {
+        customerId,
+        OR: [
+          { status: 2 },
+          { status: 4, refundType: 'debt_offset' },
+          { status: 4, refundType: 'cash_refund' },
+        ],
+      },
+      select: { refundAmount: true },
+    });
+    const totalDebtOffsets = debtOffsets.reduce(
+      (sum: number, ro: any) => sum + Number(ro.refundAmount),
+      0,
+    );
+
+    const totalDebt =
+      totalGrandTotal -
+      totalCashFlowReceived +
+      totalCashFlowPaidOut -
+      totalDebtOffsets;
+
+    await tx.customer.update({
+      where: { id: customerId },
+      data: { totalDebt },
     });
   }
 
