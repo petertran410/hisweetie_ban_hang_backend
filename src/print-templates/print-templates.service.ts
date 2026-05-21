@@ -488,7 +488,7 @@ export class PrintTemplatesService {
     const url = this.generateVietQRUrl(bank, amt, addInfo);
 
     return {
-      Ma_QR_Code: `<img src="${url}" alt="QR thanh toan" style="width:160px;height:160px;display:block;" />`,
+      Ma_QR_Code: `<img src="${url}" alt="QR thanh toan" style="width:160px;height:160px;" />`,
       Ten_Ngan_Hang_QR: bank.bankName || '',
       So_Tai_Khoan_QR: bank.accountNumber || '',
       Chu_Tai_Khoan_QR: bank.accountHolder || '',

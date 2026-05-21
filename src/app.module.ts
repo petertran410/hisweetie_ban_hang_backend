@@ -62,6 +62,7 @@ import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { HealthController } from './health/health.controller';
 import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
+import { SepayModule } from './sepay/sepay.module';
 
 @Module({
   controllers: [HealthController],
@@ -126,6 +127,7 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
     SyncKiotModule,
     LarkSyncModule,
     SupplierReturnsModule,
+    SepayModule,
   ],
   providers: [
     {

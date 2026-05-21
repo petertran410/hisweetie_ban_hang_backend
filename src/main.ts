@@ -10,7 +10,9 @@ import { existsSync, mkdirSync } from 'fs';
 };
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    rawBody: true,
+  });
 
   app.useBodyParser('json', { limit: '20mb' });
 
