@@ -470,7 +470,7 @@ export class PrintTemplatesService {
     if (bank.accountHolder) params.append('accountName', bank.accountHolder);
     return `https://img.vietqr.io/image/${encodeURIComponent(
       bank.bankCode,
-    )}-${encodeURIComponent(bank.accountNumber)}-compact2.png?${params.toString()}`;
+    )}-${encodeURIComponent(bank.accountNumber)}-compact1.png?${params.toString()}`;
   }
 
   private qrVars(soldBy: any, amount: any, addInfo: string) {

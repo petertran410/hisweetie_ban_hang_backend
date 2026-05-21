@@ -611,6 +611,15 @@ const VARIABLES = [
 async function seedPrintTemplateVariables() {
   console.log('Seeding print template variables...');
 
+  // Reset sequence để tránh ID conflict khi re-seed
+  await prisma.$executeRawUnsafe(`
+    SELECT setval(
+      pg_get_serial_sequence('print_template_variables', 'id'),
+      COALESCE(MAX(id), 0) + 1,
+      false
+    ) FROM print_template_variables
+  `);
+
   for (const variable of VARIABLES) {
     await prisma.printTemplateVariable.upsert({
       where: {
