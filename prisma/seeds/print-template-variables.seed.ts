@@ -162,6 +162,22 @@ const VARIABLES = [
     sortOrder: 6,
     isItemVariable: true,
   },
+  {
+    templateFor: 'invoice',
+    key: 'Don_Gia_Sau_Chiet_Khau',
+    label: 'Đơn giá sau giảm giá',
+    group: 'Sản phẩm',
+    sortOrder: 7,
+    isItemVariable: true,
+  },
+  {
+    templateFor: 'order',
+    key: 'Don_Gia_Sau_Chiet_Khau',
+    label: 'Đơn giá sau giảm giá',
+    group: 'Sản phẩm',
+    sortOrder: 7,
+    isItemVariable: true,
+  },
 
   // Tổng tiền
   {

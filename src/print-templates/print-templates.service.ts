@@ -616,6 +616,14 @@ export class PrintTemplatesService {
   }
 
   private mapItem(item: any) {
+    const price = Number(item.price || 0);
+    const discount = Number(item.discount || 0);
+    const discountRatio = Number(item.discountRatio || 0);
+    const priceAfterDiscount =
+      item.appliedPrice != null
+        ? Number(item.appliedPrice)
+        : price - discount - (price * discountRatio) / 100;
+
     return {
       Ma_Hang: item.productCode || item.product?.code || '',
       Ten_Hang_Hoa: item.productName || item.product?.name || '',
@@ -623,6 +631,7 @@ export class PrintTemplatesService {
       So_Luong: Number(item.quantity),
       Don_Gia: this.money(item.price),
       Giam_Gia_Don_Gia: this.money(item.discount),
+      Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
       Ghi_Chu_Hang_Hoa: item.note || item.description || '',
       Thanh_Tien: this.money(item.totalPrice || item.subTotal),
     };

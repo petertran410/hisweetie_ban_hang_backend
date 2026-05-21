@@ -61,6 +61,7 @@ import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { HealthController } from './health/health.controller';
 import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
+import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
 
 @Module({
   controllers: [HealthController],
@@ -117,6 +118,7 @@ import { SupplierReturnsModule } from './supplier-returns/supplier-returns.modul
     PackingLoadingsModule,
     AllPackingModule,
     BankAccountsModule,
+    UserBankAccountsModule,
     ReturnOrdersModule,
     InventoryChecksModule,
     StockAuditsModule,
