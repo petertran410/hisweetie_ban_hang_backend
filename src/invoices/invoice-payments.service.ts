@@ -8,6 +8,7 @@ import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
+import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
 @Injectable()
 export class InvoicePaymentsService {
@@ -235,87 +236,18 @@ export class InvoicePaymentsService {
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {
-    const customer = await tx.customer.findUnique({
-      where: { id: customerId },
-      select: { id: true },
-    });
-
-    if (!customer) return;
-
     const invoices = await tx.invoice.findMany({
-      where: {
-        customerId,
-        status: { notIn: [2] },
-      },
+      where: { customerId, status: { notIn: [INVOICE_STATUS.CANCELLED] } },
       select: { grandTotal: true },
     });
-    const totalGrandTotal = invoices.reduce(
+    const totalPurchased = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
-
-    const cashFlowsReceipt = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: true,
-        status: { not: 2 },
-        NOT: [
-          { code: { startsWith: 'TTTUHD' } },
-          // { code: { startsWith: 'CB' } },
-        ],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowReceived = cashFlowsReceipt.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const cashFlowsPayment = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: false,
-        status: { not: 2 },
-        // NOT: [{ code: { startsWith: 'CB' } }],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowPaidOut = cashFlowsPayment.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    // - status=2 (STOCK_RECEIVED): confirmStockReceived đã trực tiếp giảm totalDebt
-    // - status=4 + debt_offset: đã hoàn thành, cấn trừ vĩnh viễn
-    // - status=4 + cash_refund: Bước 2 đã trừ nguyên refundAmount; Bước 3 cộng lại
-    //   effectiveRefundAmount qua CHI-TH (nằm trong totalCashFlowPaidOut).
-    const debtOffsets = await tx.returnOrder.findMany({
-      where: {
-        customerId,
-        OR: [
-          { status: 2 },
-          { status: 4, refundType: 'debt_offset' },
-          { status: 4, refundType: 'cash_refund' },
-        ],
-      },
-      select: { refundAmount: true },
-    });
-    const totalDebtOffsets = debtOffsets.reduce(
-      (sum: number, ro: any) => sum + Number(ro.refundAmount),
-      0,
-    );
-
-    const totalDebt =
-      totalGrandTotal -
-      totalCashFlowReceived +
-      totalCashFlowPaidOut -
-      totalDebtOffsets;
-
     await tx.customer.update({
       where: { id: customerId },
-      data: { totalDebt },
+      data: { totalPurchased },
     });
+    await recalcCustomerDebt(tx, customerId);
   }
 }

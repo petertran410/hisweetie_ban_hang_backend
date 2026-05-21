@@ -1,7 +1,7 @@
 interface RecalcDebtOptions {
   excludeReturnOrderId?: number; // bỏ 1 RO đang chuyển trạng thái khỏi cấn trừ
   extraDebtOffset?: number; // cộng thêm cấn trừ thủ công (RO hiện tại sắp sang status 4)
-  setTotalPurchased?: boolean; // ghi luôn totalPurchased (cho invoices.service)
+  totalPurchased?: number; // ghi luôn totalPurchased (cho invoices.service)
 }
 
 // Formula A — NGUỒN CHÂN LÝ DUY NHẤT. Tính nợ RIÊNG của 1 khách, ghi + trả về totalDebt.
@@ -77,9 +77,10 @@ export async function recalcCustomerDebt(
 
   await tx.customer.update({
     where: { id: customerId },
-    data: opts.setTotalPurchased
-      ? { totalDebt, totalPurchased: totalGrandTotal }
-      : { totalDebt },
+    data:
+      opts.totalPurchased !== undefined
+        ? { totalDebt, totalPurchased: opts.totalPurchased }
+        : { totalDebt },
   });
 
   return totalDebt;
