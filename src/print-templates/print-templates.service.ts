@@ -266,7 +266,13 @@ export class PrintTemplatesService {
             },
           },
         },
-        soldBy: true,
+        soldBy: {
+          include: {
+            bankAccountMapping: {
+              include: { bankAccount: true },
+            },
+          },
+        },
         creator: true,
         branch: true,
         delivery: true,
@@ -289,7 +295,13 @@ export class PrintTemplatesService {
             },
           },
         },
-        soldBy: true,
+        soldBy: {
+          include: {
+            bankAccountMapping: {
+              include: { bankAccount: true },
+            },
+          },
+        },
         creator: true,
         branch: true,
         delivery: true,
@@ -447,6 +459,42 @@ export class PrintTemplatesService {
     };
   }
 
+  private generateVietQRUrl(
+    bank: any,
+    amount: number,
+    addInfo: string,
+  ): string {
+    const params = new URLSearchParams();
+    if (amount > 0) params.append('amount', String(amount));
+    if (addInfo) params.append('addInfo', addInfo);
+    if (bank.accountHolder) params.append('accountName', bank.accountHolder);
+    return `https://img.vietqr.io/image/${encodeURIComponent(
+      bank.bankCode,
+    )}-${encodeURIComponent(bank.accountNumber)}-compact2.png?${params.toString()}`;
+  }
+
+  private qrVars(soldBy: any, amount: any, addInfo: string) {
+    const bank = soldBy?.bankAccountMapping?.bankAccount;
+    if (!bank) {
+      return {
+        Ma_QR_Code: '',
+        Ten_Ngan_Hang_QR: '',
+        So_Tai_Khoan_QR: '',
+        Chu_Tai_Khoan_QR: '',
+      };
+    }
+
+    const amt = Math.round(Number(amount || 0));
+    const url = this.generateVietQRUrl(bank, amt, addInfo);
+
+    return {
+      Ma_QR_Code: `<img src="${url}" alt="QR thanh toan" style="width:160px;height:160px;display:block;" />`,
+      Ten_Ngan_Hang_QR: bank.bankName || '',
+      So_Tai_Khoan_QR: bank.accountNumber || '',
+      Chu_Tai_Khoan_QR: bank.accountHolder || '',
+    };
+  }
+
   private supplierVars(supplier: any) {
     return {
       Ma_Nha_Cung_Cap: supplier?.code || '',
@@ -467,6 +515,7 @@ export class PrintTemplatesService {
       ...this.customerVars(inv.customer, inv.delivery),
       ...this.staffVars(inv.soldBy, inv.creator),
       ...this.deliveryVars(inv.delivery),
+      ...this.qrVars(inv.soldBy, inv.grandTotal, inv.code),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
       Tong_Tien_Hang: this.money(inv.totalAmount),
@@ -488,6 +537,7 @@ export class PrintTemplatesService {
       ...this.customerVars(o.customer, o.delivery),
       ...this.staffVars(o.soldBy, o.creator),
       ...this.deliveryVars(o.delivery),
+      ...this.qrVars(o.soldBy, o.grandTotal, o.code),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
       Tong_Tien_Hang: this.money(o.totalAmount),

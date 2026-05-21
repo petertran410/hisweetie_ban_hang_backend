@@ -30,5 +30,9 @@ export class CreateInvoicePaymentDto {
 
   @IsString()
   @IsOptional()
+  sepayTransactionId?: string;
+
+  @IsString()
+  @IsOptional()
   notes?: string;
 }

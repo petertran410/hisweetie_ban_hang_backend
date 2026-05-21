@@ -58,6 +58,7 @@ export class OrderPaymentsService {
           description:
             dto.description ||
             `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
+          sepayTransactionId: dto.sepayTransactionId,
           createdBy: userId,
         },
       });

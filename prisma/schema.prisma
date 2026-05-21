@@ -1193,6 +1193,7 @@ model OrderPayment {
   accountId     Int?
   bankAccount   String?
   description   String?
+  sepayTransactionId String?  @unique @map("sepay_transaction_id")
   status        Int      @default(1)
   statusValue   String?
   createdBy     Int
@@ -1342,6 +1343,7 @@ model InvoicePayment {
   accountId     Int?
   description   String?
   cashFlowId    Int?
+  sepayTransactionId String?  @unique @map("sepay_transaction_id")
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 

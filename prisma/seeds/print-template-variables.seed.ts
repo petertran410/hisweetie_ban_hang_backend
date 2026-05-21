@@ -539,6 +539,73 @@ const VARIABLES = [
     sortOrder: 7,
     isItemVariable: true,
   },
+  // ==================== HÓA ĐƠN — QR THANH TOÁN ====================
+  {
+    templateFor: 'invoice',
+    key: 'Ma_QR_Code',
+    label: 'Mã QR thanh toán (ảnh)',
+    group: 'Thanh toán',
+    sortOrder: 1,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'invoice',
+    key: 'Ten_Ngan_Hang_QR',
+    label: 'Tên ngân hàng (QR)',
+    group: 'Thanh toán',
+    sortOrder: 2,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'invoice',
+    key: 'So_Tai_Khoan_QR',
+    label: 'Số tài khoản (QR)',
+    group: 'Thanh toán',
+    sortOrder: 3,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'invoice',
+    key: 'Chu_Tai_Khoan_QR',
+    label: 'Chủ tài khoản (QR)',
+    group: 'Thanh toán',
+    sortOrder: 4,
+    isItemVariable: false,
+  },
+
+  // ==================== ĐẶT HÀNG — QR THANH TOÁN ====================
+  {
+    templateFor: 'order',
+    key: 'Ma_QR_Code',
+    label: 'Mã QR thanh toán (ảnh)',
+    group: 'Thanh toán',
+    sortOrder: 1,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'order',
+    key: 'Ten_Ngan_Hang_QR',
+    label: 'Tên ngân hàng (QR)',
+    group: 'Thanh toán',
+    sortOrder: 2,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'order',
+    key: 'So_Tai_Khoan_QR',
+    label: 'Số tài khoản (QR)',
+    group: 'Thanh toán',
+    sortOrder: 3,
+    isItemVariable: false,
+  },
+  {
+    templateFor: 'order',
+    key: 'Chu_Tai_Khoan_QR',
+    label: 'Chủ tài khoản (QR)',
+    group: 'Thanh toán',
+    sortOrder: 4,
+    isItemVariable: false,
+  },
 ];
 
 async function seedPrintTemplateVariables() {

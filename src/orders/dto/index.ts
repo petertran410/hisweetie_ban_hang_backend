@@ -302,6 +302,10 @@ export class CreateOrderPaymentDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  @IsString()
+  @IsOptional()
+  sepayTransactionId?: string;
 }
 
 export class ProductPriceHistoryDto {
