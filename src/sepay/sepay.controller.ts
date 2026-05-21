@@ -29,7 +29,8 @@ export class SepayController {
   @Post('webhook')
   @ApiOperation({ summary: 'Sepay webhook — HMAC-SHA256 verified' })
   async handleWebhook(
-    @Headers('x-signature') signature: string,
+    @Headers('x-sepay-signature') signatureHeader: string,
+    @Headers('x-sepay-timestamp') timestampHeader: string,
     @Req() req: RawBodyRequest<Request>,
     @Body() payload: SepayWebhookDto,
   ) {
@@ -40,8 +41,10 @@ export class SepayController {
       );
     }
 
-    if (!signature) {
-      throw new UnauthorizedException('Missing X-Signature header');
+    if (!signatureHeader || !timestampHeader) {
+      throw new UnauthorizedException(
+        'Missing X-SePay-Signature / X-SePay-Timestamp header',
+      );
     }
 
     const rawBody = req.rawBody;
@@ -49,21 +52,33 @@ export class SepayController {
       throw new BadRequestException('Missing raw body');
     }
 
-    // Tính HMAC-SHA256 của raw body bằng secret
-    const expectedHex = crypto
-      .createHmac('sha256', secret)
-      .update(rawBody)
-      .digest('hex');
+    // Chống replay: timestamp (Unix giây) lệch quá ±5 phút thì loại
+    const timestamp = Number(timestampHeader);
+    if (
+      !Number.isFinite(timestamp) ||
+      Math.abs(Date.now() / 1000 - timestamp) > 300
+    ) {
+      throw new UnauthorizedException('Request expired');
+    }
 
-    // So sánh đẳng thời gian (chống timing attack).
-    // Bắt buộc: 2 buffer phải cùng độ dài, không thì timingSafeEqual throw.
+    // Sepay ký `{timestamp}.{raw_body}` — update 2 bước để giữ byte gốc
+    const hmac = crypto.createHmac('sha256', secret);
+    hmac.update(`${timestampHeader}.`);
+    hmac.update(rawBody);
+    const expectedHex = hmac.digest('hex');
+
+    // Header dạng "sha256={hex}" — bỏ tiền tố
+    const receivedHex = signatureHeader.startsWith('sha256=')
+      ? signatureHeader.slice(7)
+      : signatureHeader;
+
     let valid = false;
     try {
       const expectedBuf = Buffer.from(expectedHex, 'hex');
-      const receivedBuf = Buffer.from(signature, 'hex');
-      if (expectedBuf.length === receivedBuf.length) {
-        valid = crypto.timingSafeEqual(expectedBuf, receivedBuf);
-      }
+      const receivedBuf = Buffer.from(receivedHex, 'hex');
+      valid =
+        expectedBuf.length === receivedBuf.length &&
+        crypto.timingSafeEqual(expectedBuf, receivedBuf);
     } catch {
       valid = false;
     }
