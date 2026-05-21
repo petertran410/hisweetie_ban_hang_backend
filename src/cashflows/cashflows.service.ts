@@ -892,7 +892,7 @@ export class CashFlowsService {
               status: { not: 2 },
               NOT: [
                 { code: { startsWith: 'TTTUHD' } },
-                { code: { startsWith: 'CB' } },
+                // { code: { startsWith: 'CB' } },
               ],
             },
             select: { amount: true },
@@ -908,7 +908,7 @@ export class CashFlowsService {
               partnerType: 'C',
               isReceipt: false,
               status: { not: 2 },
-              NOT: [{ code: { startsWith: 'CB' } }],
+              // NOT: [{ code: { startsWith: 'CB' } }],
             },
             select: { amount: true },
           });
