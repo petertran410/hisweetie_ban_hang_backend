@@ -67,25 +67,13 @@ export class InvoicePaymentsService {
 
       await this.calculateInvoiceTotals(dto.invoiceId, tx);
 
-      if (invoice.customerId) {
-        await this.updateCustomerTotals(invoice.customerId, tx);
-      }
-
       if (!invoice.branch) {
         throw new Error('Hóa đơn chưa có chi nhánh');
       }
 
-      const updatedCustomer = invoice.customerId
-        ? await tx.customer.findUnique({
-            where: { id: invoice.customerId },
-            select: { totalDebt: true },
-          })
-        : null;
-
-      const customerDebtSnapshot = updatedCustomer
-        ? Number(updatedCustomer.totalDebt)
-        : null;
-
+      // [Reorder fix] Tạo CashFlow TRƯỚC khi updateCustomerTotals
+      // để Formula A query thấy cả payment vừa tạo.
+      // Snapshot tạm null, sẽ update sau khi recalculate xong.
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
@@ -108,9 +96,25 @@ export class InvoicePaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
-          customerDebtSnapshot,
+          customerDebtSnapshot: null,
         },
       });
+
+      if (invoice.customerId) {
+        await this.updateCustomerTotals(invoice.customerId, tx);
+
+        // Sau khi recalculate, đọc lại totalDebt và update snapshot cho CashFlow vừa tạo
+        const updatedCustomer = await tx.customer.findUnique({
+          where: { id: invoice.customerId },
+          select: { totalDebt: true },
+        });
+        if (updatedCustomer) {
+          await tx.cashFlow.update({
+            where: { id: cashFlow.id },
+            data: { customerDebtSnapshot: Number(updatedCustomer.totalDebt) },
+          });
+        }
+      }
 
       const paymentResult = await tx.invoicePayment.findUnique({
         where: { id: payment.id },
