@@ -68,19 +68,19 @@ export class SyncKiotService {
     const results: Record<string, any> = {};
 
     // LAYER 1: Dữ liệu nền tảng (tuần tự)
-    results.branches = await this.safeSync('branch', () =>
-      this.syncBranch.syncAll(),
-    );
+    // results.branches = await this.safeSync('branch', () =>
+    //   this.syncBranch.syncAll(),
+    // );
     results.users = await this.safeSync('user', () => this.syncUser.syncAll());
-    results.saleChannels = await this.safeSync('sale_channel', () =>
-      this.syncSaleChannel.syncAll(),
-    );
-    results.surcharges = await this.safeSync('surcharge', () =>
-      this.syncSurcharge.syncAll(),
-    );
-    results.bankAccounts = await this.safeSync('bank_account', () =>
-      this.syncBankAccount.syncAll(),
-    );
+    // results.saleChannels = await this.safeSync('sale_channel', () =>
+    //   this.syncSaleChannel.syncAll(),
+    // );
+    // results.surcharges = await this.safeSync('surcharge', () =>
+    //   this.syncSurcharge.syncAll(),
+    // );
+    // results.bankAccounts = await this.safeSync('bank_account', () =>
+    //   this.syncBankAccount.syncAll(),
+    // );
     results.tradeMarks = await this.safeSync('trade_mark', () =>
       this.syncTradeMark.syncAll(),
     );
@@ -138,16 +138,16 @@ export class SyncKiotService {
     const results: Record<string, any> = {};
 
     // Layer 1
-    results.branches = await this.safeSync('branch', () =>
-      this.syncBranch.syncIncremental(),
-    );
+    // results.branches = await this.safeSync('branch', () =>
+    //   this.syncBranch.syncIncremental(),
+    // );
     results.users = await this.safeSync('user', () => this.syncUser.syncAll()); // User không có modifiedDate
-    results.saleChannels = await this.safeSync('sale_channel', () =>
-      this.syncSaleChannel.syncAll(),
-    );
-    results.surcharges = await this.safeSync('surcharge', () =>
-      this.syncSurcharge.syncAll(),
-    );
+    // results.saleChannels = await this.safeSync('sale_channel', () =>
+    //   this.syncSaleChannel.syncAll(),
+    // );
+    // results.surcharges = await this.safeSync('surcharge', () =>
+    //   this.syncSurcharge.syncAll(),
+    // );
     results.customerGroups = await this.safeSync('customer_group', () =>
       this.syncCustomerGroup.syncAll(),
     );
