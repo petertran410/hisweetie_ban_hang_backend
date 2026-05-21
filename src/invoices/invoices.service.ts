@@ -1263,7 +1263,7 @@ export class InvoicesService {
         status: { not: 2 },
         NOT: [
           { code: { startsWith: 'TTTUHD' } },
-          { code: { startsWith: 'CB' } },
+          // { code: { startsWith: 'CB' } },
         ],
       },
       select: { amount: true },
