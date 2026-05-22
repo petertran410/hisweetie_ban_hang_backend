@@ -1869,15 +1869,52 @@ export class InvoicesService {
   }
 
   async getPaymentHistory(invoiceId: number) {
-    const payments = await this.prisma.invoicePayment.findMany({
-      where: { invoiceId },
-      include: {
-        cashFlow: true,
-      },
-      orderBy: { createdAt: 'desc' },
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: invoiceId },
+      select: { orderId: true },
     });
 
-    return payments;
+    const payments = await this.prisma.invoicePayment.findMany({
+      where: { invoiceId },
+      include: { cashFlow: true },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    let orderPayments: any[] = [];
+    if (invoice?.orderId) {
+      orderPayments = await this.prisma.orderPayment.findMany({
+        where: { orderId: invoice.orderId },
+        select: {
+          id: true,
+          code: true,
+          amount: true,
+          paymentDate: true,
+          paymentMethod: true,
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+
+    const enriched = payments.map((p) => {
+      if (!p.code.startsWith('TTTUHD')) return p;
+
+      const matched = orderPayments.find(
+        (op) =>
+          Number(op.amount) === Number(p.amount) &&
+          new Date(op.paymentDate).getTime() ===
+            new Date(p.paymentDate).getTime(),
+      );
+
+      return {
+        ...p,
+        sourceOrderPaymentCode: matched?.code ?? null,
+      };
+    });
+
+    return enriched.sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
   }
 
   async findForReturnOrder(query: {
