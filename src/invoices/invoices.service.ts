@@ -945,7 +945,6 @@ export class InvoicesService {
             });
           }
 
-          // THÊM: Auto-cancel các CTN gắn với HĐ này
           const linkedCtns = await tx.returnOrder.findMany({
             where: {
               invoiceId: id,
@@ -969,11 +968,38 @@ export class InvoicesService {
               },
             });
 
-            // Undo phần CTN đã cộng vào paidAmount của HĐ
             updateData.paidAmount = Math.max(
               0,
               Number(currentInvoice.paidAmount) - totalCtnAmount,
             );
+          }
+
+          if (
+            dto.cancelPayments &&
+            currentInvoice.payments &&
+            currentInvoice.payments.length > 0
+          ) {
+            const paymentIds = currentInvoice.payments.map((p) => p.id);
+            const cashFlowIds = currentInvoice.payments
+              .map((p) => p.cashFlowId)
+              .filter((cfId): cfId is number => cfId != null);
+
+            // Soft-cancel cashflow (status=2 → Formula A loại đúng)
+            if (cashFlowIds.length > 0) {
+              await tx.cashFlow.updateMany({
+                where: { id: { in: cashFlowIds } },
+                data: { status: 2, statusValue: 'Đã hủy' },
+              });
+            }
+
+            // Soft-cancel invoicePayment
+            await tx.invoicePayment.updateMany({
+              where: { id: { in: paymentIds } },
+              data: { status: 2, statusValue: 'Đã hủy' },
+            });
+
+            // Reset paidAmount = 0 (cả CTN + cash đều bị hủy)
+            updateData.paidAmount = 0;
           }
 
           updateData.debtAmount = 0;
