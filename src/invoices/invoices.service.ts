@@ -25,6 +25,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { query } from 'express';
 
 @Injectable()
 export class InvoicesService {
@@ -1911,7 +1912,38 @@ export class InvoicesService {
       };
     });
 
-    return enriched.sort(
+    // [NEW] Lấy CTN (cấn trừ nợ) gắn với hóa đơn, normalize sang shape giống invoicePayment
+    const ctns = await this.prisma.returnOrder.findMany({
+      where: {
+        invoiceId,
+        refundType: 'manual_offset',
+        status: { in: [4, 5] },
+      },
+      select: {
+        id: true,
+        code: true,
+        refundAmount: true,
+        refundConfirmedAt: true,
+        createdAt: true,
+        status: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const ctnRows = ctns.map((c) => ({
+      id: -c.id, // negative để không trùng id với invoicePayment
+      code: c.code,
+      invoiceId,
+      amount: c.refundAmount,
+      paymentDate: c.refundConfirmedAt || c.createdAt,
+      createdAt: c.createdAt,
+      paymentMethod: null,
+      status: c.status === 5 ? 2 : 1, // map: 4→1 (active), 5→2 (cancelled) để FE dùng cùng convention
+      cashFlow: null,
+      isCTN: true,
+    }));
+
+    return [...enriched, ...ctnRows].sort(
       (a, b) =>
         new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
