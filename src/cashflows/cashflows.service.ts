@@ -14,6 +14,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
 
 @Injectable()
 export class CashFlowsService {
@@ -854,92 +855,8 @@ export class CashFlowsService {
       });
 
       if (invoice.customerId) {
-        const customer = await tx.customer.findUnique({
-          where: { id: invoice.customerId },
-          select: { id: true },
-        });
-
-        if (customer) {
-          const targetCustomerId = customer.id;
-
-          const childIds = await tx.customer.findMany({
-            where: { parentId: targetCustomerId },
-            select: { id: true },
-          });
-
-          const allCustomerIds = [
-            targetCustomerId,
-            ...childIds.map((c: any) => c.id),
-          ];
-
-          const allInvoices = await tx.invoice.findMany({
-            where: {
-              customerId: { in: allCustomerIds },
-              status: { notIn: [2] },
-            },
-            select: { grandTotal: true },
-          });
-          const totalGrandTotal = allInvoices.reduce(
-            (sum: number, inv: any) => sum + Number(inv.grandTotal),
-            0,
-          );
-
-          const cashFlowsReceipt = await tx.cashFlow.findMany({
-            where: {
-              partnerId: { in: allCustomerIds },
-              partnerType: 'C',
-              isReceipt: true,
-              status: { not: 2 },
-              NOT: [
-                { code: { startsWith: 'TTTUHD' } },
-                // { code: { startsWith: 'CB' } },
-              ],
-            },
-            select: { amount: true },
-          });
-          const totalCashFlowReceived = cashFlowsReceipt.reduce(
-            (sum: number, cf: any) => sum + Number(cf.amount),
-            0,
-          );
-
-          const cashFlowsPayment = await tx.cashFlow.findMany({
-            where: {
-              partnerId: { in: allCustomerIds },
-              partnerType: 'C',
-              isReceipt: false,
-              status: { not: 2 },
-              // NOT: [{ code: { startsWith: 'CB' } }],
-            },
-            select: { amount: true },
-          });
-          const totalCashFlowPaidOut = cashFlowsPayment.reduce(
-            (sum: number, cf: any) => sum + Number(cf.amount),
-            0,
-          );
-
-          const debtOffsets = await tx.returnOrder.findMany({
-            where: {
-              customerId: { in: allCustomerIds },
-              OR: [{ status: 2 }, { status: 4, refundType: 'debt_offset' }],
-            },
-            select: { refundAmount: true },
-          });
-          const totalDebtOffsets = debtOffsets.reduce(
-            (sum: number, ro: any) => sum + Number(ro.refundAmount),
-            0,
-          );
-
-          const totalDebt =
-            totalGrandTotal -
-            totalCashFlowReceived +
-            totalCashFlowPaidOut -
-            totalDebtOffsets;
-
-          await tx.customer.update({
-            where: { id: targetCustomerId },
-            data: { totalDebt },
-          });
-        }
+        // Recalc đúng chủ hóa đơn (per-customer). Trả con → trừ con; trả cha → trừ cha.
+        await this.recalcCustomerDebt(invoice.customerId, tx);
       }
 
       return {
@@ -1500,75 +1417,8 @@ export class CashFlowsService {
       }
 
       for (const cid of affectedCustomerIds) {
-        const custInvoices = await tx.invoice.findMany({
-          where: { customerId: cid, status: { notIn: [2] } },
-          select: { grandTotal: true },
-        });
-        const totalGrandTotal = custInvoices.reduce(
-          (sum: number, inv: any) => sum + Number(inv.grandTotal),
-          0,
-        );
+        const newDebt = await this.recalcCustomerDebt(cid, tx);
 
-        const cashFlowsReceipt = await tx.cashFlow.findMany({
-          where: {
-            partnerId: cid,
-            partnerType: 'C',
-            isReceipt: true,
-            status: { not: 2 },
-            NOT: [
-              { code: { startsWith: 'TTTUHD' } },
-              // { code: { startsWith: 'CB' } },
-            ],
-          },
-          select: { amount: true },
-        });
-        const totalCashFlowReceived = cashFlowsReceipt.reduce(
-          (sum: number, cf: any) => sum + Number(cf.amount),
-          0,
-        );
-
-        const cashFlowsPaidOut = await tx.cashFlow.findMany({
-          where: {
-            partnerId: cid,
-            partnerType: 'C',
-            isReceipt: false,
-            status: { not: 2 },
-          },
-          select: { amount: true },
-        });
-        const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
-          (sum: number, cf: any) => sum + Number(cf.amount),
-          0,
-        );
-
-        const debtOffsets = await tx.returnOrder.findMany({
-          where: {
-            customerId: cid,
-            OR: [
-              { status: 2 },
-              { status: 4, refundType: 'debt_offset' },
-              { status: 4, refundType: 'cash_refund' },
-            ],
-          },
-          select: { refundAmount: true },
-        });
-        const totalDebtOffsets = debtOffsets.reduce(
-          (sum: number, ro: any) => sum + Number(ro.refundAmount),
-          0,
-        );
-
-        const newDebt =
-          totalGrandTotal -
-          totalCashFlowReceived +
-          totalCashFlowPaidOut -
-          totalDebtOffsets;
-
-        await tx.customer.update({
-          where: { id: cid },
-          data: { totalDebt: newDebt },
-        });
-
-        // Update customerDebtSnapshot trên cashflow vừa tạo
         const cfForCust = cashFlows.find((cf: any) => cf.partnerId === cid);
         if (cfForCust) {
           await tx.cashFlow.update({
@@ -1585,76 +1435,8 @@ export class CashFlowsService {
     });
   }
 
-  // Formula A — chuẩn cho mọi nơi recalc customer.totalDebt trong file này
-  private async recalcCustomerDebt(customerId: number, tx: any) {
-    const invoices = await tx.invoice.findMany({
-      where: { customerId, status: { notIn: [2] } },
-      select: { grandTotal: true },
-    });
-    const totalGrandTotal = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.grandTotal),
-      0,
-    );
-
-    const cashFlowsReceipt = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: true,
-        status: { not: 2 },
-        NOT: [
-          { code: { startsWith: 'TTTUHD' } },
-          // { code: { startsWith: 'CB' } },
-        ],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowReceived = cashFlowsReceipt.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const cashFlowsPaidOut = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: false,
-        status: { not: 2 },
-        // NOT: [{ code: { startsWith: 'CB' } }],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const debtOffsets = await tx.returnOrder.findMany({
-      where: {
-        customerId,
-        OR: [
-          { status: 2 },
-          { status: 4, refundType: 'debt_offset' },
-          { status: 4, refundType: 'cash_refund' },
-        ],
-      },
-      select: { refundAmount: true },
-    });
-    const totalDebtOffsets = debtOffsets.reduce(
-      (sum: number, ro: any) => sum + Number(ro.refundAmount),
-      0,
-    );
-
-    const totalDebt =
-      totalGrandTotal -
-      totalCashFlowReceived +
-      totalCashFlowPaidOut -
-      totalDebtOffsets;
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalDebt },
-    });
+  private recalcCustomerDebt(customerId: number, tx: any) {
+    return recalcCustomerDebtUtil(tx, customerId);
   }
 
   private async generateSafeCashFlowCode(
