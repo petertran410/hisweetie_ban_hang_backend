@@ -689,15 +689,173 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy phiếu thu/chi');
       }
 
+      // ── 1. Tìm các entity liên quan TRƯỚC khi hủy
+      const linkedInvoicePayments = await tx.invoicePayment.findMany({
+        where: {
+          OR: [{ cashFlowId: id }, { code: { startsWith: cashFlow.code } }],
+          status: { not: 2 },
+        },
+        select: { id: true, invoiceId: true },
+      });
+
+      const linkedOrderPayments = await tx.orderPayment.findMany({
+        where: {
+          code: { startsWith: cashFlow.code },
+          status: { not: 2 },
+        },
+        select: { id: true, orderId: true },
+      });
+
+      const linkedCtns = await tx.returnOrder.findMany({
+        where: {
+          cashFlowId: id,
+          refundType: 'manual_offset',
+          status: 4,
+        },
+        select: { id: true, invoiceId: true, customerId: true },
+      });
+
+      // ── 2. Hủy cashflow
       const updated = await tx.cashFlow.update({
         where: { id },
         data: { status: 2, statusValue: 'Đã hủy' },
       });
 
-      // [Fix] Sau khi hủy, recalc customer.totalDebt nếu cashflow thuộc về customer
-      // Formula A đã exclude status=2 nên cashflow vừa hủy sẽ không được tính
+      // ── 3. Hủy invoicePayments liên quan
+      if (linkedInvoicePayments.length > 0) {
+        await tx.invoicePayment.updateMany({
+          where: { id: { in: linkedInvoicePayments.map((p) => p.id) } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      // ── 4. Hủy orderPayments liên quan
+      if (linkedOrderPayments.length > 0) {
+        await tx.orderPayment.updateMany({
+          where: { id: { in: linkedOrderPayments.map((p) => p.id) } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      // ── 5. Hủy CTN liên quan
+      if (linkedCtns.length > 0) {
+        await tx.returnOrder.updateMany({
+          where: { id: { in: linkedCtns.map((c) => c.id) } },
+          data: { status: 5, statusValue: 'Đã hủy' },
+        });
+      }
+
+      // ── 6. Recalc paidAmount/debtAmount/status cho từng invoice bị ảnh hưởng
+      const affectedInvoiceIds = new Set<number>();
+      linkedInvoicePayments.forEach((p) => {
+        if (p.invoiceId) affectedInvoiceIds.add(p.invoiceId);
+      });
+      linkedCtns.forEach((c) => {
+        if (c.invoiceId) affectedInvoiceIds.add(c.invoiceId);
+      });
+
+      for (const invId of affectedInvoiceIds) {
+        const invoice = await tx.invoice.findUnique({
+          where: { id: invId },
+          select: { grandTotal: true, status: true },
+        });
+        if (!invoice) continue;
+
+        const activePayments = await tx.invoicePayment.findMany({
+          where: { invoiceId: invId, status: { not: 2 } },
+          select: { amount: true },
+        });
+        const sumPayments = activePayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        );
+
+        const activeCtns = await tx.returnOrder.findMany({
+          where: {
+            invoiceId: invId,
+            refundType: 'manual_offset',
+            status: 4,
+          },
+          select: { refundAmount: true },
+        });
+        const sumCtns = activeCtns.reduce(
+          (sum: number, c: any) => sum + Number(c.refundAmount),
+          0,
+        );
+
+        const newPaidAmount = sumPayments + sumCtns;
+        const newDebtAmount = Math.max(
+          0,
+          Number(invoice.grandTotal) - newPaidAmount,
+        );
+
+        // Chỉ thay đổi status nếu invoice CHƯA bị hủy
+        const updateInvoiceData: any = {
+          paidAmount: newPaidAmount,
+          debtAmount: newDebtAmount,
+        };
+        if (invoice.status !== 2) {
+          const newStatus = newDebtAmount <= 0 ? 1 : 3;
+          updateInvoiceData.status = newStatus;
+          updateInvoiceData.statusValue =
+            newStatus === 1 ? 'Hoàn thành' : 'Đang xử lý';
+        }
+
+        await tx.invoice.update({
+          where: { id: invId },
+          data: updateInvoiceData,
+        });
+      }
+
+      // ── 7. Recalc paidAmount/debtAmount cho từng order bị ảnh hưởng
+      const affectedOrderIds = new Set<number>();
+      linkedOrderPayments.forEach((p) => {
+        if (p.orderId) affectedOrderIds.add(p.orderId);
+      });
+
+      for (const orderId of affectedOrderIds) {
+        const order = await tx.order.findUnique({
+          where: { id: orderId },
+          select: { grandTotal: true },
+        });
+        if (!order) continue;
+
+        const activeOrderPayments = await tx.orderPayment.findMany({
+          where: { orderId, status: { not: 2 } },
+          select: { amount: true },
+        });
+        const sumOrderPayments = activeOrderPayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        );
+
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            paidAmount: sumOrderPayments,
+            depositAmount: sumOrderPayments,
+            debtAmount: Math.max(
+              0,
+              Number(order.grandTotal) - sumOrderPayments,
+            ),
+          },
+        });
+      }
+
+      // ── 8. Recalc customer.totalDebt (giữ logic cũ)
       if (cashFlow.partnerType === 'C' && cashFlow.partnerId) {
         await this.recalcCustomerDebt(cashFlow.partnerId, tx);
+      }
+
+      // ── 9. Recalc thêm customer của CTN nếu khác partnerId
+      const ctnCustomerIds = new Set<number>();
+      linkedCtns.forEach((c) => {
+        if (c.customerId && c.customerId !== cashFlow.partnerId) {
+          ctnCustomerIds.add(c.customerId);
+        }
+      });
+      for (const cid of ctnCustomerIds) {
+        await this.recalcCustomerDebt(cid, tx);
       }
 
       return { cashFlow, updated };
