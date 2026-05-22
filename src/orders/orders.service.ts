@@ -21,6 +21,7 @@ import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 import { INVOICE_STATUS } from 'src/invoices/dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
+import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
 @Injectable()
 export class OrdersService {
@@ -921,75 +922,8 @@ export class OrdersService {
     });
   }
 
-  private async recalculateCustomerDebt(customerId: number, tx: any) {
-    const invoices = await tx.invoice.findMany({
-      where: { customerId, status: { notIn: [2] } },
-      select: { grandTotal: true },
-    });
-    const totalGrandTotal = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.grandTotal),
-      0,
-    );
-
-    const cashFlowsReceipt = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: true,
-        status: { not: 2 },
-        NOT: [
-          { code: { startsWith: 'TTTUHD' } },
-          // { code: { startsWith: 'CB' } },
-        ],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowReceived = cashFlowsReceipt.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const cashFlowsPaidOut = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: false,
-        status: { not: 2 },
-        // NOT: [{ code: { startsWith: 'CB' } }],
-      },
-      select: { amount: true },
-    });
-    const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const debtOffsets = await tx.returnOrder.findMany({
-      where: {
-        customerId,
-        OR: [
-          { status: 2 },
-          { status: 4, refundType: 'debt_offset' },
-          { status: 4, refundType: 'cash_refund' },
-        ],
-      },
-      select: { refundAmount: true },
-    });
-    const totalDebtOffsets = debtOffsets.reduce(
-      (sum: number, ro: any) => sum + Number(ro.refundAmount),
-      0,
-    );
-
-    const totalDebt =
-      totalGrandTotal -
-      totalCashFlowReceived +
-      totalCashFlowPaidOut -
-      totalDebtOffsets;
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalDebt },
-    });
+  private recalculateCustomerDebt(customerId: number, tx: any) {
+    return recalcCustomerDebt(tx, customerId);
   }
 
   async getProductPriceHistory(

@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as ExcelJS from 'exceljs';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
+import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
 @Injectable()
 export class ImportService {
@@ -1824,60 +1825,18 @@ export class ImportService {
     });
     if (!customer) return;
 
+    // Tính totalPurchased riêng (Formula A chỉ phụ trách totalDebt)
     const invoices = await tx.invoice.findMany({
-      where: {
-        customerId,
-        status: { notIn: [2] }, // Exclude cancelled
-      },
+      where: { customerId, status: { notIn: [2] } },
       select: { grandTotal: true },
     });
-
     const totalPurchased = invoices.reduce(
       (sum: number, inv: any) => sum + Number(inv.grandTotal),
       0,
     );
 
-    const cashFlowsReceipt = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: true,
-        status: { not: 2 },
-        NOT: [
-          { code: { startsWith: 'TTTUHD' } },
-          { code: { startsWith: 'CB' } },
-        ],
-      },
-      select: { amount: true },
-    });
-    const totalReceived = cashFlowsReceipt.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const cashFlowsPaidOut = await tx.cashFlow.findMany({
-      where: {
-        partnerId: customerId,
-        partnerType: 'C',
-        isReceipt: false,
-        status: { not: 2 },
-      },
-      select: { amount: true },
-    });
-    const totalPaidOut = cashFlowsPaidOut.reduce(
-      (sum: number, cf: any) => sum + Number(cf.amount),
-      0,
-    );
-
-    const totalDebt = totalPurchased - totalReceived + totalPaidOut;
-
-    await tx.customer.update({
-      where: { id: customerId },
-      data: {
-        totalPurchased,
-        totalDebt,
-      },
-    });
+    // Delegate sang Formula A (chân lý). Pass totalPurchased để cập nhật cả 2 field cùng lúc.
+    await recalcCustomerDebt(tx, customerId, { totalPurchased });
   }
 
   // --- Helper: build column map cho invoice ---

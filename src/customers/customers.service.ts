@@ -1005,16 +1005,8 @@ export class CustomersService {
       where: {
         customerId: { in: returnOrderCustomerIds },
         code: { startsWith: 'TH' },
-        OR: [
-          {
-            status: { in: [1, 2, 3, 4] },
-            NOT: { AND: [{ status: 4 }, { refundType: 'cash_refund' }] },
-          },
-          {
-            status: 5,
-            refundType: 'manual_offset',
-          },
-        ],
+        status: { in: [1, 2, 3, 4] },
+        NOT: { AND: [{ status: 4 }, { refundType: 'cash_refund' }] },
       },
       select: {
         id: true,
@@ -1034,34 +1026,22 @@ export class CustomersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // ✅ Push vào timeline
     for (const ro of allReturnOrders) {
       const displayDate =
         ro.refundConfirmedAt || ro.confirmedAt || ro.createdAt;
 
-      let itemType: string;
-      let description: string;
-
-      if (ro.status === 5 && ro.refundType === 'manual_offset') {
-        itemType = 'ctn_cancelled';
-        description = `Hủy cấn trừ nợ ${ro.code}`;
-      } else {
-        itemType = 'return_order';
-        description = `Trả hàng ${ro.code}`;
-      }
-
       timeline.push({
-        type: itemType,
+        type: 'return_order',
         id: ro.id,
         code: ro.code,
         date: displayDate,
         createdAt: ro.createdAt,
         amount: Number(ro.refundAmount),
         method: null,
-        description,
+        description: `Trả hàng ${ro.code}`,
         debtSnapshot: 0,
         status: ro.status,
-        statusValue: ro.status === 5 ? 'Đã hủy' : 'Trả hàng',
+        statusValue: 'Trả hàng',
         branch: ro.branch,
         user: null,
         customerName: ro.customer?.name || null,
@@ -1073,11 +1053,10 @@ export class CustomersService {
     const calcOrder: Record<string, number> = {
       invoice: 0,
       expense: 1,
-      ctn_cancelled: 2,
-      return_order: 3,
-      debt_offset: 4,
-      payment: 5,
+      return_order: 2,
+      payment: 3,
     };
+
     timeline.sort((a, b) => {
       const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (timeDiff !== 0) return timeDiff;
@@ -1092,11 +1071,8 @@ export class CustomersService {
         runningDebt -= item.amount;
       } else if (item.type === 'expense') {
         runningDebt += item.amount;
-      } else if (item.type === 'ctn_cancelled') {
-        // ✅ THÊM: Hủy CTN → Cộng lại (hoàn lại dư nợ)
-        runningDebt += item.amount;
       } else {
-        // payment, debt_offset: trừ đi
+        // payment: trừ đi
         runningDebt -= item.amount;
       }
       item.debtSnapshot = runningDebt;

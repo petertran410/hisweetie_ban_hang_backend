@@ -945,6 +945,37 @@ export class InvoicesService {
             });
           }
 
+          // THÊM: Auto-cancel các CTN gắn với HĐ này
+          const linkedCtns = await tx.returnOrder.findMany({
+            where: {
+              invoiceId: id,
+              refundType: 'manual_offset',
+              status: 4,
+            },
+            select: { id: true, refundAmount: true },
+          });
+
+          if (linkedCtns.length > 0) {
+            const totalCtnAmount = linkedCtns.reduce(
+              (sum, ctn) => sum + Number(ctn.refundAmount),
+              0,
+            );
+
+            await tx.returnOrder.updateMany({
+              where: { id: { in: linkedCtns.map((c) => c.id) } },
+              data: {
+                status: 5,
+                statusValue: 'Đã hủy',
+              },
+            });
+
+            // Undo phần CTN đã cộng vào paidAmount của HĐ
+            updateData.paidAmount = Math.max(
+              0,
+              Number(currentInvoice.paidAmount) - totalCtnAmount,
+            );
+          }
+
           updateData.debtAmount = 0;
 
           if (currentInvoice.customerId && currentInvoice.customer) {
