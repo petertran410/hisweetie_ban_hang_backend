@@ -533,11 +533,12 @@ export class ReturnOrdersService {
       }
 
       if (returnOrder.customerId && refundAmount > 0) {
-        await tx.customer.update({
-          where: { id: returnOrder.customerId },
-          data: {
-            totalDebt: { decrement: refundAmount },
-          },
+        // Dùng Formula A canonical thay vì decrement thủ công
+        // RO hiện tại chưa được update sang STOCK_RECEIVED (status=2) → exclude + extraDebtOffset
+        // để mô phỏng RO đã được tính trong debtOffsets
+        await recalcCustomerDebt(tx, returnOrder.customerId, {
+          excludeReturnOrderId: id,
+          extraDebtOffset: refundAmount,
         });
       }
 

@@ -843,16 +843,31 @@ export class OrdersService {
         select: { id: true, name: true, email: true },
       });
 
-      // Hủy phiếu thu nếu được yêu cầu
       if (dto.cancelPayments && order.payments.length > 0) {
+        const paymentIds = order.payments.map((p) => p.id);
+        const paymentCodes = order.payments
+          .map((p) => p.code)
+          .filter((c): c is string => !!c);
+
+        // Soft-cancel orderPayment (giữ audit, không hard-delete)
+        await tx.orderPayment.updateMany({
+          where: { id: { in: paymentIds } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+
+        // Soft-cancel cashFlow match theo code (giữ audit + tra cứu được)
+        if (paymentCodes.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: {
+              code: { in: paymentCodes },
+              status: { not: 2 },
+            },
+            data: { status: 2, statusValue: 'Đã hủy' },
+          });
+        }
+
+        // Audit log từng payment (giữ nguyên message ORDER_PAYMENT_DELETE)
         for (const payment of order.payments) {
-          // Xóa phiếu thu
-          await tx.orderPayment.delete({ where: { id: payment.id } });
-
-          // Xóa cash flow tương ứng
-          await tx.cashFlow.deleteMany({ where: { code: payment.code } });
-
-          // Log audit xóa payment
           await this.auditLogsService.create({
             actionType: 'DELETE',
             actionCode: 'ORDER_PAYMENT_DELETE',
@@ -881,7 +896,6 @@ export class OrdersService {
           });
         }
 
-        // Cập nhật lại công nợ khách hàng nếu có payments bị xóa
         if (order.customerId) {
           await this.recalculateCustomerDebt(order.customerId, tx);
         }
@@ -894,6 +908,9 @@ export class OrdersService {
           status: ORDER_STATUS.CANCELLED,
           statusValue: getStatusLabel(ORDER_STATUS.CANCELLED),
           orderStatus: 'cancelled',
+          ...(dto.cancelPayments && order.payments.length > 0
+            ? { paidAmount: 0, depositAmount: 0, debtAmount: 0 }
+            : {}),
           debtAmount: 0,
         },
       });

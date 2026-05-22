@@ -980,14 +980,29 @@ export class InvoicesService {
             currentInvoice.payments.length > 0
           ) {
             const paymentIds = currentInvoice.payments.map((p) => p.id);
-            const cashFlowIds = currentInvoice.payments
+            const paymentCodes = currentInvoice.payments
+              .map((p) => p.code)
+              .filter((c): c is string => !!c);
+            const explicitCashFlowIds = currentInvoice.payments
               .map((p) => p.cashFlowId)
               .filter((cfId): cfId is number => cfId != null);
 
-            // Soft-cancel cashflow (status=2 → Formula A loại đúng)
-            if (cashFlowIds.length > 0) {
+            // Soft-cancel cashFlow: ưu tiên cashFlowId, fallback match theo code
+            // (cover cả historical data có cashFlowId = NULL)
+            const orConditions: any[] = [];
+            if (explicitCashFlowIds.length > 0) {
+              orConditions.push({ id: { in: explicitCashFlowIds } });
+            }
+            if (paymentCodes.length > 0) {
+              orConditions.push({ code: { in: paymentCodes } });
+            }
+
+            if (orConditions.length > 0) {
               await tx.cashFlow.updateMany({
-                where: { id: { in: cashFlowIds } },
+                where: {
+                  OR: orConditions,
+                  status: { not: 2 },
+                },
                 data: { status: 2, statusValue: 'Đã hủy' },
               });
             }
