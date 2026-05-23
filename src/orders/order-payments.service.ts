@@ -195,12 +195,23 @@ export class OrderPaymentsService {
         throw new Error('Không tìm thấy thanh toán');
       }
 
-      await tx.orderPayment.delete({ where: { id } });
+      // Soft-cancel cashFlow tương ứng (OrderPayment không có cashFlowId → chỉ match theo code)
+      if (payment.code) {
+        await tx.cashFlow.updateMany({
+          where: { code: payment.code, status: { not: 2 } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
 
-      await tx.cashFlow.deleteMany({ where: { code: payment.code } });
+      // Soft-cancel orderPayment (thay vì hard-delete)
+      await tx.orderPayment.update({
+        where: { id },
+        data: { status: 2, statusValue: 'Đã hủy' },
+      });
 
+      // Recalc paidAmount chỉ tính các orderPayment còn active (loại đã hủy)
       const allPayments = await tx.orderPayment.findMany({
-        where: { orderId: payment.orderId },
+        where: { orderId: payment.orderId, status: { not: 2 } },
       });
       const paidAmount = allPayments.reduce(
         (sum, p) => sum + Number(p.amount),
