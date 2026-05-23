@@ -103,13 +103,33 @@ export class CashFlowsService {
             });
             createdInvoicePaymentIds.push(invPayment.id);
 
+            // Tổng invoicePayment còn active (loại đã hủy)
             const allPayments = await tx.invoicePayment.findMany({
-              where: { invoiceId: allocation.invoiceId },
+              where: {
+                invoiceId: allocation.invoiceId,
+                status: { not: 2 },
+              },
             });
-            const paidAmount = allPayments.reduce(
+            const sumPayments = allPayments.reduce(
               (sum: number, p: any) => sum + Number(p.amount),
               0,
             );
+
+            // Tổng CTN còn active (manual_offset, status=4) — tránh ghi đè mất phần CTN
+            const ctns = await tx.returnOrder.findMany({
+              where: {
+                invoiceId: allocation.invoiceId,
+                refundType: 'manual_offset',
+                status: 4,
+              },
+              select: { refundAmount: true },
+            });
+            const sumCtns = ctns.reduce(
+              (sum: number, c: any) => sum + Number(c.refundAmount),
+              0,
+            );
+
+            const paidAmount = sumPayments + sumCtns;
 
             const debtAmount = Number(invoice.grandTotal) - paidAmount;
             let status = 3;
@@ -988,13 +1008,30 @@ export class CashFlowsService {
         },
       });
 
+      // Tổng invoicePayment còn active (loại đã hủy)
       const payments = await tx.invoicePayment.findMany({
-        where: { invoiceId: dto.invoiceId },
+        where: { invoiceId: dto.invoiceId, status: { not: 2 } },
       });
-      const paidAmount = payments.reduce(
+      const sumPayments = payments.reduce(
         (sum: number, p: any) => sum + Number(p.amount),
         0,
       );
+
+      // Tổng CTN còn active (manual_offset, status=4) — tránh ghi đè mất phần CTN
+      const ctns = await tx.returnOrder.findMany({
+        where: {
+          invoiceId: dto.invoiceId,
+          refundType: 'manual_offset',
+          status: 4,
+        },
+        select: { refundAmount: true },
+      });
+      const sumCtns = ctns.reduce(
+        (sum: number, c: any) => sum + Number(c.refundAmount),
+        0,
+      );
+
+      const paidAmount = sumPayments + sumCtns;
 
       const debtAmount = Number(invoice.grandTotal) - paidAmount;
       let invoiceStatus = 3;
