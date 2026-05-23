@@ -1045,13 +1045,26 @@ export class InvoicesService {
           (totalAmount * (dto.discountRatio || 0)) / 100;
         const grandTotal = totalAmount - discountAmount - discountFromRatio;
 
+        // Tổng invoicePayment còn active (loại đã hủy)
         const payments = await tx.invoicePayment.findMany({
-          where: { invoiceId: id },
+          where: { invoiceId: id, status: { not: 2 } },
         });
-        const paidAmount = payments.reduce(
+        const sumPayments = payments.reduce(
           (sum, p) => sum + Number(p.amount),
           0,
         );
+
+        // Tổng CTN còn active (manual_offset, status=4) — tránh ghi đè mất phần CTN
+        const ctns = await tx.returnOrder.findMany({
+          where: { invoiceId: id, refundType: 'manual_offset', status: 4 },
+          select: { refundAmount: true },
+        });
+        const sumCtns = ctns.reduce(
+          (sum, c) => sum + Number(c.refundAmount),
+          0,
+        );
+
+        const paidAmount = sumPayments + sumCtns;
         const debtAmount = grandTotal - paidAmount;
 
         let status: number = currentInvoice.status;
