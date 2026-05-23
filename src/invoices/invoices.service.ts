@@ -647,9 +647,31 @@ export class InvoicesService {
           });
         }
 
+        // Auto-cancel CTN gắn HĐ cũ (đồng bộ với D6 block trong CANCEL flow)
+        const linkedCtns = await tx.returnOrder.findMany({
+          where: {
+            invoiceId: id,
+            refundType: 'manual_offset',
+            status: 4,
+          },
+          select: { id: true },
+        });
+
+        if (linkedCtns.length > 0) {
+          await tx.returnOrder.updateMany({
+            where: { id: { in: linkedCtns.map((c) => c.id) } },
+            data: { status: 5, statusValue: 'Đã hủy' },
+          });
+        }
+
         await tx.invoice.update({
           where: { id },
-          data: { status: INVOICE_STATUS.CANCELLED, statusValue: 'Đã hủy' },
+          data: {
+            status: INVOICE_STATUS.CANCELLED,
+            statusValue: 'Đã hủy',
+            paidAmount: 0,
+            debtAmount: 0,
+          },
         });
 
         const totalAmount = dto.items.reduce(
@@ -660,8 +682,12 @@ export class InvoicesService {
         const discountFromRatio =
           (totalAmount * (dto.discountRatio || 0)) / 100;
         const grandTotal = totalAmount - discountAmount - discountFromRatio;
-        const paidAmount = currentInvoice.payments.reduce(
-          (sum, p) => sum + Number(p.amount),
+        // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
+        const activePayments = currentInvoice.payments.filter(
+          (p: any) => p.status !== 2,
+        );
+        const paidAmount = activePayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
           0,
         );
         const debtAmount = grandTotal - paidAmount;

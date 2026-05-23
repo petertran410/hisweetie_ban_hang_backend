@@ -407,6 +407,7 @@ export class CustomersService {
         contactNumber: true,
         phone: true,
         email: true,
+        totalDebt: true,
         parentId: true,
         parent: {
           select: { code: true, name: true },
