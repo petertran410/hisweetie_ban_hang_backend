@@ -43,9 +43,9 @@ export class SyncCashFlowService extends BaseSyncService {
       where: { code: record.code },
     });
 
-    const branch = record.branchId
+    const branch = record.branchKiotVietId
       ? await this.prisma.branch.findFirst({
-          where: { kiotVietId: record.branchId },
+          where: { kiotVietId: record.branchKiotVietId },
           select: { id: true },
         })
       : null;

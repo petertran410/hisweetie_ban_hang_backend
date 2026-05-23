@@ -137,8 +137,13 @@ export class SyncProductService extends BaseSyncService {
     inventories: any[],
   ) {
     for (const inv of inventories) {
-      const kiotVietId = inv.branchKiotVietId ?? inv.branchId;
-      if (!kiotVietId) continue;
+      const kiotVietId = inv.branchKiotVietId;
+      if (!kiotVietId) {
+        this.logger.warn(
+          `⚠️ Inventory: branchKiotVietId missing for product ${productCode}, skipping`,
+        );
+        continue;
+      }
 
       const branch = await this.prisma.branch.findFirst({
         where: { kiotVietId },
