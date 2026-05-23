@@ -175,16 +175,44 @@ export class InvoicePaymentsService {
 
   async remove(id: number) {
     return this.prisma.$transaction(async (tx) => {
-      const payment = await tx.invoicePayment.findUnique({ where: { id } });
+      const payment = await tx.invoicePayment.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          code: true,
+          invoiceId: true,
+          cashFlowId: true,
+        },
+      });
       if (!payment) {
         throw new Error('Payment not found');
       }
 
-      await tx.cashFlow.deleteMany({
-        where: { code: payment.code },
+      // Soft-cancel cashFlow tương ứng (ưu tiên cashFlowId, fallback theo code)
+      const orConditions: any[] = [];
+      if (payment.cashFlowId != null) {
+        orConditions.push({ id: payment.cashFlowId });
+      }
+      if (payment.code) {
+        orConditions.push({ code: payment.code });
+      }
+
+      if (orConditions.length > 0) {
+        await tx.cashFlow.updateMany({
+          where: {
+            OR: orConditions,
+            status: { not: 2 },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      // Soft-cancel invoicePayment (thay vì hard-delete)
+      await tx.invoicePayment.update({
+        where: { id },
+        data: { status: 2, statusValue: 'Đã hủy' },
       });
 
-      await tx.invoicePayment.delete({ where: { id } });
       await this.calculateInvoiceTotals(payment.invoiceId, tx);
 
       const invoice = await tx.invoice.findUnique({
@@ -197,11 +225,26 @@ export class InvoicePaymentsService {
   }
 
   private async calculateInvoiceTotals(invoiceId: number, tx: any) {
-    const payments = await tx.invoicePayment.findMany({ where: { invoiceId } });
-    const paidAmount = payments.reduce(
+    // Tổng invoicePayment active (loại đã hủy)
+    const payments = await tx.invoicePayment.findMany({
+      where: { invoiceId, status: { not: 2 } },
+    });
+    const sumPayments = payments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),
       0,
     );
+
+    // Tổng CTN active (manual_offset, status=4) — tránh ghi đè mất phần CTN
+    const ctns = await tx.returnOrder.findMany({
+      where: { invoiceId, refundType: 'manual_offset', status: 4 },
+      select: { refundAmount: true },
+    });
+    const sumCtns = ctns.reduce(
+      (sum: number, c: any) => sum + Number(c.refundAmount),
+      0,
+    );
+
+    const paidAmount = sumPayments + sumCtns;
 
     const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) return;
