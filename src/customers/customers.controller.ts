@@ -52,6 +52,13 @@ export class CustomersController {
     return this.customersService.findByCode(code);
   }
 
+  @Get('export')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Xuất danh sách khách hàng' })
+  exportCustomers(@Query() query: CustomerQueryDto, @Req() req: any) {
+    return this.customersService.exportCustomers(query, req.user?.id);
+  }
+
   @Get(':id')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })
