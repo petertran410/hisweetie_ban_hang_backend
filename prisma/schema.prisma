@@ -42,6 +42,8 @@ model User {
   priceBookUsers        PriceBookUser[]
   createdTransfers      Transfer[]      @relation("TransferCreator")
   createdCustomerGroups CustomerGroup[] @relation("CustomerGroupCreator")
+  createdCustomers      Customer[]      @relation("CustomerCreator")
+  updatedCustomers      Customer[]      @relation("CustomerUpdater")
   cashFlowsCreated    CashFlow[] @relation("CashFlowCreator")
   cashFlowsCollected  CashFlow[] @relation("CashFlowCollector")
   createdProductions Production[] @relation("ProductionCreator")
@@ -370,6 +372,8 @@ model Customer {
   comments       String?
   customerTypeId Int?
   branchId       Int?
+  createdBy      Int?
+  updatedBy      Int?
   parentId       Int?
   totalPurchased Decimal   @default(0)
   totalDebt      Decimal   @default(0)
@@ -406,6 +410,8 @@ model Customer {
   returnOrders         ReturnOrder[]         @relation("ReturnOrderCustomer")
   parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
   addresses            CustomerAddress[]
+  creator              User?                 @relation("CustomerCreator", fields: [createdBy], references: [id])
+  updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
 
   @@map("customers")
 }
