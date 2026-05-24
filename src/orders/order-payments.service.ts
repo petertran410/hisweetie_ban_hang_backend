@@ -65,7 +65,7 @@ export class OrderPaymentsService {
       });
 
       const allPayments = await tx.orderPayment.findMany({
-        where: { orderId: dto.orderId },
+        where: { orderId: dto.orderId, status: { not: 2 } },
       });
       const paidAmount = allPayments.reduce(
         (sum, p) => sum + Number(p.amount),
@@ -272,7 +272,9 @@ export class OrderPaymentsService {
   }
 
   private async calculateOrderTotals(orderId: number, tx: any) {
-    const payments = await tx.orderPayment.findMany({ where: { orderId } });
+    const payments = await tx.orderPayment.findMany({
+      where: { orderId, status: { not: 2 } },
+    });
     const paidAmount = payments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),
       0,

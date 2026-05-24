@@ -660,7 +660,9 @@ export class OrdersService {
 
   private async calculateTotals(orderId: number, tx: any) {
     const items = await tx.orderItem.findMany({ where: { orderId } });
-    const payments = await tx.orderPayment.findMany({ where: { orderId } });
+    const payments = await tx.orderPayment.findMany({
+      where: { orderId, status: { not: 2 } },
+    });
 
     const totalAmount = items.reduce(
       (sum: number, item: any) => sum + Number(item.totalPrice),
