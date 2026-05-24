@@ -21,6 +21,8 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class CustomersService {
@@ -31,8 +33,9 @@ export class CustomersService {
 
   async exportCustomers(
     query: CustomerQueryDto,
-    userId?: number,
-  ): Promise<any[]> {
+    userId: number | undefined,
+    res: Response,
+  ): Promise<void> {
     const EXPORT_CAP = 5000;
 
     const {
@@ -63,7 +66,7 @@ export class CustomersService {
       isActive,
     } = query;
 
-    // ── where building — copy nguyên xi từ findAll ──────────────────────────
+    // ── where building (giữ nguyên logic) ────────────────────────────────────
     const where: any = {};
 
     if (isActive !== undefined) {
@@ -72,13 +75,8 @@ export class CustomersService {
       where.isActive = true;
     }
 
-    if (code) {
-      where.code = { contains: code, mode: 'insensitive' };
-    }
-
-    if (name) {
-      where.name = { contains: name, mode: 'insensitive' };
-    }
+    if (code) where.code = { contains: code, mode: 'insensitive' };
+    if (name) where.name = { contains: name, mode: 'insensitive' };
 
     if (contactNumber) {
       where.OR = [
@@ -92,35 +90,21 @@ export class CustomersService {
     }
 
     if (birthDate) {
-      const birthDateObj = new Date(birthDate);
+      const d = new Date(birthDate);
       where.birthDate = {
-        gte: new Date(
-          birthDateObj.getFullYear(),
-          birthDateObj.getMonth(),
-          birthDateObj.getDate(),
-        ),
-        lt: new Date(
-          birthDateObj.getFullYear(),
-          birthDateObj.getMonth(),
-          birthDateObj.getDate() + 1,
-        ),
+        gte: new Date(d.getFullYear(), d.getMonth(), d.getDate()),
+        lt: new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1),
       };
     }
 
-    // ── allowedGroupIds — giữ nguyên logic admin check ──────────────────────
     let isAdmin = false;
     if (userId) {
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
         include: {
-          userRoles: {
-            include: {
-              role: { select: { name: true } },
-            },
-          },
+          userRoles: { include: { role: { select: { name: true } } } },
         },
       });
-
       isAdmin =
         user?.userRoles.some(
           (ur) => ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
@@ -137,144 +121,96 @@ export class CustomersService {
         },
         select: { id: true },
       });
-
       const allowedGroupIds = allowedGroups.map((g) => g.id);
 
       if (groupId) {
         if (!allowedGroupIds.includes(groupId)) {
-          return []; // export trả về mảng rỗng thay vì object
+          res.end(); // không có quyền → trả file rỗng
+          return;
         }
-        where.customerGroupDetails = {
-          some: { customerGroupId: groupId },
-        };
+        where.customerGroupDetails = { some: { customerGroupId: groupId } };
       } else {
         where.customerGroupDetails = {
           some: { customerGroupId: { in: allowedGroupIds } },
         };
       }
     } else if (groupId) {
-      where.customerGroupDetails = {
-        some: { customerGroupId: groupId },
-      };
+      where.customerGroupDetails = { some: { customerGroupId: groupId } };
     }
 
     if (customerType && customerType !== 'all') {
       where.type = customerType === 'individual' ? 0 : 1;
     }
-
     if (gender && gender !== 'all') {
       where.gender = gender === 'male' ? true : false;
     }
-
-    if (branchId !== undefined) {
-      where.branchId = branchId;
-    }
-
-    if (createdBy !== undefined) {
-      where.createdBy = createdBy;
-    }
+    if (branchId !== undefined) where.branchId = branchId;
+    if (createdBy !== undefined) where.createdBy = createdBy;
 
     if (createdDateFrom || createdDateTo) {
       where.createdAt = {};
-      if (createdDateFrom) {
-        where.createdAt.gte = new Date(createdDateFrom);
-      }
+      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
       if (createdDateTo) {
-        const endDate = new Date(createdDateTo);
-        endDate.setHours(23, 59, 59, 999);
-        where.createdAt.lte = endDate;
+        const d = new Date(createdDateTo);
+        d.setHours(23, 59, 59, 999);
+        where.createdAt.lte = d;
       }
     }
 
     if (lastTransactionFrom || lastTransactionTo) {
       const invoiceWhere: any = {};
-      if (lastTransactionFrom) {
-        invoiceWhere.gte = new Date(lastTransactionFrom);
-      }
+      if (lastTransactionFrom) invoiceWhere.gte = new Date(lastTransactionFrom);
       if (lastTransactionTo) {
-        const endDate = new Date(lastTransactionTo);
-        endDate.setHours(23, 59, 59, 999);
-        invoiceWhere.lte = endDate;
+        const d = new Date(lastTransactionTo);
+        d.setHours(23, 59, 59, 999);
+        invoiceWhere.lte = d;
       }
-      where.invoices = {
-        some: { purchaseDate: invoiceWhere },
-      };
+      where.invoices = { some: { purchaseDate: invoiceWhere } };
     }
 
     if (birthdayFrom || birthdayTo) {
       where.birthDate = {};
       if (birthdayFrom) {
-        const startDate = new Date(birthdayFrom);
-        where.birthDate.gte = new Date(
-          1900,
-          startDate.getMonth(),
-          startDate.getDate(),
-        );
+        const d = new Date(birthdayFrom);
+        where.birthDate.gte = new Date(1900, d.getMonth(), d.getDate());
       }
       if (birthdayTo) {
-        const endDate = new Date(birthdayTo);
-        where.birthDate.lte = new Date(
-          2100,
-          endDate.getMonth(),
-          endDate.getDate(),
-        );
+        const d = new Date(birthdayTo);
+        where.birthDate.lte = new Date(2100, d.getMonth(), d.getDate());
       }
     }
 
     if (totalPurchasedFrom !== undefined || totalPurchasedTo !== undefined) {
       where.totalPurchased = {};
-      if (totalPurchasedFrom !== undefined) {
+      if (totalPurchasedFrom !== undefined)
         where.totalPurchased.gte = totalPurchasedFrom;
-      }
-      if (totalPurchasedTo !== undefined) {
+      if (totalPurchasedTo !== undefined)
         where.totalPurchased.lte = totalPurchasedTo;
-      }
     }
-
     if (debtFrom !== undefined || debtTo !== undefined) {
       where.totalDebt = {};
-      if (debtFrom !== undefined) {
-        where.totalDebt.gte = debtFrom;
-      }
-      if (debtTo !== undefined) {
-        where.totalDebt.lte = debtTo;
-      }
+      if (debtFrom !== undefined) where.totalDebt.gte = debtFrom;
+      if (debtTo !== undefined) where.totalDebt.lte = debtTo;
     }
-
     if (pointFrom !== undefined || pointTo !== undefined) {
       where.totalPoint = {};
-      if (pointFrom !== undefined) {
-        where.totalPoint.gte = pointFrom;
-      }
-      if (pointTo !== undefined) {
-        where.totalPoint.lte = pointTo;
-      }
+      if (pointFrom !== undefined) where.totalPoint.gte = pointFrom;
+      if (pointTo !== undefined) where.totalPoint.lte = pointTo;
     }
     // ── kết thúc where building ──────────────────────────────────────────────
 
-    const customers = await this.prisma.customer.findMany({
+    const allIdRows = await this.prisma.customer.findMany({
       where,
-      take: EXPORT_CAP,
+      select: { id: true },
       orderBy: { [orderBy]: orderDirection },
-      include: {
-        branch: { select: { id: true, name: true } },
-        addresses: {
-          where: { isDefault: true },
-          take: 1,
-        },
-        customerGroupDetails: {
-          include: {
-            customerGroup: { select: { id: true, name: true } },
-          },
-        },
-        creator: { select: { id: true, name: true } },
-      },
     });
 
-    if (customers.length === 0) return [];
+    if (allIdRows.length === 0) {
+      res.end();
+      return;
+    }
 
-    // ── 2 groupBy queries cho cột phái sinh — O(n) sau Map ──────────────────
-    const customerIds = customers.map((c) => c.id);
+    const customerIds = allIdRows.map((r) => r.id);
     const now = new Date();
 
     const [lastTxRows, debtStartRows] = await Promise.all([
@@ -301,54 +237,128 @@ export class CustomersService {
       debtStartRows.map((r) => [r.customerId, r._min.purchaseDate]),
     );
 
-    // ── map sang flat row ───────────────────────────────────────────────────
-    return customers.map((c) => {
-      const addr = c.addresses?.[0];
-      const groups =
-        c.customerGroupDetails?.map((d) => d.customerGroup.name).join('|') ??
-        '';
-
-      const lastTxDate = lastTxMap.get(c.id) ?? null;
-      const debtStartDate = debtStartMap.get(c.id) ?? null;
-      const debtDays = debtStartDate
-        ? Math.floor(
-            (now.getTime() - new Date(debtStartDate).getTime()) / 86_400_000,
-          )
-        : 0;
-
-      return {
-        code: c.code ?? '',
-        name: c.name,
-        contactNumber: c.contactNumber ?? '',
-        phone: c.phone ?? '',
-        email: c.email ?? '',
-        birthDate: c.birthDate
-          ? new Date(c.birthDate).toLocaleDateString('vi-VN')
-          : '',
-        gender: c.gender === true ? 'Nam' : c.gender === false ? 'Nữ' : '',
-        customerType: c.type === 0 ? 'Cá nhân' : 'Công ty',
-        isActive: c.isActive ? 1 : 0,
-        invoiceCccdCmnd: c.invoiceCccdCmnd ?? '',
-        organization: c.organization ?? '',
-        taxCode: c.taxCode ?? '',
-        groups,
-        comments: c.comments ?? '',
-        address: addr?.address ?? '',
-        locationName: addr?.locationName ?? '',
-        wardName: addr?.wardName ?? (addr as any)?.newWardName ?? '',
-        cityName: addr?.cityName ?? (addr as any)?.newCityName ?? '',
-        branchName: c.branch?.name ?? '',
-        totalDebt: Number(c.totalDebt),
-        totalPurchased: Number(c.totalPurchased),
-        totalRevenue: Number(c.totalRevenue),
-        lastTransactionDate: lastTxDate
-          ? new Date(lastTxDate).toLocaleDateString('vi-VN')
-          : '',
-        debtDays,
-        createdAt: new Date(c.createdAt).toLocaleDateString('vi-VN'),
-        createdByName: c.creator?.name ?? '',
-      };
+    // ── Stream Excel ─────────────────────────────────────────────────────────
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
     });
+    const sheet = workbook.addWorksheet('Khách hàng');
+
+    sheet.columns = [
+      { header: 'Mã khách hàng', key: 'code', width: 18 },
+      { header: 'Tên khách hàng', key: 'name', width: 28 },
+      { header: 'Điện thoại', key: 'contactNumber', width: 16 },
+      { header: 'Điện thoại 2', key: 'phone', width: 16 },
+      { header: 'Email', key: 'email', width: 24 },
+      { header: 'Ngày sinh', key: 'birthDate', width: 14 },
+      { header: 'Giới tính', key: 'gender', width: 10 },
+      { header: 'Loại khách hàng', key: 'customerType', width: 16 },
+      { header: 'Trạng thái', key: 'isActive', width: 18 },
+      { header: 'Số CMND/CCCD', key: 'invoiceCccdCmnd', width: 18 },
+      { header: 'Công ty', key: 'organization', width: 24 },
+      { header: 'Mã số thuế', key: 'taxCode', width: 16 },
+      { header: 'Nhóm khách hàng', key: 'groups', width: 22 },
+      { header: 'Ghi chú', key: 'comments', width: 24 },
+      { header: 'Địa chỉ', key: 'address', width: 30 },
+      { header: 'Khu vực', key: 'locationName', width: 18 },
+      { header: 'Phường/Xã', key: 'wardName', width: 18 },
+      { header: 'Thành phố', key: 'cityName', width: 18 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Nợ cần thu', key: 'totalDebt', width: 16 },
+      { header: 'Tổng bán', key: 'totalPurchased', width: 16 },
+      { header: 'Tổng bán trừ trả hàng', key: 'totalRevenue', width: 22 },
+      { header: 'Ngày giao dịch cuối', key: 'lastTransactionDate', width: 20 },
+      { header: 'Số ngày nợ', key: 'debtDays', width: 14 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 14 },
+      { header: 'Người tạo', key: 'createdByName', width: 20 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    // ── Pass 2: Stream theo batch — không load toàn bộ vào RAM ───────────────
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.customer.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { [orderBy]: orderDirection },
+        include: {
+          branch: { select: { id: true, name: true } },
+          addresses: { where: { isDefault: true }, take: 1 },
+          customerGroupDetails: {
+            include: { customerGroup: { select: { id: true, name: true } } },
+          },
+          creator: { select: { id: true, name: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const c of batch) {
+        const addr = c.addresses?.[0];
+        const groups =
+          c.customerGroupDetails?.map((d) => d.customerGroup.name).join('|') ??
+          '';
+
+        const lastTxDate = lastTxMap.get(c.id) ?? null;
+        const debtStartDate = debtStartMap.get(c.id) ?? null;
+        const debtDays = debtStartDate
+          ? Math.floor(
+              (now.getTime() - new Date(debtStartDate).getTime()) / 86_400_000,
+            )
+          : 0;
+
+        const row = sheet.addRow({
+          code: c.code ?? '',
+          name: c.name,
+          contactNumber: c.contactNumber ?? '',
+          phone: c.phone ?? '',
+          email: c.email ?? '',
+          birthDate: c.birthDate
+            ? new Date(c.birthDate).toLocaleDateString('vi-VN')
+            : '',
+          gender: c.gender === true ? 'Nam' : c.gender === false ? 'Nữ' : '',
+          customerType: c.type === 0 ? 'Cá nhân' : 'Công ty',
+          isActive: c.isActive ? 'Đang hoạt động' : 'Ngừng hoạt động',
+          invoiceCccdCmnd: c.invoiceCccdCmnd ?? '',
+          organization: c.organization ?? '',
+          taxCode: c.taxCode ?? '',
+          groups,
+          comments: c.comments ?? '',
+          address: addr?.address ?? '',
+          locationName: addr?.locationName ?? '',
+          wardName: addr?.wardName ?? (addr as any)?.newWardName ?? '',
+          cityName: addr?.cityName ?? (addr as any)?.newCityName ?? '',
+          branchName: c.branch?.name ?? '',
+          totalDebt: Number(c.totalDebt),
+          totalPurchased: Number(c.totalPurchased),
+          totalRevenue: Number(c.totalRevenue),
+          lastTransactionDate: lastTxDate
+            ? new Date(lastTxDate).toLocaleDateString('vi-VN')
+            : '',
+          debtDays,
+          createdAt: new Date(c.createdAt).toLocaleDateString('vi-VN'),
+          createdByName: c.creator?.name ?? '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findAll(query: CustomerQueryDto, userId?: number) {

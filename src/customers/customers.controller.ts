@@ -9,7 +9,9 @@ import {
   Query,
   UseGuards,
   Req,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { CustomersService } from './customers.service';
 import {
   CreateCustomerDto,
@@ -53,10 +55,27 @@ export class CustomersController {
   }
 
   @Get('export')
-  @RequirePermissions('customers:view')
+  @RequirePermissions('customers:export')
   @ApiOperation({ summary: 'Xuất danh sách khách hàng' })
-  exportCustomers(@Query() query: CustomerQueryDto, @Req() req: any) {
-    return this.customersService.exportCustomers(query, req.user?.id);
+  async exportCustomers(
+    @Query() query: CustomerQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DanhSachKhachHang_${timestamp}.xlsx`,
+    );
+
+    await this.customersService.exportCustomers(query, req.user?.id, res);
   }
 
   @Get(':id')
