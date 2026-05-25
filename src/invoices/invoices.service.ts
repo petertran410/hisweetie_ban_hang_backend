@@ -45,6 +45,7 @@ export class InvoicesService {
       search,
       customerIds,
       branchId,
+      branchIds,
       statusIds,
       fromDate,
       toDate,
@@ -139,7 +140,9 @@ export class InvoicesService {
       where.parentCustomerId = query.parentCustomerId;
     }
 
-    if (branchId) {
+    if (branchIds?.length) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
       where.branchId = branchId;
     }
 
@@ -2379,6 +2382,7 @@ export class InvoicesService {
       search,
       customerIds,
       branchId,
+      branchIds,
       statusIds,
       fromDate,
       toDate,
@@ -2457,7 +2461,12 @@ export class InvoicesService {
     }
 
     if (customerIds?.length) where.customerId = { in: customerIds };
-    if (branchId) where.branchId = branchId;
+    if (branchIds?.length) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
+
     if (statusIds?.length) where.status = { in: statusIds };
 
     if (fromDate || toDate || fromPurchaseDate || toPurchaseDate) {

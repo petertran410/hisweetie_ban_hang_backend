@@ -48,6 +48,18 @@ export class InvoiceQueryDto {
   branchId?: number;
 
   @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : [],
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  branchIds?: number[];
+
+  @IsOptional()
   @IsInt()
   @Type(() => Number)
   parentCustomerId?: number;
@@ -134,4 +146,8 @@ export class InvoiceQueryDto {
   @IsOptional()
   @IsString()
   productNoteSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  columns?: string;
 }
