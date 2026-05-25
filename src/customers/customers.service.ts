@@ -199,30 +199,29 @@ export class CustomersService {
     }
     // ── kết thúc where building ──────────────────────────────────────────────
 
-    const allIdRows = await this.prisma.customer.findMany({
-      where,
-      select: { id: true },
-      orderBy: { [orderBy]: orderDirection },
-    });
+    const customerCount = await this.prisma.customer.count({ where });
 
-    if (allIdRows.length === 0) {
+    if (customerCount === 0) {
       res.end();
       return;
     }
 
-    const customerIds = allIdRows.map((r) => r.id);
     const now = new Date();
 
+    // groupBy dùng relation filter → Prisma sinh subquery, không dùng IN list bind vars
     const [lastTxRows, debtStartRows] = await Promise.all([
       this.prisma.invoice.groupBy({
         by: ['customerId'],
-        where: { customerId: { in: customerIds }, status: { not: 2 } },
+        where: {
+          customer: where,
+          status: { not: 2 },
+        },
         _max: { purchaseDate: true },
       }),
       this.prisma.invoice.groupBy({
         by: ['customerId'],
         where: {
-          customerId: { in: customerIds },
+          customer: where,
           debtAmount: { gt: 0 },
           status: { not: 2 },
         },
