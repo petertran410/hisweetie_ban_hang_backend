@@ -106,24 +106,40 @@ export class CustomersController {
     );
   }
 
+  // Controller export-debt — bỏ 2 dòng setHeader, chỉ giữ lại việc gọi service
   @Get(':id/export-debt')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Xuất công nợ chi tiết khách hàng' })
-  async exportCustomerDebt(@Param('id') id: string, @Res() res: Response) {
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  async exportCustomerDebt(
+    @Param('id') id: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
+    @Query('includeDetails') includeDetails?: string,
+    @Query('showUnit') showUnit?: string,
+    @Query('showQty') showQty?: string,
+    @Query('showPrice') showPrice?: string,
+    @Query('showDiscount') showDiscount?: string,
+    @Query('showTotal') showTotal?: string,
+    @Query('showNote') showNote?: string,
+    @Res() res?: Response,
+  ) {
+    const toBool = (v?: string) => v === 'true';
 
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    await this.customersService.exportCustomerDebt(
+      +id,
+      {
+        fromDate,
+        toDate,
+        includeDetails: toBool(includeDetails),
+        showUnit: toBool(showUnit),
+        showQty: toBool(showQty),
+        showPrice: toBool(showPrice),
+        showDiscount: toBool(showDiscount),
+        showTotal: toBool(showTotal),
+        showNote: toBool(showNote),
+      },
+      res,
     );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=CongNoChiTiet_KH${id}_KV${ts}.xlsx`,
-    );
-
-    await this.customersService.exportCustomerDebt(+id, res);
   }
 
   @Get(':id')

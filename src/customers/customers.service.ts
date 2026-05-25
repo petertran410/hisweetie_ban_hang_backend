@@ -2147,7 +2147,21 @@ export class CustomersService {
   }
 
   // ── Export công nợ chi tiết (hóa đơn còn nợ) ────────────────────────────────
-  async exportCustomerDebt(customerId: number, res: Response): Promise<void> {
+  async exportCustomerDebt(
+    customerId: number,
+    options: {
+      fromDate?: string;
+      toDate?: string;
+      includeDetails?: boolean;
+      showUnit?: boolean;
+      showQty?: boolean;
+      showPrice?: boolean;
+      showDiscount?: boolean;
+      showTotal?: boolean;
+      showNote?: boolean;
+    },
+    res: Response,
+  ): Promise<void> {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: {
@@ -2160,25 +2174,92 @@ export class CustomersService {
     });
     if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
 
-    const invoices = await this.prisma.invoice.findMany({
-      where: {
-        customerId,
-        debtAmount: { gt: 0 },
-        status: { notIn: [2] },
-      },
-      select: {
-        code: true,
-        purchaseDate: true,
-        grandTotal: true,
-        paidAmount: true,
-        debtAmount: true,
-        statusValue: true,
-        branch: { select: { name: true } },
-        soldBy: { select: { name: true } },
-      },
-      orderBy: { purchaseDate: 'asc' },
-    });
+    // ── 1. Lấy timeline + filter date ───────────────────────────────────────
+    const { data: rawTimeline } = await this.getDebtTimeline(customerId, false);
 
+    let timeline = [...rawTimeline].reverse(); // sort tăng dần (cũ → mới)
+    if (options.fromDate) {
+      const from = new Date(options.fromDate);
+      timeline = timeline.filter((i) => new Date(i.date) >= from);
+    }
+    if (options.toDate) {
+      const to = new Date(options.toDate);
+      to.setHours(23, 59, 59, 999);
+      timeline = timeline.filter((i) => new Date(i.date) <= to);
+    }
+
+    // ── 2. Tính Nợ đầu kỳ / Phát sinh / Nợ cuối kỳ ────────────────────────
+    let totalDebit = 0;
+    let totalCredit = 0;
+    for (const item of timeline) {
+      if (item.type === 'invoice' || item.type === 'expense') {
+        totalDebit += Number(item.amount);
+      } else {
+        totalCredit += Number(item.amount);
+      }
+    }
+    const noCuoiKy = Number(customer.totalDebt ?? 0);
+    const noDauKy = noCuoiKy - (totalDebit - totalCredit);
+
+    // ── 3. Batch fetch InvoiceDetail + ReturnOrderDetail ────────────────────
+    const invoiceIds = timeline
+      .filter((i) => i.type === 'invoice')
+      .map((i) => i.id as number);
+    const returnOrderIds = timeline
+      .filter((i) => i.type === 'return_order')
+      .map((i) => i.id as number);
+
+    const [invoiceDetails, returnOrderDetails] = await Promise.all([
+      invoiceIds.length > 0
+        ? this.prisma.invoiceDetail.findMany({
+            where: { invoiceId: { in: invoiceIds } },
+            select: {
+              invoiceId: true,
+              productCode: true,
+              productName: true,
+              quantity: true,
+              price: true,
+              discount: true,
+              totalPrice: true,
+              note: true,
+              product: { select: { unit: true } },
+            },
+            orderBy: { id: 'asc' },
+          })
+        : Promise.resolve([]),
+      returnOrderIds.length > 0
+        ? this.prisma.returnOrderDetail.findMany({
+            where: { returnOrderId: { in: returnOrderIds } },
+            select: {
+              returnOrderId: true,
+              productCode: true,
+              productName: true,
+              confirmedQuantity: true,
+              returnPrice: true,
+              totalAmount: true,
+              note: true,
+              product: { select: { unit: true } },
+            },
+            orderBy: { id: 'asc' },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Build Maps để O(1) lookup
+    const invDetailMap = new Map<number, typeof invoiceDetails>();
+    for (const d of invoiceDetails) {
+      if (!invDetailMap.has(d.invoiceId)) invDetailMap.set(d.invoiceId, []);
+      invDetailMap.get(d.invoiceId)!.push(d);
+    }
+
+    const roDetailMap = new Map<number, typeof returnOrderDetails>();
+    for (const d of returnOrderDetails) {
+      if (!roDetailMap.has(d.returnOrderId))
+        roDetailMap.set(d.returnOrderId, []);
+      roDetailMap.get(d.returnOrderId)!.push(d);
+    }
+
+    // ── 4. Helper format ─────────────────────────────────────────────────────
     const pad = (n: number) => String(n).padStart(2, '0');
     const fmtDate = (d: any) => {
       if (!d) return '';
@@ -2186,63 +2267,266 @@ export class CustomersService {
       return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
     };
 
-    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
-      stream: res,
-      useStyles: true,
-    });
+    const TYPE_LABEL: Record<string, string> = {
+      invoice: 'Bán hàng',
+      payment: 'Thanh toán',
+      expense: 'Hoàn tiền',
+      return_order: 'Trả hàng',
+      debt_offset: 'Cấn trừ nợ',
+    };
+
+    // ── 5. Build workbook (non-streaming) ────────────────────────────────────
+    const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Công nợ chi tiết');
 
-    // Set column widths trước khi addRow
-    [6, 18, 20, 20, 18, 16, 16, 16, 14].forEach((w, i) => {
+    // Column widths (A=STT, B=Thời gian, C=Mã, D=Diễn giải, E=DVT, F=SL,
+    //               G=Đơn giá, H=Giảm giá, I=VAT, J=Giá bán/trả,
+    //               K=Thành tiền, L=Ghi nợ, M=Ghi có)
+    const COL_WIDTHS = [6, 20, 16, 36, 8, 10, 14, 12, 8, 14, 14, 16, 16];
+    COL_WIDTHS.forEach((w, i) => {
       sheet.getColumn(i + 1).width = w;
     });
 
-    // Info block khách hàng
-    sheet.addRow(['Mã khách hàng:', customer.code ?? '']).commit();
-    sheet.addRow(['Tên khách hàng:', customer.name]).commit();
-    sheet.addRow(['Điện thoại:', customer.contactNumber ?? '']).commit();
-    sheet
-      .addRow(['Tổng nợ hiện tại:', Number(customer.totalDebt ?? 0)])
-      .commit();
-    sheet.addRow([]).commit();
+    // ── Header rows ──────────────────────────────────────────────────────────
+    // Row 1–3: Company info (placeholder – có thể customize sau)
+    sheet.addRow(['HiSweetie']);
+    sheet.addRow([]);
+    sheet.addRow([]);
 
-    // Header cột
-    const headerRow = sheet.addRow([
-      'STT',
-      'Mã hóa đơn',
-      'Thời gian',
-      'Chi nhánh',
-      'Người bán',
-      'Khách cần trả',
-      'Khách đã trả',
-      'Còn nợ',
-      'Trạng thái',
+    // Row 4: Title (centered)
+    const titleRow = sheet.addRow([
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'Công nợ chi tiết khách hàng',
     ]);
-    headerRow.font = { bold: true, size: 11 };
-    headerRow.fill = {
+    titleRow.getCell(7).font = { bold: true, size: 14 };
+    titleRow.getCell(7).alignment = { horizontal: 'center' };
+
+    sheet.addRow([]);
+
+    // Row 6: Customer info + summary
+    const r6 = sheet.addRow([
+      'Khách hàng',
+      customer.name,
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'Nợ đầu kỳ',
+      noDauKy,
+    ]);
+    r6.getCell(1).font = { bold: true };
+    r6.getCell(12).font = { bold: true };
+
+    const r7 = sheet.addRow([
+      'Mã KH',
+      customer.code ?? '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'Phát sinh trong kỳ',
+      totalDebit,
+      totalCredit,
+    ]);
+    r7.getCell(1).font = { bold: true };
+    r7.getCell(12).font = { bold: true };
+
+    const r8 = sheet.addRow([
+      'Điện thoại',
+      customer.contactNumber ?? '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      'Nợ cuối kỳ',
+      noCuoiKy,
+    ]);
+    r8.getCell(1).font = { bold: true };
+    r8.getCell(12).font = { bold: true };
+
+    sheet.addRow([]);
+
+    // ── Column header row ────────────────────────────────────────────────────
+    const HEADER_FILL: ExcelJS.Fill = {
       type: 'pattern',
       pattern: 'solid',
       fgColor: { argb: 'FFD9E1F2' },
     };
-    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
-    headerRow.commit();
-
-    invoices.forEach((inv, idx) => {
-      sheet
-        .addRow([
-          idx + 1,
-          inv.code,
-          fmtDate(inv.purchaseDate),
-          (inv.branch as any)?.name ?? '',
-          (inv.soldBy as any)?.name ?? '',
-          Number(inv.grandTotal),
-          Number(inv.paidAmount),
-          Number(inv.debtAmount),
-          inv.statusValue ?? '',
-        ])
-        .commit();
+    const hRow = sheet.addRow([
+      '',
+      'Thời gian',
+      'Mã',
+      'Diễn giải',
+      'DVT',
+      'SL',
+      'Đơn giá',
+      'Giảm giá',
+      'VAT',
+      'Giá bán/trả',
+      'Thành tiền',
+      'Ghi nợ',
+      'Ghi có',
+    ]);
+    hRow.eachCell((cell) => {
+      cell.font = { bold: true };
+      cell.fill = HEADER_FILL;
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = {
+        top: { style: 'thin' },
+        bottom: { style: 'thin' },
+        left: { style: 'thin' },
+        right: { style: 'thin' },
+      };
     });
 
-    await workbook.commit();
+    // ── Data rows ────────────────────────────────────────────────────────────
+    let stt = 0;
+    const numFmt = '#,##0';
+
+    for (const item of timeline) {
+      const isDebit = item.type === 'invoice' || item.type === 'expense';
+      const debit = isDebit ? Number(item.amount) : null;
+      const credit = !isDebit ? Number(item.amount) : null;
+
+      stt++;
+
+      // Main transaction row
+      const mainRow = sheet.addRow([
+        stt,
+        fmtDate(item.date),
+        item.code,
+        TYPE_LABEL[item.type] ?? item.type,
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        debit ?? '',
+        credit ?? '',
+      ]);
+      mainRow.getCell(1).alignment = { horizontal: 'center' };
+      mainRow.getCell(12).numFmt = numFmt;
+      mainRow.getCell(13).numFmt = numFmt;
+      if (isDebit) {
+        mainRow.getCell(12).font = { color: { argb: 'FFCC0000' } };
+      } else {
+        mainRow.getCell(13).font = { color: { argb: 'FF006600' } };
+      }
+
+      // Sub-rows: Invoice details
+      if (options.includeDetails && item.type === 'invoice') {
+        const details = invDetailMap.get(item.id as number) ?? [];
+        for (const d of details) {
+          const unitPrice = Number(d.price);
+          const discountPerUnit = Number(d.discount);
+          const salePrice = unitPrice - discountPerUnit;
+          const qty = Number(d.quantity);
+
+          const subRow = sheet.addRow([
+            '',
+            '',
+            d.productCode,
+            d.productName + (d.note ? ` (${d.note})` : ''),
+            options.showUnit ? ((d.product as any)?.unit ?? '') : '',
+            options.showQty ? qty : '',
+            options.showPrice ? unitPrice : '',
+            options.showDiscount ? discountPerUnit : '',
+            0, // VAT
+            options.showTotal ? salePrice : '',
+            options.showTotal ? Number(d.totalPrice) : '',
+            '',
+            '',
+          ]);
+
+          subRow.font = { color: { argb: 'FF444444' } };
+          subRow.getCell(7).numFmt = numFmt;
+          subRow.getCell(8).numFmt = numFmt;
+          subRow.getCell(10).numFmt = numFmt;
+          subRow.getCell(11).numFmt = numFmt;
+        }
+      }
+
+      // Sub-rows: Return order details
+      if (options.includeDetails && item.type === 'return_order') {
+        const details = roDetailMap.get(item.id as number) ?? [];
+        for (const d of details) {
+          const returnPrice = Number(d.returnPrice);
+          const qty = Number(d.confirmedQuantity);
+
+          const subRow = sheet.addRow([
+            '',
+            '',
+            d.productCode,
+            d.productName + (d.note ? ` (${d.note})` : ''),
+            options.showUnit ? ((d.product as any)?.unit ?? '') : '',
+            options.showQty ? qty : '',
+            options.showPrice ? returnPrice : '',
+            options.showDiscount ? 0 : '',
+            0, // VAT
+            options.showTotal ? returnPrice : '',
+            options.showTotal ? Number(d.totalAmount) : '',
+            '',
+            '',
+          ]);
+
+          subRow.font = { color: { argb: 'FF444444' } };
+          subRow.getCell(7).numFmt = numFmt;
+          subRow.getCell(10).numFmt = numFmt;
+          subRow.getCell(11).numFmt = numFmt;
+        }
+      }
+    }
+
+    // ── Tổng cộng ────────────────────────────────────────────────────────────
+    const totalRow = sheet.addRow([
+      '',
+      'Tổng cộng',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '',
+      totalDebit,
+      totalCredit,
+    ]);
+    totalRow.getCell(2).font = { bold: true };
+    totalRow.getCell(12).font = { bold: true };
+    totalRow.getCell(13).font = { bold: true };
+    totalRow.getCell(12).numFmt = numFmt;
+    totalRow.getCell(13).numFmt = numFmt;
+
+    // ── Stream ra response ───────────────────────────────────────────────────
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    await workbook.xlsx.write(res);
+    res.end();
   }
 }
