@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateInvoiceDto,
@@ -25,7 +27,6 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
-import { query } from 'express';
 
 @Injectable()
 export class InvoicesService {
@@ -2371,5 +2372,540 @@ export class InvoicesService {
         );
       }
     }
+  }
+
+  private buildInvoiceExportWhere(query: InvoiceQueryDto): any {
+    const {
+      search,
+      customerIds,
+      branchId,
+      statusIds,
+      fromDate,
+      toDate,
+      fromPurchaseDate,
+      toPurchaseDate,
+      fromCreatedDate,
+      toCreatedDate,
+      deliveryStatus,
+      paymentMethod,
+      bankAccountIds,
+      invoiceCodeSearch,
+      productSearch,
+      customerSearch,
+      deliveryCodeSearch,
+      orderCodeSearch,
+      descriptionSearch,
+      productNoteSearch,
+    } = query;
+
+    const where: any = {};
+
+    if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { description: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    if (invoiceCodeSearch) {
+      where.code = { contains: invoiceCodeSearch, mode: 'insensitive' };
+    }
+
+    if (customerSearch) {
+      where.customer = {
+        OR: [
+          { name: { contains: customerSearch, mode: 'insensitive' } },
+          { code: { contains: customerSearch, mode: 'insensitive' } },
+          { contactNumber: { contains: customerSearch, mode: 'insensitive' } },
+        ],
+      };
+    }
+
+    if (deliveryCodeSearch) {
+      where.delivery = {
+        ...where.delivery,
+        deliveryCode: { contains: deliveryCodeSearch, mode: 'insensitive' },
+      };
+    }
+
+    if (orderCodeSearch) {
+      where.order = {
+        code: { contains: orderCodeSearch, mode: 'insensitive' },
+      };
+    }
+
+    if (descriptionSearch) {
+      where.description = { contains: descriptionSearch, mode: 'insensitive' };
+    }
+
+    const detailsConditions: any = {};
+    if (productSearch) {
+      detailsConditions.OR = [
+        { productCode: { contains: productSearch, mode: 'insensitive' } },
+        { productName: { contains: productSearch, mode: 'insensitive' } },
+      ];
+    }
+    if (productNoteSearch) {
+      detailsConditions.note = {
+        contains: productNoteSearch,
+        mode: 'insensitive',
+      };
+    }
+    if (Object.keys(detailsConditions).length > 0) {
+      where.details = { some: detailsConditions };
+    }
+
+    if (customerIds?.length) where.customerId = { in: customerIds };
+    if (branchId) where.branchId = branchId;
+    if (statusIds?.length) where.status = { in: statusIds };
+
+    if (fromDate || toDate || fromPurchaseDate || toPurchaseDate) {
+      where.purchaseDate = {};
+      if (fromDate || fromPurchaseDate)
+        where.purchaseDate.gte = new Date((fromDate || fromPurchaseDate)!);
+      if (toDate || toPurchaseDate)
+        where.purchaseDate.lte = new Date((toDate || toPurchaseDate)!);
+    }
+
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
+
+    if (deliveryStatus) {
+      if (deliveryStatus === 'none') where.delivery = null;
+      else if (deliveryStatus === 'pending')
+        where.delivery = { ...where.delivery, status: 1 };
+      else if (deliveryStatus === 'delivered')
+        where.delivery = { ...where.delivery, status: { gte: 2 } };
+    }
+
+    if (paymentMethod) {
+      where.payments = { some: { paymentMethod } };
+    }
+
+    if (bankAccountIds?.length) {
+      where.payments = {
+        some: {
+          ...(paymentMethod ? { paymentMethod } : {}),
+          accountId: { in: bankAccountIds },
+        },
+      };
+    }
+
+    return where;
+  }
+
+  getDetailColumns(): Array<{ key: string; header: string; width: number }> {
+    return [
+      { key: 'branchName', header: 'Chi nhánh', width: 18 },
+      { key: 'invoiceCode', header: 'Mã hóa đơn', width: 16 },
+      { key: 'purchaseDate', header: 'Thời gian', width: 18 },
+      { key: 'createdAt', header: 'Thời gian tạo', width: 18 },
+      { key: 'updatedAt', header: 'Ngày cập nhật', width: 18 },
+      { key: 'orderCode', header: 'Mã đặt hàng', width: 16 },
+      { key: 'customerCode', header: 'Mã khách hàng', width: 14 },
+      { key: 'customerName', header: 'Tên khách hàng', width: 22 },
+      { key: 'customerPhone', header: 'Điện thoại', width: 14 },
+      { key: 'customerAddress', header: 'Địa chỉ KH', width: 28 },
+      { key: 'customerLocationName', header: 'Khu vực KH', width: 18 },
+      { key: 'customerWardName', header: 'Phường-Xã KH', width: 18 },
+      { key: 'priceBookName', header: 'Bảng giá', width: 16 },
+      { key: 'soldByName', header: 'Người bán', width: 18 },
+      { key: 'creatorName', header: 'Người tạo', width: 18 },
+      { key: 'deliveryReceiver', header: 'Người nhận', width: 18 },
+      { key: 'deliveryPhone', header: 'ĐT người nhận', width: 14 },
+      { key: 'deliveryAddress', header: 'Địa chỉ giao', width: 28 },
+      { key: 'deliveryLocationName', header: 'Khu vực giao', width: 18 },
+      { key: 'deliveryWardName', header: 'Phường-Xã giao', width: 18 },
+      { key: 'deliveryWeight', header: 'Trọng lượng (gram)', width: 20 },
+      { key: 'deliveryNote', header: 'Ghi chú giao hàng', width: 22 },
+      { key: 'description', header: 'Ghi chú', width: 22 },
+      { key: 'totalAmount', header: 'Tổng tiền hàng', width: 16 },
+      { key: 'discount', header: 'Giảm giá HĐ', width: 14 },
+      { key: 'grandTotal', header: 'Khách cần trả', width: 16 },
+      { key: 'paidAmount', header: 'Khách đã trả', width: 16 },
+      { key: 'cashPayment', header: 'Tiền mặt', width: 14 },
+      { key: 'cardPayment', header: 'Thẻ', width: 12 },
+      { key: 'walletPayment', header: 'Ví', width: 12 },
+      { key: 'bankTransferPayment', header: 'Chuyển khoản', width: 16 },
+      { key: 'rewardPoint', header: 'Điểm', width: 10 }, // no schema source → empty
+      { key: 'voucherAmount', header: 'Voucher', width: 12 }, // no schema source → empty
+      { key: 'voucherCode', header: 'Mã voucher', width: 14 }, // no schema source → empty
+      { key: 'codAmount', header: 'Còn cần thu (COD)', width: 20 },
+      { key: 'statusValue', header: 'Trạng thái', width: 16 },
+      { key: 'productCode', header: 'Mã hàng', width: 14 },
+      { key: 'productName', header: 'Tên hàng', width: 28 },
+      { key: 'productNote', header: 'Ghi chú hàng hóa', width: 22 },
+      { key: 'quantity', header: 'Số lượng', width: 12 },
+      { key: 'unitPrice', header: 'Đơn giá', width: 14 },
+      { key: 'detailDiscountRatio', header: 'Giảm giá %', width: 12 },
+      { key: 'detailDiscount', header: 'Giảm giá', width: 14 },
+      { key: 'sellingPrice', header: 'Giá bán', width: 14 },
+      { key: 'totalPrice', header: 'Thành tiền', width: 16 },
+    ];
+  }
+
+  // ─── EXPORT 1: Tổng quan (1 dòng/hóa đơn) ──────────────────────────────────
+  async exportOverview(query: InvoiceQueryDto, res: Response): Promise<void> {
+    const where = this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn tổng quan');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 16 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 18 },
+      { header: 'Mã đặt hàng', key: 'orderCode', width: 16 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Điện thoại', key: 'customerPhone', width: 14 },
+      { header: 'Địa chỉ KH', key: 'customerAddress', width: 28 },
+      { header: 'Bảng giá', key: 'priceBookName', width: 16 },
+      { header: 'Người bán', key: 'soldByName', width: 18 },
+      { header: 'Người tạo', key: 'creatorName', width: 18 },
+      { header: 'Người nhận', key: 'deliveryReceiver', width: 18 },
+      { header: 'Ghi chú giao hàng', key: 'deliveryNote', width: 22 },
+      { header: 'Ghi chú', key: 'description', width: 22 },
+      { header: 'Tổng tiền hàng', key: 'totalAmount', width: 16 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Khách cần trả', key: 'grandTotal', width: 16 },
+      { header: 'Khách đã trả', key: 'paidAmount', width: 16 },
+      { header: 'Còn nợ', key: 'debtAmount', width: 14 },
+      { header: 'Trạng thái', key: 'statusValue', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          createdAt: true,
+          totalAmount: true,
+          discount: true,
+          grandTotal: true,
+          paidAmount: true,
+          debtAmount: true,
+          statusValue: true,
+          description: true,
+          priceBookName: true,
+          branch: { select: { name: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
+            },
+          },
+          order: { select: { code: true } },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          delivery: { select: { receiver: true, noteForDriver: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        stt++;
+        const defaultAddr =
+          (inv.customer as any)?.addresses?.[0]?.address ?? '';
+        sheet
+          .addRow({
+            stt,
+            branchName: inv.branch?.name ?? '',
+            invoiceCode: inv.code,
+            purchaseDate: new Date(inv.purchaseDate),
+            createdAt: new Date(inv.createdAt),
+            orderCode: inv.order?.code ?? '',
+            customerCode: inv.customer?.code ?? 'Khách vãng lai',
+            customerName: inv.customer?.name ?? 'Khách vãng lai',
+            customerPhone:
+              inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
+            customerAddress: defaultAddr,
+            priceBookName: inv.priceBookName ?? '',
+            soldByName: inv.soldBy?.name ?? '',
+            creatorName: inv.creator?.name ?? '',
+            deliveryReceiver: inv.delivery?.receiver ?? '',
+            deliveryNote: inv.delivery?.noteForDriver ?? '',
+            description: inv.description ?? '',
+            totalAmount: Number(inv.totalAmount),
+            discount: Number(inv.discount),
+            grandTotal: Number(inv.grandTotal),
+            paidAmount: Number(inv.paidAmount),
+            debtAmount: Number(inv.debtAmount),
+            statusValue: inv.statusValue ?? '',
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  // ─── EXPORT 2: Chi tiết (1 dòng/sản phẩm) ──────────────────────────────────
+  async exportDetail(
+    query: InvoiceQueryDto,
+    selectedColumns: string[],
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+    const catalog = this.getDetailColumns();
+
+    const activeCols =
+      selectedColumns.length > 0
+        ? catalog.filter((c) => selectedColumns.includes(c.key))
+        : catalog;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn chi tiết');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      ...activeCols.map((c) => ({
+        header: c.header,
+        key: c.key,
+        width: c.width,
+      })),
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          createdAt: true,
+          updatedAt: true,
+          totalAmount: true,
+          discount: true,
+          grandTotal: true,
+          paidAmount: true,
+          debtAmount: true,
+          statusValue: true,
+          description: true,
+          priceBookName: true,
+          usingCod: true,
+          branch: { select: { name: true } },
+          order: { select: { code: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true, locationName: true, wardName: true },
+              },
+            },
+          },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          delivery: {
+            select: {
+              receiver: true,
+              contactNumber: true,
+              address: true,
+              locationName: true,
+              wardName: true,
+              weight: true,
+              weightUnit: true,
+              noteForDriver: true,
+              priceCodPayment: true,
+            },
+          },
+          payments: {
+            select: { paymentMethod: true, amount: true },
+          },
+          details: {
+            select: {
+              productCode: true,
+              productName: true,
+              note: true,
+              quantity: true,
+              price: true,
+              discount: true,
+              discountRatio: true,
+              totalPrice: true,
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        const addr = (inv.customer as any)?.addresses?.[0];
+
+        const payMap = { cash: 0, card: 0, wallet: 0, bank_transfer: 0 };
+        for (const p of inv.payments ?? []) {
+          const m = p.paymentMethod ?? 'cash';
+          if (m in payMap) payMap[m as keyof typeof payMap] += Number(p.amount);
+        }
+
+        let weightGram = 0;
+        if (inv.delivery?.weight != null) {
+          const w = Number(inv.delivery.weight);
+          weightGram = inv.delivery.weightUnit === 'kg' ? w * 1000 : w;
+        }
+
+        const codAmount = inv.usingCod
+          ? Number(inv.delivery?.priceCodPayment ?? 0)
+          : Number(inv.debtAmount);
+
+        const invData: Record<string, any> = {
+          branchName: inv.branch?.name ?? '',
+          invoiceCode: inv.code,
+          purchaseDate: new Date(inv.purchaseDate),
+          createdAt: new Date(inv.createdAt),
+          updatedAt: new Date(inv.updatedAt),
+          orderCode: inv.order?.code ?? '',
+          customerCode: inv.customer?.code ?? 'Khách vãng lai',
+          customerName: inv.customer?.name ?? 'Khách vãng lai',
+          customerPhone:
+            inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
+          customerAddress: addr?.address ?? '',
+          customerLocationName: addr?.locationName ?? '',
+          customerWardName: addr?.wardName ?? '',
+          priceBookName: inv.priceBookName ?? '',
+          soldByName: inv.soldBy?.name ?? '',
+          creatorName: inv.creator?.name ?? '',
+          deliveryReceiver: inv.delivery?.receiver ?? '',
+          deliveryPhone: inv.delivery?.contactNumber ?? '',
+          deliveryAddress: inv.delivery?.address ?? '',
+          deliveryLocationName: inv.delivery?.locationName ?? '',
+          deliveryWardName: inv.delivery?.wardName ?? '',
+          deliveryWeight: weightGram,
+          deliveryNote: inv.delivery?.noteForDriver ?? '',
+          description: inv.description ?? '',
+          totalAmount: Number(inv.totalAmount),
+          discount: Number(inv.discount),
+          grandTotal: Number(inv.grandTotal),
+          paidAmount: Number(inv.paidAmount),
+          cashPayment: payMap.cash,
+          cardPayment: payMap.card,
+          walletPayment: payMap.wallet,
+          bankTransferPayment: payMap.bank_transfer,
+          rewardPoint: '',
+          voucherAmount: '',
+          voucherCode: '',
+          codAmount,
+          statusValue: inv.statusValue ?? '',
+        };
+
+        const details = inv.details?.length ? inv.details : [null];
+
+        for (const detail of details) {
+          stt++;
+          const row: Record<string, any> = { stt };
+
+          for (const col of activeCols) {
+            if (col.key in invData) {
+              row[col.key] = invData[col.key];
+            } else if (detail) {
+              switch (col.key) {
+                case 'productCode':
+                  row[col.key] = detail.productCode;
+                  break;
+                case 'productName':
+                  row[col.key] = detail.productName;
+                  break;
+                case 'productNote':
+                  row[col.key] = detail.note ?? '';
+                  break;
+                case 'quantity':
+                  row[col.key] = Number(detail.quantity);
+                  break;
+                case 'unitPrice':
+                  row[col.key] = Number(detail.price);
+                  break;
+                case 'detailDiscountRatio':
+                  row[col.key] = Number(detail.discountRatio);
+                  break;
+                case 'detailDiscount':
+                  row[col.key] = Number(detail.discount);
+                  break;
+                case 'sellingPrice':
+                  row[col.key] = Number(detail.price) - Number(detail.discount);
+                  break;
+                case 'totalPrice':
+                  row[col.key] = Number(detail.totalPrice);
+                  break;
+                default:
+                  row[col.key] = '';
+              }
+            } else {
+              row[col.key] = '';
+            }
+          }
+
+          sheet.addRow(row).commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 }

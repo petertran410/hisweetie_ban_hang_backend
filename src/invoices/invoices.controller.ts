@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  Res,
 } from '@nestjs/common';
 import { InvoicesService } from './invoices.service';
 import {
@@ -21,6 +22,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { Response } from 'express';
 
 @ApiTags('Invoices')
 @ApiBearerAuth()
@@ -58,6 +60,55 @@ export class InvoicesController {
       branchId: branchId ? +branchId : undefined,
       limit: limit ? +limit : 20,
     });
+  }
+
+  @Get('export-detail/columns')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({ summary: 'Lấy catalog cột export chi tiết' })
+  getDetailColumns() {
+    return this.invoicesService.getDetailColumns();
+  }
+
+  @Get('export')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({ summary: 'Xuất Excel hóa đơn tổng quan' })
+  async exportOverview(@Query() query: InvoiceQueryDto, @Res() res: Response) {
+    const ts = Date.now();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=HoaDon_TongQuan_${ts}.xlsx`,
+    );
+    await this.invoicesService.exportOverview(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({ summary: 'Xuất Excel hóa đơn chi tiết' })
+  async exportDetail(
+    @Query() query: InvoiceQueryDto,
+    @Query('columns') columnsParam: string,
+    @Res() res: Response,
+  ) {
+    const selectedColumns = columnsParam
+      ? columnsParam
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const ts = Date.now();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=HoaDon_ChiTiet_${ts}.xlsx`,
+    );
+    await this.invoicesService.exportDetail(query, selectedColumns, res);
   }
 
   @Get(':id')

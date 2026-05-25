@@ -36,8 +36,6 @@ export class CustomersService {
     userId: number | undefined,
     res: Response,
   ): Promise<void> {
-    const EXPORT_CAP = 5000;
-
     const {
       code,
       name,
