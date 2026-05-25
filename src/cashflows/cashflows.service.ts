@@ -15,6 +15,8 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class CashFlowsService {
@@ -1684,5 +1686,170 @@ export class CashFlowsService {
         cashFlow.cashFlowGroupName || cashFlow.cashFlowGroup?.name,
       creatorName: cashFlow.creatorName || cashFlow.creator?.name,
     };
+  }
+
+  // ─── BUILD WHERE ─────────────────────────────────────────────────────────
+  private buildCashFlowExportWhere(query: CashFlowQueryDto): any {
+    const {
+      branchIds,
+      code,
+      search,
+      userId,
+      accountId,
+      partnerType,
+      method,
+      cashFlowGroupId,
+      usedForFinancialReporting,
+      partnerName,
+      contactNumber,
+      isReceipt,
+      startDate,
+      endDate,
+      status,
+    } = query;
+
+    const where: any = {};
+
+    if (userId) {
+      where.createdBy = userId;
+    }
+
+    if (!code?.length && branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    }
+
+    if (code && code.length > 0) {
+      where.code = { in: code };
+    } else if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { partnerName: { contains: search, mode: 'insensitive' } },
+      ];
+    } else {
+      where.code = { not: { startsWith: 'TTTU' } };
+    }
+
+    if (accountId) where.accountId = accountId;
+    if (partnerType && partnerType !== 'A') where.partnerType = partnerType;
+    if (method && method.length > 0) where.method = { in: method };
+    if (cashFlowGroupId && cashFlowGroupId.length > 0) {
+      where.cashFlowGroupId = { in: cashFlowGroupId };
+    }
+    if (usedForFinancialReporting !== undefined) {
+      where.usedForFinancialReporting = usedForFinancialReporting;
+    }
+    if (partnerName) {
+      where.partnerName = { contains: partnerName, mode: 'insensitive' };
+    }
+    if (contactNumber) {
+      where.contactNumber = { contains: contactNumber };
+    }
+    if (isReceipt !== undefined) where.isReceipt = isReceipt;
+
+    if (!code?.length && (startDate || endDate)) {
+      where.transDate = {};
+      if (startDate) where.transDate.gte = new Date(startDate);
+      if (endDate) where.transDate.lte = new Date(endDate);
+    }
+
+    if (status !== undefined) where.status = status;
+
+    return where;
+  }
+
+  // ─── EXPORT: Sổ quỹ tổng quan (1 dòng/phiếu) ────────────────────────────
+  async exportOverview(query: CashFlowQueryDto, res: Response): Promise<void> {
+    const where = this.buildCashFlowExportWhere(query);
+    const BATCH_SIZE = 500;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Sổ quỹ tổng quan');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã phiếu', key: 'code', width: 16 },
+      { header: 'Thời gian GD', key: 'transDate', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 18 },
+      { header: 'Loại', key: 'flowType', width: 10 },
+      { header: 'Nhóm thu/chi', key: 'cashFlowGroupName', width: 20 },
+      { header: 'Người nộp/nhận', key: 'partnerName', width: 22 },
+      { header: 'Số điện thoại', key: 'contactNumber', width: 14 },
+      { header: 'Giá trị', key: 'amount', width: 16 },
+      { header: 'Hình thức TT', key: 'method', width: 14 },
+      { header: 'Ghi chú', key: 'description', width: 28 },
+      { header: 'Trạng thái', key: 'statusValue', width: 16 },
+      { header: 'Người tạo', key: 'creatorName', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.cashFlow.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { transDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          transDate: true,
+          createdAt: true,
+          isReceipt: true,
+          amount: true,
+          method: true,
+          partnerName: true,
+          contactNumber: true,
+          description: true,
+          statusValue: true,
+          branch: { select: { name: true } },
+          cashFlowGroup: { select: { name: true } },
+          creator: { select: { name: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const cf of batch) {
+        stt++;
+        sheet
+          .addRow({
+            stt,
+            branchName: cf.branch?.name ?? '',
+            code: cf.code,
+            transDate: new Date(cf.transDate),
+            createdAt: new Date(cf.createdAt),
+            flowType: cf.isReceipt ? 'Thu' : 'Chi',
+            cashFlowGroupName: cf.cashFlowGroup?.name ?? '',
+            partnerName: cf.partnerName ?? '',
+            contactNumber: cf.contactNumber ?? '',
+            amount: Number(cf.amount),
+            method: cf.method ?? '',
+            description: cf.description ?? '',
+            statusValue: cf.statusValue ?? '',
+            creatorName: cf.creator?.name ?? '',
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 }

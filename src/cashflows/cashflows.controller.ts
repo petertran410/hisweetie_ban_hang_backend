@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   UseGuards,
+  Res,
 } from '@nestjs/common';
 import { CashFlowsService } from './cashflows.service';
 import {
@@ -22,6 +23,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
+import { Response } from 'express';
 
 @ApiTags('Cash Flows')
 @ApiBearerAuth()
@@ -42,6 +44,22 @@ export class CashFlowsController {
   @ApiOperation({ summary: 'Get all cash flows' })
   findAll(@Query() query: CashFlowQueryDto, @CurrentUser() user: any) {
     return this.cashFlowsService.findAll(query, user);
+  }
+
+  @Get('export')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Xuất Excel sổ quỹ tổng quan' })
+  async exportOverview(@Query() query: CashFlowQueryDto, @Res() res: Response) {
+    const ts = Date.now();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=SoQuy_TongQuan_${ts}.xlsx`,
+    );
+    await this.cashFlowsService.exportOverview(query, res);
   }
 
   @Get(':id')
