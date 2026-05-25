@@ -2067,4 +2067,182 @@ export class CustomersService {
       `Số điện thoại "${matched}" đã được sử dụng bởi khách hàng "${existing.name}"`,
     );
   }
+
+  // ── Export lịch sử giao dịch (debt timeline) ────────────────────────────────
+  async exportDebtTimeline(
+    customerId: number,
+    includeChildren: boolean,
+    res: Response,
+  ): Promise<void> {
+    const { data: timeline } = await this.getDebtTimeline(
+      customerId,
+      includeChildren,
+    );
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmtDate = (d: any) => {
+      if (!d) return '';
+      const dt = new Date(d);
+      return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    };
+
+    const TYPE_LABEL: Record<string, string> = {
+      invoice: 'Hóa đơn',
+      payment: 'Thu tiền',
+      expense: 'Hoàn tiền',
+      return_order: 'Trả hàng',
+      debt_offset: 'Cấn trừ nợ',
+    };
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Lịch sử thanh toán');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã giao dịch', key: 'code', width: 18 },
+      { header: 'Thời gian', key: 'date', width: 20 },
+      { header: 'Loại giao dịch', key: 'type', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Khách hàng', key: 'customerName', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người thực hiện', key: 'user', width: 18 },
+      { header: 'Giá trị', key: 'amount', width: 16 },
+      { header: 'Dư nợ khách hàng', key: 'debtSnapshot', width: 18 },
+      { header: 'Trạng thái', key: 'statusValue', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.commit();
+
+    // Timeline đang sort giảm dần → export giảm dần, STT ngược
+    timeline.forEach((item, idx) => {
+      sheet
+        .addRow({
+          stt: idx + 1,
+          code: item.code,
+          date: fmtDate(item.date),
+          type: TYPE_LABEL[item.type] ?? item.type,
+          customerCode: item.customerCode ?? '',
+          customerName: item.customerName ?? '',
+          branch: (item.branch as any)?.name ?? '',
+          user: (item.user as any)?.name ?? '',
+          amount: Number(item.amount),
+          debtSnapshot: Number(item.debtSnapshot),
+          statusValue: item.statusValue ?? '',
+        })
+        .commit();
+    });
+
+    await workbook.commit();
+  }
+
+  // ── Export công nợ chi tiết (hóa đơn còn nợ) ────────────────────────────────
+  async exportCustomerDebt(customerId: number, res: Response): Promise<void> {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: customerId },
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        contactNumber: true,
+        totalDebt: true,
+      },
+    });
+    if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
+
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customerId,
+        debtAmount: { gt: 0 },
+        status: { notIn: [2] },
+      },
+      select: {
+        code: true,
+        purchaseDate: true,
+        grandTotal: true,
+        paidAmount: true,
+        debtAmount: true,
+        statusValue: true,
+        branch: { select: { name: true } },
+        soldBy: { select: { name: true } },
+      },
+      orderBy: { purchaseDate: 'asc' },
+    });
+
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const fmtDate = (d: any) => {
+      if (!d) return '';
+      const dt = new Date(d);
+      return `${pad(dt.getDate())}/${pad(dt.getMonth() + 1)}/${dt.getFullYear()} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`;
+    };
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Công nợ chi tiết');
+
+    // Set column widths trước khi addRow
+    [6, 18, 20, 20, 18, 16, 16, 16, 14].forEach((w, i) => {
+      sheet.getColumn(i + 1).width = w;
+    });
+
+    // Info block khách hàng
+    sheet.addRow(['Mã khách hàng:', customer.code ?? '']).commit();
+    sheet.addRow(['Tên khách hàng:', customer.name]).commit();
+    sheet.addRow(['Điện thoại:', customer.contactNumber ?? '']).commit();
+    sheet
+      .addRow(['Tổng nợ hiện tại:', Number(customer.totalDebt ?? 0)])
+      .commit();
+    sheet.addRow([]).commit();
+
+    // Header cột
+    const headerRow = sheet.addRow([
+      'STT',
+      'Mã hóa đơn',
+      'Thời gian',
+      'Chi nhánh',
+      'Người bán',
+      'Khách cần trả',
+      'Khách đã trả',
+      'Còn nợ',
+      'Trạng thái',
+    ]);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.commit();
+
+    invoices.forEach((inv, idx) => {
+      sheet
+        .addRow([
+          idx + 1,
+          inv.code,
+          fmtDate(inv.purchaseDate),
+          (inv.branch as any)?.name ?? '',
+          (inv.soldBy as any)?.name ?? '',
+          Number(inv.grandTotal),
+          Number(inv.paidAmount),
+          Number(inv.debtAmount),
+          inv.statusValue ?? '',
+        ])
+        .commit();
+    });
+
+    await workbook.commit();
+  }
 }

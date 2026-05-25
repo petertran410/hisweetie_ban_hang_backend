@@ -78,6 +78,54 @@ export class CustomersController {
     await this.customersService.exportCustomers(query, req.user?.id, res);
   }
 
+  @Get(':id/export-debt-timeline')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Xuất lịch sử giao dịch khách hàng' })
+  async exportDebtTimeline(
+    @Param('id') id: string,
+    @Query('includeChildren') includeChildren: string,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=LichSuThanhToan_KH${id}_KV${ts}.xlsx`,
+    );
+
+    await this.customersService.exportDebtTimeline(
+      +id,
+      includeChildren === 'true',
+      res,
+    );
+  }
+
+  @Get(':id/export-debt')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Xuất công nợ chi tiết khách hàng' })
+  async exportCustomerDebt(@Param('id') id: string, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=CongNoChiTiet_KH${id}_KV${ts}.xlsx`,
+    );
+
+    await this.customersService.exportCustomerDebt(+id, res);
+  }
+
   @Get(':id')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })
