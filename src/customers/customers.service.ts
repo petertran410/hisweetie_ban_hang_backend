@@ -2131,7 +2131,9 @@ export class CustomersService {
           stt: idx + 1,
           code: item.code,
           date: fmtDate(item.date),
-          type: TYPE_LABEL[item.type] ?? item.type,
+          type: item.code?.startsWith('CB')
+            ? 'Cân bằng'
+            : (TYPE_LABEL[item.type] ?? item.type),
           customerCode: item.customerCode ?? '',
           customerName: item.customerName ?? '',
           branch: (item.branch as any)?.name ?? '',
@@ -2177,7 +2179,7 @@ export class CustomersService {
     // ── 1. Lấy timeline + filter date ───────────────────────────────────────
     const { data: rawTimeline } = await this.getDebtTimeline(customerId, false);
 
-    let timeline = [...rawTimeline].reverse(); // sort tăng dần (cũ → mới)
+    let timeline = [...rawTimeline];
     if (options.fromDate) {
       const from = new Date(options.fromDate);
       timeline = timeline.filter((i) => new Date(i.date) >= from);
@@ -2415,7 +2417,9 @@ export class CustomersService {
         stt,
         fmtDate(item.date),
         item.code,
-        TYPE_LABEL[item.type] ?? item.type,
+        item.code?.startsWith('CB')
+          ? 'Cân bằng'
+          : (TYPE_LABEL[item.type] ?? item.type),
         '',
         '',
         '',
