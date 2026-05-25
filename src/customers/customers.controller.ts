@@ -112,16 +112,16 @@ export class CustomersController {
   @ApiOperation({ summary: 'Xuất công nợ chi tiết khách hàng' })
   async exportCustomerDebt(
     @Param('id') id: string,
-    @Query('fromDate') fromDate?: string,
-    @Query('toDate') toDate?: string,
-    @Query('includeDetails') includeDetails?: string,
-    @Query('showUnit') showUnit?: string,
-    @Query('showQty') showQty?: string,
-    @Query('showPrice') showPrice?: string,
-    @Query('showDiscount') showDiscount?: string,
-    @Query('showTotal') showTotal?: string,
-    @Query('showNote') showNote?: string,
-    @Res() res?: Response,
+    @Query('fromDate') fromDate: string,
+    @Query('toDate') toDate: string,
+    @Query('includeDetails') includeDetails: string,
+    @Query('showUnit') showUnit: string,
+    @Query('showQty') showQty: string,
+    @Query('showPrice') showPrice: string,
+    @Query('showDiscount') showDiscount: string,
+    @Query('showTotal') showTotal: string,
+    @Query('showNote') showNote: string,
+    @Res() res: Response,
   ) {
     const toBool = (v?: string) => v === 'true';
 

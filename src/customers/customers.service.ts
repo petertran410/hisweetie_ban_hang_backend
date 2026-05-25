@@ -2246,13 +2246,13 @@ export class CustomersService {
     ]);
 
     // Build Maps để O(1) lookup
-    const invDetailMap = new Map<number, typeof invoiceDetails>();
+    const invDetailMap = new Map<number, any[]>();
     for (const d of invoiceDetails) {
       if (!invDetailMap.has(d.invoiceId)) invDetailMap.set(d.invoiceId, []);
       invDetailMap.get(d.invoiceId)!.push(d);
     }
 
-    const roDetailMap = new Map<number, typeof returnOrderDetails>();
+    const roDetailMap = new Map<number, any[]>();
     for (const d of returnOrderDetails) {
       if (!roDetailMap.has(d.returnOrderId))
         roDetailMap.set(d.returnOrderId, []);
