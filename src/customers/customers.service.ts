@@ -74,7 +74,16 @@ export class CustomersService {
     }
 
     if (code) where.code = { contains: code, mode: 'insensitive' };
-    if (name) where.name = { contains: name, mode: 'insensitive' };
+    if (name) {
+      const tokens = name.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length <= 1) {
+        where.name = { contains: name, mode: 'insensitive' };
+      } else {
+        where.AND = tokens.map((token) => ({
+          name: { contains: token, mode: 'insensitive' },
+        }));
+      }
+    }
 
     if (contactNumber) {
       where.OR = [
@@ -406,7 +415,14 @@ export class CustomersService {
     }
 
     if (name) {
-      where.name = { contains: name, mode: 'insensitive' };
+      const tokens = name.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length <= 1) {
+        where.name = { contains: name, mode: 'insensitive' };
+      } else {
+        where.AND = tokens.map((token) => ({
+          name: { contains: token, mode: 'insensitive' },
+        }));
+      }
     }
 
     if (contactNumber) {
