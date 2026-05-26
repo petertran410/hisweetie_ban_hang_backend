@@ -130,10 +130,21 @@ export class ProductsService {
 
     const where: any = {};
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { code: { contains: search, mode: 'insensitive' } },
-      ];
+      const tokens = search.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length <= 1) {
+        where.OR = [
+          { name: { contains: search, mode: 'insensitive' } },
+          { code: { contains: search, mode: 'insensitive' } },
+        ];
+      } else {
+        // Multi-word: mỗi token phải khớp ít nhất name hoặc code
+        where.AND = tokens.map((token) => ({
+          OR: [
+            { name: { contains: token, mode: 'insensitive' } },
+            { code: { contains: token, mode: 'insensitive' } },
+          ],
+        }));
+      }
     }
 
     if (categoryIds) {

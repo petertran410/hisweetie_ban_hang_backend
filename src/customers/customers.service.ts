@@ -719,12 +719,20 @@ export class CustomersService {
     const where: any = { isActive: true };
 
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { code: { contains: search, mode: 'insensitive' } },
-        { contactNumber: { contains: search } },
-        { phone: { contains: search } },
-      ];
+      const tokens = search.trim().split(/\s+/).filter(Boolean);
+      if (tokens.length <= 1) {
+        where.OR = [
+          { name: { contains: search, mode: 'insensitive' } },
+          { code: { contains: search, mode: 'insensitive' } },
+          { contactNumber: { contains: search } },
+          { phone: { contains: search } },
+        ];
+      } else {
+        // Multi-word: tất cả token phải xuất hiện trong name
+        where.AND = tokens.map((token) => ({
+          name: { contains: token, mode: 'insensitive' },
+        }));
+      }
     }
 
     const data = await this.prisma.customer.findMany({
