@@ -2177,30 +2177,60 @@ export class CustomersService {
     if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
 
     // ── 1. Lấy timeline + filter date ───────────────────────────────────────
+    // ── 1. Lấy timeline + parse date filter ──────────────────────────────
     const { data: rawTimeline } = await this.getDebtTimeline(customerId, false);
 
-    let timeline = [...rawTimeline];
-    if (options.fromDate) {
-      const from = new Date(options.fromDate);
-      timeline = timeline.filter((i) => new Date(i.date) >= from);
+    const fromDate = options.fromDate ? new Date(options.fromDate) : null;
+    const toDate = options.toDate ? new Date(options.toDate) : null;
+    if (toDate) toDate.setHours(23, 59, 59, 999);
+
+    let timeline = [...rawTimeline]; // desc (mới → cũ) từ getDebtTimeline
+    if (fromDate) {
+      timeline = timeline.filter((i) => new Date(i.date) >= fromDate);
     }
-    if (options.toDate) {
-      const to = new Date(options.toDate);
-      to.setHours(23, 59, 59, 999);
-      timeline = timeline.filter((i) => new Date(i.date) <= to);
+    if (toDate) {
+      timeline = timeline.filter((i) => new Date(i.date) <= toDate);
     }
 
-    // ── 2. Tính Nợ đầu kỳ / Phát sinh / Nợ cuối kỳ ────────────────────────
-    let totalDebit = 0;
-    let totalCredit = 0;
-    for (const item of timeline) {
-      if (item.type === 'invoice' || item.type === 'expense') {
-        totalDebit += Number(item.amount);
-      } else {
-        totalCredit += Number(item.amount);
+    // Loại return_order status 1 (REQUEST) và 3 (IN_PROGRESS) vì Formula A
+    // chỉ count status 2 (STOCK_RECEIVED) và 4 (COMPLETED)
+    const isFormulaA = (item: any): boolean => {
+      if (item.type === 'return_order') {
+        return item.status === 2 || item.status === 4;
       }
-    }
-    const noCuoiKy = Number(customer.totalDebt ?? 0);
+      return true;
+    };
+
+    const isItemDebit = (item: any): boolean =>
+      item.type === 'invoice' || item.type === 'expense';
+
+    const sumNet = (items: any[]) => {
+      let debit = 0;
+      let credit = 0;
+      for (const item of items) {
+        if (!isFormulaA(item)) continue;
+        const amt = Number(item.amount);
+        if (isItemDebit(item)) debit += amt;
+        else credit += amt;
+      }
+      return { debit, credit, net: debit - credit };
+    };
+
+    // ── 3. Tính Nợ đầu kỳ / Nợ cuối kỳ / Phát sinh trong kỳ ──────────────
+    const noHienTai = Number(customer.totalDebt ?? 0);
+
+    // Items SAU toDate — để trừ ngược ra noCuoiKy
+    const afterItems = toDate
+      ? rawTimeline.filter((i) => new Date(i.date) > toDate)
+      : [];
+    const noCuoiKy = noHienTai - sumNet(afterItems).net;
+
+    // Phát sinh trong kỳ
+    const rangeNet = sumNet(timeline);
+    const totalDebit = rangeNet.debit;
+    const totalCredit = rangeNet.credit;
+
+    // Nợ đầu kỳ
     const noDauKy = noCuoiKy - (totalDebit - totalCredit);
 
     // ── 3. Batch fetch InvoiceDetail + ReturnOrderDetail ────────────────────
@@ -2406,9 +2436,10 @@ export class CustomersService {
     const numFmt = '#,##0';
 
     for (const item of timeline) {
-      const isDebit = item.type === 'invoice' || item.type === 'expense';
-      const debit = isDebit ? Number(item.amount) : null;
-      const credit = !isDebit ? Number(item.amount) : null;
+      const formulaA = isFormulaA(item);
+      const debitItem = isItemDebit(item);
+      const debit = formulaA && debitItem ? Number(item.amount) : null;
+      const credit = formulaA && !debitItem ? Number(item.amount) : null;
 
       stt++;
 
@@ -2433,7 +2464,7 @@ export class CustomersService {
       mainRow.getCell(1).alignment = { horizontal: 'center' };
       mainRow.getCell(12).numFmt = numFmt;
       mainRow.getCell(13).numFmt = numFmt;
-      if (isDebit) {
+      if (debitItem) {
         mainRow.getCell(12).font = { color: { argb: 'FFCC0000' } };
       } else {
         mainRow.getCell(13).font = { color: { argb: 'FF006600' } };
