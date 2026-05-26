@@ -755,7 +755,7 @@ export class ReportsService {
     for (const [customerId, row] of map.entries()) {
       row.closingDebt = row.openingDebt + row.debit - row.credit;
       const hasActivity = row.debit !== 0 || row.credit !== 0;
-      if (row.openingDebt > 0 || hasActivity) {
+      if (hasActivity) {
         result.push({ customerId, ...row });
       }
     }
@@ -1030,11 +1030,13 @@ export class ReportsService {
       txs.sort((a, b) => a.time.getTime() - b.time.getTime());
 
       // Helper ghép "Nhóm hàng (3 Cấp)": parentName>>middleName>>childName
-      const productGroupOf = (p?: {
-        parentName?: string | null;
-        middleName?: string | null;
-        childName?: string | null;
-      } | null) => {
+      const productGroupOf = (
+        p?: {
+          parentName?: string | null;
+          middleName?: string | null;
+          childName?: string | null;
+        } | null,
+      ) => {
         if (!p) return '';
         const parts = [p.parentName, p.middleName, p.childName].filter(
           (x): x is string => !!x && x.trim().length > 0,
