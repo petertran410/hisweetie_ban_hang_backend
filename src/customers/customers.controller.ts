@@ -114,6 +114,7 @@ export class CustomersController {
     @Param('id') id: string,
     @Query('fromDate') fromDate: string,
     @Query('toDate') toDate: string,
+    @Query('branchId') branchId: string,
     @Query('includeDetails') includeDetails: string,
     @Query('showUnit') showUnit: string,
     @Query('showQty') showQty: string,
@@ -130,6 +131,7 @@ export class CustomersController {
       {
         fromDate,
         toDate,
+        branchId: branchId ? +branchId : undefined,
         includeDetails: toBool(includeDetails),
         showUnit: toBool(showUnit),
         showQty: toBool(showQty),

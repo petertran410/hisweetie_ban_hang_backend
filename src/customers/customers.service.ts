@@ -2154,6 +2154,7 @@ export class CustomersService {
     options: {
       fromDate?: string;
       toDate?: string;
+      branchId?: number;
       includeDetails?: boolean;
       showUnit?: boolean;
       showQty?: boolean;
@@ -2176,7 +2177,13 @@ export class CustomersService {
     });
     if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
 
-    // ── 1. Lấy timeline + filter date ───────────────────────────────────────
+    const branch = options.branchId
+      ? await this.prisma.branch.findUnique({
+          where: { id: options.branchId },
+          select: { name: true, address: true, contactNumber: true },
+        })
+      : null;
+
     // ── 1. Lấy timeline + parse date filter ──────────────────────────────
     const { data: rawTimeline } = await this.getDebtTimeline(customerId, false);
 
@@ -2260,41 +2267,53 @@ export class CustomersService {
       .filter((i) => i.type === 'return_order')
       .map((i) => i.id as number);
 
-    const [invoiceDetails, returnOrderDetails] = await Promise.all([
-      invoiceIds.length > 0
-        ? this.prisma.invoiceDetail.findMany({
-            where: { invoiceId: { in: invoiceIds } },
-            select: {
-              invoiceId: true,
-              productCode: true,
-              productName: true,
-              quantity: true,
-              price: true,
-              discount: true,
-              totalPrice: true,
-              note: true,
-              product: { select: { unit: true } },
-            },
-            orderBy: { id: 'asc' },
-          })
-        : Promise.resolve([]),
-      returnOrderIds.length > 0
-        ? this.prisma.returnOrderDetail.findMany({
-            where: { returnOrderId: { in: returnOrderIds } },
-            select: {
-              returnOrderId: true,
-              productCode: true,
-              productName: true,
-              confirmedQuantity: true,
-              returnPrice: true,
-              totalAmount: true,
-              note: true,
-              product: { select: { unit: true } },
-            },
-            orderBy: { id: 'asc' },
-          })
-        : Promise.resolve([]),
-    ]);
+    const [invoiceDetails, returnOrderDetails, invoiceHeaderRows] =
+      await Promise.all([
+        invoiceIds.length > 0
+          ? this.prisma.invoiceDetail.findMany({
+              where: { invoiceId: { in: invoiceIds } },
+              select: {
+                invoiceId: true,
+                productCode: true,
+                productName: true,
+                quantity: true,
+                price: true,
+                discount: true,
+                totalPrice: true,
+                note: true,
+                product: { select: { unit: true } },
+              },
+              orderBy: { id: 'asc' },
+            })
+          : Promise.resolve([]),
+        returnOrderIds.length > 0
+          ? this.prisma.returnOrderDetail.findMany({
+              where: { returnOrderId: { in: returnOrderIds } },
+              select: {
+                returnOrderId: true,
+                productCode: true,
+                productName: true,
+                confirmedQuantity: true,
+                returnPrice: true,
+                totalAmount: true,
+                note: true,
+                product: { select: { unit: true } },
+              },
+              orderBy: { id: 'asc' },
+            })
+          : Promise.resolve([]),
+        invoiceIds.length > 0 // ← THÊM
+          ? this.prisma.invoice.findMany({
+              where: { id: { in: invoiceIds } },
+              select: {
+                id: true,
+                discount: true,
+                discountRatio: true,
+                totalAmount: true,
+              },
+            })
+          : Promise.resolve([]),
+      ]);
 
     // Build Maps để O(1) lookup
     const invDetailMap = new Map<number, any[]>();
@@ -2308,6 +2327,19 @@ export class CustomersService {
       if (!roDetailMap.has(d.returnOrderId))
         roDetailMap.set(d.returnOrderId, []);
       roDetailMap.get(d.returnOrderId)!.push(d);
+    }
+
+    // ← THÊM: Map invoice-level discount
+    const invDiscountMap = new Map<
+      number,
+      { discount: number; discountRatio: number; totalAmount: number }
+    >();
+    for (const inv of invoiceHeaderRows) {
+      invDiscountMap.set(inv.id, {
+        discount: Number(inv.discount),
+        discountRatio: Number(inv.discountRatio),
+        totalAmount: Number(inv.totalAmount),
+      });
     }
 
     // ── 4. Helper format ─────────────────────────────────────────────────────
@@ -2339,23 +2371,47 @@ export class CustomersService {
     });
 
     // ── Header rows ──────────────────────────────────────────────────────────
-    // Row 1–3: Company info (placeholder – có thể customize sau)
-    sheet.addRow(['HiSweetie']);
-    sheet.addRow([]);
-    sheet.addRow([]);
+    // Row 1: Brand name
+    const r1 = sheet.addRow(['Diệp Trà']);
+    r1.getCell(1).font = { bold: true, size: 13 };
 
-    // Row 4: Title (centered)
-    const titleRow = sheet.addRow([
-      '',
-      '',
-      '',
-      '',
-      '',
-      '',
-      'Công nợ chi tiết khách hàng',
-    ]);
-    titleRow.getCell(7).font = { bold: true, size: 14 };
-    titleRow.getCell(7).alignment = { horizontal: 'center' };
+    // Row 2: Chi nhánh
+    const r2 = sheet.addRow(['Chi nhánh', branch?.name ?? '']);
+    r2.getCell(1).font = { bold: true };
+
+    // Row 3: Địa chỉ
+    const r3 = sheet.addRow(['Địa chỉ', branch?.address ?? '']);
+    r3.getCell(1).font = { bold: true };
+
+    // Row 4: Điện thoại
+    const r4 = sheet.addRow(['Điện thoại', branch?.contactNumber ?? '']);
+    r4.getCell(1).font = { bold: true };
+
+    // Row 5: Title merged A:M
+    const titleRow = sheet.addRow([]);
+    sheet.mergeCells(`A${titleRow.number}:M${titleRow.number}`);
+    titleRow.getCell(1).value = 'Công nợ chi tiết khách hàng';
+    titleRow.getCell(1).font = { bold: true, size: 14 };
+    titleRow.getCell(1).alignment = {
+      horizontal: 'center',
+      vertical: 'middle',
+    };
+
+    // Row 6 (nếu có lọc ngày): date range merged
+    const hasDateFilter = fromDate || toDate;
+    if (hasDateFilter) {
+      const fmtDay = (d: Date) =>
+        `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+      const fromStr = fromDate ? fmtDay(fromDate) : '...';
+      const toStr = toDate ? fmtDay(toDate) : '...';
+      const dateRow = sheet.addRow([]);
+      sheet.mergeCells(`A${dateRow.number}:M${dateRow.number}`);
+      dateRow.getCell(1).value = `Từ ngày ${fromStr} đến ngày ${toStr}`;
+      dateRow.getCell(1).alignment = {
+        horizontal: 'center',
+        vertical: 'middle',
+      };
+    }
 
     sheet.addRow([]);
 
@@ -2489,7 +2545,6 @@ export class CustomersService {
         mainRow.getCell(13).font = { color: { argb: 'FF006600' } };
       }
 
-      // Sub-rows: Invoice details
       if (options.includeDetails && item.type === 'invoice') {
         const details = invDetailMap.get(item.id as number) ?? [];
         for (const d of details) {
@@ -2519,6 +2574,40 @@ export class CustomersService {
           subRow.getCell(8).numFmt = numFmt;
           subRow.getCell(10).numFmt = numFmt;
           subRow.getCell(11).numFmt = numFmt;
+        }
+
+        const invDisc = invDiscountMap.get(item.id as number);
+        if (invDisc) {
+          // Chiết khấu theo %
+          const totalDiscAmt =
+            (invDisc.discountRatio > 0
+              ? (invDisc.totalAmount * invDisc.discountRatio) / 100
+              : 0) + invDisc.discount;
+
+          if (totalDiscAmt > 0) {
+            const discLabel =
+              invDisc.discountRatio > 0
+                ? `Chiết khấu(${invDisc.discountRatio}%)`
+                : 'Chiết khấu';
+
+            const discRow = sheet.addRow([
+              '',
+              '',
+              '',
+              discLabel,
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              totalDiscAmt,
+              '',
+              '',
+            ]);
+            discRow.font = { italic: true, color: { argb: 'FF666666' } };
+            discRow.getCell(11).numFmt = numFmt;
+          }
         }
       }
 
