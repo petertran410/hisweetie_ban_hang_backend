@@ -2216,22 +2216,41 @@ export class CustomersService {
       return { debit, credit, net: debit - credit };
     };
 
-    // ── 3. Tính Nợ đầu kỳ / Nợ cuối kỳ / Phát sinh trong kỳ ──────────────
-    const noHienTai = Number(customer.totalDebt ?? 0);
+    // ── 3. Nợ đầu kỳ / Nợ cuối kỳ — lấy từ debtSnapshot của timeline ─────
+    // rawTimeline đang sort desc (mới → cũ), .find() trả về giao dịch GẦN NHẤT thỏa điều kiện
 
-    // Items SAU toDate — để trừ ngược ra noCuoiKy
-    const afterItems = toDate
-      ? rawTimeline.filter((i) => new Date(i.date) > toDate)
-      : [];
-    const noCuoiKy = noHienTai - sumNet(afterItems).net;
+    // Nợ đầu kỳ = debtSnapshot của giao dịch gần nhất TRƯỚC fromDate
+    // - Có fromDate: tìm item gần nhất với date < fromDate
+    // - Không có fromDate (full export): = 0 (không có gì trước thời điểm bắt đầu của timeline)
+    let noDauKy = 0;
+    if (fromDate) {
+      const beforeItem = rawTimeline.find((i) => new Date(i.date) < fromDate);
+      if (beforeItem) {
+        noDauKy = Number(beforeItem.debtSnapshot ?? 0);
+      }
+    }
 
-    // Phát sinh trong kỳ
-    const rangeNet = sumNet(timeline);
-    const totalDebit = rangeNet.debit;
-    const totalCredit = rangeNet.credit;
+    // Nợ cuối kỳ:
+    // - Có toDate: debtSnapshot của giao dịch gần nhất ≤ toDate (= nếu range rỗng thì = noDauKy)
+    // - Không có toDate: dùng customer.totalDebt (= thời điểm hiện tại)
+    let noCuoiKy: number;
+    if (toDate) {
+      const lastInRange = rawTimeline.find((i) => new Date(i.date) <= toDate);
+      noCuoiKy = lastInRange ? Number(lastInRange.debtSnapshot ?? 0) : noDauKy;
+    } else {
+      noCuoiKy = Number(customer.totalDebt ?? 0);
+    }
 
-    // Nợ đầu kỳ
-    const noDauKy = noCuoiKy - (totalDebit - totalCredit);
+    // ── 4. Phát sinh trong kỳ ────────────────────────────────────────────
+    // Tổng debit/credit từ timeline (đã lọc theo Formula A để khớp với totals)
+    let totalDebit = 0;
+    let totalCredit = 0;
+    for (const item of timeline) {
+      if (!isFormulaA(item)) continue;
+      const amt = Number(item.amount);
+      if (isItemDebit(item)) totalDebit += amt;
+      else totalCredit += amt;
+    }
 
     // ── 3. Batch fetch InvoiceDetail + ReturnOrderDetail ────────────────────
     const invoiceIds = timeline
