@@ -878,7 +878,7 @@ export class ReportsService {
       { header: 'Mã vạch', key: 'productBarcode', width: 14 },
       { header: 'Tên hàng', key: 'productName', width: 40 },
       { header: 'Thương hiệu', key: 'tradeMark', width: 14 },
-      { header: 'Nhóm hàng (3 Cấp)', key: 'productGroup', width: 30 },
+      { header: 'Nhóm hàng(3 Cấp)', key: 'productGroup', width: 30 },
       { header: 'Đơn giá', key: 'unitPrice', width: 12 },
       { header: 'SL sản phẩm', key: 'productQty', width: 10 },
       { header: 'Thành tiền', key: 'productAmount', width: 14 },
@@ -903,21 +903,24 @@ export class ReportsService {
       const c = cmap.get(agg.customerId);
       if (!c) continue;
 
-      // Dòng tổng khách (cột A-H)
-      const summaryRow = sheet.addRow({
-        customerCode: c.code || '',
-        customerName: c.name,
-        contactNumber: c.contactNumber || '',
-        customerGroups: c.groups || '',
-        openingDebt: agg.openingDebt,
-        debit: agg.debit,
-        credit: agg.credit,
-        closingDebt: agg.closingDebt,
-      });
-      summaryRow.font = { bold: true, size: 11 };
-      summaryRow.commit();
+      const hasActivity = agg.debit !== 0 || agg.credit !== 0;
 
-      if (agg.debit === 0 && agg.credit === 0) continue;
+      // Khách không có giao dịch trong kỳ: chỉ in 1 dòng tổng khách (A-H)
+      if (!hasActivity) {
+        const summaryRow = sheet.addRow({
+          customerCode: c.code || '',
+          customerName: c.name,
+          contactNumber: c.contactNumber || '',
+          customerGroups: c.groups || '',
+          openingDebt: agg.openingDebt,
+          debit: agg.debit,
+          credit: agg.credit,
+          closingDebt: agg.closingDebt,
+        });
+        summaryRow.font = { bold: true, size: 11 };
+        summaryRow.commit();
+        continue;
+      }
 
       // Lấy chi tiết giao dịch trong kỳ của customer
       const branchFilter = query.branchId ? { branchId: query.branchId } : {};
@@ -947,6 +950,9 @@ export class ReportsService {
                 product: {
                   select: {
                     unit: true,
+                    parentName: true,
+                    middleName: true,
+                    childName: true,
                     tradeMark: { select: { name: true } },
                   },
                 },
@@ -1023,16 +1029,37 @@ export class ReportsService {
 
       txs.sort((a, b) => a.time.getTime() - b.time.getTime());
 
-      // Dòng "Dư nợ đầu kỳ"
-      sheet
-        .addRow({
-          transCode: '---',
-          transTime: fromDate,
-          transType: 'Dư nợ đầu kỳ',
-          transValue: 0,
-          runningDebt: agg.openingDebt,
-        })
-        .commit();
+      // Helper ghép "Nhóm hàng (3 Cấp)": parentName>>middleName>>childName
+      const productGroupOf = (p?: {
+        parentName?: string | null;
+        middleName?: string | null;
+        childName?: string | null;
+      } | null) => {
+        if (!p) return '';
+        const parts = [p.parentName, p.middleName, p.childName].filter(
+          (x): x is string => !!x && x.trim().length > 0,
+        );
+        return parts.join('>>');
+      };
+
+      // Dòng đầu = MERGE: tổng khách (A-H) + "Dư nợ đầu kỳ" (I-M)
+      const firstRow = sheet.addRow({
+        customerCode: c.code || '',
+        customerName: c.name,
+        contactNumber: c.contactNumber || '',
+        customerGroups: c.groups || '',
+        openingDebt: agg.openingDebt,
+        debit: agg.debit,
+        credit: agg.credit,
+        closingDebt: agg.closingDebt,
+        transCode: '---',
+        transTime: fromDate,
+        transType: 'Dư nợ đầu kỳ',
+        transValue: 0,
+        runningDebt: agg.openingDebt,
+      });
+      firstRow.font = { bold: true, size: 11 };
+      firstRow.commit();
 
       let running = agg.openingDebt;
 
@@ -1044,6 +1071,7 @@ export class ReportsService {
           const head = details[0];
           sheet
             .addRow({
+              contactNumber: c.contactNumber || '',
               transCode: inv.code,
               transTime: new Date(inv.purchaseDate),
               transType: 'Bán hàng',
@@ -1052,6 +1080,7 @@ export class ReportsService {
               productCode: head?.productCode || '',
               productName: head?.productName || '',
               tradeMark: head?.product?.tradeMark?.name || '',
+              productGroup: productGroupOf(head?.product),
               unitPrice: head ? Number(head.price) : 0,
               productQty: head ? Number(head.quantity) : 0,
               productAmount: head ? Number(head.totalPrice) : 0,
@@ -1066,9 +1095,11 @@ export class ReportsService {
             const d = details[i];
             sheet
               .addRow({
+                contactNumber: c.contactNumber || '',
                 productCode: d.productCode,
                 productName: d.productName,
                 tradeMark: d.product?.tradeMark?.name || '',
+                productGroup: productGroupOf(d.product),
                 unitPrice: Number(d.price),
                 productQty: Number(d.quantity),
                 productAmount: Number(d.totalPrice),
@@ -1085,6 +1116,7 @@ export class ReportsService {
           running -= Number(cf.amount);
           sheet
             .addRow({
+              contactNumber: c.contactNumber || '',
               transCode: cf.code,
               transTime: new Date(cf.transDate),
               transType: 'Thanh toán',
@@ -1097,6 +1129,7 @@ export class ReportsService {
           running += Number(cf.amount);
           sheet
             .addRow({
+              contactNumber: c.contactNumber || '',
               transCode: cf.code,
               transTime: new Date(cf.transDate),
               transType: 'Chi tiền cho KH',
@@ -1109,6 +1142,7 @@ export class ReportsService {
           running -= Number(ro.refundAmount);
           sheet
             .addRow({
+              contactNumber: c.contactNumber || '',
               transCode: ro.code,
               transTime: new Date(ro.createdAt),
               transType: 'Trả hàng',
