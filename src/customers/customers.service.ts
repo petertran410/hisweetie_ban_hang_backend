@@ -75,9 +75,10 @@ export class CustomersService {
 
     if (code) where.code = { contains: code, mode: 'insensitive' };
     if (name) {
-      const tokens = name.trim().split(/\s+/).filter(Boolean);
+      const normalized = name.normalize('NFC');
+      const tokens = normalized.trim().split(/\s+/).filter(Boolean);
       if (tokens.length <= 1) {
-        where.name = { contains: name, mode: 'insensitive' };
+        where.name = { contains: normalized, mode: 'insensitive' };
       } else {
         where.AND = tokens.map((token) => ({
           name: { contains: token, mode: 'insensitive' },
@@ -416,13 +417,32 @@ export class CustomersService {
 
     if (name) {
       const tokens = name.trim().split(/\s+/).filter(Boolean);
+
+      let matchedIds: { id: number }[];
       if (tokens.length <= 1) {
-        where.name = { contains: name, mode: 'insensitive' };
+        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
+      SELECT id FROM "customers"
+      WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${name}%`}))
+    `;
       } else {
-        where.AND = tokens.map((token) => ({
-          name: { contains: token, mode: 'insensitive' },
-        }));
+        const tokenSets = await Promise.all(
+          tokens.map(
+            (t) =>
+              this.prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "customers"
+          WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
+        `,
+          ),
+        );
+        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
+        matchedIds = tokenSets[0].filter((r) =>
+          idSets.every((s) => s.has(r.id)),
+        );
       }
+
+      where.id = {
+        in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
+      };
     }
 
     if (contactNumber) {
@@ -736,19 +756,39 @@ export class CustomersService {
 
     if (search) {
       const tokens = search.trim().split(/\s+/).filter(Boolean);
+
+      let matchedIds: { id: number }[];
       if (tokens.length <= 1) {
-        where.OR = [
-          { name: { contains: search, mode: 'insensitive' } },
-          { code: { contains: search, mode: 'insensitive' } },
-          { contactNumber: { contains: search } },
-          { phone: { contains: search } },
-        ];
+        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
+      SELECT id FROM "customers"
+      WHERE "isActive" = true
+      AND (
+        unaccent(lower(name)) LIKE unaccent(lower(${`%${search}%`}))
+        OR lower(code) LIKE lower(${`%${search}%`})
+        OR "contactNumber" LIKE ${`%${search}%`}
+        OR phone LIKE ${`%${search}%`}
+      )
+      LIMIT 50
+    `;
       } else {
-        // Multi-word: tất cả token phải xuất hiện trong name
-        where.AND = tokens.map((token) => ({
-          name: { contains: token, mode: 'insensitive' },
-        }));
+        const tokenSets = await Promise.all(
+          tokens.map(
+            (t) =>
+              this.prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "customers"
+          WHERE "isActive" = true
+          AND unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
+        `,
+          ),
+        );
+        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
+        matchedIds = tokenSets[0].filter((r) =>
+          idSets.every((s) => s.has(r.id)),
+        );
       }
+
+      if (matchedIds.length === 0) return { data: [] };
+      where.id = { in: matchedIds.map((r) => r.id) };
     }
 
     const data = await this.prisma.customer.findMany({
