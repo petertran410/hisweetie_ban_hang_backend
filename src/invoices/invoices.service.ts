@@ -2894,7 +2894,12 @@ export class InvoicesService {
                   row[col.key] = Number(detail.discount);
                   break;
                 case 'sellingPrice':
-                  row[col.key] = Number(detail.price) - Number(detail.discount);
+                  {
+                    const qty = Number(detail.quantity);
+                    row[col.key] =
+                      qty > 0 ? Number(detail.totalPrice) / qty : 0;
+                    break;
+                  }
                   break;
                 case 'totalPrice':
                   row[col.key] = Number(detail.totalPrice);
