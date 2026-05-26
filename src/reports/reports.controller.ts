@@ -57,4 +57,27 @@ export class ReportsController {
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     await this.reportsService.exportProductByCustomer(query, res);
   }
+
+  // ── Báo cáo 3: Preview ──
+  @Get('customer-debt')
+  @ApiOperation({ summary: 'Preview báo cáo công nợ theo khách hàng' })
+  getCustomerDebtPreview(@Query() query: ReportQueryDto) {
+    return this.reportsService.getCustomerDebtPreview(query);
+  }
+
+  // ── Báo cáo 3: Export Excel ──
+  @Get('customer-debt/export')
+  @ApiOperation({ summary: 'Xuất Excel báo cáo công nợ theo khách hàng' })
+  async exportCustomerDebt(
+    @Query() query: ReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `bao-cao-cong-no-theo-khach-hang_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.reportsService.exportCustomerDebt(query, res);
+  }
 }

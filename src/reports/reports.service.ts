@@ -608,4 +608,519 @@ export class ReportsService {
     sheet.commit();
     await workbook.commit();
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BÁO CÁO 3: Công nợ — Aggregate helper (theo công thức recalcCustomerDebt)
+  // ═══════════════════════════════════════════════════════════════════════════
+  private async aggregateCustomerDebt(query: ReportQueryDto) {
+    const fromDate = query.fromDate ? new Date(query.fromDate) : new Date(0);
+    const toDate = query.toDate ? new Date(query.toDate) : new Date();
+
+    let allowedCustomerIds: number[] | null = null;
+    if (query.customerGroupId) {
+      const inGroup = await this.prisma.customerGroupDetail.findMany({
+        where: { customerGroupId: query.customerGroupId },
+        select: { customerId: true },
+      });
+      allowedCustomerIds = inGroup.map((g) => g.customerId);
+      if (allowedCustomerIds.length === 0) return [];
+    }
+    if (query.customerId) {
+      allowedCustomerIds = allowedCustomerIds
+        ? allowedCustomerIds.filter((id) => id === query.customerId)
+        : [query.customerId];
+      if (allowedCustomerIds.length === 0) return [];
+    }
+
+    const invoiceBaseWhere: any = {
+      status: { not: INVOICE_STATUS.CANCELLED },
+      customerId: { not: null },
+    };
+    if (query.branchId) invoiceBaseWhere.branchId = query.branchId;
+    if (allowedCustomerIds)
+      invoiceBaseWhere.customerId = { in: allowedCustomerIds };
+
+    const cashFlowBaseWhere: any = {
+      partnerType: 'C',
+      status: { not: 2 },
+      partnerId: { not: null },
+    };
+    if (query.branchId) cashFlowBaseWhere.branchId = query.branchId;
+    if (allowedCustomerIds)
+      cashFlowBaseWhere.partnerId = { in: allowedCustomerIds };
+
+    const roBaseWhere: any = {
+      customerId: { not: null },
+      OR: [
+        { status: 2 },
+        { status: 4, refundType: 'debt_offset' },
+        { status: 4, refundType: 'cash_refund' },
+      ],
+    };
+    if (query.branchId) roBaseWhere.branchId = query.branchId;
+    if (allowedCustomerIds) roBaseWhere.customerId = { in: allowedCustomerIds };
+
+    const sumInvoice = (extra: any) =>
+      this.prisma.invoice.groupBy({
+        by: ['customerId'],
+        where: { ...invoiceBaseWhere, ...extra },
+        _sum: { grandTotal: true },
+      });
+
+    const sumCashFlow = (extra: any) =>
+      this.prisma.cashFlow.groupBy({
+        by: ['partnerId'],
+        where: { ...cashFlowBaseWhere, ...extra },
+        _sum: { amount: true },
+      });
+
+    const sumReturnOrder = (extra: any) =>
+      this.prisma.returnOrder.groupBy({
+        by: ['customerId'],
+        where: { ...roBaseWhere, ...extra },
+        _sum: { refundAmount: true },
+      });
+
+    const [
+      invBefore,
+      invIn,
+      cfReceiptBefore,
+      cfReceiptIn,
+      cfPaidBefore,
+      cfPaidIn,
+      roBefore,
+      roIn,
+    ] = await Promise.all([
+      sumInvoice({ purchaseDate: { lt: fromDate } }),
+      sumInvoice({ purchaseDate: { gte: fromDate, lte: toDate } }),
+      sumCashFlow({
+        isReceipt: true,
+        NOT: { code: { startsWith: 'TTTUHD' } },
+        transDate: { lt: fromDate },
+      }),
+      sumCashFlow({
+        isReceipt: true,
+        NOT: { code: { startsWith: 'TTTUHD' } },
+        transDate: { gte: fromDate, lte: toDate },
+      }),
+      sumCashFlow({ isReceipt: false, transDate: { lt: fromDate } }),
+      sumCashFlow({
+        isReceipt: false,
+        transDate: { gte: fromDate, lte: toDate },
+      }),
+      sumReturnOrder({ createdAt: { lt: fromDate } }),
+      sumReturnOrder({ createdAt: { gte: fromDate, lte: toDate } }),
+    ]);
+
+    type Row = {
+      openingDebt: number;
+      debit: number;
+      credit: number;
+      closingDebt: number;
+    };
+    const map = new Map<number, Row>();
+    const ensure = (id: number) => {
+      if (!map.has(id))
+        map.set(id, { openingDebt: 0, debit: 0, credit: 0, closingDebt: 0 });
+      return map.get(id)!;
+    };
+
+    for (const r of invBefore)
+      if (r.customerId != null)
+        ensure(r.customerId).openingDebt += Number(r._sum.grandTotal) || 0;
+    for (const r of cfReceiptBefore)
+      if (r.partnerId != null)
+        ensure(r.partnerId).openingDebt -= Number(r._sum.amount) || 0;
+    for (const r of cfPaidBefore)
+      if (r.partnerId != null)
+        ensure(r.partnerId).openingDebt += Number(r._sum.amount) || 0;
+    for (const r of roBefore)
+      if (r.customerId != null)
+        ensure(r.customerId).openingDebt -= Number(r._sum.refundAmount) || 0;
+
+    for (const r of invIn)
+      if (r.customerId != null)
+        ensure(r.customerId).debit += Number(r._sum.grandTotal) || 0;
+    for (const r of cfReceiptIn)
+      if (r.partnerId != null)
+        ensure(r.partnerId).credit += Number(r._sum.amount) || 0;
+    for (const r of cfPaidIn)
+      if (r.partnerId != null)
+        ensure(r.partnerId).credit -= Number(r._sum.amount) || 0;
+    for (const r of roIn)
+      if (r.customerId != null)
+        ensure(r.customerId).credit += Number(r._sum.refundAmount) || 0;
+
+    const result: Array<{ customerId: number } & Row> = [];
+    for (const [customerId, row] of map.entries()) {
+      row.closingDebt = row.openingDebt + row.debit - row.credit;
+      const hasActivity = row.debit !== 0 || row.credit !== 0;
+      if (row.openingDebt > 0 || hasActivity) {
+        result.push({ customerId, ...row });
+      }
+    }
+    return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BÁO CÁO 3: Công nợ — Preview (phân trang)
+  // ═══════════════════════════════════════════════════════════════════════════
+  async getCustomerDebtPreview(query: ReportQueryDto) {
+    const aggregates = await this.aggregateCustomerDebt(query);
+    aggregates.sort((a, b) => b.closingDebt - a.closingDebt);
+
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+    const total = aggregates.length;
+    const paged = aggregates.slice(skip, skip + limit);
+    const customerIds = paged.map((a) => a.customerId);
+
+    const customers = customerIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: customerIds } },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            contactNumber: true,
+            groups: true,
+          },
+        })
+      : [];
+    const cmap = new Map(customers.map((c) => [c.id, c]));
+
+    const summary = aggregates.reduce(
+      (acc, a) => {
+        acc.totalOpening += a.openingDebt;
+        acc.totalDebit += a.debit;
+        acc.totalCredit += a.credit;
+        acc.totalClosing += a.closingDebt;
+        return acc;
+      },
+      {
+        totalCustomers: aggregates.length,
+        totalOpening: 0,
+        totalDebit: 0,
+        totalCredit: 0,
+        totalClosing: 0,
+      },
+    );
+
+    return {
+      data: paged.map((a) => {
+        const c = cmap.get(a.customerId);
+        return {
+          customerId: a.customerId,
+          customerCode: c?.code || '',
+          customerName: c?.name || '',
+          contactNumber: c?.contactNumber || '',
+          customerGroups: c?.groups || '',
+          openingDebt: a.openingDebt,
+          debit: a.debit,
+          credit: a.credit,
+          closingDebt: a.closingDebt,
+        };
+      }),
+      total,
+      page,
+      limit,
+      summary,
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // BÁO CÁO 3: Công nợ — Export Excel hierarchical (streaming)
+  // ═══════════════════════════════════════════════════════════════════════════
+  async exportCustomerDebt(query: ReportQueryDto, res: Response) {
+    const aggregates = await this.aggregateCustomerDebt(query);
+    aggregates.sort((a, b) => b.closingDebt - a.closingDebt);
+    const customerIds = aggregates.map((a) => a.customerId);
+
+    const fromDate = query.fromDate ? new Date(query.fromDate) : new Date(0);
+    const toDate = query.toDate ? new Date(query.toDate) : new Date();
+
+    const customers = customerIds.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: customerIds } },
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            contactNumber: true,
+            groups: true,
+          },
+        })
+      : [];
+    const cmap = new Map(customers.map((c) => [c.id, c]));
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('BaoCaoCongNoTheoKhachHang');
+
+    sheet.columns = [
+      { header: 'Mã KH', key: 'customerCode', width: 14 },
+      { header: 'Khách hàng', key: 'customerName', width: 32 },
+      { header: 'Số điện thoại', key: 'contactNumber', width: 14 },
+      { header: 'Nhóm khách hàng', key: 'customerGroups', width: 28 },
+      { header: 'Nợ đầu kỳ', key: 'openingDebt', width: 16 },
+      { header: 'Ghi nợ', key: 'debit', width: 14 },
+      { header: 'Ghi có', key: 'credit', width: 14 },
+      { header: 'Nợ cuối kỳ', key: 'closingDebt', width: 16 },
+      { header: 'Mã giao dịch', key: 'transCode', width: 14 },
+      { header: 'Thời gian', key: 'transTime', width: 18 },
+      { header: 'Loại giao dịch', key: 'transType', width: 14 },
+      { header: 'Giá trị', key: 'transValue', width: 16 },
+      { header: 'Dư nợ cuối', key: 'runningDebt', width: 16 },
+      { header: 'Mã hàng', key: 'productCode', width: 14 },
+      { header: 'Mã vạch', key: 'productBarcode', width: 14 },
+      { header: 'Tên hàng', key: 'productName', width: 40 },
+      { header: 'Thương hiệu', key: 'tradeMark', width: 14 },
+      { header: 'Nhóm hàng (3 Cấp)', key: 'productGroup', width: 30 },
+      { header: 'Đơn giá', key: 'unitPrice', width: 12 },
+      { header: 'SL sản phẩm', key: 'productQty', width: 10 },
+      { header: 'Thành tiền', key: 'productAmount', width: 14 },
+      { header: 'Chiết khấu', key: 'productDiscount', width: 12 },
+      { header: 'VAT bán hàng', key: 'vatSale', width: 12 },
+      { header: 'VAT hoàn lại', key: 'vatReturn', width: 12 },
+      { header: 'Thu khác', key: 'otherFee', width: 12 },
+      { header: 'Tổng cộng', key: 'grandTotal', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    for (const agg of aggregates) {
+      const c = cmap.get(agg.customerId);
+      if (!c) continue;
+
+      // Dòng tổng khách (cột A-H)
+      const summaryRow = sheet.addRow({
+        customerCode: c.code || '',
+        customerName: c.name,
+        contactNumber: c.contactNumber || '',
+        customerGroups: c.groups || '',
+        openingDebt: agg.openingDebt,
+        debit: agg.debit,
+        credit: agg.credit,
+        closingDebt: agg.closingDebt,
+      });
+      summaryRow.font = { bold: true, size: 11 };
+      summaryRow.commit();
+
+      if (agg.debit === 0 && agg.credit === 0) continue;
+
+      // Lấy chi tiết giao dịch trong kỳ của customer
+      const branchFilter = query.branchId ? { branchId: query.branchId } : {};
+
+      const [invoices, cashFlowsRaw, returnOrders] = await Promise.all([
+        this.prisma.invoice.findMany({
+          where: {
+            customerId: agg.customerId,
+            status: { not: INVOICE_STATUS.CANCELLED },
+            purchaseDate: { gte: fromDate, lte: toDate },
+            ...branchFilter,
+          },
+          orderBy: { purchaseDate: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            purchaseDate: true,
+            grandTotal: true,
+            details: {
+              select: {
+                productCode: true,
+                productName: true,
+                quantity: true,
+                price: true,
+                discount: true,
+                totalPrice: true,
+                product: {
+                  select: {
+                    unit: true,
+                    tradeMark: { select: { name: true } },
+                  },
+                },
+              },
+            },
+          },
+        }),
+        this.prisma.cashFlow.findMany({
+          where: {
+            partnerId: agg.customerId,
+            partnerType: 'C',
+            status: { not: 2 },
+            transDate: { gte: fromDate, lte: toDate },
+            ...branchFilter,
+          },
+          orderBy: { transDate: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            transDate: true,
+            amount: true,
+            isReceipt: true,
+          },
+        }),
+        this.prisma.returnOrder.findMany({
+          where: {
+            customerId: agg.customerId,
+            OR: [
+              { status: 2 },
+              { status: 4, refundType: 'debt_offset' },
+              { status: 4, refundType: 'cash_refund' },
+            ],
+            createdAt: { gte: fromDate, lte: toDate },
+            ...branchFilter,
+          },
+          orderBy: { createdAt: 'asc' },
+          select: {
+            id: true,
+            code: true,
+            createdAt: true,
+            refundAmount: true,
+          },
+        }),
+      ]);
+
+      const cashFlows = cashFlowsRaw.filter(
+        (cf) => !(cf.isReceipt && cf.code.startsWith('TTTUHD')),
+      );
+
+      type Tx =
+        | { kind: 'invoice'; time: Date; data: (typeof invoices)[number] }
+        | {
+            kind: 'cashflow_in';
+            time: Date;
+            data: (typeof cashFlows)[number];
+          }
+        | {
+            kind: 'cashflow_out';
+            time: Date;
+            data: (typeof cashFlows)[number];
+          }
+        | { kind: 'return'; time: Date; data: (typeof returnOrders)[number] };
+
+      const txs: Tx[] = [];
+      for (const inv of invoices)
+        txs.push({ kind: 'invoice', time: inv.purchaseDate, data: inv });
+      for (const cf of cashFlows) {
+        if (cf.isReceipt)
+          txs.push({ kind: 'cashflow_in', time: cf.transDate, data: cf });
+        else txs.push({ kind: 'cashflow_out', time: cf.transDate, data: cf });
+      }
+      for (const ro of returnOrders)
+        txs.push({ kind: 'return', time: ro.createdAt, data: ro });
+
+      txs.sort((a, b) => a.time.getTime() - b.time.getTime());
+
+      // Dòng "Dư nợ đầu kỳ"
+      sheet
+        .addRow({
+          transCode: '---',
+          transTime: fromDate,
+          transType: 'Dư nợ đầu kỳ',
+          transValue: 0,
+          runningDebt: agg.openingDebt,
+        })
+        .commit();
+
+      let running = agg.openingDebt;
+
+      for (const tx of txs) {
+        if (tx.kind === 'invoice') {
+          const inv = tx.data;
+          running += Number(inv.grandTotal);
+          const details = inv.details;
+          const head = details[0];
+          sheet
+            .addRow({
+              transCode: inv.code,
+              transTime: new Date(inv.purchaseDate),
+              transType: 'Bán hàng',
+              transValue: Number(inv.grandTotal),
+              runningDebt: running,
+              productCode: head?.productCode || '',
+              productName: head?.productName || '',
+              tradeMark: head?.product?.tradeMark?.name || '',
+              unitPrice: head ? Number(head.price) : 0,
+              productQty: head ? Number(head.quantity) : 0,
+              productAmount: head ? Number(head.totalPrice) : 0,
+              productDiscount: head ? Number(head.discount) : 0,
+              vatSale: 0,
+              vatReturn: 0,
+              otherFee: 0,
+              grandTotal: Number(inv.grandTotal),
+            })
+            .commit();
+          for (let i = 1; i < details.length; i++) {
+            const d = details[i];
+            sheet
+              .addRow({
+                productCode: d.productCode,
+                productName: d.productName,
+                tradeMark: d.product?.tradeMark?.name || '',
+                unitPrice: Number(d.price),
+                productQty: Number(d.quantity),
+                productAmount: Number(d.totalPrice),
+                productDiscount: Number(d.discount),
+                vatSale: 0,
+                vatReturn: 0,
+                otherFee: 0,
+                grandTotal: Number(inv.grandTotal),
+              })
+              .commit();
+          }
+        } else if (tx.kind === 'cashflow_in') {
+          const cf = tx.data;
+          running -= Number(cf.amount);
+          sheet
+            .addRow({
+              transCode: cf.code,
+              transTime: new Date(cf.transDate),
+              transType: 'Thanh toán',
+              transValue: -Number(cf.amount),
+              runningDebt: running,
+            })
+            .commit();
+        } else if (tx.kind === 'cashflow_out') {
+          const cf = tx.data;
+          running += Number(cf.amount);
+          sheet
+            .addRow({
+              transCode: cf.code,
+              transTime: new Date(cf.transDate),
+              transType: 'Chi tiền cho KH',
+              transValue: Number(cf.amount),
+              runningDebt: running,
+            })
+            .commit();
+        } else {
+          const ro = tx.data;
+          running -= Number(ro.refundAmount);
+          sheet
+            .addRow({
+              transCode: ro.code,
+              transTime: new Date(ro.createdAt),
+              transType: 'Trả hàng',
+              transValue: -Number(ro.refundAmount),
+              runningDebt: running,
+            })
+            .commit();
+        }
+      }
+    }
+
+    sheet.commit();
+    await workbook.commit();
+  }
 }
