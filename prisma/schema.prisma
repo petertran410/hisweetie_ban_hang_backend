@@ -412,6 +412,7 @@ model Customer {
   addresses            CustomerAddress[]
   creator              User?                 @relation("CustomerCreator", fields: [createdBy], references: [id])
   updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
+  priceBookCustomers   PriceBookCustomer[]
 
   @@map("customers")
 }
@@ -949,6 +950,7 @@ model PriceBook {
   warnNonListedProducts  Boolean   @default(false)
   priority               Int       @default(0)
   forAllCusGroup         Boolean   @default(false)
+  forAllCustomer         Boolean   @default(true)
   forAllUser             Boolean   @default(false)
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt
@@ -956,12 +958,14 @@ model PriceBook {
   priceBookDetails        PriceBookDetail[]
   priceBookBranches       PriceBookBranch[]
   priceBookCustomerGroups PriceBookCustomerGroup[]
+  priceBookCustomers      PriceBookCustomer[]
   priceBookUsers          PriceBookUser[]
   Product                 Product[]
   orders Order[] @relation("OrderPriceBook")
   invoices Invoice[] @relation("InvoicePriceBook")
 
   @@map("price_books")
+
 }
 
 model PriceBookDetail {
@@ -1008,6 +1012,20 @@ model PriceBookCustomerGroup {
 
   @@unique([priceBookId, customerGroupId])
   @@map("price_book_customer_groups")
+}
+
+model PriceBookCustomer {
+  id           Int      @id @default(autoincrement())
+  priceBookId  Int
+  customerId   Int
+  customerName String
+  createdAt    DateTime @default(now())
+
+  priceBook PriceBook @relation(fields: [priceBookId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([priceBookId, customerId])
+  @@map("price_book_customers")
 }
 
 model PriceBookUser {

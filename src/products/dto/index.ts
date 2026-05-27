@@ -468,4 +468,14 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   stockStatus?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  priceBookId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  onlyInPriceBook?: boolean;
 }

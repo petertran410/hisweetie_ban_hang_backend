@@ -416,22 +416,28 @@ export class CustomersService {
     }
 
     if (name) {
-      const tokens = name.trim().split(/\s+/).filter(Boolean);
+      const normalized = name.normalize('NFC');
+      const tokens = normalized.trim().split(/\s+/).filter(Boolean);
 
       let matchedIds: { id: number }[];
       if (tokens.length <= 1) {
         matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
       SELECT id FROM "customers"
-      WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${name}%`}))
+      WHERE (
+        unaccent(lower(name)) LIKE unaccent(lower(${`%${normalized}%`}))
+        OR lower(code) LIKE lower(${`%${normalized}%`})
+        OR "contactNumber" LIKE ${`%${normalized}%`}
+        OR phone LIKE ${`%${normalized}%`}
+      )
     `;
       } else {
         const tokenSets = await Promise.all(
           tokens.map(
             (t) =>
               this.prisma.$queryRaw<{ id: number }[]>`
-          SELECT id FROM "customers"
-          WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
-        `,
+        SELECT id FROM "customers"
+        WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
+      `,
           ),
         );
         const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));

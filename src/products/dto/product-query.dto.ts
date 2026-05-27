@@ -60,4 +60,14 @@ export class ProductQueryDto {
     return Array.isArray(value) ? value.map(Number) : [Number(value)];
   })
   types?: number[];
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  priceBookId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  onlyInPriceBook?: boolean;
 }

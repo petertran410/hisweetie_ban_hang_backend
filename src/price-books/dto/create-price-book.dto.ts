@@ -59,6 +59,10 @@ export class CreatePriceBookDto {
 
   @IsBoolean()
   @IsOptional()
+  forAllCustomer?: boolean = true;
+
+  @IsBoolean()
+  @IsOptional()
   forAllUser?: boolean = false;
 
   @IsArray()
@@ -76,6 +80,11 @@ export class CreatePriceBookDto {
   @IsNumber({}, { each: true })
   @IsOptional()
   customerGroups?: number[];
+
+  @IsArray()
+  @IsNumber({}, { each: true })
+  @IsOptional()
+  customers?: number[];
 
   @IsArray()
   @IsNumber({}, { each: true })

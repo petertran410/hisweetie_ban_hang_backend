@@ -125,6 +125,8 @@ export class ProductsService {
       middleName,
       childName,
       stockStatus,
+      priceBookId,
+      onlyInPriceBook,
     } = query;
     const skip = (page - 1) * limit;
 
@@ -163,6 +165,18 @@ export class ProductsService {
       where.id = {
         in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
       };
+    }
+
+    if (priceBookId && priceBookId > 0 && onlyInPriceBook) {
+      const pb = await this.prisma.priceBook.findUnique({
+        where: { id: priceBookId },
+        select: { allowNonListedProducts: true },
+      });
+      if (pb && !pb.allowNonListedProducts) {
+        where.priceBookDetails = {
+          some: { priceBookId, isActive: true },
+        };
+      }
     }
 
     if (categoryIds) {

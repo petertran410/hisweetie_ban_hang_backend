@@ -84,6 +84,17 @@ export class PriceBooksService {
               },
             },
           },
+          priceBookCustomers: {
+            include: {
+              customer: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
+                },
+              },
+            },
+          },
           priceBookUsers: {
             include: {
               user: {
@@ -144,6 +155,17 @@ export class PriceBooksService {
             },
           },
         },
+        priceBookCustomers: {
+          include: {
+            customer: {
+              select: {
+                id: true,
+                name: true,
+                code: true,
+              },
+            },
+          },
+        },
         priceBookUsers: {
           include: {
             user: {
@@ -177,6 +199,7 @@ export class PriceBooksService {
           warnNonListedProducts: dto.warnNonListedProducts ?? false,
           priority: dto.priority ?? 0,
           forAllCusGroup: dto.forAllCusGroup ?? false,
+          forAllCustomer: dto.forAllCustomer ?? true,
           forAllUser: dto.forAllUser ?? false,
         },
       });
@@ -214,6 +237,25 @@ export class PriceBooksService {
         );
         await tx.priceBookCustomerGroup.createMany({
           data: customerGroupsData,
+        });
+      }
+
+      if (dto.customers && dto.customers.length > 0) {
+        const customersData = await Promise.all(
+          dto.customers.map(async (customerId) => {
+            const customer = await tx.customer.findUnique({
+              where: { id: customerId },
+              select: { name: true },
+            });
+            return {
+              priceBookId: priceBook.id,
+              customerId,
+              customerName: customer?.name || '',
+            };
+          }),
+        );
+        await tx.priceBookCustomer.createMany({
+          data: customersData,
         });
       }
 
@@ -266,6 +308,17 @@ export class PriceBooksService {
                 select: {
                   id: true,
                   name: true,
+                },
+              },
+            },
+          },
+          priceBookCustomers: {
+            include: {
+              customer: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
                 },
               },
             },
@@ -325,6 +378,7 @@ export class PriceBooksService {
           warnNonListedProducts: dto.warnNonListedProducts,
           priority: dto.priority,
           forAllCusGroup: dto.forAllCusGroup,
+          forAllCustomer: dto.forAllCustomer,
           forAllUser: dto.forAllUser,
         },
       });
@@ -390,6 +444,31 @@ export class PriceBooksService {
           );
           await tx.priceBookCustomerGroup.createMany({
             data: customerGroupsData,
+          });
+        }
+      }
+
+      if (dto.customers !== undefined) {
+        await tx.priceBookCustomer.deleteMany({
+          where: { priceBookId: id },
+        });
+
+        if (dto.customers.length > 0) {
+          const customersData = await Promise.all(
+            dto.customers.map(async (customerId) => {
+              const customer = await tx.customer.findUnique({
+                where: { id: customerId },
+                select: { name: true },
+              });
+              return {
+                priceBookId: id,
+                customerId,
+                customerName: customer?.name || '',
+              };
+            }),
+          );
+          await tx.priceBookCustomer.createMany({
+            data: customersData,
           });
         }
       }
@@ -492,23 +571,23 @@ export class PriceBooksService {
 
     const where: any = {
       isActive: true,
-      OR: [{ startDate: null }, { startDate: { lte: checkDate } }],
       AND: [
-        {
-          OR: [{ endDate: null }, { endDate: { gte: checkDate } }],
-        },
+        { OR: [{ startDate: null }, { startDate: { lte: checkDate } }] },
+        { OR: [{ endDate: null }, { endDate: { gte: checkDate } }] },
       ],
     };
 
-    const orConditions: any[] = [];
-
+    // Branch scope
     if (branchId) {
-      orConditions.push(
-        { isGlobal: true },
-        { priceBookBranches: { some: { branchId } } },
-      );
+      where.AND.push({
+        OR: [
+          { isGlobal: true },
+          { priceBookBranches: { some: { branchId } } },
+        ],
+      });
     }
 
+    // Customer scope (gồm customer group + customer cụ thể)
     if (customerId) {
       const customer = await this.prisma.customer.findUnique({
         where: { id: customerId },
@@ -524,27 +603,38 @@ export class PriceBooksService {
           (g) => g.customerGroupId,
         );
 
+        // Customer group scope
+        const cgConditions: any[] = [{ forAllCusGroup: true }];
         if (groupIds.length > 0) {
-          orConditions.push({
+          cgConditions.push({
             priceBookCustomerGroups: {
               some: { customerGroupId: { in: groupIds } },
             },
           });
         }
+        where.AND.push({ OR: cgConditions });
 
-        orConditions.push({ forAllCusGroup: true });
+        // Customer cụ thể scope
+        where.AND.push({
+          OR: [
+            { forAllCustomer: true },
+            { priceBookCustomers: { some: { customerId } } },
+          ],
+        });
       }
+    } else {
+      // Không có customerId → chỉ hiện bảng giá forAllCustomer=true
+      where.AND.push({ forAllCustomer: true });
     }
 
+    // User scope
     if (userId) {
-      orConditions.push(
-        { priceBookUsers: { some: { userId } } },
-        { forAllUser: true },
-      );
-    }
-
-    if (orConditions.length > 0) {
-      where.OR = orConditions;
+      where.AND.push({
+        OR: [
+          { forAllUser: true },
+          { priceBookUsers: { some: { userId } } },
+        ],
+      });
     }
 
     const priceBooks = await this.prisma.priceBook.findMany({
@@ -565,6 +655,7 @@ export class PriceBooksService {
         },
         priceBookBranches: true,
         priceBookCustomerGroups: true,
+        priceBookCustomers: true,
         priceBookUsers: true,
       },
       orderBy: { priority: 'desc' },
