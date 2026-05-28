@@ -88,6 +88,26 @@ export class ProductsWithPricesQueryDto {
   branchId?: number;
 
   @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  parentName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  middleName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  childName?: string;
+
+  @IsOptional()
+  @IsString()
+  @Transform(({ value }) => (value && value.trim() !== '' ? value : undefined))
+  stockStatus?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   page?: number = 1;

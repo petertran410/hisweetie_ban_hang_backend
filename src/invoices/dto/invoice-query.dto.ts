@@ -125,10 +125,22 @@ export class InvoiceQueryDto {
 
   @IsOptional()
   @IsString()
+  @IsIn([
+    'purchaseDate',
+    'createdAt',
+    'updatedAt',
+    'grandTotal',
+    'paidAmount',
+    'returnOrderAmount',
+    'cashRefundAmount',
+    'debtOffsetAmount',
+    'remainingAmount',
+  ])
   orderBy?: string;
 
   @IsOptional()
   @IsString()
+  @IsIn(['asc', 'desc'])
   orderDirection?: string;
 
   @IsOptional()

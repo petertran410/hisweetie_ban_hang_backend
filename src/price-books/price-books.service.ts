@@ -1011,6 +1011,12 @@ export class PriceBooksService {
     branchId?: number,
     page: number = 1,
     limit: number = 15,
+    extraFilters?: {
+      parentName?: string;
+      middleName?: string;
+      childName?: string;
+      stockStatus?: string;
+    },
   ) {
     const where: any = {
       isActive: true,
@@ -1034,44 +1040,148 @@ export class PriceBooksService {
       }
     }
 
+    if (extraFilters?.parentName) where.parentName = extraFilters.parentName;
+    if (extraFilters?.middleName) where.middleName = extraFilters.middleName;
+    if (extraFilters?.childName) where.childName = extraFilters.childName;
+
+    if (extraFilters?.stockStatus === 'instock') {
+      where.inventories = { some: { onHand: { gt: 0 } } };
+    } else if (extraFilters?.stockStatus === 'outstock') {
+      where.inventories = { every: { onHand: { lte: 0 } } };
+    }
+
     const skip = (page - 1) * limit;
 
-    const [products, total] = await Promise.all([
-      this.prisma.product.findMany({
-        where,
-        skip,
-        take: limit,
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          basePrice: true,
-          unit: true,
-          inventories: branchId
-            ? {
-                where: { branchId },
-                select: { onHand: true, cost: true, branchId: true },
-              }
-            : { select: { onHand: true, cost: true, branchId: true } },
-          priceBookDetails: {
-            where: {
-              priceBookId: { in: priceBookIds },
-              isActive: true,
-            },
-            select: {
-              priceBookId: true,
-              price: true,
-            },
-          },
+    // Bao gồm cả Bảng giá chung (id=0) chỉ để JOIN priceBookDetails trả về,
+    // nhưng count rank chỉ tính các bảng giá thật (id > 0)
+    const realPriceBookIds = (priceBookIds || []).filter((id) => id > 0);
+
+    const fullSelect = {
+      id: true,
+      code: true,
+      name: true,
+      basePrice: true,
+      unit: true,
+      inventories: branchId
+        ? {
+            where: { branchId },
+            select: { onHand: true, cost: true, branchId: true },
+          }
+        : { select: { onHand: true, cost: true, branchId: true } },
+      priceBookDetails: {
+        where: {
+          priceBookId: { in: priceBookIds },
+          isActive: true,
         },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.product.count({ where }),
-    ]);
+        select: {
+          priceBookId: true,
+          price: true,
+        },
+      },
+    } as const;
+
+    let products: any[] = [];
+    let total = 0;
+
+    if (realPriceBookIds.length > 0) {
+      // Đếm số bảng giá (trong realPriceBookIds) mà mỗi sản phẩm xuất hiện
+      const grouped = await this.prisma.priceBookDetail.groupBy({
+        by: ['productId'],
+        where: {
+          priceBookId: { in: realPriceBookIds },
+          isActive: true,
+        },
+        _count: { productId: true },
+      });
+      const matchCountMap = new Map<number, number>();
+      grouped.forEach((g) =>
+        matchCountMap.set(g.productId, g._count.productId),
+      );
+      const matchedIds = Array.from(matchCountMap.keys());
+
+      // Lấy in-products thoả where, kèm createdAt để tie-break
+      const inProducts = matchedIds.length
+        ? await this.prisma.product.findMany({
+            where: { ...where, id: { in: matchedIds } },
+            select: { id: true, createdAt: true },
+          })
+        : [];
+
+      // Sort: rank desc (số bảng giá khớp giảm dần), tie-break createdAt desc
+      inProducts.sort((a, b) => {
+        const ca = matchCountMap.get(a.id) || 0;
+        const cb = matchCountMap.get(b.id) || 0;
+        if (cb !== ca) return cb - ca;
+        return b.createdAt.getTime() - a.createdAt.getTime();
+      });
+
+      const totalIn = inProducts.length;
+      const outWhere = matchedIds.length
+        ? { ...where, id: { notIn: matchedIds } }
+        : where;
+      const totalOut = await this.prisma.product.count({ where: outWhere });
+      total = totalIn + totalOut;
+
+      // Phân trang xuyên 2 nhóm: phần "in" trước (đã sort theo rank), "out" sau
+      let inIdsWindow: number[] = [];
+      let outSkip = 0;
+      let outTake = 0;
+
+      if (skip + limit <= totalIn) {
+        inIdsWindow = inProducts.slice(skip, skip + limit).map((p) => p.id);
+      } else if (skip >= totalIn) {
+        outSkip = skip - totalIn;
+        outTake = limit;
+      } else {
+        inIdsWindow = inProducts.slice(skip).map((p) => p.id);
+        outTake = limit - inIdsWindow.length;
+      }
+
+      // Fetch in-products với full select rồi giữ đúng thứ tự rank
+      let inResults: any[] = [];
+      if (inIdsWindow.length > 0) {
+        const fetched = await this.prisma.product.findMany({
+          where: { id: { in: inIdsWindow } },
+          select: fullSelect,
+        });
+        const fetchedMap = new Map(fetched.map((p) => [p.id, p]));
+        inResults = inIdsWindow
+          .map((id) => fetchedMap.get(id))
+          .filter(Boolean) as any[];
+      }
+
+      // Fetch out-products với full select
+      let outResults: any[] = [];
+      if (outTake > 0) {
+        outResults = await this.prisma.product.findMany({
+          where: outWhere,
+          select: fullSelect,
+          orderBy: { createdAt: 'desc' },
+          skip: outSkip,
+          take: outTake,
+        });
+      }
+
+      products = [...inResults, ...outResults];
+    } else {
+      // Không có bảng giá thật được chọn → fallback list thường
+      const [list, count] = await Promise.all([
+        this.prisma.product.findMany({
+          where,
+          skip,
+          take: limit,
+          select: fullSelect,
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.product.count({ where }),
+      ]);
+      products = list;
+      total = count;
+    }
 
     const data = products.map((product) => {
       const prices: Record<number, number> = {};
-      product.priceBookDetails.forEach((detail) => {
+      product.priceBookDetails.forEach((detail: any) => {
         prices[detail.priceBookId] = Number(detail.price);
       });
 
@@ -1083,7 +1193,7 @@ export class PriceBooksService {
         unit: product.unit,
         prices,
         stockQuantity: product.inventories.reduce(
-          (sum, inv) => sum + Number(inv.onHand),
+          (sum: number, inv: any) => sum + Number(inv.onHand),
           0,
         ),
         inventories: product.inventories,

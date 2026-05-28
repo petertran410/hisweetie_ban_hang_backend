@@ -10,6 +10,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
+import { recalcSupplierDebt } from '../common/supplier-debt.util';
 
 @Injectable()
 export class SuppliersService {
@@ -499,27 +500,7 @@ export class SuppliersService {
   }
 
   async updateDebt(supplierId: number) {
-    const purchaseOrders = await this.prisma.purchaseOrder.findMany({
-      where: { supplierId },
-    });
-
-    const debt = purchaseOrders.reduce((sum, po) => {
-      const poDebt =
-        Number(po.total) - Number(po.discount) - Number(po.paidAmount);
-      return sum + poDebt;
-    }, 0);
-
-    const totalInvoiced = purchaseOrders.reduce((sum, po) => {
-      return sum + Number(po.total);
-    }, 0);
-
-    return this.prisma.supplier.update({
-      where: { id: supplierId },
-      data: {
-        debt,
-        totalInvoiced,
-      },
-    });
+    return this.prisma.$transaction((tx) => recalcSupplierDebt(tx, supplierId));
   }
 
   private async generateSafeSupplierCode(tx: any): Promise<string> {
@@ -681,35 +662,52 @@ export class SuppliersService {
       });
     }
 
-    // 3. Lấy supplier returns đã hoàn thành → trừ nợ
+    // 3. Lấy supplier returns đã xuất kho hoặc đã hoàn thành → trừ nợ
+    //    Đối xứng với Formula B: SR offsets gồm STOCK_EXPORTED(2) và COMPLETED(3).
+    //    KHÔNG lọc CANCELLED(4) hay DRAFT(5).
     const supplierReturns = await this.prisma.supplierReturn.findMany({
       where: {
         supplierId,
-        status: 3, // COMPLETED
+        status: { in: [2, 3] },
       },
       select: {
         id: true,
         code: true,
         mode: true,
+        status: true,
         refundType: true,
         refundAmount: true,
         refundedAmount: true,
         refundConfirmedAt: true,
+        exportedAt: true,
         createdAt: true,
         branchId: true,
         branch: { select: { id: true, name: true } },
         refundConfirmer: { select: { id: true, name: true } },
+        exporter: { select: { id: true, name: true } },
         purchaseOrder: { select: { id: true, code: true } },
       },
-      orderBy: { refundConfirmedAt: 'asc' },
+      orderBy: { createdAt: 'asc' },
     });
 
     for (const sr of supplierReturns) {
-      const displayDate = sr.refundConfirmedAt || sr.createdAt;
+      // status=2 (STOCK_EXPORTED) chưa có refundedAmount → dùng refundAmount
+      const amount =
+        sr.status === 3
+          ? Number(sr.refundedAmount)
+          : Number(sr.refundAmount);
+
+      const displayDate =
+        sr.status === 3
+          ? sr.refundConfirmedAt || sr.createdAt
+          : sr.exportedAt || sr.createdAt;
+
       const description =
-        sr.refundType === 'debt_offset'
-          ? `Cấn trừ nợ ${sr.code}${sr.purchaseOrder ? ` (${sr.purchaseOrder.code})` : ''}`
-          : `Trả hàng nhập ${sr.code}`;
+        sr.status === 2
+          ? `Xuất kho trả hàng ${sr.code}`
+          : sr.refundType === 'debt_offset'
+            ? `Cấn trừ nợ ${sr.code}${sr.purchaseOrder ? ` (${sr.purchaseOrder.code})` : ''}`
+            : `Trả hàng nhập ${sr.code}`;
 
       timeline.push({
         type: 'supplier_return',
@@ -717,13 +715,22 @@ export class SuppliersService {
         code: sr.code,
         date: displayDate,
         createdAt: sr.createdAt,
-        amount: Number(sr.refundedAmount),
+        amount,
+        status: sr.status,
+        mode: sr.mode,
         refundType: sr.refundType,
         method: null,
         description,
         debtSnapshot: 0,
+        // Khi RO COMPLETED + debt_offset + by_purchase_order, debt đã được giảm
+        // qua po.paidAmount += refundAmount → KHÔNG trừ thêm trong timeline.
+        // Hiển thị entry để user thấy phiếu nhưng skip cộng dồn debt.
+        skipDebtCalc:
+          sr.status === 3 &&
+          sr.refundType === 'debt_offset' &&
+          sr.mode === 'by_purchase_order',
         branch: sr.branch,
-        user: sr.refundConfirmer,
+        user: sr.status === 3 ? sr.refundConfirmer : sr.exporter,
       });
     }
 
@@ -749,9 +756,12 @@ export class SuppliersService {
       if (item.type === 'purchase') {
         runningDebt += item.amount;
       } else if (item.type === 'balance_adjustment') {
-        runningDebt += item.amount;
+        runningDebt += item.amount; // ← đối xứng KH "expense": cashflow thu S tăng debt
       } else if (item.type === 'supplier_return') {
-        runningDebt -= item.amount; // ← trả hàng giảm nợ
+        // skipDebtCalc: RO debt_offset + by_purchase_order đã giảm debt qua po.paidAmount
+        if (!item.skipDebtCalc) {
+          runningDebt -= item.amount; // ← trả hàng giảm nợ
+        }
       } else if (item.type === 'payment') {
         runningDebt -= item.amount;
       }

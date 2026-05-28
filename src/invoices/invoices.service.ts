@@ -63,6 +63,8 @@ export class InvoicesService {
       orderCodeSearch,
       descriptionSearch,
       productNoteSearch,
+      orderBy: rawOrderBy,
+      orderDirection: rawOrderDirection,
     } = query;
 
     const effectiveLimit = pageSize || limit;
@@ -186,38 +188,162 @@ export class InvoicesService {
       if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
     }
 
-    const [data, total] = await Promise.all([
-      this.prisma.invoice.findMany({
-        where,
-        skip: effectiveSkip,
-        take: effectiveLimit,
-        include: {
-          customer: true,
-          branch: { select: { id: true, name: true } },
-          soldBy: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-          details: { include: { product: true } },
-          payments: true,
-          delivery: true,
-          returnOrders: {
-            where: {
-              status: { gte: 2 }, // Đã nhập kho trở lên
-              code: { startsWith: 'TH' }, // CHỈ LẤY PHIẾU TRẢ HÀNG, KHÔNG LẤY CTN
-            },
-            select: {
-              id: true,
-              code: true,
-              status: true,
-              refundAmount: true,
-              refundedAmount: true,
-              refundType: true,
-            },
-          },
+    // ── Sort logic ──
+    const COMPUTED_SORT_FIELDS = ['returnOrderAmount', 'cashRefundAmount', 'debtOffsetAmount', 'remainingAmount'];
+    const DB_SORT_FIELDS: Record<string, string> = {
+      purchaseDate: 'purchase_date',
+      createdAt: 'created_at',
+      updatedAt: 'updated_at',
+      grandTotal: 'grand_total',
+      paidAmount: 'paid_amount',
+    };
+
+    const sortField = rawOrderBy && (COMPUTED_SORT_FIELDS.includes(rawOrderBy) || DB_SORT_FIELDS[rawOrderBy])
+      ? rawOrderBy
+      : 'createdAt';
+    const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
+    const isComputedSort = COMPUTED_SORT_FIELDS.includes(sortField);
+
+    const includeConfig = {
+      customer: true,
+      branch: { select: { id: true, name: true } },
+      soldBy: { select: { id: true, name: true } },
+      creator: { select: { id: true, name: true } },
+      details: { include: { product: true } },
+      payments: true,
+      delivery: true,
+      returnOrders: {
+        where: {
+          status: { gte: 2 }, // Đã nhập kho trở lên
+          code: { startsWith: 'TH' }, // CHỈ LẤY PHIẾU TRẢ HÀNG, KHÔNG LẤY CTN
         },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.invoice.count({ where }),
-    ]);
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          refundAmount: true,
+          refundedAmount: true,
+          refundType: true,
+        },
+      },
+    } as const;
+
+    let data: any[];
+    let total: number;
+
+    if (isComputedSort) {
+      // Sort theo computed field: build WHERE conditions trực tiếp trong raw SQL
+      // để tránh fetch all ids vào memory
+      let aggregateExpr: string;
+      if (sortField === 'returnOrderAmount') {
+        aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0)`;
+      } else if (sortField === 'cashRefundAmount') {
+        aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status = 4 AND ro."refundType" = 'cash_refund' AND ro.code LIKE 'TH%' THEN ro."refundedAmount" ELSE 0 END), 0)`;
+      } else if (sortField === 'debtOffsetAmount') {
+        aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status = 4 AND ro."refundType" = 'debt_offset' AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0)`;
+      } else {
+        // remainingAmount ≈ grand_total - paid_amount - returnOrderAmount
+        aggregateExpr = `(i."grandTotal" - i."paidAmount" - COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0))`;
+      }
+
+      const sortDirSql = sortDir === 'asc' ? 'ASC' : 'DESC';
+
+      // Build WHERE conditions cho raw SQL từ where object
+      const sqlConditions: string[] = [];
+      const sqlParams: any[] = [];
+
+      if (where.createdBy !== undefined) {
+        sqlParams.push(where.createdBy);
+        sqlConditions.push(`i."createdBy" = $${sqlParams.length}`);
+      }
+      if (where.customerId?.in) {
+        sqlParams.push(where.customerId.in);
+        sqlConditions.push(`i."customerId" = ANY($${sqlParams.length})`);
+      }
+      if (where.parentCustomerId !== undefined) {
+        sqlParams.push(where.parentCustomerId);
+        sqlConditions.push(`i."parentCustomerId" = $${sqlParams.length}`);
+      }
+      if (where.branchId?.in) {
+        sqlParams.push(where.branchId.in);
+        sqlConditions.push(`i."branchId" = ANY($${sqlParams.length})`);
+      } else if (typeof where.branchId === 'number') {
+        sqlParams.push(where.branchId);
+        sqlConditions.push(`i."branchId" = $${sqlParams.length}`);
+      }
+      if (where.status?.in) {
+        sqlParams.push(where.status.in);
+        sqlConditions.push(`i.status = ANY($${sqlParams.length})`);
+      }
+      if (where.purchaseDate?.gte) {
+        sqlParams.push(where.purchaseDate.gte);
+        sqlConditions.push(`i."purchaseDate" >= $${sqlParams.length}`);
+      }
+      if (where.purchaseDate?.lte) {
+        sqlParams.push(where.purchaseDate.lte);
+        sqlConditions.push(`i."purchaseDate" <= $${sqlParams.length}`);
+      }
+      if (where.createdAt?.gte) {
+        sqlParams.push(where.createdAt.gte);
+        sqlConditions.push(`i."createdAt" >= $${sqlParams.length}`);
+      }
+      if (where.createdAt?.lte) {
+        sqlParams.push(where.createdAt.lte);
+        sqlConditions.push(`i."createdAt" <= $${sqlParams.length}`);
+      }
+
+      const whereClause = sqlConditions.length > 0
+        ? `WHERE ${sqlConditions.join(' AND ')}`
+        : '';
+
+      // Count query
+      const countResult = await this.prisma.$queryRawUnsafe<{ count: bigint }[]>(
+        `SELECT COUNT(DISTINCT i.id) as count FROM invoices i ${whereClause}`,
+        ...sqlParams,
+      );
+      total = Number(countResult[0]?.count ?? 0);
+
+      // Sorted ids query
+      sqlParams.push(effectiveLimit);
+      sqlParams.push(effectiveSkip);
+      const sortedIdsRaw = await this.prisma.$queryRawUnsafe<{ id: number }[]>(
+        `SELECT i.id
+         FROM invoices i
+         LEFT JOIN return_orders ro ON ro."invoiceId" = i.id
+         ${whereClause}
+         GROUP BY i.id, i."grandTotal", i."paidAmount"
+         ORDER BY ${aggregateExpr} ${sortDirSql}
+         LIMIT $${sqlParams.length - 1} OFFSET $${sqlParams.length}`,
+        ...sqlParams,
+      );
+
+      const sortedIds = sortedIdsRaw.map((r) => Number(r.id));
+
+      if (sortedIds.length === 0) {
+        data = [];
+      } else {
+        const unsortedData = await this.prisma.invoice.findMany({
+          where: { id: { in: sortedIds } },
+          include: includeConfig,
+        });
+        const dataMap = new Map(unsortedData.map((inv) => [inv.id, inv]));
+        data = sortedIds.map((id) => dataMap.get(id)).filter(Boolean);
+      }
+    } else {
+      // Sort theo DB field thông thường — dùng Prisma orderBy
+      const prismaOrderBy = { [sortField]: sortDir };
+
+      [data, total] = await Promise.all([
+        this.prisma.invoice.findMany({
+          where,
+          skip: effectiveSkip,
+          take: effectiveLimit,
+          include: includeConfig,
+          orderBy: prismaOrderBy,
+        }),
+        this.prisma.invoice.count({ where }),
+      ]);
+    }
 
     // Tính toán 4 trường mới cho mỗi invoice
     const dataWithReturnCalculations = data.map((invoice) => {

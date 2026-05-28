@@ -556,6 +556,8 @@ export class OrdersService {
     const {
       page = 1,
       limit = 10,
+      pageSize,
+      currentItem,
       search,
       status,
       customerId,
@@ -568,8 +570,13 @@ export class OrdersService {
       saleChannelId,
       paymentMethod,
       bankAccountIds,
+      orderBy: rawOrderBy,
+      orderDirection: rawOrderDirection,
     } = query;
-    const skip = (page - 1) * limit;
+
+    const effectiveLimit = pageSize || limit;
+    const effectiveSkip =
+      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
     const where: any = {};
 
@@ -610,11 +617,18 @@ export class OrdersService {
       where.payments = { some: paymentWhere };
     }
 
+    const VALID_ORDER_BY = new Set([
+      'orderDate', 'createdAt', 'updatedAt', 'grandTotal',
+      'paidAmount', 'debtAmount', 'totalAmount', 'status',
+    ]);
+    const sortField = rawOrderBy && VALID_ORDER_BY.has(rawOrderBy) ? rawOrderBy : 'orderDate';
+    const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
+
     const [data, total] = await Promise.all([
       this.prisma.order.findMany({
         where,
-        skip,
-        take: limit,
+        skip: effectiveSkip,
+        take: effectiveLimit,
         include: {
           customer: true,
           soldBy: { select: { id: true, name: true } },
@@ -623,7 +637,7 @@ export class OrdersService {
           invoices: true,
           delivery: true,
         },
-        orderBy: { orderDate: 'desc' },
+        orderBy: { [sortField]: sortDir },
       }),
       this.prisma.order.count({ where }),
     ]);

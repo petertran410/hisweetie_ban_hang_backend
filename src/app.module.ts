@@ -146,10 +146,6 @@ import { SepayModule } from './sepay/sepay.module';
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,
     },
-    {
-      provide: APP_PIPE,
-      useClass: ValidationPipe,
-    },
   ],
 })
 export class AppModule {}

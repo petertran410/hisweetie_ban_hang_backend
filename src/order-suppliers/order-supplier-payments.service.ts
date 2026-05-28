@@ -7,6 +7,7 @@ import {
   getSeverityFromActionCode,
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
+import { recalcSupplierDebt } from '../common/supplier-debt.util';
 
 @Injectable()
 export class OrderSupplierPaymentsService {
@@ -328,40 +329,6 @@ export class OrderSupplierPaymentsService {
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    // Tính debt từ OrderSupplier: tổng tiền - đã trả (số âm = NCC nợ mình)
-    const orderSuppliers = await tx.orderSupplier.findMany({
-      where: { supplierId },
-      include: { payments: true },
-    });
-
-    let debtFromOrders = 0;
-    for (const os of orderSuppliers) {
-      const totalPaid = os.payments.reduce(
-        (sum: number, p: any) => sum + Number(p.amount),
-        0,
-      );
-      // Nếu trả nhiều hơn total thì là NCC nợ mình (số âm)
-      debtFromOrders += totalPaid;
-    }
-
-    // Tính debt từ PurchaseOrder: tổng tiền - discount - đã trả (số dương = mình nợ NCC)
-    const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId },
-    });
-
-    const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
-      const total = Number(po.total);
-      const discount = Number(po.discount);
-      const paid = Number(po.paidAmount);
-      return sum + (total - discount - paid);
-    }, 0);
-
-    // Debt tổng = Mình nợ NCC (PurchaseOrder) - NCC nợ mình (OrderSupplier payment)
-    const totalDebt = debtFromPurchases - debtFromOrders;
-
-    await tx.supplier.update({
-      where: { id: supplierId },
-      data: { debt: totalDebt },
-    });
+    await recalcSupplierDebt(tx, supplierId);
   }
 }

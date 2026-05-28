@@ -15,6 +15,7 @@ import {
   ImportSupplierReturnsDto,
   SUPPLIER_RETURN_STATUS_LABELS,
 } from './dto';
+import { recalcSupplierDebt } from '../common/supplier-debt.util';
 
 @Injectable()
 export class SupplierReturnsService {
@@ -56,58 +57,11 @@ export class SupplierReturnsService {
   }
 
   /**
-   * Tái tính Supplier.debt — bao gồm cả supplier returns theo mode by_product.
-   * Formula:
-   *   debt = SUM(po.total - po.discount - po.paidAmount)   [phiếu nhập không draft]
-   *        - SUM(orderSupplierPayment.amount)               [đặt hàng đã ứng trước]
-   *        - SUM(supplierReturn.refundedAmount)              [trả hàng by_product đã hoàn thành]
+   * Tái tính Supplier.debt — delegate sang recalcSupplierDebt (Formula B).
+   * Giữ wrapper để không phải sửa các call-site cũ.
    */
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId, isDraft: false },
-    });
-
-    const debtFromPurchases = purchaseOrders.reduce((sum: number, po: any) => {
-      return (
-        sum + (Number(po.total) - Number(po.discount) - Number(po.paidAmount))
-      );
-    }, 0);
-
-    const orderSuppliers = await tx.orderSupplier.findMany({
-      where: { supplierId },
-      include: { payments: true },
-    });
-
-    const debtFromOrders = orderSuppliers.reduce((sum: number, os: any) => {
-      const paid = os.payments.reduce(
-        (s: number, p: any) => s + Number(p.amount),
-        0,
-      );
-      return sum + paid;
-    }, 0);
-
-    // Trả hàng nhập theo sản phẩm lẻ (by_product) đã hoàn thành
-    // → cả debt_offset lẫn cash_refund đều giảm nợ NCC
-    const byProductReturns = await tx.supplierReturn.aggregate({
-      where: {
-        supplierId,
-        mode: 'by_product',
-        status: SUPPLIER_RETURN_STATUS.COMPLETED,
-      },
-      _sum: { refundedAmount: true },
-    });
-
-    const debtFromByProductReturns = Number(
-      byProductReturns._sum.refundedAmount || 0,
-    );
-
-    const totalDebt =
-      debtFromPurchases - debtFromOrders - debtFromByProductReturns;
-
-    await tx.supplier.update({
-      where: { id: supplierId },
-      data: { debt: totalDebt },
-    });
+    await recalcSupplierDebt(tx, supplierId);
   }
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
@@ -648,6 +602,11 @@ export class SupplierReturnsService {
         },
       });
 
+      // Step 2 đã chuyển status → STOCK_EXPORTED. Formula B đếm RO này vào
+      // offsets nên debt sẽ giảm tương ứng `refundAmount`. Đối xứng với KH
+      // step 2 STOCK_RECEIVED ở return-orders.service.
+      await this.updateSupplierDebt(supplierReturn.supplierId, tx);
+
       await this.auditLogsService.create({
         actionType: 'PUT',
         actionCode: 'SUPPLIER_RETURN_STOCK_EXPORTED',
@@ -871,6 +830,10 @@ export class SupplierReturnsService {
             SUPPLIER_RETURN_STATUS_LABELS[SUPPLIER_RETURN_STATUS.CANCELLED],
         },
       });
+
+      // Phiếu bị hủy → loại khỏi offsets của Formula B → recalc để hoàn nợ NCC
+      // (đối xứng return-orders.cancel L848-850).
+      await this.updateSupplierDebt(supplierReturn.supplierId, tx);
 
       await this.auditLogsService.create({
         actionType: 'PUT',

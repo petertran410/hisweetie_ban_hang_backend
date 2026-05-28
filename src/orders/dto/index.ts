@@ -221,6 +221,16 @@ export class OrderQueryDto {
   limit?: number;
 
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  pageSize?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  currentItem?: number;
+
+  @IsOptional()
   @IsString()
   search?: string;
 
@@ -276,6 +286,25 @@ export class OrderQueryDto {
   })
   @IsArray()
   bankAccountIds?: number[];
+
+  @IsOptional()
+  @IsString()
+  @IsIn([
+    'orderDate',
+    'createdAt',
+    'updatedAt',
+    'grandTotal',
+    'paidAmount',
+    'debtAmount',
+    'totalAmount',
+    'status',
+  ])
+  orderBy?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['asc', 'desc'])
+  orderDirection?: string;
 }
 
 export class CreateOrderPaymentDto {

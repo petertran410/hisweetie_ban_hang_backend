@@ -223,7 +223,11 @@ export class CreateProductDto {
   @IsOptional()
   @IsArray()
   @IsNumber({}, { each: true })
-  @Type(() => Number)
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (value !== undefined && value !== null) return [Number(value)];
+    return undefined;
+  })
   costBranchIds?: number[];
 
   @IsOptional()
@@ -393,7 +397,11 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsOptional()
   @IsArray()
   @IsNumber({}, { each: true })
-  @Type(() => Number)
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (value !== undefined && value !== null) return [Number(value)];
+    return undefined;
+  })
   costBranchIds?: number[];
 }
 

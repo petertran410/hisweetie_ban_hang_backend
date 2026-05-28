@@ -15,6 +15,7 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
+import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -324,6 +325,15 @@ export class CashFlowsService {
           where: { id: { in: createdInvoicePaymentIds } },
           data: { cashFlowId: cashFlow.id },
         });
+      }
+
+      // [FIX-11] Recalc Supplier.debt khi tạo cashflow tự do partnerType='S'.
+      // Sổ quỹ tự do chỉ ảnh hưởng debt qua cashflow; không cần allocate sang
+      // PurchaseOrder vì cashflow này KHÔNG có code prefix PNPC*/PDNPC*.
+      // Formula B sẽ tự tính: isReceipt=true → +amount (NCC nợ ngược thêm),
+      // isReceipt=false → -amount (mình bớt nợ).
+      if (dto.affectDebt && dto.partnerId && dto.partnerType === 'S') {
+        await this.recalcSupplierDebt(dto.partnerId, tx);
       }
 
       const user = await tx.user.findUnique({
@@ -648,6 +658,18 @@ export class CashFlowsService {
         await this.recalcCustomerDebt(cid, tx);
       }
 
+      // [FIX-10] Đối xứng cho NCC
+      const supplierIdsToRecalc = new Set<number>();
+      if (existingCashFlow.partnerType === 'S' && existingCashFlow.partnerId) {
+        supplierIdsToRecalc.add(existingCashFlow.partnerId);
+      }
+      if (cashFlow.partnerType === 'S' && cashFlow.partnerId) {
+        supplierIdsToRecalc.add(cashFlow.partnerId);
+      }
+      for (const sid of supplierIdsToRecalc) {
+        await this.recalcSupplierDebt(sid, tx);
+      }
+
       return { existingCashFlow, cashFlow };
     });
 
@@ -737,6 +759,21 @@ export class CashFlowsService {
         select: { id: true, invoiceId: true, customerId: true },
       });
 
+      // [FIX-10] Tìm payments NCC liên quan: PNPC* (PurchaseOrderPayment)
+      // và PDNPC* (OrderSupplierPayment) match theo code = cashFlow.code.
+      const linkedPurchaseOrderPayments = await tx.purchaseOrderPayment.findMany(
+        {
+          where: { code: cashFlow.code, status: { not: 2 } },
+          select: { id: true, purchaseOrderId: true },
+        },
+      );
+
+      const linkedOrderSupplierPayments =
+        await tx.orderSupplierPayment.findMany({
+          where: { code: cashFlow.code, status: { not: 2 } },
+          select: { id: true, orderSupplierId: true },
+        });
+
       // ── 2. Hủy cashflow
       const updated = await tx.cashFlow.update({
         where: { id },
@@ -764,6 +801,24 @@ export class CashFlowsService {
         await tx.returnOrder.updateMany({
           where: { id: { in: linkedCtns.map((c) => c.id) } },
           data: { status: 5, statusValue: 'Đã hủy' },
+        });
+      }
+
+      // [FIX-10] Hủy PurchaseOrderPayment / OrderSupplierPayment liên quan
+      if (linkedPurchaseOrderPayments.length > 0) {
+        await tx.purchaseOrderPayment.updateMany({
+          where: {
+            id: { in: linkedPurchaseOrderPayments.map((p) => p.id) },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+      if (linkedOrderSupplierPayments.length > 0) {
+        await tx.orderSupplierPayment.updateMany({
+          where: {
+            id: { in: linkedOrderSupplierPayments.map((p) => p.id) },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
         });
       }
 
@@ -878,6 +933,100 @@ export class CashFlowsService {
       });
       for (const cid of ctnCustomerIds) {
         await this.recalcCustomerDebt(cid, tx);
+      }
+
+      // [FIX-10] Recalc PurchaseOrder.paidAmount/debtAmount cho từng PO bị ảnh hưởng
+      const affectedPurchaseOrderIds = new Set<number>();
+      linkedPurchaseOrderPayments.forEach((p) => {
+        if (p.purchaseOrderId)
+          affectedPurchaseOrderIds.add(p.purchaseOrderId);
+      });
+
+      for (const poId of affectedPurchaseOrderIds) {
+        const po = await tx.purchaseOrder.findUnique({
+          where: { id: poId },
+          select: { total: true, discount: true },
+        });
+        if (!po) continue;
+
+        const activePayments = await tx.purchaseOrderPayment.findMany({
+          where: { purchaseOrderId: poId, status: { not: 2 } },
+          select: { amount: true },
+        });
+        const sumPayments = activePayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        );
+
+        const subTotal = Number(po.total) - Number(po.discount);
+        await tx.purchaseOrder.update({
+          where: { id: poId },
+          data: {
+            paidAmount: sumPayments,
+            debtAmount: Math.max(0, subTotal - sumPayments),
+          },
+        });
+      }
+
+      // [FIX-10] Recalc OrderSupplier.paidAmount cho từng OS bị ảnh hưởng
+      const affectedOrderSupplierIds = new Set<number>();
+      linkedOrderSupplierPayments.forEach((p) => {
+        if (p.orderSupplierId)
+          affectedOrderSupplierIds.add(p.orderSupplierId);
+      });
+
+      for (const osId of affectedOrderSupplierIds) {
+        const os = await tx.orderSupplier.findUnique({
+          where: { id: osId },
+          select: { subTotal: true },
+        });
+        if (!os) continue;
+
+        const activePayments = await tx.orderSupplierPayment.findMany({
+          where: { orderSupplierId: osId, status: { not: 2 } },
+          select: { amount: true },
+        });
+        const sumPayments = activePayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        );
+
+        await tx.orderSupplier.update({
+          where: { id: osId },
+          data: {
+            paidAmount: sumPayments,
+            supplierDebt: Number(os.subTotal) - sumPayments,
+          },
+        });
+      }
+
+      // [FIX-10] Recalc Supplier.debt
+      if (cashFlow.partnerType === 'S' && cashFlow.partnerId) {
+        await this.recalcSupplierDebt(cashFlow.partnerId, tx);
+      }
+
+      // Recalc cho supplier của PO/OS bị ảnh hưởng (nếu khác partnerId)
+      const affectedSupplierIds = new Set<number>();
+      for (const poId of affectedPurchaseOrderIds) {
+        const po = await tx.purchaseOrder.findUnique({
+          where: { id: poId },
+          select: { supplierId: true },
+        });
+        if (po?.supplierId && po.supplierId !== cashFlow.partnerId) {
+          affectedSupplierIds.add(po.supplierId);
+        }
+      }
+      for (const osId of affectedOrderSupplierIds) {
+        const os = await tx.orderSupplier.findUnique({
+          where: { id: osId },
+          select: { supplierId: true },
+        });
+        if (os?.supplierId && os.supplierId !== cashFlow.partnerId) {
+          affectedSupplierIds.add(os.supplierId);
+        }
+      }
+      for (const sid of affectedSupplierIds) {
+        await this.recalcSupplierDebt(sid, tx);
       }
 
       return { cashFlow, updated };
@@ -1298,8 +1447,9 @@ export class CashFlowsService {
 
       // ── 1. Xử lý invoice allocations — CHƯA tạo cashflow ──
       const invoicePayments: any[] = [];
-      const amountPerCustomer = new Map<number, number>(); // ← THÊM: gom tiền theo customer
-      const paymentIdsByCustomer = new Map<number, number[]>(); // ← THÊM: gom payment IDs theo customer
+      const amountPerCustomer = new Map<number, number>();
+      const paymentIdsByCustomer = new Map<number, number[]>();
+      const ctnIdsByCustomer = new Map<number, number[]>();
 
       if (dto.allocateToInvoices && dto.invoices && dto.invoices.length > 0) {
         for (const invoice of dto.invoices) {
@@ -1438,7 +1588,7 @@ export class CashFlowsService {
             },
           });
 
-          await tx.returnOrder.create({
+          const createdCtn = await tx.returnOrder.create({
             data: {
               code: ctnCode,
               invoiceId: debtOffset.invoiceId,
@@ -1460,6 +1610,12 @@ export class CashFlowsService {
               createdByName: user?.name || 'System',
             },
           });
+
+          // ← THÊM: gom CTN id theo customer chủ hóa đơn để link sang cashflow sau
+          const ctnCustId = invoiceData.customerId!;
+          const existingCtnIds = ctnIdsByCustomer.get(ctnCustId) || [];
+          existingCtnIds.push(createdCtn.id);
+          ctnIdsByCustomer.set(ctnCustId, existingCtnIds);
         }
 
         // Consume overpaid invoices (GIỮ NGUYÊN logic)
@@ -1540,6 +1696,18 @@ export class CashFlowsService {
               data: { cashFlowId: cf.id },
             });
           }
+
+          // ← THÊM: link tất cả CTN debt-offset vào cashflow này
+          const allCtnIds: number[] = [];
+          for (const ids of ctnIdsByCustomer.values()) {
+            allCtnIds.push(...ids);
+          }
+          if (allCtnIds.length > 0) {
+            await tx.returnOrder.updateMany({
+              where: { id: { in: allCtnIds } },
+              data: { cashFlowId: cf.id },
+            });
+          }
         } else {
           // Case mixed: invoice thuộc nhiều customer → tách cashflow per customer
           for (const [custId, custAmount] of amountPerCustomer) {
@@ -1594,6 +1762,15 @@ export class CashFlowsService {
                 data: { cashFlowId: cf.id },
               });
             }
+
+            // ← THÊM: link CTN debt-offset của customer này vào cashflow của customer này
+            const ctnIds = ctnIdsByCustomer.get(custId) || [];
+            if (ctnIds.length > 0) {
+              await tx.returnOrder.updateMany({
+                where: { id: { in: ctnIds } },
+                data: { cashFlowId: cf.id },
+              });
+            }
           }
         }
       }
@@ -1634,6 +1811,10 @@ export class CashFlowsService {
 
   private recalcCustomerDebt(customerId: number, tx: any) {
     return recalcCustomerDebtUtil(tx, customerId);
+  }
+
+  private recalcSupplierDebt(supplierId: number, tx: any) {
+    return recalcSupplierDebtUtil(tx, supplierId);
   }
 
   private async generateSafeCashFlowCode(

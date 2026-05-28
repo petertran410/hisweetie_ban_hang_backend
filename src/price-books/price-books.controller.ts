@@ -66,6 +66,12 @@ export class PriceBooksController {
       query.branchId,
       query.page,
       query.limit,
+      {
+        parentName: query.parentName,
+        middleName: query.middleName,
+        childName: query.childName,
+        stockStatus: query.stockStatus,
+      },
     );
   }
 

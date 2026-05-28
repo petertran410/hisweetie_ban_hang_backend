@@ -11,6 +11,7 @@ import {
   getSeverityFromActionCode,
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
+import { recalcSupplierDebt } from '../common/supplier-debt.util';
 
 @Injectable()
 export class OrderSuppliersService {
@@ -292,7 +293,7 @@ export class OrderSuppliersService {
             code: paymentCode,
             branchId: orderSupplier.branchId ?? 1,
             cashFlowGroupId: 4,
-            isReceipt: true,
+            isReceipt: false,
             amount: dto.paymentAmount,
             transDate: new Date(),
             method: cashFlowMethod,
@@ -607,7 +608,7 @@ export class OrderSuppliersService {
 
       const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
 
-      const exists = await tx.supplier.findFirst({ where: { code } });
+      const exists = await tx.orderSupplier.findFirst({ where: { code } });
 
       if (!exists) return code;
       attempts++;
@@ -665,37 +666,7 @@ export class OrderSuppliersService {
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    const orderSuppliers = await tx.orderSupplier.findMany({
-      where: { supplierId },
-      include: { payments: true },
-    });
-
-    let debtFromOrders = 0;
-    for (const os of orderSuppliers) {
-      const totalPaid = os.payments.reduce(
-        (sum: number, p: any) => sum + Number(p.amount),
-        0,
-      );
-      debtFromOrders += totalPaid;
-    }
-
-    const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId },
-    });
-
-    const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
-      const total = Number(po.total);
-      const discount = Number(po.discount);
-      const paid = Number(po.paidAmount);
-      return sum + (total - discount - paid);
-    }, 0);
-
-    const totalDebt = debtFromPurchases - debtFromOrders;
-
-    await tx.supplier.update({
-      where: { id: supplierId },
-      data: { debt: totalDebt },
-    });
+    await recalcSupplierDebt(tx, supplierId);
   }
 
   private buildOrderSupplierSnapshot(os: any) {

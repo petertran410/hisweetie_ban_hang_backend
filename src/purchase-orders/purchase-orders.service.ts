@@ -15,6 +15,7 @@ import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
+import { recalcSupplierDebt } from '../common/supplier-debt.util';
 
 @Injectable()
 export class PurchaseOrdersService {
@@ -133,6 +134,52 @@ export class PurchaseOrdersService {
         await this.updateInventory(purchaseOrder.id, tx);
       }
 
+      // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
+      // + CashFlow PNPC. Formula B sẽ loại trừ cashflow PNPC* khỏi tổng cashflow
+      // (vì đã được phản ánh qua po.paidAmount).
+      if (paidAmount > 0 && !dto.isDraft) {
+        const paymentCode = await this.generatePNPCCode(tx);
+
+        await tx.purchaseOrderPayment.create({
+          data: {
+            code: paymentCode,
+            purchaseOrderId: purchaseOrder.id,
+            paymentDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : new Date(),
+            amount: paidAmount,
+            paymentMethod: 'cash',
+            description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+          },
+        });
+
+        if (dto.branchId) {
+          await tx.cashFlow.create({
+            data: {
+              code: paymentCode,
+              branchId: dto.branchId,
+              cashFlowGroupId: 4,
+              isReceipt: false,
+              amount: paidAmount,
+              transDate: dto.purchaseDate
+                ? new Date(dto.purchaseDate)
+                : new Date(),
+              method: 'cash',
+              partnerType: 'S',
+              partnerId: dto.supplierId,
+              partnerName: supplier?.name,
+              description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+            },
+          });
+        }
+      }
+
       await this.updateSupplierDebt(dto.supplierId, tx);
 
       if (dto.orderSupplierId) {
@@ -212,12 +259,6 @@ export class PurchaseOrdersService {
     if (createdById) where.createdBy = createdById;
     if (purchaseById) where.purchaseById = purchaseById;
     if (status !== undefined) where.status = status;
-
-    if (createdDateFrom || createdDateTo) {
-      where.createdAt = {};
-      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
-      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
-    }
 
     if (createdDateFrom || createdDateTo) {
       where.createdAt = {};
@@ -404,11 +445,6 @@ export class PurchaseOrdersService {
       const branchId = dto.branchId || existing.branchId;
       if (branchId) {
         await this.updateInventory(id, tx);
-      }
-
-      await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
-      if (dto.supplierId && dto.supplierId !== existing.supplierId) {
-        await this.updateSupplierDebt(existing.supplierId, tx);
       }
 
       await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
@@ -673,37 +709,54 @@ export class PurchaseOrdersService {
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
-    const purchaseOrders = await tx.purchaseOrder.findMany({
-      where: { supplierId, isDraft: false },
-    });
+    await recalcSupplierDebt(tx, supplierId);
+  }
 
-    const debtFromPurchases = purchaseOrders.reduce((sum, po) => {
-      const total = Number(po.total);
-      const discount = Number(po.discount);
-      const paid = Number(po.paidAmount);
-      return sum + (total - discount - paid);
-    }, 0);
+  /**
+   * Sinh mã PNPC###### duy nhất cho PurchaseOrderPayment + CashFlow đi kèm
+   * khi PO được tạo với paidAmount > 0. Mirror với purchase-order-payments.service.
+   */
+  private async generatePNPCCode(tx: any): Promise<string> {
+    const prefix = 'PNPC';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
 
-    const orderSuppliers = await tx.orderSupplier.findMany({
-      where: { supplierId },
-      include: { payments: true },
-    });
+    while (attempts < maxAttempts) {
+      const allPayments = await tx.purchaseOrderPayment.findMany({
+        where: { code: { startsWith: prefix } },
+        select: { code: true },
+        orderBy: { id: 'desc' },
+      });
 
-    let debtFromOrders = 0;
-    for (const os of orderSuppliers) {
-      const totalPaid = os.payments.reduce(
-        (sum: number, p: any) => sum + Number(p.amount),
-        0,
-      );
-      debtFromOrders += totalPaid;
+      const validCodes = allPayments
+        .map((p: any) => p.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a: string, b: string) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+      const exists = await tx.purchaseOrderPayment.findFirst({
+        where: { code },
+      });
+
+      if (!exists) return code;
+      attempts++;
     }
 
-    const totalDebt = debtFromPurchases - debtFromOrders;
-
-    await tx.supplier.update({
-      where: { id: supplierId },
-      data: { debt: totalDebt },
-    });
+    throw new Error('Không thể tạo mã thanh toán PNPC duy nhất');
   }
 
   private async generateSafePurchaseOrderCode(tx: any): Promise<string> {

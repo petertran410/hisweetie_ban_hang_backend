@@ -306,6 +306,14 @@ export class ProductsService {
       ...productData
     } = dto;
 
+    console.log('[DEBUG CREATE] costScope:', costScope);
+    console.log('[DEBUG CREATE] costBranchIds:', costBranchIds);
+    console.log('[DEBUG CREATE] typeof costBranchIds:', typeof costBranchIds);
+    console.log(
+      '[DEBUG CREATE] Array.isArray(costBranchIds):',
+      Array.isArray(costBranchIds),
+    );
+
     const name = dto.name;
     const attributesText = dto.attributesText || null;
     const fullName = dto.fullName || this.buildFullName(name, attributesText);
@@ -463,6 +471,12 @@ export class ProductsService {
           };
         }),
       );
+
+      console.log(
+        '[DEBUG CREATE] branchesToCreateInventory:',
+        branchesToCreateInventory.map((b) => ({ id: b.id, name: b.name })),
+      );
+      console.log('[DEBUG CREATE] inventoryData.length:', inventoryData.length);
 
       if (inventoryData.length > 0) {
         await tx.inventory.createMany({ data: inventoryData });
