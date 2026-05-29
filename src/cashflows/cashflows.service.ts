@@ -1254,7 +1254,13 @@ export class CashFlowsService {
       throw new Error('Cash flow not found');
     }
 
-    const [invoicePayments, orderPayments, debtOffsets] = await Promise.all([
+    const [
+      invoicePayments,
+      orderPayments,
+      debtOffsets,
+      purchaseOrderPayments,
+      orderSupplierPayments,
+    ] = await Promise.all([
       this.prisma.invoicePayment.findMany({
         where: {
           OR: [
@@ -1318,9 +1324,71 @@ export class CashFlowsService {
         },
         orderBy: { refundConfirmedAt: 'desc' },
       }),
+      // Phiếu nhập hàng (PN) liên kết — đối xứng `invoicePayments` của KH.
+      // Match qua FK `cashFlowId` (Wave 2) hoặc fallback `code` startsWith.
+      this.prisma.purchaseOrderPayment.findMany({
+        where: {
+          OR: [
+            { code: { startsWith: cashFlow.code } },
+            { cashFlowId: cashFlowId },
+          ],
+        },
+        include: {
+          purchaseOrder: {
+            select: {
+              id: true,
+              code: true,
+              total: true,
+              subTotal: true,
+              paidAmount: true,
+              debtAmount: true,
+              status: true,
+              statusValue: true,
+              isDraft: true,
+              supplier: {
+                select: { id: true, code: true, name: true },
+              },
+            },
+          },
+        },
+        orderBy: { paymentDate: 'desc' },
+      }),
+      // Phiếu đặt hàng nhập (PDN) liên kết — đối xứng `orderPayments` của KH.
+      this.prisma.orderSupplierPayment.findMany({
+        where: {
+          OR: [
+            { code: { startsWith: cashFlow.code } },
+            { cashFlowId: cashFlowId },
+          ],
+        },
+        include: {
+          orderSupplier: {
+            select: {
+              id: true,
+              code: true,
+              total: true,
+              subTotal: true,
+              paidAmount: true,
+              supplierDebt: true,
+              status: true,
+              statusValue: true,
+              supplier: {
+                select: { id: true, code: true, name: true },
+              },
+            },
+          },
+        },
+        orderBy: { paymentDate: 'desc' },
+      }),
     ]);
 
-    return { invoicePayments, orderPayments, debtOffsets };
+    return {
+      invoicePayments,
+      orderPayments,
+      debtOffsets,
+      purchaseOrderPayments,
+      orderSupplierPayments,
+    };
   }
 
   private async generateManualCode(

@@ -11,6 +11,10 @@ export class InventoryCheckQueryDto {
 
   @IsOptional()
   @IsString()
+  branchIds?: string;
+
+  @IsOptional()
+  @IsString()
   page?: string;
 
   @IsOptional()
