@@ -16,6 +16,7 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
+import { INVOICE_STATUS, getStatusLabel } from '../invoices/dto/invoice-status.constants';
 import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -136,9 +137,20 @@ export class CashFlowsService {
             const paidAmount = sumPayments + sumCtns;
 
             const debtAmount = Number(invoice.grandTotal) - paidAmount;
-            let status = 3;
+            const currentStatus = invoice.status;
+            let newStatus = currentStatus;
+
             if (debtAmount <= 0) {
-              status = 1;
+              if (
+                currentStatus === INVOICE_STATUS.PROCESSING ||
+                currentStatus === INVOICE_STATUS.DELIVERED
+              ) {
+                newStatus = INVOICE_STATUS.COMPLETED;
+              }
+            } else {
+              if (currentStatus === INVOICE_STATUS.COMPLETED) {
+                newStatus = INVOICE_STATUS.PROCESSING;
+              }
             }
 
             await tx.invoice.update({
@@ -146,8 +158,8 @@ export class CashFlowsService {
               data: {
                 paidAmount,
                 debtAmount,
-                status,
-                statusValue: status === 1 ? 'Hoàn thành' : 'Đang xử lý',
+                status: newStatus,
+                statusValue: getStatusLabel(newStatus),
               },
             });
           }
@@ -205,7 +217,21 @@ export class CashFlowsService {
               0,
               Number(invoiceData.debtAmount) - debtOffset.amount,
             );
-            const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+            const currentStatus = invoiceData.status;
+            let invoiceStatus = currentStatus;
+
+            if (newDebtAmount <= 0) {
+              if (
+                currentStatus === INVOICE_STATUS.PROCESSING ||
+                currentStatus === INVOICE_STATUS.DELIVERED
+              ) {
+                invoiceStatus = INVOICE_STATUS.COMPLETED;
+              }
+            } else {
+              if (currentStatus === INVOICE_STATUS.COMPLETED) {
+                invoiceStatus = INVOICE_STATUS.PROCESSING;
+              }
+            }
 
             await tx.invoice.update({
               where: { id: debtOffset.invoiceId },
@@ -213,7 +239,7 @@ export class CashFlowsService {
                 paidAmount: newPaidAmount,
                 debtAmount: newDebtAmount,
                 status: invoiceStatus,
-                statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+                statusValue: getStatusLabel(invoiceStatus),
               },
             });
 
@@ -899,11 +925,25 @@ export class CashFlowsService {
           paidAmount: newPaidAmount,
           debtAmount: newDebtAmount,
         };
-        if (invoice.status !== 2) {
-          const newStatus = newDebtAmount <= 0 ? 1 : 3;
+        if (invoice.status !== INVOICE_STATUS.CANCELLED) {
+          const currentStatus = invoice.status;
+          let newStatus = currentStatus;
+
+          if (newDebtAmount <= 0) {
+            if (
+              currentStatus === INVOICE_STATUS.PROCESSING ||
+              currentStatus === INVOICE_STATUS.DELIVERED
+            ) {
+              newStatus = INVOICE_STATUS.COMPLETED;
+            }
+          } else {
+            if (currentStatus === INVOICE_STATUS.COMPLETED) {
+              newStatus = INVOICE_STATUS.PROCESSING;
+            }
+          }
+
           updateInvoiceData.status = newStatus;
-          updateInvoiceData.statusValue =
-            newStatus === 1 ? 'Hoàn thành' : 'Đang xử lý';
+          updateInvoiceData.statusValue = getStatusLabel(newStatus);
         }
 
         await tx.invoice.update({
@@ -1213,9 +1253,20 @@ export class CashFlowsService {
       const paidAmount = sumPayments + sumCtns;
 
       const debtAmount = Number(invoice.grandTotal) - paidAmount;
-      let invoiceStatus = 3;
+      const currentStatus = invoice.status;
+      let invoiceStatus = currentStatus;
+
       if (debtAmount <= 0) {
-        invoiceStatus = 1;
+        if (
+          currentStatus === INVOICE_STATUS.PROCESSING ||
+          currentStatus === INVOICE_STATUS.DELIVERED
+        ) {
+          invoiceStatus = INVOICE_STATUS.COMPLETED;
+        }
+      } else {
+        if (currentStatus === INVOICE_STATUS.COMPLETED) {
+          invoiceStatus = INVOICE_STATUS.PROCESSING;
+        }
       }
 
       await tx.invoice.update({
@@ -1224,7 +1275,7 @@ export class CashFlowsService {
           paidAmount,
           debtAmount,
           status: invoiceStatus,
-          statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+          statusValue: getStatusLabel(invoiceStatus),
         },
       });
 
@@ -1616,13 +1667,29 @@ export class CashFlowsService {
             Number(invoiceData.debtAmount) - invoice.amount,
           );
 
+          const currentInvStatus = invoiceData.status;
+          let newInvStatus = currentInvStatus;
+
+          if (newDebtAmount <= 0) {
+            if (
+              currentInvStatus === INVOICE_STATUS.PROCESSING ||
+              currentInvStatus === INVOICE_STATUS.DELIVERED
+            ) {
+              newInvStatus = INVOICE_STATUS.COMPLETED;
+            }
+          } else {
+            if (currentInvStatus === INVOICE_STATUS.COMPLETED) {
+              newInvStatus = INVOICE_STATUS.PROCESSING;
+            }
+          }
+
           await tx.invoice.update({
             where: { id: invoice.invoiceId },
             data: {
               paidAmount: newPaidAmount,
               debtAmount: newDebtAmount,
-              status: newDebtAmount <= 0 ? 1 : 3,
-              statusValue: newDebtAmount <= 0 ? 'Hoàn thành' : 'Đang xử lý',
+              status: newInvStatus,
+              statusValue: getStatusLabel(newInvStatus),
             },
           });
         }
@@ -1672,7 +1739,21 @@ export class CashFlowsService {
             0,
             Number(invoiceData.debtAmount) - debtOffset.amount,
           );
-          const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+          const currentInvStatus2 = invoiceData.status;
+          let invoiceStatus = currentInvStatus2;
+
+          if (newDebtAmount <= 0) {
+            if (
+              currentInvStatus2 === INVOICE_STATUS.PROCESSING ||
+              currentInvStatus2 === INVOICE_STATUS.DELIVERED
+            ) {
+              invoiceStatus = INVOICE_STATUS.COMPLETED;
+            }
+          } else {
+            if (currentInvStatus2 === INVOICE_STATUS.COMPLETED) {
+              invoiceStatus = INVOICE_STATUS.PROCESSING;
+            }
+          }
 
           await tx.invoice.update({
             where: { id: debtOffset.invoiceId },
@@ -1680,7 +1761,7 @@ export class CashFlowsService {
               paidAmount: newPaidAmount,
               debtAmount: newDebtAmount,
               status: invoiceStatus,
-              statusValue: invoiceStatus === 1 ? 'Hoàn thành' : 'Đang xử lý',
+              statusValue: getStatusLabel(invoiceStatus),
             },
           });
 
