@@ -722,13 +722,6 @@ export class SuppliersService {
         method: null,
         description,
         debtSnapshot: 0,
-        // Khi RO COMPLETED + debt_offset + by_purchase_order, debt đã được giảm
-        // qua po.paidAmount += refundAmount → KHÔNG trừ thêm trong timeline.
-        // Hiển thị entry để user thấy phiếu nhưng skip cộng dồn debt.
-        skipDebtCalc:
-          sr.status === 3 &&
-          sr.refundType === 'debt_offset' &&
-          sr.mode === 'by_purchase_order',
         branch: sr.branch,
         user: sr.status === 3 ? sr.refundConfirmer : sr.exporter,
       });
@@ -758,10 +751,7 @@ export class SuppliersService {
       } else if (item.type === 'balance_adjustment') {
         runningDebt += item.amount; // ← đối xứng KH "expense": cashflow thu S tăng debt
       } else if (item.type === 'supplier_return') {
-        // skipDebtCalc: RO debt_offset + by_purchase_order đã giảm debt qua po.paidAmount
-        if (!item.skipDebtCalc) {
-          runningDebt -= item.amount; // ← trả hàng giảm nợ
-        }
+        runningDebt -= item.amount; // ← trả hàng giảm nợ (mọi mode/refundType)
       } else if (item.type === 'payment') {
         runningDebt -= item.amount;
       }

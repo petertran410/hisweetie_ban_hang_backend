@@ -216,8 +216,96 @@ export class PurchaseOrderQueryDto {
   status?: number;
 }
 
+export class CreatePurchaseOrderFromOrderSupplierItemDto {
+  @IsInt()
+  productId: number;
+
+  @IsString()
+  productCode: string;
+
+  @IsString()
+  productName: string;
+
+  @IsNumber()
+  quantity: number;
+
+  @IsNumber()
+  price: number;
+
+  @IsNumber()
+  @IsOptional()
+  discount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsNumber()
+  totalPrice: number;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+}
+
+export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
+  @IsString()
+  method: string;
+
+  @IsNumber()
+  amount: number;
+
+  @IsInt()
+  @IsOptional()
+  accountId?: number;
+}
+
 export class CreatePurchaseOrderFromOrderSupplierDto {
   @IsNumber()
   @IsOptional()
   additionalPayment?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreatePurchaseOrderFromOrderSupplierPaymentDto)
+  @IsOptional()
+  payments?: CreatePurchaseOrderFromOrderSupplierPaymentDto[];
+
+  @IsInt()
+  @IsOptional()
+  branchId?: number;
+
+  @IsDateString()
+  @IsOptional()
+  purchaseDate?: string;
+
+  @IsNumber()
+  @IsOptional()
+  discount?: number;
+
+  @IsNumber()
+  @IsOptional()
+  discountRatio?: number;
+
+  @IsBoolean()
+  @IsOptional()
+  isDraft?: boolean;
+
+  @IsString()
+  @IsOptional()
+  partnerType?: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsInt()
+  @IsOptional()
+  purchaseById?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreatePurchaseOrderFromOrderSupplierItemDto)
+  @IsOptional()
+  items?: CreatePurchaseOrderFromOrderSupplierItemDto[];
 }

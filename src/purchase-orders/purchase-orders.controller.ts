@@ -14,6 +14,7 @@ import { PurchaseOrdersService } from './purchase-orders.service';
 import { PurchaseOrderPaymentsService } from './purchase-order-payments.service';
 import {
   CreatePurchaseOrderDto,
+  CreatePurchaseOrderFromOrderSupplierDto,
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
 } from './dto';
@@ -48,6 +49,25 @@ export class PurchaseOrdersController {
   create(@Body() dto: CreatePurchaseOrderDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.purchaseOrdersService.create(dto, userId);
+  }
+
+  @Post('from-order-supplier/:orderSupplierId')
+  @RequirePermissions('purchase_orders:create')
+  @ApiOperation({
+    summary:
+      'Tạo phiếu nhập hàng từ phiếu đặt hàng nhập, kế thừa số tiền đã thanh toán ở PDN',
+  })
+  createFromOrderSupplier(
+    @Param('orderSupplierId') orderSupplierId: string,
+    @Body() dto: CreatePurchaseOrderFromOrderSupplierDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.purchaseOrdersService.createFromOrderSupplier(
+      +orderSupplierId,
+      dto,
+      userId,
+    );
   }
 
   @Put(':id')

@@ -37,7 +37,7 @@ export class OrderSupplierPaymentsService {
         throw new Error('Không tìm thấy phiếu đặt hàng nhập');
       }
 
-      // Generate payment code PDNPC
+      // Generate payment code PCPDN
       const code = await this.generatePaymentCode(tx);
 
       const payment = await tx.orderSupplierPayment.create({
@@ -49,7 +49,7 @@ export class OrderSupplierPaymentsService {
           paymentMethod: dto.paymentMethod || 'cash',
           accountId: dto.accountId,
           description:
-            dto.notes || `Trả tiền đặt hàng nhập ${orderSupplier.code} - PDNPC`,
+            dto.notes || `Trả tiền đặt hàng nhập ${orderSupplier.code} - PCPDN`,
           status: 1,
           statusValue: 'Đã thanh toán',
         },
@@ -83,7 +83,7 @@ export class OrderSupplierPaymentsService {
         data: {
           code,
           branchId: orderSupplier.branchId ?? 1,
-          cashFlowGroupId: 4,
+          cashFlowGroupId: 9,
           isReceipt: false,
           amount: dto.amount,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
@@ -95,7 +95,7 @@ export class OrderSupplierPaymentsService {
           contactNumber: orderSupplier.supplier?.contactNumber,
           address: orderSupplier.supplier?.address,
           description:
-            dto.notes || `Chi tiền đặt hàng nhập ${orderSupplier.code} - PDNPC`,
+            dto.notes || `Chi tiền đặt hàng nhập ${orderSupplier.code} - PCPDN`,
           status: 0,
           statusValue: 'Đã thanh toán',
           createdBy: userId,
@@ -147,13 +147,13 @@ export class OrderSupplierPaymentsService {
   }
 
   async findAllByOrderSupplier(orderSupplierId: number) {
-    // 1. Payments trực tiếp trên order supplier (PDNPC)
+    // 1. Payments trực tiếp trên order supplier (PCPDN)
     const directPayments = await this.prisma.orderSupplierPayment.findMany({
       where: { orderSupplierId },
       orderBy: { paymentDate: 'desc' },
     });
 
-    // 2. Payments từ các purchase order liên kết (PNPC)
+    // 2. Payments từ các purchase order liên kết (PCPN)
     const purchaseOrders = await this.prisma.purchaseOrder.findMany({
       where: { orderSupplierId },
       select: {
@@ -286,7 +286,7 @@ export class OrderSupplierPaymentsService {
   }
 
   private async generatePaymentCode(tx: any): Promise<string> {
-    const prefix = 'PDNPC';
+    const prefix = 'PCPDN';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
     const maxAttempts = 10;

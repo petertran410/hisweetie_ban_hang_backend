@@ -45,7 +45,7 @@ export class PurchaseOrderPaymentsService {
         throw new Error('Không tìm thấy phiếu nhập hàng');
       }
 
-      // Generate payment code PNPC
+      // Generate payment code PCPN
       const code = await this.generatePaymentCode(tx);
 
       const payment = await tx.purchaseOrderPayment.create({
@@ -57,7 +57,7 @@ export class PurchaseOrderPaymentsService {
           paymentMethod: dto.paymentMethod || 'cash',
           accountId: dto.accountId,
           description:
-            dto.notes || `Trả tiền nhập hàng ${purchaseOrder.code} - PNPC`,
+            dto.notes || `Trả tiền nhập hàng ${purchaseOrder.code} - PCPN`,
           status: 1,
           statusValue: 'Đã thanh toán',
         },
@@ -89,7 +89,7 @@ export class PurchaseOrderPaymentsService {
         data: {
           code,
           branchId: purchaseOrder.branchId ?? 1,
-          cashFlowGroupId: 4,
+          cashFlowGroupId: 9,
           isReceipt: false,
           amount: dto.amount,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
@@ -101,7 +101,7 @@ export class PurchaseOrderPaymentsService {
           contactNumber: purchaseOrder.supplier?.contactNumber,
           address: purchaseOrder.supplier?.address,
           description:
-            dto.notes || `Chi tiền nhập hàng ${purchaseOrder.code} - PNPC`,
+            dto.notes || `Chi tiền nhập hàng ${purchaseOrder.code} - PCPN`,
           status: 0,
           statusValue: 'Đã thanh toán',
           createdBy: userId,
@@ -242,7 +242,7 @@ export class PurchaseOrderPaymentsService {
   }
 
   private async generatePaymentCode(tx: any): Promise<string> {
-    const prefix = 'PNPC';
+    const prefix = 'PCPN';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
     const maxAttempts = 10;

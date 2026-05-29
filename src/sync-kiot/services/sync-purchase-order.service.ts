@@ -248,7 +248,7 @@ export class SyncPurchaseOrderService extends BaseSyncService {
     });
 
     for (const pm of payments) {
-      const code = pm.code || `PNPC${po?.code}-${Date.now()}`;
+      const code = pm.code || `PCPN${po?.code}-${Date.now()}`;
 
       const existingPayment = await this.prisma.purchaseOrderPayment.findFirst({
         where: {
@@ -278,7 +278,7 @@ export class SyncPurchaseOrderService extends BaseSyncService {
           data: {
             code,
             branchId: po?.branchId || 1,
-            cashFlowGroupId: 4,
+            cashFlowGroupId: 9,
             isReceipt: false,
             amount: pm.amount || 0,
             transDate: pm.transDate ? new Date(pm.transDate) : new Date(),

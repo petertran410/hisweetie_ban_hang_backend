@@ -328,9 +328,9 @@ export class CashFlowsService {
       }
 
       // [FIX-11] Recalc Supplier.debt khi tạo cashflow tự do partnerType='S'.
-      // Sổ quỹ tự do chỉ ảnh hưởng debt qua cashflow; không cần allocate sang
-      // PurchaseOrder vì cashflow này KHÔNG có code prefix PNPC*/PDNPC*.
-      // Formula B sẽ tự tính: isReceipt=true → +amount (NCC nợ ngược thêm),
+      // Sổ quỹ tự do chỉ ảnh hưởng debt qua cashflow. Formula B mới đối xứng KH:
+      // cashflow là single source duy nhất nên gọi recalc sẽ tự đúng.
+      // isReceipt=true → +amount (NCC ứng cho mình → mình nợ thêm),
       // isReceipt=false → -amount (mình bớt nợ).
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'S') {
         await this.recalcSupplierDebt(dto.partnerId, tx);
@@ -417,9 +417,12 @@ export class CashFlowsService {
         { partnerName: { contains: search, mode: 'insensitive' } },
       ];
     } else {
-      where.code = {
-        not: { startsWith: 'TTTU' },
-      };
+      // Ẩn cashflow CLONE (TTTU* phía bán, PCTU* phía mua) khỏi list mặc định
+      // — chúng chỉ phục vụ filter công nợ, không hiển thị riêng để tránh trùng.
+      where.AND = [
+        { code: { not: { startsWith: 'TTTU' } } },
+        { code: { not: { startsWith: 'PCTU' } } },
+      ];
     }
 
     if (accountId) {
@@ -658,7 +661,9 @@ export class CashFlowsService {
         await this.recalcCustomerDebt(cid, tx);
       }
 
-      // [FIX-10] Đối xứng cho NCC
+      // [FIX-10a] Đối xứng KH: recalc supplier cho cả OLD và NEW supplier
+      // (nếu khác nhau). Formula B mới dùng cashflow làm single source nên
+      // recalc tự đồng bộ.
       const supplierIdsToRecalc = new Set<number>();
       if (existingCashFlow.partnerType === 'S' && existingCashFlow.partnerId) {
         supplierIdsToRecalc.add(existingCashFlow.partnerId);
@@ -759,8 +764,8 @@ export class CashFlowsService {
         select: { id: true, invoiceId: true, customerId: true },
       });
 
-      // [FIX-10] Tìm payments NCC liên quan: PNPC* (PurchaseOrderPayment)
-      // và PDNPC* (OrderSupplierPayment) match theo code = cashFlow.code.
+      // [FIX-10] Tìm payments NCC liên quan: PCPN* (PurchaseOrderPayment)
+      // và PCPDN* (OrderSupplierPayment) match theo code = cashFlow.code.
       const linkedPurchaseOrderPayments = await tx.purchaseOrderPayment.findMany(
         {
           where: { code: cashFlow.code, status: { not: 2 } },
@@ -1907,7 +1912,11 @@ export class CashFlowsService {
         { partnerName: { contains: search, mode: 'insensitive' } },
       ];
     } else {
-      where.code = { not: { startsWith: 'TTTU' } };
+      // Ẩn cashflow CLONE (TTTU*, PCTU*) khỏi export mặc định
+      where.AND = [
+        { code: { not: { startsWith: 'TTTU' } } },
+        { code: { not: { startsWith: 'PCTU' } } },
+      ];
     }
 
     if (accountId) where.accountId = accountId;

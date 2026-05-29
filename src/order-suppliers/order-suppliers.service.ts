@@ -292,7 +292,7 @@ export class OrderSuppliersService {
           data: {
             code: paymentCode,
             branchId: orderSupplier.branchId ?? 1,
-            cashFlowGroupId: 4,
+            cashFlowGroupId: 9,
             isReceipt: false,
             amount: dto.paymentAmount,
             transDate: new Date(),
@@ -438,7 +438,7 @@ export class OrderSuppliersService {
           data: {
             code: paymentCode,
             branchId: existing.branchId ?? 1,
-            cashFlowGroupId: 4,
+            cashFlowGroupId: 9,
             isReceipt: false,
             amount: dto.paymentAmount,
             transDate: new Date(),
@@ -618,7 +618,7 @@ export class OrderSuppliersService {
   }
 
   private async generatePaymentCode(tx: any): Promise<string> {
-    const prefix = 'PDNPC';
+    const prefix = 'PCPDN';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
     const maxAttempts = 10;
