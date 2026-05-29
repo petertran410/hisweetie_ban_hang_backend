@@ -560,8 +560,10 @@ export class OrdersService {
       currentItem,
       search,
       status,
+      statuses,
       customerId,
       branchId,
+      branchIds,
       fromDate,
       toDate,
       fromCreatedDate,
@@ -587,12 +589,19 @@ export class OrdersService {
     if (search) {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
     }
-    if (status) {
+    if (statuses && statuses.length > 0) {
+      const statusNumbers = statuses.map((s) => convertStatusStringToNumber(s));
+      where.status = { in: statusNumbers };
+    } else if (status) {
       const statusNumber = convertStatusStringToNumber(status);
       where.status = statusNumber;
     }
     if (customerId) where.customerId = customerId;
-    if (branchId) where.branchId = branchId;
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
     if (soldById) where.soldById = soldById;
     if (saleChannelId) where.saleChannelId = saleChannelId;
 
