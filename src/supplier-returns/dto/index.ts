@@ -112,6 +112,18 @@ export class ConfirmExportDetailDto {
   @IsNumber()
   @Min(0)
   confirmedQuantity: number;
+
+  /**
+   * Loại hàng trả NCC. Mirror RO step 2: nếu trả hàng damaged thì trừ
+   * `inventory.damagedQuantity`; near_expiry trừ `nearExpiryQuantity`;
+   * normal chỉ trừ `onHand`.
+   *
+   * Default 'normal' để tương thích với data cũ.
+   */
+  @IsOptional()
+  @IsString()
+  @IsIn(['normal', 'damaged', 'near_expiry'])
+  conditionType?: 'normal' | 'damaged' | 'near_expiry';
 }
 
 export class ConfirmExportDto {

@@ -58,7 +58,12 @@ export class StockAuditsService {
       ];
     }
 
-    if (query.branchId) where.branchId = +query.branchId;
+    if (query.branchIds) {
+      const ids = query.branchIds.split(',').map((id) => +id).filter(Boolean);
+      if (ids.length > 0) where.branchId = { in: ids };
+    } else if (query.branchId) {
+      where.branchId = +query.branchId;
+    }
     if (query.status) where.status = +query.status;
     if (query.creatorId) where.createdById = +query.creatorId;
 
@@ -328,7 +333,7 @@ export class StockAuditsService {
               productName: detail.productName,
               branchId: audit.branchId,
               branchName: audit.branchName,
-              transactionType: delta > 0 ? 'STOCK_AUDIT_IN' : 'STOCK_AUDIT_OUT',
+              transactionType: 'STOCK_AUDIT',
               refCode: audit.code,
               refType: 'stock_audit',
               refId: audit.id,
@@ -416,10 +421,7 @@ export class StockAuditsService {
                 productName: detail.productName,
                 branchId: audit.branchId,
                 branchName: audit.branchName,
-                transactionType:
-                  delta > 0
-                    ? 'STOCK_AUDIT_CANCEL_OUT'
-                    : 'STOCK_AUDIT_CANCEL_IN',
+                transactionType: 'STOCK_AUDIT_CANCEL',
                 refCode: audit.code,
                 refType: 'stock_audit',
                 refId: audit.id,

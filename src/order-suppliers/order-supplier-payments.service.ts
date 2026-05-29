@@ -37,39 +37,14 @@ export class OrderSupplierPaymentsService {
         throw new Error('Không tìm thấy phiếu đặt hàng nhập');
       }
 
+      // Đối xứng `invoice-payments.service.ts:71-73`: bắt buộc PDN có chi
+      // nhánh trước khi tạo CashFlow. Tránh fallback `branchId ?? 1` ghi sai.
+      if (!orderSupplier.branchId) {
+        throw new Error('Phiếu đặt hàng nhập chưa có chi nhánh');
+      }
+
       // Generate payment code PCPDN
       const code = await this.generatePaymentCode(tx);
-
-      const payment = await tx.orderSupplierPayment.create({
-        data: {
-          code,
-          orderSupplierId: dto.orderSupplierId,
-          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
-          amount: dto.amount,
-          paymentMethod: dto.paymentMethod || 'cash',
-          accountId: dto.accountId,
-          description:
-            dto.notes || `Trả tiền đặt hàng nhập ${orderSupplier.code} - PCPDN`,
-          status: 1,
-          statusValue: 'Đã thanh toán',
-        },
-      });
-
-      // Tính tổng đã trả cho OrderSupplier
-      const allPayments = await tx.orderSupplierPayment.findMany({
-        where: { orderSupplierId: dto.orderSupplierId },
-      });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-
-      await tx.orderSupplier.update({
-        where: { id: dto.orderSupplierId },
-        data: {
-          paidAmount,
-        },
-      });
 
       // Map payment method to cashflow method
       let cashFlowMethod = 'cash';
@@ -79,10 +54,12 @@ export class OrderSupplierPaymentsService {
         cashFlowMethod = 'card';
       }
 
+      // Tạo CashFlow TRƯỚC để có id gán vào OrderSupplierPayment.cashFlowId
+      // (đối xứng `invoice-payments.service.ts:78-99`).
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: orderSupplier.branchId ?? 1,
+          branchId: orderSupplier.branchId,
           cashFlowGroupId: 9,
           isReceipt: false,
           amount: dto.amount,
@@ -100,11 +77,66 @@ export class OrderSupplierPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
+          supplierDebtSnapshot: null,
+        },
+      });
+
+      const payment = await tx.orderSupplierPayment.create({
+        data: {
+          code,
+          orderSupplierId: dto.orderSupplierId,
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+          amount: dto.amount,
+          paymentMethod: dto.paymentMethod || 'cash',
+          accountId: dto.accountId,
+          description:
+            dto.notes || `Trả tiền đặt hàng nhập ${orderSupplier.code} - PCPDN`,
+          status: 1,
+          statusValue: 'Đã thanh toán',
+          cashFlowId: cashFlow.id,
+        },
+      });
+
+      // Recalc paidAmount + supplierDebt cache — chỉ tính payment ACTIVE
+      // (status≠2). Đối xứng pattern phía bán: cache reflect đúng giá trị
+      // của các record không hủy.
+      const activePayments = await tx.orderSupplierPayment.findMany({
+        where: {
+          orderSupplierId: dto.orderSupplierId,
+          status: { not: 2 },
+        },
+        select: { amount: true },
+      });
+      const paidAmount = activePayments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
+        0,
+      );
+      const subTotal = Number(orderSupplier.subTotal || 0);
+
+      await tx.orderSupplier.update({
+        where: { id: dto.orderSupplierId },
+        data: {
+          paidAmount,
+          supplierDebt: subTotal - paidAmount,
         },
       });
 
       // Update supplier debt: Trừ vào debt (NCC nợ mình nếu số âm)
       await this.updateSupplierDebt(orderSupplier.supplierId, tx);
+
+      // Snapshot supplier debt sau recalc.
+      const updatedSupplier = await tx.supplier.findUnique({
+        where: { id: orderSupplier.supplierId },
+        select: { debt: true },
+      });
+      await tx.cashFlow.update({
+        where: { id: cashFlow.id },
+        data: {
+          supplierDebtSnapshot: updatedSupplier
+            ? Number(updatedSupplier.debt)
+            : null,
+        },
+      });
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -214,26 +246,56 @@ export class OrderSupplierPaymentsService {
         throw new Error('Không tìm thấy thanh toán');
       }
 
-      // Xóa CashFlow
-      await tx.cashFlow.deleteMany({
-        where: { code: payment.code },
+      // Đối xứng `invoice-payments.service.ts` và `order-payments.service.ts`:
+      // SOFT-cancel CashFlow + Payment thay vì hard-delete. Giữ audit trail
+      // và đảm bảo Formula B (recalcSupplierDebt) thấy đúng dữ liệu sau khi
+      // hủy (filter status≠2 tự động loại các record này). Ưu tiên match qua
+      // FK `cashFlowId`, fallback `code`.
+      const orConditions: any[] = [];
+      if (payment.cashFlowId != null) {
+        orConditions.push({ id: payment.cashFlowId });
+      }
+      if (payment.code) {
+        orConditions.push({ code: payment.code });
+      }
+      if (orConditions.length > 0) {
+        await tx.cashFlow.updateMany({
+          where: {
+            OR: orConditions,
+            partnerType: 'S',
+            partnerId: payment.orderSupplier.supplierId,
+            status: { not: 2 },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      await tx.orderSupplierPayment.update({
+        where: { id },
+        data: { status: 2, statusValue: 'Đã hủy' },
       });
 
-      // Xóa payment
-      await tx.orderSupplierPayment.delete({ where: { id } });
-
-      // Recalculate paidAmount
-      const allPayments = await tx.orderSupplierPayment.findMany({
-        where: { orderSupplierId: payment.orderSupplierId },
+      // Recalc paidAmount + supplierDebt cache trên OrderSupplier — chỉ tính
+      // payment ACTIVE (status≠2). Đối xứng `Order.calculateTotals` phía bán.
+      const activePayments = await tx.orderSupplierPayment.findMany({
+        where: {
+          orderSupplierId: payment.orderSupplierId,
+          status: { not: 2 },
+        },
+        select: { amount: true },
       });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
+      const paidAmount = activePayments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
         0,
       );
+      const subTotal = Number(payment.orderSupplier.subTotal || 0);
 
       await tx.orderSupplier.update({
         where: { id: payment.orderSupplierId },
-        data: { paidAmount },
+        data: {
+          paidAmount,
+          supplierDebt: subTotal - paidAmount,
+        },
       });
 
       if (userId) {
@@ -247,20 +309,23 @@ export class OrderSupplierPaymentsService {
           select: { name: true },
         });
 
+        // FIX: actionCode đúng phải là ORDER_SUPPLIER_PAYMENT_DELETE
+        // (trước đây sai thành ORDER_SUPPLIER_DELETE → log hiển thị
+        // "xóa phiếu đặt hàng" cho hành động "xóa thanh toán").
         await this.auditLogsService.create({
           actionType: 'DELETE',
-          actionCode: 'ORDER_SUPPLIER_DELETE',
-          entityType: 'order_suppliers',
+          actionCode: 'ORDER_SUPPLIER_PAYMENT_DELETE',
+          entityType: 'order_supplier_payment',
           entityId: id.toString(),
           entityCode: payment.code,
-          category: getCategoryFromActionCode('ORDER_SUPPLIER_DELETE'),
-          severity: getSeverityFromActionCode('ORDER_SUPPLIER_DELETE'),
+          category: getCategoryFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
+          severity: getSeverityFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
           snapshot: {
             code: payment.code,
             amount: Number(payment.amount),
             paymentMethod: payment.paymentMethod,
             paymentDate: payment.paymentDate,
-            purchaseOrder: {
+            orderSupplier: {
               code: payment.orderSupplier.code,
               supplier: supplierName?.name
                 ? {
@@ -269,10 +334,11 @@ export class OrderSupplierPaymentsService {
                 : null,
             },
           },
-          message: renderAuditMessage('ORDER_SUPPLIER_DELETE', {
-            orderSupplierCode: payment.code,
+          message: renderAuditMessage('ORDER_SUPPLIER_PAYMENT_DELETE', {
+            paymentCode: payment.code,
+            orderSupplierCode: payment.orderSupplier.code,
           }),
-          messageTemplate: 'ORDER_SUPPLIER_DELETE',
+          messageTemplate: 'ORDER_SUPPLIER_PAYMENT_DELETE',
           userId,
           userName: user?.name || user?.email || 'System',
           branchId:
@@ -282,6 +348,8 @@ export class OrderSupplierPaymentsService {
 
       // Update supplier debt
       await this.updateSupplierDebt(payment.orderSupplier.supplierId, tx);
+
+      return { message: 'Xóa thanh toán thành công' };
     });
   }
 

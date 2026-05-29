@@ -11,6 +11,10 @@ export class StockAuditQueryDto {
 
   @IsOptional()
   @IsString()
+  branchIds?: string;
+
+  @IsOptional()
+  @IsString()
   status?: string;
 
   @IsOptional()

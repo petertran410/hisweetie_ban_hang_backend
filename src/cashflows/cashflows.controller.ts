@@ -18,6 +18,7 @@ import {
   CashFlowQueryDto,
   CreatePaymentDto,
   CreateCustomerPaymentDto,
+  CreateSupplierPaymentDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -101,6 +102,20 @@ export class CashFlowsController {
   ) {
     const userId = req.user?.id || 1;
     return this.cashFlowsService.createCustomerPayment(dto, userId);
+  }
+
+  @Post('supplier-payments')
+  @RequirePermissions('cash_flows:create')
+  @ApiOperation({
+    summary:
+      'Trả tiền NCC bulk cho nhiều phiếu nhập hàng - đối xứng customer-payments',
+  })
+  createSupplierPayment(
+    @Body() dto: CreateSupplierPaymentDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.cashFlowsService.createSupplierPayment(dto, userId);
   }
 
   @Put(':id')

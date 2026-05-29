@@ -212,6 +212,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'order_supplier',
     severity: 'warning',
   },
+  ORDER_SUPPLIER_CANCEL: {
+    template: 'Hủy đặt hàng nhập {orderSupplierCode}, NCC: {supplierName}',
+    category: 'order_supplier',
+    severity: 'warning',
+  },
   ORDER_SUPPLIER_PAYMENT_CREATE: {
     template:
       'Tạo thanh toán {paymentCode} cho đặt hàng nhập {orderSupplierCode}, giá trị: {amount}',

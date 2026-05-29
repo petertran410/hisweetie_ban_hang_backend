@@ -113,7 +113,7 @@ export class ProductsService {
   async findAll(query: ProductQueryDto) {
     const {
       page = 1,
-      limit = 20,
+      limit,
       search,
       categoryIds,
       isActive,
@@ -128,7 +128,7 @@ export class ProductsService {
       priceBookId,
       onlyInPriceBook,
     } = query;
-    const skip = (page - 1) * limit;
+    const skip = limit ? (page - 1) * limit : 0;
 
     const where: any = {};
     if (search) {
@@ -219,7 +219,7 @@ export class ProductsService {
       this.prisma.product.findMany({
         where,
         skip,
-        take: limit,
+        ...(limit ? { take: limit } : {}),
         include: {
           tradeMark: true,
           variant: true,
@@ -666,6 +666,21 @@ export class ProductsService {
       const minQuality = minStockAlert;
       const maxQuality = maxStockAlert;
 
+      // Đọc giá trị onHand cũ để so sánh sau khi upsert
+      let oldOnHand: number | null = null;
+      if (onHand !== undefined && branchId) {
+        const existingInventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: id,
+              branchId: branchId,
+            },
+          },
+          select: { onHand: true, cost: true },
+        });
+        oldOnHand = existingInventory ? Number(existingInventory.onHand) : 0;
+      }
+
       if (
         cost !== undefined &&
         (costScope === 'all' || costScope === 'specific')
@@ -875,6 +890,96 @@ export class ProductsService {
               }),
               ...(minQuality !== undefined && { minQuality }),
               ...(maxQuality !== undefined && { maxQuality }),
+            },
+          });
+        }
+      }
+
+      // Tạo StockAudit + InventoryLog nếu tồn kho thay đổi
+      if (onHand !== undefined && branchId && oldOnHand !== null) {
+        const delta = Number(onHand) - oldOnHand;
+        if (delta !== 0) {
+          // Sinh mã KK tiếp theo (chung sequence với StockAudit)
+          const lastAudit = await tx.stockAudit.findFirst({
+            orderBy: { id: 'desc' },
+            select: { code: true },
+          });
+          const nextNum = lastAudit
+            ? parseInt(lastAudit.code.replace('KK', ''), 10) + 1
+            : 1;
+          const auditCode = `KK${String(nextNum).padStart(6, '0')}`;
+
+          // Lấy thông tin branch
+          const auditBranch = await tx.branch.findUnique({
+            where: { id: branchId },
+            select: { name: true },
+          });
+
+          // Lấy thông tin user
+          let auditUserName = 'System';
+          if (userId) {
+            const auditUser = await tx.user.findUnique({
+              where: { id: userId },
+              select: { name: true, email: true },
+            });
+            auditUserName = auditUser?.name || auditUser?.email || 'System';
+          }
+
+          // Lấy cost hiện tại
+          const currentInventory = await tx.inventory.findUnique({
+            where: {
+              productId_branchId: { productId: id, branchId },
+            },
+            select: { cost: true },
+          });
+          const currentCost = Number(currentInventory?.cost || 0);
+
+          // Tạo StockAudit (status = 2: COMPLETED)
+          const stockAudit = await tx.stockAudit.create({
+            data: {
+              code: auditCode,
+              branchId: branchId,
+              branchName: auditBranch?.name || '',
+              checkDate: new Date(),
+              note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name}`,
+              status: 2,
+              createdById: userId || 1,
+              createdByName: auditUserName,
+              completedById: userId || 1,
+              completedByName: auditUserName,
+              completedAt: new Date(),
+              details: {
+                create: {
+                  productId: id,
+                  productCode: product.code,
+                  productName: product.name,
+                  unit: currentProduct.unit,
+                  systemQuantity: oldOnHand,
+                  actualQuantity: Number(onHand),
+                  difference: delta,
+                  costAtCheck: currentCost,
+                  differenceValue: delta * currentCost,
+                },
+              },
+            },
+          });
+
+          // Tạo InventoryLog
+          await tx.inventoryLog.create({
+            data: {
+              productId: id,
+              productCode: product.code,
+              productName: product.name,
+              branchId: branchId,
+              branchName: auditBranch?.name || '',
+              transactionType: 'STOCK_AUDIT',
+              refCode: auditCode,
+              refType: 'stock_audit',
+              refId: stockAudit.id,
+              quantity: delta,
+              costPrice: currentCost,
+              note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name} (${oldOnHand} → ${onHand})`,
+              createdByName: auditUserName,
             },
           });
         }

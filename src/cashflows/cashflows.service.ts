@@ -6,6 +6,7 @@ import {
   CashFlowQueryDto,
   CreatePaymentDto,
   CreateCustomerPaymentDto,
+  CreateSupplierPaymentDto,
 } from './dto';
 import {
   getCategoryFromActionCode,
@@ -334,6 +335,20 @@ export class CashFlowsService {
       // isReceipt=false → -amount (mình bớt nợ).
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'S') {
         await this.recalcSupplierDebt(dto.partnerId, tx);
+
+        // Snapshot supplier debt vào cashflow vừa tạo, đối xứng KH.
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: dto.partnerId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlow.id },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
       }
 
       const user = await tx.user.findUnique({
@@ -765,17 +780,25 @@ export class CashFlowsService {
       });
 
       // [FIX-10] Tìm payments NCC liên quan: PCPN* (PurchaseOrderPayment)
-      // và PCPDN* (OrderSupplierPayment) match theo code = cashFlow.code.
+      // và PCPDN* (OrderSupplierPayment) — ưu tiên match qua FK
+      // `cashFlowId` (Wave 2), fallback theo `code`. Đối xứng pattern phía
+      // bán đã có sẵn FK ở `InvoicePayment.cashFlowId`.
       const linkedPurchaseOrderPayments = await tx.purchaseOrderPayment.findMany(
         {
-          where: { code: cashFlow.code, status: { not: 2 } },
+          where: {
+            OR: [{ cashFlowId: id }, { code: cashFlow.code }],
+            status: { not: 2 },
+          },
           select: { id: true, purchaseOrderId: true },
         },
       );
 
       const linkedOrderSupplierPayments =
         await tx.orderSupplierPayment.findMany({
-          where: { code: cashFlow.code, status: { not: 2 } },
+          where: {
+            OR: [{ cashFlowId: id }, { code: cashFlow.code }],
+            status: { not: 2 },
+          },
           select: { id: true, orderSupplierId: true },
         });
 
@@ -1812,6 +1835,272 @@ export class CashFlowsService {
         invoicePayments,
       };
     });
+  }
+
+  /**
+   * Trả tiền NCC bulk cho nhiều phiếu nhập (PN). Đối xứng
+   * `createCustomerPayment`. Cụ thể đảo logic:
+   *   - partnerType 'C' → 'S'
+   *   - cashFlowGroupId 1 → 9 (chi NCC)
+   *   - isReceipt true → false
+   *   - Invoice → PurchaseOrder
+   *   - InvoicePayment → PurchaseOrderPayment (PCPN)
+   *   - allocateToInvoices → allocateToPurchaseOrders
+   *   - debtOffsets cho NCC: tạo SupplierReturn `manual_offset` (chưa
+   *     implement nhánh này — tương tự CTN của KH cần thêm logic riêng,
+   *     hiện chỉ throw để FE biết)
+   *
+   * Đơn giản hóa so với KH: PurchaseOrder không có cha-con như Customer
+   * (Customer có parentId), nên không cần split cashflow theo nhiều
+   * partner — luôn 1 cashflow.
+   */
+  async createSupplierPayment(dto: CreateSupplierPaymentDto, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const supplier = await tx.supplier.findUnique({
+        where: { id: dto.supplierId },
+        select: {
+          id: true,
+          name: true,
+          contactNumber: true,
+          address: true,
+          debt: true,
+        },
+      });
+
+      if (!supplier) throw new Error('Không tìm thấy nhà cung cấp');
+      if (!dto.branchId) throw new Error('Vui lòng chọn chi nhánh');
+
+      // ── 1. Allocate vào PurchaseOrder ──────────────────────────────────
+      const createdPaymentIds: number[] = [];
+      let allocatedTotal = 0;
+
+      if (
+        dto.allocateToPurchaseOrders &&
+        dto.purchaseOrders &&
+        dto.purchaseOrders.length > 0
+      ) {
+        for (const po of dto.purchaseOrders) {
+          const poData = await tx.purchaseOrder.findUnique({
+            where: { id: po.purchaseOrderId },
+            include: { payments: { where: { status: { not: 2 } } } },
+          });
+
+          if (!poData) {
+            throw new Error(
+              `Không tìm thấy phiếu nhập ID ${po.purchaseOrderId}`,
+            );
+          }
+          if (poData.supplierId !== dto.supplierId) {
+            throw new Error(
+              `Phiếu nhập ${poData.code} không thuộc về NCC này`,
+            );
+          }
+
+          const currentDebt = Number(poData.debtAmount);
+          if (po.amount > currentDebt) {
+            throw new Error(
+              `Số tiền thanh toán ${po.amount} vượt quá công nợ ${currentDebt} của phiếu nhập ${poData.code}`,
+            );
+          }
+
+          // Generate code PCPN — đối xứng `TT{invoiceCode}-N` của KH
+          const paymentCode = await this.generatePCPNCodeBulk(tx);
+
+          const payment = await tx.purchaseOrderPayment.create({
+            data: {
+              code: paymentCode,
+              purchaseOrderId: po.purchaseOrderId,
+              amount: po.amount,
+              paymentDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+              paymentMethod: dto.method,
+              accountId: dto.accountId,
+              description:
+                dto.description || `Chi tiền nhập hàng ${poData.code}`,
+              status: 1,
+              statusValue: 'Đã thanh toán',
+              cashFlowId: null,
+            },
+          });
+
+          createdPaymentIds.push(payment.id);
+          allocatedTotal += po.amount;
+
+          // Recompute paidAmount + debtAmount của PN
+          const allActivePayments = await tx.purchaseOrderPayment.findMany({
+            where: { purchaseOrderId: po.purchaseOrderId, status: { not: 2 } },
+            select: { amount: true },
+          });
+          const newPaidAmount = allActivePayments.reduce(
+            (s: number, p: any) => s + Number(p.amount),
+            0,
+          );
+          const newDebt = Number(poData.subTotal) - newPaidAmount;
+          await tx.purchaseOrder.update({
+            where: { id: po.purchaseOrderId },
+            data: {
+              paidAmount: newPaidAmount,
+              debtAmount: newDebt,
+              supplierDebt: newDebt,
+            },
+          });
+        }
+      }
+
+      // Validate tổng allocate khớp với totalAmount nếu user dùng allocate
+      if (
+        dto.allocateToPurchaseOrders &&
+        Math.abs(allocatedTotal - dto.totalAmount) > 0.01
+      ) {
+        // Cho phép NHỎ HƠN totalAmount (phần dư = "trả thừa" — thành credit
+        // với NCC). Nếu LỚN HƠN thì lỗi rõ ràng.
+        if (allocatedTotal > dto.totalAmount) {
+          throw new Error(
+            `Tổng phân bổ ${allocatedTotal} vượt quá số tiền thanh toán ${dto.totalAmount}`,
+          );
+        }
+      }
+
+      // ── 2. Tạo CashFlow chi NCC ─────────────────────────────────────────
+      let cashFlow: any = null;
+      if (dto.totalAmount > 0) {
+        const code = await this.generateSafeCashFlowCode(false, tx);
+        cashFlow = await tx.cashFlow.create({
+          data: {
+            code,
+            branchId: dto.branchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount: dto.totalAmount,
+            transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
+            method: dto.method || 'cash',
+            accountId: dto.accountId,
+            partnerType: 'S',
+            partnerId: dto.supplierId,
+            partnerName: supplier.name,
+            contactNumber: supplier.contactNumber,
+            address: supplier.address,
+            description: dto.description || 'Chi tiền nhà cung cấp',
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+
+        // Link tất cả PurchaseOrderPayment vào cashflow vừa tạo
+        if (createdPaymentIds.length > 0) {
+          await tx.purchaseOrderPayment.updateMany({
+            where: { id: { in: createdPaymentIds } },
+            data: { cashFlowId: cashFlow.id },
+          });
+        }
+      }
+
+      // ── 3. Recalc Supplier.debt ─────────────────────────────────────────
+      await this.recalcSupplierDebt(dto.supplierId, tx);
+
+      // ── 4. Snapshot supplier debt vào cashflow ──────────────────────────
+      if (cashFlow) {
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlow.id },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
+      }
+
+      // ── 5. Audit log ────────────────────────────────────────────────────
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      if (cashFlow) {
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'CASHFLOW_CREATE',
+          entityType: 'cashflows',
+          entityId: cashFlow.id.toString(),
+          entityCode: cashFlow.code,
+          category: getCategoryFromActionCode('CASHFLOW_CREATE'),
+          severity: getSeverityFromActionCode('CASHFLOW_CREATE'),
+          snapshot: {
+            code: cashFlow.code,
+            amount: Number(cashFlow.amount),
+            partnerType: 'S',
+            supplierId: dto.supplierId,
+            supplierName: supplier.name,
+            allocatedPayments: createdPaymentIds.length,
+          },
+          message: renderAuditMessage('CASHFLOW_CREATE', {
+            flowType: 'Chi',
+            amount: Number(cashFlow.amount),
+            description: cashFlow.description || `Chi tiền NCC ${supplier.name}`,
+          }),
+          messageTemplate: 'CASHFLOW_CREATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: dto.branchId || user?.branchId || undefined,
+        });
+      }
+
+      return { cashFlow, paymentCount: createdPaymentIds.length };
+    });
+  }
+
+  /**
+   * Tạo mã PCPN###### unique cho bulk supplier payment.
+   * Đối xứng `purchase-orders.service.ts:generatePCPNCode` nhưng inline ở
+   * cashflows.service để tránh circular import.
+   */
+  private async generatePCPNCodeBulk(tx: any): Promise<string> {
+    const prefix = 'PCPN';
+    const regex = new RegExp(`^${prefix}\\d{6}$`);
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    while (attempts < maxAttempts) {
+      const allPayments = await tx.purchaseOrderPayment.findMany({
+        where: { code: { startsWith: prefix } },
+        select: { code: true },
+        orderBy: { id: 'desc' },
+      });
+
+      const validCodes = allPayments
+        .map((p: any) => p.code)
+        .filter((code: string) => regex.test(code))
+        .sort((a: string, b: string) => {
+          const numA = parseInt(a.replace(prefix, ''));
+          const numB = parseInt(b.replace(prefix, ''));
+          return numB - numA;
+        });
+
+      let nextNumber = 1;
+      if (validCodes.length > 0) {
+        const lastCode = validCodes[0];
+        const match = lastCode.match(/\d+$/);
+        if (match) {
+          nextNumber = parseInt(match[0]) + 1;
+        }
+      }
+
+      const code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
+      const exists = await tx.purchaseOrderPayment.findFirst({
+        where: { code },
+      });
+
+      if (!exists) return code;
+      attempts++;
+    }
+
+    throw new Error('Không thể tạo mã thanh toán PCPN duy nhất');
   }
 
   private recalcCustomerDebt(customerId: number, tx: any) {

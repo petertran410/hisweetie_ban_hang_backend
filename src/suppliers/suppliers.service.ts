@@ -622,11 +622,17 @@ export class SuppliersService {
     }
 
     // 2. Lấy cashflows → trừ nợ (phiếu chi cho NCC)
+    //    Đối xứng `customers.service.ts:1288-1294`: loại CashFlow CLONE
+    //    `PCTUPN######` (tạo khi chuyển PDN → PN có thanh toán trước) khỏi
+    //    timeline để tránh hiển thị 2 dòng payment trùng giá trị (1 dòng
+    //    PCPDN gốc + 1 dòng PCTUPN clone). recalcSupplierDebt cũng filter
+    //    cùng prefix tại `supplier-debt.util.ts`.
     const cashFlows = await this.prisma.cashFlow.findMany({
       where: {
         partnerType: 'S',
         partnerId: supplierId,
         status: { not: 2 },
+        NOT: [{ code: { startsWith: 'PCTUPN' } }],
       },
       select: {
         id: true,

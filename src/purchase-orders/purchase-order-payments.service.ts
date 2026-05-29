@@ -45,39 +45,18 @@ export class PurchaseOrderPaymentsService {
         throw new Error('Không tìm thấy phiếu nhập hàng');
       }
 
+      // Đối xứng `invoice-payments.service.ts:71-73`: bắt buộc PO phải có
+      // chi nhánh trước khi tạo CashFlow. Tránh fallback `branchId ?? 1`
+      // ghi sai chi nhánh tiền chi.
+      if (!purchaseOrder.branchId) {
+        throw new Error('Phiếu nhập hàng chưa có chi nhánh');
+      }
+
       // Generate payment code PCPN
       const code = await this.generatePaymentCode(tx);
 
-      const payment = await tx.purchaseOrderPayment.create({
-        data: {
-          code,
-          purchaseOrderId: dto.purchaseOrderId,
-          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
-          amount: dto.amount,
-          paymentMethod: dto.paymentMethod || 'cash',
-          accountId: dto.accountId,
-          description:
-            dto.notes || `Trả tiền nhập hàng ${purchaseOrder.code} - PCPN`,
-          status: 1,
-          statusValue: 'Đã thanh toán',
-        },
-      });
-
-      // Tính tổng đã trả cho PurchaseOrder
-      const allPayments = await tx.purchaseOrderPayment.findMany({
-        where: { purchaseOrderId: dto.purchaseOrderId },
-      });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-
-      await tx.purchaseOrder.update({
-        where: { id: dto.purchaseOrderId },
-        data: { paidAmount },
-      });
-
-      // Map payment method
+      // Tạo CashFlow TRƯỚC để có id gán vào PurchaseOrderPayment.cashFlowId.
+      // Đối xứng `invoice-payments.service.ts:78-117`.
       let cashFlowMethod = 'cash';
       if (dto.paymentMethod === 'transfer') {
         cashFlowMethod = 'transfer';
@@ -88,7 +67,7 @@ export class PurchaseOrderPaymentsService {
       const cashFlow = await tx.cashFlow.create({
         data: {
           code,
-          branchId: purchaseOrder.branchId ?? 1,
+          branchId: purchaseOrder.branchId,
           cashFlowGroupId: 9,
           isReceipt: false,
           amount: dto.amount,
@@ -106,11 +85,46 @@ export class PurchaseOrderPaymentsService {
           statusValue: 'Đã thanh toán',
           createdBy: userId,
           usedForFinancialReporting: 1,
+          supplierDebtSnapshot: null,
         },
       });
 
+      const payment = await tx.purchaseOrderPayment.create({
+        data: {
+          code,
+          purchaseOrderId: dto.purchaseOrderId,
+          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+          amount: dto.amount,
+          paymentMethod: dto.paymentMethod || 'cash',
+          accountId: dto.accountId,
+          description:
+            dto.notes || `Trả tiền nhập hàng ${purchaseOrder.code} - PCPN`,
+          status: 1,
+          statusValue: 'Đã thanh toán',
+          cashFlowId: cashFlow.id,
+        },
+      });
+
+      // Recalc cached field paidAmount + debtAmount của PO. Filter status≠2
+      // để khi sau này soft-cancel payment, recalc tự đồng bộ.
+      await this.recomputePurchaseOrderTotals(dto.purchaseOrderId, tx);
+
       // Update supplier debt
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
+
+      // Snapshot supplier debt vào CashFlow vừa tạo, đối xứng phía bán.
+      const updatedSupplier = await tx.supplier.findUnique({
+        where: { id: purchaseOrder.supplierId },
+        select: { debt: true },
+      });
+      await tx.cashFlow.update({
+        where: { id: cashFlow.id },
+        data: {
+          supplierDebtSnapshot: updatedSupplier
+            ? Number(updatedSupplier.debt)
+            : null,
+        },
+      });
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -178,25 +192,35 @@ export class PurchaseOrderPaymentsService {
         throw new Error('Không tìm thấy thanh toán');
       }
 
-      await tx.cashFlow.deleteMany({
-        where: { code: payment.code },
+      // Đối xứng `invoice-payments.service.ts:185-208`: SOFT-cancel CashFlow +
+      // Payment, KHÔNG hard-delete. Giữ audit trail và cho phép Formula B
+      // recalc đúng (filter status≠2). Ưu tiên match qua FK `cashFlowId`,
+      // fallback theo `code`.
+      const orConditions: any[] = [];
+      if (payment.cashFlowId != null) {
+        orConditions.push({ id: payment.cashFlowId });
+      }
+      if (payment.code) {
+        orConditions.push({ code: payment.code });
+      }
+      if (orConditions.length > 0) {
+        await tx.cashFlow.updateMany({
+          where: {
+            OR: orConditions,
+            partnerType: 'S',
+            partnerId: payment.purchaseOrder.supplierId,
+            status: { not: 2 },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      await tx.purchaseOrderPayment.update({
+        where: { id },
+        data: { status: 2, statusValue: 'Đã hủy' },
       });
 
-      await tx.purchaseOrderPayment.delete({ where: { id } });
-
-      const allPayments = await tx.purchaseOrderPayment.findMany({
-        where: { purchaseOrderId: payment.purchaseOrderId },
-      });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-
-      await tx.purchaseOrder.update({
-        where: { id: payment.purchaseOrderId },
-        data: { paidAmount },
-      });
-
+      await this.recomputePurchaseOrderTotals(payment.purchaseOrderId, tx);
       await this.updateSupplierDebt(payment.purchaseOrder.supplierId, tx);
 
       const auditUserId = userId || 1;
@@ -238,6 +262,41 @@ export class PurchaseOrderPaymentsService {
       });
 
       return { message: 'Xóa thanh toán thành công' };
+    });
+  }
+
+  /**
+   * Recalc cached fields `paidAmount` + `debtAmount` trên PurchaseOrder từ
+   * danh sách `purchaseOrderPayment` ACTIVE (status ≠ 2). Đối xứng
+   * `invoice-payments.service.ts:calculateInvoiceTotals`.
+   */
+  private async recomputePurchaseOrderTotals(
+    purchaseOrderId: number,
+    tx: any,
+  ) {
+    const po = await tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrderId },
+      select: { subTotal: true },
+    });
+    if (!po) return;
+
+    const activePayments = await tx.purchaseOrderPayment.findMany({
+      where: { purchaseOrderId, status: { not: 2 } },
+      select: { amount: true },
+    });
+    const paidAmount = activePayments.reduce(
+      (sum: number, p: any) => sum + Number(p.amount),
+      0,
+    );
+    const debtAmount = Number(po.subTotal) - paidAmount;
+
+    await tx.purchaseOrder.update({
+      where: { id: purchaseOrderId },
+      data: {
+        paidAmount,
+        debtAmount,
+        supplierDebt: debtAmount,
+      },
     });
   }
 

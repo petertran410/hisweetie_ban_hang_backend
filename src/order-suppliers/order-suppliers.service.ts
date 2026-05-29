@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  CancelOrderSupplierDto,
   CreateOrderSupplierDto,
   UpdateOrderSupplierDto,
   OrderSupplierQueryDto,
@@ -12,6 +17,34 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
+
+/**
+ * Bảng nhãn status của OrderSupplier (PDN). Đối xứng `getStatusLabel` của
+ * `OrderSupplier` ở frontend (`pos-hisweetie/lib/types/order-supplier.ts`).
+ *
+ *   0 DRAFT     - Phiếu tạm
+ *   1 CONFIRMED - Đã xác nhận NCC
+ *   2 PARTIAL   - Nhập một phần
+ *   3 COMPLETED - Hoàn thành
+ *   4 CANCELLED - Đã hủy
+ */
+function getOrderSupplierStatusLabel(status: number): string {
+  switch (status) {
+    case 0:
+      return 'Phiếu tạm';
+    case 1:
+      return 'Đã xác nhận NCC';
+    case 2:
+      return 'Nhập một phần';
+    case 3:
+      return 'Hoàn thành';
+    case 4:
+      return 'Đã hủy';
+    default:
+      return 'Không xác định';
+  }
+}
 
 @Injectable()
 export class OrderSuppliersService {
@@ -239,6 +272,7 @@ export class OrderSuppliersService {
           userId: dto.userId,
           description: dto.description,
           status: dto.status || 0,
+          statusValue: getOrderSupplierStatusLabel(dto.status || 0),
           discount: discountAmount,
           discountRatio: dto.discountRatio || 0,
           total,
@@ -266,20 +300,15 @@ export class OrderSuppliersService {
       });
 
       if (dto.paymentAmount && dto.paymentAmount > 0) {
-        const paymentCode = await this.generatePaymentCode(tx);
+        // Đối xứng `purchase-orders.service.ts`: bắt buộc PDN phải có chi nhánh
+        // khi tạo CashFlow để tránh fallback `?? 1` ghi sai chi nhánh tiền chi.
+        if (!orderSupplier.branchId) {
+          throw new NotFoundException(
+            'Phiếu đặt hàng nhập chưa có chi nhánh. Vui lòng chọn chi nhánh trước khi thanh toán.',
+          );
+        }
 
-        await tx.orderSupplierPayment.create({
-          data: {
-            code: paymentCode,
-            orderSupplierId: orderSupplier.id,
-            amount: dto.paymentAmount,
-            paymentDate: new Date(),
-            paymentMethod: dto.paymentMethod || 'cash',
-            description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
-            status: 1,
-            statusValue: 'Đã thanh toán',
-          },
-        });
+        const paymentCode = await this.generatePaymentCode(tx);
 
         let cashFlowMethod = 'cash';
         if (dto.paymentMethod === 'transfer') {
@@ -288,10 +317,12 @@ export class OrderSuppliersService {
           cashFlowMethod = 'card';
         }
 
-        await tx.cashFlow.create({
+        // Tạo CashFlow TRƯỚC để có id gán vào OrderSupplierPayment.cashFlowId.
+        // Đối xứng pattern phía bán.
+        const cashFlow = await tx.cashFlow.create({
           data: {
             code: paymentCode,
-            branchId: orderSupplier.branchId ?? 1,
+            branchId: orderSupplier.branchId,
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: dto.paymentAmount,
@@ -307,10 +338,39 @@ export class OrderSuppliersService {
             statusValue: 'Đã thanh toán',
             createdBy: userId,
             usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+
+        await tx.orderSupplierPayment.create({
+          data: {
+            code: paymentCode,
+            orderSupplierId: orderSupplier.id,
+            amount: dto.paymentAmount,
+            paymentDate: new Date(),
+            paymentMethod: dto.paymentMethod || 'cash',
+            description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
           },
         });
 
         await this.updateSupplierDebt(dto.supplierId, tx);
+
+        // Snapshot supplier debt sau recalc.
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlow.id },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
       }
 
       const user = await tx.user.findUnique({
@@ -345,7 +405,10 @@ export class OrderSuppliersService {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.orderSupplier.findUnique({
         where: { id },
-        include: { items: true, supplier: true },
+        include: {
+          items: { include: { product: { select: { name: true } } } },
+          supplier: true,
+        },
       });
 
       if (!existing) {
@@ -411,62 +474,26 @@ export class OrderSuppliersService {
         productQty = itemsData.length;
       }
 
+      // Đối xứng `Order.update` phía bán: KHÔNG tạo payment + cashflow trực
+      // tiếp trong update. Mỗi lần save form sẽ tạo MỚI một CashFlow → user
+      // dễ vô tình nhân đôi/nhân ba khoản chi. Ép user dùng endpoint riêng
+      // `POST /api/order-suppliers/:id/payments` cho thanh toán bổ sung.
       if (dto.paymentAmount && dto.paymentAmount > 0) {
-        const paymentCode = await this.generatePaymentCode(tx);
-
-        await tx.orderSupplierPayment.create({
-          data: {
-            code: paymentCode,
-            orderSupplierId: id,
-            amount: dto.paymentAmount,
-            paymentDate: new Date(),
-            paymentMethod: dto.paymentMethod || 'cash',
-            description: `Trả tiền đặt hàng nhập ${existing.code}`,
-            status: 1,
-            statusValue: 'Đã thanh toán',
-          },
-        });
-
-        let cashFlowMethod = 'cash';
-        if (dto.paymentMethod === 'transfer') {
-          cashFlowMethod = 'transfer';
-        } else if (dto.paymentMethod === 'card') {
-          cashFlowMethod = 'card';
-        }
-
-        await tx.cashFlow.create({
-          data: {
-            code: paymentCode,
-            branchId: existing.branchId ?? 1,
-            cashFlowGroupId: 9,
-            isReceipt: false,
-            amount: dto.paymentAmount,
-            transDate: new Date(),
-            method: cashFlowMethod,
-            partnerType: 'S',
-            partnerId: existing.supplierId,
-            partnerName: existing.supplier?.name,
-            contactNumber: existing.supplier?.contactNumber,
-            address: existing.supplier?.address,
-            description: `Chi tiền đặt hàng nhập ${existing.code}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            collectorUserId: userId,
-            usedForFinancialReporting: 1,
-          },
-        });
-
-        const allPayments = await tx.orderSupplierPayment.findMany({
-          where: { orderSupplierId: id },
-        });
-        currentPaidAmount = allPayments.reduce(
-          (sum, p) => sum + Number(p.amount),
-          0,
+        throw new BadRequestException(
+          'Không thể thanh toán trực tiếp khi cập nhật phiếu đặt hàng nhập. Vui lòng dùng chức năng thanh toán riêng.',
         );
-
-        await this.updateSupplierDebt(existing.supplierId, tx);
       }
+
+      // Recompute paidAmount từ active payments (mirror Order.calculateTotals)
+      // — single source of truth là OrderSupplierPayment ACTIVE.
+      const activePayments = await tx.orderSupplierPayment.findMany({
+        where: { orderSupplierId: id, status: { not: 2 } },
+        select: { amount: true },
+      });
+      currentPaidAmount = activePayments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
+        0,
+      );
 
       const updatedOrderSupplier = await tx.orderSupplier.update({
         where: { id },
@@ -495,7 +522,7 @@ export class OrderSuppliersService {
           branch: true,
           user: true,
           creator: true,
-          items: true,
+          items: { include: { product: { select: { name: true } } } },
           payments: true,
         },
       });
@@ -504,6 +531,48 @@ export class OrderSuppliersService {
         where: { id: userId },
         select: { name: true, email: true, branchId: true },
       });
+
+      // Build fieldChanges + itemChanges đối xứng `Order.update` phía bán
+      // (orders.service.ts:476-513). Audit trail PDN giờ có đủ thông tin
+      // "đổi gì" thay vì chỉ snapshot mới.
+      const fieldChanges = buildChanges(
+        'order_suppliers',
+        {
+          statusValue: existing.statusValue,
+          subTotal: Number(existing.subTotal),
+          discount: Number(existing.discount || 0),
+          discountRatio: Number(existing.discountRatio || 0),
+          description: existing.description,
+          supplierId: existing.supplierId,
+        },
+        {
+          statusValue: updatedOrderSupplier.statusValue,
+          subTotal: Number(updatedOrderSupplier.subTotal),
+          discount: Number(updatedOrderSupplier.discount || 0),
+          discountRatio: Number(updatedOrderSupplier.discountRatio || 0),
+          description: updatedOrderSupplier.description,
+          supplierId: updatedOrderSupplier.supplierId,
+        },
+      );
+
+      const itemChanges = buildItemChanges(
+        existing.items.map((i: any) => ({
+          productId: i.productId,
+          productName: i.product?.name || i.productName,
+          quantity: Number(i.quantity),
+          price: Number(i.price),
+          discount: Number(i.discount || 0),
+        })),
+        updatedOrderSupplier.items.map((i: any) => ({
+          productId: i.productId,
+          productName: i.product?.name || i.productName,
+          quantity: Number(i.quantity),
+          price: Number(i.price),
+          discount: Number(i.discount || 0),
+        })),
+      );
+
+      const allChanges = [...fieldChanges, ...itemChanges];
 
       await this.auditLogsService.create({
         actionType: 'PUT',
@@ -514,6 +583,7 @@ export class OrderSuppliersService {
         category: getCategoryFromActionCode('ORDER_SUPPLIER_UPDATE'),
         severity: getSeverityFromActionCode('ORDER_SUPPLIER_UPDATE'),
         snapshot: this.buildOrderSupplierSnapshot(updatedOrderSupplier),
+        changes: allChanges.length > 0 ? allChanges : null,
         message: renderAuditMessage('ORDER_SUPPLIER_UPDATE', {
           orderSupplierCode: updatedOrderSupplier.code,
         }),
@@ -524,6 +594,178 @@ export class OrderSuppliersService {
       });
 
       return updatedOrderSupplier;
+    });
+  }
+
+  /**
+   * Hủy mềm phiếu đặt hàng nhập (PDN). Mirror chính xác `OrdersService.cancelOrder`
+   * của phía bán:
+   *   - Block khi đã CANCELLED hoặc khi đã có PurchaseOrder con (active).
+   *   - dto.cancelPayments=true: soft cancel mọi OrderSupplierPayment + CashFlow
+   *     PCPDN match theo code, set paidAmount=0, supplierDebt=0.
+   *   - dto.cancelPayments=false: vẫn cho hủy nhưng KHÔNG đụng payment — user phải
+   *     xóa từng payment trước. Đối xứng pattern phía bán.
+   *   - Recalc Supplier.debt qua Formula B sau cùng.
+   */
+  async cancelOrderSupplier(
+    id: number,
+    dto: CancelOrderSupplierDto,
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const orderSupplier = await tx.orderSupplier.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          purchaseOrders: {
+            where: { status: { not: 2 } },
+            select: { id: true, code: true, isDraft: true },
+          },
+          payments: { where: { status: { not: 2 } } },
+          supplier: {
+            select: { id: true, code: true, name: true, debt: true },
+          },
+          creator: { select: { id: true, name: true } },
+        },
+      });
+
+      if (!orderSupplier) {
+        throw new NotFoundException('Không tìm thấy phiếu đặt hàng nhập');
+      }
+
+      // Status 4 = CANCELLED (đối xứng ORDER_STATUS.CANCELLED phía bán)
+      if (orderSupplier.status === 4) {
+        throw new BadRequestException(
+          'Phiếu đặt hàng nhập đã được hủy trước đó',
+        );
+      }
+
+      // Block khi còn PN active — đối xứng "Đơn hàng có hóa đơn" phía bán
+      const hasActivePurchaseOrders =
+        orderSupplier.purchaseOrders &&
+        orderSupplier.purchaseOrders.length > 0;
+      if (hasActivePurchaseOrders) {
+        throw new BadRequestException(
+          'Phiếu đặt hàng nhập đã có phiếu nhập. Vui lòng hủy tất cả phiếu nhập trước khi hủy phiếu đặt hàng nhập',
+        );
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, email: true },
+      });
+
+      if (dto.cancelPayments && orderSupplier.payments.length > 0) {
+        const paymentIds = orderSupplier.payments.map((p: any) => p.id);
+        const paymentCodes = orderSupplier.payments
+          .map((p: any) => p.code)
+          .filter((c: any): c is string => !!c);
+        const explicitCashFlowIds = orderSupplier.payments
+          .map((p: any) => p.cashFlowId)
+          .filter((id: any): id is number => typeof id === 'number');
+
+        // Soft-cancel OrderSupplierPayment (giữ audit, không hard-delete)
+        await tx.orderSupplierPayment.updateMany({
+          where: { id: { in: paymentIds } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+
+        // Soft-cancel CashFlow PCPDN: ưu tiên match qua FK cashFlowId,
+        // fallback `code` (đối xứng `invoice-payments.service.ts:191-208`).
+        const orConditions: any[] = [];
+        if (explicitCashFlowIds.length > 0) {
+          orConditions.push({ id: { in: explicitCashFlowIds } });
+        }
+        if (paymentCodes.length > 0) {
+          orConditions.push({ code: { in: paymentCodes } });
+        }
+        if (orConditions.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: {
+              OR: orConditions,
+              partnerType: 'S',
+              partnerId: orderSupplier.supplierId,
+              status: { not: 2 },
+            },
+            data: { status: 2, statusValue: 'Đã hủy' },
+          });
+        }
+
+        // Audit log từng payment (đối xứng phía bán log ORDER_PAYMENT_DELETE)
+        for (const payment of orderSupplier.payments) {
+          await this.auditLogsService.create({
+            actionType: 'DELETE',
+            actionCode: 'ORDER_SUPPLIER_PAYMENT_DELETE',
+            entityType: 'order_supplier_payment',
+            entityId: payment.id.toString(),
+            entityCode: payment.code,
+            category: getCategoryFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
+            severity: getSeverityFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
+            snapshot: {
+              code: payment.code,
+              amount: Number(payment.amount),
+              paymentMethod: payment.paymentMethod,
+              orderSupplier: {
+                code: orderSupplier.code,
+                supplier: orderSupplier.supplier,
+              },
+            },
+            message: renderAuditMessage('ORDER_SUPPLIER_PAYMENT_DELETE', {
+              paymentCode: payment.code,
+              orderSupplierCode: orderSupplier.code,
+            }),
+            messageTemplate: 'ORDER_SUPPLIER_PAYMENT_DELETE',
+            userId,
+            userName: user?.name || 'System',
+            branchId: orderSupplier.branchId || undefined,
+          });
+        }
+      } else if (orderSupplier.payments.length > 0 && !dto.cancelPayments) {
+        // Đối xứng pattern phía bán: nếu user không gửi cancelPayments=true mà
+        // còn payment active, vẫn cho hủy nhưng payment giữ nguyên. Tuy nhiên
+        // điều này dẫn tới supplierDebt không đồng bộ — block để user buộc
+        // phải quyết định rõ.
+        throw new BadRequestException(
+          'Phiếu đặt hàng nhập có thanh toán. Hãy hủy thanh toán trước hoặc gửi cancelPayments=true để hủy luôn thanh toán',
+        );
+      }
+
+      // Update PDN sang CANCELLED — đối xứng `Order.status=CANCELLED`
+      await tx.orderSupplier.update({
+        where: { id },
+        data: {
+          status: 4,
+          statusValue: 'Đã hủy',
+          ...(dto.cancelPayments && orderSupplier.payments.length > 0
+            ? { paidAmount: 0, supplierDebt: 0 }
+            : { supplierDebt: 0 }),
+        },
+      });
+
+      // Recalc Supplier.debt qua Formula B (filter status≠2 tự loại records vừa hủy)
+      await this.updateSupplierDebt(orderSupplier.supplierId, tx);
+
+      // Audit ORDER_SUPPLIER_CANCEL
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_SUPPLIER_CANCEL',
+        entityType: 'order_suppliers',
+        entityId: id.toString(),
+        entityCode: orderSupplier.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_CANCEL'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_CANCEL'),
+        snapshot: this.buildOrderSupplierSnapshot(orderSupplier),
+        message: renderAuditMessage('ORDER_SUPPLIER_CANCEL', {
+          orderSupplierCode: orderSupplier.code,
+          supplierName: orderSupplier.supplier?.name || 'N/A',
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_CANCEL',
+        userId,
+        userName: user?.name || 'System',
+        branchId: orderSupplier.branchId || undefined,
+      });
+
+      return { message: 'Hủy phiếu đặt hàng nhập thành công' };
     });
   }
 
@@ -667,6 +909,65 @@ export class OrderSuppliersService {
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
     await recalcSupplierDebt(tx, supplierId);
+  }
+
+  /**
+   * Recompute cached fields trên OrderSupplier từ source of truth (items + 
+   * active payments). Mirror chính xác `OrdersService.calculateTotals` của 
+   * phía bán nhưng đối xứng:
+   *   - KH: paymentStatus 'Draft'/'partial'/'paid' từ paidAmount vs grandTotal
+   *   - NCC: dùng cùng logic, ghi vào `OrderSupplier` (paidAmount/supplierDebt)
+   *
+   * Phía bán có field `Order.paymentStatus` riêng. Phía mua không có field
+   * tương đương trong schema OrderSupplier — bỏ qua. Cache còn lại đầy đủ.
+   */
+  private async calculateTotals(orderSupplierId: number, tx: any) {
+    const items = await tx.orderSupplierItem.findMany({
+      where: { orderSupplierId },
+    });
+    const payments = await tx.orderSupplierPayment.findMany({
+      where: { orderSupplierId, status: { not: 2 } },
+    });
+
+    const total = items.reduce(
+      (sum: number, item: any) => sum + Number(item.subTotal),
+      0,
+    );
+
+    const orderSupplier = await tx.orderSupplier.findUnique({
+      where: { id: orderSupplierId },
+    });
+    if (!orderSupplier) return;
+
+    const discountAmount = Number(orderSupplier.discount) || 0;
+    const discountFromRatio =
+      (total * (Number(orderSupplier.discountRatio) || 0)) / 100;
+    const subTotal = total - discountAmount - discountFromRatio;
+
+    const paidAmount = payments.reduce(
+      (sum: number, p: any) => sum + Number(p.amount),
+      0,
+    );
+    const supplierDebt = subTotal - paidAmount;
+
+    const totalQuantity = items.reduce(
+      (sum: number, item: any) => sum + Number(item.quantity),
+      0,
+    );
+
+    await tx.orderSupplier.update({
+      where: { id: orderSupplierId },
+      data: {
+        total,
+        subTotal,
+        totalAmt: subTotal,
+        totalQty: totalQuantity,
+        totalQuantity,
+        productQty: items.length,
+        paidAmount,
+        supplierDebt,
+      },
+    });
   }
 
   private buildOrderSupplierSnapshot(os: any) {

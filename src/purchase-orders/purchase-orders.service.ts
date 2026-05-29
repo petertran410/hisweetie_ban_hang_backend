@@ -91,6 +91,15 @@ export class PurchaseOrdersService {
       const paidAmount = Number(dto.paidAmount || 0);
       const debtAmount = subTotal - paidAmount;
 
+      // Đối xứng `invoices.service.ts:583`: nếu có thanh toán mà chưa chọn
+      // chi nhánh, throw thẳng. Tránh case PurchaseOrderPayment được tạo
+      // nhưng CashFlow bỏ qua → recalcSupplierDebt sai.
+      if (paidAmount > 0 && !dto.isDraft && !dto.branchId) {
+        throw new BadRequestException(
+          'Vui lòng chọn chi nhánh khi có thanh toán',
+        );
+      }
+
       const supplier = await tx.supplier.findUnique({
         where: { id: dto.supplierId },
         select: { debt: true, name: true, code: true },
@@ -138,8 +147,35 @@ export class PurchaseOrdersService {
       // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
       // + CashFlow PCPN. Formula B đối xứng triệt để KH: cashflow là single
       // source cho mọi tiền, KHÔNG dùng po.paidAmount trong công thức.
-      if (paidAmount > 0 && !dto.isDraft) {
+      const cashFlowIdsToUpdate: number[] = [];
+      if (paidAmount > 0 && !dto.isDraft && dto.branchId) {
         const paymentCode = await this.generatePCPNCode(tx);
+
+        // Tạo CashFlow TRƯỚC để có id gán vào PurchaseOrderPayment.cashFlowId
+        // (đối xứng pattern `invoice-payments.service.ts:78-99`).
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: dto.branchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount: paidAmount,
+            transDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : new Date(),
+            method: 'cash',
+            partnerType: 'S',
+            partnerId: dto.supplierId,
+            partnerName: supplier?.name,
+            description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+        cashFlowIdsToUpdate.push(cashFlow.id);
 
         await tx.purchaseOrderPayment.create({
           data: {
@@ -153,35 +189,29 @@ export class PurchaseOrdersService {
             description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
           },
         });
-
-        if (dto.branchId) {
-          await tx.cashFlow.create({
-            data: {
-              code: paymentCode,
-              branchId: dto.branchId,
-              cashFlowGroupId: 9,
-              isReceipt: false,
-              amount: paidAmount,
-              transDate: dto.purchaseDate
-                ? new Date(dto.purchaseDate)
-                : new Date(),
-              method: 'cash',
-              partnerType: 'S',
-              partnerId: dto.supplierId,
-              partnerName: supplier?.name,
-              description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
-              status: 0,
-              statusValue: 'Đã thanh toán',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-            },
-          });
-        }
       }
 
       await this.updateSupplierDebt(dto.supplierId, tx);
+
+      // Update supplierDebtSnapshot trên cashflow vừa tạo, đối xứng
+      // `invoices.service.ts:1845-1854` (cashFlow.updateMany sau recalc).
+      if (cashFlowIdsToUpdate.length > 0) {
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.updateMany({
+          where: { id: { in: cashFlowIdsToUpdate } },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
+      }
 
       if (dto.orderSupplierId) {
         await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
@@ -487,6 +517,7 @@ export class PurchaseOrdersService {
       // (đối xứng phía bán: OrderPayment → InvoicePayment + CashFlow `TTTU`).
       // CashFlow gốc `PCPDN######` của PDN GIỮ NGUYÊN — `recalcSupplierDebt`
       // dùng filter `NOT startsWith 'PCTUPN'` để tránh trừ đôi.
+      const cashFlowIdsToUpdate: number[] = [];
       let cloneSeq = 0;
       if (
         isFirstPN &&
@@ -497,7 +528,7 @@ export class PurchaseOrdersService {
           cloneSeq++;
           const paymentCode = `PCTU${purchaseOrder.code}-${cloneSeq}`;
 
-          await tx.cashFlow.create({
+          const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
               branchId,
@@ -517,8 +548,10 @@ export class PurchaseOrdersService {
               statusValue: 'Đã thanh toán',
               createdBy: userId,
               usedForFinancialReporting: 1,
+              supplierDebtSnapshot: null,
             },
           });
+          cashFlowIdsToUpdate.push(cashFlow.id);
 
           await tx.purchaseOrderPayment.create({
             data: {
@@ -531,6 +564,7 @@ export class PurchaseOrdersService {
               description: `Thanh toán từ phiếu đặt hàng nhập ${orderSupplier.code}`,
               status: 1,
               statusValue: 'Đã thanh toán',
+              cashFlowId: cashFlow.id,
             },
           });
         }
@@ -550,7 +584,7 @@ export class PurchaseOrdersService {
 
           const paymentCode = await this.generatePCPNCode(tx);
 
-          await tx.cashFlow.create({
+          const cashFlow = await tx.cashFlow.create({
             data: {
               code: paymentCode,
               branchId,
@@ -572,8 +606,10 @@ export class PurchaseOrdersService {
               statusValue: 'Đã thanh toán',
               createdBy: userId,
               usedForFinancialReporting: 1,
+              supplierDebtSnapshot: null,
             },
           });
+          cashFlowIdsToUpdate.push(cashFlow.id);
 
           await tx.purchaseOrderPayment.create({
             data: {
@@ -588,6 +624,7 @@ export class PurchaseOrdersService {
               description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
               status: 1,
               statusValue: 'Đã thanh toán',
+              cashFlowId: cashFlow.id,
             },
           });
         }
@@ -595,6 +632,23 @@ export class PurchaseOrdersService {
 
       await this.updateSupplierDebt(orderSupplier.supplierId, tx);
       await this.updateOrderSupplierStatus(orderSupplier.id, tx);
+
+      // Sau recalc, snapshot supplier debt vào các CashFlow vừa tạo (PCTUPN
+      // clone + PCPN additional). Đối xứng `invoices.service.ts:1845-1854`.
+      if (cashFlowIdsToUpdate.length > 0) {
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: orderSupplier.supplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.updateMany({
+          where: { id: { in: cashFlowIdsToUpdate } },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
+      }
 
       const user = await tx.user.findUnique({
         where: { id: userId },
@@ -825,17 +879,30 @@ export class PurchaseOrdersService {
       }
 
       const subTotal = total - discountAmount;
-      const paidAmount = Number(dto.paidAmount || existing.paidAmount);
+
+      // Đối xứng `Order.calculateTotals` phía bán: KHÔNG trust `dto.paidAmount`.
+      // Recompute từ active PurchaseOrderPayment (status≠2). Cache `paidAmount`
+      // và `debtAmount` luôn khớp với CashFlow thực — single source of truth.
+      const activePayments = await tx.purchaseOrderPayment.findMany({
+        where: { purchaseOrderId: id, status: { not: 2 } },
+        select: { amount: true },
+      });
+      const paidAmount = activePayments.reduce(
+        (sum: number, p: any) => sum + Number(p.amount),
+        0,
+      );
       const debtAmount = subTotal - paidAmount;
 
       const updateData: any = {
         purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
         total,
+        totalAmount: total,
         discount: dto.discount,
         discountRatio: dto.discountRatio,
-        paidAmount: dto.paidAmount,
+        paidAmount,
         debtAmount,
         subTotal,
+        supplierDebt: debtAmount,
         partnerType: dto.partnerType,
         description: dto.description,
         purchaseById: dto.purchaseById,
@@ -941,7 +1008,8 @@ export class PurchaseOrdersService {
         where: { id },
         include: {
           items: true,
-          branch: { select: { id: true, name: true } }, // THÊM
+          payments: true,
+          branch: { select: { id: true, name: true } },
         },
       });
 
@@ -953,8 +1021,50 @@ export class PurchaseOrdersService {
         await this.restoreInventory(id, tx);
       }
 
+      // Soft-cancel mọi CashFlow liên quan tới PN này (PCPN######, PCTUPN...).
+      // CashFlow KHÔNG có FK tới PurchaseOrder — chỉ link qua `code` hoặc qua
+      // `PurchaseOrderPayment.cashFlowId` (sau Wave 2). Phải soft-cancel
+      // CashFlow TRƯỚC khi delete PN (cascade sẽ xoá PurchaseOrderPayment).
+      // Đối xứng `invoice-payments.service.ts:191-208`: ưu tiên match theo
+      // FK `cashFlowId`, fallback `code`.
+      const paymentCodes = (purchaseOrder.payments || [])
+        .map((p: any) => p.code)
+        .filter(Boolean);
+      const explicitCashFlowIds = (purchaseOrder.payments || [])
+        .map((p: any) => p.cashFlowId)
+        .filter((id: any): id is number => typeof id === 'number');
+
+      const orConditions: any[] = [];
+      if (explicitCashFlowIds.length > 0) {
+        orConditions.push({ id: { in: explicitCashFlowIds } });
+      }
+      if (paymentCodes.length > 0) {
+        orConditions.push({ code: { in: paymentCodes } });
+      }
+
+      if (orConditions.length > 0) {
+        await tx.cashFlow.updateMany({
+          where: {
+            OR: orConditions,
+            partnerType: 'S',
+            partnerId: purchaseOrder.supplierId,
+            status: { not: 2 },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+      }
+
+      const orderSupplierId = purchaseOrder.orderSupplierId;
+
       await tx.purchaseOrder.delete({ where: { id } });
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
+
+      // Cập nhật trạng thái PDN nếu PN này thuộc PDN — đối xứng `update()` và
+      // `create()` đều gọi `updateOrderSupplierStatus`. Đây là bước phía bán
+      // gọi `updateOrderStatusByInvoices` khi cancel Invoice.
+      if (orderSupplierId) {
+        await this.updateOrderSupplierStatus(orderSupplierId, tx);
+      }
 
       if (userId) {
         const user = await tx.user.findUnique({

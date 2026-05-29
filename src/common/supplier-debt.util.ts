@@ -63,8 +63,12 @@ export async function recalcSupplierDebt(
     0,
   );
 
+  // `totalInvoiced` = tổng giá trị THỰC mua từ NCC (đã trừ discount). Đối
+  // xứng `Customer.totalPurchased` = sum(Invoice.grandTotal). Trước đây
+  // dùng `total` làm input → bỏ sót discount → filter "NCC mua từ X đến Y"
+  // bị lệch theo discount.
   const totalInvoicedComputed = purchaseOrders.reduce(
-    (s: number, po: any) => s + Number(po.total),
+    (s: number, po: any) => s + (Number(po.total) - Number(po.discount)),
     0,
   );
 

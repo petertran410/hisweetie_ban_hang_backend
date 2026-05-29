@@ -656,6 +656,7 @@ export class ReturnOrdersService {
 
       let actualCashRefund = 0;
       let finalDebtSnapshot: number | null = null;
+      let refundCashFlowId: number | null = null;
 
       const debtHolderId = returnOrder.customerId!;
 
@@ -695,7 +696,7 @@ export class ReturnOrdersService {
           finalDebtSnapshot = Number(updatedDebtHolder?.totalDebt || 0);
 
           const cashFlowCode = await this.generateSafePCCode(tx);
-          await tx.cashFlow.create({
+          const createdCashFlow = await tx.cashFlow.create({
             data: {
               code: cashFlowCode,
               branchId: returnOrder.branchId,
@@ -718,6 +719,10 @@ export class ReturnOrdersService {
               customerDebtSnapshot: finalDebtSnapshot,
             },
           });
+          // Đối xứng `supplier-returns.service.ts:734-754`: lưu cashFlowId
+          // vào ReturnOrder để cancel/audit có thể tra cứu chính xác
+          // CashFlow gốc thay vì phải match qua `code` (schema có FK).
+          refundCashFlowId = createdCashFlow.id;
         } else {
           // debt_offset: cửa hàng CHƯA chi tiền thật
           // Không increment totalDebt → giữ nguyên mức âm (cửa hàng vẫn nợ khách)
@@ -744,6 +749,7 @@ export class ReturnOrdersService {
           refundConfirmedAt: new Date(),
           customerDebtSnapshot: finalDebtSnapshot,
           note: dto.note || returnOrder.note,
+          ...(refundCashFlowId ? { cashFlowId: refundCashFlowId } : {}),
         },
       });
 

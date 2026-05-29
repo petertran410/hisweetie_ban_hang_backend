@@ -580,6 +580,7 @@ model SupplierReturnDetail {
   confirmedQuantity Decimal @default(0)
   returnPrice      Decimal
   totalAmount      Decimal
+  conditionType    String   @default("normal")
   note             String?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
@@ -1502,11 +1503,13 @@ model PurchaseOrderPayment {
   description     String?
   status          Int      @default(1)
   statusValue     String?
+  cashFlowId      Int?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   account       BankAccount?  @relation(fields: [accountId], references: [id])
+  cashFlow      CashFlow?     @relation(fields: [cashFlowId], references: [id])
 
   @@unique([code, purchaseOrderId]) 
   @@map("purchase_order_payments")
@@ -1705,6 +1708,7 @@ model CashFlow {
   createdBy                  Int
   collectorUserId            Int?
   customerDebtSnapshot       Decimal?
+  supplierDebtSnapshot       Decimal?
   createdAt                  DateTime  @default(now())
   updatedAt                  DateTime  @updatedAt
 
@@ -1715,6 +1719,8 @@ model CashFlow {
   creator        User            @relation("CashFlowCreator", fields: [createdBy], references: [id])
   collector      User?           @relation("CashFlowCollector", fields: [collectorUserId], references: [id])
   invoicePayments InvoicePayment[]
+  purchaseOrderPayments PurchaseOrderPayment[]
+  orderSupplierPayments OrderSupplierPayment[]
   returnOrders    ReturnOrder[]
   supplierReturns SupplierReturn[]
   
@@ -1818,11 +1824,13 @@ model OrderSupplierPayment {
   description     String?
   status          Int      @default(1)
   statusValue     String?
+  cashFlowId      Int?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   orderSupplier OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
   account       BankAccount?  @relation(fields: [accountId], references: [id])
+  cashFlow      CashFlow?     @relation(fields: [cashFlowId], references: [id])
 
   @@map("order_supplier_payments")
 }

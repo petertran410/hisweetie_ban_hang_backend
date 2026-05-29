@@ -3,3 +3,4 @@ export * from './update-cashflow.dto';
 export * from './cashflow-query.dto';
 export * from './create-payment.dto';
 export * from './create-customer-payment.dto';
+export * from './create-supplier-payment.dto';

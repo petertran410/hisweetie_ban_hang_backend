@@ -17,6 +17,7 @@ import {
   UpdateOrderSupplierDto,
   OrderSupplierQueryDto,
   CreateOrderSupplierPaymentDto,
+  CancelOrderSupplierDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -60,6 +61,21 @@ export class OrderSuppliersController {
   ) {
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.update(+id, dto, userId);
+  }
+
+  @Put(':id/cancel')
+  @RequirePermissions('order_suppliers:update')
+  @ApiOperation({
+    summary:
+      'Hủy mềm phiếu đặt hàng nhập, đối xứng PUT /api/orders/:id/cancel của phía bán',
+  })
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelOrderSupplierDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.orderSuppliersService.cancelOrderSupplier(+id, dto, userId);
   }
 
   @Delete(':id')

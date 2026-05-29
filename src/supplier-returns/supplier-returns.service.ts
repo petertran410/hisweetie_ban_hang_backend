@@ -524,6 +524,15 @@ export class SupplierReturnsService {
         const confirmedQty = confirmDetail.confirmedQuantity;
         if (confirmedQty <= 0) continue;
 
+        // Đối xứng `return-orders.service.ts:377-381`: confirmedQuantity
+        // không được vượt quá requestQuantity. Phía bán block sớm — phía mua
+        // trước đây cho qua → user có thể hoàn tiền vượt request.
+        if (confirmedQty > Number(detail.requestQuantity)) {
+          throw new BadRequestException(
+            `Sản phẩm ${detail.productName}: Số lượng xuất (${confirmedQty}) vượt quá số lượng yêu cầu (${Number(detail.requestQuantity)})`,
+          );
+        }
+
         // Validate tồn kho đủ để xuất
         const inv = await tx.inventory.findFirst({
           where: {
@@ -538,7 +547,36 @@ export class SupplierReturnsService {
           );
         }
 
-        // Giảm tồn kho
+        // Validate damaged/nearExpiry buckets nếu user chỉ định loại hàng.
+        // Đối xứng `invoices.service.ts:validateConditionQuantity`: chỉ
+        // check khi conditionType !== 'normal'.
+        const condition = confirmDetail.conditionType || 'normal';
+        if (condition === 'damaged') {
+          if (Number(inv.damagedQuantity || 0) < confirmedQty) {
+            throw new BadRequestException(
+              `Sản phẩm ${detail.productName}: Tồn kho hàng damaged không đủ (cần ${confirmedQty}, còn ${Number(inv.damagedQuantity || 0)})`,
+            );
+          }
+        } else if (condition === 'near_expiry') {
+          if (Number(inv.nearExpiryQuantity || 0) < confirmedQty) {
+            throw new BadRequestException(
+              `Sản phẩm ${detail.productName}: Tồn kho hàng cận date không đủ (cần ${confirmedQty}, còn ${Number(inv.nearExpiryQuantity || 0)})`,
+            );
+          }
+        }
+
+        // Giảm tồn kho theo conditionType. Đối xứng
+        // `invoices.service.ts:buildInventoryDeductData`: trừ `onHand` luôn,
+        // trừ thêm bucket damaged/nearExpiry nếu chỉ định.
+        const deductData: Record<string, any> = {
+          onHand: { decrement: confirmedQty },
+        };
+        if (condition === 'damaged') {
+          deductData.damagedQuantity = { decrement: confirmedQty };
+        } else if (condition === 'near_expiry') {
+          deductData.nearExpiryQuantity = { decrement: confirmedQty };
+        }
+
         await tx.inventory.update({
           where: {
             productId_branchId: {
@@ -546,7 +584,7 @@ export class SupplierReturnsService {
               branchId: supplierReturn.branchId,
             },
           },
-          data: { onHand: { decrement: confirmedQty } },
+          data: deductData,
         });
 
         // Ghi InventoryLog
@@ -569,10 +607,13 @@ export class SupplierReturnsService {
           },
         });
 
-        // Cập nhật confirmedQuantity trên detail
+        // Cập nhật confirmedQuantity + conditionType trên detail
         await tx.supplierReturnDetail.update({
           where: { id: detail.id },
-          data: { confirmedQuantity: confirmedQty },
+          data: {
+            confirmedQuantity: confirmedQty,
+            conditionType: condition,
+          },
         });
       }
 
@@ -729,6 +770,7 @@ export class SupplierReturnsService {
             statusValue: 'Đã thu',
             createdBy: userId,
             usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
           },
         });
         cashFlowId = cashFlow.id;
@@ -736,6 +778,23 @@ export class SupplierReturnsService {
 
       // ── Cập nhật Supplier.debt ────────────────────────────────────────────
       await this.updateSupplierDebt(supplierReturn.supplierId, tx);
+
+      // ── Snapshot supplier debt vào CashFlow vừa tạo (cash_refund) ────────
+      // Đối xứng `return-orders.service.ts:691-720` (customerDebtSnapshot).
+      if (cashFlowId) {
+        const updatedSupplier = await tx.supplier.findUnique({
+          where: { id: supplierReturn.supplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlowId },
+          data: {
+            supplierDebtSnapshot: updatedSupplier
+              ? Number(updatedSupplier.debt)
+              : null,
+          },
+        });
+      }
 
       // ── Cập nhật trạng thái phiếu ─────────────────────────────────────────
       await tx.supplierReturn.update({
@@ -799,11 +858,22 @@ export class SupplierReturnsService {
         throw new BadRequestException('Phiếu trả hàng nhập đã bị hủy');
       }
 
-      // Rollback tồn kho nếu đã xuất kho
+      // Rollback tồn kho nếu đã xuất kho — restore cả damaged/nearExpiry
+      // buckets theo conditionType (đối xứng `return-orders.cancel:817-826`).
       if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
         for (const detail of supplierReturn.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty <= 0) continue;
+
+          const restoreData: Record<string, any> = {
+            onHand: { increment: confirmedQty },
+          };
+          const condition = (detail as any).conditionType || 'normal';
+          if (condition === 'damaged') {
+            restoreData.damagedQuantity = { increment: confirmedQty };
+          } else if (condition === 'near_expiry') {
+            restoreData.nearExpiryQuantity = { increment: confirmedQty };
+          }
 
           await tx.inventory.update({
             where: {
@@ -812,7 +882,7 @@ export class SupplierReturnsService {
                 branchId: supplierReturn.branchId,
               },
             },
-            data: { onHand: { increment: confirmedQty } },
+            data: restoreData,
           });
         }
       }
