@@ -580,10 +580,7 @@ export class PriceBooksService {
     // Branch scope
     if (branchId) {
       where.AND.push({
-        OR: [
-          { isGlobal: true },
-          { priceBookBranches: { some: { branchId } } },
-        ],
+        OR: [{ isGlobal: true }, { priceBookBranches: { some: { branchId } } }],
       });
     }
 
@@ -630,10 +627,7 @@ export class PriceBooksService {
     // User scope
     if (userId) {
       where.AND.push({
-        OR: [
-          { forAllUser: true },
-          { priceBookUsers: { some: { userId } } },
-        ],
+        OR: [{ forAllUser: true }, { priceBookUsers: { some: { userId } } }],
       });
     }
 

@@ -485,7 +485,7 @@ export class AuthService {
         : user.userRoles.map((ur) => ur.role);
 
     for (const role of rolesSource) {
-      const branchPerms = (role as any).roleBranchPermissions || [];
+      const branchPerms = role.roleBranchPermissions || [];
       const source =
         branchPerms.length > 0 ? branchPerms : role.rolePermissions;
       for (const rp of source) {
@@ -501,7 +501,7 @@ export class AuthService {
       else if (up.type === 'deny') denyKeys.add(key);
     }
 
-    let permissions = new Set([...basePermKeys, ...grantKeys]);
+    const permissions = new Set([...basePermKeys, ...grantKeys]);
     for (const dk of denyKeys) permissions.delete(dk);
 
     if (branchId) {

@@ -189,7 +189,12 @@ export class InvoicesService {
     }
 
     // ── Sort logic ──
-    const COMPUTED_SORT_FIELDS = ['returnOrderAmount', 'cashRefundAmount', 'debtOffsetAmount', 'remainingAmount'];
+    const COMPUTED_SORT_FIELDS = [
+      'returnOrderAmount',
+      'cashRefundAmount',
+      'debtOffsetAmount',
+      'remainingAmount',
+    ];
     const DB_SORT_FIELDS: Record<string, string> = {
       purchaseDate: 'purchase_date',
       createdAt: 'created_at',
@@ -198,9 +203,11 @@ export class InvoicesService {
       paidAmount: 'paid_amount',
     };
 
-    const sortField = rawOrderBy && (COMPUTED_SORT_FIELDS.includes(rawOrderBy) || DB_SORT_FIELDS[rawOrderBy])
-      ? rawOrderBy
-      : 'createdAt';
+    const sortField =
+      rawOrderBy &&
+      (COMPUTED_SORT_FIELDS.includes(rawOrderBy) || DB_SORT_FIELDS[rawOrderBy])
+        ? rawOrderBy
+        : 'createdAt';
     const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
     const isComputedSort = COMPUTED_SORT_FIELDS.includes(sortField);
 
@@ -292,12 +299,13 @@ export class InvoicesService {
         sqlConditions.push(`i."createdAt" <= $${sqlParams.length}`);
       }
 
-      const whereClause = sqlConditions.length > 0
-        ? `WHERE ${sqlConditions.join(' AND ')}`
-        : '';
+      const whereClause =
+        sqlConditions.length > 0 ? `WHERE ${sqlConditions.join(' AND ')}` : '';
 
       // Count query
-      const countResult = await this.prisma.$queryRawUnsafe<{ count: bigint }[]>(
+      const countResult = await this.prisma.$queryRawUnsafe<
+        { count: bigint }[]
+      >(
         `SELECT COUNT(DISTINCT i.id) as count FROM invoices i ${whereClause}`,
         ...sqlParams,
       );

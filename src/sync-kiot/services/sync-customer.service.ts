@@ -3,10 +3,17 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
 
+interface CustomerLookupContext {
+  branchByKiotId: Map<string, number>;
+  customerByCode: Map<string, number>;
+  customerGroupByKiotId: Map<string, number>;
+}
+
 @Injectable()
 export class SyncCustomerService extends BaseSyncService {
   protected readonly entityName = 'customer';
   protected readonly endpoint = 'customers';
+  protected concurrency = 8;
 
   constructor(prisma: PrismaService, api: SyncKiotApiService) {
     super(prisma, api);
@@ -18,26 +25,86 @@ export class SyncCustomerService extends BaseSyncService {
     return this.upsertRecord(record);
   }
 
+  protected async preloadLookups(
+    records: any[],
+  ): Promise<CustomerLookupContext> {
+    const branchKiotIds = new Set<number>();
+    const customerCodes = new Set<string>();
+    const groupKiotIds = new Set<number>();
+
+    for (const r of records) {
+      if (r?.code) customerCodes.add(r.code);
+      const branchKiot = r?.branch?.kiotVietId ?? r?.branchId;
+      if (branchKiot) branchKiotIds.add(Number(branchKiot));
+      for (const rel of r?.CustomerGroupRelation ?? []) {
+        if (rel?.customerGroupId) groupKiotIds.add(Number(rel.customerGroupId));
+      }
+    }
+
+    const [branches, customers, groups] = await Promise.all([
+      branchKiotIds.size > 0
+        ? this.prisma.branch.findMany({
+            where: { kiotVietId: { in: [...branchKiotIds] } },
+            select: { id: true, kiotVietId: true },
+          })
+        : Promise.resolve([]),
+      customerCodes.size > 0
+        ? this.prisma.customer.findMany({
+            where: { code: { in: [...customerCodes] } },
+            select: { id: true, code: true },
+          })
+        : Promise.resolve([]),
+      groupKiotIds.size > 0
+        ? this.prisma.customerGroup.findMany({
+            where: { kiotVietId: { in: [...groupKiotIds] } },
+            select: { id: true, kiotVietId: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const branchByKiotId = new Map<string, number>();
+    for (const b of branches as any[]) {
+      if (b.kiotVietId != null)
+        branchByKiotId.set(String(b.kiotVietId), b.id);
+    }
+
+    const customerByCode = new Map<string, number>();
+    for (const c of customers) if (c.code) customerByCode.set(c.code, c.id);
+
+    const customerGroupByKiotId = new Map<string, number>();
+    for (const g of groups as any[]) {
+      if (g.kiotVietId != null)
+        customerGroupByKiotId.set(String(g.kiotVietId), g.id);
+    }
+
+    return { branchByKiotId, customerByCode, customerGroupByKiotId };
+  }
+
+  protected async upsertRecordWithContext(
+    record: any,
+    context: CustomerLookupContext,
+  ): Promise<'created' | 'updated' | 'skipped'> {
+    return this.upsertWithCtx(record, context);
+  }
+
   protected async upsertRecord(
     record: any,
   ): Promise<'created' | 'updated' | 'skipped'> {
-    // Match bằng code (unique ở cả 2 hệ thống)
-    const existing = await this.prisma.customer.findFirst({
-      where: { code: record.code },
-    });
+    const context = await this.preloadLookups([record]);
+    return this.upsertWithCtx(record, context);
+  }
 
-    let branchId: number | null = null;
-    const branchKiotVietId =
-      record.branch?.kiotVietId ?? record.branchId ?? null;
-    if (branchKiotVietId) {
-      const branch = await this.prisma.branch.findFirst({
-        where: { kiotVietId: branchKiotVietId },
-        select: { id: true },
-      });
-      branchId = branch?.id || null;
-    }
+  private async upsertWithCtx(
+    record: any,
+    ctx: CustomerLookupContext,
+  ): Promise<'created' | 'updated' | 'skipped'> {
+    const existingId = ctx.customerByCode.get(record.code);
 
-    // Kiot-owned fields (KHÔNG ghi đè invoice*, customerTypeId, addresses)
+    const branchKiot = record.branch?.kiotVietId ?? record.branchId ?? null;
+    const branchId = branchKiot
+      ? (ctx.branchByKiotId.get(String(branchKiot)) ?? null)
+      : null;
+
     const kiotOwnedData = {
       name: record.name,
       gender: record.gender,
@@ -64,20 +131,19 @@ export class SyncCustomerService extends BaseSyncService {
       lastSyncedAt: new Date(),
     };
 
-    if (existing) {
+    if (existingId) {
       await this.prisma.customer.update({
-        where: { id: existing.id },
+        where: { id: existingId },
         data: kiotOwnedData,
       });
 
-      // Sync CustomerGroupRelation nếu có
       if (record.CustomerGroupRelation?.length) {
-        await this.syncCustomerGroups(
-          existing.id,
+        await this.syncCustomerGroupsBulk(
+          existingId,
           record.CustomerGroupRelation,
+          ctx,
         );
       }
-
       return 'updated';
     }
 
@@ -85,7 +151,6 @@ export class SyncCustomerService extends BaseSyncService {
       data: { code: record.code, ...kiotOwnedData },
     });
 
-    // Tạo CustomerAddress từ address/locationName/wardName
     if (record.address || record.locationName) {
       await this.prisma.customerAddress.create({
         data: {
@@ -100,30 +165,31 @@ export class SyncCustomerService extends BaseSyncService {
     }
 
     if (record.CustomerGroupRelation?.length) {
-      await this.syncCustomerGroups(created.id, record.CustomerGroupRelation);
+      await this.syncCustomerGroupsBulk(
+        created.id,
+        record.CustomerGroupRelation,
+        ctx,
+      );
     }
 
     return 'created';
   }
 
-  private async syncCustomerGroups(customerId: number, relations: any[]) {
-    for (const rel of relations) {
-      const group = await this.prisma.customerGroup.findFirst({
-        where: { kiotVietId: rel.customerGroupId },
-        select: { id: true },
-      });
-      if (!group) continue;
+  private async syncCustomerGroupsBulk(
+    customerId: number,
+    relations: any[],
+    ctx: CustomerLookupContext,
+  ) {
+    const data = relations
+      .map((rel) => ctx.customerGroupByKiotId.get(String(rel.customerGroupId)))
+      .filter((id): id is number => !!id)
+      .map((customerGroupId) => ({ customerId, customerGroupId }));
 
-      await this.prisma.customerGroupDetail.upsert({
-        where: {
-          customerId_customerGroupId: {
-            customerId,
-            customerGroupId: group.id,
-          },
-        },
-        update: {},
-        create: { customerId, customerGroupId: group.id },
-      });
-    }
+    if (data.length === 0) return;
+
+    await this.prisma.customerGroupDetail.createMany({
+      data,
+      skipDuplicates: true,
+    });
   }
 }

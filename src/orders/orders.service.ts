@@ -220,9 +220,9 @@ export class OrdersService {
         branchId: finalOrder?.branchId || undefined,
       });
 
-      if (finalOrder) {
-        this.larkOrderSync.syncSingleAsync(finalOrder.id);
-      }
+      // if (finalOrder) {
+      //   this.larkOrderSync.syncSingleAsync(finalOrder.id);
+      // }
 
       return { order: finalOrder, warnings };
     });
@@ -241,6 +241,15 @@ export class OrdersService {
 
       if (!existingOrder) {
         throw new Error('Order not found');
+      }
+
+      if (
+        dto.branchId !== undefined &&
+        dto.branchId !== existingOrder.branchId
+      ) {
+        throw new BadRequestException(
+          'Không được phép đổi chi nhánh của đơn đã tạo',
+        );
       }
 
       if (dto.items) {
@@ -482,6 +491,7 @@ export class OrdersService {
           discountRatio: Number(existingOrder.discountRatio || 0),
           description: existingOrder.description,
           customerId: existingOrder.customerId,
+          branchId: existingOrder.branchId,
         },
         {
           statusValue: updatedOrderBeforeCalc.statusValue,
@@ -490,6 +500,7 @@ export class OrdersService {
           discountRatio: Number(updatedOrderBeforeCalc.discountRatio || 0),
           description: updatedOrderBeforeCalc.description,
           customerId: updatedOrderBeforeCalc.customerId,
+          branchId: updatedOrderBeforeCalc.branchId,
         },
       );
 
@@ -533,7 +544,7 @@ export class OrdersService {
         branchId: updatedOrderBeforeCalc.branchId || undefined,
       });
 
-      this.larkOrderSync.syncSingleAsync(id);
+      // this.larkOrderSync.syncSingleAsync(id);
 
       return tx.order.findUnique({
         where: { id },
@@ -627,10 +638,17 @@ export class OrdersService {
     }
 
     const VALID_ORDER_BY = new Set([
-      'orderDate', 'createdAt', 'updatedAt', 'grandTotal',
-      'paidAmount', 'debtAmount', 'totalAmount', 'status',
+      'orderDate',
+      'createdAt',
+      'updatedAt',
+      'grandTotal',
+      'paidAmount',
+      'debtAmount',
+      'totalAmount',
+      'status',
     ]);
-    const sortField = rawOrderBy && VALID_ORDER_BY.has(rawOrderBy) ? rawOrderBy : 'orderDate';
+    const sortField =
+      rawOrderBy && VALID_ORDER_BY.has(rawOrderBy) ? rawOrderBy : 'orderDate';
     const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
 
     const [data, total] = await Promise.all([

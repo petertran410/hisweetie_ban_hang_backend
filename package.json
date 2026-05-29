@@ -23,7 +23,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
-    "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts"
+    "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
+    "fix:order-status": "ts-node prisma/seeds/fix-order-status-value.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.63.1",

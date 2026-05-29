@@ -16,7 +16,10 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
-import { INVOICE_STATUS, getStatusLabel } from '../invoices/dto/invoice-status.constants';
+import {
+  INVOICE_STATUS,
+  getStatusLabel,
+} from '../invoices/dto/invoice-status.constants';
 import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -809,15 +812,14 @@ export class CashFlowsService {
       // và PCPDN* (OrderSupplierPayment) — ưu tiên match qua FK
       // `cashFlowId` (Wave 2), fallback theo `code`. Đối xứng pattern phía
       // bán đã có sẵn FK ở `InvoicePayment.cashFlowId`.
-      const linkedPurchaseOrderPayments = await tx.purchaseOrderPayment.findMany(
-        {
+      const linkedPurchaseOrderPayments =
+        await tx.purchaseOrderPayment.findMany({
           where: {
             OR: [{ cashFlowId: id }, { code: cashFlow.code }],
             status: { not: 2 },
           },
           select: { id: true, purchaseOrderId: true },
-        },
-      );
+        });
 
       const linkedOrderSupplierPayments =
         await tx.orderSupplierPayment.findMany({
@@ -1006,8 +1008,7 @@ export class CashFlowsService {
       // [FIX-10] Recalc PurchaseOrder.paidAmount/debtAmount cho từng PO bị ảnh hưởng
       const affectedPurchaseOrderIds = new Set<number>();
       linkedPurchaseOrderPayments.forEach((p) => {
-        if (p.purchaseOrderId)
-          affectedPurchaseOrderIds.add(p.purchaseOrderId);
+        if (p.purchaseOrderId) affectedPurchaseOrderIds.add(p.purchaseOrderId);
       });
 
       for (const poId of affectedPurchaseOrderIds) {
@@ -1039,8 +1040,7 @@ export class CashFlowsService {
       // [FIX-10] Recalc OrderSupplier.paidAmount cho từng OS bị ảnh hưởng
       const affectedOrderSupplierIds = new Set<number>();
       linkedOrderSupplierPayments.forEach((p) => {
-        if (p.orderSupplierId)
-          affectedOrderSupplierIds.add(p.orderSupplierId);
+        if (p.orderSupplierId) affectedOrderSupplierIds.add(p.orderSupplierId);
       });
 
       for (const osId of affectedOrderSupplierIds) {
@@ -2040,9 +2040,7 @@ export class CashFlowsService {
             );
           }
           if (poData.supplierId !== dto.supplierId) {
-            throw new Error(
-              `Phiếu nhập ${poData.code} không thuộc về NCC này`,
-            );
+            throw new Error(`Phiếu nhập ${poData.code} không thuộc về NCC này`);
           }
 
           const currentDebt = Number(poData.debtAmount);
@@ -2191,7 +2189,8 @@ export class CashFlowsService {
           message: renderAuditMessage('CASHFLOW_CREATE', {
             flowType: 'Chi',
             amount: Number(cashFlow.amount),
-            description: cashFlow.description || `Chi tiền NCC ${supplier.name}`,
+            description:
+              cashFlow.description || `Chi tiền NCC ${supplier.name}`,
           }),
           messageTemplate: 'CASHFLOW_CREATE',
           userId,

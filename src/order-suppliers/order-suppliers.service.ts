@@ -642,8 +642,7 @@ export class OrderSuppliersService {
 
       // Block khi còn PN active — đối xứng "Đơn hàng có hóa đơn" phía bán
       const hasActivePurchaseOrders =
-        orderSupplier.purchaseOrders &&
-        orderSupplier.purchaseOrders.length > 0;
+        orderSupplier.purchaseOrders && orderSupplier.purchaseOrders.length > 0;
       if (hasActivePurchaseOrders) {
         throw new BadRequestException(
           'Phiếu đặt hàng nhập đã có phiếu nhập. Vui lòng hủy tất cả phiếu nhập trước khi hủy phiếu đặt hàng nhập',
@@ -699,8 +698,12 @@ export class OrderSuppliersService {
             entityType: 'order_supplier_payment',
             entityId: payment.id.toString(),
             entityCode: payment.code,
-            category: getCategoryFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
-            severity: getSeverityFromActionCode('ORDER_SUPPLIER_PAYMENT_DELETE'),
+            category: getCategoryFromActionCode(
+              'ORDER_SUPPLIER_PAYMENT_DELETE',
+            ),
+            severity: getSeverityFromActionCode(
+              'ORDER_SUPPLIER_PAYMENT_DELETE',
+            ),
             snapshot: {
               code: payment.code,
               amount: Number(payment.amount),
@@ -912,8 +915,8 @@ export class OrderSuppliersService {
   }
 
   /**
-   * Recompute cached fields trên OrderSupplier từ source of truth (items + 
-   * active payments). Mirror chính xác `OrdersService.calculateTotals` của 
+   * Recompute cached fields trên OrderSupplier từ source of truth (items +
+   * active payments). Mirror chính xác `OrdersService.calculateTotals` của
    * phía bán nhưng đối xứng:
    *   - KH: paymentStatus 'Draft'/'partial'/'paid' từ paidAmount vs grandTotal
    *   - NCC: dùng cùng logic, ghi vào `OrderSupplier` (paidAmount/supplierDebt)

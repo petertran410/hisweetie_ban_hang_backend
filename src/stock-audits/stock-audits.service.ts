@@ -59,7 +59,10 @@ export class StockAuditsService {
     }
 
     if (query.branchIds) {
-      const ids = query.branchIds.split(',').map((id) => +id).filter(Boolean);
+      const ids = query.branchIds
+        .split(',')
+        .map((id) => +id)
+        .filter(Boolean);
       if (ids.length > 0) where.branchId = { in: ids };
     } else if (query.branchId) {
       where.branchId = +query.branchId;

@@ -699,9 +699,7 @@ export class SuppliersService {
     for (const sr of supplierReturns) {
       // status=2 (STOCK_EXPORTED) chưa có refundedAmount → dùng refundAmount
       const amount =
-        sr.status === 3
-          ? Number(sr.refundedAmount)
-          : Number(sr.refundAmount);
+        sr.status === 3 ? Number(sr.refundedAmount) : Number(sr.refundAmount);
 
       const displayDate =
         sr.status === 3

@@ -270,10 +270,7 @@ export class PurchaseOrderPaymentsService {
    * danh sách `purchaseOrderPayment` ACTIVE (status ≠ 2). Đối xứng
    * `invoice-payments.service.ts:calculateInvoiceTotals`.
    */
-  private async recomputePurchaseOrderTotals(
-    purchaseOrderId: number,
-    tx: any,
-  ) {
+  private async recomputePurchaseOrderTotals(purchaseOrderId: number, tx: any) {
     const po = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
       select: { subTotal: true },

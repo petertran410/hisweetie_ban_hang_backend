@@ -319,8 +319,7 @@ export class PurchaseOrdersService {
         throw new BadRequestException('Phiếu đặt hàng đã hoàn thành');
       }
 
-      const branchId =
-        dto.branchId ?? orderSupplier.branchId ?? undefined;
+      const branchId = dto.branchId ?? orderSupplier.branchId ?? undefined;
       if (!branchId) {
         throw new BadRequestException(
           'Phiếu đặt hàng nhập không có thông tin chi nhánh',
@@ -362,8 +361,7 @@ export class PurchaseOrdersService {
         (sum: number, po: any) => sum + Number(po.discount),
         0,
       );
-      const remainingDiscount =
-        Number(orderSupplier.discount) - usedDiscount;
+      const remainingDiscount = Number(orderSupplier.discount) - usedDiscount;
       const fallbackDiscount = remainingDiscount > 0 ? remainingDiscount : 0;
 
       const isFirstPN = activePOs.length === 0;
@@ -392,21 +390,23 @@ export class PurchaseOrdersService {
       const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
 
       // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
-      const itemsToReceive = (dto.items && dto.items.length > 0
-        ? dto.items
-        : remainingItems.map((item: any) => ({
-            productId: item.productId,
-            productCode: item.productCode,
-            productName: item.productName,
-            quantity: item.remainingQuantity,
-            price: Number(item.price),
-            discount: Number(item.discount) || 0,
-            discountRatio: 0,
-            totalPrice:
-              (Number(item.price) - (Number(item.discount) || 0)) *
-              item.remainingQuantity,
-            description: item.description,
-          }))) as any[];
+      const itemsToReceive = (
+        dto.items && dto.items.length > 0
+          ? dto.items
+          : remainingItems.map((item: any) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: item.remainingQuantity,
+              price: Number(item.price),
+              discount: Number(item.discount) || 0,
+              discountRatio: 0,
+              totalPrice:
+                (Number(item.price) - (Number(item.discount) || 0)) *
+                item.remainingQuantity,
+              description: item.description,
+            }))
+      ) as any[];
 
       const itemsData = await Promise.all(
         itemsToReceive.map(async (item) => {
@@ -519,11 +519,7 @@ export class PurchaseOrdersService {
       // dùng filter `NOT startsWith 'PCTUPN'` để tránh trừ đôi.
       const cashFlowIdsToUpdate: number[] = [];
       let cloneSeq = 0;
-      if (
-        isFirstPN &&
-        totalPaidFromOrderSupplier > 0 &&
-        !dto.isDraft
-      ) {
+      if (isFirstPN && totalPaidFromOrderSupplier > 0 && !dto.isDraft) {
         for (const osPayment of orderSupplier.payments) {
           cloneSeq++;
           const paymentCode = `PCTU${purchaseOrder.code}-${cloneSeq}`;
@@ -595,7 +591,7 @@ export class PurchaseOrdersService {
                 ? new Date(dto.purchaseDate)
                 : new Date(),
               method: payment.method || 'cash',
-              accountId: (payment as any).accountId ?? null,
+              accountId: payment.accountId ?? null,
               partnerType: 'S',
               partnerId: orderSupplier.supplierId,
               partnerName: orderSupplier.supplier?.name,
@@ -620,7 +616,7 @@ export class PurchaseOrdersService {
                 ? new Date(dto.purchaseDate)
                 : new Date(),
               paymentMethod: payment.method || 'cash',
-              accountId: (payment as any).accountId ?? null,
+              accountId: payment.accountId ?? null,
               description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
               status: 1,
               statusValue: 'Đã thanh toán',

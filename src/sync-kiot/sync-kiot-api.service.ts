@@ -34,52 +34,69 @@ export class SyncKiotApiService {
     };
   }
 
+  /**
+   * Fetch 1 page. Dùng cho pipeline streaming (fetch song song với process).
+   */
+  async fetchPage<T = any>(
+    endpoint: string,
+    currentItem: number,
+    pageSize: number,
+    modifiedFrom?: string,
+  ): Promise<{ data: T[]; total: number } | null> {
+    const params: Record<string, string> = {
+      pageSize: String(pageSize),
+      currentItem: String(currentItem),
+    };
+    if (modifiedFrom) params.modifiedFrom = modifiedFrom;
+
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get<SyncDataResponse<T>>(
+          `${this.baseUrl}/sync-data/${endpoint}`,
+          { headers: this.headers, params, timeout: 60000 },
+        ),
+      );
+      const { data, total } = response.data;
+      return { data: data || [], total: total || 0 };
+    } catch (error) {
+      const status = error.response?.status;
+      const responseData = error.response?.data;
+      const errorCode = error.code;
+      this.logger.error(
+        `❌ fetchPage ${endpoint} offset=${currentItem}: ` +
+          `code=${errorCode}, status=${status}, message=${error.message}, ` +
+          `data=${JSON.stringify(responseData)}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Eager fetch all (cũ — dồn vào RAM trước khi process).
+   * Giữ để các service chưa migrate sang streaming vẫn dùng được.
+   */
   async fetchAll<T = any>(
     endpoint: string,
     modifiedFrom?: string,
   ): Promise<T[]> {
     const allData: T[] = [];
     let currentItem = 0;
-    const pageSize = 1000;
+    const pageSize = 500;
 
     while (true) {
-      const params: Record<string, string> = {
-        pageSize: String(pageSize),
-        currentItem: String(currentItem),
-      };
-      if (modifiedFrom) params.modifiedFrom = modifiedFrom;
-
-      try {
-        const response = await firstValueFrom(
-          this.httpService.get<SyncDataResponse<T>>(
-            `${this.baseUrl}/sync-data/${endpoint}`,
-            { headers: this.headers, params, timeout: 30000 },
-          ),
-        );
-
-        const { data, total } = response.data;
-
-        if (!data || data.length === 0) break;
-
-        allData.push(...data);
-        currentItem += data.length;
-
-        this.logger.log(`📄 ${endpoint}: ${allData.length}/${total} fetched`);
-
-        if (allData.length >= total) break;
-      } catch (error) {
-        const status = error.response?.status;
-        const responseData = error.response?.data;
-        const errorCode = error.code;
-
-        this.logger.error(
-          `❌ Failed to fetch ${endpoint} at offset ${currentItem}: ` +
-            `code=${errorCode}, status=${status}, ` +
-            `message=${error.message}, ` +
-            `data=${JSON.stringify(responseData)}`,
-        );
-        throw error;
-      }
+      const page = await this.fetchPage<T>(
+        endpoint,
+        currentItem,
+        pageSize,
+        modifiedFrom,
+      );
+      if (!page) break;
+      const { data, total } = page;
+      if (!data || data.length === 0) break;
+      allData.push(...data);
+      currentItem += data.length;
+      this.logger.log(`📄 ${endpoint}: ${allData.length}/${total} fetched`);
+      if (allData.length >= total) break;
     }
 
     return allData;
