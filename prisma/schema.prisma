@@ -1210,7 +1210,8 @@ model OrderItem {
 
 model OrderPayment {
   id            Int      @id @default(autoincrement())
-  code          String   @unique
+  code          String
+  kiotVietId  BigInt?  @unique @map("kiot_viet_id")
   orderId       Int
   amount        Decimal 
   paymentDate   DateTime @default(now())
@@ -1229,6 +1230,8 @@ model OrderPayment {
   account BankAccount? @relation(fields: [accountId], references: [id])
   creator User         @relation("PaymentCreator", fields: [createdBy], references: [id])
 
+  @@unique([code, orderId])
+  @@index([code])
   @@map("order_payments")
 }
 
@@ -1358,7 +1361,8 @@ model InvoiceDetail {
 
 model InvoicePayment {
   id            Int      @id @default(autoincrement())
-  code          String   @unique
+  code          String
+  kiotVietId  BigInt?  @unique @map("kiot_viet_id")
   invoiceId     Int
   paymentDate   DateTime @default(now())
   amount        Decimal
@@ -1376,6 +1380,8 @@ model InvoicePayment {
   account  BankAccount?  @relation(fields: [accountId], references: [id])
   cashFlow CashFlow? @relation(fields: [cashFlowId], references: [id])
 
+  @@unique([code, invoiceId])
+  @@index([code])
   @@map("invoice_payments")
 }
 

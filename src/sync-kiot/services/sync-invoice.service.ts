@@ -140,8 +140,7 @@ export class SyncInvoiceService extends BaseSyncService {
 
     const branchByKiotId = new Map<string, number>();
     for (const b of branches as any[]) {
-      if (b.kiotVietId != null)
-        branchByKiotId.set(String(b.kiotVietId), b.id);
+      if (b.kiotVietId != null) branchByKiotId.set(String(b.kiotVietId), b.id);
     }
 
     const userByKiotId = new Map<string, number>();
@@ -363,11 +362,7 @@ export class SyncInvoiceService extends BaseSyncService {
     invoiceId = invoice.id;
 
     if (record.invoiceDetails?.length) {
-      await this.syncInvoiceDetailsBulk(
-        invoiceId,
-        record.invoiceDetails,
-        ctx,
-      );
+      await this.syncInvoiceDetailsBulk(invoiceId, record.invoiceDetails, ctx);
     }
 
     if (record.invoiceDelivery) {
@@ -499,10 +494,13 @@ export class SyncInvoiceService extends BaseSyncService {
     });
 
     for (const pm of payments) {
-      const code = pm.code || `TT${invoice?.code}-${Date.now()}`;
+      const code =
+        pm.code || `TT${invoice?.code}-${Date.now()}-${invoiceId}`;
 
+      // Check theo (code, invoiceId): 1 phiếu thu KiotViet có thể chia cho N invoice
+      // → mỗi invoice có 1 InvoicePayment row riêng, nhưng cùng code chung
       const existingPayment = await this.prisma.invoicePayment.findFirst({
-        where: { code },
+        where: { code, invoiceId },
       });
       if (existingPayment) continue;
 
@@ -510,49 +508,74 @@ export class SyncInvoiceService extends BaseSyncService {
         ? (ctx.bankAccountByKiotId.get(String(pm.accountId)) ?? null)
         : null;
 
-      let cashFlow = await this.prisma.cashFlow.findFirst({
-        where: { code },
-      });
+      let cashFlow = await this.prisma.cashFlow.findFirst({ where: { code } });
 
       if (!cashFlow) {
-        cashFlow = await this.prisma.cashFlow.create({
+        try {
+          cashFlow = await this.prisma.cashFlow.create({
+            data: {
+              code,
+              branchId: invoice?.branchId || 1,
+              cashFlowGroupId: 3,
+              isReceipt: true,
+              amount: pm.amount || 0,
+              transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+              method: pm.method || 'cash',
+              accountId,
+              partnerType: 'C',
+              partnerId: invoice?.customerId || null,
+              partnerName: invoice?.customer?.name || null,
+              contactNumber: invoice?.customer?.contactNumber || null,
+              address: invoice?.customer?.addresses?.[0]?.address || null,
+              description:
+                pm.description || `Thu tiền hóa đơn ${invoice?.code}`,
+              status: pm.status === 1 ? 2 : 0,
+              statusValue: pm.status === 1 ? 'Đã hủy' : 'Đã thanh toán',
+              createdBy: 1,
+              usedForFinancialReporting: 1,
+              createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+            },
+          });
+        } catch (e: any) {
+          if (e?.code === 'P2002') {
+            // Race: worker khác vừa tạo → re-fetch
+            cashFlow = await this.prisma.cashFlow.findFirst({
+              where: { code },
+            });
+            if (!cashFlow) {
+              this.logger.warn(
+                `⚠️ CashFlow ${code} race conflict but cannot re-fetch, skip payment`,
+              );
+              continue;
+            }
+          } else {
+            throw e;
+          }
+        }
+      }
+      try {
+        await this.prisma.invoicePayment.create({
           data: {
             code,
-            branchId: invoice?.branchId || 1,
-            cashFlowGroupId: 3,
-            isReceipt: true,
+            kiotVietId: pm.id ? BigInt(pm.id) : null,
+            invoiceId,
             amount: pm.amount || 0,
-            transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-            method: pm.method || 'cash',
+            paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+            status: pm.status ?? 1,
+            paymentMethod: pm.method || 'cash',
             accountId,
-            partnerType: 'C',
-            partnerId: invoice?.customerId || null,
-            partnerName: invoice?.customer?.name || null,
-            contactNumber: invoice?.customer?.contactNumber || null,
-            address: invoice?.customer?.addresses?.[0]?.address || null,
-            description: pm.description || `Thu tiền hóa đơn ${invoice?.code}`,
-            status: pm.status === 1 ? 2 : 0,
-            statusValue: pm.status === 1 ? 'Đã hủy' : 'Đã thanh toán',
-            createdBy: 1,
-            usedForFinancialReporting: 1,
-            createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+            description: pm.description || null,
+            cashFlowId: cashFlow.id,
           },
         });
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
+          // Payment đã được worker khác tạo (race trên (code, invoiceId)
+          // hoặc trên kiotVietId) → skip
+          continue;
+        }
+        throw e;
       }
-
-      await this.prisma.invoicePayment.create({
-        data: {
-          code,
-          invoiceId,
-          amount: pm.amount || 0,
-          paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-          status: pm.status ?? 1,
-          paymentMethod: pm.method || 'cash',
-          accountId,
-          description: pm.description || null,
-          cashFlowId: cashFlow.id,
-        },
-      });
     }
   }
 }

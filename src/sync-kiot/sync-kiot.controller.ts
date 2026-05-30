@@ -44,6 +44,20 @@ export class SyncKiotController {
     return { success: true, results, timestamp: new Date().toISOString() };
   }
 
+  @Post('invoice/:code')
+  async syncOneInvoice(@Param('code') code: string) {
+    this.logger.log(`📨 Manual sync invoice: ${code}`);
+    const result = await this.syncService.syncSingleEntity('invoice', code);
+    return { success: true, result, timestamp: new Date().toISOString() };
+  }
+
+  @Post('order/:code')
+  async syncOneOrder(@Param('code') code: string) {
+    this.logger.log(`📨 Manual sync order: ${code}`);
+    const result = await this.syncService.syncSingleEntity('order', code);
+    return { success: true, result, timestamp: new Date().toISOString() };
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Body() body: { entityType: string; code: string; action: string },

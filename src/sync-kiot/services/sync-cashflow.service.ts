@@ -15,7 +15,7 @@ interface CashFlowLookupContext {
 export class SyncCashFlowService extends BaseSyncService {
   protected readonly entityName = 'cash_flow';
   protected readonly endpoint = 'cashflows';
-  protected concurrency = 8;
+  protected concurrency = 10;
 
   constructor(prisma: PrismaService, api: SyncKiotApiService) {
     super(prisma, api);
@@ -101,8 +101,7 @@ export class SyncCashFlowService extends BaseSyncService {
 
     const branchByKiotId = new Map<string, number>();
     for (const b of branches as any[]) {
-      if (b.kiotVietId != null)
-        branchByKiotId.set(String(b.kiotVietId), b.id);
+      if (b.kiotVietId != null) branchByKiotId.set(String(b.kiotVietId), b.id);
     }
 
     const customerByKiotId = new Map<string, number>();

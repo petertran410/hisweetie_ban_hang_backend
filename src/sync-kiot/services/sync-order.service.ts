@@ -491,10 +491,11 @@ export class SyncOrderService extends BaseSyncService {
     });
 
     for (const pm of payments) {
-      const code = pm.code || `TTDH${order?.code}-${Date.now()}`;
+      const code = pm.code || `TTDH${order?.code}-${Date.now()}-${orderId}`;
 
+      // Check theo (code, orderId): 1 phiếu thu KiotViet có thể chia cho N order
       const existingPayment = await this.prisma.orderPayment.findFirst({
-        where: { code },
+        where: { code, orderId },
       });
       if (existingPayment) continue;
 
@@ -507,45 +508,71 @@ export class SyncOrderService extends BaseSyncService {
       });
 
       if (!cashFlow) {
-        cashFlow = await this.prisma.cashFlow.create({
-          data: {
-            code,
-            branchId: order?.branchId || 1,
-            cashFlowGroupId: 3,
-            isReceipt: true,
-            amount: pm.amount || 0,
-            transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-            method: pm.method || 'cash',
-            accountId,
-            partnerType: 'C',
-            partnerId: order?.customerId || null,
-            partnerName: order?.customer?.name || null,
-            contactNumber: order?.customer?.contactNumber || null,
-            address: order?.customer?.addresses?.[0]?.address || null,
-            description:
-              pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
-            status: pm.status === 1 ? 2 : 0,
-            statusValue: pm.status === 1 ? 'Đã hủy' : 'Đã thanh toán',
-            createdBy: 1,
-            usedForFinancialReporting: 1,
-            createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
-          },
-        });
+        try {
+          cashFlow = await this.prisma.cashFlow.create({
+            data: {
+              code,
+              branchId: order?.branchId || 1,
+              cashFlowGroupId: 3,
+              isReceipt: true,
+              amount: pm.amount || 0,
+              transDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+              method: pm.method || 'cash',
+              accountId,
+              partnerType: 'C',
+              partnerId: order?.customerId || null,
+              partnerName: order?.customer?.name || null,
+              contactNumber: order?.customer?.contactNumber || null,
+              address: order?.customer?.addresses?.[0]?.address || null,
+              description:
+                pm.description || `Thu tạm ứng đơn hàng ${order?.code}`,
+              status: pm.status === 1 ? 2 : 0,
+              statusValue: pm.status === 1 ? 'Đã hủy' : 'Đã thanh toán',
+              createdBy: 1,
+              usedForFinancialReporting: 1,
+              createdAt: pm.transDate ? new Date(pm.transDate) : new Date(),
+            },
+          });
+        } catch (e: any) {
+          if (e?.code === 'P2002') {
+            // Race: worker khác vừa tạo → re-fetch
+            cashFlow = await this.prisma.cashFlow.findFirst({
+              where: { code },
+            });
+            if (!cashFlow) {
+              this.logger.warn(
+                `⚠️ CashFlow ${code} race conflict but cannot re-fetch, skip payment`,
+              );
+              continue;
+            }
+          } else {
+            throw e;
+          }
+        }
       }
 
-      await this.prisma.orderPayment.create({
-        data: {
-          code,
-          orderId,
-          amount: pm.amount || 0,
-          paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
-          paymentMethod: pm.method || 'cash',
-          accountId,
-          description: pm.description || null,
-          status: pm.status ?? 1,
-          createdBy: 1,
-        },
-      });
+      try {
+        await this.prisma.orderPayment.create({
+          data: {
+            code,
+            kiotVietId: pm.id ? BigInt(pm.id) : null,
+            orderId,
+            amount: pm.amount || 0,
+            paymentDate: pm.transDate ? new Date(pm.transDate) : new Date(),
+            paymentMethod: pm.method || 'cash',
+            accountId,
+            description: pm.description || null,
+            status: pm.status ?? 1,
+            createdBy: 1,
+          },
+        });
+      } catch (e: any) {
+        if (e?.code === 'P2002') {
+          // Race trên (code, orderId) hoặc kiotVietId → skip
+          continue;
+        }
+        throw e;
+      }
     }
   }
 }

@@ -49,7 +49,7 @@ export abstract class BaseSyncService {
    * Page size khi fetch từ sync_kiot_data. Có thể override.
    * Lưu ý: sync_kiot_data giới hạn max 500/page (parsePagination).
    */
-  protected pageSize = 500;
+  protected pageSize = 1000;
 
   constructor(
     protected readonly prisma: PrismaService,
