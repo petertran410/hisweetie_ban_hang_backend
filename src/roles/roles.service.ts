@@ -99,6 +99,10 @@ export class RolesService {
           })),
         });
       }
+
+      // Permissions của role thay đổi → bump version cho tất cả user đang gán
+      // role này để buộc client refetch (token cũ sẽ bị invalidate ở JwtStrategy).
+      await this.bumpUsersOfRole(id);
     }
 
     return this.findOne(role.id);
@@ -132,8 +136,15 @@ export class RolesService {
   }
 
   private async bumpUsersOfRole(roleId: number): Promise<void> {
+    // Bump cả user có role qua UserRole (global) lẫn UserBranchRole (per-branch),
+    // vì cả 2 đều có thể nhận permission từ role này.
     await this.prisma.user.updateMany({
-      where: { userRoles: { some: { roleId } } },
+      where: {
+        OR: [
+          { userRoles: { some: { roleId } } },
+          { userBranchRoles: { some: { roleId } } },
+        ],
+      },
       data: { permissionVersion: { increment: 1 } },
     });
     this.permissionCache.invalidateAll();
@@ -171,5 +182,9 @@ export class RolesService {
           ]
         : []),
     ]);
+
+    // Override permission per-branch thay đổi → bump version cho user
+    // gán role này (ở mọi chi nhánh) để token cũ mất hiệu lực.
+    await this.bumpUsersOfRole(roleId);
   }
 }

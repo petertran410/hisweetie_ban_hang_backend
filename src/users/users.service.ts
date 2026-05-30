@@ -435,7 +435,8 @@ export class UsersService {
       data.roleIds ||
       data.permissionIds ||
       data.denyPermissionIds ||
-      data.isActive !== undefined
+      data.isActive !== undefined ||
+      data.canViewOtherStaffData !== undefined
     ) {
       await this.bumpPermissionVersion(id);
     }

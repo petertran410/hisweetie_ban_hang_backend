@@ -227,6 +227,7 @@ export class AuthService {
         permissions,
         branchId: user.branchId,
         branchIds,
+        canViewOtherStaffData: user.canViewOtherStaffData,
       },
     };
   }
