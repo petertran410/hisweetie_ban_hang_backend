@@ -45,6 +45,22 @@ export class OrdersController {
     );
   }
 
+  @Get('pending-summary')
+  @RequirePermissions('orders:view')
+  getPendingSummary(@Query('productIds') productIds?: string) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.ordersService.getPendingSummary(ids);
+  }
+
+  @Get('pending-by-product')
+  @RequirePermissions('orders:view')
+  getPendingByProduct(@Query('productId') productId: string) {
+    return this.ordersService.getPendingByProduct(+productId);
+  }
+
   @Put(':id/cancel')
   @RequirePermissions('orders:update')
   cancel(

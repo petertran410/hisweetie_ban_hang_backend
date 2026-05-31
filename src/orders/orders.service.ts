@@ -1092,6 +1092,124 @@ export class OrdersService {
     return results.slice(0, 5);
   }
 
+  /**
+   * Tính tổng số lượng "Khách đặt" cho từng productId.
+   * Khách đặt = sum(quantity của OrderItem) trong các Order có status thuộc
+   * { Phiếu tạm (1), Đã xác nhận (5) } ở MỌI chi nhánh.
+   */
+  async getPendingSummary(productIds: number[]) {
+    if (!productIds || productIds.length === 0) {
+      return {} as Record<number, number>;
+    }
+
+    const grouped = await this.prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: productIds },
+        order: {
+          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+        },
+      },
+      _sum: { quantity: true },
+    });
+
+    const result: Record<number, number> = {};
+    for (const id of productIds) result[id] = 0;
+    for (const row of grouped) {
+      result[row.productId] = Number(row._sum.quantity || 0);
+    }
+    return result;
+  }
+
+  /**
+   * Lấy danh sách đơn hàng có chứa productId đang ở trạng thái
+   * Phiếu tạm hoặc Đã xác nhận trên mọi chi nhánh.
+   * Trả về thông tin tối thiểu cho modal: mã đơn, ngày tạo, khách hàng,
+   * người tạo, thành tiền, trạng thái, số lượng đặt sản phẩm tương ứng.
+   *
+   * Lưu ý: 1 sản phẩm có thể xuất hiện trên nhiều dòng (OrderItem) trong
+   * cùng 1 đơn → phải gộp về 1 dòng / 1 đơn để tránh trùng key ở FE.
+   */
+  async getPendingByProduct(productId: number) {
+    if (!productId || Number.isNaN(productId)) return [];
+
+    const items = await this.prisma.orderItem.findMany({
+      where: {
+        productId,
+        order: {
+          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+        },
+      },
+      select: {
+        quantity: true,
+        order: {
+          select: {
+            id: true,
+            code: true,
+            orderDate: true,
+            createdAt: true,
+            grandTotal: true,
+            status: true,
+            statusValue: true,
+            orderStatus: true,
+            customer: { select: { id: true, code: true, name: true } },
+            creator: { select: { id: true, name: true } },
+            branch: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { order: { createdAt: 'desc' } },
+    });
+
+    // Gộp các dòng cùng orderId → 1 record / 1 đơn (cộng quantity)
+    const map = new Map<
+      number,
+      {
+        orderId: number;
+        code: string;
+        createdAt: Date;
+        orderDate: Date;
+        grandTotal: number;
+        status: number;
+        statusValue: string;
+        orderStatus: string;
+        customer: { id: number; code: string | null; name: string } | null;
+        creator: { id: number; name: string | null } | null;
+        branch: { id: number; name: string } | null;
+        quantity: number;
+      }
+    >();
+
+    for (const it of items) {
+      const o = it.order;
+      const existing = map.get(o.id);
+      if (existing) {
+        existing.quantity += Number(it.quantity);
+      } else {
+        map.set(o.id, {
+          orderId: o.id,
+          code: o.code,
+          createdAt: o.createdAt,
+          orderDate: o.orderDate,
+          grandTotal: Number(o.grandTotal),
+          status: o.status,
+          // Luôn map từ status (number) → label tiếng Việt; không dùng
+          // statusValue thô vì DB lưu không nhất quán (mix Việt/Anh).
+          statusValue: getStatusLabel(o.status),
+          orderStatus: o.orderStatus,
+          customer: o.customer,
+          creator: o.creator,
+          branch: o.branch,
+          quantity: Number(it.quantity),
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
+  }
+
   private buildOrderSnapshot(order: any) {
     return {
       code: order.code,
