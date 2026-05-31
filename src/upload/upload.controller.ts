@@ -63,7 +63,7 @@ export class UploadController {
   }
 
   @Post('images')
-  @UseInterceptors(FilesInterceptor('files', 20))
+  @UseInterceptors(FilesInterceptor('files', 30))
   async uploadImages(
     @UploadedFiles() files: Express.Multer.File[],
     @Query('subfolder') subfolder?: string,
