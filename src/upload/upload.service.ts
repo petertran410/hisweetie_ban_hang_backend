@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { join } from 'path';
 import { existsSync, unlinkSync, mkdirSync, writeFileSync } from 'fs';
 import convert from 'heic-convert';
-import sharp from 'sharp';
 
 const HEIC_MIMES = new Set([
   'image/heic',
@@ -15,7 +14,24 @@ const HEIC_MIMES = new Set([
 const MAX_DIMENSION = 1920; // Resize chiều dài/rộng tối đa
 const JPEG_QUALITY = 80;
 const WEBP_QUALITY = 80;
-const PNG_COMPRESSION_LEVEL = 9; // PNG: 0-9 (cao hơn = nén mạnh hơn, chậm hơn)
+const PNG_COMPRESSION_LEVEL = 9;
+
+// Lazy-load sharp để nếu binary lỗi thì cả ứng dụng không crash khi import
+type SharpFn = typeof import('sharp');
+let sharpModule: SharpFn | null = null;
+let sharpLoadError: Error | null = null;
+function getSharp(): SharpFn | null {
+  if (sharpModule) return sharpModule;
+  if (sharpLoadError) return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    sharpModule = require('sharp') as SharpFn;
+    return sharpModule;
+  } catch (err) {
+    sharpLoadError = err as Error;
+    return null;
+  }
+}
 
 @Injectable()
 export class UploadService {
@@ -40,58 +56,73 @@ export class UploadService {
       .join('');
 
     let workingBuffer: Buffer = buffer;
+    const isHeic = HEIC_MIMES.has(mimetype.toLowerCase());
 
-    // Bước 1: nếu là HEIC/HEIF → decode sang JPEG buffer trước (sharp chưa hỗ trợ HEIC mặc định)
-    if (HEIC_MIMES.has(mimetype.toLowerCase())) {
-      const outputBuffer = await convert({
-        buffer: buffer,
-        format: 'JPEG',
-        quality: 1, // giữ chất lượng tối đa ở bước decode, sẽ nén lại ở sharp
-      });
-      workingBuffer = Buffer.from(outputBuffer);
+    // Bước 1: nếu HEIC/HEIF → decode sang JPEG buffer
+    if (isHeic) {
+      try {
+        const outputBuffer = await convert({
+          buffer: buffer,
+          format: 'JPEG',
+          quality: 1,
+        });
+        workingBuffer = Buffer.from(outputBuffer);
+      } catch (err) {
+        this.logger.error(
+          `HEIC convert thất bại cho ${originalname}: ${(err as Error).message}`,
+          (err as Error).stack,
+        );
+        throw new Error(`HEIC decode failed: ${(err as Error).message}`);
+      }
     }
 
-    // Bước 2: nén & resize qua sharp
-    let pipeline = sharp(workingBuffer, { failOn: 'none' })
-      .rotate() // tự xoay theo EXIF orientation rồi mới strip
-      .resize({
-        width: MAX_DIMENSION,
-        height: MAX_DIMENSION,
-        fit: 'inside',
-        withoutEnlargement: true,
-      });
-
-    // Quyết định format đầu ra:
-    // - HEIC → JPEG (đã decode ở trên)
-    // - PNG → giữ PNG (giữ alpha channel)
-    // - WEBP → giữ WEBP
-    // - JPEG/JPG/khác → JPEG
+    // Bước 2: nén & resize qua sharp (nếu sharp khả dụng)
+    const sharp = getSharp();
+    let finalBuffer: Buffer = workingBuffer;
     let ext: string;
     const lowerMime = mimetype.toLowerCase();
-    if (HEIC_MIMES.has(lowerMime)) {
-      pipeline = pipeline.jpeg({ quality: JPEG_QUALITY, mozjpeg: true });
-      ext = '.jpg';
-    } else if (lowerMime === 'image/png') {
-      pipeline = pipeline.png({ compressionLevel: PNG_COMPRESSION_LEVEL });
-      ext = '.png';
-    } else if (lowerMime === 'image/webp') {
-      pipeline = pipeline.webp({ quality: WEBP_QUALITY });
-      ext = '.webp';
-    } else {
-      // jpeg, jpg, hoặc khác — chuẩn hóa về JPEG
-      pipeline = pipeline.jpeg({ quality: JPEG_QUALITY, mozjpeg: true });
-      ext = '.jpg';
-    }
 
-    let finalBuffer: Buffer;
-    try {
-      finalBuffer = await pipeline.toBuffer();
-    } catch (err) {
-      this.logger.warn(
-        `sharp compress thất bại cho ${originalname}: ${(err as Error).message}. Lưu nguyên buffer gốc.`,
-      );
-      // Fallback: lưu nguyên buffer ban đầu nếu sharp không xử lý được
-      finalBuffer = workingBuffer;
+    if (sharp) {
+      try {
+        let pipeline = sharp(workingBuffer, { failOn: 'none' })
+          .rotate()
+          .resize({
+            width: MAX_DIMENSION,
+            height: MAX_DIMENSION,
+            fit: 'inside',
+            withoutEnlargement: true,
+          });
+
+        if (isHeic) {
+          pipeline = pipeline.jpeg({ quality: JPEG_QUALITY, mozjpeg: true });
+          ext = '.jpg';
+        } else if (lowerMime === 'image/png') {
+          pipeline = pipeline.png({ compressionLevel: PNG_COMPRESSION_LEVEL });
+          ext = '.png';
+        } else if (lowerMime === 'image/webp') {
+          pipeline = pipeline.webp({ quality: WEBP_QUALITY });
+          ext = '.webp';
+        } else {
+          pipeline = pipeline.jpeg({ quality: JPEG_QUALITY, mozjpeg: true });
+          ext = '.jpg';
+        }
+
+        finalBuffer = await pipeline.toBuffer();
+      } catch (err) {
+        this.logger.warn(
+          `sharp compress thất bại cho ${originalname} (mime=${mimetype}): ${(err as Error).message}. Lưu nguyên buffer.`,
+        );
+        // Fallback: dùng buffer chưa nén
+        ext = isHeic ? '.jpg' : this.extFromMime(lowerMime, originalname);
+      }
+    } else {
+      // sharp không tải được → log 1 lần, vẫn lưu file
+      if (sharpLoadError) {
+        this.logger.warn(
+          `sharp không khả dụng (${sharpLoadError.message}). Lưu ảnh không nén.`,
+        );
+      }
+      ext = isHeic ? '.jpg' : this.extFromMime(lowerMime, originalname);
     }
 
     const filename = `${timestamp}-${randomName}${ext}`;
@@ -102,7 +133,15 @@ export class UploadService {
     }
 
     const filePath = join(uploadDir, filename);
-    writeFileSync(filePath, finalBuffer);
+    try {
+      writeFileSync(filePath, finalBuffer);
+    } catch (err) {
+      this.logger.error(
+        `Ghi file thất bại ${filePath}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+      throw new Error(`Write file failed: ${(err as Error).message}`);
+    }
 
     return {
       filename,
@@ -116,5 +155,15 @@ export class UploadService {
     if (existsSync(filePath)) {
       unlinkSync(filePath);
     }
+  }
+
+  private extFromMime(mime: string, originalname: string): string {
+    if (mime === 'image/png') return '.png';
+    if (mime === 'image/webp') return '.webp';
+    if (mime === 'image/jpeg' || mime === 'image/jpg') return '.jpg';
+    // fallback: lấy theo originalname
+    const idx = originalname.lastIndexOf('.');
+    if (idx >= 0) return originalname.slice(idx).toLowerCase();
+    return '.jpg';
   }
 }

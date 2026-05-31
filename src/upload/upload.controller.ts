@@ -8,6 +8,7 @@ import {
   Delete,
   Param,
   Query,
+  Logger,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
@@ -25,6 +26,8 @@ const ALLOWED_MIMES = new Set([
 
 @Controller('upload')
 export class UploadController {
+  private readonly logger = new Logger(UploadController.name);
+
   constructor(private uploadService: UploadService) {}
 
   @Post('image')
@@ -38,17 +41,25 @@ export class UploadController {
     }
 
     if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
-      throw new BadRequestException('Only image files are allowed');
+      throw new BadRequestException(
+        `Mime type không được hỗ trợ: ${file.mimetype}`,
+      );
     }
 
-    const result = await this.uploadService.saveImage(
-      file.buffer,
-      file.originalname,
-      file.mimetype,
-      subfolder,
-    );
-
-    return result;
+    try {
+      return await this.uploadService.saveImage(
+        file.buffer,
+        file.originalname,
+        file.mimetype,
+        subfolder,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Upload image thất bại: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+      throw err;
+    }
   }
 
   @Post('images')
@@ -68,7 +79,7 @@ export class UploadController {
       if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
         errors.push({
           originalname: file.originalname,
-          reason: 'Only image files are allowed',
+          reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
         });
         continue;
       }
@@ -81,10 +92,15 @@ export class UploadController {
           subfolder,
         );
         items.push(result);
-      } catch {
+      } catch (err) {
+        const message = (err as Error).message || 'Unknown error';
+        this.logger.error(
+          `Upload images batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
+          (err as Error).stack,
+        );
         errors.push({
           originalname: file.originalname,
-          reason: 'Upload failed',
+          reason: message,
         });
       }
     }
