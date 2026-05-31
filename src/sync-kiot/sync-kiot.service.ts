@@ -241,6 +241,30 @@ export class SyncKiotService {
   }
 
   /**
+   * Sync Order theo cận trên purchaseDate.
+   * Dùng cho batch migration lịch sử (vd. lấy hết Order <= 01/04/2026).
+   * Không update SyncControl (giống pattern runRecentSync) để không phá
+   * incremental sync nếu bật lại sau này.
+   */
+  async runOrdersBeforeDate(toDate: Date): Promise<Record<string, any>> {
+    this.logger.log(
+      `📦 Starting Order sync where purchaseDate <= ${toDate.toISOString()}...`,
+    );
+    try {
+      const result = await this.syncOrder.syncBeforeDate(toDate);
+      this.logger.log(
+        `✅ Order before-date sync completed: ${JSON.stringify(result)}`,
+      );
+      return { orders: { success: true, ...result } };
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Order before-date sync failed: ${error.message}`,
+      );
+      return { orders: { success: false, error: error.message } };
+    }
+  }
+
+  /**
    * Sync 1 entity cụ thể (dùng cho webhook)
    */
   async syncSingleEntity(entityType: string, code: string): Promise<any> {

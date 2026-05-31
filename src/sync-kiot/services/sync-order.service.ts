@@ -56,6 +56,23 @@ export class SyncOrderService extends BaseSyncService {
   }
 
   /**
+   * Sync toàn bộ Order có purchaseDate <= toDate.
+   * Forward `purchaseDateTo` xuống sync_kiot_data để DB-side filter.
+   * Không update SyncControl (gọi từ orchestrator riêng).
+   */
+  async syncBeforeDate(toDate: Date): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+  }> {
+    const purchaseDateTo = toDate.toISOString();
+    this.logger.log(
+      `🔄 Sync orders with purchaseDate <= ${purchaseDateTo}...`,
+    );
+    return this.streamSync(undefined, { purchaseDateTo });
+  }
+
+  /**
    * Preload tất cả foreign-key lookup cho 1 page records.
    * Giải N+1 ở mức page.
    */

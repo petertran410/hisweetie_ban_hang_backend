@@ -12,12 +12,14 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
+import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 
 @Injectable()
 export class PackingSlipsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private n8nNotifyService: N8nNotifyService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -200,6 +202,27 @@ export class PackingSlipsService {
       userName: user?.name || user?.email || 'System',
       branchId: packingSlip.branchId || undefined,
     });
+
+    // Notify n8n webhook để gửi tin nhắn Zalo "Báo đơn giao hàng thành công".
+    // Lấy lại bản đầy đủ relation (đặc biệt là invoice.customer) để build payload.
+    try {
+      const fullPackingSlip = await this.findOne(packingSlip.id);
+      // Không await để response API tạo packing slip không bị chờ webhook.
+      // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
+      void this.n8nNotifyService
+        .notifyDelivery(fullPackingSlip as any)
+        .catch((err) => {
+          // Phòng ngừa, dù service đã tự log
+          // eslint-disable-next-line no-console
+          console.error('notifyDelivery unexpected error:', err);
+        });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        'Failed to load packing slip for n8n notify:',
+        (err as Error).message,
+      );
+    }
 
     return packingSlip;
   }

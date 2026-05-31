@@ -108,8 +108,14 @@ export abstract class BaseSyncService {
   /**
    * Pipeline: fetch page N+1 đồng thời với process page N.
    * Trong mỗi page: preload lookup map, sau đó upsert song song chunk-concurrency.
+   *
+   * @param extraParams optional query params bổ sung forward xuống sync_kiot_data
+   *                    (vd. purchaseDateTo cho Order).
    */
-  protected async streamSync(modifiedFrom?: string): Promise<SyncResult> {
+  protected async streamSync(
+    modifiedFrom?: string,
+    extraParams?: Record<string, string>,
+  ): Promise<SyncResult> {
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -117,7 +123,13 @@ export abstract class BaseSyncService {
     let totalExpected = 0;
 
     let nextFetch: Promise<{ data: any[]; total: number } | null> =
-      this.api.fetchPage(this.endpoint, 0, this.pageSize, modifiedFrom);
+      this.api.fetchPage(
+        this.endpoint,
+        0,
+        this.pageSize,
+        modifiedFrom,
+        extraParams,
+      );
 
     let currentItem = 0;
 
@@ -137,6 +149,7 @@ export abstract class BaseSyncService {
               nextOffset,
               this.pageSize,
               modifiedFrom,
+              extraParams,
             )
           : Promise.resolve(null);
 

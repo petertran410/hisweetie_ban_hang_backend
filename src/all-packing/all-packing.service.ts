@@ -7,17 +7,34 @@ export class AllPackingService {
   constructor(private prisma: PrismaService) {}
 
   async findAll(query: AllPackingQueryDto) {
-    const { branchId, type, search, limit, pageSize, currentItem = 0 } = query;
+    const {
+      branchId,
+      branchIds,
+      type,
+      search,
+      invoiceSearch,
+      customerSearch,
+      limit,
+      pageSize,
+      currentItem = 0,
+    } = query;
     const take = limit || pageSize || 15;
+
+    // Resolve branch filter: branchIds takes priority over branchId
+    const effectiveBranchIds = branchIds?.length
+      ? branchIds
+      : branchId
+        ? [branchId]
+        : undefined;
 
     let allData: any[] = [];
     let total = 0;
 
     if (!type || type === 'all') {
       const [packingSlips, packingHangs, packingLoadings] = await Promise.all([
-        this.getPackingSlips(branchId, search),
-        this.getPackingHangs(branchId, search),
-        this.getPackingLoadings(branchId, search),
+        this.getPackingSlips(effectiveBranchIds, search, invoiceSearch, customerSearch),
+        this.getPackingHangs(effectiveBranchIds, search, invoiceSearch, customerSearch),
+        this.getPackingLoadings(effectiveBranchIds, search, invoiceSearch, customerSearch),
       ]);
 
       allData = [
@@ -26,13 +43,13 @@ export class AllPackingService {
         ...packingLoadings.map((item) => ({ ...item, type: 'loading' })),
       ];
     } else if (type === 'giao-hang') {
-      const packingSlips = await this.getPackingSlips(branchId, search);
+      const packingSlips = await this.getPackingSlips(effectiveBranchIds, search, invoiceSearch, customerSearch);
       allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
     } else if (type === 'dong-hang') {
-      const packingHangs = await this.getPackingHangs(branchId, search);
+      const packingHangs = await this.getPackingHangs(effectiveBranchIds, search, invoiceSearch, customerSearch);
       allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
     } else if (type === 'loading') {
-      const packingLoadings = await this.getPackingLoadings(branchId, search);
+      const packingLoadings = await this.getPackingLoadings(effectiveBranchIds, search, invoiceSearch, customerSearch);
       allData = packingLoadings.map((item) => ({
         ...item,
         type: 'loading',
@@ -50,11 +67,16 @@ export class AllPackingService {
     return { data: paginatedData, total };
   }
 
-  private async getPackingSlips(branchId?: number, search?: string) {
+  private async getPackingSlips(
+    branchIds?: number[],
+    search?: string,
+    invoiceSearch?: string,
+    customerSearch?: string,
+  ) {
     const where: any = {};
 
-    if (branchId) {
-      where.branchId = branchId;
+    if (branchIds?.length) {
+      where.branchId = { in: branchIds };
     }
 
     if (search) {
@@ -62,6 +84,29 @@ export class AllPackingService {
         { code: { contains: search, mode: 'insensitive' } },
         { note: { contains: search, mode: 'insensitive' } },
       ];
+    }
+
+    if (invoiceSearch) {
+      where.invoices = {
+        some: {
+          invoice: { code: { contains: invoiceSearch, mode: 'insensitive' } },
+        },
+      };
+    }
+
+    if (customerSearch) {
+      where.invoices = {
+        ...where.invoices,
+        some: {
+          ...(where.invoices?.some || {}),
+          invoice: {
+            ...(where.invoices?.some?.invoice || {}),
+            customer: {
+              name: { contains: customerSearch, mode: 'insensitive' },
+            },
+          },
+        },
+      };
     }
 
     return this.prisma.packingSlip.findMany({
@@ -93,11 +138,16 @@ export class AllPackingService {
     });
   }
 
-  private async getPackingHangs(branchId?: number, search?: string) {
+  private async getPackingHangs(
+    branchIds?: number[],
+    search?: string,
+    invoiceSearch?: string,
+    customerSearch?: string,
+  ) {
     const where: any = {};
 
-    if (branchId) {
-      where.branchId = branchId;
+    if (branchIds?.length) {
+      where.branchId = { in: branchIds };
     }
 
     if (search) {
@@ -105,6 +155,29 @@ export class AllPackingService {
         { code: { contains: search, mode: 'insensitive' } },
         { note: { contains: search, mode: 'insensitive' } },
       ];
+    }
+
+    if (invoiceSearch) {
+      where.invoices = {
+        some: {
+          invoice: { code: { contains: invoiceSearch, mode: 'insensitive' } },
+        },
+      };
+    }
+
+    if (customerSearch) {
+      where.invoices = {
+        ...where.invoices,
+        some: {
+          ...(where.invoices?.some || {}),
+          invoice: {
+            ...(where.invoices?.some?.invoice || {}),
+            customer: {
+              name: { contains: customerSearch, mode: 'insensitive' },
+            },
+          },
+        },
+      };
     }
 
     return this.prisma.packingHang.findMany({
@@ -138,11 +211,16 @@ export class AllPackingService {
     });
   }
 
-  private async getPackingLoadings(branchId?: number, search?: string) {
+  private async getPackingLoadings(
+    branchIds?: number[],
+    search?: string,
+    invoiceSearch?: string,
+    customerSearch?: string,
+  ) {
     const where: any = {};
 
-    if (branchId) {
-      where.branchId = branchId;
+    if (branchIds?.length) {
+      where.branchId = { in: branchIds };
     }
 
     if (search) {
@@ -150,6 +228,29 @@ export class AllPackingService {
         { code: { contains: search, mode: 'insensitive' } },
         { note: { contains: search, mode: 'insensitive' } },
       ];
+    }
+
+    if (invoiceSearch) {
+      where.invoices = {
+        some: {
+          invoice: { code: { contains: invoiceSearch, mode: 'insensitive' } },
+        },
+      };
+    }
+
+    if (customerSearch) {
+      where.invoices = {
+        ...where.invoices,
+        some: {
+          ...(where.invoices?.some || {}),
+          invoice: {
+            ...(where.invoices?.some?.invoice || {}),
+            customer: {
+              name: { contains: customerSearch, mode: 'insensitive' },
+            },
+          },
+        },
+      };
     }
 
     return this.prisma.packingLoading.findMany({

@@ -58,6 +58,43 @@ export class SyncKiotController {
     return { success: true, result, timestamp: new Date().toISOString() };
   }
 
+  /**
+   * Sync Order theo cận trên purchaseDate (batch migration lịch sử).
+   * Body: { toDate?: string } — ISO datetime, optional.
+   *   Default: 2026-04-01T16:59:59.999Z (hết ngày 01/04/2026 giờ Asia/Ho_Chi_Minh).
+   * Không update SyncControl.
+   */
+  @Post('orders/before-date')
+  async syncOrdersBeforeDate(@Body() body?: { toDate?: string }) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn('⏭️ Sync disabled, skipping orders/before-date sync');
+      return { success: false, reason: 'Sync is disabled' };
+    }
+
+    // Default: hết ngày 01/04/2026 giờ VN (UTC+7)
+    // = 2026-04-01 23:59:59.999+07:00 = 2026-04-01T16:59:59.999Z
+    const DEFAULT_TO_DATE = '2026-04-01T16:59:59.999Z';
+    const toDate = new Date(body?.toDate ?? DEFAULT_TO_DATE);
+
+    if (isNaN(toDate.getTime())) {
+      return {
+        success: false,
+        reason: `Invalid toDate: ${body?.toDate}`,
+      };
+    }
+
+    this.logger.log(
+      `📨 Manual sync orders where purchaseDate <= ${toDate.toISOString()}`,
+    );
+    const results = await this.syncService.runOrdersBeforeDate(toDate);
+    return {
+      success: true,
+      toDate: toDate.toISOString(),
+      results,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Body() body: { entityType: string; code: string; action: string },

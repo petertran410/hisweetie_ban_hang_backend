@@ -1,11 +1,25 @@
-import { IsOptional, IsInt, IsString, IsIn } from 'class-validator';
-import { Type } from 'class-transformer';
+import { IsOptional, IsInt, IsString, IsIn, IsArray } from 'class-validator';
+import { Type, Transform } from 'class-transformer';
 
 export class AllPackingQueryDto {
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  branchIds?: number[];
 
   @IsOptional()
   @IsString()
@@ -15,6 +29,14 @@ export class AllPackingQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsString()
+  invoiceSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  customerSearch?: string;
 
   @IsOptional()
   @Type(() => Number)

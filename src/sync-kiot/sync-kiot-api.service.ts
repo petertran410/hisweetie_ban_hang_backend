@@ -36,18 +36,29 @@ export class SyncKiotApiService {
 
   /**
    * Fetch 1 page. Dùng cho pipeline streaming (fetch song song với process).
+   *
+   * @param extraParams optional query params bổ sung (vd. purchaseDateTo).
+   *                    Truyền trực tiếp xuống sync_kiot_data dưới dạng query string.
    */
   async fetchPage<T = any>(
     endpoint: string,
     currentItem: number,
     pageSize: number,
     modifiedFrom?: string,
+    extraParams?: Record<string, string>,
   ): Promise<{ data: T[]; total: number } | null> {
     const params: Record<string, string> = {
       pageSize: String(pageSize),
       currentItem: String(currentItem),
     };
     if (modifiedFrom) params.modifiedFrom = modifiedFrom;
+    if (extraParams) {
+      for (const [key, value] of Object.entries(extraParams)) {
+        if (value !== undefined && value !== null && value !== '') {
+          params[key] = value;
+        }
+      }
+    }
 
     try {
       const response = await firstValueFrom(
