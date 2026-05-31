@@ -219,11 +219,10 @@ export class PackingSlipsService {
         .notifyDelivery(fullPackingSlip as any)
         .catch((err) => {
           // Phòng ngừa, dù service đã tự log
-          // eslint-disable-next-line no-console
+
           console.error('notifyDelivery unexpected error:', err);
         });
     } catch (err) {
-      // eslint-disable-next-line no-console
       console.error(
         'Failed to load packing slip for n8n notify:',
         (err as Error).message,

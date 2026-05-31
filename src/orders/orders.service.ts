@@ -21,6 +21,7 @@ import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 import { INVOICE_STATUS } from 'src/invoices/dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
+import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
 @Injectable()
@@ -30,6 +31,7 @@ export class OrdersService {
     private priceBooksService: PriceBooksService,
     private auditLogsService: AuditLogsService,
     private larkOrderSync: LarkOrderSyncService,
+    private larkOrderNotification: LarkOrderNotificationService,
   ) {}
 
   async create(dto: CreateOrderDto, userId: number) {
@@ -229,7 +231,7 @@ export class OrdersService {
   }
 
   async update(id: number, dto: UpdateOrderDto, user: any) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const existingOrder = await tx.order.findUnique({
         where: { id },
         include: {
@@ -561,6 +563,15 @@ export class OrdersService {
         },
       });
     });
+
+    // Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group HN/SG mỗi khi đơn được
+    // lưu ở trạng thái "Đã xác nhận" (status = 5). Chạy ngoài transaction,
+    // fire-and-forget để không ảnh hưởng response time.
+    if (result?.status === ORDER_STATUS.CONFIRMED) {
+      this.larkOrderNotification.notifyOrderConfirmedAsync(id);
+    }
+
+    return result;
   }
 
   async findAll(query: OrderQueryDto, currentUser?: any) {

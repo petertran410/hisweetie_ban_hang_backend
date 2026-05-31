@@ -469,7 +469,7 @@ export class InvoicesService {
       const paidAmount = dto.paidAmount || 0;
       const debtAmount = grandTotal - paidAmount;
 
-      let status: number = INVOICE_STATUS.PROCESSING;
+      const status: number = INVOICE_STATUS.PROCESSING;
       // Hóa đơn mới luôn bắt đầu ở PROCESSING — không tự chuyển COMPLETED dù đã thanh toán đủ,
       // vì chưa giao hàng. COMPLETED chỉ áp dụng khi đã DELIVERED + thanh toán đủ.
 
@@ -860,7 +860,7 @@ export class InvoicesService {
         );
         const debtAmount = grandTotal - paidAmount;
 
-        let status: number = INVOICE_STATUS.PROCESSING;
+        const status: number = INVOICE_STATUS.PROCESSING;
         // Hóa đơn mới (clone) luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
 
         const customerDebtSnapshot = currentInvoice.customer

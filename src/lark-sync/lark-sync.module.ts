@@ -4,6 +4,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { LarkClientProvider } from './lark-client.provider';
 import { LarkBaseService } from './services/lark-base.service';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
+import { LarkOrderNotificationService } from './services/lark-order-notification.service';
 import { LarkSyncController } from './lark-sync.controller';
 import { LarkSyncCron } from './lark-sync.cron';
 
@@ -14,8 +15,9 @@ import { LarkSyncCron } from './lark-sync.cron';
     LarkClientProvider,
     LarkBaseService,
     LarkOrderSyncService,
+    LarkOrderNotificationService,
     LarkSyncCron,
   ],
-  exports: [LarkOrderSyncService],
+  exports: [LarkOrderSyncService, LarkOrderNotificationService],
 })
 export class LarkSyncModule {}

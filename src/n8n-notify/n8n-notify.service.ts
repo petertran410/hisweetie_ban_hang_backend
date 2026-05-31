@@ -139,7 +139,7 @@ export class N8nNotifyService {
         createdAt:
           typeof ps.createdAt === 'string'
             ? ps.createdAt
-            : ps.createdAt?.toISOString?.() ?? null,
+            : (ps.createdAt?.toISOString?.() ?? null),
         branchId: ps.branchId ?? ps.branch?.id ?? null,
         branchName: ps.branch?.name ?? null,
         creatorName: ps.creator?.name ?? null,
@@ -169,7 +169,8 @@ export class N8nNotifyService {
 
   private toNumber(v: any): number {
     if (v === null || v === undefined) return 0;
-    const n = typeof v === 'object' && 'toNumber' in v ? v.toNumber() : Number(v);
+    const n =
+      typeof v === 'object' && 'toNumber' in v ? v.toNumber() : Number(v);
     return Number.isFinite(n) ? n : 0;
   }
 }

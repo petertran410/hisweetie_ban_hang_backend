@@ -32,9 +32,24 @@ export class AllPackingService {
 
     if (!type || type === 'all') {
       const [packingSlips, packingHangs, packingLoadings] = await Promise.all([
-        this.getPackingSlips(effectiveBranchIds, search, invoiceSearch, customerSearch),
-        this.getPackingHangs(effectiveBranchIds, search, invoiceSearch, customerSearch),
-        this.getPackingLoadings(effectiveBranchIds, search, invoiceSearch, customerSearch),
+        this.getPackingSlips(
+          effectiveBranchIds,
+          search,
+          invoiceSearch,
+          customerSearch,
+        ),
+        this.getPackingHangs(
+          effectiveBranchIds,
+          search,
+          invoiceSearch,
+          customerSearch,
+        ),
+        this.getPackingLoadings(
+          effectiveBranchIds,
+          search,
+          invoiceSearch,
+          customerSearch,
+        ),
       ]);
 
       allData = [
@@ -43,13 +58,28 @@ export class AllPackingService {
         ...packingLoadings.map((item) => ({ ...item, type: 'loading' })),
       ];
     } else if (type === 'giao-hang') {
-      const packingSlips = await this.getPackingSlips(effectiveBranchIds, search, invoiceSearch, customerSearch);
+      const packingSlips = await this.getPackingSlips(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerSearch,
+      );
       allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
     } else if (type === 'dong-hang') {
-      const packingHangs = await this.getPackingHangs(effectiveBranchIds, search, invoiceSearch, customerSearch);
+      const packingHangs = await this.getPackingHangs(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerSearch,
+      );
       allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
     } else if (type === 'loading') {
-      const packingLoadings = await this.getPackingLoadings(effectiveBranchIds, search, invoiceSearch, customerSearch);
+      const packingLoadings = await this.getPackingLoadings(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerSearch,
+      );
       allData = packingLoadings.map((item) => ({
         ...item,
         type: 'loading',
