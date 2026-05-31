@@ -65,10 +65,14 @@ export class InvoiceQueryDto {
   parentCustomerId?: number;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    if (typeof value === 'number') return [value];
+    return value;
+  })
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @IsInt({ each: true })
   statusIds?: number[];
 
   @IsOptional()
@@ -162,4 +166,37 @@ export class InvoiceQueryDto {
   @IsOptional()
   @IsString()
   columns?: string;
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  createdByIds?: number[];
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  soldByIds?: number[];
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  saleChannelId?: number;
 }

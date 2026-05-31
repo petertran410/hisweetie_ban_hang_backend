@@ -255,15 +255,14 @@ export class InvoicePaymentsService {
     let newStatus = currentStatus;
 
     if (debtAmount <= 0) {
-      if (
-        currentStatus === INVOICE_STATUS.PROCESSING ||
-        currentStatus === INVOICE_STATUS.DELIVERED
-      ) {
+      // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+      if (currentStatus === INVOICE_STATUS.DELIVERED) {
         newStatus = INVOICE_STATUS.COMPLETED;
       }
     } else {
+      // Hoàn tác: COMPLETED → DELIVERED (vẫn giao thành công, nhưng chưa thanh toán đủ)
       if (currentStatus === INVOICE_STATUS.COMPLETED) {
-        newStatus = INVOICE_STATUS.PROCESSING;
+        newStatus = INVOICE_STATUS.DELIVERED;
       }
     }
 

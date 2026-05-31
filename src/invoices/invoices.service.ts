@@ -188,6 +188,19 @@ export class InvoicesService {
       if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
     }
 
+    // Filter theo người tạo (chỉ áp dụng khi user có quyền xem data người khác)
+    if (query.createdByIds?.length && !where.createdBy) {
+      where.createdBy = { in: query.createdByIds };
+    }
+
+    if (query.soldByIds?.length) {
+      where.soldById = { in: query.soldByIds };
+    }
+
+    if (query.saleChannelId) {
+      where.saleChannelId = query.saleChannelId;
+    }
+
     // ── Sort logic ──
     const COMPUTED_SORT_FIELDS = [
       'returnOrderAmount',
@@ -260,8 +273,13 @@ export class InvoicesService {
       const sqlParams: any[] = [];
 
       if (where.createdBy !== undefined) {
-        sqlParams.push(where.createdBy);
-        sqlConditions.push(`i."createdBy" = $${sqlParams.length}`);
+        if (where.createdBy?.in) {
+          sqlParams.push(where.createdBy.in);
+          sqlConditions.push(`i."createdBy" = ANY($${sqlParams.length})`);
+        } else {
+          sqlParams.push(where.createdBy);
+          sqlConditions.push(`i."createdBy" = $${sqlParams.length}`);
+        }
       }
       if (where.customerId?.in) {
         sqlParams.push(where.customerId.in);
@@ -297,6 +315,19 @@ export class InvoicesService {
       if (where.createdAt?.lte) {
         sqlParams.push(where.createdAt.lte);
         sqlConditions.push(`i."createdAt" <= $${sqlParams.length}`);
+      }
+      if (where.soldById !== undefined) {
+        if (where.soldById?.in) {
+          sqlParams.push(where.soldById.in);
+          sqlConditions.push(`i."soldById" = ANY($${sqlParams.length})`);
+        } else {
+          sqlParams.push(where.soldById);
+          sqlConditions.push(`i."soldById" = $${sqlParams.length}`);
+        }
+      }
+      if (where.saleChannelId !== undefined) {
+        sqlParams.push(where.saleChannelId);
+        sqlConditions.push(`i."saleChannelId" = $${sqlParams.length}`);
       }
 
       const whereClause =
@@ -439,9 +470,8 @@ export class InvoicesService {
       const debtAmount = grandTotal - paidAmount;
 
       let status: number = INVOICE_STATUS.PROCESSING;
-      if (debtAmount <= 0) {
-        status = INVOICE_STATUS.COMPLETED;
-      }
+      // Hóa đơn mới luôn bắt đầu ở PROCESSING — không tự chuyển COMPLETED dù đã thanh toán đủ,
+      // vì chưa giao hàng. COMPLETED chỉ áp dụng khi đã DELIVERED + thanh toán đủ.
 
       const customer = dto.customerId
         ? await tx.customer.findUnique({
@@ -831,7 +861,7 @@ export class InvoicesService {
         const debtAmount = grandTotal - paidAmount;
 
         let status: number = INVOICE_STATUS.PROCESSING;
-        if (debtAmount <= 0) status = INVOICE_STATUS.COMPLETED;
+        // Hóa đơn mới (clone) luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
 
         const customerDebtSnapshot = currentInvoice.customer
           ? Number(currentInvoice.customer.totalDebt) -
@@ -1236,10 +1266,17 @@ export class InvoicesService {
           status !== INVOICE_STATUS.CANCELLED &&
           status !== INVOICE_STATUS.FAILED_DELIVERY
         ) {
-          status =
-            debtAmount <= 0
-              ? INVOICE_STATUS.COMPLETED
-              : INVOICE_STATUS.PROCESSING;
+          // Chỉ chuyển trạng thái dựa trên thanh toán khi hóa đơn đã giao thành công.
+          // Các trạng thái khác (PROCESSING, PACKED, LOADING) giữ nguyên.
+          if (debtAmount <= 0) {
+            if (status === INVOICE_STATUS.DELIVERED) {
+              status = INVOICE_STATUS.COMPLETED;
+            }
+          } else {
+            if (status === INVOICE_STATUS.COMPLETED) {
+              status = INVOICE_STATUS.DELIVERED;
+            }
+          }
         }
 
         updateData.totalAmount = totalAmount;
@@ -1575,8 +1612,8 @@ export class InvoicesService {
       const grandTotal = totalAmount - discountForThisInvoice;
       const debtAmount = grandTotal - totalPaid;
 
-      const status =
-        debtAmount <= 0 ? INVOICE_STATUS.COMPLETED : INVOICE_STATUS.PROCESSING;
+      // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
+      const status = INVOICE_STATUS.PROCESSING;
 
       const orderCustomer = order.customerId
         ? await tx.customer.findUnique({

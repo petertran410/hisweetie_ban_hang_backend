@@ -3,13 +3,25 @@ import {
   Post,
   UseInterceptors,
   UploadedFile,
+  UploadedFiles,
   BadRequestException,
   Delete,
   Param,
   Query,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
+
+const ALLOWED_MIMES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/jpg',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'image/heic-sequence',
+  'image/heif-sequence',
+]);
 
 @Controller('upload')
 export class UploadController {
@@ -17,7 +29,7 @@ export class UploadController {
 
   @Post('image')
   @UseInterceptors(FileInterceptor('file'))
-  uploadImage(
+  async uploadImage(
     @UploadedFile() file: Express.Multer.File,
     @Query('subfolder') subfolder?: string,
   ) {
@@ -25,16 +37,59 @@ export class UploadController {
       throw new BadRequestException('File is required');
     }
 
-    const allowedMimes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp'];
-    if (!allowedMimes.includes(file.mimetype)) {
+    if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
       throw new BadRequestException('Only image files are allowed');
     }
 
-    return {
-      filename: file.filename,
-      url: this.uploadService.getFileUrl(file.filename, subfolder),
-      size: file.size,
-    };
+    const result = await this.uploadService.saveImage(
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+      subfolder,
+    );
+
+    return result;
+  }
+
+  @Post('images')
+  @UseInterceptors(FilesInterceptor('files', 20))
+  async uploadImages(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Query('subfolder') subfolder?: string,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('At least one file is required');
+    }
+
+    const items: { filename: string; url: string; size: number }[] = [];
+    const errors: { originalname: string; reason: string }[] = [];
+
+    for (const file of files) {
+      if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
+        errors.push({
+          originalname: file.originalname,
+          reason: 'Only image files are allowed',
+        });
+        continue;
+      }
+
+      try {
+        const result = await this.uploadService.saveImage(
+          file.buffer,
+          file.originalname,
+          file.mimetype,
+          subfolder,
+        );
+        items.push(result);
+      } catch {
+        errors.push({
+          originalname: file.originalname,
+          reason: 'Upload failed',
+        });
+      }
+    }
+
+    return { items, errors };
   }
 
   @Delete(':filename')

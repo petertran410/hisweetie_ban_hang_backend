@@ -144,15 +144,14 @@ export class CashFlowsService {
             let newStatus = currentStatus;
 
             if (debtAmount <= 0) {
-              if (
-                currentStatus === INVOICE_STATUS.PROCESSING ||
-                currentStatus === INVOICE_STATUS.DELIVERED
-              ) {
+              // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+              if (currentStatus === INVOICE_STATUS.DELIVERED) {
                 newStatus = INVOICE_STATUS.COMPLETED;
               }
             } else {
+              // Hoàn tác: COMPLETED → DELIVERED
               if (currentStatus === INVOICE_STATUS.COMPLETED) {
-                newStatus = INVOICE_STATUS.PROCESSING;
+                newStatus = INVOICE_STATUS.DELIVERED;
               }
             }
 
@@ -224,15 +223,14 @@ export class CashFlowsService {
             let invoiceStatus = currentStatus;
 
             if (newDebtAmount <= 0) {
-              if (
-                currentStatus === INVOICE_STATUS.PROCESSING ||
-                currentStatus === INVOICE_STATUS.DELIVERED
-              ) {
+              // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+              if (currentStatus === INVOICE_STATUS.DELIVERED) {
                 invoiceStatus = INVOICE_STATUS.COMPLETED;
               }
             } else {
+              // Hoàn tác: COMPLETED → DELIVERED
               if (currentStatus === INVOICE_STATUS.COMPLETED) {
-                invoiceStatus = INVOICE_STATUS.PROCESSING;
+                invoiceStatus = INVOICE_STATUS.DELIVERED;
               }
             }
 
@@ -932,15 +930,14 @@ export class CashFlowsService {
           let newStatus = currentStatus;
 
           if (newDebtAmount <= 0) {
-            if (
-              currentStatus === INVOICE_STATUS.PROCESSING ||
-              currentStatus === INVOICE_STATUS.DELIVERED
-            ) {
+            // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+            if (currentStatus === INVOICE_STATUS.DELIVERED) {
               newStatus = INVOICE_STATUS.COMPLETED;
             }
           } else {
+            // Hoàn tác: COMPLETED → DELIVERED
             if (currentStatus === INVOICE_STATUS.COMPLETED) {
-              newStatus = INVOICE_STATUS.PROCESSING;
+              newStatus = INVOICE_STATUS.DELIVERED;
             }
           }
 
@@ -1257,15 +1254,14 @@ export class CashFlowsService {
       let invoiceStatus = currentStatus;
 
       if (debtAmount <= 0) {
-        if (
-          currentStatus === INVOICE_STATUS.PROCESSING ||
-          currentStatus === INVOICE_STATUS.DELIVERED
-        ) {
+        // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+        if (currentStatus === INVOICE_STATUS.DELIVERED) {
           invoiceStatus = INVOICE_STATUS.COMPLETED;
         }
       } else {
+        // Hoàn tác: COMPLETED → DELIVERED
         if (currentStatus === INVOICE_STATUS.COMPLETED) {
-          invoiceStatus = INVOICE_STATUS.PROCESSING;
+          invoiceStatus = INVOICE_STATUS.DELIVERED;
         }
       }
 
@@ -1671,15 +1667,14 @@ export class CashFlowsService {
           let newInvStatus = currentInvStatus;
 
           if (newDebtAmount <= 0) {
-            if (
-              currentInvStatus === INVOICE_STATUS.PROCESSING ||
-              currentInvStatus === INVOICE_STATUS.DELIVERED
-            ) {
+            // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+            if (currentInvStatus === INVOICE_STATUS.DELIVERED) {
               newInvStatus = INVOICE_STATUS.COMPLETED;
             }
           } else {
+            // Hoàn tác: COMPLETED → DELIVERED
             if (currentInvStatus === INVOICE_STATUS.COMPLETED) {
-              newInvStatus = INVOICE_STATUS.PROCESSING;
+              newInvStatus = INVOICE_STATUS.DELIVERED;
             }
           }
 
@@ -1743,15 +1738,14 @@ export class CashFlowsService {
           let invoiceStatus = currentInvStatus2;
 
           if (newDebtAmount <= 0) {
-            if (
-              currentInvStatus2 === INVOICE_STATUS.PROCESSING ||
-              currentInvStatus2 === INVOICE_STATUS.DELIVERED
-            ) {
+            // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
+            if (currentInvStatus2 === INVOICE_STATUS.DELIVERED) {
               invoiceStatus = INVOICE_STATUS.COMPLETED;
             }
           } else {
+            // Hoàn tác: COMPLETED → DELIVERED
             if (currentInvStatus2 === INVOICE_STATUS.COMPLETED) {
-              invoiceStatus = INVOICE_STATUS.PROCESSING;
+              invoiceStatus = INVOICE_STATUS.DELIVERED;
             }
           }
 

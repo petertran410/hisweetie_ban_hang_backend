@@ -1,34 +1,17 @@
 import { Module } from '@nestjs/common';
 import { MulterModule } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname, join } from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { memoryStorage } from 'multer';
 import { UploadController } from './upload.controller';
 import { UploadService } from './upload.service';
 
 @Module({
   imports: [
     MulterModule.register({
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const subfolder = (req.query.subfolder as string) || '';
-          const uploadPath = join(process.cwd(), 'uploads', subfolder);
-
-          if (!existsSync(uploadPath)) {
-            mkdirSync(uploadPath, { recursive: true });
-          }
-
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          const timestamp = Date.now();
-          const randomName = Array(16)
-            .fill(null)
-            .map(() => Math.floor(Math.random() * 16).toString(16))
-            .join('');
-          cb(null, `${timestamp}-${randomName}${extname(file.originalname)}`);
-        },
-      }),
+      storage: memoryStorage(),
+      limits: {
+        fileSize: 25 * 1024 * 1024, // 25MB per file
+        files: 20,
+      },
     }),
   ],
   controllers: [UploadController],
