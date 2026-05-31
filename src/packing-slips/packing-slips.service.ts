@@ -114,6 +114,12 @@ export class PackingSlipsService {
                     contactNumber: true,
                   },
                 },
+                soldBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
               },
             },
           },

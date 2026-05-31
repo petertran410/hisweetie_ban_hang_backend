@@ -70,6 +70,13 @@ export class N8nNotifyService {
       this.config.get<string>('API_URL') ||
       '';
 
+    // Debug: log secret length and first/last chars to verify env parsing
+    if (secret) {
+      this.logger.debug(
+        `Webhook secret: length=${secret.length}, first="${secret[0]}", last="${secret[secret.length - 1]}"`,
+      );
+    }
+
     const payload = this.buildPayload(packingSlip, publicUrl);
 
     try {
@@ -116,7 +123,14 @@ export class N8nNotifyService {
             contactNumber: inv.invoice.customer.contactNumber ?? null,
           }
         : null,
+      soldByName: (inv.invoice as any)?.soldBy?.name ?? null,
     }));
+
+    // Collect unique seller names across all invoices
+    const soldByNames = invoices
+      .map((inv) => inv.soldByName)
+      .filter((name): name is string => !!name)
+      .filter((v, i, a) => a.indexOf(v) === i);
 
     return {
       packingSlip: {
@@ -129,6 +143,7 @@ export class N8nNotifyService {
         branchId: ps.branchId ?? ps.branch?.id ?? null,
         branchName: ps.branch?.name ?? null,
         creatorName: ps.creator?.name ?? null,
+        soldByNames,
         numberOfPackages: ps.numberOfPackages,
         paymentMethod: ps.paymentMethod,
         cashAmount: this.toNumber(ps.cashAmount),
