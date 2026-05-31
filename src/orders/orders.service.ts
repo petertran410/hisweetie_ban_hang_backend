@@ -1123,22 +1123,28 @@ export class OrdersService {
 
   /**
    * Lấy danh sách đơn hàng có chứa productId đang ở trạng thái
-   * Phiếu tạm hoặc Đã xác nhận trên mọi chi nhánh.
+   * Phiếu tạm hoặc Đã xác nhận.
+   * Nếu truyền branchId thì lọc theo chi nhánh, không truyền thì lấy mọi chi nhánh.
    * Trả về thông tin tối thiểu cho modal: mã đơn, ngày tạo, khách hàng,
    * người tạo, thành tiền, trạng thái, số lượng đặt sản phẩm tương ứng.
    *
    * Lưu ý: 1 sản phẩm có thể xuất hiện trên nhiều dòng (OrderItem) trong
    * cùng 1 đơn → phải gộp về 1 dòng / 1 đơn để tránh trùng key ở FE.
    */
-  async getPendingByProduct(productId: number) {
+  async getPendingByProduct(productId: number, branchId?: number) {
     if (!productId || Number.isNaN(productId)) return [];
+
+    const orderWhere: any = {
+      status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+    };
+    if (branchId && !Number.isNaN(branchId)) {
+      orderWhere.branchId = branchId;
+    }
 
     const items = await this.prisma.orderItem.findMany({
       where: {
         productId,
-        order: {
-          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
-        },
+        order: orderWhere,
       },
       select: {
         quantity: true,

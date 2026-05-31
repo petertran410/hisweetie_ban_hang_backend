@@ -57,8 +57,14 @@ export class OrdersController {
 
   @Get('pending-by-product')
   @RequirePermissions('orders:view')
-  getPendingByProduct(@Query('productId') productId: string) {
-    return this.ordersService.getPendingByProduct(+productId);
+  getPendingByProduct(
+    @Query('productId') productId: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.ordersService.getPendingByProduct(
+      +productId,
+      branchId ? +branchId : undefined,
+    );
   }
 
   @Put(':id/cancel')

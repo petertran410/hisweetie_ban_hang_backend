@@ -105,44 +105,7 @@ export class CustomersService {
       };
     }
 
-    let isAdmin = false;
-    if (userId) {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        include: {
-          userRoles: { include: { role: { select: { name: true } } } },
-        },
-      });
-      isAdmin =
-        user?.userRoles.some(
-          (ur) => ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
-        ) || false;
-    }
-
-    if (userId && !isAdmin) {
-      const allowedGroups = await this.prisma.customerGroup.findMany({
-        where: {
-          OR: [
-            { allowedUserIds: { isEmpty: true } },
-            { allowedUserIds: { has: userId } },
-          ],
-        },
-        select: { id: true },
-      });
-      const allowedGroupIds = allowedGroups.map((g) => g.id);
-
-      if (groupId) {
-        if (!allowedGroupIds.includes(groupId)) {
-          res.end(); // không có quyền → trả file rỗng
-          return;
-        }
-        where.customerGroupDetails = { some: { customerGroupId: groupId } };
-      } else {
-        where.customerGroupDetails = {
-          some: { customerGroupId: { in: allowedGroupIds } },
-        };
-      }
-    } else if (groupId) {
+    if (groupId) {
       where.customerGroupDetails = { some: { customerGroupId: groupId } };
     }
 
@@ -478,58 +441,7 @@ export class CustomersService {
       };
     }
 
-    let isAdmin = false;
-    if (userId) {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        include: {
-          userRoles: {
-            include: {
-              role: {
-                select: { name: true },
-              },
-            },
-          },
-        },
-      });
-
-      isAdmin =
-        user?.userRoles.some(
-          (ur) => ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
-        ) || false;
-    }
-
-    if (userId && !isAdmin) {
-      const allowedGroups = await this.prisma.customerGroup.findMany({
-        where: {
-          OR: [
-            { allowedUserIds: { isEmpty: true } },
-            { allowedUserIds: { has: userId } },
-          ],
-        },
-        select: { id: true },
-      });
-
-      const allowedGroupIds = allowedGroups.map((g) => g.id);
-
-      if (groupId) {
-        if (!allowedGroupIds.includes(groupId)) {
-          return {
-            data: [],
-            total: 0,
-            pageSize,
-            currentItem,
-          };
-        }
-        where.customerGroupDetails = {
-          some: { customerGroupId: groupId },
-        };
-      } else {
-        where.customerGroupDetails = {
-          some: { customerGroupId: { in: allowedGroupIds } },
-        };
-      }
-    } else if (groupId) {
+    if (groupId) {
       where.customerGroupDetails = {
         some: { customerGroupId: groupId },
       };
