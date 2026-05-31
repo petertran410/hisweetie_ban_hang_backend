@@ -134,7 +134,7 @@ export class LarkOrderNotificationService {
     const sellerName = order.soldBy?.name || '';
     const note = (order.description || '').trim();
     const orderUrl =
-      this.config.get<string>('POS_FRONTEND_URL') || 'http://localhost:3050';
+      this.config.get<string>('FRONTEND_URL') || 'http://localhost:3050';
 
     // Header block: thông tin đơn hàng
     const headerLines: string[] = [
@@ -199,9 +199,7 @@ export class LarkOrderNotificationService {
       const priceCellLines = [productName, priceStr];
       if (itemNote) priceCellLines.push(`*${itemNote}*`);
 
-      itemRows.push(
-        buildRow(priceCellLines.join('\n'), qtyStr, totalStr),
-      );
+      itemRows.push(buildRow(priceCellLines.join('\n'), qtyStr, totalStr));
     }
 
     // Footer: tổng kết
