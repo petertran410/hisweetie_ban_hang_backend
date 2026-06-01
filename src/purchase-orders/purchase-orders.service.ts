@@ -9,6 +9,7 @@ import {
   CreatePurchaseOrderFromOrderSupplierDto,
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
+  CancelPurchaseOrderDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -1092,6 +1093,173 @@ export class PurchaseOrdersService {
       }
 
       return { message: 'Xóa phiếu nhập hàng thành công' };
+    });
+  }
+
+  async cancelPurchaseOrder(
+    id: number,
+    dto: CancelPurchaseOrderDto,
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const purchaseOrder = await tx.purchaseOrder.findUnique({
+        where: { id },
+        include: {
+          items: true,
+          payments: { where: { status: { not: 2 } } },
+          supplier: { select: { id: true, code: true, name: true } },
+          branch: { select: { id: true, name: true } },
+        },
+      });
+
+      if (!purchaseOrder) {
+        throw new NotFoundException('Không tìm thấy phiếu nhập hàng');
+      }
+
+      // status = 2 → đã hủy (đối xứng PURCHASE_ORDER_STATUS.CANCELLED)
+      if (purchaseOrder.status === 2) {
+        throw new BadRequestException('Phiếu nhập hàng đã được hủy trước đó');
+      }
+
+      // Khi PN có thanh toán active mà user KHÔNG xác nhận hủy thanh toán
+      // → buộc user quyết định rõ (đối xứng cancelOrderSupplier).
+      if (purchaseOrder.payments.length > 0 && !dto.cancelPayments) {
+        throw new BadRequestException(
+          'Phiếu nhập hàng có thanh toán. Hãy hủy thanh toán trước hoặc gửi cancelPayments=true để hủy luôn thanh toán',
+        );
+      }
+
+      // ─── Hoàn nguyên kho an toàn ────────────────────────────────────────
+      // KHÔNG dùng `decrement` blind: phải kiểm tra `onHand` hiện tại của
+      // chi nhánh để không bao giờ làm tồn kho âm. Nếu hàng đã được bán/
+      // chuyển/hủy đi rồi thì không thể hủy PN này được nữa — yêu cầu
+      // user xử lý các phiếu hậu kỳ trước.
+      if (purchaseOrder.branchId && purchaseOrder.items.length > 0) {
+        const productIds = purchaseOrder.items.map((it: any) => it.productId);
+        const inventories = await tx.inventory.findMany({
+          where: {
+            branchId: purchaseOrder.branchId,
+            productId: { in: productIds },
+          },
+          include: { product: { select: { code: true, name: true } } },
+        });
+        const invMap = new Map<number, any>();
+        inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
+
+        for (const item of purchaseOrder.items) {
+          const inv = invMap.get(item.productId);
+          const onHand = inv ? Number(inv.onHand) : 0;
+          const qty = Number(item.quantity);
+          if (onHand < qty) {
+            const productLabel = inv?.product
+              ? `${inv.product.code} - ${inv.product.name}`
+              : `productId=${item.productId}`;
+            throw new BadRequestException(
+              `Không thể hủy phiếu nhập: tồn kho hiện tại của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${onHand}, nhỏ hơn số đã nhập (${qty}). Vui lòng xử lý các phiếu xuất/chuyển kho liên quan trước.`,
+            );
+          }
+        }
+
+        for (const item of purchaseOrder.items) {
+          const inv = invMap.get(item.productId);
+          if (!inv) continue;
+          await tx.inventory.update({
+            where: { id: inv.id },
+            data: {
+              onHand: { decrement: Number(item.quantity) },
+            },
+          });
+        }
+      }
+
+      // ─── Soft-cancel payments + cashflow ───────────────────────────────
+      if (dto.cancelPayments && purchaseOrder.payments.length > 0) {
+        const paymentIds = purchaseOrder.payments.map((p: any) => p.id);
+        const paymentCodes = purchaseOrder.payments
+          .map((p: any) => p.code)
+          .filter((c: any): c is string => !!c);
+        const explicitCashFlowIds = purchaseOrder.payments
+          .map((p: any) => p.cashFlowId)
+          .filter((cid: any): cid is number => typeof cid === 'number');
+
+        await tx.purchaseOrderPayment.updateMany({
+          where: { id: { in: paymentIds } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+
+        const orConditions: any[] = [];
+        if (explicitCashFlowIds.length > 0) {
+          orConditions.push({ id: { in: explicitCashFlowIds } });
+        }
+        if (paymentCodes.length > 0) {
+          orConditions.push({ code: { in: paymentCodes } });
+        }
+        if (orConditions.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: {
+              OR: orConditions,
+              partnerType: 'S',
+              partnerId: purchaseOrder.supplierId,
+              status: { not: 2 },
+            },
+            data: { status: 2, statusValue: 'Đã hủy' },
+          });
+        }
+      }
+
+      // ─── Update PN sang CANCELLED ──────────────────────────────────────
+      await tx.purchaseOrder.update({
+        where: { id },
+        data: {
+          status: 2,
+          statusValue: 'Đã hủy',
+          isDraft: false,
+          ...(dto.cancelPayments
+            ? { paidAmount: 0, debtAmount: 0, supplierDebt: 0 }
+            : { supplierDebt: 0 }),
+        },
+      });
+
+      // Recalc Supplier.debt — filter status≠2 tự loại PN/payment vừa hủy.
+      await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
+
+      // Cập nhật trạng thái PDN nếu PN này thuộc PDN.
+      if (purchaseOrder.orderSupplierId) {
+        await this.updateOrderSupplierStatus(
+          purchaseOrder.orderSupplierId,
+          tx,
+        );
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'PURCHASE_ORDER_CANCEL',
+        entityType: 'purchase_orders',
+        entityId: id.toString(),
+        entityCode: purchaseOrder.code,
+        category: getCategoryFromActionCode('PURCHASE_ORDER_CANCEL'),
+        severity: getSeverityFromActionCode('PURCHASE_ORDER_CANCEL'),
+        snapshot: this.buildPurchaseOrderSnapshot(
+          purchaseOrder,
+          purchaseOrder.supplier?.name,
+          purchaseOrder.branch?.name,
+        ),
+        message: renderAuditMessage('PURCHASE_ORDER_CANCEL', {
+          purchaseOrderCode: purchaseOrder.code,
+          supplierName: purchaseOrder.supplier?.name || 'N/A',
+        }),
+        messageTemplate: 'PURCHASE_ORDER_CANCEL',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: purchaseOrder.branchId || user?.branchId || undefined,
+      });
+
+      return { message: 'Hủy phiếu nhập hàng thành công' };
     });
   }
 

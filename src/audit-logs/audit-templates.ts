@@ -185,6 +185,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'purchase_order',
     severity: 'warning',
   },
+  PURCHASE_ORDER_CANCEL: {
+    template:
+      'Hủy phiếu nhập hàng {purchaseOrderCode}, NCC: {supplierName}',
+    category: 'purchase_order',
+    severity: 'warning',
+  },
   PURCHASE_ORDER_PAYMENT_CREATE: {
     template:
       'Tạo thanh toán {paymentCode} cho nhập hàng {purchaseOrderCode}, giá trị: {amount}',

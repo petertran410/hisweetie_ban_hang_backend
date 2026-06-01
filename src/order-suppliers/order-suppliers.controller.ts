@@ -39,6 +39,34 @@ export class OrderSuppliersController {
     return this.orderSuppliersService.findAll(query);
   }
 
+  @Get('confirmed-summary')
+  @RequirePermissions('order_suppliers:view')
+  getConfirmedSummary(
+    @Query('productIds') productIds?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.orderSuppliersService.getConfirmedSummary(
+      ids,
+      branchId ? +branchId : undefined,
+    );
+  }
+
+  @Get('confirmed-by-product')
+  @RequirePermissions('order_suppliers:view')
+  getConfirmedByProduct(
+    @Query('productId') productId: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    return this.orderSuppliersService.getConfirmedByProduct(
+      +productId,
+      branchId ? +branchId : undefined,
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('order_suppliers:view')
   findOne(@Param('id') id: string) {

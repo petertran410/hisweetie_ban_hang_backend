@@ -17,6 +17,7 @@ import {
   CreatePurchaseOrderFromOrderSupplierDto,
   UpdatePurchaseOrderDto,
   PurchaseOrderQueryDto,
+  CancelPurchaseOrderDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -79,6 +80,21 @@ export class PurchaseOrdersController {
   ) {
     const userId = req.user?.id || 1;
     return this.purchaseOrdersService.update(+id, dto, userId);
+  }
+
+  @Put(':id/cancel')
+  @RequirePermissions('purchase_orders:update')
+  @ApiOperation({
+    summary:
+      'Hủy mềm phiếu nhập hàng, hoàn nguyên kho + soft-cancel payment/cashflow',
+  })
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelPurchaseOrderDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.purchaseOrdersService.cancelPurchaseOrder(+id, dto, userId);
   }
 
   @Delete(':id')

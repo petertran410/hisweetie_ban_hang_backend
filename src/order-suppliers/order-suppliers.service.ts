@@ -73,6 +73,24 @@ export class OrderSuppliersService {
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },
         { supplier: { name: { contains: search, mode: 'insensitive' } } },
+        { supplier: { code: { contains: search, mode: 'insensitive' } } },
+        {
+          items: {
+            some: {
+              OR: [
+                { productCode: { contains: search, mode: 'insensitive' } },
+                { productName: { contains: search, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
+        {
+          purchaseOrders: {
+            some: {
+              code: { contains: search, mode: 'insensitive' },
+            },
+          },
+        },
       ];
     }
     if (branchId) where.branchId = branchId;
@@ -812,6 +830,135 @@ export class OrderSuppliersService {
     }
 
     return { message: 'Xóa phiếu đặt hàng nhập thành công' };
+  }
+
+  /**
+   * Tổng số lượng "Đặt NCC" cho từng productId.
+   * Đặt NCC = sum(quantity của OrderSupplierItem) trong các phiếu OrderSupplier
+   * có status thuộc { Đã xác nhận NCC (1), Nhập một phần (2) }.
+   * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
+   *
+   * Đối xứng `OrdersService.getPendingSummary` của phía bán.
+   */
+  async getConfirmedSummary(productIds: number[], branchId?: number) {
+    if (!productIds || productIds.length === 0) {
+      return {} as Record<number, number>;
+    }
+
+    const orderSupplierWhere: any = {
+      status: { in: [1, 2] },
+    };
+    if (branchId && !Number.isNaN(branchId)) {
+      orderSupplierWhere.branchId = branchId;
+    }
+
+    const grouped = await this.prisma.orderSupplierItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: productIds },
+        orderSupplier: orderSupplierWhere,
+      },
+      _sum: { quantity: true },
+    });
+
+    const result: Record<number, number> = {};
+    for (const id of productIds) result[id] = 0;
+    for (const row of grouped) {
+      result[row.productId] = Number(row._sum.quantity || 0);
+    }
+    return result;
+  }
+
+  /**
+   * Lấy danh sách phiếu đặt hàng nhập (OrderSupplier) có chứa productId
+   * đang ở trạng thái Đã xác nhận NCC (1) hoặc Nhập một phần (2).
+   * Nếu truyền branchId thì lọc theo chi nhánh, không truyền thì lấy mọi chi nhánh.
+   * Trả về thông tin tối thiểu cho modal: mã phiếu, ngày tạo, nhà cung cấp,
+   * người tạo, tổng tiền, trạng thái, số lượng đặt sản phẩm tương ứng.
+   *
+   * Đối xứng `OrdersService.getPendingByProduct` của phía bán.
+   */
+  async getConfirmedByProduct(productId: number, branchId?: number) {
+    if (!productId || Number.isNaN(productId)) return [];
+
+    const orderSupplierWhere: any = {
+      status: { in: [1, 2] },
+    };
+    if (branchId && !Number.isNaN(branchId)) {
+      orderSupplierWhere.branchId = branchId;
+    }
+
+    const items = await this.prisma.orderSupplierItem.findMany({
+      where: {
+        productId,
+        orderSupplier: orderSupplierWhere,
+      },
+      select: {
+        quantity: true,
+        orderSupplier: {
+          select: {
+            id: true,
+            code: true,
+            orderDate: true,
+            createdAt: true,
+            total: true,
+            status: true,
+            statusValue: true,
+            supplier: { select: { id: true, code: true, name: true } },
+            creator: { select: { id: true, name: true } },
+            branch: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { orderSupplier: { createdAt: 'desc' } },
+    });
+
+    // Schema có @@unique([orderSupplierId, productId]) → thực tế 1 dòng/phiếu,
+    // nhưng vẫn gộp theo orderSupplierId cho an toàn.
+    const map = new Map<
+      number,
+      {
+        orderSupplierId: number;
+        code: string;
+        createdAt: Date;
+        orderDate: Date;
+        total: number;
+        status: number;
+        statusValue: string;
+        supplier: { id: number; code: string | null; name: string } | null;
+        creator: { id: number; name: string | null } | null;
+        branch: { id: number; name: string } | null;
+        quantity: number;
+      }
+    >();
+
+    for (const it of items) {
+      const o = it.orderSupplier;
+      const existing = map.get(o.id);
+      if (existing) {
+        existing.quantity += Number(it.quantity);
+      } else {
+        map.set(o.id, {
+          orderSupplierId: o.id,
+          code: o.code,
+          createdAt: o.createdAt,
+          orderDate: o.orderDate,
+          total: Number(o.total),
+          status: o.status,
+          // Luôn map từ status (number) → label tiếng Việt; không dùng
+          // statusValue thô vì DB lưu không nhất quán.
+          statusValue: getOrderSupplierStatusLabel(o.status),
+          supplier: o.supplier,
+          creator: o.creator,
+          branch: o.branch,
+          quantity: Number(it.quantity),
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort(
+      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+    );
   }
 
   private async generateSafeOrderSupplierCode(tx?: any): Promise<string> {
