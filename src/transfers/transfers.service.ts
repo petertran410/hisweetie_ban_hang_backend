@@ -883,6 +883,16 @@ export class TransfersService {
 
       if (transfer.status === 2) {
         for (const detail of transfer.details) {
+          // Cộng lại tồn cho chi nhánh chuyển (atomic increment, không overwrite)
+          const fromInv = await tx.inventory.findUnique({
+            where: {
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
+            },
+          });
+
           await tx.inventory.update({
             where: {
               productId_branchId: {
@@ -892,6 +902,24 @@ export class TransfersService {
             },
             data: {
               onHand: { increment: detail.sendQuantity },
+            },
+          });
+
+          await tx.inventoryLog.create({
+            data: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.fromBranchId,
+              branchName: transfer.fromBranch?.name || '',
+              transactionType: 'TRANSFER_CANCEL',
+              refCode: transfer.code,
+              refType: 'transfer',
+              refId: transfer.id,
+              quantity: Number(detail.sendQuantity),
+              costPrice: fromInv ? Number(fromInv.cost) : 0,
+              transactionPrice: null,
+              partnerName: null,
             },
           });
         }
@@ -899,6 +927,16 @@ export class TransfersService {
 
       if (transfer.status === 3) {
         for (const detail of transfer.details) {
+          // Cộng lại tồn cho chi nhánh chuyển (atomic increment, không overwrite)
+          const fromInv = await tx.inventory.findUnique({
+            where: {
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
+            },
+          });
+
           await tx.inventory.update({
             where: {
               productId_branchId: {
@@ -911,17 +949,66 @@ export class TransfersService {
             },
           });
 
-          await tx.inventory.update({
-            where: {
-              productId_branchId: {
-                productId: detail.productId,
-                branchId: transfer.toBranchId,
-              },
-            },
+          await tx.inventoryLog.create({
             data: {
-              onHand: { decrement: detail.receivedQuantity },
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.fromBranchId,
+              branchName: transfer.fromBranch?.name || '',
+              transactionType: 'TRANSFER_CANCEL',
+              refCode: transfer.code,
+              refType: 'transfer',
+              refId: transfer.id,
+              quantity: Number(detail.sendQuantity),
+              costPrice: fromInv ? Number(fromInv.cost) : 0,
+              transactionPrice: null,
+              partnerName: null,
             },
           });
+
+          // Trừ tồn ở chi nhánh nhận đúng số lượng đã nhận thực tế
+          // (atomic decrement, không overwrite — cho phép âm vì hệ thống đã chấp nhận tồn âm)
+          if (Number(detail.receivedQuantity) > 0) {
+            const toInv = await tx.inventory.findUnique({
+              where: {
+                productId_branchId: {
+                  productId: detail.productId,
+                  branchId: transfer.toBranchId,
+                },
+              },
+            });
+
+            await tx.inventory.update({
+              where: {
+                productId_branchId: {
+                  productId: detail.productId,
+                  branchId: transfer.toBranchId,
+                },
+              },
+              data: {
+                onHand: { decrement: detail.receivedQuantity },
+              },
+            });
+
+            await tx.inventoryLog.create({
+              data: {
+                productId: detail.productId,
+                productCode: detail.productCode,
+                productName: detail.productName,
+                branchId: transfer.toBranchId,
+                branchName: transfer.toBranch?.name || '',
+                transactionType: 'TRANSFER_CANCEL',
+                refCode: transfer.code,
+                refType: 'transfer',
+                refId: transfer.id,
+                quantity: -Number(detail.receivedQuantity),
+                costPrice: toInv ? Number(toInv.cost) : 0,
+                transactionPrice: null,
+                partnerName: null,
+              },
+            });
+          }
         }
       }
     });

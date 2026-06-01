@@ -73,10 +73,12 @@ export class InvoicesController {
   findForPacking(
     @Query('branchId') branchId?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
   ) {
     return this.invoicesService.findForPacking({
       branchId: branchId ? +branchId : undefined,
       pageSize: pageSize ? +pageSize : 100,
+      search,
     });
   }
 

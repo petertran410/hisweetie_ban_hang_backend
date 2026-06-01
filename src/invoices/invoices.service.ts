@@ -2270,12 +2270,24 @@ export class InvoicesService {
   // ── Lấy hóa đơn cho luồng báo đơn (giao hàng / đóng hàng / loading)
   // Trả minimal data: id, code, customer.name, grandTotal, branchId
   // Dùng cho dropdown chọn invoice ở form báo đơn — không cần invoices:view
-  async findForPacking(query: { branchId?: number; pageSize?: number }) {
-    const { branchId, pageSize = 100 } = query;
+  async findForPacking(query: {
+    branchId?: number;
+    pageSize?: number;
+    search?: string;
+  }) {
+    const { branchId, pageSize = 100, search } = query;
     const take = Math.min(Math.max(pageSize, 1), 200);
 
     const where: any = {};
     if (branchId) where.branchId = branchId;
+
+    const keyword = search?.trim();
+    if (keyword) {
+      where.OR = [
+        { code: { contains: keyword } },
+        { customer: { name: { contains: keyword } } },
+      ];
+    }
 
     const data = await this.prisma.invoice.findMany({
       where,
@@ -2284,6 +2296,7 @@ export class InvoicesService {
         code: true,
         branchId: true,
         grandTotal: true,
+        purchaseDate: true,
         customer: { select: { id: true, name: true } },
       },
       orderBy: { createdAt: 'desc' },
