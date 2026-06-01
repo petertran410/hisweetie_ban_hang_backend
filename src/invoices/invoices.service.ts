@@ -574,290 +574,294 @@ export class InvoicesService {
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateSafeInvoiceCode(tx);
+    return this.prisma.$transaction(
+      async (tx) => {
+        const code = await this.generateSafeInvoiceCode(tx);
 
-      const totalAmount = dto.items.reduce(
-        (sum, item) => sum + item.totalPrice,
-        0,
-      );
-      const discountAmount = dto.discountAmount || 0;
-      const discountFromRatio = (totalAmount * (dto.discountRatio || 0)) / 100;
-      const grandTotal = totalAmount - discountAmount - discountFromRatio;
-      const paidAmount = dto.paidAmount || 0;
-      const debtAmount = grandTotal - paidAmount;
+        const totalAmount = dto.items.reduce(
+          (sum, item) => sum + item.totalPrice,
+          0,
+        );
+        const discountAmount = dto.discountAmount || 0;
+        const discountFromRatio =
+          (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+        const paidAmount = dto.paidAmount || 0;
+        const debtAmount = grandTotal - paidAmount;
 
-      const status: number = INVOICE_STATUS.PROCESSING;
-      // Hóa đơn mới luôn bắt đầu ở PROCESSING — không tự chuyển COMPLETED dù đã thanh toán đủ,
-      // vì chưa giao hàng. COMPLETED chỉ áp dụng khi đã DELIVERED + thanh toán đủ.
+        const status: number = INVOICE_STATUS.PROCESSING;
+        // Hóa đơn mới luôn bắt đầu ở PROCESSING — không tự chuyển COMPLETED dù đã thanh toán đủ,
+        // vì chưa giao hàng. COMPLETED chỉ áp dụng khi đã DELIVERED + thanh toán đủ.
 
-      const customer = dto.customerId
-        ? await tx.customer.findUnique({
-            where: { id: dto.customerId },
-            select: { id: true, totalDebt: true, name: true },
-          })
-        : null;
+        const customer = dto.customerId
+          ? await tx.customer.findUnique({
+              where: { id: dto.customerId },
+              select: { id: true, totalDebt: true, name: true },
+            })
+          : null;
 
-      const parentCustomerId = customer ? customer.id : null;
+        const parentCustomerId = customer ? customer.id : null;
 
-      const currentCustomerDebt = Number(customer?.totalDebt || 0);
-      const customerDebtSnapshot = currentCustomerDebt + debtAmount;
+        const currentCustomerDebt = Number(customer?.totalDebt || 0);
+        const customerDebtSnapshot = currentCustomerDebt + debtAmount;
 
-      let priceBook: any = null;
+        let priceBook: any = null;
 
-      if (dto.priceBookId && dto.priceBookId > 0) {
-        priceBook = await tx.priceBook.findFirst({
-          where: { id: dto.priceBookId, isActive: true },
-        });
-      } else if (dto.priceBookId === undefined || dto.priceBookId === null) {
-        const applicablePriceBooks = await tx.priceBook.findMany({
-          where: {
-            isActive: true,
-            OR: [
-              { isGlobal: true },
-              { priceBookBranches: { some: { branchId: dto.branchId } } },
-              ...(dto.customerId
-                ? [
-                    {
-                      priceBookCustomerGroups: {
-                        some: {
-                          customerGroup: {
-                            customerGroupDetails: {
-                              some: { customerId: dto.customerId },
+        if (dto.priceBookId && dto.priceBookId > 0) {
+          priceBook = await tx.priceBook.findFirst({
+            where: { id: dto.priceBookId, isActive: true },
+          });
+        } else if (dto.priceBookId === undefined || dto.priceBookId === null) {
+          const applicablePriceBooks = await tx.priceBook.findMany({
+            where: {
+              isActive: true,
+              OR: [
+                { isGlobal: true },
+                { priceBookBranches: { some: { branchId: dto.branchId } } },
+                ...(dto.customerId
+                  ? [
+                      {
+                        priceBookCustomerGroups: {
+                          some: {
+                            customerGroup: {
+                              customerGroupDetails: {
+                                some: { customerId: dto.customerId },
+                              },
                             },
                           },
                         },
                       },
-                    },
-                    { forAllCusGroup: true },
-                  ]
-                : []),
-            ],
-          },
-          orderBy: { priority: 'desc' },
-          take: 1,
-        });
-        priceBook = applicablePriceBooks[0] || null;
-      }
-      // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null
-
-      const invoice = await tx.invoice.create({
-        data: {
-          code,
-          customerId: dto.customerId,
-          parentCustomerId,
-          branchId: dto.branchId,
-          soldById: dto.soldById,
-          saleChannelId: dto.saleChannelId,
-          priceBookId: priceBook?.id || null,
-          priceBookName: priceBook?.name || null,
-          purchaseDate: dto.purchaseDate
-            ? new Date(dto.purchaseDate)
-            : new Date(),
-          totalAmount,
-          discount: discountAmount,
-          discountRatio: dto.discountRatio || 0,
-          grandTotal,
-          paidAmount,
-          debtAmount,
-          status,
-          statusValue: getStatusLabel(status),
-          usingCod: dto.usingCod || false,
-          description: dto.description,
-          createdBy: userId,
-          customerDebtSnapshot,
-          details: {
-            createMany: {
-              data: dto.items.map((item) => ({
-                productId: item.productId,
-                productCode: item.productCode,
-                productName: item.productName,
-                quantity: item.quantity,
-                price: item.price,
-                discount: item.discount || 0,
-                discountRatio: item.discountRatio || 0,
-                totalPrice: item.totalPrice,
-                note: item.note,
-                conditionType: item.conditionType || 'normal',
-              })),
+                      { forAllCusGroup: true },
+                    ]
+                  : []),
+              ],
             },
-          },
-          ...(dto.delivery && {
-            delivery: {
-              create: {
-                receiver: dto.delivery.receiver,
-                contactNumber: dto.delivery.contactNumber,
-                address: dto.delivery.address,
-                locationName: dto.delivery.locationName,
-                wardName: dto.delivery.wardName,
-                weight: dto.delivery.weight,
-                weightUnit: dto.delivery.weightUnit || 'g',
-                length: dto.delivery.length,
-                width: dto.delivery.width,
-                height: dto.delivery.height,
-                noteForDriver: dto.delivery.noteForDriver,
+            orderBy: { priority: 'desc' },
+            take: 1,
+          });
+          priceBook = applicablePriceBooks[0] || null;
+        }
+        // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null
+
+        const invoice = await tx.invoice.create({
+          data: {
+            code,
+            customerId: dto.customerId,
+            parentCustomerId,
+            branchId: dto.branchId,
+            soldById: dto.soldById,
+            saleChannelId: dto.saleChannelId,
+            priceBookId: priceBook?.id || null,
+            priceBookName: priceBook?.name || null,
+            purchaseDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : new Date(),
+            totalAmount,
+            discount: discountAmount,
+            discountRatio: dto.discountRatio || 0,
+            grandTotal,
+            paidAmount,
+            debtAmount,
+            status,
+            statusValue: getStatusLabel(status),
+            usingCod: dto.usingCod || false,
+            description: dto.description,
+            createdBy: userId,
+            customerDebtSnapshot,
+            details: {
+              createMany: {
+                data: dto.items.map((item) => ({
+                  productId: item.productId,
+                  productCode: item.productCode,
+                  productName: item.productName,
+                  quantity: item.quantity,
+                  price: item.price,
+                  discount: item.discount || 0,
+                  discountRatio: item.discountRatio || 0,
+                  totalPrice: item.totalPrice,
+                  note: item.note,
+                  conditionType: item.conditionType || 'normal',
+                })),
               },
             },
-          }),
-        },
-        include: {
-          details: true,
-          payments: true,
-          delivery: true,
-        },
-      });
-
-      if (paidAmount > 0) {
-        const existingPayments = await tx.invoicePayment.findMany({
-          where: { invoiceId: invoice.id },
-        });
-        const paymentSequence = existingPayments.length + 1;
-        const paymentCode = `TT${invoice.code}-${paymentSequence}`;
-
-        const paymentCustomer = dto.customerId
-          ? await tx.customer.findUnique({
-              where: { id: dto.customerId },
-              select: { id: true, name: true },
-            })
-          : null;
-
-        await tx.invoicePayment.create({
-          data: {
-            code: paymentCode,
-            invoiceId: invoice.id,
-            status: 1,
-            statusValue: 'Paid',
-            amount: paidAmount,
-            paymentDate: new Date(),
-            paymentMethod: 'cash',
-            description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+            ...(dto.delivery && {
+              delivery: {
+                create: {
+                  receiver: dto.delivery.receiver,
+                  contactNumber: dto.delivery.contactNumber,
+                  address: dto.delivery.address,
+                  locationName: dto.delivery.locationName,
+                  wardName: dto.delivery.wardName,
+                  weight: dto.delivery.weight,
+                  weightUnit: dto.delivery.weightUnit || 'g',
+                  length: dto.delivery.length,
+                  width: dto.delivery.width,
+                  height: dto.delivery.height,
+                  noteForDriver: dto.delivery.noteForDriver,
+                },
+              },
+            }),
+          },
+          include: {
+            details: true,
+            payments: true,
+            delivery: true,
           },
         });
 
         if (paidAmount > 0) {
-          if (!dto.branchId) {
-            throw new Error('Vui lòng chọn chi nhánh');
-          }
+          const existingPayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.id },
+          });
+          const paymentSequence = existingPayments.length + 1;
+          const paymentCode = `TT${invoice.code}-${paymentSequence}`;
 
-          await tx.cashFlow.create({
+          const paymentCustomer = dto.customerId
+            ? await tx.customer.findUnique({
+                where: { id: dto.customerId },
+                select: { id: true, name: true },
+              })
+            : null;
+
+          await tx.invoicePayment.create({
             data: {
               code: paymentCode,
-              branchId: dto.branchId,
-              isReceipt: true,
+              invoiceId: invoice.id,
+              status: 1,
+              statusValue: 'Paid',
               amount: paidAmount,
-              transDate: new Date(),
-              method: 'cash',
-              partnerType: 'C',
-              partnerId: invoice.customerId,
-              partnerName: paymentCustomer?.name,
+              paymentDate: new Date(),
+              paymentMethod: 'cash',
               description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
-              status: 0,
-              statusValue: 'Đã thanh toán',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-              customerDebtSnapshot:
-                currentCustomerDebt + grandTotal - paidAmount,
+            },
+          });
+
+          if (paidAmount > 0) {
+            if (!dto.branchId) {
+              throw new Error('Vui lòng chọn chi nhánh');
+            }
+
+            await tx.cashFlow.create({
+              data: {
+                code: paymentCode,
+                branchId: dto.branchId,
+                isReceipt: true,
+                amount: paidAmount,
+                transDate: new Date(),
+                method: 'cash',
+                partnerType: 'C',
+                partnerId: invoice.customerId,
+                partnerName: paymentCustomer?.name,
+                description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+                status: 0,
+                statusValue: 'Đã thanh toán',
+                createdBy: userId,
+                usedForFinancialReporting: 1,
+                customerDebtSnapshot:
+                  currentCustomerDebt + grandTotal - paidAmount,
+              },
+            });
+          }
+        }
+
+        const branch = await tx.branch.findUnique({
+          where: { id: dto.branchId },
+          select: { id: true, name: true },
+        });
+
+        for (const item of dto.items) {
+          const condition = item.conditionType || 'normal';
+          const invSnapshot = await tx.inventory.findFirst({
+            where: { productId: item.productId, branchId: dto.branchId },
+          });
+
+          await this.validateConditionQuantity(
+            tx,
+            item.productId,
+            dto.branchId!,
+            item.quantity,
+            condition,
+          );
+
+          await tx.inventory.updateMany({
+            where: { productId: item.productId, branchId: dto.branchId },
+            data: this.buildInventoryDeductData(item.quantity, condition),
+          });
+
+          await tx.inventoryLog.create({
+            data: {
+              productId: item.productId,
+              productCode: item.productCode || '',
+              productName: item.productName || '',
+              branchId: dto.branchId!,
+              branchName: branch?.name || '',
+              transactionType: 'SALE',
+              refCode: invoice.code,
+              refType: 'invoice',
+              refId: invoice.id,
+              quantity: -Number(item.quantity),
+              costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+              transactionPrice: Number(item.price),
+              partnerId: dto.customerId || null,
+              partnerName: customer?.name,
             },
           });
         }
-      }
 
-      const branch = await this.prisma.branch.findUnique({
-        where: { id: dto.branchId },
-        select: { id: true, name: true },
-      });
+        if (dto.customerId) {
+          await this.updateCustomerTotals(dto.customerId, tx);
+        }
 
-      for (const item of dto.items) {
-        const condition = item.conditionType || 'normal';
-        const invSnapshot = await tx.inventory.findFirst({
-          where: { productId: item.productId, branchId: dto.branchId },
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
         });
 
-        await this.validateConditionQuantity(
-          tx,
-          item.productId,
-          dto.branchId!,
-          item.quantity,
-          condition,
-        );
-
-        await tx.inventory.updateMany({
-          where: { productId: item.productId, branchId: dto.branchId },
-          data: this.buildInventoryDeductData(item.quantity, condition),
+        const orderCode = await tx.order.findUnique({
+          where: { id: Number(invoice.orderId) },
+          select: { code: true },
         });
 
-        await tx.inventoryLog.create({
-          data: {
-            productId: item.productId,
-            productCode: item.productCode || '',
-            productName: item.productName || '',
-            branchId: dto.branchId!,
-            branchName: branch?.name || '',
-            transactionType: 'SALE',
-            refCode: invoice.code,
-            refType: 'invoice',
-            refId: invoice.id,
-            quantity: -Number(item.quantity),
-            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
-            transactionPrice: Number(item.price),
-            partnerId: dto.customerId || null,
-            partnerName: customer?.name,
+        const customerName = await tx.customer.findUnique({
+          where: { id: Number(invoice.customerId) },
+          select: { name: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'INVOICE_CREATE',
+          entityType: 'invoices',
+          entityId: invoice.id.toString(),
+          entityCode: invoice.code,
+          category: getCategoryFromActionCode('INVOICE_CREATE'),
+          severity: getSeverityFromActionCode('INVOICE_CREATE'),
+          snapshot: this.buildInvoiceSnapshot(invoice),
+          message: renderAuditMessage('INVOICE_CREATE', {
+            invoiceCode: invoice.code,
+            orderCode: orderCode || '',
+            customerName: customerName || '',
+          }),
+          messageTemplate: 'INVOICE_CREATE',
+          userId,
+          userName: user?.name || user?.email || 'System',
+          branchId: invoice.branchId || undefined,
+        });
+
+        return tx.invoice.findUnique({
+          where: { id: invoice.id },
+          include: {
+            details: true,
+            payments: true,
+            delivery: true,
+            customer: true,
+            branch: true,
+            soldBy: true,
+            priceBook: true,
           },
         });
-      }
-
-      if (dto.customerId) {
-        await this.updateCustomerTotals(dto.customerId, tx);
-      }
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
-      });
-
-      const orderCode = await tx.order.findUnique({
-        where: { id: Number(invoice.orderId) },
-        select: { code: true },
-      });
-
-      const customerName = await tx.customer.findUnique({
-        where: { id: Number(invoice.customerId) },
-        select: { name: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'INVOICE_CREATE',
-        entityType: 'invoices',
-        entityId: invoice.id.toString(),
-        entityCode: invoice.code,
-        category: getCategoryFromActionCode('INVOICE_CREATE'),
-        severity: getSeverityFromActionCode('INVOICE_CREATE'),
-        snapshot: this.buildInvoiceSnapshot(invoice),
-        message: renderAuditMessage('INVOICE_CREATE', {
-          invoiceCode: invoice.code,
-          orderCode: orderCode || '',
-          customerName: customerName || '',
-        }),
-        messageTemplate: 'INVOICE_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: invoice.branchId || undefined,
-      });
-
-      return tx.invoice.findUnique({
-        where: { id: invoice.id },
-        include: {
-          details: true,
-          payments: true,
-          delivery: true,
-          customer: true,
-          branch: true,
-          soldBy: true,
-          priceBook: true,
-        },
-      });
-    });
+      },
+      { timeout: 30000 },
+    );
   }
 
   async update(id: number, dto: UpdateInvoiceDto, userId?: number) {

@@ -13,6 +13,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
+import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
 
 @Injectable()
 export class PackingSlipsService {
@@ -20,6 +21,7 @@ export class PackingSlipsService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private n8nNotifyService: N8nNotifyService,
+    private larkExpenseSync: LarkExpenseSyncService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -60,7 +62,7 @@ export class PackingSlipsService {
         include: {
           branch: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
-          expensePayer: { select: { id: true, name: true } },
+          expensePayer: { select: { id: true, name: true, larkUserId: true } },
           invoices: {
             include: {
               invoice: {
@@ -239,6 +241,14 @@ export class PackingSlipsService {
           // Phòng ngừa, dù service đã tự log
 
           console.error('notifyDelivery unexpected error:', err);
+        });
+
+      // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
+      // Best-effort: lỗi ở đây không ảnh hưởng response.
+      void this.larkExpenseSync
+        .syncPackingSlipExpenses(fullPackingSlip as any)
+        .catch((err) => {
+          console.error('larkExpenseSync unexpected error:', err);
         });
     } catch (err) {
       console.error(

@@ -17,6 +17,7 @@ model User {
   phone     String?
   avatar    String?
   googleId  String?  @unique
+  larkUserId String? @unique @map("lark_user_id")
   branchId  Int?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
