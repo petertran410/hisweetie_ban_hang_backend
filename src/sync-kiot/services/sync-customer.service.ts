@@ -25,6 +25,27 @@ export class SyncCustomerService extends BaseSyncService {
     return this.upsertRecord(record);
   }
 
+  /**
+   * Sync toàn bộ Customer có createdDate trong khoảng [fromDate, toDate].
+   * Forward `createdDateFrom` & `createdDateTo` xuống sync_kiot_data để DB-side filter.
+   * Không update SyncControl (gọi từ orchestrator riêng).
+   */
+  async syncByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+  }> {
+    const createdDateFrom = fromDate.toISOString();
+    const createdDateTo = toDate.toISOString();
+    this.logger.log(
+      `🔄 Sync customers with createdDate in [${createdDateFrom}, ${createdDateTo}]...`,
+    );
+    return this.streamSync(undefined, { createdDateFrom, createdDateTo });
+  }
+
   protected async preloadLookups(
     records: any[],
   ): Promise<CustomerLookupContext> {

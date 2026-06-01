@@ -265,6 +265,60 @@ export class SyncKiotService {
   }
 
   /**
+   * Sync CashFlow theo khoảng transDate [fromDate, toDate].
+   * Dùng cho batch migration sổ quỹ (vd. lấy hết CashFlow trong tháng 5/2026).
+   * Không update SyncControl (giống pattern runOrdersBeforeDate) để không phá
+   * incremental sync nếu bật lại sau này.
+   */
+  async runCashflowsByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Record<string, any>> {
+    this.logger.log(
+      `📦 Starting CashFlow sync where transDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]...`,
+    );
+    try {
+      const result = await this.syncCashFlow.syncByDateRange(fromDate, toDate);
+      this.logger.log(
+        `✅ CashFlow date-range sync completed: ${JSON.stringify(result)}`,
+      );
+      return { cashFlows: { success: true, ...result } };
+    } catch (error: any) {
+      this.logger.error(
+        `❌ CashFlow date-range sync failed: ${error.message}`,
+      );
+      return { cashFlows: { success: false, error: error.message } };
+    }
+  }
+
+  /**
+   * Sync Customer theo khoảng createdDate [fromDate, toDate].
+   * Dùng cho batch migration danh sách khách hàng theo ngày tạo.
+   * Không update SyncControl (giống pattern runOrdersBeforeDate) để không phá
+   * incremental sync nếu bật lại sau này.
+   */
+  async runCustomersByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Record<string, any>> {
+    this.logger.log(
+      `📦 Starting Customer sync where createdDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]...`,
+    );
+    try {
+      const result = await this.syncCustomer.syncByDateRange(fromDate, toDate);
+      this.logger.log(
+        `✅ Customer date-range sync completed: ${JSON.stringify(result)}`,
+      );
+      return { customers: { success: true, ...result } };
+    } catch (error: any) {
+      this.logger.error(
+        `❌ Customer date-range sync failed: ${error.message}`,
+      );
+      return { customers: { success: false, error: error.message } };
+    }
+  }
+
+  /**
    * Sync 1 entity cụ thể (dùng cho webhook)
    */
   async syncSingleEntity(entityType: string, code: string): Promise<any> {

@@ -95,6 +95,142 @@ export class SyncKiotController {
     };
   }
 
+  /**
+   * Sync CashFlow theo khoảng transDate (batch migration sổ quỹ theo ngày).
+   * Body: { fromDate?: string; toDate?: string } — ISO datetime, optional.
+   *   Default fromDate: 2026-05-24T17:00:00.000Z (= 25/05/2026 00:00 giờ Asia/Ho_Chi_Minh).
+   *   Default toDate:   hết ngày hiện tại theo giờ Asia/Ho_Chi_Minh.
+   * Không update SyncControl.
+   */
+  @Post('cashflows/by-date-range')
+  async syncCashflowsByDateRange(
+    @Body() body?: { fromDate?: string; toDate?: string },
+  ) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn(
+        '⏭️ Sync disabled, skipping cashflows/by-date-range sync',
+      );
+      return { success: false, reason: 'Sync is disabled' };
+    }
+
+    // Default fromDate: 25/05/2026 00:00:00 giờ VN (UTC+7)
+    // = 2026-05-25 00:00:00+07:00 = 2026-05-24T17:00:00.000Z
+    const DEFAULT_FROM_DATE = '2026-05-24T17:00:00.000Z';
+
+    // Default toDate: hết ngày hôm nay theo giờ VN (UTC+7)
+    // = today 23:59:59.999+07:00 = today 16:59:59.999Z
+    const nowVN = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const yyyy = nowVN.getUTCFullYear();
+    const mm = String(nowVN.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(nowVN.getUTCDate()).padStart(2, '0');
+    const DEFAULT_TO_DATE = `${yyyy}-${mm}-${dd}T16:59:59.999Z`;
+
+    const fromDate = new Date(body?.fromDate ?? DEFAULT_FROM_DATE);
+    const toDate = new Date(body?.toDate ?? DEFAULT_TO_DATE);
+
+    if (isNaN(fromDate.getTime())) {
+      return {
+        success: false,
+        reason: `Invalid fromDate: ${body?.fromDate}`,
+      };
+    }
+    if (isNaN(toDate.getTime())) {
+      return {
+        success: false,
+        reason: `Invalid toDate: ${body?.toDate}`,
+      };
+    }
+    if (fromDate.getTime() > toDate.getTime()) {
+      return {
+        success: false,
+        reason: `fromDate (${fromDate.toISOString()}) must be <= toDate (${toDate.toISOString()})`,
+      };
+    }
+
+    this.logger.log(
+      `📨 Manual sync cashflows where transDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]`,
+    );
+    const results = await this.syncService.runCashflowsByDateRange(
+      fromDate,
+      toDate,
+    );
+    return {
+      success: true,
+      fromDate: fromDate.toISOString(),
+      toDate: toDate.toISOString(),
+      results,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Sync Customer theo khoảng createdDate (batch migration khách hàng theo ngày).
+   * Body: { fromDate?: string; toDate?: string } — ISO datetime, optional.
+   *   Default fromDate: 2026-05-24T17:00:00.000Z (= 25/05/2026 00:00 giờ Asia/Ho_Chi_Minh).
+   *   Default toDate:   hết ngày hiện tại theo giờ Asia/Ho_Chi_Minh.
+   * Không update SyncControl.
+   */
+  @Post('customers/by-date-range')
+  async syncCustomersByDateRange(
+    @Body() body?: { fromDate?: string; toDate?: string },
+  ) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn(
+        '⏭️ Sync disabled, skipping customers/by-date-range sync',
+      );
+      return { success: false, reason: 'Sync is disabled' };
+    }
+
+    // Default fromDate: 25/05/2026 00:00:00 giờ VN (UTC+7)
+    // = 2026-05-25 00:00:00+07:00 = 2026-05-24T17:00:00.000Z
+    const DEFAULT_FROM_DATE = '2026-05-24T17:00:00.000Z';
+
+    // Default toDate: hết ngày hôm nay theo giờ VN (UTC+7)
+    // = today 23:59:59.999+07:00 = today 16:59:59.999Z
+    const nowVN = new Date(Date.now() + 7 * 60 * 60 * 1000);
+    const yyyy = nowVN.getUTCFullYear();
+    const mm = String(nowVN.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(nowVN.getUTCDate()).padStart(2, '0');
+    const DEFAULT_TO_DATE = `${yyyy}-${mm}-${dd}T16:59:59.999Z`;
+
+    const fromDate = new Date(body?.fromDate ?? DEFAULT_FROM_DATE);
+    const toDate = new Date(body?.toDate ?? DEFAULT_TO_DATE);
+
+    if (isNaN(fromDate.getTime())) {
+      return {
+        success: false,
+        reason: `Invalid fromDate: ${body?.fromDate}`,
+      };
+    }
+    if (isNaN(toDate.getTime())) {
+      return {
+        success: false,
+        reason: `Invalid toDate: ${body?.toDate}`,
+      };
+    }
+    if (fromDate.getTime() > toDate.getTime()) {
+      return {
+        success: false,
+        reason: `fromDate (${fromDate.toISOString()}) must be <= toDate (${toDate.toISOString()})`,
+      };
+    }
+
+    this.logger.log(
+      `📨 Manual sync customers where createdDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]`,
+    );
+    const results = await this.syncService.runCustomersByDateRange(
+      fromDate,
+      toDate,
+    );
+    return {
+      success: true,
+      fromDate: fromDate.toISOString(),
+      toDate: toDate.toISOString(),
+      results,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
   @Post('webhook')
   async handleWebhook(
     @Body() body: { entityType: string; code: string; action: string },

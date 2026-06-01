@@ -28,6 +28,27 @@ export class SyncCashFlowService extends BaseSyncService {
   }
 
   /**
+   * Sync toàn bộ CashFlow có transDate trong khoảng [fromDate, toDate].
+   * Forward `transDateFrom` & `transDateTo` xuống sync_kiot_data để DB-side filter.
+   * Không update SyncControl (gọi từ orchestrator riêng).
+   */
+  async syncByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+  }> {
+    const transDateFrom = fromDate.toISOString();
+    const transDateTo = toDate.toISOString();
+    this.logger.log(
+      `🔄 Sync cashflows with transDate in [${transDateFrom}, ${transDateTo}]...`,
+    );
+    return this.streamSync(undefined, { transDateFrom, transDateTo });
+  }
+
+  /**
    * Normalize partnerType từ KiotViet sang format hisweetie
    * KiotViet: 'Customer' | '1' → 'C'
    * KiotViet: 'Supplier' | '2' → 'S'
