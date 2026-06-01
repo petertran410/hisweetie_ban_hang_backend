@@ -94,6 +94,7 @@ export class AuthService {
         branchId: user.branchId,
         branchIds,
         canViewOtherStaffData: user.canViewOtherStaffData,
+        canViewOnlyOwnPackings: user.canViewOnlyOwnPackings,
       },
     };
   }
@@ -228,6 +229,7 @@ export class AuthService {
         branchId: user.branchId,
         branchIds,
         canViewOtherStaffData: user.canViewOtherStaffData,
+        canViewOnlyOwnPackings: user.canViewOnlyOwnPackings,
       },
     };
   }
@@ -373,6 +375,7 @@ export class AuthService {
       branchId: user.branchId,
       branchIds,
       canViewOtherStaffData: user.canViewOtherStaffData,
+      canViewOnlyOwnPackings: user.canViewOnlyOwnPackings,
       permissionVersion: user.permissionVersion,
     };
   }

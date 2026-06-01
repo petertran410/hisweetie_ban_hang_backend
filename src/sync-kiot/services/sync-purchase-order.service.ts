@@ -96,6 +96,7 @@ export class SyncPurchaseOrderService extends BaseSyncService {
         where: { id: existing.id },
         data: {
           ...kiotOwnedData,
+          branchId: branch?.id || existing.branchId || null,
           total: grossTotal,
           totalAmount: grossTotal,
           discount,

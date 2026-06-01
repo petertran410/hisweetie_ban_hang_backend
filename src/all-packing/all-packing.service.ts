@@ -6,7 +6,7 @@ import { AllPackingQueryDto } from './dto/all-packing-query.dto';
 export class AllPackingService {
   constructor(private prisma: PrismaService) {}
 
-  async findAll(query: AllPackingQueryDto) {
+  async findAll(query: AllPackingQueryDto, currentUser?: any) {
     const {
       branchId,
       branchIds,
@@ -27,6 +27,12 @@ export class AllPackingService {
         ? [branchId]
         : undefined;
 
+    // Nếu user bị giới hạn chỉ xem báo đơn của chính mình → filter createdBy
+    const ownerFilterId =
+      currentUser && currentUser.canViewOnlyOwnPackings
+        ? currentUser.id
+        : undefined;
+
     let allData: any[] = [];
     let total = 0;
 
@@ -37,18 +43,21 @@ export class AllPackingService {
           search,
           invoiceSearch,
           customerSearch,
+          ownerFilterId,
         ),
         this.getPackingHangs(
           effectiveBranchIds,
           search,
           invoiceSearch,
           customerSearch,
+          ownerFilterId,
         ),
         this.getPackingLoadings(
           effectiveBranchIds,
           search,
           invoiceSearch,
           customerSearch,
+          ownerFilterId,
         ),
       ]);
 
@@ -63,6 +72,7 @@ export class AllPackingService {
         search,
         invoiceSearch,
         customerSearch,
+        ownerFilterId,
       );
       allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
     } else if (type === 'dong-hang') {
@@ -71,6 +81,7 @@ export class AllPackingService {
         search,
         invoiceSearch,
         customerSearch,
+        ownerFilterId,
       );
       allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
     } else if (type === 'loading') {
@@ -79,6 +90,7 @@ export class AllPackingService {
         search,
         invoiceSearch,
         customerSearch,
+        ownerFilterId,
       );
       allData = packingLoadings.map((item) => ({
         ...item,
@@ -102,11 +114,16 @@ export class AllPackingService {
     search?: string,
     invoiceSearch?: string,
     customerSearch?: string,
+    ownerFilterId?: number,
   ) {
     const where: any = {};
 
     if (branchIds?.length) {
       where.branchId = { in: branchIds };
+    }
+
+    if (ownerFilterId) {
+      where.createdBy = ownerFilterId;
     }
 
     if (search) {
@@ -173,11 +190,16 @@ export class AllPackingService {
     search?: string,
     invoiceSearch?: string,
     customerSearch?: string,
+    ownerFilterId?: number,
   ) {
     const where: any = {};
 
     if (branchIds?.length) {
       where.branchId = { in: branchIds };
+    }
+
+    if (ownerFilterId) {
+      where.createdBy = ownerFilterId;
     }
 
     if (search) {
@@ -246,11 +268,16 @@ export class AllPackingService {
     search?: string,
     invoiceSearch?: string,
     customerSearch?: string,
+    ownerFilterId?: number,
   ) {
     const where: any = {};
 
     if (branchIds?.length) {
       where.branchId = { in: branchIds };
+    }
+
+    if (ownerFilterId) {
+      where.createdBy = ownerFilterId;
     }
 
     if (search) {

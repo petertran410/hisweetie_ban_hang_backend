@@ -257,9 +257,7 @@ export class SyncKiotService {
       );
       return { orders: { success: true, ...result } };
     } catch (error: any) {
-      this.logger.error(
-        `❌ Order before-date sync failed: ${error.message}`,
-      );
+      this.logger.error(`❌ Order before-date sync failed: ${error.message}`);
       return { orders: { success: false, error: error.message } };
     }
   }
@@ -284,9 +282,7 @@ export class SyncKiotService {
       );
       return { cashFlows: { success: true, ...result } };
     } catch (error: any) {
-      this.logger.error(
-        `❌ CashFlow date-range sync failed: ${error.message}`,
-      );
+      this.logger.error(`❌ CashFlow date-range sync failed: ${error.message}`);
       return { cashFlows: { success: false, error: error.message } };
     }
   }
@@ -311,9 +307,7 @@ export class SyncKiotService {
       );
       return { customers: { success: true, ...result } };
     } catch (error: any) {
-      this.logger.error(
-        `❌ Customer date-range sync failed: ${error.message}`,
-      );
+      this.logger.error(`❌ Customer date-range sync failed: ${error.message}`);
       return { customers: { success: false, error: error.message } };
     }
   }

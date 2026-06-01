@@ -186,8 +186,7 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
   PURCHASE_ORDER_CANCEL: {
-    template:
-      'Hủy phiếu nhập hàng {purchaseOrderCode}, NCC: {supplierName}',
+    template: 'Hủy phiếu nhập hàng {purchaseOrderCode}, NCC: {supplierName}',
     category: 'purchase_order',
     severity: 'warning',
   },

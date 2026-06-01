@@ -67,6 +67,7 @@ export class SyncOrderSupplierService extends BaseSyncService {
         where: { id: existing.id },
         data: {
           ...kiotOwnedData,
+          branchId: branch?.id || existing.branchId || null,
           paidAmount: Number(record.paidAmount || 0),
           supplierDebt: Number(record.supplierDebt || 0),
         },

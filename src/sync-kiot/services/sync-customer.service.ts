@@ -85,8 +85,7 @@ export class SyncCustomerService extends BaseSyncService {
 
     const branchByKiotId = new Map<string, number>();
     for (const b of branches as any[]) {
-      if (b.kiotVietId != null)
-        branchByKiotId.set(String(b.kiotVietId), b.id);
+      if (b.kiotVietId != null) branchByKiotId.set(String(b.kiotVietId), b.id);
     }
 
     const customerByCode = new Map<string, number>();

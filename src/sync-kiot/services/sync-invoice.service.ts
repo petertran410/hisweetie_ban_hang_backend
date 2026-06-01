@@ -494,8 +494,7 @@ export class SyncInvoiceService extends BaseSyncService {
     });
 
     for (const pm of payments) {
-      const code =
-        pm.code || `TT${invoice?.code}-${Date.now()}-${invoiceId}`;
+      const code = pm.code || `TT${invoice?.code}-${Date.now()}-${invoiceId}`;
 
       // Check theo (code, invoiceId): 1 phiếu thu KiotViet có thể chia cho N invoice
       // → mỗi invoice có 1 InvoicePayment row riêng, nhưng cùng code chung

@@ -849,7 +849,8 @@ export class OrderSuppliersService {
       status: { in: [1, 2] },
     };
     if (branchId && !Number.isNaN(branchId)) {
-      orderSupplierWhere.branchId = branchId;
+      // Lấy cả phiếu không gắn chi nhánh (branchId = null) — áp dụng cho mọi CN
+      orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
 
     const grouped = await this.prisma.orderSupplierItem.groupBy({
@@ -885,7 +886,8 @@ export class OrderSuppliersService {
       status: { in: [1, 2] },
     };
     if (branchId && !Number.isNaN(branchId)) {
-      orderSupplierWhere.branchId = branchId;
+      // Lấy cả phiếu không gắn chi nhánh (branchId = null) — áp dụng cho mọi CN
+      orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
 
     const items = await this.prisma.orderSupplierItem.findMany({

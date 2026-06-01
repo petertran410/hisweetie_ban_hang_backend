@@ -325,8 +325,13 @@ export class OrdersService {
         }
       }
 
+      // Chỉ động đến priceBook khi DTO chủ động gửi.
+      // dto.priceBookId === undefined / null → giữ nguyên giá trị đã chốt
+      //   (PUT không kèm priceBookId từ các flow patch nhỏ như đổi trạng thái,
+      //    đổi description, đổi delivery... không được phép thay đổi bảng giá).
+      // dto.priceBookId > 0 → set theo bảng giá user chọn.
+      // dto.priceBookId === 0 → "Bảng giá chung" → null/null.
       if (dto.priceBookId !== undefined && dto.priceBookId !== null) {
-        // User chủ động chọn bảng giá từ dropdown
         if (dto.priceBookId > 0) {
           const priceBook = await tx.priceBook.findFirst({
             where: { id: dto.priceBookId, isActive: true },
@@ -337,57 +342,6 @@ export class OrdersService {
           // dto.priceBookId === 0 → "Bảng giá chung"
           updateData.priceBookId = null;
           updateData.priceBookName = null;
-        }
-      } else {
-        // priceBookId không gửi → auto-detect nếu context thay đổi
-        const needRecalculatePriceBook =
-          dto.customerId !== existingOrder.customerId ||
-          dto.branchId !== existingOrder.branchId ||
-          dto.soldById !== existingOrder.soldById;
-
-        if (needRecalculatePriceBook) {
-          const branchId = dto.branchId || existingOrder.branchId;
-          const customerId = dto.customerId || existingOrder.customerId;
-
-          const orConditions: any[] = [{ isGlobal: true }];
-
-          if (branchId) {
-            orConditions.push({
-              priceBookBranches: {
-                some: { branchId },
-              },
-            });
-          }
-
-          if (customerId) {
-            orConditions.push(
-              {
-                priceBookCustomerGroups: {
-                  some: {
-                    customerGroup: {
-                      customerGroupDetails: {
-                        some: { customerId },
-                      },
-                    },
-                  },
-                },
-              },
-              { forAllCusGroup: true },
-            );
-          }
-
-          const applicablePriceBooks = await tx.priceBook.findMany({
-            where: {
-              isActive: true,
-              OR: orConditions,
-            },
-            orderBy: { priority: 'desc' },
-            take: 1,
-          });
-
-          const priceBook = applicablePriceBooks[0] || null;
-          updateData.priceBookId = priceBook?.id || null;
-          updateData.priceBookName = priceBook?.name || null;
         }
       }
 

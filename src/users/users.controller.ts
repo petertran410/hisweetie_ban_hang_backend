@@ -163,6 +163,8 @@ export class UsersController {
       permissionIds?: number[];
       denyPermissionIds?: number[];
       branchIds?: number[];
+      canViewOtherStaffData?: boolean;
+      canViewOnlyOwnPackings?: boolean;
     },
     @Req() req: any,
   ) {

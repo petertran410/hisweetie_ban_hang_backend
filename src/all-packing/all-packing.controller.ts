@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards, Req } from '@nestjs/common';
 import { AllPackingService } from './all-packing.service';
 import { AllPackingQueryDto } from './dto/all-packing-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -15,7 +15,7 @@ export class AllPackingController {
   @Get()
   @RequirePermissions('packing_slips:view')
   @ApiOperation({ summary: 'Lấy danh sách tất cả loại báo đơn' })
-  findAll(@Query() query: AllPackingQueryDto) {
-    return this.allPackingService.findAll(query);
+  findAll(@Query() query: AllPackingQueryDto, @Req() req: any) {
+    return this.allPackingService.findAll(query, req.user);
   }
 }

@@ -1225,10 +1225,7 @@ export class PurchaseOrdersService {
 
       // Cập nhật trạng thái PDN nếu PN này thuộc PDN.
       if (purchaseOrder.orderSupplierId) {
-        await this.updateOrderSupplierStatus(
-          purchaseOrder.orderSupplierId,
-          tx,
-        );
+        await this.updateOrderSupplierStatus(purchaseOrder.orderSupplierId, tx);
       }
 
       const user = await tx.user.findUnique({
