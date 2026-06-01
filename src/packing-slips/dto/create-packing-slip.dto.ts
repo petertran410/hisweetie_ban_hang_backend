@@ -5,7 +5,26 @@ import {
   IsNumber,
   IsArray,
   IsBoolean,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class PackingSlipExpenseFileDto {
+  @IsString()
+  fileUrl: string;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string;
+
+  @IsOptional()
+  @IsString()
+  fileType?: string;
+
+  @IsOptional()
+  @IsInt()
+  fileSize?: number;
+}
 
 export class CreatePackingSlipDto {
   @IsInt()
@@ -47,6 +66,10 @@ export class CreatePackingSlipDto {
   cuocGuiHang?: number;
 
   @IsOptional()
+  @IsInt()
+  expensePayerId?: number | null;
+
+  @IsOptional()
   @IsString()
   note?: string;
 
@@ -54,4 +77,10 @@ export class CreatePackingSlipDto {
   @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PackingSlipExpenseFileDto)
+  expenseFiles?: PackingSlipExpenseFileDto[];
 }

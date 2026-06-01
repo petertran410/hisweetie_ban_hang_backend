@@ -161,6 +161,7 @@ export class AllPackingService {
       include: {
         branch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
+        expensePayer: { select: { id: true, name: true } },
         invoices: {
           include: {
             invoice: {
@@ -180,6 +181,7 @@ export class AllPackingService {
           },
         },
         images: true,
+        expenseFiles: true,
       },
       orderBy: { createdAt: 'desc' },
     });

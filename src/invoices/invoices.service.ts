@@ -36,12 +36,12 @@ export class InvoicesService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: InvoiceQueryDto, currentUser?: any) {
+  /**
+   * Tách logic build `where` để dùng chung giữa findAll và getTotals.
+   * Mọi filter (status/branch/date/payment/advanced search...) áp lên cả 2.
+   */
+  private buildInvoiceListWhere(query: InvoiceQueryDto, currentUser?: any) {
     const {
-      page = 1,
-      limit = 15,
-      pageSize,
-      currentItem,
       search,
       customerIds,
       branchId,
@@ -63,13 +63,7 @@ export class InvoicesService {
       orderCodeSearch,
       descriptionSearch,
       productNoteSearch,
-      orderBy: rawOrderBy,
-      orderDirection: rawOrderDirection,
     } = query;
-
-    const effectiveLimit = pageSize || limit;
-    const effectiveSkip =
-      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
     const where: any = {};
 
@@ -200,6 +194,130 @@ export class InvoicesService {
     if (query.saleChannelId) {
       where.saleChannelId = query.saleChannelId;
     }
+
+    return where;
+  }
+
+  /**
+   * Tổng các cột tiền của TOÀN BỘ hóa đơn match filter (không phân trang).
+   * Dùng cho hàng "tổng" hiển thị ngay dưới header bảng hóa đơn.
+   *
+   * - totalAmount/grandTotal/paidAmount/debtAmount: aggregate trực tiếp từ DB
+   * - returnOrderAmount/cashRefundAmount/debtOffsetAmount/remainingAmount:
+   *   dùng `calculateReturnSummary` cho từng invoice rồi cộng dồn — không thể
+   *   aggregate sum thuần vì `debtOffsetAmount` phụ thuộc credit per-invoice
+   *   (Math.min(totalDebtOffset, credit)) và `remainingAmount` cũng phải tính
+   *   theo từng invoice. Cộng tổng raw sẽ sai cho hóa đơn có credit > 0.
+   */
+  async getTotals(query: InvoiceQueryDto, currentUser?: any) {
+    const where = this.buildInvoiceListWhere(query, currentUser);
+
+    // Aggregate các cột raw từ DB
+    const agg = await this.prisma.invoice.aggregate({
+      where,
+      _sum: {
+        totalAmount: true,
+        grandTotal: true,
+        paidAmount: true,
+        debtAmount: true,
+      },
+      _count: { _all: true },
+    });
+
+    // Lấy minimum data để tính 4 trường computed per-invoice rồi cộng dồn.
+    // Chỉ select những field thực sự cần để tránh kéo về quá nhiều dữ liệu.
+    //
+    // ⚠ Phải chia batch theo cursor: khi where rất rộng (vd: không filter gì) số
+    // hóa đơn match có thể vượt 32k. Prisma sẽ load parent xong rồi nested
+    // `returnOrders` query với `WHERE invoiceId IN (id1, ..., idN)` — mỗi id là
+    // 1 bind variable, dễ vượt giới hạn 32767 của PostgreSQL prepared statement
+    // (`too many bind variables in prepared statement`).
+    const BATCH_SIZE = 5000;
+    let returnOrderAmount = 0;
+    let cashRefundAmount = 0;
+    let debtOffsetAmount = 0;
+    let remainingAmount = 0;
+    let cursor: { id: number } | undefined;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        select: {
+          id: true,
+          grandTotal: true,
+          paidAmount: true,
+          returnOrders: {
+            where: {
+              status: { gte: 2 },
+              code: { startsWith: 'TH' },
+            },
+            select: {
+              code: true,
+              status: true,
+              refundAmount: true,
+              refundedAmount: true,
+              refundType: true,
+            },
+          },
+        },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { cursor, skip: 1 } : {}),
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        const summary = this.calculateReturnSummary(
+          inv.returnOrders || [],
+          Number(inv.grandTotal),
+          Number(inv.paidAmount),
+        );
+        returnOrderAmount += summary.returnOrderAmount;
+        cashRefundAmount += summary.cashRefundAmount;
+        debtOffsetAmount += summary.debtOffsetAmount;
+        remainingAmount += summary.remainingAmount;
+      }
+
+      if (batch.length < BATCH_SIZE) break;
+      cursor = { id: batch[batch.length - 1].id };
+    }
+
+    const totalAmount = Number(agg._sum.totalAmount || 0);
+    const grandTotal = Number(agg._sum.grandTotal || 0);
+    const paidAmount = Number(agg._sum.paidAmount || 0);
+    const debtAmount = Number(agg._sum.debtAmount || 0);
+
+    return {
+      count: agg._count._all,
+      totalAmount,
+      grandTotal,
+      // "Khách cần trả" trên FE đang map về grandTotal — giữ nhất quán.
+      customerDebt: grandTotal,
+      paidAmount,
+      debtAmount,
+      returnOrderAmount,
+      cashRefundAmount,
+      debtOffsetAmount,
+      remainingAmount,
+    };
+  }
+
+  async findAll(query: InvoiceQueryDto, currentUser?: any) {
+    const {
+      page = 1,
+      limit = 15,
+      pageSize,
+      currentItem,
+      orderBy: rawOrderBy,
+      orderDirection: rawOrderDirection,
+    } = query;
+
+    const effectiveLimit = pageSize || limit;
+    const effectiveSkip =
+      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
+
+    const where = this.buildInvoiceListWhere(query, currentUser);
 
     // ── Sort logic ──
     const COMPUTED_SORT_FIELDS = [

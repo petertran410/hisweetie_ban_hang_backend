@@ -92,6 +92,15 @@ export class InvoicesController {
     return this.invoicesService.getDetailColumns();
   }
 
+  @Get('totals')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({
+    summary: 'Tổng các cột tiền của TOÀN BỘ hóa đơn match filter',
+  })
+  getTotals(@Query() query: InvoiceQueryDto, @CurrentUser() user: any) {
+    return this.invoicesService.getTotals(query, user);
+  }
+
   @Get('export')
   @RequirePermissions('invoices:view')
   @ApiOperation({ summary: 'Xuất Excel hóa đơn tổng quan' })

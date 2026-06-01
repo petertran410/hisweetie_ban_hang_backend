@@ -55,6 +55,12 @@ export class OrdersController {
     return this.ordersService.getPendingSummary(ids);
   }
 
+  @Get('totals')
+  @RequirePermissions('orders:view')
+  getTotals(@Query() query: OrderQueryDto, @CurrentUser() user: any) {
+    return this.ordersService.getTotals(query, user);
+  }
+
   @Get('pending-by-product')
   @RequirePermissions('orders:view')
   getPendingByProduct(

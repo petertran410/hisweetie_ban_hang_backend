@@ -24,6 +24,36 @@ const ALLOWED_MIMES = new Set([
   'image/heif-sequence',
 ]);
 
+// Cho phép cả ảnh + tài liệu (pdf, doc, xls, csv, txt, zip, ...) — dùng cho file
+// chứng từ chi phí, không qua pipeline xử lý ảnh.
+const ALLOWED_FILE_MIMES = new Set([
+  // Images
+  'image/jpeg',
+  'image/png',
+  'image/jpg',
+  'image/webp',
+  'image/gif',
+  'image/heic',
+  'image/heif',
+  'image/heic-sequence',
+  'image/heif-sequence',
+  // Documents
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/plain',
+  'text/csv',
+  'application/csv',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/x-rar-compressed',
+  'application/octet-stream',
+]);
+
 @Controller('upload')
 export class UploadController {
   private readonly logger = new Logger(UploadController.name);
@@ -112,5 +142,89 @@ export class UploadController {
   async deleteFile(@Param('filename') filename: string) {
     await this.uploadService.deleteFile(filename);
     return { message: 'File deleted successfully' };
+  }
+
+  @Post('file')
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAnyFile(
+    @UploadedFile() file: Express.Multer.File,
+    @Query('subfolder') subfolder?: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
+      throw new BadRequestException(
+        `Mime type không được hỗ trợ: ${file.mimetype}`,
+      );
+    }
+
+    try {
+      return await this.uploadService.saveFile(
+        file.buffer,
+        file.originalname,
+        file.mimetype,
+        subfolder,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Upload file thất bại: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+      throw err;
+    }
+  }
+
+  @Post('files')
+  @UseInterceptors(FilesInterceptor('files', 30))
+  async uploadAnyFiles(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Query('subfolder') subfolder?: string,
+  ) {
+    if (!files || files.length === 0) {
+      throw new BadRequestException('At least one file is required');
+    }
+
+    const items: {
+      filename: string;
+      url: string;
+      size: number;
+      mimetype: string;
+      originalname: string;
+    }[] = [];
+    const errors: { originalname: string; reason: string }[] = [];
+
+    for (const file of files) {
+      if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
+        errors.push({
+          originalname: file.originalname,
+          reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
+        });
+        continue;
+      }
+
+      try {
+        const result = await this.uploadService.saveFile(
+          file.buffer,
+          file.originalname,
+          file.mimetype,
+          subfolder,
+        );
+        items.push(result);
+      } catch (err) {
+        const message = (err as Error).message || 'Unknown error';
+        this.logger.error(
+          `Upload files batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
+          (err as Error).stack,
+        );
+        errors.push({
+          originalname: file.originalname,
+          reason: message,
+        });
+      }
+    }
+
+    return { items, errors };
   }
 }

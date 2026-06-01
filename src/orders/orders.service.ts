@@ -528,12 +528,12 @@ export class OrdersService {
     return result;
   }
 
-  async findAll(query: OrderQueryDto, currentUser?: any) {
+  /**
+   * Tách logic build `where` để dùng chung giữa findAll và getTotals.
+   * Mọi filter (status/branch/date/payment...) thay đổi đều áp lên cả 2.
+   */
+  private buildOrderListWhere(query: OrderQueryDto, currentUser?: any) {
     const {
-      page = 1,
-      limit = 10,
-      pageSize,
-      currentItem,
       search,
       status,
       statuses,
@@ -548,13 +548,7 @@ export class OrdersService {
       saleChannelId,
       paymentMethod,
       bankAccountIds,
-      orderBy: rawOrderBy,
-      orderDirection: rawOrderDirection,
     } = query;
-
-    const effectiveLimit = pageSize || limit;
-    const effectiveSkip =
-      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
     const where: any = {};
 
@@ -601,6 +595,59 @@ export class OrdersService {
       }
       where.payments = { some: paymentWhere };
     }
+
+    return where;
+  }
+
+  /**
+   * Tổng các cột tiền của TOÀN BỘ đơn match filter (không phân trang).
+   * Dùng cho hàng "tổng" hiển thị ngay dưới header bảng đặt hàng.
+   */
+  async getTotals(query: OrderQueryDto, currentUser?: any) {
+    const where = this.buildOrderListWhere(query, currentUser);
+
+    const agg = await this.prisma.order.aggregate({
+      where,
+      _sum: {
+        totalAmount: true,
+        grandTotal: true,
+        paidAmount: true,
+        debtAmount: true,
+      },
+      _count: { _all: true },
+    });
+
+    const totalAmount = Number(agg._sum.totalAmount || 0);
+    const grandTotal = Number(agg._sum.grandTotal || 0);
+    const paidAmount = Number(agg._sum.paidAmount || 0);
+    const debtAmount = Number(agg._sum.debtAmount || 0);
+
+    return {
+      count: agg._count._all,
+      totalAmount,
+      grandTotal,
+      // "Khách cần trả" trên FE đang hiển thị grandTotal — giữ nhất quán.
+      customerDebt: grandTotal,
+      paidAmount,
+      debtAmount,
+    };
+  }
+
+  async findAll(query: OrderQueryDto, currentUser?: any) {
+    const {
+      page = 1,
+      limit = 10,
+      pageSize,
+      currentItem,
+      orderBy: rawOrderBy,
+      orderDirection: rawOrderDirection,
+    } = query;
+
+    const effectiveLimit = pageSize || limit;
+    const effectiveSkip =
+      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
+
+    const where = this.buildOrderListWhere(query, currentUser);
 
     const VALID_ORDER_BY = new Set([
       'orderDate',

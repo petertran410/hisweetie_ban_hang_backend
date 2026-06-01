@@ -60,6 +60,7 @@ export class PackingSlipsService {
         include: {
           branch: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
+          expensePayer: { select: { id: true, name: true } },
           invoices: {
             include: {
               invoice: {
@@ -81,6 +82,7 @@ export class PackingSlipsService {
             },
           },
           images: true,
+          expenseFiles: true,
         },
         orderBy: { createdAt: 'desc' },
         skip: currentItem,
@@ -98,6 +100,7 @@ export class PackingSlipsService {
       include: {
         branch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
+        expensePayer: { select: { id: true, name: true } },
         invoices: {
           include: {
             invoice: {
@@ -125,6 +128,7 @@ export class PackingSlipsService {
           },
         },
         images: true,
+        expenseFiles: true,
       },
     });
 
@@ -152,6 +156,7 @@ export class PackingSlipsService {
           feeGrab: dto.feeGrab || 0,
           hasCuocGuiHang: dto.hasCuocGuiHang,
           cuocGuiHang: dto.cuocGuiHang || 0,
+          expensePayerId: dto.expensePayerId ?? null,
           note: dto.note,
           createdBy: userId,
           invoices: {
@@ -160,12 +165,25 @@ export class PackingSlipsService {
           images: dto.imageUrls
             ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
             : undefined,
+          expenseFiles:
+            dto.expenseFiles && dto.expenseFiles.length > 0
+              ? {
+                  create: dto.expenseFiles.map((f) => ({
+                    fileUrl: f.fileUrl,
+                    fileName: f.fileName,
+                    fileType: f.fileType,
+                    fileSize: f.fileSize,
+                  })),
+                }
+              : undefined,
         },
         include: {
           branch: true,
           creator: true,
+          expensePayer: true,
           invoices: { include: { invoice: true } },
           images: true,
+          expenseFiles: true,
         },
       });
 
@@ -250,6 +268,10 @@ export class PackingSlipsService {
         note: dto.note,
       };
 
+      if ('expensePayerId' in dto) {
+        updateData.expensePayerId = dto.expensePayerId ?? null;
+      }
+
       if (dto.invoiceIds) {
         await tx.packingSlipInvoice.deleteMany({
           where: { packingSlipId: id },
@@ -266,14 +288,32 @@ export class PackingSlipsService {
         };
       }
 
+      if (dto.expenseFiles) {
+        await tx.packingSlipExpenseFile.deleteMany({
+          where: { packingSlipId: id },
+        });
+        if (dto.expenseFiles.length > 0) {
+          updateData.expenseFiles = {
+            create: dto.expenseFiles.map((f) => ({
+              fileUrl: f.fileUrl,
+              fileName: f.fileName,
+              fileType: f.fileType,
+              fileSize: f.fileSize,
+            })),
+          };
+        }
+      }
+
       return tx.packingSlip.update({
         where: { id },
         data: updateData,
         include: {
           branch: true,
           creator: true,
+          expensePayer: true,
           invoices: { include: { invoice: true } },
           images: true,
+          expenseFiles: true,
         },
       });
     });

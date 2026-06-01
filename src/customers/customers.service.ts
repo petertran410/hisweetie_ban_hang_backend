@@ -331,22 +331,19 @@ export class CustomersService {
     await workbook.commit();
   }
 
-  async findAll(query: CustomerQueryDto, userId?: number) {
+  /**
+   * Tách logic build `where` để dùng chung giữa findAll và getTotals.
+   * Async vì có raw SQL query phục vụ tìm kiếm `name` (unaccent + multi-token).
+   * Mọi filter thay đổi đều áp lên cả 2 endpoint.
+   */
+  private async buildCustomerListWhere(query: CustomerQueryDto) {
     const {
       code,
       name,
       contactNumber,
       lastModifiedFrom,
-      pageSize = 20,
-      currentItem = 0,
-      orderBy = 'createdAt',
-      orderDirection = 'desc',
-      includeRemoveIds = false,
-      includeTotal = false,
-      includeCustomerGroup = false,
       birthDate,
       groupId,
-      includeCustomerSocial = false,
       customerType,
       gender,
       branchId,
@@ -539,6 +536,51 @@ export class CustomersService {
         where.totalPoint.lte = pointTo;
       }
     }
+
+    return where;
+  }
+
+  /**
+   * Tổng các cột tiền của TOÀN BỘ khách hàng match filter (không phân trang).
+   * Dùng cho hàng "tổng" hiển thị ngay dưới header bảng khách hàng.
+   * 3 trường totalDebt/totalPurchased/totalRevenue đã được lưu sẵn trên
+   * `customers` (cập nhật khi tạo/sửa/xóa invoice/payment) → aggregate sum
+   * trực tiếp là chính xác.
+   */
+  async getTotals(query: CustomerQueryDto) {
+    const where = await this.buildCustomerListWhere(query);
+
+    const agg = await this.prisma.customer.aggregate({
+      where,
+      _sum: {
+        totalDebt: true,
+        totalPurchased: true,
+        totalRevenue: true,
+      },
+      _count: { _all: true },
+    });
+
+    return {
+      count: agg._count._all,
+      totalDebt: Number(agg._sum.totalDebt || 0),
+      totalPurchased: Number(agg._sum.totalPurchased || 0),
+      totalRevenue: Number(agg._sum.totalRevenue || 0),
+    };
+  }
+
+  async findAll(query: CustomerQueryDto, userId?: number) {
+    const {
+      pageSize = 20,
+      currentItem = 0,
+      orderBy = 'createdAt',
+      orderDirection = 'desc',
+      includeRemoveIds = false,
+      includeTotal = false,
+      includeCustomerGroup = false,
+      includeCustomerSocial = false,
+    } = query;
+
+    const where = await this.buildCustomerListWhere(query);
 
     const [data, total] = await Promise.all([
       this.prisma.customer.findMany({

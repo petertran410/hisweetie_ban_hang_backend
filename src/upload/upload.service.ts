@@ -157,6 +157,57 @@ export class UploadService {
     }
   }
 
+  /**
+   * Lưu file gốc (không nén, không resize). Dùng cho file PDF, doc, xls, csv,...
+   * và cả ảnh trong trường hợp cần giữ nguyên file.
+   */
+  async saveFile(
+    buffer: Buffer,
+    originalname: string,
+    mimetype: string,
+    subfolder?: string,
+  ): Promise<{
+    filename: string;
+    url: string;
+    size: number;
+    mimetype: string;
+    originalname: string;
+  }> {
+    const timestamp = Date.now();
+    const randomName = Array(16)
+      .fill(null)
+      .map(() => Math.floor(Math.random() * 16).toString(16))
+      .join('');
+
+    const idx = originalname.lastIndexOf('.');
+    const ext = idx >= 0 ? originalname.slice(idx).toLowerCase() : '';
+    const filename = `${timestamp}-${randomName}${ext}`;
+
+    const uploadDir = join(process.cwd(), 'uploads', subfolder || '');
+    if (!existsSync(uploadDir)) {
+      mkdirSync(uploadDir, { recursive: true });
+    }
+
+    const filePath = join(uploadDir, filename);
+    try {
+      writeFileSync(filePath, buffer);
+    } catch (err) {
+      this.logger.error(
+        `Ghi file thất bại ${filePath}: ${(err as Error).message}`,
+        (err as Error).stack,
+      );
+      throw new Error(`Write file failed: ${(err as Error).message}`);
+    }
+
+    return {
+      filename,
+      url: this.getFileUrl(filename, subfolder),
+      size: buffer.length,
+      mimetype,
+      originalname,
+    };
+  }
+
   private extFromMime(mime: string, originalname: string): string {
     if (mime === 'image/png') return '.png';
     if (mime === 'image/webp') return '.webp';

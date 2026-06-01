@@ -52,6 +52,7 @@ model User {
   createdSupplierGroups SupplierGroup[] @relation("SupplierGroupCreator")
   createdSuppliers      Supplier[]      @relation("SupplierCreator")
   createdPackingSlips   PackingSlip[]   @relation("PackingSlipCreator")
+  paidPackingSlips      PackingSlip[]   @relation("PackingSlipExpensePayer")
   createdPackingHangs   PackingHang[]   @relation("PackingHangCreator")
   createdPackingLoadings PackingLoading[] @relation("PackingLoadingCreator")
   loadedPackingLoadings  PackingLoading[] @relation("PackingLoadingUser")
@@ -1900,6 +1901,7 @@ model PackingSlip {
   feeGrab         Decimal? @default(0)
   hasCuocGuiHang  Boolean  @default(false)
   cuocGuiHang     Decimal? @default(0)
+  expensePayerId  Int?
   note            String?
   createdBy       Int
   createdAt       DateTime @default(now())
@@ -1907,8 +1909,10 @@ model PackingSlip {
 
   branch          Branch              @relation(fields: [branchId], references: [id])
   creator         User                @relation("PackingSlipCreator", fields: [createdBy], references: [id])
+  expensePayer    User?               @relation("PackingSlipExpensePayer", fields: [expensePayerId], references: [id])
   invoices        PackingSlipInvoice[]
   images          PackingSlipImage[]
+  expenseFiles    PackingSlipExpenseFile[]
 
   @@map("packing_slips")
 }
@@ -1935,6 +1939,20 @@ model PackingSlipImage {
   packingSlip    PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
 
   @@map("packing_slip_images")
+}
+
+model PackingSlipExpenseFile {
+  id             Int      @id @default(autoincrement())
+  packingSlipId  Int
+  fileUrl        String
+  fileName       String?
+  fileType       String?
+  fileSize       Int?
+  createdAt      DateTime @default(now())
+
+  packingSlip    PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
+
+  @@map("packing_slip_expense_files")
 }
 
 model NoteTemplate {

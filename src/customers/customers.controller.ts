@@ -47,6 +47,15 @@ export class CustomersController {
     return this.customersService.searchCustomers(search);
   }
 
+  @Get('totals')
+  @RequirePermissions('customers:view')
+  @ApiOperation({
+    summary: 'Tổng các cột tiền của TOÀN BỘ khách hàng match filter',
+  })
+  getTotals(@Query() query: CustomerQueryDto) {
+    return this.customersService.getTotals(query);
+  }
+
   @Get('code/:code')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo Code' })
