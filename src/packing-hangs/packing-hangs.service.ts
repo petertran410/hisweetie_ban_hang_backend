@@ -379,20 +379,4 @@ export class PackingHangsService {
       })),
     };
   }
-
-  async checkInvoices(
-    invoiceIds: number[],
-  ): Promise<{ invoiceId: number; code: string }[]> {
-    if (!invoiceIds.length) return [];
-
-    const records = await this.prisma.packingHangInvoice.findMany({
-      where: { invoiceId: { in: invoiceIds } },
-      include: { packingHang: { select: { code: true } } },
-    });
-
-    return records.map((r) => ({
-      invoiceId: r.invoiceId,
-      code: r.packingHang.code,
-    }));
-  }
 }

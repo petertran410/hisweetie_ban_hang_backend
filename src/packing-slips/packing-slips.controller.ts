@@ -15,7 +15,6 @@ import {
   CreatePackingSlipDto,
   UpdatePackingSlipDto,
   PackingSlipQueryDto,
-  CheckInvoicesDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -32,12 +31,6 @@ export class PackingSlipsController {
   @RequirePermissions('packing_slips:view')
   findAll(@Query() query: PackingSlipQueryDto) {
     return this.packingSlipsService.findAll(query);
-  }
-
-  @Post('check-invoices')
-  @RequirePermissions('packing_slips:view')
-  checkInvoices(@Body() dto: CheckInvoicesDto) {
-    return this.packingSlipsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')

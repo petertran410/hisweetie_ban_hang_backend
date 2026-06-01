@@ -15,7 +15,6 @@ import {
   CreatePackingHangDto,
   UpdatePackingHangDto,
   PackingHangQueryDto,
-  CheckInvoicesDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -32,12 +31,6 @@ export class PackingHangsController {
   @RequirePermissions('packing_hangs:view')
   findAll(@Query() query: PackingHangQueryDto) {
     return this.packingHangsService.findAll(query);
-  }
-
-  @Post('check-invoices')
-  @RequirePermissions('packing_hangs:view')
-  checkInvoices(@Body() dto: CheckInvoicesDto) {
-    return this.packingHangsService.checkInvoices(dto.invoiceIds);
   }
 
   @Get(':id')

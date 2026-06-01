@@ -6,7 +6,10 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { PERMISSIONS_KEY } from '../decorators/permissions.decorator';
+import {
+  PERMISSIONS_KEY,
+  ANY_PERMISSIONS_KEY,
+} from '../decorators/permissions.decorator';
 import { AuthService } from '../auth.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
@@ -26,7 +29,16 @@ export class PermissionsGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
-    if (!requiredPermissions || requiredPermissions.length === 0) {
+    const anyPermissions = this.reflector.getAllAndOverride<string[]>(
+      ANY_PERMISSIONS_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    const hasRequired =
+      Array.isArray(requiredPermissions) && requiredPermissions.length > 0;
+    const hasAny = Array.isArray(anyPermissions) && anyPermissions.length > 0;
+
+    if (!hasRequired && !hasAny) {
       return true;
     }
 
@@ -59,14 +71,22 @@ export class PermissionsGuard implements CanActivate {
       permissions = user.permissions || [];
     }
 
-    const hasPermission = requiredPermissions.every((permission) =>
-      permissions.includes(permission),
-    );
+    if (hasRequired) {
+      const ok = requiredPermissions.every((p) => permissions.includes(p));
+      if (!ok) {
+        throw new ForbiddenException(
+          `Bạn không có quyền thực hiện thao tác này. Cần quyền: ${requiredPermissions.join(', ')}`,
+        );
+      }
+    }
 
-    if (!hasPermission) {
-      throw new ForbiddenException(
-        `Bạn không có quyền thực hiện thao tác này. Cần quyền: ${requiredPermissions.join(', ')}`,
-      );
+    if (hasAny) {
+      const ok = anyPermissions.some((p) => permissions.includes(p));
+      if (!ok) {
+        throw new ForbiddenException(
+          `Bạn không có quyền thực hiện thao tác này. Cần một trong các quyền: ${anyPermissions.join(', ')}`,
+        );
+      }
     }
 
     return true;

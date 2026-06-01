@@ -21,7 +21,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequirePermissions, RequireAnyPermission } from '../auth/decorators/permissions.decorator';
 import { Response } from 'express';
 
 @ApiTags('Invoices')
@@ -59,6 +59,24 @@ export class InvoicesController {
       search,
       branchId: branchId ? +branchId : undefined,
       limit: limit ? +limit : 20,
+    });
+  }
+
+  @Get('for-packing')
+  @RequireAnyPermission(
+    'packing_slips:create',
+    'packing_hangs:create',
+    'packing_loadings:create',
+    'invoices:view',
+  )
+  @ApiOperation({ summary: 'Lấy hóa đơn cho luồng báo đơn (minimal fields)' })
+  findForPacking(
+    @Query('branchId') branchId?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.invoicesService.findForPacking({
+      branchId: branchId ? +branchId : undefined,
+      pageSize: pageSize ? +pageSize : 100,
     });
   }
 
