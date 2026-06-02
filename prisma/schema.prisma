@@ -2364,3 +2364,23 @@ enum MisaSyncStatus {
   FAILED
   SKIP
 }
+
+// Phiên upload ảnh từ điện thoại qua QR (mô hình qrcp).
+// Máy tính tạo phiên + hiển thị QR; điện thoại quét rồi upload ảnh vào phiên.
+// Postgres không có TTL → expiresAt là cột thường, kiểm tra hết hạn bằng code.
+model UploadSession {
+  id          String   @id @default(uuid())
+  token       String
+  subfolder   String   @db.VarChar(100)
+  status      String   @default("active") @db.VarChar(20) // active | closed
+  images      Json     @default("[]") // mảng URL string[]
+  maxFiles    Int      @default(30)
+  createdById Int?     @map("created_by_id")
+  expiresAt   DateTime @map("expires_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([expiresAt])
+  @@index([createdById])
+  @@map("upload_sessions")
+}
