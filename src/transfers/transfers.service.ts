@@ -27,6 +27,7 @@ export class TransfersService {
 
   async findAll(query: TransferQueryDto) {
     const {
+      search,
       fromBranchIds,
       toBranchIds,
       currentBranchId,
@@ -40,6 +41,10 @@ export class TransfersService {
     } = query;
 
     const where: any = {};
+
+    if (search && search.trim()) {
+      where.code = { contains: search.trim(), mode: 'insensitive' };
+    }
 
     if (currentBranchId) {
       const baseConditions: any[] = [

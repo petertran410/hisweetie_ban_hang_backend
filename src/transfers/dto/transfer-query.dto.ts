@@ -1,7 +1,18 @@
-import { IsOptional, IsArray, IsNumber, IsDateString } from 'class-validator';
+import {
+  IsOptional,
+  IsArray,
+  IsNumber,
+  IsDateString,
+  IsString,
+} from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
 export class TransferQueryDto {
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+
   @IsOptional()
   @Transform(({ value }) => (value ? value.split(',').map(Number) : undefined))
   @IsArray()

@@ -1134,74 +1134,138 @@ export class ProductsService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy.
-    // refType lưu ở InventoryLog: invoice, return_order, supplier_return,
+    // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy hoặc đã bị xóa cứng.
+    // refType ghi ở InventoryLog: invoice, return_order, supplier_return,
     // stock_audit, purchase_order, transfer, destruction, production…
-    // Hiện chỉ những loại có khái niệm "Đã hủy" rõ ràng và phổ biến cần lọc:
-    //   - invoice          → Invoice.status = 2 (CANCELLED)
-    //   - return_order     → ReturnOrder.status = 5 (CANCELLED)
-    //   - supplier_return  → SupplierReturn.status = 4 (CANCELLED)
-    //   - stock_audit      → StockAudit.status = 3 (CANCELLED)
+    //
+    // Mapping refType → status code "Đã hủy":
+    //   - invoice          → Invoice.status        = 2
+    //   - return_order     → ReturnOrder.status    = 5
+    //   - supplier_return  → SupplierReturn.status = 4
+    //   - stock_audit      → StockAudit.status     = 3
+    //   - purchase_order   → PurchaseOrder.status  = 2
+    //   - transfer         → Transfer.status       = 4
+    //   - production       → Production.status     = 3
+    //   - destruction      → Destruction.status    = 3
+    //
+    // Cách tiếp cận: với mỗi refType, query các id ACTIVE (record còn tồn tại
+    // và status != cancelled). Log nào trỏ tới id không thuộc active set → ẩn.
+    // Cách này cover cả 2 case:
+    //   a) record bị cancel (status = mã hủy ở trên)
+    //   b) record bị xóa cứng (Invoice.remove, PurchaseOrder.remove, …)
+    // Đồng thời cũng ẩn luôn log đối ứng (STOCK_AUDIT_CANCEL, TRANSFER_CANCEL)
+    // vì cùng refType+refId → đúng theo yêu cầu "không hiển thị đơn đã hủy".
     const refIdsByType: Record<string, Set<number>> = {};
     for (const log of rawLogs) {
       if (!log.refType || !log.refId) continue;
       (refIdsByType[log.refType] ||= new Set()).add(log.refId);
     }
 
-    const cancelledKeys = new Set<string>(); // `${refType}:${refId}`
+    const activeKeys = new Set<string>(); // `${refType}:${refId}` còn active
 
-    const collectCancelled = async (
+    const collectActive = async (
       refType: string,
       ids: number[],
       finder: (ids: number[]) => Promise<{ id: number }[]>,
     ) => {
       if (ids.length === 0) return;
-      const cancelled = await finder(ids);
-      cancelled.forEach((row) => cancelledKeys.add(`${refType}:${row.id}`));
+      const active = await finder(ids);
+      active.forEach((row) => activeKeys.add(`${refType}:${row.id}`));
     };
 
     await Promise.all([
-      collectCancelled(
+      collectActive(
         'invoice',
         Array.from(refIdsByType['invoice'] || []),
         (ids) =>
           this.prisma.invoice.findMany({
-            where: { id: { in: ids }, status: 2 },
+            where: { id: { in: ids }, status: { not: 2 } },
             select: { id: true },
           }),
       ),
-      collectCancelled(
+      collectActive(
         'return_order',
         Array.from(refIdsByType['return_order'] || []),
         (ids) =>
           this.prisma.returnOrder.findMany({
-            where: { id: { in: ids }, status: 5 },
+            where: { id: { in: ids }, status: { not: 5 } },
             select: { id: true },
           }),
       ),
-      collectCancelled(
+      collectActive(
         'supplier_return',
         Array.from(refIdsByType['supplier_return'] || []),
         (ids) =>
           this.prisma.supplierReturn.findMany({
-            where: { id: { in: ids }, status: 4 },
+            where: { id: { in: ids }, status: { not: 4 } },
             select: { id: true },
           }),
       ),
-      collectCancelled(
+      collectActive(
         'stock_audit',
         Array.from(refIdsByType['stock_audit'] || []),
         (ids) =>
           this.prisma.stockAudit.findMany({
-            where: { id: { in: ids }, status: 3 },
+            where: { id: { in: ids }, status: { not: 3 } },
+            select: { id: true },
+          }),
+      ),
+      collectActive(
+        'purchase_order',
+        Array.from(refIdsByType['purchase_order'] || []),
+        (ids) =>
+          this.prisma.purchaseOrder.findMany({
+            where: { id: { in: ids }, status: { not: 2 } },
+            select: { id: true },
+          }),
+      ),
+      collectActive(
+        'transfer',
+        Array.from(refIdsByType['transfer'] || []),
+        (ids) =>
+          this.prisma.transfer.findMany({
+            where: { id: { in: ids }, status: { not: 4 } },
+            select: { id: true },
+          }),
+      ),
+      collectActive(
+        'production',
+        Array.from(refIdsByType['production'] || []),
+        (ids) =>
+          this.prisma.production.findMany({
+            where: { id: { in: ids }, status: { not: 3 } },
+            select: { id: true },
+          }),
+      ),
+      collectActive(
+        'destruction',
+        Array.from(refIdsByType['destruction'] || []),
+        (ids) =>
+          this.prisma.destruction.findMany({
+            where: { id: { in: ids }, status: { not: 3 } },
             select: { id: true },
           }),
       ),
     ]);
 
-    const activeLogs = rawLogs.filter(
-      (log) => !cancelledKeys.has(`${log.refType}:${log.refId}`),
-    );
+    // Danh sách refType có rule kiểm tra. refType ngoài danh sách này coi như
+    // luôn active (giữ hành vi cũ — không vô tình ẩn dữ liệu hợp lệ).
+    const KNOWN_REF_TYPES = new Set([
+      'invoice',
+      'return_order',
+      'supplier_return',
+      'stock_audit',
+      'purchase_order',
+      'transfer',
+      'production',
+      'destruction',
+    ]);
+
+    const activeLogs = rawLogs.filter((log) => {
+      if (!log.refType || !log.refId) return true; // log lẻ — không có chứng từ
+      if (!KNOWN_REF_TYPES.has(log.refType)) return true;
+      return activeKeys.has(`${log.refType}:${log.refId}`);
+    });
 
     // Bước 2: gộp các log cùng (refType, refCode, transactionType) thành 1 dòng
     // — sum quantity, các trường còn lại lấy theo dòng đại diện (mới nhất).
