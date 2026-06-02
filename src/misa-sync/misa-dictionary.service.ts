@@ -709,4 +709,28 @@ export class MisaDictionaryService {
     if (union.size === 0) return 0;
     return intersection.size / union.size;
   }
+
+  /**
+   * Danh sách nhân viên phụ trách (Misa account object với isEmployee = true).
+   * Dùng cho dropdown filter "Nhân viên phụ trách" ở trang hóa đơn VAT.
+   */
+  async findEmployees(): Promise<
+    { id: string; code: string; name: string }[]
+  > {
+    const employees = await this.prisma.misaAccountObject.findMany({
+      where: { isEmployee: true, inactive: false },
+      select: {
+        accountObjectId: true,
+        accountObjectCode: true,
+        accountObjectName: true,
+      },
+      orderBy: { accountObjectName: 'asc' },
+    });
+
+    return employees.map((e) => ({
+      id: e.accountObjectId,
+      code: e.accountObjectCode,
+      name: e.accountObjectName,
+    }));
+  }
 }

@@ -102,14 +102,14 @@ export class InvoicesController {
   }
 
   @Get('vat')
-  @RequirePermissions('invoices:view')
+  @RequirePermissions('vat_invoices:view')
   @ApiOperation({ summary: 'Danh sách hóa đơn VAT (dữ liệu Misa)' })
   findAllVat(@Query() query: InvoiceQueryDto, @CurrentUser() user: any) {
     return this.invoicesService.findAllVat(query, user);
   }
 
   @Get('vat/totals')
-  @RequirePermissions('invoices:view')
+  @RequirePermissions('vat_invoices:view')
   @ApiOperation({
     summary: 'Tổng các cột VAT của TOÀN BỘ hóa đơn match filter',
   })

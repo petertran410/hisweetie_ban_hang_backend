@@ -11,6 +11,7 @@ import {
   ANY_PERMISSIONS_KEY,
 } from '../decorators/permissions.decorator';
 import { AuthService } from '../auth.service';
+import { PermissionCacheService } from '../../permission-cache/permission-cache.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 
@@ -21,6 +22,7 @@ export class PermissionsGuard implements CanActivate {
   constructor(
     private reflector: Reflector,
     private authService: AuthService,
+    private permissionCache: PermissionCacheService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -63,10 +65,19 @@ export class PermissionsGuard implements CanActivate {
     let permissions: string[];
 
     if (branchId && !isNaN(branchId)) {
-      permissions = await this.authService.getPermissionsForBranch(
-        user.id,
-        branchId,
-      );
+      // Cache theo cặp user + chi nhánh (TTL 60s). Hit → bỏ qua 2 query DB.
+      // Cache được invalidate qua PermissionCacheService.invalidateUser/invalidateAll
+      // mỗi khi quyền của user/role thay đổi (xem users.service & roles.service).
+      const cached = this.permissionCache.getBranch(user.id, branchId);
+      if (cached) {
+        permissions = cached;
+      } else {
+        permissions = await this.authService.getPermissionsForBranch(
+          user.id,
+          branchId,
+        );
+        this.permissionCache.setBranch(user.id, branchId, permissions);
+      }
     } else {
       permissions = user.permissions || [];
     }

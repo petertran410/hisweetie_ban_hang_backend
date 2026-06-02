@@ -28,6 +28,14 @@ export class PurchaseOrderItemDto {
   @IsOptional()
   discountRatio?: number;
 
+  // Thành tiền do FE tính sẵn (số nguyên). Khi có, BE lưu thẳng giá trị này
+  // thay vì recompute (price - discount) * quantity — tránh sai lệch do đơn
+  // giá có tới 3 số thập phân (vd 333.333 * 3 = 999.999). Nếu không gửi,
+  // BE fallback về công thức cũ.
+  @IsNumber()
+  @IsOptional()
+  totalPrice?: number;
+
   @IsString()
   @IsOptional()
   description?: string;

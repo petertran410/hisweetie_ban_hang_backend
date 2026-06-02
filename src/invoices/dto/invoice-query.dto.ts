@@ -214,4 +214,20 @@ export class InvoiceQueryDto {
   @IsArray()
   @IsIn(['PENDING', 'SYNCED', 'FAILED', 'SKIP'], { each: true })
   misaSyncStatus?: ('PENDING' | 'SYNCED' | 'FAILED' | 'SKIP')[];
+
+  // Lọc theo nhân viên phụ trách (Misa) — khớp customer.misaEmployeeCode
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : value,
+  )
+  @IsArray()
+  @IsString({ each: true })
+  misaEmployeeCodes?: string[];
 }

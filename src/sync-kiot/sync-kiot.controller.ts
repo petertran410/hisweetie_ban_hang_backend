@@ -231,34 +231,6 @@ export class SyncKiotController {
     };
   }
 
-  @Post('webhook')
-  async handleWebhook(
-    @Body() body: { entityType: string; code: string; action: string },
-  ) {
-    // Tạm disable webhook để tránh sync KiotViet tạo duplicate OrderItem
-    // (lineNumber=null từ user save không match với upsert lineNumber=1..N của sync).
-    // Bật lại sau khi fix Bug C hoàn tất.
-    this.logger.warn(
-      `⏭️ Webhook disabled (Bug C mitigation): ${body.entityType} ${body.code} (${body.action})`,
-    );
-    return { success: false, reason: 'Webhook is temporarily disabled' };
-
-    // if (!(await this.syncService.isSyncEnabled())) {
-    //   this.logger.warn(
-    //     `⏭️ Sync disabled, skipping webhook: ${body.entityType} ${body.code}`,
-    //   );
-    //   return { success: false, reason: 'Sync is disabled' };
-    // }
-    // this.logger.log(
-    //   `📨 Webhook: ${body.entityType} ${body.code} (${body.action})`,
-    // );
-    // const result = await this.syncService.syncSingleEntity(
-    //   body.entityType,
-    //   body.code,
-    // );
-    // return { success: true, result };
-  }
-
   @Get('status')
   async getSyncStatus() {
     return this.syncService['prisma'].syncControl.findMany({

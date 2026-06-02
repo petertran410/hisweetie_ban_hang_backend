@@ -9,7 +9,9 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { MisaCallbackRequestDto } from './dto';
+import { MisaBulkVoucherRequestDto } from './dto';
 import { MisaDictionaryService } from './misa-dictionary.service';
 import { MisaVoucherService } from './misa-voucher.service';
 
@@ -24,7 +26,17 @@ export class MisaSyncController {
     private readonly misaDictionaryService: MisaDictionaryService,
   ) {}
 
+  @Get('employees')
+  @RequirePermissions('vat_invoices:view')
+  @ApiOperation({
+    summary: 'Danh sách nhân viên phụ trách (Misa, isEmployee = true)',
+  })
+  async getEmployees(): Promise<{ id: string; code: string; name: string }[]> {
+    return this.misaDictionaryService.findEmployees();
+  }
+
   @Post('dictionary/sync')
+  @RequirePermissions('vat_invoices:push')
   @HttpCode(200)
   @ApiOperation({ summary: 'Sync danh mục Misa về database' })
   async syncAllDictionaries(): Promise<{
@@ -56,6 +68,7 @@ export class MisaSyncController {
   }
 
   @Post('voucher/create/:invoiceCode')
+  @RequirePermissions('vat_invoices:push')
   @HttpCode(200)
   @ApiOperation({ summary: 'Tạo chứng từ bán hàng Misa từ mã hóa đơn' })
   async createVoucherFromInvoice(
@@ -85,7 +98,32 @@ export class MisaSyncController {
     }
   }
 
+  @Post('voucher/bulk-create')
+  @RequirePermissions('vat_invoices:push')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Đẩy hàng loạt hóa đơn lên Misa theo danh sách mã' })
+  async createVouchersBulk(@Body() body: MisaBulkVoucherRequestDto): Promise<{
+    success: boolean;
+    message: string;
+    total: number;
+    successCount: number;
+    failedCount: number;
+    results: Array<{
+      invoiceCode: string;
+      success: boolean;
+      orgRefId: string | null;
+      message: string;
+    }>;
+  }> {
+    this.logger.log(
+      `📦 Manual bulk create Misa vouchers for ${body.invoiceCodes.length} invoices`,
+    );
+
+    return this.misaVoucherService.createVouchersBulk(body.invoiceCodes);
+  }
+
   @Post('voucher/retry')
+  @RequirePermissions('vat_invoices:push')
   @HttpCode(200)
   @ApiOperation({ summary: 'Retry các hóa đơn đẩy Misa bị FAILED' })
   async retryFailedVouchers(): Promise<{
@@ -113,6 +151,7 @@ export class MisaSyncController {
   }
 
   @Post('voucher/delete/:invoiceCode')
+  @RequirePermissions('vat_invoices:delete')
   @HttpCode(200)
   @ApiOperation({ summary: 'Xóa đề nghị sinh chứng từ Misa theo mã hóa đơn' })
   async deleteVoucherByInvoiceCode(

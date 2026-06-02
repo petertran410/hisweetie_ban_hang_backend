@@ -214,7 +214,7 @@ export class MisaVoucherService {
     );
     const branchId = this.configService.get<string>('MISA_BRANCH_ID');
 
-    const isHcmBranch = invoice.branchId === 3 || invoice.branchId === 1;
+    const isHcmBranch = invoice.branchId === 1;
 
     const STOCK_HCM = {
       stockId: '012e030c-5815-4bb1-b7fc-2fc0fa295a34',
@@ -400,10 +400,15 @@ export class MisaVoucherService {
     const vatDiff = expectedTotalVat - totalVatAmount;
 
     if (vatDiff !== 0) {
+      // Bù trừ chênh lệch làm tròn vào TIỀN TRƯỚC THUẾ của dòng đầu (giảm
+      // amount) và cộng vào VAT, giữ nguyên thành tiền sau thuế của dòng — nhờ
+      // vậy total_amount (sau thuế) luôn bằng tổng tiền hàng đã gồm thuế.
       details[0].vat_amount_oc = (details[0].vat_amount_oc ?? 0) + vatDiff;
       details[0].vat_amount = (details[0].vat_amount ?? 0) + vatDiff;
+      details[0].amount_oc = (details[0].amount_oc ?? 0) - vatDiff;
+      details[0].amount = (details[0].amount ?? 0) - vatDiff;
       totalVatAmount += vatDiff;
-      totalAmount += vatDiff;
+      totalSaleAmount -= vatDiff;
       this.logger.log(
         `🔧 Adjusted VAT difference: ${vatDiff} VND on first detail line`,
       );
@@ -457,9 +462,10 @@ export class MisaVoucherService {
     }));
 
     const now = new Date();
-    const misaDate = this.getMisaPostingDate(invoice.purchaseDate);
-    const postedDate = this.formatDateForMisa(misaDate);
-    const refDate = this.formatDateForMisa(misaDate);
+    // Ngày chứng từ (refdate) và ngày hạch toán (posted_date) đều lấy theo thời
+    // điểm đẩy lên Misa (now). Bỏ logic dời ngày sang hôm sau trước đây.
+    const postedDate = this.formatDateForMisa(now);
+    const refDate = this.formatDateForMisa(now);
     const inRefOrder = this.formatDateForMisa(invoice.purchaseDate);
     const createdDate = this.formatDateForMisa(now);
     const customerAddress =
@@ -582,29 +588,21 @@ export class MisaVoucherService {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
-  private getMisaPostingDate(purchaseDate: Date): Date {
-    const vnHour = (purchaseDate.getUTCHours() + 7) % 24;
-    if (vnHour >= 12 && vnHour < 19) {
-      const nextDay = new Date(purchaseDate);
-      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-      nextDay.setUTCHours(1, 30, 0, 0);
-
-      const vnNextDay = new Date(nextDay.getTime() + 7 * 60 * 60 * 1000);
-      if (vnNextDay.getUTCDay() === 0) {
-        nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-      }
-
-      return nextDay;
-    }
-    return purchaseDate;
-  }
-
   private async sendVoucherToMisa(
     payload: MisaSaveVoucherRequestDto,
   ): Promise<{ success: boolean; message: string }> {
     const baseUrl = this.configService.get<string>('MISA_BASE_URL');
     const accessToken = await this.misaAuthService.getAccessToken();
     const url = `${baseUrl}/apir/sync/actopen/save`;
+
+    const orgRefId = payload.voucher?.[0]?.org_refid;
+    const orgRefNo = payload.voucher?.[0]?.org_refno;
+
+    // Log full payload gửi đi để soi khi MISA xử lý bất đồng bộ (Success chỉ
+    // nghĩa là đã vào hàng đợi, chưa chắc sinh được chứng từ).
+    this.logger.debug(
+      `📤 Misa save payload [${orgRefNo} / ${orgRefId}]: ${JSON.stringify(payload)}`,
+    );
 
     try {
       const response = await firstValueFrom(
@@ -618,6 +616,12 @@ export class MisaVoucherService {
 
       const data = response.data;
 
+      // Log nguyên văn response MISA (Success/ErrorCode/ErrorMessage/Data) —
+      // Data thường chứa message hàng đợi, giúp đối soát với callback sau này.
+      this.logger.log(
+        `📥 Misa save response [${orgRefNo} / ${orgRefId}]: ${JSON.stringify(data)}`,
+      );
+
       if (data.Success) {
         return {
           success: true,
@@ -625,14 +629,26 @@ export class MisaVoucherService {
         };
       }
 
+      this.logger.error(
+        `❌ Misa rejected voucher [${orgRefNo} / ${orgRefId}]: ${data.ErrorCode} - ${data.ErrorMessage}`,
+      );
       return {
         success: false,
         message: `${data.ErrorCode}: ${data.ErrorMessage}`,
       };
     } catch (error) {
+      // Lỗi HTTP (timeout, 4xx/5xx) — log cả response body nếu có.
+      const respData = error.response?.data;
+      this.logger.error(
+        `❌ Misa save HTTP error [${orgRefNo} / ${orgRefId}]: ${error.message}${
+          respData ? ` | body: ${JSON.stringify(respData)}` : ''
+        }`,
+      );
       return {
         success: false,
-        message: error.message,
+        message: respData
+          ? `${error.message}: ${JSON.stringify(respData)}`
+          : error.message,
       };
     }
   }
@@ -688,6 +704,75 @@ export class MisaVoucherService {
     this.logger.error(
       `❌ Invoice ${invoice.code} failed to sync to Misa: ${errorCode} - ${errorMessage}`,
     );
+  }
+
+  /**
+   * Đẩy hàng loạt hóa đơn lên Misa theo danh sách mã.
+   * Xử lý tuần tự để tránh vượt rate limit Misa + tránh refresh token trùng.
+   */
+  async createVouchersBulk(invoiceCodes: string[]): Promise<{
+    success: boolean;
+    message: string;
+    total: number;
+    successCount: number;
+    failedCount: number;
+    results: Array<{
+      invoiceCode: string;
+      success: boolean;
+      orgRefId: string | null;
+      message: string;
+    }>;
+  }> {
+    this.logger.log(
+      `📦 Bulk creating Misa vouchers for ${invoiceCodes.length} invoices`,
+    );
+
+    const results: Array<{
+      invoiceCode: string;
+      success: boolean;
+      orgRefId: string | null;
+      message: string;
+    }> = [];
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const invoiceCode of invoiceCodes) {
+      try {
+        const result = await this.createSaleVoucherFromInvoice(invoiceCode);
+        results.push({
+          invoiceCode,
+          success: result.success,
+          orgRefId: result.orgRefId,
+          message: result.message,
+        });
+        if (result.success) {
+          successCount++;
+        } else {
+          failedCount++;
+        }
+      } catch (error) {
+        failedCount++;
+        results.push({
+          invoiceCode,
+          success: false,
+          orgRefId: null,
+          message: error.message,
+        });
+      }
+    }
+
+    this.logger.log(
+      `📦 Bulk push done: ${successCount} success, ${failedCount} failed / ${invoiceCodes.length} total`,
+    );
+
+    return {
+      success: failedCount === 0,
+      message: `Đã đẩy ${successCount}/${invoiceCodes.length} hóa đơn lên Misa thành công`,
+      total: invoiceCodes.length,
+      successCount,
+      failedCount,
+      results,
+    };
   }
 
   async retryFailedInvoices(limit: number = 10): Promise<number> {

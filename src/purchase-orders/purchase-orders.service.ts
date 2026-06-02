@@ -40,9 +40,15 @@ export class PurchaseOrdersService {
           if (!product)
             throw new NotFoundException(`Product ${item.productId} not found`);
 
+          // FE có thể gửi sẵn `totalPrice` (số nguyên đã chốt) khi user nhập
+          // trực tiếp ô Thành tiền. Khi đó lưu thẳng để tránh sai lệch do đơn
+          // giá có 3 số thập phân (vd 333.333 * 3 = 999.999). Nếu không gửi,
+          // fallback công thức (price - discount) * quantity.
           const totalPrice =
-            (Number(item.price) - (Number(item.discount) || 0)) *
-            Number(item.quantity);
+            item.totalPrice !== undefined && item.totalPrice !== null
+              ? Number(item.totalPrice)
+              : (Number(item.price) - (Number(item.discount) || 0)) *
+                Number(item.quantity);
 
           return {
             productId: item.productId,
@@ -907,9 +913,13 @@ export class PurchaseOrdersService {
                 `Product ${item.productId} not found`,
               );
 
+            // Đối xứng create(): ưu tiên `totalPrice` FE gửi sẵn (số nguyên),
+            // fallback công thức (price - discount) * quantity nếu không có.
             const totalPrice =
-              (Number(item.price) - (Number(item.discount) || 0)) *
-              Number(item.quantity);
+              item.totalPrice !== undefined && item.totalPrice !== null
+                ? Number(item.totalPrice)
+                : (Number(item.price) - (Number(item.discount) || 0)) *
+                  Number(item.quantity);
 
             return {
               purchaseOrderId: id,

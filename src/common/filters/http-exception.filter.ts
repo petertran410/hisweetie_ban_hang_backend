@@ -53,10 +53,20 @@ export class HttpExceptionFilter implements ExceptionFilter {
       };
     }
 
-    this.logger.error(
-      `${request.method} ${request.url}`,
-      exception instanceof Error ? exception.stack : exception,
-    );
+    // Chỉ log error (kèm stack) cho lỗi server (5xx) hoặc exception không xác định.
+    // Lỗi client 4xx là hành vi mong đợi (validation, không tìm thấy, ...) → log gọn 1 dòng.
+    // Riêng 401/403 (chưa đăng nhập / không có quyền) bỏ qua hẳn để tránh lụt log.
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logger.error(
+        `${request.method} ${request.url}`,
+        exception instanceof Error ? exception.stack : exception,
+      );
+    } else if (
+      status !== HttpStatus.UNAUTHORIZED &&
+      status !== HttpStatus.FORBIDDEN
+    ) {
+      this.logger.warn(`${request.method} ${request.url} ${status}`);
+    }
 
     response.status(status).json({
       statusCode: status,

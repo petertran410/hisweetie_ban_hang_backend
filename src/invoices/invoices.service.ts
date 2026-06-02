@@ -200,6 +200,15 @@ export class InvoicesService {
       where.misaSyncStatus = { in: query.misaSyncStatus };
     }
 
+    // Lọc theo nhân viên phụ trách (Misa): hóa đơn có khách hàng được map tới
+    // nhân viên này qua customer.misaEmployeeCode (cùng nguồn dữ liệu đẩy Misa).
+    if (query.misaEmployeeCodes?.length) {
+      where.customer = {
+        ...(where.customer || {}),
+        misaEmployeeCode: { in: query.misaEmployeeCodes },
+      };
+    }
+
     return where;
   }
 
@@ -560,6 +569,9 @@ export class InvoicesService {
               taxCode: true,
               identificationNumber: true,
               invoiceAddress: true,
+              misaEmployeeId: true,
+              misaEmployeeCode: true,
+              misaEmployeeName: true,
             },
           },
           branch: { select: { id: true, name: true } },
@@ -585,11 +597,9 @@ export class InvoicesService {
     ]);
 
     const dataWithVat = data.map((invoice) => {
-      const vatLines = (invoice.details || []).filter(
-        (d) => d.product?.misa_code && d.product.misa_code.trim() !== '',
-      );
+      // Tính VAT theo từng dòng sản phẩm (đúng nghiệp vụ kế toán) rồi cộng dồn.
       const vat = computeInvoiceVat(
-        vatLines.map((d) => ({
+        (invoice.details || []).map((d) => ({
           quantity: d.quantity,
           price: d.price,
           discount: d.discount,
@@ -617,9 +627,9 @@ export class InvoicesService {
    * Tổng các cột VAT của TOÀN BỘ hóa đơn match filter (không phân trang).
    * Dùng cho hàng "tổng" dưới header bảng hóa đơn VAT.
    *
-   * Phải tính per-invoice (computeInvoiceVat có làm tròn + fix-up dòng đầu) rồi
-   * cộng dồn — không aggregate SQM thuần được. Batch theo cursor để tránh vượt
-   * giới hạn bind variable của PostgreSQL khi where rộng.
+   * VAT tính theo từng dòng sản phẩm (computeInvoiceVat — đúng nghiệp vụ kế
+   * toán, khớp với voucher đẩy Misa) rồi cộng dồn. Batch theo cursor để tránh
+   * vượt giới hạn bind variable của PostgreSQL khi where rộng.
    */
   async getVatTotals(query: InvoiceQueryDto, currentUser?: any) {
     const where = this.buildInvoiceListWhere(query, currentUser);
@@ -641,7 +651,6 @@ export class InvoicesService {
               quantity: true,
               price: true,
               discount: true,
-              product: { select: { misa_code: true } },
             },
           },
         },
@@ -654,11 +663,8 @@ export class InvoicesService {
 
       for (const inv of batch) {
         count += 1;
-        const vatLines = (inv.details || []).filter(
-          (d) => d.product?.misa_code && d.product.misa_code.trim() !== '',
-        );
         const vat = computeInvoiceVat(
-          vatLines.map((d) => ({
+          (inv.details || []).map((d) => ({
             quantity: d.quantity,
             price: d.price,
             discount: d.discount,

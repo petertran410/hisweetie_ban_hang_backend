@@ -39,10 +39,16 @@ export interface InvoiceVatResult {
 }
 
 /**
- * Tính VAT cho 1 dòng hàng. Công thức y hệt misa-voucher.service.ts:
- *  - unitPrice (trước thuế)   = round((price - discount) / (1 + rate/100), 2)
- *  - amountBeforeTax          = round(unitPrice * quantity)
- *  - vatAmount                = trunc(amountBeforeTax * rate / 100)
+ * Tính VAT cho 1 dòng hàng. Giá nhập (price) là giá ĐÃ GỒM thuế.
+ *  - unitPriceAfterTax = price - discount                       (đơn giá sau thuế)
+ *  - unitPrice         = round((price - discount)/(1+rate/100), 2)
+ *  - amountAfterTax    = round(unitPriceAfterTax * quantity)    (neo vào gross)
+ *  - amountBeforeTax   = round(amountAfterTax / (1 + rate/100))
+ *  - vatAmount         = amountAfterTax - amountBeforeTax       (VAT = phần bù)
+ *
+ * Neo thành tiền sau thuế vào gross rồi bóc ngược tiền trước thuế + VAT đảm bảo
+ * TRÊN TỪNG DÒNG: amountBeforeTax + vatAmount === amountAfterTax. Nhờ vậy tổng
+ * sau thuế của cả hóa đơn luôn bằng tổng tiền hàng, không lệch do làm tròn.
  */
 export function computeLineVat(
   line: VatComputableLine,
@@ -55,9 +61,9 @@ export function computeLineVat(
   const unitPriceAfterTax = originalPrice - discountAmount;
   const unitPrice =
     Math.round((unitPriceAfterTax / (1 + vatRate / 100)) * 100) / 100;
-  const amountBeforeTax = Math.round(unitPrice * quantity);
-  const vatAmount = Math.trunc((amountBeforeTax * vatRate) / 100);
-  const amountAfterTax = amountBeforeTax + vatAmount;
+  const amountAfterTax = Math.round(unitPriceAfterTax * quantity);
+  const amountBeforeTax = Math.round(amountAfterTax / (1 + vatRate / 100));
+  const vatAmount = amountAfterTax - amountBeforeTax;
 
   return {
     unitPriceAfterTax,
@@ -69,9 +75,10 @@ export function computeLineVat(
 }
 
 /**
- * Tính tổng VAT cho toàn hóa đơn + áp fix-up chênh lệch VAT lên dòng đầu
- * (giống misa-voucher.service.ts). Chỉ tính trên các dòng truyền vào — bên
- * gọi nên lọc dòng có misa_code trước nếu muốn khớp tuyệt đối với voucher.
+ * Tính tổng VAT cho toàn hóa đơn bằng cách cộng dồn từng dòng. Vì mỗi dòng đã
+ * đảm bảo amountBeforeTax + vatAmount === amountAfterTax (neo vào gross) nên
+ * tổng sau thuế luôn khớp tổng tiền hàng — không cần fix-up chênh lệch. Bên gọi
+ * nên lọc dòng có misa_code trước nếu muốn khớp tuyệt đối với voucher.
  */
 export function computeInvoiceVat(
   lines: VatComputableLine[],
@@ -90,17 +97,29 @@ export function computeInvoiceVat(
     totalAfterTax += result.amountAfterTax;
   }
 
-  // Fix-up chênh lệch VAT dồn vào dòng đầu (total_discount_amount = 0)
-  if (lineResults.length > 0) {
-    const expectedTotalVat = Math.trunc((totalPreTax * vatRate) / 100);
-    const vatDiff = expectedTotalVat - totalVat;
-    if (vatDiff !== 0) {
-      lineResults[0].vatAmount += vatDiff;
-      lineResults[0].amountAfterTax += vatDiff;
-      totalVat += vatDiff;
-      totalAfterTax += vatDiff;
-    }
-  }
-
   return { lines: lineResults, totalPreTax, totalVat, totalAfterTax };
+}
+
+/**
+ * Bóc VAT từ TỔNG hóa đơn đã gồm thuế (dùng cho trang hiển thị hóa đơn VAT).
+ *
+ * Khác với computeInvoiceVat (cộng dồn từng dòng — phục vụ đẩy voucher Misa),
+ * hàm này tính trực tiếp từ grandTotal nên LUÔN đảm bảo:
+ *    totalPreTax + totalVat === totalAfterTax === grandTotal
+ * Không bị lệch vài đồng do làm tròn từng dòng, và không phụ thuộc việc sản
+ * phẩm có map misa_code hay không.
+ *
+ *  - totalAfterTax = grandTotal (giá đã gồm VAT)
+ *  - totalPreTax   = round(grandTotal / (1 + rate/100))
+ *  - totalVat      = grandTotal - totalPreTax
+ */
+export function computeInvoiceVatFromTotal(
+  grandTotal: VatNumeric | null | undefined,
+  vatRate: number = MISA_VAT_RATE,
+): { totalPreTax: number; totalVat: number; totalAfterTax: number } {
+  const totalAfterTax = Math.round(Number(grandTotal || 0));
+  const totalPreTax = Math.round(totalAfterTax / (1 + vatRate / 100));
+  const totalVat = totalAfterTax - totalPreTax;
+
+  return { totalPreTax, totalVat, totalAfterTax };
 }

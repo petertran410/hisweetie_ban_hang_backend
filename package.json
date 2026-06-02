@@ -22,6 +22,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
+    "seed:stock-audits": "ts-node prisma/seeds/add-stock-audit-permissions.ts",
+    "seed:vat-invoices": "ts-node prisma/seeds/add-vat-invoices-permissions.ts",
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
     "fix:order-status": "ts-node prisma/seeds/fix-order-status-value.ts",

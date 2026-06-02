@@ -275,6 +275,52 @@ const permissionsData: PermissionData[] = [
     category: 'Kho',
   },
 
+  // Stock Audits (Kiểm kho)
+  {
+    name: 'stock_audits:view',
+    resource: 'stock_audits',
+    action: 'view',
+    description: 'Xem kiểm kho',
+    category: 'Kho',
+  },
+  {
+    name: 'stock_audits:create',
+    resource: 'stock_audits',
+    action: 'create',
+    description: 'Tạo kiểm kho',
+    category: 'Kho',
+  },
+  {
+    name: 'stock_audits:update',
+    resource: 'stock_audits',
+    action: 'update',
+    description: 'Sửa/hoàn tất/hủy kiểm kho',
+    category: 'Kho',
+  },
+
+  // Inventory Checks (Kiểm hàng loại B)
+  {
+    name: 'inventory_checks:view',
+    resource: 'inventory_checks',
+    action: 'view',
+    description: 'Xem kiểm hàng loại B',
+    category: 'Kho',
+  },
+  {
+    name: 'inventory_checks:create',
+    resource: 'inventory_checks',
+    action: 'create',
+    description: 'Tạo kiểm hàng loại B',
+    category: 'Kho',
+  },
+  {
+    name: 'inventory_checks:update',
+    resource: 'inventory_checks',
+    action: 'update',
+    description: 'Sửa/hủy kiểm hàng loại B',
+    category: 'Kho',
+  },
+
   // Orders
   {
     name: 'orders:view',
@@ -413,6 +459,29 @@ const permissionsData: PermissionData[] = [
     resource: 'invoices',
     action: 'cancel',
     description: 'Hủy hóa đơn',
+    category: 'Bán hàng',
+  },
+
+  // VAT Invoices (Misa / Thuế) — quyền tách riêng khỏi invoices
+  {
+    name: 'vat_invoices:view',
+    resource: 'vat_invoices',
+    action: 'view',
+    description: 'Xem hóa đơn VAT (dữ liệu Misa)',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'vat_invoices:push',
+    resource: 'vat_invoices',
+    action: 'push',
+    description: 'Đẩy hóa đơn VAT lên Misa (đồng nghĩa đẩy lên thuế)',
+    category: 'Bán hàng',
+  },
+  {
+    name: 'vat_invoices:delete',
+    resource: 'vat_invoices',
+    action: 'delete',
+    description: 'Xóa chứng từ Misa của hóa đơn VAT',
     category: 'Bán hàng',
   },
 
@@ -1170,10 +1239,12 @@ async function seedPermissions() {
 
   const userPermissions = allPermissions.filter(
     (p) =>
-      p.category === 'Bán hàng' ||
-      p.category === 'Khách hàng' ||
-      (p.category === 'Sản phẩm' && p.action === 'view') ||
-      (p.category === 'Kho' && p.action === 'view'),
+      // vat_invoices (Misa/Thuế) chỉ dành cho Super Admin + Admin — User không được nhận
+      p.resource !== 'vat_invoices' &&
+      (p.category === 'Bán hàng' ||
+        p.category === 'Khách hàng' ||
+        (p.category === 'Sản phẩm' && p.action === 'view') ||
+        (p.category === 'Kho' && p.action === 'view')),
   );
 
   for (const perm of userPermissions) {
