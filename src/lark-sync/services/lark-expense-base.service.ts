@@ -16,8 +16,7 @@ export class LarkExpenseBaseService {
     @Inject(LARK_CLIENT) private readonly client: lark.Client,
     private readonly config: ConfigService,
   ) {
-    this.baseToken =
-      this.config.get<string>('LARK_EXPENSE_BASE_TOKEN') || null;
+    this.baseToken = this.config.get<string>('LARK_EXPENSE_BASE_TOKEN') || null;
     if (!this.baseToken) {
       this.logger.warn(
         'LARK_EXPENSE_BASE_TOKEN chưa cấu hình — sync phiếu chi sẽ bị skip',

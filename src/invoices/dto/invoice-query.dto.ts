@@ -199,4 +199,19 @@ export class InvoiceQueryDto {
   @IsInt()
   @Type(() => Number)
   saleChannelId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : value,
+  )
+  @IsArray()
+  @IsIn(['PENDING', 'SYNCED', 'FAILED', 'SKIP'], { each: true })
+  misaSyncStatus?: ('PENDING' | 'SYNCED' | 'FAILED' | 'SKIP')[];
 }

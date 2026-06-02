@@ -27,6 +27,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
 
 @Injectable()
 export class InvoicesService {
@@ -193,6 +194,10 @@ export class InvoicesService {
 
     if (query.saleChannelId) {
       where.saleChannelId = query.saleChannelId;
+    }
+
+    if (query.misaSyncStatus?.length) {
+      where.misaSyncStatus = { in: query.misaSyncStatus };
     }
 
     return where;
@@ -520,6 +525,155 @@ export class InvoicesService {
     });
 
     return { data: dataWithReturnCalculations, total };
+  }
+
+  /**
+   * Danh sách hóa đơn cho trang /don-hang/hoa-don-vat.
+   * Tái dùng nguyên filter `buildInvoiceListWhere`, nhưng mỗi hóa đơn được gắn
+   * thêm khối `vat` (tiền trước thuế / VAT 8% / sau thuế) tính theo đúng logic
+   * misa-voucher.service (qua computeInvoiceVat) + các field đồng bộ Misa.
+   *
+   * VAT chỉ tính trên các dòng có `product.misa_code` để khớp với voucher thật.
+   */
+  async findAllVat(query: InvoiceQueryDto, currentUser?: any) {
+    const { page = 1, limit = 15, pageSize, currentItem } = query;
+
+    const effectiveLimit = pageSize || limit;
+    const effectiveSkip =
+      currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
+
+    const where = this.buildInvoiceListWhere(query, currentUser);
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.invoice.findMany({
+        where,
+        skip: effectiveSkip,
+        take: effectiveLimit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          customer: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              contactNumber: true,
+              taxCode: true,
+              identificationNumber: true,
+              invoiceAddress: true,
+            },
+          },
+          branch: { select: { id: true, name: true } },
+          soldBy: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          details: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  misa_code: true,
+                  misa_name: true,
+                  misa_unit: true,
+                },
+              },
+            },
+          },
+        },
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+
+    const dataWithVat = data.map((invoice) => {
+      const vatLines = (invoice.details || []).filter(
+        (d) => d.product?.misa_code && d.product.misa_code.trim() !== '',
+      );
+      const vat = computeInvoiceVat(
+        vatLines.map((d) => ({
+          quantity: d.quantity,
+          price: d.price,
+          discount: d.discount,
+        })),
+      );
+      const missingMisaCode = (invoice.details || []).some(
+        (d) => !d.product?.misa_code || d.product.misa_code.trim() === '',
+      );
+
+      return {
+        ...invoice,
+        vat: {
+          totalPreTax: vat.totalPreTax,
+          totalVat: vat.totalVat,
+          totalAfterTax: vat.totalAfterTax,
+        },
+        missingMisaCode,
+      };
+    });
+
+    return { data: dataWithVat, total };
+  }
+
+  /**
+   * Tổng các cột VAT của TOÀN BỘ hóa đơn match filter (không phân trang).
+   * Dùng cho hàng "tổng" dưới header bảng hóa đơn VAT.
+   *
+   * Phải tính per-invoice (computeInvoiceVat có làm tròn + fix-up dòng đầu) rồi
+   * cộng dồn — không aggregate SQM thuần được. Batch theo cursor để tránh vượt
+   * giới hạn bind variable của PostgreSQL khi where rộng.
+   */
+  async getVatTotals(query: InvoiceQueryDto, currentUser?: any) {
+    const where = this.buildInvoiceListWhere(query, currentUser);
+
+    const BATCH_SIZE = 5000;
+    let count = 0;
+    let totalPreTax = 0;
+    let totalVat = 0;
+    let totalAfterTax = 0;
+    let cursor: { id: number } | undefined;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        select: {
+          id: true,
+          details: {
+            select: {
+              quantity: true,
+              price: true,
+              discount: true,
+              product: { select: { misa_code: true } },
+            },
+          },
+        },
+        orderBy: { id: 'asc' },
+        take: BATCH_SIZE,
+        ...(cursor ? { cursor, skip: 1 } : {}),
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        count += 1;
+        const vatLines = (inv.details || []).filter(
+          (d) => d.product?.misa_code && d.product.misa_code.trim() !== '',
+        );
+        const vat = computeInvoiceVat(
+          vatLines.map((d) => ({
+            quantity: d.quantity,
+            price: d.price,
+            discount: d.discount,
+          })),
+        );
+        totalPreTax += vat.totalPreTax;
+        totalVat += vat.totalVat;
+        totalAfterTax += vat.totalAfterTax;
+      }
+
+      if (batch.length < BATCH_SIZE) break;
+      cursor = { id: batch[batch.length - 1].id };
+    }
+
+    return { count, totalPreTax, totalVat, totalAfterTax };
   }
 
   async findOne(id: number) {

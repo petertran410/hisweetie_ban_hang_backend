@@ -96,7 +96,8 @@ export class MisaSyncController {
     this.logger.log('🔄 Retry failed Misa vouchers triggered');
 
     try {
-      const successCount = await this.misaVoucherService.retryFailedInvoices(10);
+      const successCount =
+        await this.misaVoucherService.retryFailedInvoices(10);
       return {
         success: true,
         message: 'Retried failed invoices',

@@ -1285,9 +1285,8 @@ export class ProductsService {
         mergedMap.set(key, { ...log });
       } else {
         // sum quantity (Prisma Decimal hỗ trợ + qua Number cast).
-        existing.quantity = (
-          Number(existing.quantity) + Number(log.quantity)
-        ) as any;
+        existing.quantity = (Number(existing.quantity) +
+          Number(log.quantity)) as any;
       }
     }
 

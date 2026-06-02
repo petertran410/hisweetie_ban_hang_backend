@@ -12,7 +12,6 @@ export class TransferQueryDto {
   @IsString()
   search?: string;
 
-
   @IsOptional()
   @Transform(({ value }) => (value ? value.split(',').map(Number) : undefined))
   @IsArray()

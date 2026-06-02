@@ -70,12 +70,12 @@ export class LarkUserDirectoryService {
   private async buildCache(): Promise<Map<string, string>> {
     const map = new Map<string, string>();
 
-    let departmentIds: string[] = [];
-    let looseUserIds: string[] = [];
+    const departmentIds: string[] = [];
+    const looseUserIds: string[] = [];
 
     try {
       let pageToken: string | undefined;
-      // eslint-disable-next-line no-constant-condition
+
       while (true) {
         const res: any = await this.client.contact.scope.list({
           params: {
@@ -107,7 +107,7 @@ export class LarkUserDirectoryService {
     // 2. Lấy user theo từng department
     for (const dept of departmentIds) {
       let pageToken: string | undefined;
-      // eslint-disable-next-line no-constant-condition
+
       while (true) {
         try {
           const res: any = await this.client.contact.user.findByDepartment({
@@ -154,9 +154,7 @@ export class LarkUserDirectoryService {
           this.addUser(map, res.data.user);
         }
       } catch (err: any) {
-        this.logger.warn(
-          `contact.user.get ${openId} lỗi: ${err.message}`,
-        );
+        this.logger.warn(`contact.user.get ${openId} lỗi: ${err.message}`);
       }
     }
 
@@ -181,10 +179,6 @@ export class LarkUserDirectoryService {
   }
 
   private normalize(s: string): string {
-    return s
-      .toLowerCase()
-      .normalize('NFC')
-      .replace(/\s+/g, ' ')
-      .trim();
+    return s.toLowerCase().normalize('NFC').replace(/\s+/g, ' ').trim();
   }
 }

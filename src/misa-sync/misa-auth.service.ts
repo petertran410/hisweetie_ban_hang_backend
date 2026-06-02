@@ -88,8 +88,9 @@ export class MisaAuthService {
       }
 
       // Xử lý Data có thể là string JSON hoặc object
-      let tokenData: MisaTokenDataDto | undefined =
-        data.Data as MisaTokenDataDto | undefined;
+      let tokenData: MisaTokenDataDto | undefined = data.Data as
+        | MisaTokenDataDto
+        | undefined;
 
       if (typeof data.Data === 'string') {
         try {

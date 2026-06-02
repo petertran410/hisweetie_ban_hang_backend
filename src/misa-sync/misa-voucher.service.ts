@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { randomUUID } from 'crypto';
 import { MisaAuthService } from './misa-auth.service';
 import { MisaDictionaryService } from './misa-dictionary.service';
+import { computeLineVat } from './misa-vat.util';
 import {
   MisaSaveVoucherRequestDto,
   MisaSaVoucherDto,
@@ -41,7 +42,9 @@ export class MisaVoucherService {
   async createSaleVoucherFromInvoice(
     invoiceCode: string,
   ): Promise<{ success: boolean; orgRefId: string | null; message: string }> {
-    this.logger.log(`🧾 Creating Misa voucher for invoice code: ${invoiceCode}`);
+    this.logger.log(
+      `🧾 Creating Misa voucher for invoice code: ${invoiceCode}`,
+    );
 
     try {
       const invoice = await this.prismaService.invoice.findUnique({
@@ -258,9 +261,11 @@ export class MisaVoucherService {
 
     let matchedAccountObject = accountObject;
     if (customerTaxIdentifier) {
-      const matchedByTax = await this.prismaService.misaAccountObject.findFirst({
-        where: { companyTaxCode: customerTaxIdentifier },
-      });
+      const matchedByTax = await this.prismaService.misaAccountObject.findFirst(
+        {
+          where: { companyTaxCode: customerTaxIdentifier },
+        },
+      );
 
       if (matchedByTax) {
         matchedAccountObject = matchedByTax;
@@ -276,7 +281,7 @@ export class MisaVoucherService {
 
     const details: MisaSaVoucherDetailDto[] = [];
     let totalSaleAmount = 0;
-    let totalDiscountAmount = 0;
+    const totalDiscountAmount = 0;
     let totalVatAmount = 0;
     let totalAmount = 0;
 
@@ -301,14 +306,20 @@ export class MisaVoucherService {
       }
 
       const quantity = Number(detail.quantity);
-      const originalPrice = Number(detail.price);
-      const discountAmount = Number(detail.discount || 0);
-      const unitPriceAfterTax = originalPrice - discountAmount;
-      const unitPrice =
-        Math.round((unitPriceAfterTax / (1 + this.VAT_RATE / 100)) * 100) / 100;
-      const amountBeforeTax = Math.round(unitPrice * quantity);
-      const vatAmount = Math.trunc((amountBeforeTax * this.VAT_RATE) / 100);
-      const amountAfterTax = amountBeforeTax + vatAmount;
+      const {
+        unitPriceAfterTax,
+        unitPrice,
+        amountBeforeTax,
+        vatAmount,
+        amountAfterTax,
+      } = computeLineVat(
+        {
+          quantity: detail.quantity,
+          price: detail.price,
+          discount: detail.discount,
+        },
+        this.VAT_RATE,
+      );
 
       totalSaleAmount += amountBeforeTax;
       totalVatAmount += vatAmount;
@@ -344,7 +355,8 @@ export class MisaVoucherService {
         vat_amount_oc: vatAmount,
         vat_amount: vatAmount,
 
-        debit_account: matchedAccountObject?.receiveAccount || this.DEBIT_ACCOUNT,
+        debit_account:
+          matchedAccountObject?.receiveAccount || this.DEBIT_ACCOUNT,
         credit_account: this.CREDIT_ACCOUNT,
         cost_account: this.COST_ACCOUNT,
 
@@ -477,7 +489,8 @@ export class MisaVoucherService {
       account_object_id: matchedAccountObject?.accountObjectId,
       account_object_code:
         matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-      account_object_name: matchedAccountObject?.accountObjectName || customerName,
+      account_object_name:
+        matchedAccountObject?.accountObjectName || customerName,
       account_object_address: customerAddress,
       account_object_tax_code:
         matchedAccountObject?.companyTaxCode || customerTaxIdentifier,
@@ -501,7 +514,8 @@ export class MisaVoucherService {
         account_object_id: matchedAccountObject?.accountObjectId,
         account_object_code:
           matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-        account_object_name: matchedAccountObject?.accountObjectName || customerName,
+        account_object_name:
+          matchedAccountObject?.accountObjectName || customerName,
         account_object_address: customerAddress,
         account_object_tax_code:
           matchedAccountObject?.companyTaxCode || customerTaxIdentifier,
@@ -534,7 +548,8 @@ export class MisaVoucherService {
         account_object_id: matchedAccountObject?.accountObjectId,
         account_object_code:
           matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-        account_object_name: matchedAccountObject?.accountObjectName || customerName,
+        account_object_name:
+          matchedAccountObject?.accountObjectName || customerName,
         account_object_address: customerAddress,
         employee_id: employeeId,
         employee_code: employeeCode,
@@ -705,7 +720,9 @@ export class MisaVoucherService {
     success: boolean;
     message: string;
   }> {
-    this.logger.log(`🗑️ Deleting Misa voucher for invoice code: ${invoiceCode}`);
+    this.logger.log(
+      `🗑️ Deleting Misa voucher for invoice code: ${invoiceCode}`,
+    );
 
     try {
       const invoice = await this.prismaService.invoice.findUnique({

@@ -843,13 +843,15 @@ export class PurchaseOrdersService {
       if (!wasDraft && existing.branchId) {
         if (willBeDraft) {
           for (const [productId, oldQty] of oldQtyMap.entries()) {
-            if (oldQty > 0) productsToCheck.push({ productId, decrease: oldQty });
+            if (oldQty > 0)
+              productsToCheck.push({ productId, decrease: oldQty });
           }
         } else {
           for (const [productId, oldQty] of oldQtyMap.entries()) {
             const newQty = newQtyMap.get(productId) ?? 0;
             const delta = newQty - oldQty;
-            if (delta < 0) productsToCheck.push({ productId, decrease: -delta });
+            if (delta < 0)
+              productsToCheck.push({ productId, decrease: -delta });
           }
         }
       }

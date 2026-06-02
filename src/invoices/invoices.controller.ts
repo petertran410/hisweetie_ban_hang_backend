@@ -101,6 +101,22 @@ export class InvoicesController {
     return this.invoicesService.getTotals(query, user);
   }
 
+  @Get('vat')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({ summary: 'Danh sách hóa đơn VAT (dữ liệu Misa)' })
+  findAllVat(@Query() query: InvoiceQueryDto, @CurrentUser() user: any) {
+    return this.invoicesService.findAllVat(query, user);
+  }
+
+  @Get('vat/totals')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({
+    summary: 'Tổng các cột VAT của TOÀN BỘ hóa đơn match filter',
+  })
+  getVatTotals(@Query() query: InvoiceQueryDto, @CurrentUser() user: any) {
+    return this.invoicesService.getVatTotals(query, user);
+  }
+
   @Get('export')
   @RequirePermissions('invoices:view')
   @ApiOperation({ summary: 'Xuất Excel hóa đơn tổng quan' })
