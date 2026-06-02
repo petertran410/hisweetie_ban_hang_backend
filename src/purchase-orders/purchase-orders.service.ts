@@ -143,7 +143,11 @@ export class PurchaseOrdersService {
         },
       });
 
-      if (dto.branchId) {
+      // Semantic mới: chỉ "Hoàn thành" mới đụng tồn kho. PN tạo dạng "Phiếu
+      // tạm" (isDraft=true) KHÔNG cộng tồn — chờ user chuyển sang Hoàn thành
+      // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
+      // sẵn check `!dto.isDraft` ở dưới.
+      if (dto.branchId && !dto.isDraft) {
         await this.updateInventory(purchaseOrder.id, tx);
       }
 
@@ -796,7 +800,93 @@ export class PurchaseOrdersService {
         throw new NotFoundException('Purchase order not found');
       }
 
-      if (existing.branchId) {
+      // ─── Semantic tồn kho theo isDraft ──────────────────────────────────
+      // wasDraft  willBeDraft  hành vi tồn kho
+      // ────────  ───────────  ──────────────────────────────────────────
+      // true      true         giữ nguyên (tồn chưa bao giờ cộng)
+      // true      false        cộng tồn theo SL mới (newQty)
+      // false     true         rút SL cũ khỏi tồn — pre-check đủ tồn
+      // false     false        delta = newQty - oldQty — pre-check phần giảm
+      //
+      // Mọi pre-check đều xảy ra TRƯỚC khi thực thi. Nếu không pass, throw để
+      // rollback transaction, tồn kho và DB không bị đụng vào.
+      const wasDraft = existing.isDraft;
+      const willBeDraft = dto.isDraft ?? existing.isDraft;
+      const branchUnchanged =
+        dto.branchId === undefined || dto.branchId === existing.branchId;
+
+      // Helper: build map productId → tổng SL từ list items
+      const buildQtyMap = (items: { productId: number; quantity: any }[]) => {
+        const m = new Map<number, number>();
+        for (const it of items) {
+          m.set(it.productId, (m.get(it.productId) || 0) + Number(it.quantity));
+        }
+        return m;
+      };
+
+      const oldQtyMap = buildQtyMap(existing.items);
+
+      // newQty tại existing.branchId: nếu user giữ branch thì lấy từ dto.items
+      // (hoặc giữ nguyên existing nếu dto không gửi items); nếu đổi branch thì
+      // tại branch cũ = 0 cho mọi product.
+      const newQtyMap = (() => {
+        if (!branchUnchanged) return new Map<number, number>();
+        if (dto.items) return buildQtyMap(dto.items);
+        return oldQtyMap; // không gửi items, giữ nguyên
+      })();
+
+      // Tính danh sách (productId, decrease) cần pre-check tồn:
+      //   - wasDraft=false, willBeDraft=true: rút toàn bộ oldQty (decrease=oldQty).
+      //   - wasDraft=false, willBeDraft=false: chỉ check phần giảm (delta âm).
+      //   - wasDraft=true: tồn chưa cộng từ trước → không cần check.
+      const productsToCheck: { productId: number; decrease: number }[] = [];
+      if (!wasDraft && existing.branchId) {
+        if (willBeDraft) {
+          for (const [productId, oldQty] of oldQtyMap.entries()) {
+            if (oldQty > 0) productsToCheck.push({ productId, decrease: oldQty });
+          }
+        } else {
+          for (const [productId, oldQty] of oldQtyMap.entries()) {
+            const newQty = newQtyMap.get(productId) ?? 0;
+            const delta = newQty - oldQty;
+            if (delta < 0) productsToCheck.push({ productId, decrease: -delta });
+          }
+        }
+      }
+
+      if (productsToCheck.length > 0 && existing.branchId) {
+        const inventories = await tx.inventory.findMany({
+          where: {
+            branchId: existing.branchId,
+            productId: { in: productsToCheck.map((p) => p.productId) },
+          },
+          include: { product: { select: { code: true, name: true } } },
+        });
+        const invMap = new Map<number, any>();
+        inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
+
+        const branch = await tx.branch.findUnique({
+          where: { id: existing.branchId },
+          select: { name: true },
+        });
+
+        for (const { productId, decrease } of productsToCheck) {
+          const inv = invMap.get(productId);
+          const onHand = inv ? Number(inv.onHand) : 0;
+          if (onHand < decrease) {
+            const productLabel = inv?.product
+              ? `${inv.product.code} - ${inv.product.name}`
+              : `productId=${productId}`;
+            throw new BadRequestException(
+              `Không thể giảm số lượng "${productLabel}" trong phiếu nhập: tồn kho hiện tại tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${onHand}, không đủ để giảm ${decrease}. Vui lòng xử lý các phiếu xuất/bán/chuyển kho liên quan trước.`,
+            );
+          }
+        }
+      }
+
+      // Restore tồn cũ chỉ khi PN trước đó đã cộng (wasDraft=false). Nếu
+      // wasDraft=true thì tồn chưa từng cộng → bỏ qua restore.
+      if (!wasDraft && existing.branchId) {
         await this.restoreInventory(id, tx);
       }
 
@@ -927,7 +1017,10 @@ export class PurchaseOrdersService {
       });
 
       const branchId = dto.branchId || existing.branchId;
-      if (branchId) {
+      // Apply tồn theo SL mới chỉ khi PN sau update là Hoàn thành (!willBeDraft).
+      // PN chuyển sang/giữ Phiếu tạm → tồn không cộng (đã restore SL cũ ở trên
+      // nếu wasDraft=false).
+      if (branchId && !willBeDraft) {
         await this.updateInventory(id, tx);
       }
 
@@ -1024,7 +1117,9 @@ export class PurchaseOrdersService {
         throw new NotFoundException('Purchase order not found');
       }
 
-      if (purchaseOrder.branchId) {
+      // PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn — không
+      // cần rút khi xoá. Đối xứng `cancelPurchaseOrder` semantic mới.
+      if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
         await this.restoreInventory(id, tx);
       }
 
@@ -1144,7 +1239,14 @@ export class PurchaseOrdersService {
       // chi nhánh để không bao giờ làm tồn kho âm. Nếu hàng đã được bán/
       // chuyển/hủy đi rồi thì không thể hủy PN này được nữa — yêu cầu
       // user xử lý các phiếu hậu kỳ trước.
-      if (purchaseOrder.branchId && purchaseOrder.items.length > 0) {
+      //
+      // Lưu ý: PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn
+      // (semantic mới của create/update) → khi hủy không cần rút tồn ra.
+      if (
+        !purchaseOrder.isDraft &&
+        purchaseOrder.branchId &&
+        purchaseOrder.items.length > 0
+      ) {
         const productIds = purchaseOrder.items.map((it: any) => it.productId);
         const inventories = await tx.inventory.findMany({
           where: {
