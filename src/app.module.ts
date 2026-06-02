@@ -16,6 +16,7 @@ import { SuppliersModule } from './suppliers/suppliers.module';
 import { OrdersModule } from './orders/orders.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { UploadModule } from './upload/upload.module';
+import { UploadSessionModule } from './upload-session/upload-session.module';
 import { ImportModule } from './import/import.module';
 import { PdfModule } from './pdf/pdf.module';
 import { AnalyticsModule } from './analytics/analytics.module';
@@ -98,6 +99,7 @@ import { SepayModule } from './sepay/sepay.module';
     PriceBooksModule,
     ReportsModule,
     UploadModule,
+    UploadSessionModule,
     // ExportModule,
     ImportModule,
     PdfModule,
