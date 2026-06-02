@@ -1127,17 +1127,114 @@ export class ProductsService {
     const where: any = { productId };
     if (branchId) where.branchId = branchId;
 
-    const skip = (page - 1) * limit;
+    // Lấy toàn bộ log của product (+branch) — số lượng hữu hạn theo product nên
+    // chấp nhận đánh đổi để gộp/lọc chính xác trước khi paginate.
+    const rawLogs = await this.prisma.inventoryLog.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
 
-    const [data, total] = await Promise.all([
-      this.prisma.inventoryLog.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      this.prisma.inventoryLog.count({ where }),
+    // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy.
+    // refType lưu ở InventoryLog: invoice, return_order, supplier_return,
+    // stock_audit, purchase_order, transfer, destruction, production…
+    // Hiện chỉ những loại có khái niệm "Đã hủy" rõ ràng và phổ biến cần lọc:
+    //   - invoice          → Invoice.status = 2 (CANCELLED)
+    //   - return_order     → ReturnOrder.status = 5 (CANCELLED)
+    //   - supplier_return  → SupplierReturn.status = 4 (CANCELLED)
+    //   - stock_audit      → StockAudit.status = 3 (CANCELLED)
+    const refIdsByType: Record<string, Set<number>> = {};
+    for (const log of rawLogs) {
+      if (!log.refType || !log.refId) continue;
+      (refIdsByType[log.refType] ||= new Set()).add(log.refId);
+    }
+
+    const cancelledKeys = new Set<string>(); // `${refType}:${refId}`
+
+    const collectCancelled = async (
+      refType: string,
+      ids: number[],
+      finder: (ids: number[]) => Promise<{ id: number }[]>,
+    ) => {
+      if (ids.length === 0) return;
+      const cancelled = await finder(ids);
+      cancelled.forEach((row) => cancelledKeys.add(`${refType}:${row.id}`));
+    };
+
+    await Promise.all([
+      collectCancelled(
+        'invoice',
+        Array.from(refIdsByType['invoice'] || []),
+        (ids) =>
+          this.prisma.invoice.findMany({
+            where: { id: { in: ids }, status: 2 },
+            select: { id: true },
+          }),
+      ),
+      collectCancelled(
+        'return_order',
+        Array.from(refIdsByType['return_order'] || []),
+        (ids) =>
+          this.prisma.returnOrder.findMany({
+            where: { id: { in: ids }, status: 5 },
+            select: { id: true },
+          }),
+      ),
+      collectCancelled(
+        'supplier_return',
+        Array.from(refIdsByType['supplier_return'] || []),
+        (ids) =>
+          this.prisma.supplierReturn.findMany({
+            where: { id: { in: ids }, status: 4 },
+            select: { id: true },
+          }),
+      ),
+      collectCancelled(
+        'stock_audit',
+        Array.from(refIdsByType['stock_audit'] || []),
+        (ids) =>
+          this.prisma.stockAudit.findMany({
+            where: { id: { in: ids }, status: 3 },
+            select: { id: true },
+          }),
+      ),
     ]);
+
+    const activeLogs = rawLogs.filter(
+      (log) => !cancelledKeys.has(`${log.refType}:${log.refId}`),
+    );
+
+    // Bước 2: gộp các log cùng (refType, refCode, transactionType) thành 1 dòng
+    // — sum quantity, các trường còn lại lấy theo dòng đại diện (mới nhất).
+    // Bỏ qua merge khi refCode rỗng để không vô tình gộp các log "lẻ".
+    type LogRow = (typeof activeLogs)[number];
+    const mergedMap = new Map<string, LogRow>();
+    const ungrouped: LogRow[] = [];
+
+    for (const log of activeLogs) {
+      if (!log.refCode) {
+        ungrouped.push(log);
+        continue;
+      }
+      const key = `${log.refType}|${log.refCode}|${log.transactionType}`;
+      const existing = mergedMap.get(key);
+      if (!existing) {
+        mergedMap.set(key, { ...log });
+      } else {
+        // sum quantity (Prisma Decimal hỗ trợ + qua Number cast).
+        existing.quantity = (
+          Number(existing.quantity) + Number(log.quantity)
+        ) as any;
+      }
+    }
+
+    const merged = [...mergedMap.values(), ...ungrouped].sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    const total = merged.length;
+    const skip = (page - 1) * limit;
+    const data = merged.slice(skip, skip + limit);
 
     return { data, total };
   }

@@ -698,7 +698,11 @@ export class OrdersService {
         branch: true,
         soldBy: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
-        items: { include: { product: true } },
+        items: {
+          include: {
+            product: { include: { inventories: true } },
+          },
+        },
         payments: true,
         delivery: true,
         invoices: {

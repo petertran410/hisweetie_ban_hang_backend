@@ -536,7 +536,11 @@ export class InvoicesService {
         branch: true,
         soldBy: true,
         creator: true,
-        details: { include: { product: true } },
+        details: {
+          include: {
+            product: { include: { inventories: true } },
+          },
+        },
         payments: true,
         delivery: true,
         _count: { select: { returnOrders: true } },
