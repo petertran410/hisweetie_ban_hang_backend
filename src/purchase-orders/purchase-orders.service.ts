@@ -28,7 +28,9 @@ export class PurchaseOrdersService {
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateSafePurchaseOrderCode(tx);
+      // Cho phép user tự điền mã PN. Trim + check duplicate; nếu trống fallback
+      // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
+      const code = await this.resolvePurchaseOrderCode(tx, dto.code);
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
@@ -474,7 +476,8 @@ export class PurchaseOrdersService {
 
       const supplierOldDebt = Number(orderSupplier.supplier?.debt || 0);
 
-      const code = await this.generateSafePurchaseOrderCode(tx);
+      // User được phép tự nhập mã PN khi tạo từ PDN (fromOSPayload.code).
+      const code = await this.resolvePurchaseOrderCode(tx, dto.code);
 
       const purchaseOrder = await tx.purchaseOrder.create({
         data: {
@@ -904,6 +907,13 @@ export class PurchaseOrdersService {
         description: dto.description,
         purchaseById: dto.purchaseById,
       };
+
+      // Cho phép user đổi mã PN khi update — đối xứng PDN/SX.
+      // `dto.code === undefined`: giữ nguyên. Có giá trị: trim + check duplicate
+      // (loại trừ chính phiếu này).
+      if (dto.code !== undefined) {
+        updateData.code = await this.resolvePurchaseOrderCode(tx, dto.code, id);
+      }
 
       if (dto.isDraft !== undefined) {
         updateData.isDraft = dto.isDraft;
@@ -1438,6 +1448,42 @@ export class PurchaseOrdersService {
     }
 
     throw new Error('Không thể tạo mã thanh toán PCPN duy nhất');
+  }
+
+  /**
+   * Resolve mã PN cho create / createFromOrderSupplier / update:
+   *   - Có `userCode` (sau trim, khác rỗng): kiểm duplicate trên
+   *     `PurchaseOrder.code`. `excludeId` để bỏ qua chính phiếu đang update.
+   *   - Không có / rỗng: auto-generate qua `generateSafePurchaseOrderCode`.
+   *
+   * Đối xứng `OrderSuppliersService.resolveOrderSupplierCode`. Dùng chung cho
+   * cả 3 path tạo/sửa PN để logic nhập mã thủ công nhất quán.
+   */
+  private async resolvePurchaseOrderCode(
+    tx: any,
+    userCode?: string,
+    excludeId?: number,
+  ): Promise<string> {
+    const trimmed = (userCode || '').trim();
+    if (!trimmed) {
+      return this.generateSafePurchaseOrderCode(tx);
+    }
+
+    const duplicate = await tx.purchaseOrder.findFirst({
+      where: {
+        code: trimmed,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (duplicate) {
+      throw new BadRequestException(
+        `Mã phiếu nhập hàng "${trimmed}" đã tồn tại. Vui lòng nhập mã khác hoặc để trống để hệ thống tự sinh.`,
+      );
+    }
+
+    return trimmed;
   }
 
   private async generateSafePurchaseOrderCode(tx: any): Promise<string> {

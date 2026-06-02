@@ -59,6 +59,7 @@ import { PermissionCacheModule } from './permission-cache/permission-cache.modul
 import { ScheduleModule } from '@nestjs/schedule';
 import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
+import { MisaSyncModule } from './misa-sync/misa-sync.module';
 import { HealthController } from './health/health.controller';
 import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
@@ -126,6 +127,7 @@ import { SepayModule } from './sepay/sepay.module';
     CashFlowCollectionBranchesModule,
     SyncKiotModule,
     LarkSyncModule,
+    MisaSyncModule,
     SupplierReturnsModule,
     SepayModule,
   ],

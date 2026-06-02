@@ -236,7 +236,9 @@ export class OrderSuppliersService {
 
   async create(dto: CreateOrderSupplierDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const code = await this.generateSafeOrderSupplierCode(tx);
+      // Cho phép user tự điền mã (đối xứng `productions.service.ts:141`).
+      // Trim + check duplicate; nếu trống/không hợp lệ thì auto-generate.
+      const code = await this.resolveOrderSupplierCode(tx, dto.code);
 
       const itemsData = await Promise.all(
         dto.items.map(async (item) => {
@@ -513,9 +515,18 @@ export class OrderSuppliersService {
         0,
       );
 
+      // Cho phép user đổi mã PDN khi update — đối xứng `productions.service.ts`.
+      // `dto.code === undefined`: giữ nguyên `existing.code`.
+      // `dto.code` có giá trị: trim + check duplicate (loại trừ chính phiếu này).
+      const nextCode =
+        dto.code === undefined
+          ? existing.code
+          : await this.resolveOrderSupplierCode(tx, dto.code, id);
+
       const updatedOrderSupplier = await tx.orderSupplier.update({
         where: { id },
         data: {
+          code: nextCode,
           supplierId: dto.supplierId ?? existing.supplierId,
           branchId: dto.branchId ?? existing.branchId,
           userId: dto.userId ?? existing.userId,
@@ -556,6 +567,7 @@ export class OrderSuppliersService {
       const fieldChanges = buildChanges(
         'order_suppliers',
         {
+          code: existing.code,
           statusValue: existing.statusValue,
           subTotal: Number(existing.subTotal),
           discount: Number(existing.discount || 0),
@@ -564,6 +576,7 @@ export class OrderSuppliersService {
           supplierId: existing.supplierId,
         },
         {
+          code: updatedOrderSupplier.code,
           statusValue: updatedOrderSupplier.statusValue,
           subTotal: Number(updatedOrderSupplier.subTotal),
           discount: Number(updatedOrderSupplier.discount || 0),
@@ -961,6 +974,42 @@ export class OrderSuppliersService {
     return Array.from(map.values()).sort(
       (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
     );
+  }
+
+  /**
+   * Resolve mã PDN cho create/update:
+   *   - Có `userCode` (sau trim, khác rỗng): kiểm duplicate trên
+   *     `OrderSupplier.code`. `excludeId` để bỏ qua chính phiếu đang update.
+   *   - Không có / rỗng: auto-generate qua `generateSafeOrderSupplierCode`.
+   *
+   * Dùng chung cho cả `create` và `update` để logic nhập mã thủ công đối xứng,
+   * tránh fail im lặng khi user gửi mã trùng.
+   */
+  private async resolveOrderSupplierCode(
+    tx: any,
+    userCode?: string,
+    excludeId?: number,
+  ): Promise<string> {
+    const trimmed = (userCode || '').trim();
+    if (!trimmed) {
+      return this.generateSafeOrderSupplierCode(tx);
+    }
+
+    const duplicate = await tx.orderSupplier.findFirst({
+      where: {
+        code: trimmed,
+        ...(excludeId ? { id: { not: excludeId } } : {}),
+      },
+      select: { id: true },
+    });
+
+    if (duplicate) {
+      throw new BadRequestException(
+        `Mã phiếu đặt hàng nhập "${trimmed}" đã tồn tại. Vui lòng nhập mã khác hoặc để trống để hệ thống tự sinh.`,
+      );
+    }
+
+    return trimmed;
   }
 
   private async generateSafeOrderSupplierCode(tx?: any): Promise<string> {

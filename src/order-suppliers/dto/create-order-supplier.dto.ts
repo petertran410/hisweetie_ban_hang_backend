@@ -55,6 +55,15 @@ class CreateOrderSupplierItemDto {
 }
 
 export class CreateOrderSupplierDto {
+  @ApiProperty({
+    required: false,
+    description:
+      'Mã phiếu đặt hàng nhập do người dùng nhập. Để trống để hệ thống tự sinh mã PDN######.',
+  })
+  @IsOptional()
+  @IsString()
+  code?: string;
+
   @ApiProperty()
   @IsNumber()
   supplierId: number;

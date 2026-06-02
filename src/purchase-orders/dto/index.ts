@@ -58,6 +58,10 @@ export class PurchaseOrderSurchargeDto {
 }
 
 export class CreatePurchaseOrderDto {
+  @IsString()
+  @IsOptional()
+  code?: string;
+
   @IsInt()
   @IsOptional()
   orderSupplierId?: number;
@@ -114,6 +118,10 @@ export class CreatePurchaseOrderDto {
 }
 
 export class UpdatePurchaseOrderDto {
+  @IsString()
+  @IsOptional()
+  code?: string;
+
   @IsInt()
   @IsOptional()
   supplierId?: number;
@@ -261,6 +269,10 @@ export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
 }
 
 export class CreatePurchaseOrderFromOrderSupplierDto {
+  @IsString()
+  @IsOptional()
+  code?: string;
+
   @IsNumber()
   @IsOptional()
   additionalPayment?: number;
