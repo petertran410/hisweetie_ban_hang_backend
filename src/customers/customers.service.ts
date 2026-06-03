@@ -1411,10 +1411,19 @@ export class CustomersService {
       payment: 3,
     };
 
+    // Sort tăng dần (cũ → mới) để cộng dồn dư nợ.
+    // Khóa tie-break phải DUY NHẤT để thứ tự xác định khi nhiều bản ghi
+    // trùng cùng một mốc thời gian (vd 2 phiếu thu cùng giây):
+    // date → type (calcOrder) → createdAt → id.
     timeline.sort((a, b) => {
       const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (timeDiff !== 0) return timeDiff;
-      return (calcOrder[a.type] ?? 3) - (calcOrder[b.type] ?? 3);
+      const typeDiff = (calcOrder[a.type] ?? 3) - (calcOrder[b.type] ?? 3);
+      if (typeDiff !== 0) return typeDiff;
+      const createdDiff =
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (createdDiff !== 0) return createdDiff;
+      return (a.id ?? 0) - (b.id ?? 0);
     });
 
     let runningDebt = 0;
@@ -1432,19 +1441,10 @@ export class CustomersService {
       item.debtSnapshot = runningDebt;
     }
 
-    // Sắp xếp giảm dần
-    const typeOrder: Record<string, number> = {
-      payment: 0,
-      expense: 1,
-      debt_offset: 2,
-      return_order: 3,
-      invoice: 4,
-    };
-    timeline.sort((a, b) => {
-      const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (timeDiff !== 0) return timeDiff;
-      return (typeOrder[a.type] ?? 5) - (typeOrder[b.type] ?? 5);
-    });
+    // Hiển thị mới → cũ. Phải là NGHỊCH ĐẢO chính xác của thứ tự cộng dồn ở
+    // trên thì cột "Dư nợ" mới đơn điệu (không zigzag). Đảo ngược mảng đã sort
+    // đảm bảo điều đó kể cả khi trùng thời gian/loại.
+    timeline.reverse();
 
     return { data: timeline };
   }
