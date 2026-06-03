@@ -1290,10 +1290,15 @@ export class ProductsService {
       }
     }
 
-    const merged = [...mergedMap.values(), ...ungrouped].sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-    );
+    const merged = [...mergedMap.values(), ...ungrouped]
+      // Ẩn dòng đã gộp có tổng số lượng = 0 (vd: nhận rồi hoàn tác nhận, hoặc
+      // chuyển rồi hoàn tác chuyển — cặp log đối ứng triệt tiêu nhau). Chỉ áp
+      // dụng cho log có refCode (đã qua nhóm), giữ nguyên log lẻ.
+      .filter((log) => !log.refCode || Number(log.quantity) !== 0)
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
 
     const total = merged.length;
     const skip = (page - 1) * limit;

@@ -27,7 +27,8 @@
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
     "fix:order-status": "ts-node prisma/seeds/fix-order-status-value.ts",
-    "sync:lark-users": "ts-node prisma/seeds/sync-lark-user-ids.ts"
+    "sync:lark-users": "ts-node prisma/seeds/sync-lark-user-ids.ts",
+    "backfill:transfer-in": "ts-node prisma/seeds/backfill-transfer-in-logs.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.63.1",
