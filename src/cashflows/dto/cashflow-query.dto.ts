@@ -81,7 +81,12 @@ export class CashFlowQueryDto {
   contactNumber?: string;
 
   @IsOptional()
-  @Transform(({ value }) => value === 'true')
+  @Transform(({ value, obj }) => {
+    const raw = obj?.isReceipt;
+    if (raw === 'true' || raw === true) return true;
+    if (raw === 'false' || raw === false) return false;
+    return value;
+  })
   @IsBoolean()
   isReceipt?: boolean;
 

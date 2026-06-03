@@ -31,6 +31,27 @@ export class SyncInvoiceService extends BaseSyncService {
     return this.upsertRecord(record);
   }
 
+  /**
+   * Sync toàn bộ Invoice có purchaseDate trong khoảng [fromDate, toDate].
+   * Forward `purchaseDateFrom` & `purchaseDateTo` xuống sync_kiot_data để DB-side filter.
+   * Không update SyncControl (gọi từ orchestrator riêng) — giống pattern cashflow.
+   */
+  async syncByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    created: number;
+    updated: number;
+    skipped: number;
+  }> {
+    const purchaseDateFrom = fromDate.toISOString();
+    const purchaseDateTo = toDate.toISOString();
+    this.logger.log(
+      `🔄 Sync invoices with purchaseDate in [${purchaseDateFrom}, ${purchaseDateTo}]...`,
+    );
+    return this.streamSync(undefined, { purchaseDateFrom, purchaseDateTo });
+  }
+
   protected async preloadLookups(
     records: any[],
   ): Promise<InvoiceLookupContext> {

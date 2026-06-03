@@ -288,6 +288,31 @@ export class SyncKiotService {
   }
 
   /**
+   * Sync Invoice theo khoảng purchaseDate [fromDate, toDate].
+   * Dùng cho batch migration hóa đơn (vd. lấy hết Invoice trong tháng 5/2026).
+   * Không update SyncControl (giống pattern runCashflowsByDateRange) để không phá
+   * incremental sync nếu bật lại sau này.
+   */
+  async runInvoicesByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Record<string, any>> {
+    this.logger.log(
+      `📦 Starting Invoice sync where purchaseDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]...`,
+    );
+    try {
+      const result = await this.syncInvoice.syncByDateRange(fromDate, toDate);
+      this.logger.log(
+        `✅ Invoice date-range sync completed: ${JSON.stringify(result)}`,
+      );
+      return { invoices: { success: true, ...result } };
+    } catch (error: any) {
+      this.logger.error(`❌ Invoice date-range sync failed: ${error.message}`);
+      return { invoices: { success: false, error: error.message } };
+    }
+  }
+
+  /**
    * Sync Customer theo khoảng createdDate [fromDate, toDate].
    * Dùng cho batch migration danh sách khách hàng theo ngày tạo.
    * Không update SyncControl (giống pattern runOrdersBeforeDate) để không phá
