@@ -11,16 +11,19 @@ import { Type, Transform } from 'class-transformer';
 export class CashFlowQueryDto {
   @IsOptional()
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    const arr = Array.isArray(value) ? value : String(value).split(',');
+    return arr.map(Number);
+  })
   branchIds?: number[];
 
   @IsOptional()
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',') : value,
-  )
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    return Array.isArray(value) ? value : String(value).split(',');
+  })
   code?: string[];
 
   @IsOptional()
@@ -49,16 +52,19 @@ export class CashFlowQueryDto {
 
   @IsOptional()
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',') : value,
-  )
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    return Array.isArray(value) ? value : String(value).split(',');
+  })
   method?: string[];
 
   @IsOptional()
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    const arr = Array.isArray(value) ? value : String(value).split(',');
+    return arr.map(Number);
+  })
   cashFlowGroupId?: number[];
 
   @IsOptional()
@@ -94,9 +100,11 @@ export class CashFlowQueryDto {
 
   @IsOptional()
   @IsArray()
-  @Transform(({ value }) =>
-    typeof value === 'string' ? value.split(',').map(Number) : value,
-  )
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    const arr = Array.isArray(value) ? value : String(value).split(',');
+    return arr.map(Number);
+  })
   ids?: number[];
 
   @IsOptional()
