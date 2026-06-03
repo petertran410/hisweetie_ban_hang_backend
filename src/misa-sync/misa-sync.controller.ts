@@ -11,7 +11,10 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { MisaCallbackRequestDto } from './dto';
-import { MisaBulkVoucherRequestDto } from './dto';
+import {
+  MisaBulkVoucherRequestDto,
+  MisaCreateVoucherRequestDto,
+} from './dto';
 import { MisaDictionaryService } from './misa-dictionary.service';
 import { MisaVoucherService } from './misa-voucher.service';
 
@@ -73,6 +76,7 @@ export class MisaSyncController {
   @ApiOperation({ summary: 'Tạo chứng từ bán hàng Misa từ mã hóa đơn' })
   async createVoucherFromInvoice(
     @Param('invoiceCode') invoiceCode: string,
+    @Body() body?: MisaCreateVoucherRequestDto,
   ): Promise<{
     success: boolean;
     orgRefId: string | null;
@@ -85,6 +89,7 @@ export class MisaSyncController {
     try {
       return await this.misaVoucherService.createSaleVoucherFromInvoice(
         invoiceCode,
+        body?.buyerOverride,
       );
     } catch (error) {
       this.logger.error(
@@ -119,7 +124,10 @@ export class MisaSyncController {
       `📦 Manual bulk create Misa vouchers for ${body.invoiceCodes.length} invoices`,
     );
 
-    return this.misaVoucherService.createVouchersBulk(body.invoiceCodes);
+    return this.misaVoucherService.createVouchersBulk(
+      body.invoiceCodes,
+      body.buyerOverrides,
+    );
   }
 
   @Post('voucher/retry')

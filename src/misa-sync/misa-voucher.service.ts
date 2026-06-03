@@ -15,6 +15,7 @@ import {
   MisaDeleteVoucherRequestDto,
   MisaDeleteVoucherResponseDto,
   MisaSaInvoiceDetailDto,
+  MisaBuyerOverrideDto,
 } from './dto';
 
 @Injectable()
@@ -41,6 +42,7 @@ export class MisaVoucherService {
 
   async createSaleVoucherFromInvoice(
     invoiceCode: string,
+    buyerOverride?: MisaBuyerOverrideDto,
   ): Promise<{ success: boolean; orgRefId: string | null; message: string }> {
     this.logger.log(
       `🧾 Creating Misa voucher for invoice code: ${invoiceCode}`,
@@ -136,7 +138,11 @@ export class MisaVoucherService {
       }
 
       const orgRefId = invoice.misaOrgRefId || randomUUID();
-      const voucherPayload = await this.buildVoucherPayload(invoice, orgRefId);
+      const voucherPayload = await this.buildVoucherPayload(
+        invoice,
+        orgRefId,
+        buyerOverride,
+      );
 
       if (!voucherPayload) {
         return {
@@ -207,6 +213,7 @@ export class MisaVoucherService {
   private async buildVoucherPayload(
     invoice: any,
     orgRefId: string,
+    buyerOverride?: MisaBuyerOverrideDto,
   ): Promise<MisaSaveVoucherRequestDto | null> {
     const appId = this.configService.get<string>('MISA_APP_ID');
     const orgCompanyCode = this.configService.get<string>(
@@ -277,6 +284,34 @@ export class MisaVoucherService {
           `ℹ️ No MisaAccountObject found for companyTaxCode: ${customerTaxIdentifier}, using Customer info`,
         );
       }
+    }
+
+    // ── Giá trị người mua "cuối cùng" gửi lên Misa ──
+    // Mặc định: ưu tiên thông tin đã match trong MisaAccountObject, nếu không
+    // có thì dùng thông tin khách hàng (giữ nguyên hành vi cũ).
+    let resolvedBuyerName =
+      matchedAccountObject?.accountObjectName || customerName;
+    let resolvedBuyerTaxCode =
+      matchedAccountObject?.companyTaxCode || customerTaxIdentifier;
+    let resolvedBuyerAddress =
+      matchedAccountObject?.address || invoice.customer?.invoiceAddress || '';
+
+    // Ghi đè: chỉ khi CẢ 3 ô (mã số thuế, tên người mua, địa chỉ người mua)
+    // đều có dữ liệu thì dùng chính 3 giá trị nhập tay thay cho thông tin trên.
+    const overrideTaxCode = buyerOverride?.taxCode?.trim();
+    const overrideBuyerName = buyerOverride?.buyerName?.trim();
+    const overrideBuyerAddress = buyerOverride?.buyerAddress?.trim();
+    const hasFullBuyerOverride =
+      !!overrideTaxCode && !!overrideBuyerName && !!overrideBuyerAddress;
+
+    if (hasFullBuyerOverride) {
+      resolvedBuyerName = overrideBuyerName!;
+      resolvedBuyerTaxCode = overrideTaxCode!;
+      resolvedBuyerAddress = overrideBuyerAddress!;
+      this.logger.log(
+        `📝 Áp dụng thông tin người mua nhập tay cho hóa đơn ${invoice.code}: ` +
+          `MST=${resolvedBuyerTaxCode}, tên=${resolvedBuyerName}`,
+      );
     }
 
     const details: MisaSaVoucherDetailDto[] = [];
@@ -363,8 +398,7 @@ export class MisaVoucherService {
         account_object_id: matchedAccountObject?.accountObjectId || undefined,
         account_object_code:
           matchedAccountObject?.accountObjectCode || undefined,
-        account_object_name:
-          matchedAccountObject?.accountObjectName || customerName || undefined,
+        account_object_name: resolvedBuyerName || undefined,
 
         stock_id: isHcmBranch
           ? STOCK_HCM.stockId
@@ -468,8 +502,7 @@ export class MisaVoucherService {
     const refDate = this.formatDateForMisa(now);
     const inRefOrder = this.formatDateForMisa(invoice.purchaseDate);
     const createdDate = this.formatDateForMisa(now);
-    const customerAddress =
-      matchedAccountObject?.address || invoice.customer?.invoiceAddress || '';
+    const customerAddress = resolvedBuyerAddress;
 
     const voucher: MisaSaVoucherDto = {
       voucher_type: this.VOUCHER_TYPE,
@@ -495,11 +528,9 @@ export class MisaVoucherService {
       account_object_id: matchedAccountObject?.accountObjectId,
       account_object_code:
         matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-      account_object_name:
-        matchedAccountObject?.accountObjectName || customerName,
+      account_object_name: resolvedBuyerName,
       account_object_address: customerAddress,
-      account_object_tax_code:
-        matchedAccountObject?.companyTaxCode || customerTaxIdentifier,
+      account_object_tax_code: resolvedBuyerTaxCode,
 
       employee_id: employeeId,
       employee_code: employeeCode,
@@ -520,11 +551,9 @@ export class MisaVoucherService {
         account_object_id: matchedAccountObject?.accountObjectId,
         account_object_code:
           matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-        account_object_name:
-          matchedAccountObject?.accountObjectName || customerName,
+        account_object_name: resolvedBuyerName,
         account_object_address: customerAddress,
-        account_object_tax_code:
-          matchedAccountObject?.companyTaxCode || customerTaxIdentifier,
+        account_object_tax_code: resolvedBuyerTaxCode,
         employee_id: employeeId,
         employee_code: employeeCode,
         employee_name: employeeName,
@@ -554,8 +583,7 @@ export class MisaVoucherService {
         account_object_id: matchedAccountObject?.accountObjectId,
         account_object_code:
           matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
-        account_object_name:
-          matchedAccountObject?.accountObjectName || customerName,
+        account_object_name: resolvedBuyerName,
         account_object_address: customerAddress,
         employee_id: employeeId,
         employee_code: employeeCode,
@@ -710,7 +738,10 @@ export class MisaVoucherService {
    * Đẩy hàng loạt hóa đơn lên Misa theo danh sách mã.
    * Xử lý tuần tự để tránh vượt rate limit Misa + tránh refresh token trùng.
    */
-  async createVouchersBulk(invoiceCodes: string[]): Promise<{
+  async createVouchersBulk(
+    invoiceCodes: string[],
+    buyerOverrides?: Record<string, MisaBuyerOverrideDto>,
+  ): Promise<{
     success: boolean;
     message: string;
     total: number;
@@ -738,7 +769,10 @@ export class MisaVoucherService {
 
     for (const invoiceCode of invoiceCodes) {
       try {
-        const result = await this.createSaleVoucherFromInvoice(invoiceCode);
+        const result = await this.createSaleVoucherFromInvoice(
+          invoiceCode,
+          buyerOverrides?.[invoiceCode],
+        );
         results.push({
           invoiceCode,
           success: result.success,

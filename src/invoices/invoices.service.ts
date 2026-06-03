@@ -1049,10 +1049,7 @@ export class InvoicesService {
         throw new NotFoundException(`Invoice with ID ${id} not found`);
       }
 
-      if (
-        dto.items &&
-        this.hasProductChanges(currentInvoice.details, dto.items)
-      ) {
+      if (dto.items && this.hasVersionableChanges(currentInvoice, dto)) {
         const newCode = await this.generateInvoiceCodeWithSuffix(
           currentInvoice.code,
           tx,
@@ -2181,21 +2178,71 @@ export class InvoicesService {
     });
   }
 
-  private hasProductChanges(oldDetails: any[], newItems: any[]): boolean {
-    if (oldDetails.length !== newItems.length) return true;
+  /**
+   * Quyết định việc SỬA hóa đơn có cần tạo phiên bản mới (mã có hậu tố .xx) hay không.
+   *
+   * Trả về true (→ hủy HĐ cũ + clone HĐ .xx) khi có BẤT KỲ thay đổi nào sau:
+   *   - Dòng sản phẩm: thêm/bớt SP, đổi số lượng, đổi giá bán, đổi giảm giá trên SP,
+   *     đổi tỉ lệ giảm giá trên SP, đổi tình trạng hàng (conditionType).
+   *   - Giảm giá toàn hóa đơn (discountAmount) hoặc tỉ lệ giảm giá hóa đơn (discountRatio).
+   *   - Đổi bảng giá (priceBook A → B, hoặc về "bảng giá chung").
+   *
+   * KHÔNG xét: ghi chú hóa đơn (description) và ghi chú bưu tá (delivery.noteForDriver)
+   * → các thay đổi này được cập nhật tại chỗ ở nhánh dưới, không tạo .xx, không đụng CTN.
+   *
+   * Mỗi điều kiện chỉ so sánh khi DTO chủ động gửi field tương ứng (!== undefined),
+   * tránh false-positive với các flow patch nhỏ.
+   */
+  private hasVersionableChanges(
+    currentInvoice: any,
+    dto: UpdateInvoiceDto,
+  ): boolean {
+    // (1) Bảng giá: chuẩn hóa dto.priceBookId (>0 → id, 0 → null) rồi so với giá trị đã chốt.
+    if (dto.priceBookId !== undefined && dto.priceBookId !== null) {
+      const normalizedPriceBookId =
+        dto.priceBookId > 0 ? dto.priceBookId : null;
+      if (normalizedPriceBookId !== (currentInvoice.priceBookId ?? null)) {
+        return true;
+      }
+    }
 
-    const oldMap = new Map(
-      oldDetails.map((d) => [d.productId, Number(d.quantity)]),
-    );
-    const newMap = new Map(
-      newItems.map((i) => [i.productId, Number(i.quantity)]),
-    );
+    // (2) Giảm giá toàn hóa đơn (tiền).
+    if (
+      dto.discountAmount !== undefined &&
+      Number(dto.discountAmount) !== Number(currentInvoice.discount)
+    ) {
+      return true;
+    }
 
-    if (oldMap.size !== newMap.size) return true;
+    // (3) Tỉ lệ giảm giá toàn hóa đơn.
+    if (
+      dto.discountRatio !== undefined &&
+      Number(dto.discountRatio) !== Number(currentInvoice.discountRatio)
+    ) {
+      return true;
+    }
 
-    for (const [productId, oldQty] of oldMap) {
-      const newQty = newMap.get(productId);
-      if (newQty === undefined || newQty !== oldQty) return true;
+    // (4) Dòng sản phẩm — so khớp đa tập chữ ký từng dòng.
+    if (dto.items !== undefined) {
+      const oldDetails = currentInvoice.details || [];
+      if (oldDetails.length !== dto.items.length) return true;
+
+      const buildSignature = (item: any): string =>
+        [
+          item.productId,
+          item.conditionType || 'normal',
+          Number(item.quantity),
+          Number(item.price),
+          Number(item.discount) || 0,
+          Number(item.discountRatio) || 0,
+        ].join('|');
+
+      const oldSignatures = oldDetails.map(buildSignature).sort();
+      const newSignatures = dto.items.map(buildSignature).sort();
+
+      for (let i = 0; i < oldSignatures.length; i++) {
+        if (oldSignatures[i] !== newSignatures[i]) return true;
+      }
     }
 
     return false;

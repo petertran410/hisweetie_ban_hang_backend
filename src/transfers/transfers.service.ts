@@ -702,6 +702,7 @@ export class TransfersService {
       where: { id: transferId },
       include: {
         details: true,
+        fromBranch: true,
       },
     });
 
@@ -711,19 +712,52 @@ export class TransfersService {
       );
     }
 
-    for (const detail of transfer.details) {
-      await this.prisma.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.fromBranchId,
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
           },
-        },
-        data: {
-          onHand: { increment: detail.sendQuantity },
-        },
-      });
-    }
+        });
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+          data: {
+            onHand: { increment: detail.sendQuantity },
+          },
+        });
+
+        // Ghi thẻ kho đảo chiều CHUYỂN khi hoàn tác (2→1): cộng lại số chuyển đi.
+        // Gộp với dòng TRANSFER_OUT -sendQuantity trước đó sẽ triệt tiêu về 0.
+        if (Number(detail.sendQuantity) > 0) {
+          await tx.inventoryLog.create({
+            data: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.fromBranchId,
+              branchName: transfer.fromBranch?.name || '',
+              transactionType: 'TRANSFER_OUT',
+              refCode: transfer.code,
+              refType: 'transfer',
+              refId: transfer.id,
+              quantity: Number(detail.sendQuantity),
+              costPrice: inventory ? Number(inventory.cost) : 0,
+              transactionPrice: null,
+              partnerName: null,
+            },
+          });
+        }
+      }
+    });
   }
 
   private async incrementInventoryToBranch(transferId: number) {
@@ -741,34 +775,58 @@ export class TransfersService {
       );
     }
 
-    for (const detail of transfer.details) {
-      const inventory = await this.prisma.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.toBranchId,
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.toBranchId,
+            },
           },
-        },
-      });
+        });
 
-      if (!inventory) {
-        throw new NotFoundException(
-          `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.toBranch.name}`,
-        );
+        if (!inventory) {
+          throw new NotFoundException(
+            `Không tìm thấy tồn kho cho sản phẩm ${detail.productCode} tại chi nhánh ${transfer.toBranch.name}`,
+          );
+        }
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.toBranchId,
+            },
+          },
+          data: {
+            onHand: { increment: detail.receivedQuantity },
+          },
+        });
+
+        // Ghi thẻ kho chiều NHẬN: cộng đúng số lượng nhận thực tế của chi
+        // nhánh nhận (có thể khác số chuyển đi). Bỏ qua khi nhận = 0.
+        if (Number(detail.receivedQuantity) > 0) {
+          await tx.inventoryLog.create({
+            data: {
+              productId: detail.productId,
+              productCode: detail.productCode,
+              productName: detail.productName,
+              branchId: transfer.toBranchId,
+              branchName: transfer.toBranch?.name || '',
+              transactionType: 'TRANSFER_IN',
+              refCode: transfer.code,
+              refType: 'transfer',
+              refId: transfer.id,
+              quantity: Number(detail.receivedQuantity),
+              costPrice: inventory ? Number(inventory.cost) : 0,
+              transactionPrice: null,
+              partnerName: null,
+            },
+          });
+        }
       }
-
-      await this.prisma.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: transfer.toBranchId,
-          },
-        },
-        data: {
-          onHand: { increment: detail.receivedQuantity },
-        },
-      });
-    }
+    });
   }
 
   private async decrementInventoryToBranch(transferId: number) {
@@ -807,23 +865,27 @@ export class TransfersService {
         },
       });
 
-      await this.prisma.inventoryLog.create({
-        data: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: transfer.toBranchId,
-          branchName: transfer.toBranchName || '',
-          transactionType: 'TRANSFER_IN',
-          refCode: transfer.code,
-          refType: 'transfer',
-          refId: transfer.id,
-          quantity: Number(detail.sendQuantity),
-          costPrice: inventorySnapshot ? Number(inventorySnapshot.cost) : 0,
-          transactionPrice: null,
-          partnerName: null,
-        },
-      });
+      // Ghi thẻ kho đảo chiều NHẬN khi hoàn tác (3→2): trừ đúng số đã nhận.
+      // Gộp với dòng TRANSFER_IN +receivedQuantity trước đó sẽ triệt tiêu về 0.
+      if (Number(detail.receivedQuantity) > 0) {
+        await this.prisma.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.toBranchId,
+            branchName: transfer.toBranchName || '',
+            transactionType: 'TRANSFER_IN',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: -Number(detail.receivedQuantity),
+            costPrice: inventorySnapshot ? Number(inventorySnapshot.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+          },
+        });
+      }
     }
   }
 
