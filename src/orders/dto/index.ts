@@ -365,6 +365,11 @@ export class ProductPriceHistoryDto {
   productId: number;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
   @IsString()
   @IsIn(['order', 'invoice'])
   type?: 'order' | 'invoice';
