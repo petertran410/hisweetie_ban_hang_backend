@@ -739,12 +739,17 @@ export class SuppliersService {
       payment: 3,
     };
 
+    // Khóa tie-break phải DUY NHẤT để thứ tự xác định khi nhiều bản ghi
+    // trùng cùng mốc thời gian: date → type (calcOrder) → createdAt → id.
     timeline.sort((a, b) => {
       const timeDiff = new Date(a.date).getTime() - new Date(b.date).getTime();
       if (timeDiff !== 0) return timeDiff;
       const typeDiff = (calcOrder[a.type] ?? 0) - (calcOrder[b.type] ?? 0);
       if (typeDiff !== 0) return typeDiff;
-      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      const createdDiff =
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      if (createdDiff !== 0) return createdDiff;
+      return (a.id ?? 0) - (b.id ?? 0);
     });
 
     // 4. Tính debtSnapshot
@@ -762,21 +767,9 @@ export class SuppliersService {
       item.debtSnapshot = runningDebt;
     }
 
-    // 5. Sort giảm dần
-    const typeOrder: Record<string, number> = {
-      payment: 0,
-      supplier_return: 1,
-      balance_adjustment: 2,
-      purchase: 3,
-    };
-
-    timeline.sort((a, b) => {
-      const timeDiff = new Date(b.date).getTime() - new Date(a.date).getTime();
-      if (timeDiff !== 0) return timeDiff;
-      const typeDiff = (typeOrder[a.type] ?? 2) - (typeOrder[b.type] ?? 2);
-      if (typeDiff !== 0) return typeDiff;
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    });
+    // 5. Hiển thị mới → cũ. Phải là NGHỊCH ĐẢO chính xác của thứ tự cộng dồn
+    // ở trên thì cột "Dư nợ" mới đơn điệu (không zigzag).
+    timeline.reverse();
 
     return { data: timeline };
   }
