@@ -8,6 +8,7 @@ interface CashFlowLookupContext {
   customerByKiotId: Map<string, number>;
   supplierByKiotId: Map<string, number>;
   userByKiotId: Map<string, number>;
+  userByName: Map<string, number>;
   cashFlowByCode: Map<string, number>;
 }
 
@@ -73,6 +74,7 @@ export class SyncCashFlowService extends BaseSyncService {
     const customerKiotIds = new Set<bigint>();
     const supplierKiotIds = new Set<bigint>();
     const userKiotIds = new Set<bigint>();
+    const userNames = new Set<string>();
     const codes = new Set<string>();
 
     for (const r of records) {
@@ -84,9 +86,13 @@ export class SyncCashFlowService extends BaseSyncService {
       if (r?.partnerId && partnerType === 'S')
         supplierKiotIds.add(BigInt(r.partnerId));
       if (r?.createdBy) userKiotIds.add(BigInt(r.createdBy));
+      // `userName` = tên người tạo phiếu (field `user` từ KiotViet) — dùng để
+      // fallback khớp theo tên khi không map được theo kiotVietId.
+      const name = (r?.userName ?? '').trim();
+      if (name) userNames.add(name);
     }
 
-    const [branches, customers, suppliers, users, cashFlows] =
+    const [branches, customers, suppliers, users, usersByName, cashFlows] =
       await Promise.all([
         branchKiotIds.size > 0
           ? this.prisma.branch.findMany({
@@ -110,6 +116,12 @@ export class SyncCashFlowService extends BaseSyncService {
           ? this.prisma.user.findMany({
               where: { kiotVietId: { in: [...userKiotIds] } },
               select: { id: true, kiotVietId: true },
+            })
+          : Promise.resolve([]),
+        userNames.size > 0
+          ? this.prisma.user.findMany({
+              where: { name: { in: [...userNames] } },
+              select: { id: true, name: true },
             })
           : Promise.resolve([]),
         codes.size > 0
@@ -142,6 +154,14 @@ export class SyncCashFlowService extends BaseSyncService {
       if (u.kiotVietId != null) userByKiotId.set(String(u.kiotVietId), u.id);
     }
 
+    // Map theo tên (lowercase-trim) — fallback khi không có kiotVietId match.
+    // Nếu nhiều user trùng tên, giữ bản ghi đầu tiên (an toàn hơn fallback Admin).
+    const userByName = new Map<string, number>();
+    for (const u of usersByName as any[]) {
+      const key = (u.name ?? '').trim().toLowerCase();
+      if (key && !userByName.has(key)) userByName.set(key, u.id);
+    }
+
     const cashFlowByCode = new Map<string, number>();
     for (const cf of cashFlows) cashFlowByCode.set(cf.code, cf.id);
 
@@ -150,6 +170,7 @@ export class SyncCashFlowService extends BaseSyncService {
       customerByKiotId,
       supplierByKiotId,
       userByKiotId,
+      userByName,
       cashFlowByCode,
     };
   }
@@ -190,9 +211,29 @@ export class SyncCashFlowService extends BaseSyncService {
     const amount = Number(record.amount || 0);
     const isReceipt = amount >= 0;
 
-    const createdBy = record.createdBy
-      ? (ctx.userByKiotId.get(String(record.createdBy)) ?? 1)
-      : 1;
+    // KiotViet sổ quỹ chỉ có 1 người: `createdBy` (id) + `user`/`userName` (tên).
+    // Không có khái niệm "người thu" riêng → người tạo cũng là người thu/chi.
+    // Resolve theo thứ tự: kiotVietId → khớp tên → fallback Admin (id=1).
+    let resolvedUserId: number | null = null;
+    if (record.createdBy) {
+      resolvedUserId = ctx.userByKiotId.get(String(record.createdBy)) ?? null;
+    }
+    if (resolvedUserId === null) {
+      const nameKey = (record.userName ?? '').trim().toLowerCase();
+      if (nameKey) {
+        resolvedUserId = ctx.userByName.get(nameKey) ?? null;
+      }
+    }
+    if (resolvedUserId === null) {
+      this.logger.warn(
+        `⚠️ CashFlow ${record.code}: không map được người tạo ` +
+          `(createdBy=${record.createdBy ?? 'null'}, userName="${record.userName ?? ''}") → fallback Admin (id=1)`,
+      );
+    }
+    const createdBy = resolvedUserId ?? 1;
+    // collectorUserId = chính người tạo phiếu (KiotViet không tách riêng).
+    // Chỉ set khi map được user thật, tránh gán nhầm "người thu" = Admin.
+    const collectorUserId = resolvedUserId;
 
     const kiotOwnedData = {
       branchId: branchId || 1,
@@ -217,7 +258,15 @@ export class SyncCashFlowService extends BaseSyncService {
     if (existingId) {
       await this.prisma.cashFlow.update({
         where: { id: existingId },
-        data: kiotOwnedData,
+        data: {
+          ...kiotOwnedData,
+          // Chỉ ghi đè người tạo/người thu khi map được user thật (repair dữ
+          // liệu cũ bị gán nhầm Admin). KHÔNG ghi đè về Admin/null nếu chưa map
+          // được — tránh phá giá trị đúng đã có.
+          ...(resolvedUserId !== null
+            ? { createdBy: resolvedUserId, collectorUserId: resolvedUserId }
+            : {}),
+        },
       });
       return 'updated';
     }
@@ -226,6 +275,7 @@ export class SyncCashFlowService extends BaseSyncService {
       data: {
         code: record.code,
         createdBy,
+        collectorUserId,
         ...kiotOwnedData,
         createdAt: record.transDate ? new Date(record.transDate) : new Date(),
       },

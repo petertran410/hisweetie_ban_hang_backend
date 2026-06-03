@@ -547,6 +547,7 @@ export class CashFlowsService {
             select: { id: true, bankName: true, accountNumber: true },
           },
           creator: { select: { id: true, name: true } },
+          collector: { select: { id: true, name: true } },
           collectionBranch: {
             select: { id: true, name: true },
           },
@@ -568,6 +569,7 @@ export class CashFlowsService {
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
       collectionBranchName: cashFlow.collectionBranch?.name,
       creatorName: cashFlow.creator?.name,
+      collectorName: cashFlow.collector?.name ?? cashFlow.creator?.name,
       debtOffsetTotal:
         cashFlow.returnOrders?.reduce(
           (sum: number, ro: any) => sum + Number(ro.refundAmount),
@@ -612,6 +614,12 @@ export class CashFlowsService {
             name: true,
           },
         },
+        collector: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
       },
     });
 
@@ -646,6 +654,7 @@ export class CashFlowsService {
       branchName: cashFlow.branch?.name,
       cashFlowGroupName: cashFlow.cashFlowGroup?.name,
       creatorName: cashFlow.creator?.name,
+      collectorName: cashFlow.collector?.name ?? cashFlow.creator?.name,
       customer,
       supplier,
     };
