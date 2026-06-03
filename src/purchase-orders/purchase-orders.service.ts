@@ -896,6 +896,17 @@ export class PurchaseOrdersService {
       // wasDraft=true thì tồn chưa từng cộng → bỏ qua restore.
       if (!wasDraft && existing.branchId) {
         await this.restoreInventory(id, tx);
+        // restoreInventory CHỈ hoàn lại onHand, KHÔNG xóa InventoryLog. Phải xóa
+        // các log PURCHASE cũ của phiếu này trước khi updateInventory() ghi log
+        // mới — nếu không thẻ kho sẽ cộng dồn log cũ + mới cùng refCode (vd sửa
+        // phiếu đã hoàn thành làm số lượng hiển thị bị nhân đôi).
+        await tx.inventoryLog.deleteMany({
+          where: {
+            refType: 'purchase_order',
+            transactionType: 'PURCHASE',
+            refId: id,
+          },
+        });
       }
 
       if (dto.items) {
