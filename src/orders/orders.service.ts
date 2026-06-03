@@ -1006,6 +1006,7 @@ export class OrdersService {
     customerId: number,
     productId: number,
     type?: 'order' | 'invoice',
+    branchId?: number,
   ) {
     const results: Array<{
       code: string;
@@ -1024,6 +1025,7 @@ export class OrdersService {
           order: {
             customerId,
             status: { notIn: [ORDER_STATUS.CANCELLED] },
+            ...(branchId ? { branchId } : {}),
           },
         },
         select: {
@@ -1066,6 +1068,7 @@ export class OrdersService {
           invoice: {
             customerId,
             status: { notIn: [INVOICE_STATUS.CANCELLED] },
+            ...(branchId ? { branchId } : {}),
           },
         },
         select: {

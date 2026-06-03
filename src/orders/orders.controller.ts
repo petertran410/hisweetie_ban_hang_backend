@@ -42,6 +42,7 @@ export class OrdersController {
       +params.customerId,
       +params.productId,
       params.type,
+      params.branchId ? +params.branchId : undefined,
     );
   }
 
