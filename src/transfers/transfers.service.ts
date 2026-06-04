@@ -276,17 +276,10 @@ export class TransfersService {
     const productIds = dto.transferDetails.map((d) => d.productId);
     const finalStatus = dto.status || 1;
 
-    const [products, inventoriesFrom, inventoriesTo] = await Promise.all([
+    const [products, inventoriesTo] = await Promise.all([
       this.prisma.product.findMany({
         where: { id: { in: productIds } },
         select: { id: true, name: true, code: true },
-      }),
-      this.prisma.inventory.findMany({
-        where: {
-          productId: { in: productIds },
-          branchId: dto.fromBranchId,
-        },
-        select: { productId: true, onHand: true },
       }),
       this.prisma.inventory.findMany({
         where: {
@@ -298,9 +291,6 @@ export class TransfersService {
     ]);
 
     const productMap = new Map(products.map((p) => [p.id, p.name]));
-    const inventoryFromMap = new Map(
-      inventoriesFrom.map((inv) => [inv.productId, Number(inv.onHand)]),
-    );
     const inventoryToSet = new Set(inventoriesTo.map((inv) => inv.productId));
 
     if (finalStatus >= 2) {
@@ -318,15 +308,8 @@ export class TransfersService {
         );
       }
 
-      for (const detail of dto.transferDetails) {
-        const availableStock = inventoryFromMap.get(detail.productId) || 0;
-        if (detail.sendQuantity > availableStock) {
-          const product = products.find((p) => p.id === detail.productId);
-          throw new BadRequestException(
-            `Sản phẩm "${product?.code || detail.productId}" không đủ tồn kho tại chi nhánh "${fromBranch.name}". Tồn kho hiện tại: ${availableStock}, yêu cầu: ${detail.sendQuantity}`,
-          );
-        }
-      }
+      // Cho phép chuyển vượt quá tồn kho hiện có — tồn kho chi nhánh nguồn
+      // được phép âm (cộng dồn) theo yêu cầu nghiệp vụ.
     }
 
     const code = dto.code || (await this.generateTransferCode());
@@ -650,11 +633,8 @@ export class TransfersService {
           );
         }
 
-        if (Number(inventory.onHand) < Number(detail.sendQuantity)) {
-          throw new BadRequestException(
-            `Sản phẩm ${detail.productCode} không đủ tồn kho. Tồn hiện tại: ${inventory.onHand}, yêu cầu: ${detail.sendQuantity}`,
-          );
-        }
+        // Cho phép tồn kho chi nhánh nguồn âm (cộng dồn) — không chặn khi
+        // onHand < sendQuantity theo yêu cầu nghiệp vụ.
 
         const newOnHand =
           Number(inventory.onHand) - Number(detail.sendQuantity);

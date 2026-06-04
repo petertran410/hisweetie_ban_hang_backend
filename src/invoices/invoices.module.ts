@@ -6,9 +6,10 @@ import { InvoicePaymentsService } from './invoice-payments.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { OrdersModule } from '../orders/orders.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
+import { PackingSlipsModule } from '../packing-slips/packing-slips.module';
 
 @Module({
-  imports: [PrismaModule, OrdersModule, AuditLogsModule],
+  imports: [PrismaModule, OrdersModule, AuditLogsModule, PackingSlipsModule],
   controllers: [InvoicesController, InvoicePaymentsController],
   providers: [InvoicesService, InvoicePaymentsService],
   exports: [InvoicesService, InvoicePaymentsService],
