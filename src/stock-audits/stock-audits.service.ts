@@ -31,6 +31,82 @@ const INCLUDE_FULL = {
 export class StockAuditsService {
   constructor(private prisma: PrismaService) {}
 
+  // ─── Tồn kho tại thời điểm kiểm (point-in-time, LOG-BASED) ──────
+  // Tồn ngay TRƯỚC thời điểm `checkDate` = TỔNG các giao dịch THẬT (InventoryLog)
+  // có transactionDate < checkDate. Chỉ tính những gì đã ghi vào thẻ kho:
+  //   stockBefore(T) = Σ quantity(log.transactionDate < T)
+  // → Nếu trước thời điểm kiểm KHÔNG có giao dịch nào thì tồn = 0 (không tính
+  //   "tồn ảo" khởi tạo sản phẩm chưa từng ghi log). Khớp đúng với thẻ kho.
+  // `excludeAuditId`: loại trừ chính các log của phiếu kiểm này (khi tính lại
+  // lúc Hoàn thành để tránh đếm trùng log vừa/sắp ghi).
+  private async getStockBeforeDate(
+    tx: any,
+    productId: number,
+    branchId: number,
+    checkDate: Date,
+    excludeAuditId?: number,
+  ): Promise<number> {
+    const earlierLogs = await tx.inventoryLog.findMany({
+      where: {
+        productId,
+        branchId,
+        transactionDate: { lt: checkDate },
+        ...(excludeAuditId
+          ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
+          : {}),
+      },
+      select: { quantity: true },
+    });
+    return earlierLogs.reduce(
+      (s: number, l: any) => s + Number(l.quantity),
+      0,
+    );
+  }
+
+  // ─── Tổng toàn bộ giao dịch (Σ log) của 1 sản phẩm tại 1 chi nhánh ──
+  // Dùng để set lại onHand = Σ log sau khi kiểm — giữ onHand luôn khớp với
+  // thẻ kho (loại bỏ tồn ảo không có log).
+  private async getTotalLogSum(
+    tx: any,
+    productId: number,
+    branchId: number,
+    excludeAuditId?: number,
+  ): Promise<number> {
+    const logs = await tx.inventoryLog.findMany({
+      where: {
+        productId,
+        branchId,
+        ...(excludeAuditId
+          ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
+          : {}),
+      },
+      select: { quantity: true },
+    });
+    return logs.reduce((s: number, l: any) => s + Number(l.quantity), 0);
+  }
+
+  // ─── Preview tồn tại thời điểm cho nhiều sản phẩm (phục vụ UI form) ──
+  // Trả về { productId: stockAtMoment } để form hiển thị cột "Tồn kho" đúng
+  // theo checkDate trước khi lưu — khớp với cách `complete` tính difference.
+  async previewStockAtDate(
+    branchId: number,
+    productIds: number[],
+    checkDate: string,
+  ): Promise<Record<number, number>> {
+    const date = checkDate ? new Date(checkDate) : new Date();
+    const unique = [...new Set(productIds)].filter((id) => !!id);
+    const result: Record<number, number> = {};
+    for (const pid of unique) {
+      result[pid] = await this.getStockBeforeDate(
+        this.prisma,
+        pid,
+        branchId,
+        date,
+      );
+    }
+    return result;
+  }
+
   // ─── Generate code KK000001 ─────────────────────────────────────
   private async generateCode(): Promise<string> {
     const last = await this.prisma.stockAudit.findFirst({
@@ -145,6 +221,16 @@ export class StockAuditsService {
     const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
     const code = await this.generateCode();
+    const checkDate = dto.checkDate ? new Date(dto.checkDate) : new Date();
+
+    // Tồn tại thời điểm kiểm cho từng sản phẩm (neo ngược từ onHand hiện tại).
+    const systemQtyMap = new Map<number, number>();
+    for (const id of uniqueIds) {
+      systemQtyMap.set(
+        id,
+        await this.getStockBeforeDate(this.prisma, id, dto.branchId, checkDate),
+      );
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const audit = await tx.stockAudit.create({
@@ -152,7 +238,7 @@ export class StockAuditsService {
           code,
           branchId: branch.id,
           branchName: branch.name,
-          checkDate: new Date(),
+          checkDate,
           note: dto.note || null,
           status: STOCK_AUDIT_STATUS.DRAFT,
           createdById: user.id,
@@ -162,7 +248,7 @@ export class StockAuditsService {
               data: dto.items.map((item) => {
                 const product = productMap.get(item.productId)!;
                 const inv = invMap.get(item.productId);
-                const systemQty = inv ? Number(inv.onHand) : 0;
+                const systemQty = systemQtyMap.get(item.productId) ?? 0;
                 const cost = inv ? Number(inv.cost) : 0;
                 const difference = item.actualQuantity - systemQty;
 
@@ -206,13 +292,21 @@ export class StockAuditsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // Update note
-      if (dto.note !== undefined) {
-        await tx.stockAudit.update({
-          where: { id },
-          data: { note: dto.note || null },
-        });
+      // Update note + checkDate
+      const headerData: any = {};
+      if (dto.note !== undefined) headerData.note = dto.note || null;
+      if (dto.checkDate !== undefined) {
+        headerData.checkDate = dto.checkDate
+          ? new Date(dto.checkDate)
+          : new Date();
       }
+      if (Object.keys(headerData).length > 0) {
+        await tx.stockAudit.update({ where: { id }, data: headerData });
+      }
+
+      // checkDate hiệu lực để tính tồn thời điểm (mới nếu có, không thì giữ cũ)
+      const effectiveCheckDate: Date =
+        headerData.checkDate ?? audit.checkDate;
 
       // Update items
       if (dto.items?.length) {
@@ -233,6 +327,20 @@ export class StockAuditsService {
         });
         const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
+        // Tồn tại thời điểm kiểm cho từng sản phẩm.
+        const systemQtyMap = new Map<number, number>();
+        for (const pid of uniqueIds) {
+          systemQtyMap.set(
+            pid,
+            await this.getStockBeforeDate(
+              tx,
+              pid,
+              audit.branchId,
+              effectiveCheckDate,
+            ),
+          );
+        }
+
         // Xóa details cũ, tạo mới
         await tx.stockAuditDetail.deleteMany({
           where: { stockAuditId: id },
@@ -242,7 +350,7 @@ export class StockAuditsService {
           data: dto.items.map((item) => {
             const product = productMap.get(item.productId)!;
             const inv = invMap.get(item.productId);
-            const systemQty = inv ? Number(inv.onHand) : 0;
+            const systemQty = systemQtyMap.get(item.productId) ?? 0;
             const cost = inv ? Number(inv.cost) : 0;
             const difference = item.actualQuantity - systemQty;
 
@@ -290,6 +398,8 @@ export class StockAuditsService {
     });
 
     return this.prisma.$transaction(async (tx) => {
+      const checkDate: Date = audit.checkDate ?? new Date();
+
       for (const detail of audit.details) {
         const inv = await tx.inventory.findUnique({
           where: {
@@ -305,10 +415,29 @@ export class StockAuditsService {
 
         if (!inv) continue;
 
-        // Tính delta: difference = actualQuantity - systemQuantity (lúc tạo phiếu)
-        const delta =
-          Number(detail.actualQuantity) - Number(detail.systemQuantity);
-        const newOnHand = Number(inv.onHand) + delta;
+        // Tính lại tồn TẠI THỜI ĐIỂM kiểm theo LOG (Σ giao dịch thật trước
+        // checkDate) ngay lúc Hoàn thành. difference = thực tế − tồn-log-trước.
+        // Nếu trước đó không có giao dịch nào → tồn = 0 → difference = thực tế.
+        const systemQty = await this.getStockBeforeDate(
+          tx,
+          detail.productId,
+          audit.branchId,
+          checkDate,
+          audit.id,
+        );
+        const delta = Number(detail.actualQuantity) - systemQty;
+        const cost = Number(detail.costAtCheck);
+
+        // onHand sau kiểm = Σ TẤT CẢ giao dịch thật (đã gồm dòng kiểm này).
+        // = Σ(log khác phiếu này) + delta. Cách này reconcile onHand về đúng
+        // thẻ kho (loại "tồn ảo" không có log) — đồng nhất với cách tính lệch.
+        const sumOtherLogs = await this.getTotalLogSum(
+          tx,
+          detail.productId,
+          audit.branchId,
+          audit.id,
+        );
+        const newOnHand = sumOtherLogs + delta;
 
         // Tính totalWeight mới
         const weight = inv.product?.weight ? Number(inv.product.weight) : 0;
@@ -327,7 +456,18 @@ export class StockAuditsService {
           },
         });
 
-        // Ghi InventoryLog
+        // Cập nhật lại snapshot trên detail cho khớp với giá trị đã áp dụng
+        // (systemQuantity/difference có thể đã đổi so với lúc tạo phiếu tạm).
+        await tx.stockAuditDetail.update({
+          where: { id: detail.id },
+          data: {
+            systemQuantity: systemQty,
+            difference: delta,
+            differenceValue: delta * cost,
+          },
+        });
+
+        // Ghi InventoryLog với transactionDate = thời điểm kiểm (lùi ngày được)
         if (delta !== 0) {
           await tx.inventoryLog.create({
             data: {
@@ -341,8 +481,9 @@ export class StockAuditsService {
               refType: 'stock_audit',
               refId: audit.id,
               quantity: delta,
-              costPrice: Number(detail.costAtCheck),
-              note: `Kiểm kho: ${detail.productName} (HT: ${detail.systemQuantity} → TT: ${detail.actualQuantity})`,
+              costPrice: cost,
+              transactionDate: checkDate,
+              note: `Kiểm kho: ${detail.productName} (HT: ${systemQty} → TT: ${detail.actualQuantity})`,
               createdByName: user?.name || audit.createdByName,
             },
           });
@@ -397,8 +538,9 @@ export class StockAuditsService {
 
           if (!inv) continue;
 
-          const delta =
-            Number(detail.actualQuantity) - Number(detail.systemQuantity);
+          // Dùng difference đã lưu (complete đã cập nhật khớp với giá trị
+          // thực sự áp dụng vào onHand). Rollback = trừ đúng phần đã cộng.
+          const delta = Number(detail.difference);
           const restoredOnHand = Number(inv.onHand) - delta;
           const weight = inv.product?.weight ? Number(inv.product.weight) : 0;
 
@@ -430,6 +572,7 @@ export class StockAuditsService {
                 refId: audit.id,
                 quantity: -delta,
                 costPrice: Number(detail.costAtCheck),
+                transactionDate: audit.checkDate ?? new Date(),
                 note: `Hủy kiểm kho: ${detail.productName}`,
                 createdByName: audit.createdByName,
               },

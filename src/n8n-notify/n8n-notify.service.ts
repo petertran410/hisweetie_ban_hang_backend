@@ -23,6 +23,17 @@ interface PackingSlipImage {
   imageUrl: string;
 }
 
+export interface NotifyDeliveryResult {
+  /** Webhook trả về 2xx */
+  ok: boolean;
+  /** Bị bỏ qua do chưa cấu hình N8N_DELIVERY_WEBHOOK_URL */
+  skipped: boolean;
+  /** HTTP status nếu có gọi webhook */
+  status?: number;
+  /** Thông điệp lỗi nếu gọi webhook thất bại */
+  error?: string;
+}
+
 interface PackingSlipForNotify {
   id: number;
   code: string;
@@ -52,16 +63,19 @@ export class N8nNotifyService {
 
   /**
    * Gửi thông báo "Báo đơn giao hàng thành công" sang n8n webhook.
-   * Fire-and-log: lỗi không throw lên trên để không làm fail nghiệp vụ tạo packing slip.
+   * Fire-and-log: KHÔNG throw lên trên để không làm fail nghiệp vụ tạo/cập nhật packing slip.
+   * Trả về kết quả để caller (vd: API "Gửi lại") biết thành công / bị skip / lỗi.
    */
-  async notifyDelivery(packingSlip: PackingSlipForNotify): Promise<void> {
+  async notifyDelivery(
+    packingSlip: PackingSlipForNotify,
+  ): Promise<NotifyDeliveryResult> {
     const webhookUrl = this.config.get<string>('N8N_DELIVERY_WEBHOOK_URL');
 
     if (!webhookUrl) {
       this.logger.warn(
         'N8N_DELIVERY_WEBHOOK_URL is not set — skipping delivery notification',
       );
-      return;
+      return { ok: false, skipped: true };
     }
 
     const secret = this.config.get<string>('N8N_WEBHOOK_SECRET');
@@ -70,17 +84,10 @@ export class N8nNotifyService {
       this.config.get<string>('API_URL') ||
       '';
 
-    // Debug: log secret length and first/last chars to verify env parsing
-    if (secret) {
-      this.logger.debug(
-        `Webhook secret: length=${secret.length}, first="${secret[0]}", last="${secret[secret.length - 1]}"`,
-      );
-    }
-
     const payload = this.buildPayload(packingSlip, publicUrl);
 
     try {
-      await axios.post(webhookUrl, payload, {
+      const res = await axios.post(webhookUrl, payload, {
         timeout: 10_000,
         headers: {
           'Content-Type': 'application/json',
@@ -90,6 +97,7 @@ export class N8nNotifyService {
       this.logger.log(
         `Notified n8n delivery for packing slip ${packingSlip.code} (id=${packingSlip.id})`,
       );
+      return { ok: true, skipped: false, status: res.status };
     } catch (err) {
       const ax = err as AxiosError;
       const status = ax.response?.status;
@@ -101,6 +109,7 @@ export class N8nNotifyService {
         `Failed to notify n8n delivery for packing slip ${packingSlip.code} (id=${packingSlip.id}): ` +
           `status=${status} message=${ax.message} body=${body}`,
       );
+      return { ok: false, skipped: false, status, error: ax.message };
     }
   }
 

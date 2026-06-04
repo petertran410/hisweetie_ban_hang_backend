@@ -63,6 +63,20 @@ export class ReturnOrdersService {
     if (query.refundType) {
       if (query.refundType === 'debt_offsets') {
         where.refundType = { in: ['debt_offset', 'manual_offset'] };
+      } else if (query.refundType === 'returns_only') {
+        // Trang trả hàng: loại CTN (manual_offset), giữ phiếu TH gồm cả
+        // refundType null (đang xử lý dở), cash_refund và debt_offset.
+        // Dùng OR-null vì SQL `<> 'manual_offset'` loại luôn hàng NULL.
+        // Bọc trong AND để không ghi đè where.OR của search.
+        where.AND = [
+          ...(where.AND || []),
+          {
+            OR: [
+              { refundType: null },
+              { refundType: { not: 'manual_offset' } },
+            ],
+          },
+        ];
       } else {
         where.refundType = query.refundType;
       }
