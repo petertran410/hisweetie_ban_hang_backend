@@ -8,6 +8,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { getActiveLogKeys, isLogActive, computeOnHandFromLogs, recalcInventoryOnHand } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class ProductsService {
@@ -897,18 +898,10 @@ export class ProductsService {
 
       // Tạo StockAudit + InventoryLog nếu tồn kho thay đổi
       if (onHand !== undefined && branchId && oldOnHand !== null) {
-        // LOG-BASED: tồn "hệ thống" để so sánh = TỔNG giao dịch thật trong thẻ
-        // kho (InventoryLog), KHÔNG dùng onHand cũ (onHand có thể chứa "tồn ảo"
-        // do tạo SP / sync KiotViet / import — không có log). Nhờ đó sau khi
-        // điều chỉnh, Σ thẻ kho == onHand mới, đồng nhất với logic kiểm kho.
-        const existingLogs = await tx.inventoryLog.findMany({
-          where: { productId: id, branchId },
-          select: { quantity: true },
-        });
-        const sumLogs = existingLogs.reduce(
-          (s, l) => s + Number(l.quantity),
-          0,
-        );
+        // LOG-BASED (NGUỒN CHÂN LÝ): tồn "hệ thống" để so sánh = Σ log ACTIVE
+        // trên thẻ kho (loại chứng từ đã hủy + tồn ảo không có log). delta =
+        // số người dùng nhập − tồn-thẻ-kho-hiện-tại.
+        const sumLogs = await computeOnHandFromLogs(tx, id, branchId);
         const delta = Number(onHand) - sumLogs;
         if (delta !== 0) {
           // Sinh mã KK tiếp theo (chung sequence với StockAudit)
@@ -945,24 +938,6 @@ export class ProductsService {
             select: { cost: true },
           });
           const currentCost = Number(currentInventory?.cost || 0);
-
-          // onHand mới = Σ log cũ + delta = giá trị người dùng nhập (đã set ở
-          // upsert phía trên). Reconcile lại để chắc chắn khớp Σ thẻ kho, loại
-          // bỏ phần "tồn ảo" không có log.
-          const reconciledOnHand = sumLogs + delta;
-          if (reconciledOnHand !== Number(onHand)) {
-            await tx.inventory.update({
-              where: { productId_branchId: { productId: id, branchId } },
-              data: {
-                onHand: reconciledOnHand,
-                totalWeight: this.calculateTotalWeight(
-                  product.weight,
-                  product.weightUnit,
-                  reconciledOnHand,
-                ),
-              },
-            });
-          }
 
           // Tạo StockAudit (status = 2: COMPLETED)
           const stockAudit = await tx.stockAudit.create({
@@ -1013,6 +988,10 @@ export class ProductsService {
               createdByName: auditUserName,
             },
           });
+
+          // NGUỒN CHÂN LÝ: onHand = Σ log active (đã gồm log vừa ghi) → khớp
+          // thẻ kho, loại bỏ tồn ảo.
+          await recalcInventoryOnHand(tx, id, branchId);
         }
       }
 
@@ -1166,137 +1145,10 @@ export class ProductsService {
     });
 
     // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy hoặc đã bị xóa cứng.
-    // refType ghi ở InventoryLog: invoice, return_order, supplier_return,
-    // stock_audit, purchase_order, transfer, destruction, production…
-    //
-    // Mapping refType → status code "Đã hủy":
-    //   - invoice          → Invoice.status        = 2
-    //   - return_order     → ReturnOrder.status    = 5
-    //   - supplier_return  → SupplierReturn.status = 4
-    //   - stock_audit      → StockAudit.status     = 3
-    //   - purchase_order   → PurchaseOrder.status  = 2
-    //   - transfer         → Transfer.status       = 4
-    //   - production       → Production.status     = 3
-    //   - destruction      → Destruction.status    = 3
-    //
-    // Cách tiếp cận: với mỗi refType, query các id ACTIVE (record còn tồn tại
-    // và status != cancelled). Log nào trỏ tới id không thuộc active set → ẩn.
-    // Cách này cover cả 2 case:
-    //   a) record bị cancel (status = mã hủy ở trên)
-    //   b) record bị xóa cứng (Invoice.remove, PurchaseOrder.remove, …)
-    // Đồng thời cũng ẩn luôn log đối ứng (STOCK_AUDIT_CANCEL, TRANSFER_CANCEL)
-    // vì cùng refType+refId → đúng theo yêu cầu "không hiển thị đơn đã hủy".
-    const refIdsByType: Record<string, Set<number>> = {};
-    for (const log of rawLogs) {
-      if (!log.refType || !log.refId) continue;
-      (refIdsByType[log.refType] ||= new Set()).add(log.refId);
-    }
-
-    const activeKeys = new Set<string>(); // `${refType}:${refId}` còn active
-
-    const collectActive = async (
-      refType: string,
-      ids: number[],
-      finder: (ids: number[]) => Promise<{ id: number }[]>,
-    ) => {
-      if (ids.length === 0) return;
-      const active = await finder(ids);
-      active.forEach((row) => activeKeys.add(`${refType}:${row.id}`));
-    };
-
-    await Promise.all([
-      collectActive(
-        'invoice',
-        Array.from(refIdsByType['invoice'] || []),
-        (ids) =>
-          this.prisma.invoice.findMany({
-            where: { id: { in: ids }, status: { not: 2 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'return_order',
-        Array.from(refIdsByType['return_order'] || []),
-        (ids) =>
-          this.prisma.returnOrder.findMany({
-            where: { id: { in: ids }, status: { not: 5 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'supplier_return',
-        Array.from(refIdsByType['supplier_return'] || []),
-        (ids) =>
-          this.prisma.supplierReturn.findMany({
-            where: { id: { in: ids }, status: { not: 4 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'stock_audit',
-        Array.from(refIdsByType['stock_audit'] || []),
-        (ids) =>
-          this.prisma.stockAudit.findMany({
-            where: { id: { in: ids }, status: { not: 3 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'purchase_order',
-        Array.from(refIdsByType['purchase_order'] || []),
-        (ids) =>
-          this.prisma.purchaseOrder.findMany({
-            where: { id: { in: ids }, status: { not: 2 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'transfer',
-        Array.from(refIdsByType['transfer'] || []),
-        (ids) =>
-          this.prisma.transfer.findMany({
-            where: { id: { in: ids }, status: { not: 4 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'production',
-        Array.from(refIdsByType['production'] || []),
-        (ids) =>
-          this.prisma.production.findMany({
-            where: { id: { in: ids }, status: { not: 3 } },
-            select: { id: true },
-          }),
-      ),
-      collectActive(
-        'destruction',
-        Array.from(refIdsByType['destruction'] || []),
-        (ids) =>
-          this.prisma.destruction.findMany({
-            where: { id: { in: ids }, status: { not: 3 } },
-            select: { id: true },
-          }),
-      ),
-    ]);
-
-    // Danh sách refType có rule kiểm tra. refType ngoài danh sách này coi như
-    // luôn active (giữ hành vi cũ — không vô tình ẩn dữ liệu hợp lệ).
-    const KNOWN_REF_TYPES = new Set([
-      'invoice',
-      'return_order',
-      'supplier_return',
-      'stock_audit',
-      'purchase_order',
-      'transfer',
-      'production',
-      'destruction',
-    ]);
-
-    const activeLogs = rawLogs.filter((log) => {
-      if (!log.refType || !log.refId) return true; // log lẻ — không có chứng từ
-      if (!KNOWN_REF_TYPES.has(log.refType)) return true;
-      return activeKeys.has(`${log.refType}:${log.refId}`);
-    });
+    // Dùng NGUỒN CHÂN LÝ DUY NHẤT (inventory-onhand.util) để xác định log nào
+    // còn hiệu lực — đảm bảo thẻ kho và onHand luôn cùng một bộ lọc.
+    const activeKeys = await getActiveLogKeys(this.prisma, rawLogs);
+    const activeLogs = rawLogs.filter((log) => isLogActive(log, activeKeys));
 
     // Bước 2: gộp các log cùng (refType, refCode, transactionType) thành 1 dòng
     // — sum quantity, các trường còn lại lấy theo dòng đại diện (mới nhất).
@@ -1338,32 +1190,22 @@ export class ProductsService {
         return (b.id ?? 0) - (a.id ?? 0);
       });
 
-    // ─── Tính "Tồn cuối" cho từng dòng (neo ngược từ onHand hiện tại) ──────
-    // onHand hiện tại = số dư sau giao dịch mới nhất. Các dòng bị ẩn (chứng từ
-    // đã hủy, cặp đối ứng tổng = 0) đều có tác động ròng = 0 lên onHand, nên
-    // tổng quantity của các dòng hiển thị == onHand. Đi từ mới → cũ:
-    //   tonCuoi(dòng) = số dư ngay sau dòng đó
-    //   số dư trước dòng đó = tonCuoi - quantity(dòng)
-    let runningOnHand: number;
-    if (branchId) {
-      const inv = await this.prisma.inventory.findUnique({
-        where: { productId_branchId: { productId, branchId } },
-        select: { onHand: true },
-      });
-      runningOnHand = inv ? Number(inv.onHand) : 0;
-    } else {
-      const invs = await this.prisma.inventory.findMany({
-        where: { productId },
-        select: { onHand: true },
-      });
-      runningOnHand = invs.reduce((s, i) => s + Number(i.onHand), 0);
+    // ─── Tính "Tồn cuối" bằng CỘNG DỒN XUÔI theo thời gian ────────────────
+    // Đi từ giao dịch CŨ NHẤT → MỚI NHẤT, bắt đầu từ 0 (thuần log-based: thẻ
+    // kho chỉ phản ánh các giao dịch đã ghi). Cách này khớp đúng với cách
+    // backend tính phiếu kiểm: delta = thực tế − Σ(giao dịch trước đó), nên:
+    //   - Dòng "Kiểm hàng" LUÔN hiển thị Tồn cuối = đúng số thực tế đã đếm.
+    //   - Tồn cuối mỗi dòng = số dư ngay sau giao dịch đó, tự nhất quán nội bộ.
+    // (Trước đây neo ngược từ onHand → khi onHand lệch Σlog (tồn ảo do tạo SP/
+    //  sync/import không ghi log) thì phiếu kiểm cũ nhất bị sai lệch.)
+    const mergedWithBalance = merged.map(
+      (log) => ({ ...log }) as LogRow & { tonCuoi: number },
+    );
+    let running = 0;
+    for (let i = mergedWithBalance.length - 1; i >= 0; i--) {
+      running += Number(mergedWithBalance[i].quantity);
+      mergedWithBalance[i].tonCuoi = running;
     }
-
-    const mergedWithBalance = merged.map((log) => {
-      const tonCuoi = runningOnHand;
-      runningOnHand = runningOnHand - Number(log.quantity);
-      return { ...log, tonCuoi } as typeof log & { tonCuoi: number };
-    });
 
     const total = mergedWithBalance.length;
     const skip = (page - 1) * limit;

@@ -405,6 +405,30 @@ export class PackingSlipsService {
   }
 
   /**
+   * Gửi lại thông báo giao hàng Zalo nhưng KHÔNG throw (fire-and-forget).
+   * Dùng khi gọi tự động từ flow khác (vd: versioning hóa đơn) để không làm
+   * fail nghiệp vụ gốc. Tự nuốt + log mọi lỗi.
+   */
+  async resendDeliverySafe(id: number): Promise<void> {
+    try {
+      const fullPackingSlip = await this.findOne(id);
+      const result = await this.n8nNotifyService.notifyDelivery(
+        fullPackingSlip as any,
+      );
+      if (!result.ok && !result.skipped) {
+        console.error(
+          `resendDeliverySafe: gửi Zalo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
+        );
+      }
+    } catch (err) {
+      console.error(
+        `resendDeliverySafe: lỗi khi gửi lại Zalo cho packing slip id=${id}:`,
+        (err as Error).message,
+      );
+    }
+  }
+
+  /**
    * So sánh bản cũ (đã include relations) với dto cập nhật để xác định
    * có cần gửi lại Zalo hay không. Chỉ xét các field có mặt trong dto.
    * Các trường được theo dõi: hóa đơn (invoiceIds), số kiện (numberOfPackages),

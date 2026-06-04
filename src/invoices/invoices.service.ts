@@ -28,6 +28,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
+import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 
 @Injectable()
 export class InvoicesService {
@@ -35,6 +36,7 @@ export class InvoicesService {
     private prisma: PrismaService,
     private ordersService: OrdersService,
     private auditLogsService: AuditLogsService,
+    private packingSlipsService: PackingSlipsService,
   ) {}
 
   /**
@@ -1031,7 +1033,11 @@ export class InvoicesService {
   async update(id: number, dto: UpdateInvoiceDto, userId?: number) {
     await this.findOne(id);
 
-    return this.prisma.$transaction(async (tx) => {
+    // Danh sách packing slip (giao-hang) bị ảnh hưởng bởi versioning để gửi lại Zalo
+    // sau khi transaction commit (fire-and-forget).
+    let affectedPackingSlipIds: number[] = [];
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const currentInvoice = await tx.invoice.findUnique({
         where: { id },
         include: {
@@ -1143,8 +1149,24 @@ export class InvoicesService {
         );
         const debtAmount = grandTotal - paidAmount;
 
-        const status: number = INVOICE_STATUS.PROCESSING;
-        // Hóa đơn mới (clone) luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
+        // Hóa đơn mới (.xx) kế thừa nguyên trạng thái của hóa đơn cũ
+        // (processing → processing, packed → packed, loading → loading,
+        // delivered → delivered) để báo đơn nhất quán.
+        // Hai ngoại lệ:
+        // - COMPLETED: phụ thuộc thanh toán đã tính lại — còn nợ thì lùi về
+        //   DELIVERED, hết nợ thì giữ COMPLETED.
+        // - CANCELLED: hóa đơn mới không thể mang trạng thái "đã hủy" → PROCESSING.
+        let status: number;
+        if (currentInvoice.status === INVOICE_STATUS.COMPLETED) {
+          status =
+            debtAmount <= 0
+              ? INVOICE_STATUS.COMPLETED
+              : INVOICE_STATUS.DELIVERED;
+        } else if (currentInvoice.status === INVOICE_STATUS.CANCELLED) {
+          status = INVOICE_STATUS.PROCESSING;
+        } else {
+          status = currentInvoice.status;
+        }
 
         const customerDebtSnapshot = currentInvoice.customer
           ? Number(currentInvoice.customer.totalDebt) -
@@ -1263,6 +1285,28 @@ export class InvoicesService {
             soldBy: true,
             priceBook: true,
           },
+        });
+
+        // Repoint các phiếu báo đơn (giao hàng / đóng hàng / loading) đang trỏ
+        // tới hóa đơn cũ (vừa bị hủy) sang hóa đơn mới (.01). Vì newInvoice.id là
+        // id hoàn toàn mới nên không vi phạm @@unique([packingXId, invoiceId]).
+        const affectedSlipRows = await tx.packingSlipInvoice.findMany({
+          where: { invoiceId: id },
+          select: { packingSlipId: true },
+        });
+        affectedPackingSlipIds = affectedSlipRows.map((r) => r.packingSlipId);
+
+        await tx.packingSlipInvoice.updateMany({
+          where: { invoiceId: id },
+          data: { invoiceId: newInvoice.id },
+        });
+        await tx.packingHangInvoice.updateMany({
+          where: { invoiceId: id },
+          data: { invoiceId: newInvoice.id },
+        });
+        await tx.packingLoadingInvoice.updateMany({
+          where: { invoiceId: id },
+          data: { invoiceId: newInvoice.id },
         });
 
         for (const payment of currentInvoice.payments) {
@@ -1684,6 +1728,15 @@ export class InvoicesService {
 
       return updatedInvoice;
     });
+
+    // Sau khi commit: gửi lại tin nhắn Zalo cho các phiếu giao hàng đã được
+    // repoint sang hóa đơn mới (versioning). Fire-and-forget, không chặn response.
+    const uniquePackingSlipIds = [...new Set(affectedPackingSlipIds)];
+    for (const slipId of uniquePackingSlipIds) {
+      void this.packingSlipsService.resendDeliverySafe(slipId);
+    }
+
+    return result;
   }
 
   async remove(id: number, userId: number) {
