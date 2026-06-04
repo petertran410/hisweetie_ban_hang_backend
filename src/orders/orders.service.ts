@@ -1114,20 +1114,27 @@ export class OrdersService {
   /**
    * Tính tổng số lượng "Khách đặt" cho từng productId.
    * Khách đặt = sum(quantity của OrderItem) trong các Order có status thuộc
-   * { Phiếu tạm (1), Đã xác nhận (5) } ở MỌI chi nhánh.
+   * { Phiếu tạm (1), Đã xác nhận (5) }.
+   * Nếu truyền branchId thì chỉ tính đơn thuộc chi nhánh đó — lọc y hệt
+   * `getPendingByProduct` để con số tổng khớp tuyệt đối với danh sách trong modal.
    */
-  async getPendingSummary(productIds: number[]) {
+  async getPendingSummary(productIds: number[], branchId?: number) {
     if (!productIds || productIds.length === 0) {
       return {} as Record<number, number>;
+    }
+
+    const orderWhere: any = {
+      status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+    };
+    if (branchId && !Number.isNaN(branchId)) {
+      orderWhere.branchId = branchId;
     }
 
     const grouped = await this.prisma.orderItem.groupBy({
       by: ['productId'],
       where: {
         productId: { in: productIds },
-        order: {
-          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
-        },
+        order: orderWhere,
       },
       _sum: { quantity: true },
     });
