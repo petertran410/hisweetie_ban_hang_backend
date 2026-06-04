@@ -939,7 +939,10 @@ model InventoryLog {
   partnerId        Int?
   partnerName      String?
   note             String?
-  createdAt        DateTime @default(now())
+  // Thời điểm phát sinh giao dịch (cho phép lùi ngày — vd kiểm kho backdated).
+  // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
+  transactionDate  DateTime @default(now())
+  createdAt        DateTime  @default(now())
   createdByName    String?
 
   product Product @relation(fields: [productId], references: [id])
@@ -949,6 +952,8 @@ model InventoryLog {
   @@index([branchId])
   @@index([productId, branchId])
   @@index([createdAt])
+  @@index([transactionDate])
+  @@index([productId, branchId, transactionDate])
   @@map("inventory_logs")
 }
 

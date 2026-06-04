@@ -44,6 +44,20 @@ export class StockAuditsController {
     return this.service.create(dto, user.id);
   }
 
+  // Preview tồn tại thời điểm (phục vụ UI form khi đổi checkDate / lùi ngày)
+  @Post('preview-stock')
+  @RequirePermissions('stock_audits:view')
+  previewStock(
+    @Body()
+    body: { branchId: number; productIds: number[]; checkDate: string },
+  ) {
+    return this.service.previewStockAtDate(
+      body.branchId,
+      body.productIds || [],
+      body.checkDate,
+    );
+  }
+
   @Put(':id')
   @RequirePermissions('stock_audits:update')
   update(@Param('id') id: string, @Body() dto: UpdateStockAuditDto) {

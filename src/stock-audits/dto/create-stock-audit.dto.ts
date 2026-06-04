@@ -6,6 +6,7 @@ import {
   ValidateNested,
   IsNumber,
   Min,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -25,6 +26,11 @@ class StockAuditItemDto {
 export class CreateStockAuditDto {
   @IsInt()
   branchId: number;
+
+  // Thời điểm kiểm kho. Cho phép lùi ngày (backdated). Nếu bỏ trống → now().
+  @IsOptional()
+  @IsDateString()
+  checkDate?: string;
 
   @IsOptional()
   @IsString()

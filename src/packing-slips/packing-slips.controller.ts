@@ -57,6 +57,12 @@ export class PackingSlipsController {
     return this.packingSlipsService.update(+id, dto, userId);
   }
 
+  @Post(':id/resend-notification')
+  @RequirePermissions('packing_slips:update')
+  resendNotification(@Param('id') id: string) {
+    return this.packingSlipsService.resendDeliveryNotification(+id);
+  }
+
   @Delete(':id')
   @RequirePermissions('packing_slips:delete')
   remove(@Param('id') id: string, @Req() req: any) {

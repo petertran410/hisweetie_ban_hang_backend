@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadGatewayException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePackingSlipDto,
@@ -352,7 +357,118 @@ export class PackingSlipsService {
       });
     }
 
+    // Nếu một trong các trường quan trọng (hóa đơn, số kiện, hình ảnh,
+    // hình thức thanh toán, ghi chú) thay đổi → gửi lại thông báo Zalo qua n8n.
+    if (this.hasNotifiableChange(packingSlip, dto)) {
+      try {
+        const fullPackingSlip = await this.findOne(id);
+        // Fire-and-forget: không chặn response cập nhật.
+        void this.n8nNotifyService
+          .notifyDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('notifyDelivery (update) unexpected error:', err);
+          });
+      } catch (err) {
+        console.error(
+          'Failed to load packing slip for n8n notify (update):',
+          (err as Error).message,
+        );
+      }
+    }
+
     return updated;
+  }
+
+  /**
+   * Gửi lại thông báo giao hàng vào Zalo (n8n) một cách thủ công.
+   * Khác với auto-trigger: ở đây CHỜ kết quả để báo lỗi rõ ràng cho người dùng.
+   */
+  async resendDeliveryNotification(id: number) {
+    const fullPackingSlip = await this.findOne(id);
+    const result = await this.n8nNotifyService.notifyDelivery(
+      fullPackingSlip as any,
+    );
+
+    if (result.skipped) {
+      throw new ServiceUnavailableException(
+        'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
+      );
+    }
+
+    if (!result.ok) {
+      throw new BadGatewayException(
+        `Gửi tin nhắn Zalo thất bại${result.error ? `: ${result.error}` : ''}`,
+      );
+    }
+
+    return { message: 'Đã gửi lại thông báo giao hàng vào Zalo' };
+  }
+
+  /**
+   * So sánh bản cũ (đã include relations) với dto cập nhật để xác định
+   * có cần gửi lại Zalo hay không. Chỉ xét các field có mặt trong dto.
+   * Các trường được theo dõi: hóa đơn (invoiceIds), số kiện (numberOfPackages),
+   * hình ảnh (imageUrls), hình thức thanh toán (paymentMethod + cashAmount),
+   * ghi chú (note).
+   */
+  private hasNotifiableChange(oldSlip: any, dto: UpdatePackingSlipDto): boolean {
+    if (
+      dto.numberOfPackages !== undefined &&
+      dto.numberOfPackages !== oldSlip.numberOfPackages
+    ) {
+      return true;
+    }
+
+    if (
+      dto.paymentMethod !== undefined &&
+      dto.paymentMethod !== oldSlip.paymentMethod
+    ) {
+      return true;
+    }
+
+    if (
+      dto.cashAmount !== undefined &&
+      Number(dto.cashAmount) !== Number(oldSlip.cashAmount ?? 0)
+    ) {
+      return true;
+    }
+
+    if (dto.note !== undefined && (dto.note ?? '') !== (oldSlip.note ?? '')) {
+      return true;
+    }
+
+    if (
+      dto.imageUrls !== undefined &&
+      this.hasArrayChanged(
+        dto.imageUrls,
+        (oldSlip.images || []).map((img: any) => img.imageUrl),
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      dto.invoiceIds !== undefined &&
+      this.hasArrayChanged(
+        dto.invoiceIds,
+        (oldSlip.invoices || []).map((inv: any) => inv.invoiceId),
+      )
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /** So sánh 2 mảng dạng tập hợp (không quan tâm thứ tự, loại trùng). */
+  private hasArrayChanged(next: any[], prev: any[]): boolean {
+    const a = new Set((next || []).map((v) => String(v)));
+    const b = new Set((prev || []).map((v) => String(v)));
+    if (a.size !== b.size) return true;
+    for (const v of a) {
+      if (!b.has(v)) return true;
+    }
+    return false;
   }
 
   async remove(id: number, userId?: number) {

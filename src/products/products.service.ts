@@ -897,7 +897,19 @@ export class ProductsService {
 
       // Tạo StockAudit + InventoryLog nếu tồn kho thay đổi
       if (onHand !== undefined && branchId && oldOnHand !== null) {
-        const delta = Number(onHand) - oldOnHand;
+        // LOG-BASED: tồn "hệ thống" để so sánh = TỔNG giao dịch thật trong thẻ
+        // kho (InventoryLog), KHÔNG dùng onHand cũ (onHand có thể chứa "tồn ảo"
+        // do tạo SP / sync KiotViet / import — không có log). Nhờ đó sau khi
+        // điều chỉnh, Σ thẻ kho == onHand mới, đồng nhất với logic kiểm kho.
+        const existingLogs = await tx.inventoryLog.findMany({
+          where: { productId: id, branchId },
+          select: { quantity: true },
+        });
+        const sumLogs = existingLogs.reduce(
+          (s, l) => s + Number(l.quantity),
+          0,
+        );
+        const delta = Number(onHand) - sumLogs;
         if (delta !== 0) {
           // Sinh mã KK tiếp theo (chung sequence với StockAudit)
           const lastAudit = await tx.stockAudit.findFirst({
@@ -934,6 +946,24 @@ export class ProductsService {
           });
           const currentCost = Number(currentInventory?.cost || 0);
 
+          // onHand mới = Σ log cũ + delta = giá trị người dùng nhập (đã set ở
+          // upsert phía trên). Reconcile lại để chắc chắn khớp Σ thẻ kho, loại
+          // bỏ phần "tồn ảo" không có log.
+          const reconciledOnHand = sumLogs + delta;
+          if (reconciledOnHand !== Number(onHand)) {
+            await tx.inventory.update({
+              where: { productId_branchId: { productId: id, branchId } },
+              data: {
+                onHand: reconciledOnHand,
+                totalWeight: this.calculateTotalWeight(
+                  product.weight,
+                  product.weightUnit,
+                  reconciledOnHand,
+                ),
+              },
+            });
+          }
+
           // Tạo StockAudit (status = 2: COMPLETED)
           const stockAudit = await tx.stockAudit.create({
             data: {
@@ -954,7 +984,7 @@ export class ProductsService {
                   productCode: product.code,
                   productName: product.name,
                   unit: currentProduct.unit,
-                  systemQuantity: oldOnHand,
+                  systemQuantity: sumLogs,
                   actualQuantity: Number(onHand),
                   difference: delta,
                   costAtCheck: currentCost,
@@ -964,7 +994,7 @@ export class ProductsService {
             },
           });
 
-          // Tạo InventoryLog
+          // Tạo InventoryLog (transactionDate = now → nằm cuối thẻ kho)
           await tx.inventoryLog.create({
             data: {
               productId: id,
@@ -978,7 +1008,8 @@ export class ProductsService {
               refId: stockAudit.id,
               quantity: delta,
               costPrice: currentCost,
-              note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name} (${oldOnHand} → ${onHand})`,
+              transactionDate: new Date(),
+              note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name} (${sumLogs} → ${onHand})`,
               createdByName: auditUserName,
             },
           });
@@ -1131,7 +1162,7 @@ export class ProductsService {
     // chấp nhận đánh đổi để gộp/lọc chính xác trước khi paginate.
     const rawLogs = await this.prisma.inventoryLog.findMany({
       where,
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
     });
 
     // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy hoặc đã bị xóa cứng.
@@ -1295,14 +1326,48 @@ export class ProductsService {
       // chuyển rồi hoàn tác chuyển — cặp log đối ứng triệt tiêu nhau). Chỉ áp
       // dụng cho log có refCode (đã qua nhóm), giữ nguyên log lẻ.
       .filter((log) => !log.refCode || Number(log.quantity) !== 0)
-      .sort(
-        (a, b) =>
-          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-      );
+      // Sắp xếp theo thời điểm giao dịch (transactionDate) — hỗ trợ phiếu lùi
+      // ngày nằm đúng vị trí trên thẻ kho. createdAt/id làm tiebreak.
+      .sort((a, b) => {
+        const ta = new Date(a.transactionDate ?? a.createdAt).getTime();
+        const tb = new Date(b.transactionDate ?? b.createdAt).getTime();
+        if (tb !== ta) return tb - ta;
+        const ca = new Date(a.createdAt).getTime();
+        const cb = new Date(b.createdAt).getTime();
+        if (cb !== ca) return cb - ca;
+        return (b.id ?? 0) - (a.id ?? 0);
+      });
 
-    const total = merged.length;
+    // ─── Tính "Tồn cuối" cho từng dòng (neo ngược từ onHand hiện tại) ──────
+    // onHand hiện tại = số dư sau giao dịch mới nhất. Các dòng bị ẩn (chứng từ
+    // đã hủy, cặp đối ứng tổng = 0) đều có tác động ròng = 0 lên onHand, nên
+    // tổng quantity của các dòng hiển thị == onHand. Đi từ mới → cũ:
+    //   tonCuoi(dòng) = số dư ngay sau dòng đó
+    //   số dư trước dòng đó = tonCuoi - quantity(dòng)
+    let runningOnHand: number;
+    if (branchId) {
+      const inv = await this.prisma.inventory.findUnique({
+        where: { productId_branchId: { productId, branchId } },
+        select: { onHand: true },
+      });
+      runningOnHand = inv ? Number(inv.onHand) : 0;
+    } else {
+      const invs = await this.prisma.inventory.findMany({
+        where: { productId },
+        select: { onHand: true },
+      });
+      runningOnHand = invs.reduce((s, i) => s + Number(i.onHand), 0);
+    }
+
+    const mergedWithBalance = merged.map((log) => {
+      const tonCuoi = runningOnHand;
+      runningOnHand = runningOnHand - Number(log.quantity);
+      return { ...log, tonCuoi } as typeof log & { tonCuoi: number };
+    });
+
+    const total = mergedWithBalance.length;
     const skip = (page - 1) * limit;
-    const data = merged.slice(skip, skip + limit);
+    const data = mergedWithBalance.slice(skip, skip + limit);
 
     return { data, total };
   }

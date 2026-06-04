@@ -847,10 +847,19 @@ export class OrderSuppliersService {
 
   /**
    * Tổng số lượng "Đặt NCC" cho từng productId.
-   * Đặt NCC = sum(quantity của OrderSupplierItem) trong các phiếu OrderSupplier
-   * có status thuộc { Đã xác nhận NCC (1), Nhập một phần (2) }.
-   * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
+   * Đặt NCC = số lượng CÒN LẠI cần nhập = sum(SL đặt − SL đã nhập) cho từng
+   * sản phẩm, tính trên các phiếu OrderSupplier có status thuộc
+   * { Đã xác nhận NCC (1), Nhập một phần (2) }.
    *
+   * "Đã nhập" = tổng SL của sản phẩm đó trên các PurchaseOrder ACTIVE của phiếu
+   * (không phải Phiếu tạm: isDraft=false, không bị hủy: status≠2) — đối xứng
+   * `PurchaseOrdersService.createFromOrderSupplier` (receivedQuantities).
+   *
+   * Chỉ cộng phần còn lại > 0: sản phẩm đã nhập đủ trên 1 phiếu thì phiếu đó
+   * không còn đóng góp vào "Đặt NCC" của sản phẩm (dù phiếu vẫn ở trạng thái
+   * Nhập một phần vì sản phẩm khác chưa nhập xong).
+   *
+   * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
    * Đối xứng `OrdersService.getPendingSummary` của phía bán.
    */
   async getConfirmedSummary(productIds: number[], branchId?: number) {
@@ -866,19 +875,47 @@ export class OrderSuppliersService {
       orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
 
-    const grouped = await this.prisma.orderSupplierItem.groupBy({
-      by: ['productId'],
+    const items = await this.prisma.orderSupplierItem.findMany({
       where: {
         productId: { in: productIds },
         orderSupplier: orderSupplierWhere,
       },
-      _sum: { quantity: true },
+      select: {
+        productId: true,
+        quantity: true,
+        orderSupplier: {
+          select: {
+            purchaseOrders: {
+              where: { isDraft: false, status: { not: 2 } },
+              select: {
+                items: {
+                  where: { productId: { in: productIds } },
+                  select: { productId: true, quantity: true },
+                },
+              },
+            },
+          },
+        },
+      },
     });
 
     const result: Record<number, number> = {};
     for (const id of productIds) result[id] = 0;
-    for (const row of grouped) {
-      result[row.productId] = Number(row._sum.quantity || 0);
+
+    for (const item of items) {
+      // SL đã nhập của riêng sản phẩm này trong phiếu (qua các PN active).
+      let received = 0;
+      for (const po of item.orderSupplier?.purchaseOrders || []) {
+        for (const poItem of po.items) {
+          if (poItem.productId === item.productId) {
+            received += Number(poItem.quantity);
+          }
+        }
+      }
+      const remaining = Number(item.quantity) - received;
+      if (remaining > 0) {
+        result[item.productId] += remaining;
+      }
     }
     return result;
   }
@@ -888,7 +925,11 @@ export class OrderSuppliersService {
    * đang ở trạng thái Đã xác nhận NCC (1) hoặc Nhập một phần (2).
    * Nếu truyền branchId thì lọc theo chi nhánh, không truyền thì lấy mọi chi nhánh.
    * Trả về thông tin tối thiểu cho modal: mã phiếu, ngày tạo, nhà cung cấp,
-   * người tạo, tổng tiền, trạng thái, số lượng đặt sản phẩm tương ứng.
+   * người tạo, tổng tiền, trạng thái, số lượng CÒN LẠI cần nhập của sản phẩm.
+   *
+   * `quantity` trả về = SL đặt − SL đã nhập (qua các PN active). Phiếu đã nhập
+   * đủ sản phẩm này (còn lại ≤ 0) bị ẩn — khớp với cách tính `getConfirmedSummary`
+   * và `createFromOrderSupplier`.
    *
    * Đối xứng `OrdersService.getPendingByProduct` của phía bán.
    */
@@ -922,6 +963,15 @@ export class OrderSuppliersService {
             supplier: { select: { id: true, code: true, name: true } },
             creator: { select: { id: true, name: true } },
             branch: { select: { id: true, name: true } },
+            purchaseOrders: {
+              where: { isDraft: false, status: { not: 2 } },
+              select: {
+                items: {
+                  where: { productId },
+                  select: { quantity: true },
+                },
+              },
+            },
           },
         },
       },
@@ -949,9 +999,16 @@ export class OrderSuppliersService {
 
     for (const it of items) {
       const o = it.orderSupplier;
+      // SL đã nhập của sản phẩm này trong phiếu (qua các PN active).
+      const received = (o.purchaseOrders || []).reduce(
+        (sum, po) =>
+          sum + po.items.reduce((s, poItem) => s + Number(poItem.quantity), 0),
+        0,
+      );
+      const remaining = Number(it.quantity) - received;
       const existing = map.get(o.id);
       if (existing) {
-        existing.quantity += Number(it.quantity);
+        existing.quantity += remaining;
       } else {
         map.set(o.id, {
           orderSupplierId: o.id,
@@ -966,14 +1023,15 @@ export class OrderSuppliersService {
           supplier: o.supplier,
           creator: o.creator,
           branch: o.branch,
-          quantity: Number(it.quantity),
+          quantity: remaining,
         });
       }
     }
 
-    return Array.from(map.values()).sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    );
+    // Ẩn phiếu đã nhập đủ sản phẩm này (còn lại ≤ 0).
+    return Array.from(map.values())
+      .filter((row) => row.quantity > 0)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   /**

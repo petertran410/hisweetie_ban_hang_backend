@@ -6,6 +6,7 @@ import {
   IsNumber,
   IsInt,
   Min,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -23,6 +24,11 @@ class UpdateStockAuditItemDto {
 }
 
 export class UpdateStockAuditDto {
+  // Thời điểm kiểm kho. Cho phép lùi ngày (backdated).
+  @IsOptional()
+  @IsDateString()
+  checkDate?: string;
+
   @IsOptional()
   @IsString()
   note?: string;
