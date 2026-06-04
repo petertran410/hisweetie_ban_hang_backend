@@ -2467,10 +2467,11 @@ export class InvoicesService {
     };
 
     if (branchId) where.branchId = branchId;
-    if (search) {
+    if (search && search.trim()) {
+      const term = search.trim();
       where.OR = [
-        { code: { contains: search } },
-        { customer: { name: { contains: search } } },
+        { code: { contains: term, mode: 'insensitive' } },
+        { customer: { name: { contains: term, mode: 'insensitive' } } },
       ];
     }
 

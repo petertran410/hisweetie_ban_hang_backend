@@ -48,12 +48,18 @@ export class OrdersController {
 
   @Get('pending-summary')
   @RequirePermissions('orders:view')
-  getPendingSummary(@Query('productIds') productIds?: string) {
+  getPendingSummary(
+    @Query('productIds') productIds?: string,
+    @Query('branchId') branchId?: string,
+  ) {
     const ids = (productIds || '')
       .split(',')
       .map((s) => Number(s.trim()))
       .filter((n) => !Number.isNaN(n) && n > 0);
-    return this.ordersService.getPendingSummary(ids);
+    return this.ordersService.getPendingSummary(
+      ids,
+      branchId ? +branchId : undefined,
+    );
   }
 
   @Get('totals')
