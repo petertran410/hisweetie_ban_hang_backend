@@ -363,6 +363,7 @@ export class InvoicesService {
       branch: { select: { id: true, name: true } },
       soldBy: { select: { id: true, name: true } },
       creator: { select: { id: true, name: true } },
+      order: { select: { id: true, code: true } },
       details: { include: { product: true } },
       payments: true,
       delivery: true,

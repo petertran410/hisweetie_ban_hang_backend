@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import {
   ApiBearerAuth,
   ApiTags,
@@ -17,6 +18,11 @@ import {
 @ApiTags('Dashboard')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
+// Dashboard tổng hợp toàn bộ dữ liệu nhạy cảm (doanh thu, công nợ, top khách...).
+// Yêu cầu quyền dashboard:view. Super Admin auto-pass trong PermissionsGuard.
+// Quyền này được seed gán sẵn cho Super Admin + Admin; có thể cấp thêm cho
+// vai trò khác qua trang Cài đặt → Vai trò. Role không có quyền nhận 403.
+@RequirePermissions('dashboard:view')
 @Controller('dashboard')
 export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
