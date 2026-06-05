@@ -28,7 +28,10 @@
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
     "fix:order-status": "ts-node prisma/seeds/fix-order-status-value.ts",
     "sync:lark-users": "ts-node prisma/seeds/sync-lark-user-ids.ts",
-    "backfill:transfer-in": "ts-node prisma/seeds/backfill-transfer-in-logs.ts"
+    "backfill:transfer-in": "ts-node prisma/seeds/backfill-transfer-in-logs.ts",
+    "backfill:product-images": "ts-node prisma/seeds/backfill-product-images.ts",
+    "export:product-image-map": "ts-node prisma/seeds/export-product-image-map.ts",
+    "import:product-images": "ts-node prisma/seeds/import-product-images.ts"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.63.1",
