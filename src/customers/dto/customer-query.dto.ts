@@ -45,16 +45,19 @@ export class CustomerQueryDto {
   orderDirection?: 'asc' | 'desc';
 
   @IsOptional()
+  @Type(() => String)
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   includeRemoveIds?: boolean;
 
   @IsOptional()
+  @Type(() => String)
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   includeTotal?: boolean;
 
   @IsOptional()
+  @Type(() => String)
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   includeCustomerGroup?: boolean;
@@ -69,6 +72,7 @@ export class CustomerQueryDto {
   groupId?: number;
 
   @IsOptional()
+  @Type(() => String)
   @Transform(({ value }) => value === 'true')
   @IsBoolean()
   includeCustomerSocial?: boolean;
@@ -158,6 +162,7 @@ export class CustomerQueryDto {
   pointTo?: number;
 
   @IsOptional()
+  @Type(() => String)
   @Transform(({ value }) => {
     if (value === 'true') return true;
     if (value === 'false') return false;
@@ -165,4 +170,12 @@ export class CustomerQueryDto {
   })
   @IsBoolean()
   isActive?: boolean;
+
+  // Khi true → bỏ qua filter mặc định isActive=true, lấy cả KH hoạt động & ngừng HĐ.
+  // Dùng cho lựa chọn "Tất cả" ở sidebar khách hàng.
+  @IsOptional()
+  @Type(() => String)
+  @Transform(({ value }) => value === 'true')
+  @IsBoolean()
+  includeInactive?: boolean;
 }

@@ -13,6 +13,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { getActiveLogKeys, isLogActive, computeOnHandFromLogs, recalcStockAuditChain } from '../common/inventory-onhand.util';
+import { searchProductIds } from '../common/product-search.util';
 
 @Injectable()
 export class ProductsService {
@@ -132,6 +133,8 @@ export class ProductsService {
       middleName,
       childName,
       stockStatus,
+      tradeMarkId,
+      isDirectSale,
       priceBookId,
       onlyInPriceBook,
     } = query;
@@ -139,39 +142,8 @@ export class ProductsService {
 
     const where: any = {};
     if (search) {
-      const tokens = search.trim().split(/\s+/).filter(Boolean);
-
-      let matchedIds: { id: number }[];
-      if (tokens.length <= 1) {
-        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
-      SELECT id FROM "products"
-      WHERE (
-        unaccent(lower(name)) LIKE unaccent(lower(${`%${search}%`}))
-        OR lower(code) LIKE lower(${`%${search}%`})
-      )
-    `;
-      } else {
-        const tokenSets = await Promise.all(
-          tokens.map(
-            (t) =>
-              this.prisma.$queryRaw<{ id: number }[]>`
-          SELECT id FROM "products"
-          WHERE (
-            unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
-            OR lower(code) LIKE lower(${`%${t}%`})
-          )
-        `,
-          ),
-        );
-        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
-        matchedIds = tokenSets[0].filter((r) =>
-          idSets.every((s) => s.has(r.id)),
-        );
-      }
-
-      where.id = {
-        in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
-      };
+      const matchedIds = await searchProductIds(this.prisma, search);
+      where.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
     }
 
     if (priceBookId && priceBookId > 0 && onlyInPriceBook) {
@@ -202,6 +174,9 @@ export class ProductsService {
     if (parentName) where.parentName = parentName;
     if (middleName) where.middleName = middleName;
     if (childName) where.childName = childName;
+
+    if (tradeMarkId) where.tradeMarkId = tradeMarkId;
+    if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };
@@ -306,6 +281,8 @@ export class ProductsService {
       middleName,
       childName,
       stockStatus,
+      tradeMarkId,
+      isDirectSale,
       priceBookId,
       onlyInPriceBook,
       columns,
@@ -314,35 +291,8 @@ export class ProductsService {
     // ── Build where (mirror findAll) ─────────────────────────────────────────
     const where: any = {};
     if (search) {
-      const tokens = search.trim().split(/\s+/).filter(Boolean);
-      let matchedIds: { id: number }[];
-      if (tokens.length <= 1) {
-        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
-          SELECT id FROM "products"
-          WHERE (
-            unaccent(lower(name)) LIKE unaccent(lower(${`%${search}%`}))
-            OR lower(code) LIKE lower(${`%${search}%`})
-          )
-        `;
-      } else {
-        const tokenSets = await Promise.all(
-          tokens.map(
-            (t) =>
-              this.prisma.$queryRaw<{ id: number }[]>`
-                SELECT id FROM "products"
-                WHERE (
-                  unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
-                  OR lower(code) LIKE lower(${`%${t}%`})
-                )
-              `,
-          ),
-        );
-        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
-        matchedIds = tokenSets[0].filter((r) => idSets.every((s) => s.has(r.id)));
-      }
-      where.id = {
-        in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
-      };
+      const matchedIds = await searchProductIds(this.prisma, search);
+      where.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
     }
 
     if (priceBookId && priceBookId > 0 && onlyInPriceBook) {
@@ -368,6 +318,9 @@ export class ProductsService {
     if (parentName) where.parentName = parentName;
     if (middleName) where.middleName = middleName;
     if (childName) where.childName = childName;
+
+    if (tradeMarkId) where.tradeMarkId = tradeMarkId;
+    if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };

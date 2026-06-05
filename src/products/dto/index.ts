@@ -426,7 +426,15 @@ export class ProductQueryDto {
 
   @IsOptional()
   @IsBoolean()
-  @Transform(({ value }) => value === 'true' || value === true)
+  @Transform(({ obj, key }) => {
+    // Đọc giá trị thô từ obj[key] thay vì `value`: với
+    // enableImplicitConversion=true, class-transformer ép 'false' -> true
+    // (Boolean('false')) TRƯỚC khi chạy @Transform, làm hỏng filter trạng thái.
+    const raw = obj?.[key];
+    if (raw === true || raw === 'true') return true;
+    if (raw === false || raw === 'false') return false;
+    return undefined;
+  })
   isActive?: boolean;
 
   @IsOptional()
@@ -480,11 +488,31 @@ export class ProductQueryDto {
   @IsOptional()
   @IsInt()
   @Type(() => Number)
+  tradeMarkId?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ obj, key }) => {
+    const raw = obj?.[key];
+    if (raw === true || raw === 'true') return true;
+    if (raw === false || raw === 'false') return false;
+    return undefined;
+  })
+  isDirectSale?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
   priceBookId?: number;
 
   @IsOptional()
   @IsBoolean()
-  @Transform(({ value }) => value === 'true' || value === true)
+  @Transform(({ obj, key }) => {
+    const raw = obj?.[key];
+    if (raw === true || raw === 'true') return true;
+    if (raw === false || raw === 'false') return false;
+    return undefined;
+  })
   onlyInPriceBook?: boolean;
 
   /**
