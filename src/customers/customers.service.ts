@@ -20,6 +20,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { searchCustomerIds } from '../common/customer-search.util';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -62,6 +63,7 @@ export class CustomersService {
       pointFrom,
       pointTo,
       isActive,
+      includeInactive,
     } = query;
 
     // ── where building (giữ nguyên logic) ────────────────────────────────────
@@ -69,21 +71,14 @@ export class CustomersService {
 
     if (isActive !== undefined) {
       where.isActive = isActive;
-    } else {
+    } else if (!includeInactive) {
       where.isActive = true;
     }
 
     if (code) where.code = { contains: code, mode: 'insensitive' };
     if (name) {
-      const normalized = name.normalize('NFC');
-      const tokens = normalized.trim().split(/\s+/).filter(Boolean);
-      if (tokens.length <= 1) {
-        where.name = { contains: normalized, mode: 'insensitive' };
-      } else {
-        where.AND = tokens.map((token) => ({
-          name: { contains: token, mode: 'insensitive' },
-        }));
-      }
+      const matchedIds = await searchCustomerIds(this.prisma, name);
+      where.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
     }
 
     if (contactNumber) {
@@ -361,54 +356,25 @@ export class CustomersService {
       pointFrom,
       pointTo,
       isActive,
+      includeInactive,
     } = query;
 
     const where: any = {};
 
     if (isActive !== undefined) {
       where.isActive = isActive;
-    } else {
+    } else if (!includeInactive) {
       where.isActive = true;
     }
+    // includeInactive=true && isActive undefined → không filter, lấy cả 2 trạng thái
 
     if (code) {
       where.code = { contains: code, mode: 'insensitive' };
     }
 
     if (name) {
-      const normalized = name.normalize('NFC');
-      const tokens = normalized.trim().split(/\s+/).filter(Boolean);
-
-      let matchedIds: { id: number }[];
-      if (tokens.length <= 1) {
-        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
-      SELECT id FROM "customers"
-      WHERE (
-        unaccent(lower(name)) LIKE unaccent(lower(${`%${normalized}%`}))
-        OR lower(code) LIKE lower(${`%${normalized}%`})
-        OR "contactNumber" LIKE ${`%${normalized}%`}
-        OR phone LIKE ${`%${normalized}%`}
-      )
-    `;
-      } else {
-        const tokenSets = await Promise.all(
-          tokens.map(
-            (t) =>
-              this.prisma.$queryRaw<{ id: number }[]>`
-        SELECT id FROM "customers"
-        WHERE unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
-      `,
-          ),
-        );
-        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
-        matchedIds = tokenSets[0].filter((r) =>
-          idSets.every((s) => s.has(r.id)),
-        );
-      }
-
-      where.id = {
-        in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
-      };
+      const matchedIds = await searchCustomerIds(this.prisma, name);
+      where.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
     }
 
     if (contactNumber) {
@@ -715,40 +681,9 @@ export class CustomersService {
     const where: any = { isActive: true };
 
     if (search) {
-      const tokens = search.trim().split(/\s+/).filter(Boolean);
-
-      let matchedIds: { id: number }[];
-      if (tokens.length <= 1) {
-        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
-      SELECT id FROM "customers"
-      WHERE "isActive" = true
-      AND (
-        unaccent(lower(name)) LIKE unaccent(lower(${`%${search}%`}))
-        OR lower(code) LIKE lower(${`%${search}%`})
-        OR "contactNumber" LIKE ${`%${search}%`}
-        OR phone LIKE ${`%${search}%`}
-      )
-      LIMIT 50
-    `;
-      } else {
-        const tokenSets = await Promise.all(
-          tokens.map(
-            (t) =>
-              this.prisma.$queryRaw<{ id: number }[]>`
-          SELECT id FROM "customers"
-          WHERE "isActive" = true
-          AND unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
-        `,
-          ),
-        );
-        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
-        matchedIds = tokenSets[0].filter((r) =>
-          idSets.every((s) => s.has(r.id)),
-        );
-      }
-
+      const matchedIds = await searchCustomerIds(this.prisma, search);
       if (matchedIds.length === 0) return { data: [] };
-      where.id = { in: matchedIds.map((r) => r.id) };
+      where.id = { in: matchedIds };
     }
 
     const data = await this.prisma.customer.findMany({

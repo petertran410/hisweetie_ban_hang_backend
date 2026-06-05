@@ -12,6 +12,7 @@ import {
   ProductPriceDto,
 } from './dto';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
+import { searchProductIds } from '../common/product-search.util';
 import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
@@ -749,12 +750,8 @@ export class PriceBooksService {
     };
 
     if (searchQuery) {
-      where.product = {
-        OR: [
-          { code: { contains: searchQuery, mode: 'insensitive' } },
-          { name: { contains: searchQuery, mode: 'insensitive' } },
-        ],
-      };
+      const matchedIds = await searchProductIds(this.prisma, searchQuery);
+      where.product = { id: { in: matchedIds.length > 0 ? matchedIds : [-1] } };
     }
 
     const priceBookDetails = await this.prisma.priceBookDetail.findMany({
@@ -1017,9 +1014,12 @@ export class PriceBooksService {
     };
 
     if (searchQuery) {
-      where.OR = [
-        { code: { contains: searchQuery, mode: 'insensitive' } },
-        { name: { contains: searchQuery, mode: 'insensitive' } },
+      // Khớp theo từ trọn vẹn (dùng chung util với /products). Lồng qua AND để
+      // KHÔNG ghi đè where.id mà nhánh xếp hạng bảng giá bên dưới đang dùng.
+      const matchedIds = await searchProductIds(this.prisma, searchQuery);
+      where.AND = [
+        ...(where.AND || []),
+        { id: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
       ];
     }
 
