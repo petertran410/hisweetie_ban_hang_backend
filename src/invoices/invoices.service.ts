@@ -792,10 +792,14 @@ export class InvoicesService {
           (sum, item) => sum + item.totalPrice,
           0,
         );
-        const discountAmount = dto.discountAmount || 0;
-        const discountFromRatio =
-          (totalAmount * (dto.discountRatio || 0)) / 100;
-        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+        // Giảm giá hiệu dụng: ưu tiên số tiền đã chốt (discountAmount).
+        // discountRatio chỉ là metadata (% tương ứng) — nếu chỉ có ratio (data cũ)
+        // thì quy đổi sang tiền. Tránh trừ 2 lần khi lưu cả hai.
+        const discountAmount =
+          dto.discountAmount && dto.discountAmount > 0
+            ? dto.discountAmount
+            : (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount;
         const paidAmount = dto.paidAmount || 0;
         const debtAmount = grandTotal - paidAmount;
 
@@ -1179,10 +1183,11 @@ export class InvoicesService {
           (sum, item) => sum + item.totalPrice,
           0,
         );
-        const discountAmount = dto.discountAmount || 0;
-        const discountFromRatio =
-          (totalAmount * (dto.discountRatio || 0)) / 100;
-        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+        const discountAmount =
+          dto.discountAmount && dto.discountAmount > 0
+            ? dto.discountAmount
+            : (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount;
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
           (p: any) => p.status !== 2,
@@ -1605,10 +1610,11 @@ export class InvoicesService {
           (sum, item) => sum + item.totalPrice,
           0,
         );
-        const discountAmount = dto.discountAmount || 0;
-        const discountFromRatio =
-          (totalAmount * (dto.discountRatio || 0)) / 100;
-        const grandTotal = totalAmount - discountAmount - discountFromRatio;
+        const discountAmount =
+          dto.discountAmount && dto.discountAmount > 0
+            ? dto.discountAmount
+            : (totalAmount * (dto.discountRatio || 0)) / 100;
+        const grandTotal = totalAmount - discountAmount;
 
         // Tổng invoicePayment còn active (loại đã hủy)
         const payments = await tx.invoicePayment.findMany({

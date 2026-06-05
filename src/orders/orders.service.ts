@@ -729,10 +729,13 @@ export class OrdersService {
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    const discountAmount = Number(order.discount) || 0;
-    const discountFromRatio =
-      (totalAmount * (Number(order.discountRatio) || 0)) / 100;
-    const grandTotal = totalAmount - discountAmount - discountFromRatio;
+    // Giảm giá hiệu dụng: ưu tiên số tiền đã chốt (discount).
+    // discountRatio chỉ là metadata; nếu chỉ có ratio (data cũ) thì quy đổi sang tiền.
+    const discountAmount =
+      Number(order.discount) > 0
+        ? Number(order.discount)
+        : (totalAmount * (Number(order.discountRatio) || 0)) / 100;
+    const grandTotal = totalAmount - discountAmount;
 
     const paidAmount = payments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),
