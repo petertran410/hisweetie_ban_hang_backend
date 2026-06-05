@@ -1,20 +1,26 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { OrdersService } from '../orders/orders.service';
+import { OrderSuppliersService } from '../order-suppliers/order-suppliers.service';
 import {
   renderAuditMessage,
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
-import { getActiveLogKeys, isLogActive, computeOnHandFromLogs, recalcInventoryOnHand } from '../common/inventory-onhand.util';
+import { getActiveLogKeys, isLogActive, computeOnHandFromLogs, recalcStockAuditChain } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class ProductsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private ordersService: OrdersService,
+    private orderSuppliersService: OrderSuppliersService,
   ) {}
 
   private parseAttributes(
@@ -240,6 +246,383 @@ export class ProductsService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  private getProductTypeLabel(type: number): string {
+    switch (type) {
+      case 1:
+        return 'Combo - đóng gói';
+      case 2:
+        return 'Hàng hóa';
+      case 3:
+        return 'Dịch vụ';
+      case 4:
+        return 'Hàng sản xuất';
+      default:
+        return 'Hàng hóa';
+    }
+  }
+
+  /** Nhóm hàng 3 cấp: parentName>>middleName>>childName (bỏ cấp rỗng). */
+  private buildCategoryPath(p: {
+    parentName?: string | null;
+    middleName?: string | null;
+    childName?: string | null;
+  }): string {
+    return [p.parentName, p.middleName, p.childName]
+      .filter((s) => s && String(s).trim())
+      .join('>>');
+  }
+
+  /** Giá vốn combo = tổng (giá vốn linh kiện tại chi nhánh * số lượng). */
+  private calcComboCost(product: any, branchId?: number): number {
+    if (!product.comboComponents) return 0;
+    return product.comboComponents.reduce((sum: number, comp: any) => {
+      const cp = comp.componentProduct;
+      if (!cp) return sum;
+      const inv = branchId
+        ? cp.inventories?.find((i: any) => i.branchId === branchId)
+        : cp.inventories?.[0];
+      const cost = inv ? Number(inv.cost) : 0;
+      return sum + cost * Number(comp.quantity || 0);
+    }, 0);
+  }
+
+  /**
+   * Xuất danh sách sản phẩm ra Excel (stream theo batch).
+   * - Lọc giống findAll (search, category, parent/middle/child, stockStatus, isActive, type).
+   * - Tồn kho / giá vốn / tồn min-max lấy theo chi nhánh đang chọn (branchId).
+   * - `query.columns` (CSV) quyết định cột nào được xuất; luôn có type/code/name.
+   */
+  async exportProducts(query: ProductQueryDto, res: Response): Promise<void> {
+    const {
+      search,
+      categoryIds,
+      isActive,
+      branchId,
+      type,
+      types,
+      parentName,
+      middleName,
+      childName,
+      stockStatus,
+      priceBookId,
+      onlyInPriceBook,
+      columns,
+    } = query;
+
+    // ── Build where (mirror findAll) ─────────────────────────────────────────
+    const where: any = {};
+    if (search) {
+      const tokens = search.trim().split(/\s+/).filter(Boolean);
+      let matchedIds: { id: number }[];
+      if (tokens.length <= 1) {
+        matchedIds = await this.prisma.$queryRaw<{ id: number }[]>`
+          SELECT id FROM "products"
+          WHERE (
+            unaccent(lower(name)) LIKE unaccent(lower(${`%${search}%`}))
+            OR lower(code) LIKE lower(${`%${search}%`})
+          )
+        `;
+      } else {
+        const tokenSets = await Promise.all(
+          tokens.map(
+            (t) =>
+              this.prisma.$queryRaw<{ id: number }[]>`
+                SELECT id FROM "products"
+                WHERE (
+                  unaccent(lower(name)) LIKE unaccent(lower(${`%${t}%`}))
+                  OR lower(code) LIKE lower(${`%${t}%`})
+                )
+              `,
+          ),
+        );
+        const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
+        matchedIds = tokenSets[0].filter((r) => idSets.every((s) => s.has(r.id)));
+      }
+      where.id = {
+        in: matchedIds.length > 0 ? matchedIds.map((r) => r.id) : [-1],
+      };
+    }
+
+    if (priceBookId && priceBookId > 0 && onlyInPriceBook) {
+      const pb = await this.prisma.priceBook.findUnique({
+        where: { id: priceBookId },
+        select: { allowNonListedProducts: true },
+      });
+      if (pb && !pb.allowNonListedProducts) {
+        where.priceBookDetails = { some: { priceBookId, isActive: true } };
+      }
+    }
+
+    if (categoryIds) {
+      const categoryIdArray = categoryIds
+        .split(',')
+        .map((id) => parseInt(id.trim()));
+      where.categoryId = { in: categoryIdArray };
+    }
+
+    if (isActive !== undefined) where.isActive = isActive;
+    if (type !== undefined) where.type = type;
+    if (types && types.length > 0) where.type = { in: types };
+    if (parentName) where.parentName = parentName;
+    if (middleName) where.middleName = middleName;
+    if (childName) where.childName = childName;
+
+    if (stockStatus === 'instock') {
+      where.inventories = { some: { onHand: { gt: 0 } } };
+    } else if (stockStatus === 'outstock') {
+      where.inventories = { every: { onHand: { lte: 0 } } };
+    }
+
+    let inventoriesInclude: any = { include: { branch: true } };
+    if (branchId) {
+      inventoriesInclude = { where: { branchId }, include: { branch: true } };
+    }
+
+    // ── Cột cần xuất ───────────────────────────────────────────────────────
+    const ALL_COLUMNS: Record<
+      string,
+      { header: string; width: number; value: (p: any, ctx: any) => any }
+    > = {
+      type: {
+        header: 'Loại hàng',
+        width: 16,
+        value: (p) => this.getProductTypeLabel(p.type),
+      },
+      categoryPath: {
+        header: 'Nhóm hàng(3 Cấp)',
+        width: 30,
+        value: (p) => this.buildCategoryPath(p),
+      },
+      code: { header: 'Mã hàng', width: 16, value: (p) => p.code ?? '' },
+      name: { header: 'Tên hàng', width: 40, value: (p) => p.name ?? '' },
+      tradeMark: {
+        header: 'Thương hiệu',
+        width: 20,
+        value: (p) => p.tradeMark?.name ?? '',
+      },
+      basePrice: {
+        header: 'Giá bán',
+        width: 14,
+        value: (p) => Number(p.basePrice ?? 0),
+      },
+      cost: {
+        header: 'Giá vốn',
+        width: 14,
+        value: (p, ctx) => {
+          if (p.type === 1) return this.calcComboCost(p, ctx.branchId);
+          const inv = ctx.branchId
+            ? p.inventories?.find((i: any) => i.branchId === ctx.branchId)
+            : p.inventories?.[0];
+          return inv ? Number(inv.cost) : 0;
+        },
+      },
+      stock: {
+        header: 'Tồn kho',
+        width: 12,
+        value: (p, ctx) => {
+          if (ctx.branchId) {
+            const inv = p.inventories?.find(
+              (i: any) => i.branchId === ctx.branchId,
+            );
+            return inv ? Number(inv.onHand) : 0;
+          }
+          return (
+            p.inventories?.reduce(
+              (s: number, i: any) => s + Number(i.onHand),
+              0,
+            ) || 0
+          );
+        },
+      },
+      customerOrder: {
+        header: 'Khách đặt',
+        width: 12,
+        value: (p, ctx) => ctx.pendingMap?.[p.id] ?? 0,
+      },
+      supplierOrder: {
+        header: 'Đặt NCC',
+        width: 12,
+        value: (p, ctx) => ctx.supplierMap?.[p.id] ?? 0,
+      },
+      minStock: {
+        header: 'Tồn nhỏ nhất',
+        width: 14,
+        value: (p, ctx) => {
+          const inv = ctx.branchId
+            ? p.inventories?.find((i: any) => i.branchId === ctx.branchId)
+            : p.inventories?.[0];
+          return inv ? Number(inv.minQuality) : 0;
+        },
+      },
+      maxStock: {
+        header: 'Tồn lớn nhất',
+        width: 14,
+        value: (p, ctx) => {
+          const inv = ctx.branchId
+            ? p.inventories?.find((i: any) => i.branchId === ctx.branchId)
+            : p.inventories?.[0];
+          return inv ? Number(inv.maxQuality) : 0;
+        },
+      },
+      unit: { header: 'ĐVT', width: 10, value: (p) => p.unit ?? '' },
+      images: {
+        header: 'Hình ảnh (url1,url2...)',
+        width: 30,
+        value: (p) =>
+          (p.images || []).map((img: any) => img.image).join(',') || '',
+      },
+      weight: {
+        header: 'Trọng lượng',
+        width: 14,
+        value: (p) => (p.weight != null ? Number(p.weight) : ''),
+      },
+      isDirectSale: {
+        header: 'Được bán trực tiếp',
+        width: 18,
+        value: (p) => (p.isDirectSale ? 1 : 0),
+      },
+      isActive: {
+        header: 'Đang kinh doanh',
+        width: 16,
+        value: (p) => (p.isActive ? 1 : 0),
+      },
+      description: {
+        header: 'Mô tả',
+        width: 30,
+        value: (p) => p.description ?? '',
+      },
+      components: {
+        header: 'Hàng thành phần',
+        width: 30,
+        value: (p) =>
+          (p.comboComponents || [])
+            .map(
+              (c: any) =>
+                `${c.componentProduct?.code ?? ''}:${Number(c.quantity || 0)}`,
+            )
+            .join(','),
+      },
+      createdAt: {
+        header: 'Thời gian tạo',
+        width: 20,
+        value: (p) =>
+          p.createdAt ? new Date(p.createdAt).toLocaleString('vi-VN') : '',
+      },
+    };
+
+    // Cột mặc định bắt buộc + thứ tự ưu tiên cố định để file luôn nhất quán.
+    const COLUMN_ORDER = [
+      'type',
+      'categoryPath',
+      'code',
+      'name',
+      'tradeMark',
+      'basePrice',
+      'cost',
+      'stock',
+      'customerOrder',
+      'supplierOrder',
+      'minStock',
+      'maxStock',
+      'unit',
+      'images',
+      'weight',
+      'isDirectSale',
+      'isActive',
+      'description',
+      'components',
+      'createdAt',
+    ];
+    const REQUIRED = ['type', 'code', 'name'];
+
+    const requested = new Set(
+      (columns || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s && ALL_COLUMNS[s]),
+    );
+    // Luôn đảm bảo cột bắt buộc có mặt.
+    REQUIRED.forEach((k) => requested.add(k));
+
+    const selectedKeys = COLUMN_ORDER.filter((k) => requested.has(k));
+
+    const needPending = selectedKeys.includes('customerOrder');
+    const needSupplier = selectedKeys.includes('supplierOrder');
+
+    // ── Stream Excel ─────────────────────────────────────────────────────────
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Sản phẩm');
+
+    sheet.columns = selectedKeys.map((k) => ({
+      header: ALL_COLUMNS[k].header,
+      key: k,
+      width: ALL_COLUMNS[k].width,
+    }));
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.product.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          tradeMark: true,
+          images: true,
+          inventories: inventoriesInclude,
+          comboComponents: {
+            include: {
+              componentProduct: {
+                include: { images: true, inventories: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      const ids = batch.map((p) => p.id);
+      const pendingMap = needPending
+        ? await this.ordersService.getPendingSummary(ids, branchId)
+        : {};
+      const supplierMap = needSupplier
+        ? await this.orderSuppliersService.getConfirmedSummary(ids, branchId)
+        : {};
+
+      const ctx = { branchId, pendingMap, supplierMap };
+
+      for (const p of batch) {
+        const rowData: Record<string, any> = {};
+        for (const k of selectedKeys) {
+          rowData[k] = ALL_COLUMNS[k].value(p, ctx);
+        }
+        const row = sheet.addRow(rowData);
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {
@@ -989,9 +1372,8 @@ export class ProductsService {
             },
           });
 
-          // NGUỒN CHÂN LÝ: onHand = Σ log active (đã gồm log vừa ghi) → khớp
-          // thẻ kho, loại bỏ tồn ảo.
-          await recalcInventoryOnHand(tx, id, branchId);
+          // RE-ANCHOR: tính lại chuỗi phiếu kiểm + onHand theo timeline.
+          await recalcStockAuditChain(tx, id, branchId);
         }
       }
 
@@ -1177,7 +1559,15 @@ export class ProductsService {
       // Ẩn dòng đã gộp có tổng số lượng = 0 (vd: nhận rồi hoàn tác nhận, hoặc
       // chuyển rồi hoàn tác chuyển — cặp log đối ứng triệt tiêu nhau). Chỉ áp
       // dụng cho log có refCode (đã qua nhóm), giữ nguyên log lẻ.
-      .filter((log) => !log.refCode || Number(log.quantity) !== 0)
+      // NGOẠI LỆ: GIỮ dòng phiếu kiểm (STOCK_AUDIT) dù quantity = 0 — đó là mốc
+      // neo tuyệt đối "tồn = X" hợp lệ (vd kiểm xác nhận tồn không đổi, hoặc
+      // sau re-anchor delta về 0). Ẩn nó sẽ làm mất dòng kiểm trên thẻ kho.
+      .filter(
+        (log) =>
+          !log.refCode ||
+          log.transactionType === 'STOCK_AUDIT' ||
+          Number(log.quantity) !== 0,
+      )
       // Sắp xếp theo thời điểm giao dịch (transactionDate) — hỗ trợ phiếu lùi
       // ngày nằm đúng vị trí trên thẻ kho. createdAt/id làm tiebreak.
       .sort((a, b) => {
