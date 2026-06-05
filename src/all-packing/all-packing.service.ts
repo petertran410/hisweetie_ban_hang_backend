@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AllPackingQueryDto } from './dto/all-packing-query.dto';
+import { searchCustomerIds } from '../common/customer-search.util';
 
 @Injectable()
 export class AllPackingService {
@@ -33,6 +34,12 @@ export class AllPackingService {
         ? currentUser.id
         : undefined;
 
+    // Khớp khách hàng theo từ trọn vẹn (dùng chung util). Resolve 1 lần rồi
+    // truyền id xuống 3 nhánh để tránh query trùng.
+    const customerMatchedIds = customerSearch
+      ? await searchCustomerIds(this.prisma, customerSearch)
+      : undefined;
+
     let allData: any[] = [];
     let total = 0;
 
@@ -42,21 +49,21 @@ export class AllPackingService {
           effectiveBranchIds,
           search,
           invoiceSearch,
-          customerSearch,
+          customerMatchedIds,
           ownerFilterId,
         ),
         this.getPackingHangs(
           effectiveBranchIds,
           search,
           invoiceSearch,
-          customerSearch,
+          customerMatchedIds,
           ownerFilterId,
         ),
         this.getPackingLoadings(
           effectiveBranchIds,
           search,
           invoiceSearch,
-          customerSearch,
+          customerMatchedIds,
           ownerFilterId,
         ),
       ]);
@@ -71,7 +78,7 @@ export class AllPackingService {
         effectiveBranchIds,
         search,
         invoiceSearch,
-        customerSearch,
+        customerMatchedIds,
         ownerFilterId,
       );
       allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
@@ -80,7 +87,7 @@ export class AllPackingService {
         effectiveBranchIds,
         search,
         invoiceSearch,
-        customerSearch,
+        customerMatchedIds,
         ownerFilterId,
       );
       allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
@@ -89,7 +96,7 @@ export class AllPackingService {
         effectiveBranchIds,
         search,
         invoiceSearch,
-        customerSearch,
+        customerMatchedIds,
         ownerFilterId,
       );
       allData = packingLoadings.map((item) => ({
@@ -113,7 +120,7 @@ export class AllPackingService {
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
-    customerSearch?: string,
+    customerMatchedIds?: number[],
     ownerFilterId?: number,
   ) {
     const where: any = {};
@@ -141,16 +148,15 @@ export class AllPackingService {
       };
     }
 
-    if (customerSearch) {
+    if (customerMatchedIds) {
+      const ids = customerMatchedIds.length > 0 ? customerMatchedIds : [-1];
       where.invoices = {
         ...where.invoices,
         some: {
           ...(where.invoices?.some || {}),
           invoice: {
             ...(where.invoices?.some?.invoice || {}),
-            customer: {
-              name: { contains: customerSearch, mode: 'insensitive' },
-            },
+            customerId: { in: ids },
           },
         },
       };
@@ -191,7 +197,7 @@ export class AllPackingService {
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
-    customerSearch?: string,
+    customerMatchedIds?: number[],
     ownerFilterId?: number,
   ) {
     const where: any = {};
@@ -219,16 +225,15 @@ export class AllPackingService {
       };
     }
 
-    if (customerSearch) {
+    if (customerMatchedIds) {
+      const ids = customerMatchedIds.length > 0 ? customerMatchedIds : [-1];
       where.invoices = {
         ...where.invoices,
         some: {
           ...(where.invoices?.some || {}),
           invoice: {
             ...(where.invoices?.some?.invoice || {}),
-            customer: {
-              name: { contains: customerSearch, mode: 'insensitive' },
-            },
+            customerId: { in: ids },
           },
         },
       };
@@ -269,7 +274,7 @@ export class AllPackingService {
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
-    customerSearch?: string,
+    customerMatchedIds?: number[],
     ownerFilterId?: number,
   ) {
     const where: any = {};
@@ -297,16 +302,15 @@ export class AllPackingService {
       };
     }
 
-    if (customerSearch) {
+    if (customerMatchedIds) {
+      const ids = customerMatchedIds.length > 0 ? customerMatchedIds : [-1];
       where.invoices = {
         ...where.invoices,
         some: {
           ...(where.invoices?.some || {}),
           invoice: {
             ...(where.invoices?.some?.invoice || {}),
-            customer: {
-              name: { contains: customerSearch, mode: 'insensitive' },
-            },
+            customerId: { in: ids },
           },
         },
       };

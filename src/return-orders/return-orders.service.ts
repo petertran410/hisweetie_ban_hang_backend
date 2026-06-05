@@ -21,6 +21,7 @@ import {
 } from './dto';
 import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { searchCustomerIds } from '../common/customer-search.util';
 
 @Injectable()
 export class ReturnOrdersService {
@@ -46,12 +47,11 @@ export class ReturnOrdersService {
     const where: any = {};
 
     if (query.search) {
+      const matchedIds = await searchCustomerIds(this.prisma, query.search);
       where.OR = [
         { code: { contains: query.search, mode: 'insensitive' } },
         { invoice: { code: { contains: query.search, mode: 'insensitive' } } },
-        {
-          customer: { name: { contains: query.search, mode: 'insensitive' } },
-        },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
       ];
     }
 
