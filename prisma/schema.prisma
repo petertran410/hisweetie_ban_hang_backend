@@ -450,6 +450,14 @@ model CustomerAddress {
 
   locationName String?
 
+  // Toạ độ + metadata geocoding (Google Geocoding). Tất cả nullable.
+  latitude         Float?
+  longitude        Float?
+  formattedAddress String?   @map("formatted_address")
+  geocodeProvider  String?   @map("geocode_provider")
+  geocodePrecision String?   @map("geocode_precision")
+  geocodedAt       DateTime? @map("geocoded_at")
+
   isDefault Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

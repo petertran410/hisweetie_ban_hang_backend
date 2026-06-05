@@ -71,3 +71,12 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Generated seed outputs (giữ lại address-ref/ là dữ liệu tham chiếu nguồn)
+prisma/seeds/data/_backup_*.json
+prisma/seeds/data/address-preview-changes.json
+prisma/seeds/data/address-need-review.json
+prisma/seeds/data/address-normalize-report.json
+prisma/seeds/data/address-geocode-enriched.json
+prisma/seeds/data/geocode-cache.json
+prisma/seeds/data/product-image-map.json
