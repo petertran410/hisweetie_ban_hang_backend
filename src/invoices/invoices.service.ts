@@ -27,6 +27,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { searchCustomerIds } from '../common/customer-search.util';
 import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 
@@ -43,7 +44,10 @@ export class InvoicesService {
    * Tách logic build `where` để dùng chung giữa findAll và getTotals.
    * Mọi filter (status/branch/date/payment/advanced search...) áp lên cả 2.
    */
-  private buildInvoiceListWhere(query: InvoiceQueryDto, currentUser?: any) {
+  private async buildInvoiceListWhere(
+    query: InvoiceQueryDto,
+    currentUser?: any,
+  ): Promise<any> {
     const {
       search,
       customerIds,
@@ -75,9 +79,10 @@ export class InvoicesService {
     }
 
     if (search) {
+      const matchedIds = await searchCustomerIds(this.prisma, search);
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
         { description: { contains: search, mode: 'insensitive' } },
       ];
     }
@@ -88,13 +93,11 @@ export class InvoicesService {
     }
 
     if (customerSearch) {
-      where.customer = {
-        OR: [
-          { name: { contains: customerSearch, mode: 'insensitive' } },
-          { code: { contains: customerSearch, mode: 'insensitive' } },
-          { contactNumber: { contains: customerSearch, mode: 'insensitive' } },
-        ],
-      };
+      const matchedIds = await searchCustomerIds(this.prisma, customerSearch);
+      const ids = matchedIds.length > 0 ? matchedIds : [-1];
+      where.customerId = where.customerId?.in
+        ? { in: where.customerId.in.filter((id: number) => ids.includes(id)) }
+        : { in: ids };
     }
 
     if (deliveryCodeSearch) {
@@ -132,7 +135,9 @@ export class InvoicesService {
     }
 
     if (customerIds && customerIds.length > 0) {
-      where.customerId = { in: customerIds };
+      where.customerId = where.customerId?.in
+        ? { in: where.customerId.in.filter((id: number) => customerIds.includes(id)) }
+        : { in: customerIds };
     }
 
     if (query.parentCustomerId) {
@@ -264,7 +269,7 @@ export class InvoicesService {
    *   theo từng invoice. Cộng tổng raw sẽ sai cho hóa đơn có credit > 0.
    */
   async getTotals(query: InvoiceQueryDto, currentUser?: any) {
-    const where = this.buildInvoiceListWhere(query, currentUser);
+    const where = await this.buildInvoiceListWhere(query, currentUser);
 
     // Aggregate các cột raw từ DB
     const agg = await this.prisma.invoice.aggregate({
@@ -371,7 +376,7 @@ export class InvoicesService {
     const effectiveSkip =
       currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
-    const where = this.buildInvoiceListWhere(query, currentUser);
+    const where = await this.buildInvoiceListWhere(query, currentUser);
 
     // ── Sort logic ──
     const COMPUTED_SORT_FIELDS = [
@@ -592,7 +597,7 @@ export class InvoicesService {
     const effectiveSkip =
       currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
-    const where = this.buildInvoiceListWhere(query, currentUser);
+    const where = await this.buildInvoiceListWhere(query, currentUser);
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.invoice.findMany({
@@ -673,7 +678,7 @@ export class InvoicesService {
    * vượt giới hạn bind variable của PostgreSQL khi where rộng.
    */
   async getVatTotals(query: InvoiceQueryDto, currentUser?: any) {
-    const where = this.buildInvoiceListWhere(query, currentUser);
+    const where = await this.buildInvoiceListWhere(query, currentUser);
 
     const BATCH_SIZE = 5000;
     let count = 0;
@@ -2561,9 +2566,10 @@ export class InvoicesService {
     if (branchId) where.branchId = branchId;
     if (search && search.trim()) {
       const term = search.trim();
+      const matchedIds = await searchCustomerIds(this.prisma, term);
       where.OR = [
         { code: { contains: term, mode: 'insensitive' } },
-        { customer: { name: { contains: term, mode: 'insensitive' } } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
       ];
     }
 
@@ -2660,9 +2666,10 @@ export class InvoicesService {
 
     const keyword = search?.trim();
     if (keyword) {
+      const matchedIds = await searchCustomerIds(this.prisma, keyword);
       where.OR = [
         { code: { contains: keyword } },
-        { customer: { name: { contains: keyword } } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
       ];
     }
 
@@ -2965,7 +2972,7 @@ export class InvoicesService {
     }
   }
 
-  private buildInvoiceExportWhere(query: InvoiceQueryDto): any {
+  private async buildInvoiceExportWhere(query: InvoiceQueryDto): Promise<any> {
     const {
       search,
       customerIds,
@@ -2993,9 +3000,10 @@ export class InvoicesService {
     const where: any = {};
 
     if (search) {
+      const matchedIds = await searchCustomerIds(this.prisma, search);
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },
-        { customer: { name: { contains: search, mode: 'insensitive' } } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
         { description: { contains: search, mode: 'insensitive' } },
       ];
     }
@@ -3005,13 +3013,11 @@ export class InvoicesService {
     }
 
     if (customerSearch) {
-      where.customer = {
-        OR: [
-          { name: { contains: customerSearch, mode: 'insensitive' } },
-          { code: { contains: customerSearch, mode: 'insensitive' } },
-          { contactNumber: { contains: customerSearch, mode: 'insensitive' } },
-        ],
-      };
+      const matchedIds = await searchCustomerIds(this.prisma, customerSearch);
+      const ids = matchedIds.length > 0 ? matchedIds : [-1];
+      where.customerId = where.customerId?.in
+        ? { in: where.customerId.in.filter((id: number) => ids.includes(id)) }
+        : { in: ids };
     }
 
     if (deliveryCodeSearch) {
@@ -3048,7 +3054,11 @@ export class InvoicesService {
       where.details = { some: detailsConditions };
     }
 
-    if (customerIds?.length) where.customerId = { in: customerIds };
+    if (customerIds?.length) {
+      where.customerId = where.customerId?.in
+        ? { in: where.customerId.in.filter((id: number) => customerIds.includes(id)) }
+        : { in: customerIds };
+    }
     if (branchIds?.length) {
       where.branchId = { in: branchIds };
     } else if (branchId) {
@@ -3147,7 +3157,7 @@ export class InvoicesService {
 
   // ─── EXPORT 1: Tổng quan (1 dòng/hóa đơn) ──────────────────────────────────
   async exportOverview(query: InvoiceQueryDto, res: Response): Promise<void> {
-    const where = this.buildInvoiceExportWhere(query);
+    const where = await this.buildInvoiceExportWhere(query);
     const BATCH_SIZE = 500;
 
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
@@ -3282,7 +3292,7 @@ export class InvoicesService {
     selectedColumns: string[],
     res: Response,
   ): Promise<void> {
-    const where = this.buildInvoiceExportWhere(query);
+    const where = await this.buildInvoiceExportWhere(query);
     const BATCH_SIZE = 500;
     const catalog = this.getDetailColumns();
 
