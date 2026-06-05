@@ -138,3 +138,127 @@ export async function recalcInventoryOnHand(
   }
   return onHand;
 }
+
+// ====================================================================
+// RE-ANCHOR chuỗi phiếu kiểm (Cách A).
+//
+// Phiếu kiểm kho mang nghĩa TUYỆT ĐỐI: "tại thời điểm T, tồn thực tế = X"
+// (X = StockAuditDetail.actualQuantity — KHÔNG bao giờ bị ghi đè).
+// Nhưng InventoryLog chỉ lưu DELTA (= X − tồn ngay trước T) đóng băng lúc
+// hoàn thành. Khi có giao dịch/phiếu lùi ngày chèn vào TRƯỚC một phiếu kiểm,
+// "tồn ngay trước T" đổi → delta cũ sai → tồn cuối phiếu kiểm lệch.
+//
+// Hàm này duyệt XUÔI toàn bộ thẻ kho (active) theo thời gian, và với mỗi log
+// phiếu kiểm: tính lại delta = actualQuantity − running, GHI ĐÈ
+// InventoryLog.quantity + StockAuditDetail (systemQuantity/difference). Log
+// thường (bán/nhập/chuyển) chỉ cộng dồn, KHÔNG đụng tới.
+//
+// Kết thúc: onHand = running cuối cùng (cập nhật luôn).
+// ====================================================================
+export async function recalcStockAuditChain(
+  tx: any,
+  productId: number,
+  branchId: number,
+): Promise<number> {
+  const logs = await tx.inventoryLog.findMany({
+    where: { productId, branchId },
+    orderBy: [
+      { transactionDate: 'asc' },
+      { createdAt: 'asc' },
+      { id: 'asc' },
+    ],
+    select: {
+      id: true,
+      quantity: true,
+      refType: true,
+      refId: true,
+      transactionType: true,
+    },
+  });
+
+  const activeKeys = await getActiveLogKeys(tx, logs);
+
+  // Map auditId → { actualQuantity, costAtCheck, detailId } cho sản phẩm này.
+  const auditIds = [
+    ...new Set(
+      logs
+        .filter(
+          (l: any) =>
+            l.transactionType === 'STOCK_AUDIT' &&
+            l.refType === 'stock_audit' &&
+            l.refId,
+        )
+        .map((l: any) => l.refId as number),
+    ),
+  ];
+  const detailMap = new Map<
+    number,
+    { actualQuantity: number; costAtCheck: number; detailId: number }
+  >();
+  if (auditIds.length > 0) {
+    const details = await tx.stockAuditDetail.findMany({
+      where: { stockAuditId: { in: auditIds }, productId },
+      select: {
+        id: true,
+        stockAuditId: true,
+        actualQuantity: true,
+        costAtCheck: true,
+      },
+    });
+    for (const d of details) {
+      detailMap.set(d.stockAuditId, {
+        actualQuantity: Number(d.actualQuantity),
+        costAtCheck: Number(d.costAtCheck),
+        detailId: d.id,
+      });
+    }
+  }
+
+  let running = 0;
+  for (const log of logs) {
+    if (!isLogActive(log, activeKeys)) continue; // bỏ phiếu/đơn đã hủy
+
+    const isAuditAnchor =
+      log.transactionType === 'STOCK_AUDIT' &&
+      log.refType === 'stock_audit' &&
+      log.refId &&
+      detailMap.has(log.refId);
+
+    if (isAuditAnchor) {
+      const info = detailMap.get(log.refId as number)!;
+      const newDelta = info.actualQuantity - running;
+
+      if (newDelta !== Number(log.quantity)) {
+        await tx.inventoryLog.update({
+          where: { id: log.id },
+          data: { quantity: newDelta },
+        });
+        await tx.stockAuditDetail.update({
+          where: { id: info.detailId },
+          data: {
+            systemQuantity: running,
+            difference: newDelta,
+            differenceValue: newDelta * info.costAtCheck,
+          },
+        });
+      }
+      running = info.actualQuantity;
+    } else {
+      running += Number(log.quantity);
+    }
+  }
+
+  // onHand = running cuối (đã khớp Σ active log sau khi re-anchor).
+  const inv = await tx.inventory.findUnique({
+    where: { productId_branchId: { productId, branchId } },
+    include: { product: { select: { weight: true } } },
+  });
+  if (inv) {
+    const weight = inv.product?.weight ? Number(inv.product.weight) : 0;
+    await tx.inventory.update({
+      where: { productId_branchId: { productId, branchId } },
+      data: { onHand: running, totalWeight: weight * running },
+    });
+  }
+  return running;
+}

@@ -7,7 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateStockAuditDto } from './dto/create-stock-audit.dto';
 import { UpdateStockAuditDto } from './dto/update-stock-audit.dto';
 import { StockAuditQueryDto } from './dto/stock-audit-query.dto';
-import { recalcInventoryOnHand } from '../common/inventory-onhand.util';
+import { recalcStockAuditChain } from '../common/inventory-onhand.util';
 
 const STOCK_AUDIT_STATUS = {
   DRAFT: 1,
@@ -444,7 +444,6 @@ export class StockAuditsService {
 
         // Tính lại tồn TẠI THỜI ĐIỂM kiểm theo LOG (Σ giao dịch thật trước
         // checkDate) ngay lúc Hoàn thành. difference = thực tế − tồn-log-trước.
-        // Nếu trước đó không có giao dịch nào → tồn = 0 → difference = thực tế.
         const systemQty = await this.getStockBeforeDate(
           tx,
           detail.productId,
@@ -455,8 +454,7 @@ export class StockAuditsService {
         const delta = Number(detail.actualQuantity) - systemQty;
         const cost = Number(detail.costAtCheck);
 
-        // Cập nhật lại snapshot trên detail cho khớp với giá trị đã áp dụng
-        // (systemQuantity/difference có thể đã đổi so với lúc tạo phiếu tạm).
+        // Cập nhật lại snapshot trên detail cho khớp với giá trị áp dụng.
         await tx.stockAuditDetail.update({
           where: { id: detail.id },
           data: {
@@ -466,30 +464,30 @@ export class StockAuditsService {
           },
         });
 
-        // Ghi InventoryLog với transactionDate = thời điểm kiểm (lùi ngày được)
-        if (delta !== 0) {
-          await tx.inventoryLog.create({
-            data: {
-              productId: detail.productId,
-              productCode: detail.productCode,
-              productName: detail.productName,
-              branchId: audit.branchId,
-              branchName: audit.branchName,
-              transactionType: 'STOCK_AUDIT',
-              refCode: audit.code,
-              refType: 'stock_audit',
-              refId: audit.id,
-              quantity: delta,
-              costPrice: cost,
-              transactionDate: checkDate,
-              note: `Kiểm kho: ${detail.productName} (HT: ${systemQty} → TT: ${detail.actualQuantity})`,
-              createdByName: user?.name || audit.createdByName,
-            },
-          });
-        }
+        // LUÔN ghi InventoryLog (kể cả delta = 0) — dòng này là MỐC NEO tuyệt
+        // đối của phiếu kiểm trên thẻ kho. recalcStockAuditChain sẽ tính lại
+        // delta đúng theo timeline (kể cả khi có phiếu/đơn lùi ngày chèn vào).
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: audit.branchId,
+            branchName: audit.branchName,
+            transactionType: 'STOCK_AUDIT',
+            refCode: audit.code,
+            refType: 'stock_audit',
+            refId: audit.id,
+            quantity: delta,
+            costPrice: cost,
+            transactionDate: checkDate,
+            note: `Kiểm kho: ${detail.productName} (HT: ${systemQty} → TT: ${detail.actualQuantity})`,
+            createdByName: user?.name || audit.createdByName,
+          },
+        });
 
-        // NGUỒN CHÂN LÝ: onHand = Σ log active (đã gồm log kiểm vừa ghi).
-        await recalcInventoryOnHand(tx, detail.productId, audit.branchId);
+        // RE-ANCHOR: tính lại chuỗi phiếu kiểm + onHand theo timeline mới.
+        await recalcStockAuditChain(tx, detail.productId, audit.branchId);
       }
 
       // Cập nhật status
@@ -523,8 +521,8 @@ export class StockAuditsService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      // Đổi status → CANCELLED TRƯỚC để nguồn chân lý (recalcInventoryOnHand)
-      // tự loại toàn bộ log của phiếu này (status=3) khỏi onHand.
+      // Đổi status → CANCELLED TRƯỚC để nguồn chân lý loại toàn bộ log của
+      // phiếu này (status=3) khỏi chuỗi tính tồn.
       await tx.stockAudit.update({
         where: { id },
         data: { status: STOCK_AUDIT_STATUS.CANCELLED },
@@ -537,7 +535,7 @@ export class StockAuditsService {
           // đối ứng để giữ vết lịch sử.
           const delta = Number(detail.difference);
 
-          // Ghi InventoryLog đối ứng (giữ vết; cũng bị ẩn khỏi thẻ kho do
+          // Ghi InventoryLog đối ứng (giữ vết; cũng bị loại khỏi tính toán do
           // phiếu đã CANCELLED).
           if (delta !== 0) {
             await tx.inventoryLog.create({
@@ -560,8 +558,9 @@ export class StockAuditsService {
             });
           }
 
-          // NGUỒN CHÂN LÝ: onHand = Σ log active (phiếu này đã bị loại).
-          await recalcInventoryOnHand(tx, detail.productId, audit.branchId);
+          // RE-ANCHOR: phiếu này đã bị loại → tính lại delta các phiếu kiểm
+          // CÒN LẠI (đứng sau nó) + onHand theo timeline mới.
+          await recalcStockAuditChain(tx, detail.productId, audit.branchId);
         }
       }
 

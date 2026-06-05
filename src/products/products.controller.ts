@@ -8,7 +8,9 @@ import {
   Param,
   Query,
   Req,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ProductsService } from './products.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -24,6 +26,29 @@ export class ProductsController {
   @RequirePermissions('products:view')
   findAll(@Query() query: ProductQueryDto) {
     return this.productsService.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('products:export')
+  async export(
+    @Query() query: ProductQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DanhSachSanPham_${timestamp}.xlsx`,
+    );
+
+    await this.productsService.exportProducts(query, res);
   }
 
   @Get(':id/inventory-logs')

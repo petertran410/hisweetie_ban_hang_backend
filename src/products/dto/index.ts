@@ -486,4 +486,12 @@ export class ProductQueryDto {
   @IsBoolean()
   @Transform(({ value }) => value === 'true' || value === true)
   onlyInPriceBook?: boolean;
+
+  /**
+   * Danh sách key cột cần xuất (CSV), dùng cho endpoint /products/export.
+   * Vd: "type,categoryPath,code,name,tradeMark,basePrice,cost,stock".
+   */
+  @IsOptional()
+  @IsString()
+  columns?: string;
 }
