@@ -211,6 +211,44 @@ export class InvoicesService {
       };
     }
 
+    // Lọc theo trạng thái mã số thuế khách hàng. Khớp đúng cột "Mã số thuế"
+    // hiển thị ở bảng: lấy taxCode, fallback sang identificationNumber.
+    // - 'empty': cả hai field đều trống/null.
+    // - 'filled': có ít nhất một trong hai field.
+    // Gộp vào customer.AND để không ghi đè filter customer khác (search/misa).
+    if (query.taxCodeStatus === 'empty' || query.taxCodeStatus === 'filled') {
+      const taxCondition =
+        query.taxCodeStatus === 'empty'
+          ? {
+              AND: [
+                { OR: [{ taxCode: null }, { taxCode: '' }] },
+                {
+                  OR: [
+                    { identificationNumber: null },
+                    { identificationNumber: '' },
+                  ],
+                },
+              ],
+            }
+          : {
+              OR: [
+                {
+                  AND: [{ taxCode: { not: null } }, { taxCode: { not: '' } }],
+                },
+                {
+                  AND: [
+                    { identificationNumber: { not: null } },
+                    { identificationNumber: { not: '' } },
+                  ],
+                },
+              ],
+            };
+      where.customer = {
+        ...(where.customer || {}),
+        AND: [...(where.customer?.AND || []), taxCondition],
+      };
+    }
+
     return where;
   }
 

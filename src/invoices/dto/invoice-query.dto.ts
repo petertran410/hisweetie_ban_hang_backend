@@ -230,4 +230,12 @@ export class InvoiceQueryDto {
   @IsArray()
   @IsString({ each: true })
   misaEmployeeCodes?: string[];
+
+  // Lọc theo trạng thái mã số thuế của khách hàng:
+  // 'empty' = trống cả taxCode lẫn identificationNumber,
+  // 'filled' = có ít nhất một trong hai.
+  @IsOptional()
+  @IsString()
+  @IsIn(['empty', 'filled'])
+  taxCodeStatus?: 'empty' | 'filled';
 }
