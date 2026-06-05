@@ -613,44 +613,49 @@ export class ReportsService {
   // BÁO CÁO 3: Công nợ — Aggregate helper (theo công thức recalcCustomerDebt)
   // ═══════════════════════════════════════════════════════════════════════════
   private async aggregateCustomerDebt(query: ReportQueryDto) {
+    // Nếu user chỉ truyền toDate mà không có fromDate → bắt lỗi để tránh
+    // báo cáo lệch (toàn bộ lịch sử bị nhồi vào "ghi nợ"/"ghi có" trong kỳ).
+    if (query.toDate && !query.fromDate) {
+      throw new BadRequestException(
+        'Vui lòng chọn "Từ ngày" khi đã chọn "Đến ngày"',
+      );
+    }
+
     const fromDate = query.fromDate ? new Date(query.fromDate) : new Date(0);
     const toDate = query.toDate ? new Date(query.toDate) : new Date();
 
-    let allowedCustomerIds: number[] | null = null;
+    // Tập khách hàng được phép xuất: chỉ khách isActive = true, kết hợp
+    // điều kiện customerGroupId / customerId nếu có.
+    const customerWhere: any = { isActive: true };
     if (query.customerGroupId) {
-      const inGroup = await this.prisma.customerGroupDetail.findMany({
-        where: { customerGroupId: query.customerGroupId },
-        select: { customerId: true },
-      });
-      allowedCustomerIds = inGroup.map((g) => g.customerId);
-      if (allowedCustomerIds.length === 0) return [];
+      customerWhere.customerGroupDetails = {
+        some: { customerGroupId: query.customerGroupId },
+      };
     }
-    if (query.customerId) {
-      allowedCustomerIds = allowedCustomerIds
-        ? allowedCustomerIds.filter((id) => id === query.customerId)
-        : [query.customerId];
-      if (allowedCustomerIds.length === 0) return [];
-    }
+    if (query.customerId) customerWhere.id = query.customerId;
+
+    const activeCustomers = await this.prisma.customer.findMany({
+      where: customerWhere,
+      select: { id: true },
+    });
+    const allowedCustomerIds = activeCustomers.map((c) => c.id);
+    if (allowedCustomerIds.length === 0) return [];
 
     const invoiceBaseWhere: any = {
       status: { not: INVOICE_STATUS.CANCELLED },
-      customerId: { not: null },
+      customerId: { in: allowedCustomerIds },
     };
     if (query.branchId) invoiceBaseWhere.branchId = query.branchId;
-    if (allowedCustomerIds)
-      invoiceBaseWhere.customerId = { in: allowedCustomerIds };
 
     const cashFlowBaseWhere: any = {
       partnerType: 'C',
       status: { not: 2 },
-      partnerId: { not: null },
+      partnerId: { in: allowedCustomerIds },
     };
     if (query.branchId) cashFlowBaseWhere.branchId = query.branchId;
-    if (allowedCustomerIds)
-      cashFlowBaseWhere.partnerId = { in: allowedCustomerIds };
 
     const roBaseWhere: any = {
-      customerId: { not: null },
+      customerId: { in: allowedCustomerIds },
       OR: [
         { status: 2 },
         { status: 4, refundType: 'debt_offset' },
@@ -658,7 +663,6 @@ export class ReportsService {
       ],
     };
     if (query.branchId) roBaseWhere.branchId = query.branchId;
-    if (allowedCustomerIds) roBaseWhere.customerId = { in: allowedCustomerIds };
 
     const sumInvoice = (extra: any) =>
       this.prisma.invoice.groupBy({
@@ -719,6 +723,11 @@ export class ReportsService {
       closingDebt: number;
     };
     const map = new Map<number, Row>();
+    // Khởi tạo map với toàn bộ khách hàng active để báo cáo bao quát mọi
+    // khách (kể cả khách chưa từng có giao dịch nào trong lịch sử).
+    for (const id of allowedCustomerIds) {
+      map.set(id, { openingDebt: 0, debit: 0, credit: 0, closingDebt: 0 });
+    }
     const ensure = (id: number) => {
       if (!map.has(id))
         map.set(id, { openingDebt: 0, debit: 0, credit: 0, closingDebt: 0 });
@@ -754,10 +763,7 @@ export class ReportsService {
     const result: Array<{ customerId: number } & Row> = [];
     for (const [customerId, row] of map.entries()) {
       row.closingDebt = row.openingDebt + row.debit - row.credit;
-      const hasActivity = row.debit !== 0 || row.credit !== 0;
-      if (hasActivity) {
-        result.push({ customerId, ...row });
-      }
+      result.push({ customerId, ...row });
     }
     return result;
   }
