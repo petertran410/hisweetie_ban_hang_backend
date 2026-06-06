@@ -8,7 +8,7 @@ import {
 import {
   DashboardService,
   RangeKey,
-  FinRangeKey,
+  PeriodKey,
   TopMetric,
   CategoryDimension,
 } from './dashboard.service';
@@ -90,27 +90,27 @@ export class DashboardController {
 
   @Get('branch-comparison')
   @ApiOperation({ summary: 'Compare active branches over time' })
-  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'period', required: false })
   @ApiQuery({ name: 'metric', required: false })
   getBranchComparison(
-    @Query('range') range?: RangeKey,
+    @Query('period') period?: PeriodKey,
     @Query('metric') metric?: 'rev' | 'profit',
   ) {
     return this.dashboardService.getBranchComparison(
-      range || 'week',
+      period || 'd7',
       metric || 'rev',
     );
   }
 
   @Get('finance')
   @ApiOperation({ summary: 'Debt, COD and aging buckets' })
-  @ApiQuery({ name: 'finRange', required: false })
+  @ApiQuery({ name: 'period', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
   getFinance(
-    @Query('finRange') finRange?: FinRangeKey,
+    @Query('period') period?: PeriodKey,
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
   ) {
-    return this.dashboardService.getFinance(finRange || 'all', branchId);
+    return this.dashboardService.getFinance(period || 'all', branchId);
   }
 
   @Get('tasks')

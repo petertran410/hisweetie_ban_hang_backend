@@ -3,9 +3,19 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type RangeKey = 'today' | 'week' | 'month';
-export type FinRangeKey = 'd7' | 'm30' | 'all';
 export type TopMetric = 'rev' | 'qty' | 'profit';
 export type CategoryDimension = 'parent' | 'middle' | 'child';
+
+// Bộ mốc thời gian chi tiết dùng chung cho So sánh chi nhánh & Công nợ/COD.
+export type PeriodKey =
+  | 'today'
+  | 'yesterday'
+  | 'd7'
+  | 'd30'
+  | 'thisWeek'
+  | 'thisMonth'
+  | 'lastMonth'
+  | 'all';
 
 interface RangeWindow {
   start: Date;
@@ -47,6 +57,76 @@ export class DashboardService {
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     return { start, end: now, prevStart, prevEnd: start };
+  }
+
+  /**
+   * Khoảng [start, end) cho bộ mốc chi tiết (PeriodKey).
+   * start = null nghĩa là không giới hạn dưới (dùng cho 'all').
+   * end = null nghĩa là tới hiện tại.
+   */
+  private resolvePeriod(period: PeriodKey): { start: Date | null; end: Date | null } {
+    const now = new Date();
+    const startOfToday = new Date(now);
+    startOfToday.setHours(0, 0, 0, 0);
+
+    switch (period) {
+      case 'today':
+        return { start: startOfToday, end: null };
+      case 'yesterday': {
+        const start = new Date(startOfToday);
+        start.setDate(start.getDate() - 1);
+        return { start, end: startOfToday };
+      }
+      case 'd7': {
+        const start = new Date(startOfToday);
+        start.setDate(start.getDate() - 6);
+        return { start, end: null };
+      }
+      case 'd30': {
+        const start = new Date(startOfToday);
+        start.setDate(start.getDate() - 29);
+        return { start, end: null };
+      }
+      case 'thisWeek': {
+        // Tuần bắt đầu từ Thứ 2.
+        const start = new Date(startOfToday);
+        const dow = (start.getDay() + 6) % 7; // 0 = Thứ 2
+        start.setDate(start.getDate() - dow);
+        return { start, end: null };
+      }
+      case 'thisMonth':
+        return {
+          start: new Date(now.getFullYear(), now.getMonth(), 1),
+          end: null,
+        };
+      case 'lastMonth':
+        return {
+          start: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+          end: new Date(now.getFullYear(), now.getMonth(), 1),
+        };
+      case 'all':
+      default:
+        return { start: null, end: null };
+    }
+  }
+
+  /** Đơn vị gom nhóm date_trunc cho biểu đồ theo từng mốc. */
+  private truncForPeriod(period: PeriodKey): 'hour' | 'day' {
+    return period === 'today' || period === 'yesterday' ? 'hour' : 'day';
+  }
+
+  /** Định dạng nhãn trục thời gian cho từng mốc. */
+  private fmtBucketForPeriod(d: Date, period: PeriodKey): string {
+    const dt = new Date(d);
+    if (period === 'today' || period === 'yesterday') {
+      return String(dt.getHours()).padStart(2, '0');
+    }
+    if (period === 'd7' || period === 'thisWeek') {
+      return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
+    }
+    return `${String(dt.getDate()).padStart(2, '0')}/${String(
+      dt.getMonth() + 1,
+    ).padStart(2, '0')}`;
   }
 
   /** where clause chung cho Order, có lọc branch nếu truyền. */
@@ -497,8 +577,7 @@ export class DashboardService {
       ? Prisma.sql`AND o."branchId" = ${branchId}`
       : Prisma.empty;
 
-    const trunc =
-      range === 'today' ? 'hour' : range === 'week' ? 'day' : 'week';
+    const trunc = range === 'today' ? 'hour' : 'day';
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -527,7 +606,10 @@ export class DashboardService {
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
-      return `Tuần ${Math.ceil(dt.getDate() / 7)}`;
+      // month → theo ngày DD/MM
+      return `${String(dt.getDate()).padStart(2, '0')}/${String(
+        dt.getMonth() + 1,
+      ).padStart(2, '0')}`;
     };
 
     return rows.map((r) => {
@@ -584,10 +666,20 @@ export class DashboardService {
    * So sánh các chi nhánh đang hoạt động theo trục thời gian (stacked bar).
    * Trả { labels, branches: [{ id, name, data[] }] }.
    */
-  async getBranchComparison(range: RangeKey = 'week', metric: 'rev' | 'profit' = 'rev') {
-    const w = this.getRangeWindow(range);
-    const trunc =
-      range === 'today' ? 'hour' : range === 'week' ? 'day' : 'week';
+  async getBranchComparison(
+    period: PeriodKey = 'd7',
+    metric: 'rev' | 'profit' = 'rev',
+  ) {
+    const { start, end } = this.resolvePeriod(period);
+    const trunc = this.truncForPeriod(period);
+
+    const startFilter = start
+      ? Prisma.sql`AND o."orderDate" >= ${start}`
+      : Prisma.empty;
+    // end là biên trên nửa-mở (vd hôm qua, tháng trước); 'now' khi không có end.
+    const endFilter = end
+      ? Prisma.sql`AND o."orderDate" < ${end}`
+      : Prisma.sql`AND o."orderDate" <= now()`;
 
     const valueCol =
       metric === 'profit'
@@ -609,21 +701,14 @@ export class DashboardService {
           ON inv."productId" = oi."productId" AND inv."branchId" = o."branchId"
         WHERE oi."orderId" = o.id
       ) li ON true
-      WHERE o."orderDate" >= ${w.start}
-        AND o."orderDate" <= ${w.end}
-        AND o."orderStatus" != 'cancelled'
+      WHERE o."orderStatus" != 'cancelled'
+        ${startFilter}
+        ${endFilter}
       GROUP BY o."branchId", b.name, bucket
       ORDER BY bucket ASC
     `;
 
-    const fmt = (d: Date): string => {
-      const dt = new Date(d);
-      if (range === 'today') return String(dt.getHours()).padStart(2, '0');
-      if (range === 'week') {
-        return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
-      }
-      return `Tuần ${Math.ceil(dt.getDate() / 7)}`;
-    };
+    const fmt = (d: Date): string => this.fmtBucketForPeriod(d, period);
 
     const labelSet: string[] = [];
     const branchMap = new Map<
@@ -652,23 +737,28 @@ export class DashboardService {
 
   // ──────────────────────── Finance (công nợ & COD & aging) ────────────────────────
 
-  async getFinance(finRange: FinRangeKey = 'all', branchId?: number) {
-    const now = new Date();
-    let since: Date | null = null;
-    if (finRange === 'd7') {
-      since = new Date(now);
-      since.setDate(since.getDate() - 7);
-    } else if (finRange === 'm30') {
-      since = new Date(now);
-      since.setDate(since.getDate() - 30);
-    }
+  async getFinance(period: PeriodKey = 'all', branchId?: number) {
+    const { start, end } = this.resolvePeriod(period);
 
     const branchFilter = branchId
       ? Prisma.sql`AND o."branchId" = ${branchId}`
       : Prisma.empty;
-    const sinceFilter = since
-      ? Prisma.sql`AND o."orderDate" >= ${since}`
+    const sinceFilter = start
+      ? Prisma.sql`AND o."orderDate" >= ${start}`
       : Prisma.empty;
+    const untilFilter = end
+      ? Prisma.sql`AND o."orderDate" < ${end}`
+      : Prisma.empty;
+    // Điều kiện orderDate cho Prisma aggregate (gộp gte + lt nếu có).
+    const orderDateWhere =
+      start || end
+        ? {
+            orderDate: {
+              ...(start ? { gte: start } : {}),
+              ...(end ? { lt: end } : {}),
+            },
+          }
+        : {};
 
     const [debtAgg, codResult, agingRows] = await Promise.all([
       this.prisma.order.aggregate({
@@ -678,7 +768,7 @@ export class DashboardService {
           // Chỉ tính công nợ của khách hàng còn hoạt động.
           customer: { is: { isActive: true } },
           ...(branchId ? { branchId } : {}),
-          ...(since ? { orderDate: { gte: since } } : {}),
+          ...orderDateWhere,
         },
         _sum: { debtAmount: true },
         _count: true,
@@ -693,6 +783,7 @@ export class DashboardService {
           AND d.status NOT IN (3, 4)
           ${branchFilter}
           ${sinceFilter}
+          ${untilFilter}
       `,
       // Aging buckets theo tuổi nợ tính từ orderDate (không có dueDate).
       this.prisma.$queryRaw<[{ in_term: number; d30: number; over30: number }]>`
@@ -706,6 +797,7 @@ export class DashboardService {
           AND o."orderStatus" != 'cancelled'
           ${branchFilter}
           ${sinceFilter}
+          ${untilFilter}
       `,
     ]);
 
@@ -714,7 +806,7 @@ export class DashboardService {
     const overdue = Number(aging.d30 || 0) + Number(aging.over30 || 0);
 
     return {
-      finRange,
+      finRange: period,
       debt,
       overdue,
       unpaidCount: debtAgg._count || 0,
