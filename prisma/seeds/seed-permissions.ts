@@ -214,6 +214,13 @@ const permissionsData: PermissionData[] = [
     description: 'Duyệt chuyển kho',
     category: 'Kho',
   },
+  {
+    name: 'transfers:print',
+    resource: 'transfers',
+    action: 'print',
+    description: 'In phiếu chuyển kho',
+    category: 'Kho',
+  },
 
   // Productions
   {
