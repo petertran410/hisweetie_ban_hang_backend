@@ -210,12 +210,14 @@ export class DashboardService {
           AND i."onHand" < 0
           ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
         `,
-        // Công nợ phải thu theo Hóa đơn — chỉ khách hàng còn hoạt động, HĐ chưa hủy.
+        // HĐ còn phải thu — theo khoảng thời gian đã chọn (purchaseDate),
+        // chỉ khách hàng còn hoạt động, HĐ chưa hủy.
         this.prisma.invoice.aggregate({
           where: {
             debtAmount: { gt: 0 },
             status: { notIn: [2] },
             customer: { is: { isActive: true } },
+            purchaseDate: { gte: w.start, lte: w.end },
             ...(branchId ? { branchId } : {}),
           },
           _sum: { debtAmount: true },
@@ -774,9 +776,14 @@ export class DashboardService {
     if (type === 'orders') {
       const orders = await this.prisma.order.findMany({
         where: {
-          orderStatus: status
-            ? status
-            : { notIn: ['cancelled'] },
+          // Chỉ đơn cần xử lý: phiếu tạm / đã xác nhận / đã ra 1 phần HĐ.
+          // Loại đã hủy + hoàn thành. Nếu lọc status cụ thể thì chỉ nhận
+          // các trạng thái hợp lệ trong nhóm cần xử lý.
+          orderStatus:
+            status &&
+            ['pending', 'confirmed', 'partially_invoiced'].includes(status)
+              ? status
+              : { in: ['pending', 'confirmed', 'partially_invoiced'] },
           ...(branchId ? { branchId } : {}),
         },
         take: limit,
@@ -800,11 +807,26 @@ export class DashboardService {
 
     if (type === 'debt') {
       // Công nợ đến hạn theo Hóa đơn — khách còn hoạt động, HĐ chưa hủy.
+      // Lọc theo tuổi nợ (status): in_term | due | overdue.
+      const now = new Date();
+      const startToday = new Date(now);
+      startToday.setHours(0, 0, 0, 0);
+      const d30 = new Date(startToday);
+      d30.setDate(d30.getDate() - 30);
+      let ageFilter: Prisma.InvoiceWhereInput = {};
+      if (status === 'in_term') {
+        ageFilter = { purchaseDate: { gte: startToday } };
+      } else if (status === 'due') {
+        ageFilter = { purchaseDate: { gte: d30, lt: startToday } };
+      } else if (status === 'overdue') {
+        ageFilter = { purchaseDate: { lt: d30 } };
+      }
       const invoices = await this.prisma.invoice.findMany({
         where: {
           debtAmount: { gt: 0 },
           status: { notIn: [2] },
           customer: { is: { isActive: true } },
+          ...ageFilter,
           ...(branchId ? { branchId } : {}),
         },
         take: limit,
@@ -814,10 +836,9 @@ export class DashboardService {
           branch: { select: { name: true } },
         },
       });
-      const now = Date.now();
       return invoices.map((inv) => {
         const ageDays = Math.floor(
-          (now - new Date(inv.purchaseDate).getTime()) / 86400000,
+          (Date.now() - new Date(inv.purchaseDate).getTime()) / 86400000,
         );
         return {
           code: inv.code,
@@ -835,10 +856,17 @@ export class DashboardService {
 
     if (type === 'cod') {
       // Cần giao (COD) theo Hóa đơn — loại HĐ Hoàn thành/Hủy/Giao thành công.
+      // Lọc theo trạng thái HĐ cụ thể (status = số 3/4/5/6/8) nếu hợp lệ.
+      const codStatuses = [3, 4, 5, 6, 8];
+      const wantStatus = status ? Number(status) : NaN;
+      const statusFilter =
+        !isNaN(wantStatus) && codStatuses.includes(wantStatus)
+          ? wantStatus
+          : { notIn: [1, 2, 7] };
       const invoices = await this.prisma.invoice.findMany({
         where: {
           usingCod: true,
-          status: { notIn: [1, 2, 7] },
+          status: statusFilter,
           ...(branchId ? { branchId } : {}),
         },
         take: limit,
@@ -863,7 +891,15 @@ export class DashboardService {
       }));
     }
 
-    // stock
+    // stock — lọc theo loại tồn (status): negative | out | low.
+    const stockFilter =
+      status === 'negative'
+        ? Prisma.sql`AND i."onHand" < 0`
+        : status === 'out'
+          ? Prisma.sql`AND i."onHand" = 0`
+          : status === 'low'
+            ? Prisma.sql`AND i."onHand" > 0 AND i."onHand" <= i."minQuality"`
+            : Prisma.sql`AND i."onHand" <= i."minQuality"`;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
         i.id,
@@ -877,7 +913,7 @@ export class DashboardService {
       INNER JOIN products p ON p.id = i."productId"
       INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
       WHERE p."isActive" = true
-        AND i."onHand" <= i."minQuality"
+        ${stockFilter}
         ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
       ORDER BY i."onHand" ASC
       LIMIT ${limit}
