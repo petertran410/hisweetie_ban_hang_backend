@@ -716,6 +716,7 @@ export class PurchaseOrdersService {
       search,
       supplierId,
       branchId,
+      branchIds,
       createdById,
       purchaseById,
       createdDateFrom,
@@ -729,7 +730,11 @@ export class PurchaseOrdersService {
       where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
     }
     if (supplierId) where.supplierId = supplierId;
-    if (branchId) where.branchId = branchId;
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
     if (createdById) where.createdBy = createdById;
     if (purchaseById) where.purchaseById = purchaseById;
     if (status !== undefined) where.status = status;

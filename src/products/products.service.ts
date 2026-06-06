@@ -137,8 +137,11 @@ export class ProductsService {
       isDirectSale,
       priceBookId,
       onlyInPriceBook,
+      orderBy,
+      orderDirection,
     } = query;
     const skip = limit ? (page - 1) * limit : 0;
+    const sortDir: 'asc' | 'desc' = orderDirection === 'asc' ? 'asc' : 'desc';
 
     const where: any = {};
     if (search) {
@@ -197,30 +200,132 @@ export class ProductsService {
       };
     }
 
+    const include = {
+      tradeMark: true,
+      variant: true,
+      images: true,
+      inventories: inventoriesInclude,
+      comboComponents: {
+        include: {
+          componentProduct: {
+            include: { images: true, inventories: true },
+          },
+        },
+      },
+    };
+
+    // Cột Inventory cần sắp theo chi nhánh đang chọn. Vì Inventory là quan hệ
+    // 1-nhiều, không thể orderBy trực tiếp ổn định qua các trang → sắp xếp ID
+    // ở DB trước (raw query lọc theo branch), rồi mới phân trang theo thứ tự đó.
+    const INVENTORY_SORT_FIELDS: Record<string, string> = {
+      cost: 'cost',
+      onHand: 'onHand',
+      'inventory.cost': 'cost',
+      stock: 'onHand',
+      minQuality: 'minQuality',
+      maxQuality: 'maxQuality',
+      minStock: 'minQuality',
+      maxStock: 'maxQuality',
+    };
+
+    // Cột trực tiếp trên Product.
+    const PRODUCT_SORT_FIELDS: Record<string, string> = {
+      basePrice: 'basePrice',
+    };
+
+    if (orderBy && INVENTORY_SORT_FIELDS[orderBy]) {
+      const invField = INVENTORY_SORT_FIELDS[orderBy];
+
+      // Lấy TẤT CẢ product id thỏa `where` (đã gồm mọi filter: search, isActive,
+      // type, category, parent/middle/child, tradeMark, stockStatus...). Sau đó
+      // sắp xếp các id này theo giá trị tồn kho của chi nhánh đang chọn ở DB,
+      // rồi mới phân trang → thứ tự đúng & xuyên suốt qua các trang.
+      const allMatched = await this.prisma.product.findMany({
+        where,
+        select: { id: true },
+      });
+      const total = allMatched.length;
+      const matchedIds = allMatched.map((p) => p.id);
+
+      let orderedIds: number[] = [];
+      if (matchedIds.length > 0) {
+        const branchParam =
+          branchId != null
+            ? branchId
+            : branchIds && branchIds.length === 1
+              ? branchIds[0]
+              : null;
+
+        const orderedRows = await this.prisma.$queryRawUnsafe<{ id: number }[]>(
+          this.buildInventorySortSql(invField, sortDir),
+          matchedIds,
+          branchParam,
+        );
+        orderedIds = orderedRows.map((r) => r.id);
+      }
+
+      const pageIds = orderedIds.slice(skip, limit ? skip + limit : undefined);
+
+      const pageProducts = await this.prisma.product.findMany({
+        where: { id: { in: pageIds } },
+        include,
+      });
+
+      // Giữ đúng thứ tự đã sắp xếp (findMany không đảm bảo thứ tự theo in[]).
+      const byId = new Map(pageProducts.map((p) => [p.id, p]));
+      const data = pageIds.map((id) => byId.get(id)).filter(Boolean);
+
+      return { data, total, page, limit };
+    }
+
+    const productOrderBy =
+      orderBy && PRODUCT_SORT_FIELDS[orderBy]
+        ? { [PRODUCT_SORT_FIELDS[orderBy]]: sortDir }
+        : { createdAt: 'desc' as const };
+
     const [data, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
         skip,
         ...(limit ? { take: limit } : {}),
-        include: {
-          tradeMark: true,
-          variant: true,
-          images: true,
-          inventories: inventoriesInclude,
-          comboComponents: {
-            include: {
-              componentProduct: {
-                include: { images: true, inventories: true },
-              },
-            },
-          },
-        },
-        orderBy: { createdAt: 'desc' },
+        include,
+        orderBy: productOrderBy,
       }),
       this.prisma.product.count({ where }),
     ]);
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Sinh câu SQL sắp xếp product id theo trường tồn kho của chi nhánh.
+   * Dùng LEFT JOIN + COALESCE(...,0) để sản phẩm chưa có inventory không bị loại.
+   * Khi không lọc theo chi nhánh cụ thể → cộng dồn (SUM) toàn bộ chi nhánh.
+   */
+  private buildInventorySortSql(
+    invField: 'cost' | 'onHand' | 'minQuality' | 'maxQuality' | string,
+    sortDir: 'asc' | 'desc',
+  ): string {
+    // invField đã được map từ whitelist nội bộ → an toàn để nội suy tên cột.
+    const dir = sortDir === 'asc' ? 'ASC' : 'DESC';
+    return `
+      SELECT p.id AS id
+      FROM products p
+      LEFT JOIN inventories inv
+        ON inv."productId" = p.id
+        AND ($BRANCH_FILTER$)
+      WHERE p.id = ANY($1::int[])
+      GROUP BY p.id, p."createdAt"
+      ORDER BY COALESCE(SUM(inv."${invField}"), 0) ${dir}, p."createdAt" DESC
+    `.replace(
+      '$BRANCH_FILTER$',
+      this.inventoryBranchFilterClause(),
+    );
+  }
+
+  private inventoryBranchFilterClause(): string {
+    // $2 = branchId (nullable). Khi NULL → lấy tất cả chi nhánh.
+    return `($2::int IS NULL OR inv."branchId" = $2::int)`;
   }
 
   private getProductTypeLabel(type: number): string {
