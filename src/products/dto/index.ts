@@ -522,4 +522,18 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   columns?: string;
+
+  /**
+   * Cột cần sắp xếp. Hỗ trợ:
+   * - Cột trực tiếp trên Product: basePrice
+   * - Cột trên Inventory (theo chi nhánh đang chọn): cost, onHand, minQuality, maxQuality
+   */
+  @IsOptional()
+  @IsString()
+  orderBy?: string;
+
+  /** Chiều sắp xếp: 'asc' | 'desc' (mặc định 'desc'). */
+  @IsOptional()
+  @IsString()
+  orderDirection?: string;
 }

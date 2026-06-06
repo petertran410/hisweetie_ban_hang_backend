@@ -8,7 +8,7 @@ import {
   IsBoolean,
   IsNumber,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export class PurchaseOrderItemDto {
   @IsInt()
@@ -207,6 +207,15 @@ export class PurchaseOrderQueryDto {
   @Type(() => Number)
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [];
+  })
+  @IsArray()
+  branchIds?: number[];
 
   @IsOptional()
   @Type(() => Number)
