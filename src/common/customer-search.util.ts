@@ -29,7 +29,12 @@ export async function searchCustomerIds(
   search: string,
 ): Promise<number[]> {
   const normalized = (search || '').normalize('NFC');
-  const tokens = normalized.trim().split(/\s+/).filter(Boolean);
+  // Tách token theo MỌI ký tự không phải chữ/số (Unicode-aware), để dấu câu
+  // như "-", "(", ")", "," trong tên (vd "Ms Giang - Hoàng Mai, Hà Nội (Sale)")
+  // tự bị loại, không trở thành token rác phá điều kiện AND.
+  const tokens = normalized
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
   if (tokens.length === 0) return [];
 
   const tokenSets = await Promise.all(
