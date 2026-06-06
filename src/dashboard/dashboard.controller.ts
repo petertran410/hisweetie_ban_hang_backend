@@ -5,7 +5,13 @@ import {
   UseGuards,
   ParseIntPipe,
 } from '@nestjs/common';
-import { DashboardService } from './dashboard.service';
+import {
+  DashboardService,
+  RangeKey,
+  FinRangeKey,
+  TopMetric,
+  CategoryDimension,
+} from './dashboard.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import {
@@ -29,17 +35,102 @@ export class DashboardController {
 
   @Get('stats')
   @ApiOperation({ summary: 'Get dashboard statistics overview' })
-  getStats() {
-    return this.dashboardService.getStatsOverview();
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  getStats(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+  ) {
+    return this.dashboardService.getStatsOverview(range || 'month', branchId);
   }
 
   @Get('revenue-chart')
-  @ApiOperation({ summary: 'Get revenue chart data' })
+  @ApiOperation({ summary: 'Get revenue chart data (legacy monthly)' })
   @ApiQuery({ name: 'months', required: false, type: Number })
   getRevenueChart(
     @Query('months', new ParseIntPipe({ optional: true })) months?: number,
   ) {
     return this.dashboardService.getRevenueChart(months || 6);
+  }
+
+  @Get('revenue-trend')
+  @ApiOperation({ summary: 'Revenue + profit trend by hour/day/week' })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  getRevenueTrend(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+  ) {
+    return this.dashboardService.getRevenueTrend(range || 'today', branchId);
+  }
+
+  @Get('category-breakdown')
+  @ApiOperation({ summary: 'Revenue breakdown by product group' })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({ name: 'dimension', required: false })
+  getCategoryBreakdown(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('dimension') dimension?: CategoryDimension,
+  ) {
+    return this.dashboardService.getCategoryBreakdown(
+      range || 'month',
+      branchId,
+      dimension || 'parent',
+    );
+  }
+
+  @Get('category-options')
+  @ApiOperation({ summary: 'Distinct product group values for filters' })
+  @ApiQuery({ name: 'dimension', required: false })
+  getCategoryOptions(@Query('dimension') dimension?: CategoryDimension) {
+    return this.dashboardService.getCategoryOptions(dimension || 'parent');
+  }
+
+  @Get('branch-comparison')
+  @ApiOperation({ summary: 'Compare active branches over time' })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'metric', required: false })
+  getBranchComparison(
+    @Query('range') range?: RangeKey,
+    @Query('metric') metric?: 'rev' | 'profit',
+  ) {
+    return this.dashboardService.getBranchComparison(
+      range || 'week',
+      metric || 'rev',
+    );
+  }
+
+  @Get('finance')
+  @ApiOperation({ summary: 'Debt, COD and aging buckets' })
+  @ApiQuery({ name: 'finRange', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  getFinance(
+    @Query('finRange') finRange?: FinRangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+  ) {
+    return this.dashboardService.getFinance(finRange || 'all', branchId);
+  }
+
+  @Get('tasks')
+  @ApiOperation({ summary: 'Actionable task lists (orders/debt/cod/stock)' })
+  @ApiQuery({ name: 'type', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'status', required: false })
+  getTasks(
+    @Query('type') type?: 'orders' | 'debt' | 'cod' | 'stock',
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('status') status?: string,
+  ) {
+    return this.dashboardService.getTasks(
+      type || 'orders',
+      branchId,
+      limit || 20,
+      status,
+    );
   }
 
   @Get('top-customers')
@@ -69,8 +160,6 @@ export class DashboardController {
     return this.dashboardService.getRecentOrders(limit || 10);
   }
 
-  // ======== THÊM MỚI: 3 endpoints ========
-
   @Get('today-stats')
   @ApiOperation({ summary: 'Get today sales stats' })
   getTodayStats() {
@@ -78,12 +167,29 @@ export class DashboardController {
   }
 
   @Get('top-products')
-  @ApiOperation({ summary: 'Get top selling products this month' })
+  @ApiOperation({ summary: 'Get top selling products' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({ name: 'metric', required: false })
+  @ApiQuery({ name: 'dimension', required: false })
+  @ApiQuery({ name: 'categoryValue', required: false })
   getTopProducts(
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('metric') metric?: TopMetric,
+    @Query('dimension') dimension?: CategoryDimension,
+    @Query('categoryValue') categoryValue?: string,
   ) {
-    return this.dashboardService.getTopProducts(limit || 10);
+    return this.dashboardService.getTopProducts(
+      limit || 10,
+      range || 'month',
+      branchId,
+      metric || 'rev',
+      dimension,
+      categoryValue,
+    );
   }
 
   @Get('recent-activities')
