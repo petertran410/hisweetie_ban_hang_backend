@@ -35,4 +35,13 @@ export class DestructionQueryDto {
   @IsOptional()
   @IsString()
   toDestructionDate?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  createdById?: number;
 }

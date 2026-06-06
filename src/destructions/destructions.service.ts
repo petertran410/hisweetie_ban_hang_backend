@@ -33,6 +33,8 @@ export class DestructionsService {
       currentItem = 0,
       fromDestructionDate,
       toDestructionDate,
+      search,
+      createdById,
     } = query;
 
     const where: Prisma.DestructionWhereInput = {};
@@ -43,6 +45,14 @@ export class DestructionsService {
 
     if (status && status.length > 0) {
       where.status = { in: status };
+    }
+
+    if (createdById) {
+      where.createdById = createdById;
+    }
+
+    if (search) {
+      where.code = { contains: search, mode: 'insensitive' };
     }
 
     if (fromDestructionDate || toDestructionDate) {
