@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
-export type RangeKey = 'today' | 'week' | 'month';
+export type RangeKey = 'today' | 'yesterday' | 'week' | 'month';
 export type FinRangeKey = 'd7' | 'm30' | 'all';
 export type TopMetric = 'rev' | 'qty' | 'profit';
 export type CategoryDimension = 'parent' | 'middle' | 'child';
@@ -13,6 +13,14 @@ interface RangeWindow {
   prevStart: Date;
   prevEnd: Date;
 }
+
+// Trạng thái hóa đơn (đồng bộ invoices/dto/invoice-status.constants.ts):
+// 1 Hoàn thành · 2 Đã hủy · 3 Đang xử lý · 4 Không giao được ·
+// 5 Đóng hàng · 6 Lấy hàng · 7 Giao thành công · 8 Trả hàng
+// Doanh thu: loại Đã hủy (2) + Trả hàng (8).
+const REVENUE_EXCLUDE = [2, 8];
+// COD cần giao: loại Hoàn thành (1), Đã hủy (2), Giao thành công (7).
+const COD_DONE_OR_CANCELLED = [1, 2, 7];
 
 @Injectable()
 export class DashboardService {
@@ -34,6 +42,16 @@ export class DashboardService {
       const prevStart = new Date(start);
       prevStart.setDate(prevStart.getDate() - 1);
       return { start, end: now, prevStart, prevEnd: start };
+    }
+    if (range === 'yesterday') {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 1);
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setHours(23, 59, 59, 999);
+      const prevStart = new Date(start);
+      prevStart.setDate(prevStart.getDate() - 1);
+      return { start, end, prevStart, prevEnd: start };
     }
     if (range === 'week') {
       const start = new Date(now);
@@ -64,15 +82,34 @@ export class DashboardService {
     return where;
   }
 
+  /**
+   * where clause chung cho Invoice (hóa đơn) — nền tảng ghi nhận doanh thu.
+   * Loại trừ hóa đơn Đã hủy + Trả hàng. Lọc branch nếu truyền.
+   */
+  private invoiceWhere(
+    window: { gte: Date; lt?: Date },
+    branchId?: number,
+  ): Prisma.InvoiceWhereInput {
+    const where: Prisma.InvoiceWhereInput = {
+      purchaseDate: window.lt
+        ? { gte: window.gte, lt: window.lt }
+        : { gte: window.gte },
+      status: { notIn: REVENUE_EXCLUDE },
+    };
+    if (branchId) where.branchId = branchId;
+    return where;
+  }
+
   private pct(curr: number, prev: number): number {
     if (prev <= 0) return 0;
     return Number((((curr - prev) / prev) * 100).toFixed(2));
   }
 
   /**
-   * Giá vốn (COGS) ước tính cho các đơn trong khoảng: SUM(quantity × inventory.cost),
-   * khớp theo productId + branchId, chỉ chi nhánh đang hoạt động.
-   * OrderItem không lưu giá vốn theo dòng nên đây là số tạm tính theo giá vốn hiện tại.
+   * Giá vốn (COGS) ước tính cho các hóa đơn trong khoảng: SUM(quantity × inventory.cost),
+   * khớp theo productId + branchId (LEFT JOIN — dòng thiếu giá vốn tính = 0 để không
+   * lệch số dòng so với doanh thu), chỉ chi nhánh đang hoạt động.
+   * InvoiceDetail không lưu giá vốn theo dòng nên đây là số tạm tính theo giá vốn hiện tại.
    */
   private async estimateCogs(
     start: Date,
@@ -80,15 +117,15 @@ export class DashboardService {
     branchId?: number,
   ): Promise<number> {
     const rows = await this.prisma.$queryRaw<[{ cogs: number | null }]>`
-      SELECT COALESCE(SUM(oi.quantity * inv.cost), 0)::float8 AS cogs
-      FROM order_items oi
-      INNER JOIN orders o ON oi."orderId" = o.id
-      INNER JOIN inventories inv ON inv."productId" = oi."productId" AND inv."branchId" = o."branchId"
-      INNER JOIN branches b ON b.id = o."branchId" AND b."isActive" = true
-      WHERE o."orderDate" >= ${start}
-        AND o."orderDate" <= ${end}
-        AND o."orderStatus" != 'cancelled'
-        ${branchId ? Prisma.sql`AND o."branchId" = ${branchId}` : Prisma.empty}
+      SELECT COALESCE(SUM(id.quantity * COALESCE(inv.cost, 0)), 0)::float8 AS cogs
+      FROM invoice_details id
+      INNER JOIN invoices i ON id."invoiceId" = i.id
+      INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
+      LEFT JOIN inventories inv ON inv."productId" = id."productId" AND inv."branchId" = i."branchId"
+      WHERE i."purchaseDate" >= ${start}
+        AND i."purchaseDate" <= ${end}
+        AND i.status NOT IN (2, 8)
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
     `;
     return Number(rows[0]?.cogs || 0);
   }
@@ -99,7 +136,7 @@ export class DashboardService {
     try {
       const w = this.getRangeWindow(range);
       const branchFilter = branchId
-        ? Prisma.sql`AND o."branchId" = ${branchId}`
+        ? Prisma.sql`AND i."branchId" = ${branchId}`
         : Prisma.empty;
 
       const [
@@ -117,22 +154,22 @@ export class DashboardService {
         currCogs,
         prevCogs,
       ] = await Promise.all([
-        this.prisma.order.aggregate({
-          where: this.orderWhere({ gte: w.start }, branchId),
+        this.prisma.invoice.aggregate({
+          where: this.invoiceWhere({ gte: w.start }, branchId),
           _sum: { grandTotal: true },
         }),
-        this.prisma.order.aggregate({
-          where: this.orderWhere(
+        this.prisma.invoice.aggregate({
+          where: this.invoiceWhere(
             { gte: w.prevStart, lt: w.prevEnd },
             branchId,
           ),
           _sum: { grandTotal: true },
         }),
-        this.prisma.order.count({
-          where: this.orderWhere({ gte: w.start }, branchId),
+        this.prisma.invoice.count({
+          where: this.invoiceWhere({ gte: w.start }, branchId),
         }),
-        this.prisma.order.count({
-          where: this.orderWhere(
+        this.prisma.invoice.count({
+          where: this.invoiceWhere(
             { gte: w.prevStart, lt: w.prevEnd },
             branchId,
           ),
@@ -173,25 +210,24 @@ export class DashboardService {
           AND i."onHand" < 0
           ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
         `,
-        this.prisma.order.aggregate({
+        // Công nợ phải thu theo Hóa đơn — chỉ khách hàng còn hoạt động, HĐ chưa hủy.
+        this.prisma.invoice.aggregate({
           where: {
             debtAmount: { gt: 0 },
-            orderStatus: { not: 'cancelled' },
-            // Chỉ tính công nợ của khách hàng còn hoạt động.
+            status: { notIn: [2] },
             customer: { is: { isActive: true } },
             ...(branchId ? { branchId } : {}),
           },
           _sum: { debtAmount: true },
           _count: true,
         }),
+        // COD đang luân chuyển theo Hóa đơn — loại HĐ đã Hoàn thành/Hủy/Giao thành công.
         this.prisma.$queryRaw<[{ amount: number | null; cnt: bigint }]>`
-          SELECT COALESCE(SUM(o."grandTotal" - o."paidAmount"), 0)::float8 AS amount,
+          SELECT COALESCE(SUM(i."grandTotal" - i."paidAmount"), 0)::float8 AS amount,
                  COUNT(*)::bigint AS cnt
-          FROM orders o
-          INNER JOIN order_deliveries d ON d."orderId" = o.id
-          WHERE o."usingCod" = true
-            AND o."orderStatus" != 'cancelled'
-            AND d.status NOT IN (3, 4)
+          FROM invoices i
+          WHERE i."usingCod" = true
+            AND i.status NOT IN (1, 2, 7)
             ${branchFilter}
         `,
         this.estimateCogs(w.start, w.end, branchId),
@@ -429,7 +465,7 @@ export class DashboardService {
   ) {
     const w = this.getRangeWindow(range);
     const branchFilter = branchId
-      ? Prisma.sql`AND o."branchId" = ${branchId}`
+      ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
 
     // Lọc theo nhóm hàng (parent/middle/child) nếu có truyền.
@@ -448,29 +484,29 @@ export class DashboardService {
 
     const orderCol =
       metric === 'qty'
-        ? Prisma.sql`SUM(oi.quantity)`
+        ? Prisma.sql`SUM(d.quantity)`
         : metric === 'profit'
-          ? Prisma.sql`SUM(oi."totalPrice" - oi.quantity * COALESCE(inv.cost, 0))`
-          : Prisma.sql`SUM(oi."totalPrice")`;
+          ? Prisma.sql`SUM(d."totalPrice" - d.quantity * COALESCE(inv.cost, 0))`
+          : Prisma.sql`SUM(d."totalPrice")`;
 
     const products = await this.prisma.$queryRaw<any[]>`
       SELECT
-        oi."productId",
-        oi."productCode",
-        oi."productName",
-        SUM(oi.quantity)::float8     AS "totalQuantity",
-        SUM(oi."totalPrice")::float8 AS "totalRevenue",
-        SUM(oi."totalPrice" - oi.quantity * COALESCE(inv.cost, 0))::float8 AS "totalProfit"
-      FROM order_items oi
-      INNER JOIN orders o ON oi."orderId" = o.id
-      INNER JOIN products p ON p.id = oi."productId"
-      LEFT JOIN inventories inv ON inv."productId" = oi."productId" AND inv."branchId" = o."branchId"
-      WHERE o."orderDate" >= ${w.start}
-        AND o."orderDate" <= ${w.end}
-        AND o."orderStatus" != 'cancelled'
+        d."productId",
+        d."productCode",
+        d."productName",
+        SUM(d.quantity)::float8     AS "totalQuantity",
+        SUM(d."totalPrice")::float8 AS "totalRevenue",
+        SUM(d."totalPrice" - d.quantity * COALESCE(inv.cost, 0))::float8 AS "totalProfit"
+      FROM invoice_details d
+      INNER JOIN invoices i ON d."invoiceId" = i.id
+      INNER JOIN products p ON p.id = d."productId"
+      LEFT JOIN inventories inv ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
         ${branchFilter}
         ${catFilter}
-      GROUP BY oi."productId", oi."productCode", oi."productName"
+      GROUP BY d."productId", d."productCode", d."productName"
       ORDER BY ${orderCol} DESC
       LIMIT ${limit}
     `;
@@ -494,28 +530,28 @@ export class DashboardService {
   async getRevenueTrend(range: RangeKey = 'today', branchId?: number) {
     const w = this.getRangeWindow(range);
     const branchFilter = branchId
-      ? Prisma.sql`AND o."branchId" = ${branchId}`
+      ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
 
     const trunc =
-      range === 'today' ? 'hour' : range === 'week' ? 'day' : 'week';
+      range === 'today' || range === 'yesterday' ? 'hour' : range === 'week' ? 'day' : 'week';
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
-        date_trunc(${trunc}, o."orderDate") AS bucket,
-        SUM(o."grandTotal")::float8 AS revenue,
+        date_trunc(${trunc}, i."purchaseDate") AS bucket,
+        SUM(i."grandTotal")::float8 AS revenue,
         COALESCE(SUM(li.cogs), 0)::float8 AS cogs
-      FROM orders o
+      FROM invoices i
       LEFT JOIN LATERAL (
-        SELECT SUM(oi.quantity * COALESCE(inv.cost, 0)) AS cogs
-        FROM order_items oi
+        SELECT SUM(d.quantity * COALESCE(inv.cost, 0)) AS cogs
+        FROM invoice_details d
         LEFT JOIN inventories inv
-          ON inv."productId" = oi."productId" AND inv."branchId" = o."branchId"
-        WHERE oi."orderId" = o.id
+          ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
+        WHERE d."invoiceId" = i.id
       ) li ON true
-      WHERE o."orderDate" >= ${w.start}
-        AND o."orderDate" <= ${w.end}
-        AND o."orderStatus" != 'cancelled'
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
         ${branchFilter}
       GROUP BY bucket
       ORDER BY bucket ASC
@@ -523,7 +559,7 @@ export class DashboardService {
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today') return String(dt.getHours()).padStart(2, '0');
+      if (range === 'today' || range === 'yesterday') return String(dt.getHours()).padStart(2, '0');
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
@@ -546,7 +582,7 @@ export class DashboardService {
   ) {
     const w = this.getRangeWindow(range);
     const branchFilter = branchId
-      ? Prisma.sql`AND o."branchId" = ${branchId}`
+      ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
     const dimCol =
       dimension === 'middle'
@@ -558,13 +594,13 @@ export class DashboardService {
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
         COALESCE(NULLIF(${dimCol}, ''), 'Khác') AS name,
-        SUM(oi."totalPrice")::float8 AS revenue
-      FROM order_items oi
-      INNER JOIN orders o ON oi."orderId" = o.id
-      INNER JOIN products p ON p.id = oi."productId"
-      WHERE o."orderDate" >= ${w.start}
-        AND o."orderDate" <= ${w.end}
-        AND o."orderStatus" != 'cancelled'
+        SUM(d."totalPrice")::float8 AS revenue
+      FROM invoice_details d
+      INNER JOIN invoices i ON d."invoiceId" = i.id
+      INNER JOIN products p ON p.id = d."productId"
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
         ${branchFilter}
       GROUP BY COALESCE(NULLIF(${dimCol}, ''), 'Khác')
       ORDER BY revenue DESC
@@ -587,38 +623,38 @@ export class DashboardService {
   async getBranchComparison(range: RangeKey = 'week', metric: 'rev' | 'profit' = 'rev') {
     const w = this.getRangeWindow(range);
     const trunc =
-      range === 'today' ? 'hour' : range === 'week' ? 'day' : 'week';
+      range === 'today' || range === 'yesterday' ? 'hour' : range === 'week' ? 'day' : 'week';
 
     const valueCol =
       metric === 'profit'
-        ? Prisma.sql`SUM(o."grandTotal") - COALESCE(SUM(li.cogs), 0)`
-        : Prisma.sql`SUM(o."grandTotal")`;
+        ? Prisma.sql`SUM(i."grandTotal") - COALESCE(SUM(li.cogs), 0)`
+        : Prisma.sql`SUM(i."grandTotal")`;
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
-        o."branchId" AS "branchId",
+        i."branchId" AS "branchId",
         b.name AS "branchName",
-        date_trunc(${trunc}, o."orderDate") AS bucket,
+        date_trunc(${trunc}, i."purchaseDate") AS bucket,
         ${valueCol}::float8 AS value
-      FROM orders o
-      INNER JOIN branches b ON b.id = o."branchId" AND b."isActive" = true
+      FROM invoices i
+      INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
       LEFT JOIN LATERAL (
-        SELECT SUM(oi.quantity * COALESCE(inv.cost, 0)) AS cogs
-        FROM order_items oi
+        SELECT SUM(d.quantity * COALESCE(inv.cost, 0)) AS cogs
+        FROM invoice_details d
         LEFT JOIN inventories inv
-          ON inv."productId" = oi."productId" AND inv."branchId" = o."branchId"
-        WHERE oi."orderId" = o.id
+          ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
+        WHERE d."invoiceId" = i.id
       ) li ON true
-      WHERE o."orderDate" >= ${w.start}
-        AND o."orderDate" <= ${w.end}
-        AND o."orderStatus" != 'cancelled'
-      GROUP BY o."branchId", b.name, bucket
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
+      GROUP BY i."branchId", b.name, bucket
       ORDER BY bucket ASC
     `;
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today') return String(dt.getHours()).padStart(2, '0');
+      if (range === 'today' || range === 'yesterday') return String(dt.getHours()).padStart(2, '0');
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
@@ -664,46 +700,45 @@ export class DashboardService {
     }
 
     const branchFilter = branchId
-      ? Prisma.sql`AND o."branchId" = ${branchId}`
+      ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
     const sinceFilter = since
-      ? Prisma.sql`AND o."orderDate" >= ${since}`
+      ? Prisma.sql`AND i."purchaseDate" >= ${since}`
       : Prisma.empty;
 
     const [debtAgg, codResult, agingRows] = await Promise.all([
-      this.prisma.order.aggregate({
+      // Tổng phải thu theo Hóa đơn — khách còn hoạt động, HĐ chưa hủy.
+      this.prisma.invoice.aggregate({
         where: {
           debtAmount: { gt: 0 },
-          orderStatus: { not: 'cancelled' },
-          // Chỉ tính công nợ của khách hàng còn hoạt động.
+          status: { notIn: [2] },
           customer: { is: { isActive: true } },
           ...(branchId ? { branchId } : {}),
-          ...(since ? { orderDate: { gte: since } } : {}),
+          ...(since ? { purchaseDate: { gte: since } } : {}),
         },
         _sum: { debtAmount: true },
         _count: true,
       }),
+      // COD đang luân chuyển theo Hóa đơn — loại HĐ Hoàn thành/Hủy/Giao thành công.
       this.prisma.$queryRaw<[{ amount: number | null; cnt: bigint }]>`
-        SELECT COALESCE(SUM(o."grandTotal" - o."paidAmount"), 0)::float8 AS amount,
+        SELECT COALESCE(SUM(i."grandTotal" - i."paidAmount"), 0)::float8 AS amount,
                COUNT(*)::bigint AS cnt
-        FROM orders o
-        INNER JOIN order_deliveries d ON d."orderId" = o.id
-        WHERE o."usingCod" = true
-          AND o."orderStatus" != 'cancelled'
-          AND d.status NOT IN (3, 4)
+        FROM invoices i
+        WHERE i."usingCod" = true
+          AND i.status NOT IN (1, 2, 7)
           ${branchFilter}
           ${sinceFilter}
       `,
-      // Aging buckets theo tuổi nợ tính từ orderDate (không có dueDate).
+      // Aging buckets theo tuổi nợ tính từ purchaseDate (không có dueDate).
       this.prisma.$queryRaw<[{ in_term: number; d30: number; over30: number }]>`
         SELECT
-          COALESCE(SUM(o."debtAmount") FILTER (WHERE (now()::date - o."orderDate"::date) <= 0), 0)::float8 AS in_term,
-          COALESCE(SUM(o."debtAmount") FILTER (WHERE (now()::date - o."orderDate"::date) BETWEEN 1 AND 30), 0)::float8 AS d30,
-          COALESCE(SUM(o."debtAmount") FILTER (WHERE (now()::date - o."orderDate"::date) > 30), 0)::float8 AS over30
-        FROM orders o
-        INNER JOIN customers c ON c.id = o."customerId" AND c."isActive" = true
-        WHERE o."debtAmount" > 0
-          AND o."orderStatus" != 'cancelled'
+          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) <= 0), 0)::float8 AS in_term,
+          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) BETWEEN 1 AND 30), 0)::float8 AS d30,
+          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) > 30), 0)::float8 AS over30
+        FROM invoices i
+        INNER JOIN customers c ON c.id = i."customerId" AND c."isActive" = true
+        WHERE i."debtAmount" > 0
+          AND i.status NOT IN (2)
           ${branchFilter}
           ${sinceFilter}
       `,
@@ -764,33 +799,34 @@ export class DashboardService {
     }
 
     if (type === 'debt') {
-      const orders = await this.prisma.order.findMany({
+      // Công nợ đến hạn theo Hóa đơn — khách còn hoạt động, HĐ chưa hủy.
+      const invoices = await this.prisma.invoice.findMany({
         where: {
           debtAmount: { gt: 0 },
-          orderStatus: { not: 'cancelled' },
-          // Chỉ tính công nợ của khách hàng còn hoạt động.
+          status: { notIn: [2] },
           customer: { is: { isActive: true } },
           ...(branchId ? { branchId } : {}),
         },
         take: limit,
-        orderBy: { orderDate: 'asc' },
+        orderBy: { purchaseDate: 'asc' },
         include: {
           customer: { select: { name: true } },
           branch: { select: { name: true } },
         },
       });
       const now = Date.now();
-      return orders.map((o) => {
+      return invoices.map((inv) => {
         const ageDays = Math.floor(
-          (now - new Date(o.orderDate).getTime()) / 86400000,
+          (now - new Date(inv.purchaseDate).getTime()) / 86400000,
         );
         return {
-          code: o.code,
-          partner: o.customer?.name || 'Khách vãng lai',
-          branchName: o.branch?.name || '',
-          value: Number(o.debtAmount),
+          code: inv.code,
+          partner:
+            inv.customer?.name || inv.customerName || 'Khách vãng lai',
+          branchName: inv.branch?.name || '',
+          value: Number(inv.debtAmount),
           ageDays,
-          time: o.orderDate,
+          time: inv.purchaseDate,
           status:
             ageDays > 30 ? 'overdue' : ageDays > 0 ? 'due' : 'in_term',
         };
@@ -798,31 +834,32 @@ export class DashboardService {
     }
 
     if (type === 'cod') {
-      const orders = await this.prisma.order.findMany({
+      // Cần giao (COD) theo Hóa đơn — loại HĐ Hoàn thành/Hủy/Giao thành công.
+      const invoices = await this.prisma.invoice.findMany({
         where: {
           usingCod: true,
-          orderStatus: { not: 'cancelled' },
-          delivery: { status: { notIn: [3, 4] } },
+          status: { notIn: [1, 2, 7] },
           ...(branchId ? { branchId } : {}),
         },
         take: limit,
-        orderBy: { orderDate: 'desc' },
+        orderBy: { purchaseDate: 'desc' },
         include: {
           customer: { select: { name: true } },
           branch: { select: { name: true } },
-          delivery: {
-            select: { status: true, statusValue: true, expectedDelivery: true },
-          },
+          delivery: { select: { status: true, statusValue: true } },
         },
       });
-      return orders.map((o) => ({
-        code: o.code,
-        partner: o.customer?.name || 'Khách vãng lai',
-        branchName: o.branch?.name || '',
-        value: Number(o.grandTotal) - Number(o.paidAmount),
-        time: o.delivery?.expectedDelivery || o.orderDate,
-        status: o.delivery?.statusValue || 'Đang giao',
-        deliveryStatus: o.delivery?.status,
+      return invoices.map((inv) => ({
+        code: inv.code,
+        partner: inv.customer?.name || inv.customerName || 'Khách vãng lai',
+        branchName: inv.branch?.name || '',
+        value: Number(inv.grandTotal) - Number(inv.paidAmount),
+        time: inv.purchaseDate,
+        // Trả số trạng thái hóa đơn (1-8) để FE map qua INVOICE_STATUS_LABELS
+        // — đồng nhất với trang Hóa đơn. status để dạng string cho khớp type chung.
+        status: String(inv.status),
+        invoiceStatus: inv.status,
+        deliveryStatus: inv.delivery?.status,
       }));
     }
 
