@@ -28,7 +28,10 @@ export async function searchProductIds(
   prisma: PrismaService,
   search: string,
 ): Promise<number[]> {
-  const tokens = (search || '').trim().split(/\s+/).filter(Boolean);
+  // Tách token theo MỌI ký tự không phải chữ/số (Unicode-aware), để dấu câu
+  // trong tên (vd "100gr ( 8 túi/thùng)") tự bị loại, không thành token rác
+  // phá điều kiện AND.
+  const tokens = (search || '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (tokens.length === 0) return [];
 
   const tokenSets = await Promise.all(

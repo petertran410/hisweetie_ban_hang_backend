@@ -23,6 +23,7 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { searchCustomerIds } from '../common/customer-search.util';
 
 @Injectable()
 export class OrdersService {
@@ -532,7 +533,10 @@ export class OrdersService {
    * Tách logic build `where` để dùng chung giữa findAll và getTotals.
    * Mọi filter (status/branch/date/payment...) thay đổi đều áp lên cả 2.
    */
-  private buildOrderListWhere(query: OrderQueryDto, currentUser?: any) {
+  private async buildOrderListWhere(
+    query: OrderQueryDto,
+    currentUser?: any,
+  ): Promise<any> {
     const {
       search,
       status,
@@ -548,6 +552,8 @@ export class OrdersService {
       saleChannelId,
       paymentMethod,
       bankAccountIds,
+      createdByIds,
+      soldByIds,
     } = query;
 
     const where: any = {};
@@ -557,7 +563,11 @@ export class OrdersService {
     }
 
     if (search) {
-      where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
+      const matchedIds = await searchCustomerIds(this.prisma, search);
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
+      ];
     }
     if (statuses && statuses.length > 0) {
       const statusNumbers = statuses.map((s) => convertStatusStringToNumber(s));
@@ -573,6 +583,12 @@ export class OrdersService {
       where.branchId = branchId;
     }
     if (soldById) where.soldById = soldById;
+    if (createdByIds && createdByIds.length > 0 && !where.createdBy) {
+      where.createdBy = { in: createdByIds };
+    }
+    if (soldByIds && soldByIds.length > 0) {
+      where.soldById = { in: soldByIds };
+    }
     if (saleChannelId) where.saleChannelId = saleChannelId;
 
     if (fromDate && toDate) {
@@ -604,7 +620,7 @@ export class OrdersService {
    * Dùng cho hàng "tổng" hiển thị ngay dưới header bảng đặt hàng.
    */
   async getTotals(query: OrderQueryDto, currentUser?: any) {
-    const where = this.buildOrderListWhere(query, currentUser);
+    const where = await this.buildOrderListWhere(query, currentUser);
 
     const agg = await this.prisma.order.aggregate({
       where,
@@ -647,7 +663,7 @@ export class OrdersService {
     const effectiveSkip =
       currentItem !== undefined ? currentItem : (page - 1) * effectiveLimit;
 
-    const where = this.buildOrderListWhere(query, currentUser);
+    const where = await this.buildOrderListWhere(query, currentUser);
 
     const VALID_ORDER_BY = new Set([
       'orderDate',

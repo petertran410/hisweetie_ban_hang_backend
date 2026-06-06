@@ -288,6 +288,34 @@ export class OrderQueryDto {
   soldById?: number;
 
   @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  createdByIds?: number[];
+
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  soldByIds?: number[];
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   saleChannelId?: number;
