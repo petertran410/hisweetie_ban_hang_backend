@@ -133,6 +133,15 @@ export class DashboardController {
     );
   }
 
+  @Get('task-counts')
+  @ApiOperation({ summary: 'Total counts per worklist tab (badge)' })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  getTaskCounts(
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+  ) {
+    return this.dashboardService.getTaskCounts(branchId);
+  }
+
   @Get('top-customers')
   @ApiOperation({ summary: 'Get top customers by revenue' })
   @ApiQuery({ name: 'limit', required: false, type: Number })

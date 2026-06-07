@@ -61,10 +61,12 @@ export class DashboardService {
       prevStart.setDate(prevStart.getDate() - 7);
       return { start, end: now, prevStart, prevEnd: start };
     }
-    // month
+    // month — so cùng kỳ MTD: cùng thời lượng đã trôi qua của tháng trước
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
     const prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    return { start, end: now, prevStart, prevEnd: start };
+    const elapsed = now.getTime() - start.getTime();
+    const prevEnd = new Date(prevStart.getTime() + elapsed);
+    return { start, end: now, prevStart, prevEnd };
   }
 
   /** where clause chung cho Order, có lọc branch nếu truyền. */
@@ -932,6 +934,54 @@ export class DashboardService {
             ? 'out'
             : 'low',
     }));
+  }
+
+  /**
+   * Đếm tổng thật số bản ghi mỗi tab worklist (badge). Dùng count() — KHÔNG
+   * giới hạn take như getTasks — để badge chính xác ở mọi quy mô.
+   * Badge là tổng của tab (bỏ qua filter trạng thái), khớp điều kiện where
+   * mặc định của từng nhánh trong getTasks.
+   */
+  async getTaskCounts(branchId?: number) {
+    const [orders, debt, cod, stockRows] = await Promise.all([
+      this.prisma.order.count({
+        where: {
+          orderStatus: { in: ['pending', 'confirmed', 'partially_invoiced'] },
+          ...(branchId ? { branchId } : {}),
+        },
+      }),
+      this.prisma.invoice.count({
+        where: {
+          debtAmount: { gt: 0 },
+          status: { notIn: [2] },
+          customer: { is: { isActive: true } },
+          ...(branchId ? { branchId } : {}),
+        },
+      }),
+      this.prisma.invoice.count({
+        where: {
+          usingCod: true,
+          status: { notIn: [1, 2, 7] },
+          ...(branchId ? { branchId } : {}),
+        },
+      }),
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*)::bigint AS count
+        FROM inventories i
+        INNER JOIN products p ON p.id = i."productId"
+        INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
+        WHERE p."isActive" = true
+          AND i."onHand" <= i."minQuality"
+          ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+      `,
+    ]);
+
+    return {
+      orders,
+      debt,
+      cod,
+      stock: Number(stockRows[0]?.count || 0),
+    };
   }
 
   /** Danh sách giá trị nhóm hàng (parent/middle/child) để đổ vào dropdown lọc. */
