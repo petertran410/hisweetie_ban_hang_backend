@@ -538,7 +538,9 @@ export class DashboardService {
       : Prisma.empty;
 
     const trunc =
-      range === 'today' || range === 'yesterday' ? 'hour' : range === 'week' ? 'day' : 'week';
+      range === 'today' || range === 'yesterday'
+        ? 'hour'
+        : 'day'; // week & month đều gom theo ngày
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -563,11 +565,15 @@ export class DashboardService {
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today' || range === 'yesterday') return String(dt.getHours()).padStart(2, '0');
+      if (range === 'today' || range === 'yesterday')
+        return String(dt.getHours()).padStart(2, '0');
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
-      return `Tuần ${Math.ceil(dt.getDate() / 7)}`;
+      // month → theo ngày: dd/MM
+      return `${String(dt.getDate()).padStart(2, '0')}/${String(
+        dt.getMonth() + 1,
+      ).padStart(2, '0')}`;
     };
 
     return rows.map((r) => {

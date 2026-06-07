@@ -72,18 +72,6 @@ export class SepayService {
     const code = match[0].toUpperCase();
     const isInvoice = code.startsWith('HD');
 
-    // 4. Resolve bank account từ accountNumber (để gắn vào payment)
-    const bankAccount = await this.prisma.bankAccount.findFirst({
-      where: { accountNumber: payload.accountNumber },
-    });
-    const accountId = bankAccount?.id;
-
-    if (!bankAccount) {
-      this.logger.warn(
-        `Sepay webhook: no BankAccount matching accountNumber "${payload.accountNumber}" (tx ${sepayTxId})`,
-      );
-    }
-
     // 5. System user (cho field createdBy + audit log)
     const userId = Number(
       this.configService.get<string>('SEPAY_WEBHOOK_USER_ID') || 1,
@@ -95,6 +83,7 @@ export class SepayService {
     if (isInvoice) {
       const invoice = await this.prisma.invoice.findUnique({
         where: { code },
+        select: { id: true, soldById: true },
       });
       if (!invoice) {
         this.logger.warn(
@@ -103,11 +92,17 @@ export class SepayService {
         return { success: true, message: `Invoice ${code} not found` };
       }
 
+      const accountId = await this.resolveAccountId(
+        invoice.soldById,
+        payload.accountNumber,
+        sepayTxId,
+      );
+
       const result = await this.invoicePaymentsService.create(
         {
           invoiceId: invoice.id,
           amount: payload.transferAmount,
-          paymentMethod: 'bank_transfer',
+          paymentMethod: 'transfer',
           accountId,
           sepayTransactionId: sepayTxId,
           notes: `Sepay tự động: ${content}`,
@@ -125,6 +120,7 @@ export class SepayService {
     // Order branch
     const order = await this.prisma.order.findUnique({
       where: { code },
+      select: { id: true, soldById: true },
     });
     if (!order) {
       this.logger.warn(
@@ -133,11 +129,17 @@ export class SepayService {
       return { success: true, message: `Order ${code} not found` };
     }
 
+    const accountId = await this.resolveAccountId(
+      order.soldById,
+      payload.accountNumber,
+      sepayTxId,
+    );
+
     const result = await this.orderPaymentsService.create(
       {
         orderId: order.id,
         amount: payload.transferAmount,
-        paymentMethod: 'bank_transfer',
+        paymentMethod: 'transfer',
         accountId,
         sepayTransactionId: sepayTxId,
         description: `Sepay tự động: ${content}`,
@@ -150,5 +152,39 @@ export class SepayService {
       message: 'Order payment created',
       paymentId: (result as any).payment?.id,
     };
+  }
+
+  /**
+   * Resolve accountId cho phiếu thu QR.
+   * Ưu tiên tài khoản ngân hàng đã gán cho sale (soldById) — đây là tài khoản
+   * dùng để sinh QR in trên phiếu, nên phiếu thu sẽ luôn khớp với QR.
+   * Fallback: match theo số tài khoản thực nhận (payload.accountNumber).
+   */
+  private async resolveAccountId(
+    soldById: number | null | undefined,
+    accountNumber: string,
+    sepayTxId: string,
+  ): Promise<number | undefined> {
+    if (soldById) {
+      const mapping = await this.prisma.userBankAccount.findUnique({
+        where: { userId: soldById },
+      });
+      if (mapping?.bankAccountId) {
+        return mapping.bankAccountId;
+      }
+    }
+
+    // Fallback: match theo số tài khoản thực nhận
+    const bankAccount = await this.prisma.bankAccount.findFirst({
+      where: { accountNumber },
+    });
+
+    if (!bankAccount) {
+      this.logger.warn(
+        `Sepay webhook: no account resolved (sale ${soldById ?? 'none'}, accountNumber "${accountNumber}") (tx ${sepayTxId})`,
+      );
+    }
+
+    return bankAccount?.id;
   }
 }
