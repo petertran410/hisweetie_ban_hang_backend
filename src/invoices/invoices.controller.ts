@@ -85,6 +85,28 @@ export class InvoicesController {
     });
   }
 
+  @Get('delivery-overview')
+  @RequireAnyPermission('packing_slips:view', 'invoices:view')
+  @ApiOperation({
+    summary:
+      'Tổng quan giao hàng trong ngày (3 ô thống kê + danh sách đơn chưa giao)',
+  })
+  findDeliveryOverview(
+    @Query('branchId') branchId?: string,
+    @Query('date') date?: string,
+    @Query('search') search?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('currentItem') currentItem?: string,
+  ) {
+    return this.invoicesService.findDeliveryOverview({
+      branchId: branchId ? +branchId : undefined,
+      date,
+      search,
+      pageSize: pageSize ? +pageSize : 20,
+      currentItem: currentItem ? +currentItem : 0,
+    });
+  }
+
   @Get('export-detail/columns')
   @RequirePermissions('invoices:view')
   @ApiOperation({ summary: 'Lấy catalog cột export chi tiết' })

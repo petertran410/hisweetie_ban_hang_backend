@@ -91,6 +91,18 @@ class CreateInvoiceDeliveryDto {
   noteForDriver?: string;
 }
 
+class CreateInvoicePaymentItemDto {
+  @IsString()
+  method: string;
+
+  @IsNumber()
+  amount: number;
+
+  @IsOptional()
+  @IsInt()
+  accountId?: number;
+}
+
 export class CreateInvoiceDto {
   @IsOptional()
   @IsInt()
@@ -135,6 +147,12 @@ export class CreateInvoiceDto {
   @IsOptional()
   @IsNumber()
   paidAmount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => CreateInvoicePaymentItemDto)
+  payments?: CreateInvoicePaymentItemDto[];
 
   @IsOptional()
   @IsInt()

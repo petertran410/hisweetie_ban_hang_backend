@@ -136,7 +136,11 @@ export class InvoicesService {
 
     if (customerIds && customerIds.length > 0) {
       where.customerId = where.customerId?.in
-        ? { in: where.customerId.in.filter((id: number) => customerIds.includes(id)) }
+        ? {
+            in: where.customerId.in.filter((id: number) =>
+              customerIds.includes(id),
+            ),
+          }
         : { in: customerIds };
     }
 
@@ -924,11 +928,9 @@ export class InvoicesService {
         });
 
         if (paidAmount > 0) {
-          const existingPayments = await tx.invoicePayment.findMany({
-            where: { invoiceId: invoice.id },
-          });
-          const paymentSequence = existingPayments.length + 1;
-          const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+          if (!dto.branchId) {
+            throw new Error('Vui lòng chọn chi nhánh');
+          }
 
           const paymentCustomer = dto.customerId
             ? await tx.customer.findUnique({
@@ -937,32 +939,50 @@ export class InvoicesService {
               })
             : null;
 
-          await tx.invoicePayment.create({
-            data: {
-              code: paymentCode,
-              invoiceId: invoice.id,
-              status: 1,
-              statusValue: 'Paid',
-              amount: paidAmount,
-              paymentDate: new Date(),
-              paymentMethod: 'cash',
-              description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
-            },
-          });
+          // Tách thành từng phương thức thanh toán. Nếu FE không gửi mảng
+          // payments (data cũ) thì fallback về 1 phiếu thu tiền mặt.
+          const paymentItems =
+            dto.payments && dto.payments.length > 0
+              ? dto.payments
+              : [{ method: 'cash', amount: paidAmount, accountId: undefined }];
 
-          if (paidAmount > 0) {
-            if (!dto.branchId) {
-              throw new Error('Vui lòng chọn chi nhánh');
-            }
+          const existingPayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.id },
+          });
+          let paymentSequence = existingPayments.length;
+          let cumulativePaid = 0;
+
+          for (const item of paymentItems) {
+            paymentSequence += 1;
+            const paymentCode = `TT${invoice.code}-${paymentSequence}`;
+            const method = item.method || 'cash';
+
+            await tx.invoicePayment.create({
+              data: {
+                code: paymentCode,
+                invoiceId: invoice.id,
+                status: 1,
+                statusValue: 'Paid',
+                amount: item.amount,
+                paymentDate: new Date(),
+                paymentMethod: method,
+                accountId: item.accountId,
+                description: `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
+              },
+            });
+
+            cumulativePaid += Number(item.amount);
 
             await tx.cashFlow.create({
               data: {
                 code: paymentCode,
                 branchId: dto.branchId,
+                cashFlowGroupId: 3,
                 isReceipt: true,
-                amount: paidAmount,
+                amount: item.amount,
                 transDate: new Date(),
-                method: 'cash',
+                method,
+                accountId: item.accountId,
                 partnerType: 'C',
                 partnerId: invoice.customerId,
                 partnerName: paymentCustomer?.name,
@@ -972,7 +992,7 @@ export class InvoicesService {
                 createdBy: userId,
                 usedForFinancialReporting: 1,
                 customerDebtSnapshot:
-                  currentCustomerDebt + grandTotal - paidAmount,
+                  currentCustomerDebt + grandTotal - cumulativePaid,
               },
             });
           }
@@ -2697,6 +2717,97 @@ export class InvoicesService {
     return { data, total: data.length, page: 1, limit: take };
   }
 
+  /**
+   * Tổng quan giao hàng trong NGÀY cho trang báo đơn:
+   *  - stats: { total, delivered, pending } theo ngày + chi nhánh
+   *  - data : danh sách hóa đơn CHƯA giao (có phân trang) để render bảng
+   *
+   * Định nghĩa trạng thái:
+   *  - Giao thành công = DELIVERED(7) hoặc COMPLETED(1)
+   *  - Chưa giao       = PROCESSING(3), PACKED(5), LOADING(6), FAILED_DELIVERY(4)
+   *  - Tổng đơn        = mọi hóa đơn (trừ CANCELLED(2)) tạo trong ngày
+   */
+  async findDeliveryOverview(query: {
+    branchId?: number;
+    date?: string;
+    search?: string;
+    pageSize?: number;
+    currentItem?: number;
+  }) {
+    const { branchId, date, search, pageSize = 20, currentItem = 0 } = query;
+    const take = Math.min(Math.max(pageSize, 1), 100);
+
+    // Khoảng [00:00, 23:59:59.999] của ngày được chọn (mặc định hôm nay)
+    const base = date ? new Date(date) : new Date();
+    const dayStart = new Date(base);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(base);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    const DELIVERED_STATUSES = [
+      INVOICE_STATUS.DELIVERED,
+      INVOICE_STATUS.COMPLETED,
+    ];
+    const PENDING_STATUSES = [
+      INVOICE_STATUS.PROCESSING,
+      INVOICE_STATUS.PACKED,
+      INVOICE_STATUS.LOADING,
+      INVOICE_STATUS.FAILED_DELIVERY,
+    ];
+
+    const baseWhere: any = {
+      createdAt: { gte: dayStart, lte: dayEnd },
+      status: { not: INVOICE_STATUS.CANCELLED },
+    };
+    if (branchId) baseWhere.branchId = branchId;
+
+    // Filter search cho danh sách (mã hóa đơn hoặc tên khách)
+    const listWhere: any = {
+      ...baseWhere,
+      status: { in: PENDING_STATUSES },
+    };
+    const keyword = search?.trim();
+    if (keyword) {
+      const matchedIds = await searchCustomerIds(this.prisma, keyword);
+      listWhere.OR = [
+        { code: { contains: keyword } },
+        { customerId: { in: matchedIds.length > 0 ? matchedIds : [-1] } },
+      ];
+    }
+
+    const [total, delivered, pending, listTotal, data] = await Promise.all([
+      this.prisma.invoice.count({ where: baseWhere }),
+      this.prisma.invoice.count({
+        where: { ...baseWhere, status: { in: DELIVERED_STATUSES } },
+      }),
+      this.prisma.invoice.count({
+        where: { ...baseWhere, status: { in: PENDING_STATUSES } },
+      }),
+      this.prisma.invoice.count({ where: listWhere }),
+      this.prisma.invoice.findMany({
+        where: listWhere,
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          statusValue: true,
+          grandTotal: true,
+          createdAt: true,
+          customer: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip: currentItem,
+        take,
+      }),
+    ]);
+
+    return {
+      stats: { total, delivered, pending },
+      data,
+      total: listTotal,
+    };
+  }
+
   private buildProductChangesLog(
     oldDetails: any[],
     newItems: any[],
@@ -3062,7 +3173,11 @@ export class InvoicesService {
 
     if (customerIds?.length) {
       where.customerId = where.customerId?.in
-        ? { in: where.customerId.in.filter((id: number) => customerIds.includes(id)) }
+        ? {
+            in: where.customerId.in.filter((id: number) =>
+              customerIds.includes(id),
+            ),
+          }
         : { in: customerIds };
     }
     if (branchIds?.length) {
@@ -3409,7 +3524,7 @@ export class InvoicesService {
       for (const inv of batch) {
         const addr = (inv.customer as any)?.addresses?.[0];
 
-        const payMap = { cash: 0, card: 0, wallet: 0, bank_transfer: 0 };
+        const payMap = { cash: 0, card: 0, wallet: 0, Transfer: 0 };
         for (const p of inv.payments ?? []) {
           const m = p.paymentMethod ?? 'cash';
           if (m in payMap) payMap[m as keyof typeof payMap] += Number(p.amount);
@@ -3457,7 +3572,7 @@ export class InvoicesService {
           cashPayment: payMap.cash,
           cardPayment: payMap.card,
           walletPayment: payMap.wallet,
-          bankTransferPayment: payMap.bank_transfer,
+          bankTransferPayment: payMap.Transfer,
           rewardPoint: '',
           voucherAmount: '',
           voucherCode: '',
