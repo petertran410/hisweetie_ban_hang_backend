@@ -92,8 +92,11 @@ export class InvoicesController {
       'Tổng quan giao hàng trong ngày (3 ô thống kê + danh sách đơn chưa giao)',
   })
   findDeliveryOverview(
+    @CurrentUser() user: any,
     @Query('branchId') branchId?: string,
     @Query('date') date?: string,
+    @Query('fromDate') fromDate?: string,
+    @Query('toDate') toDate?: string,
     @Query('search') search?: string,
     @Query('pageSize') pageSize?: string,
     @Query('currentItem') currentItem?: string,
@@ -101,9 +104,12 @@ export class InvoicesController {
     return this.invoicesService.findDeliveryOverview({
       branchId: branchId ? +branchId : undefined,
       date,
+      fromDate,
+      toDate,
       search,
       pageSize: pageSize ? +pageSize : 20,
       currentItem: currentItem ? +currentItem : 0,
+      currentUser: user,
     });
   }
 

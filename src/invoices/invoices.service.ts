@@ -2718,31 +2718,46 @@ export class InvoicesService {
   }
 
   /**
-   * Tổng quan giao hàng trong NGÀY cho trang báo đơn:
-   *  - stats: { total, delivered, pending } theo ngày + chi nhánh
+   * Tổng quan giao hàng cho trang báo đơn:
+   *  - stats: { total, delivered, pending } theo khoảng ngày + chi nhánh
    *  - data : danh sách hóa đơn CHƯA giao (có phân trang) để render bảng
    *
    * Định nghĩa trạng thái:
    *  - Giao thành công = DELIVERED(7) hoặc COMPLETED(1)
    *  - Chưa giao       = PROCESSING(3), PACKED(5), LOADING(6), FAILED_DELIVERY(4)
-   *  - Tổng đơn        = mọi hóa đơn (trừ CANCELLED(2)) tạo trong ngày
+   *  - Tổng đơn        = mọi hóa đơn (trừ CANCELLED(2)) trong khoảng
+   *
+   * Khoảng thời gian:
+   *  - Ưu tiên fromDate/toDate (lọc theo createdAt).
+   *  - Nếu không có, fallback về `date` (1 ngày), mặc định hôm nay.
    */
   async findDeliveryOverview(query: {
     branchId?: number;
     date?: string;
+    fromDate?: string;
+    toDate?: string;
     search?: string;
     pageSize?: number;
     currentItem?: number;
+    currentUser?: any;
   }) {
-    const { branchId, date, search, pageSize = 20, currentItem = 0 } = query;
+    const {
+      branchId,
+      date,
+      fromDate,
+      toDate,
+      search,
+      pageSize = 20,
+      currentItem = 0,
+      currentUser,
+    } = query;
     const take = Math.min(Math.max(pageSize, 1), 100);
 
-    // Khoảng [00:00, 23:59:59.999] của ngày được chọn (mặc định hôm nay)
-    const base = date ? new Date(date) : new Date();
-    const dayStart = new Date(base);
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(base);
-    dayEnd.setHours(23, 59, 59, 999);
+    // Xác định khoảng [start, end]. Ưu tiên fromDate/toDate, fallback `date`/hôm nay.
+    const rangeStart = new Date(fromDate || toDate || date || new Date());
+    rangeStart.setHours(0, 0, 0, 0);
+    const rangeEnd = new Date(toDate || fromDate || date || new Date());
+    rangeEnd.setHours(23, 59, 59, 999);
 
     const DELIVERED_STATUSES = [
       INVOICE_STATUS.DELIVERED,
@@ -2756,16 +2771,28 @@ export class InvoicesService {
     ];
 
     const baseWhere: any = {
-      createdAt: { gte: dayStart, lte: dayEnd },
+      createdAt: { gte: rangeStart, lte: rangeEnd },
       status: { not: INVOICE_STATUS.CANCELLED },
     };
     if (branchId) baseWhere.branchId = branchId;
 
-    // Filter search cho danh sách (mã hóa đơn hoặc tên khách)
+    // Danh sách hiển thị: CHỈ hóa đơn đang LOADING (lấy hàng) — để báo giao hàng.
+    // (stats vẫn tính theo PENDING_STATUSES đầy đủ ở dưới)
     const listWhere: any = {
       ...baseWhere,
-      status: { in: PENDING_STATUSES },
+      status: INVOICE_STATUS.LOADING,
     };
+
+    // Quyền: nếu bật canViewOnlyOwnLoadingInvoices → chỉ thấy hóa đơn nằm trong
+    // phiếu loading mà chính user này là người loading (loadingById).
+    if (currentUser?.canViewOnlyOwnLoadingInvoices && currentUser?.id) {
+      listWhere.packingLoadings = {
+        some: {
+          packingLoading: { loadingById: currentUser.id },
+        },
+      };
+    }
+
     const keyword = search?.trim();
     if (keyword) {
       const matchedIds = await searchCustomerIds(this.prisma, keyword);
@@ -2791,6 +2818,7 @@ export class InvoicesService {
           code: true,
           status: true,
           statusValue: true,
+          branchId: true,
           grandTotal: true,
           createdAt: true,
           customer: { select: { id: true, name: true } },

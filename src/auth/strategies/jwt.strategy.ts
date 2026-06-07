@@ -61,6 +61,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         branchId: true,
         canViewOtherStaffData: true,
         canViewOnlyOwnPackings: true,
+        canViewOnlyOwnLoadingInvoices: true,
         userBranches: { select: { branchId: true } },
         userRoles: {
           select: {
@@ -130,6 +131,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       branchIds,
       canViewOtherStaffData: fullUser.canViewOtherStaffData,
       canViewOnlyOwnPackings: fullUser.canViewOnlyOwnPackings,
+      canViewOnlyOwnLoadingInvoices: fullUser.canViewOnlyOwnLoadingInvoices,
     };
 
     // 5. Cache 60s

@@ -25,6 +25,7 @@ model User {
 
   canViewOtherStaffData  Boolean @default(false) @map("can_view_other_staff_data")
   canViewOnlyOwnPackings Boolean @default(false) @map("can_view_only_own_packings")
+  canViewOnlyOwnLoadingInvoices Boolean @default(false) @map("can_view_only_own_loading_invoices")
   permissionVersion      Int     @default(1) @map("permission_version")
 
   branch                         Branch?                @relation(fields: [branchId], references: [id])
@@ -1246,6 +1247,7 @@ model OrderPayment {
   bankAccount        String?
   description        String?
   sepayTransactionId String?  @unique @map("sepay_transaction_id")
+  sepayReferenceCode String?  @map("sepay_reference_code")
   status             Int      @default(1)
   statusValue        String?
   createdBy          Int
@@ -1410,6 +1412,7 @@ model InvoicePayment {
   description        String?
   cashFlowId         Int?
   sepayTransactionId String?  @unique @map("sepay_transaction_id")
+  sepayReferenceCode String?  @map("sepay_reference_code")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -1751,6 +1754,7 @@ model CashFlow {
   collectorUserId           Int?
   customerDebtSnapshot      Decimal?
   supplierDebtSnapshot      Decimal?
+  sepayReferenceCode        String?   @map("sepay_reference_code")
   createdAt                 DateTime  @default(now())
   updatedAt                 DateTime  @updatedAt
 
