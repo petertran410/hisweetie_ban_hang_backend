@@ -239,6 +239,8 @@ export class OrdersService {
           items: { include: { product: true } },
           delivery: true,
           customer: true,
+          soldBy: { select: { id: true, name: true } },
+          branch: { select: { id: true, name: true } },
         },
       });
 
@@ -447,8 +449,9 @@ export class OrdersService {
           discount: Number(existingOrder.discount || 0),
           discountRatio: Number(existingOrder.discountRatio || 0),
           description: existingOrder.description,
-          customerId: existingOrder.customerId,
-          branchId: existingOrder.branchId,
+          customerName: existingOrder.customer?.name ?? null,
+          soldByName: existingOrder.soldBy?.name ?? null,
+          branchName: existingOrder.branch?.name ?? null,
         },
         {
           statusValue: updatedOrderBeforeCalc.statusValue,
@@ -456,8 +459,9 @@ export class OrdersService {
           discount: Number(updatedOrderBeforeCalc.discount || 0),
           discountRatio: Number(updatedOrderBeforeCalc.discountRatio || 0),
           description: updatedOrderBeforeCalc.description,
-          customerId: updatedOrderBeforeCalc.customerId,
-          branchId: updatedOrderBeforeCalc.branchId,
+          customerName: updatedOrderBeforeCalc.customer?.name ?? null,
+          soldByName: updatedOrderBeforeCalc.soldBy?.name ?? null,
+          branchName: updatedOrderBeforeCalc.branch?.name ?? null,
         },
       );
 
@@ -1278,8 +1282,22 @@ export class OrdersService {
       customer: order.customer
         ? { code: order.customer.code, name: order.customer.name }
         : null,
-      createdBy: order.creator ? { name: order.creator } : null,
-      soldBy: order.soldBy ? { name: order.soldBy } : null,
+      createdBy: order.creator
+        ? {
+            name:
+              typeof order.creator === 'object'
+                ? order.creator.name
+                : order.creator,
+          }
+        : null,
+      soldBy: order.soldBy
+        ? {
+            name:
+              typeof order.soldBy === 'object'
+                ? order.soldBy.name
+                : order.soldBy,
+          }
+        : null,
       branch: order.branch ? { name: order.branch.name } : null,
       items: (order.items || []).map((i: any) => ({
         productId: i.productId,

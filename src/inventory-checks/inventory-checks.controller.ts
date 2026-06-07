@@ -43,7 +43,7 @@ export class InventoryChecksController {
 
   @Put(':id/cancel')
   @RequirePermissions('inventory_checks:update')
-  cancel(@Param('id') id: string) {
-    return this.service.cancel(+id);
+  cancel(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.cancel(+id, user?.id);
   }
 }

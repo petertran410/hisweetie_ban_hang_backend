@@ -74,6 +74,7 @@ export class AuditLogsService {
     actionCode?: string;
     category?: string;
     severity?: string;
+    search?: string;
     startDate?: Date;
     endDate?: Date;
     page?: number;
@@ -86,6 +87,7 @@ export class AuditLogsService {
       actionCode,
       category,
       severity,
+      search,
       startDate,
       endDate,
       page = 1,
@@ -100,6 +102,15 @@ export class AuditLogsService {
     if (actionCode) where.actionCode = actionCode;
     if (category) where.category = category;
     if (severity) where.severity = severity;
+
+    if (search && search.trim()) {
+      const q = search.trim();
+      where.OR = [
+        { message: { contains: q, mode: 'insensitive' } },
+        { userName: { contains: q, mode: 'insensitive' } },
+        { entityCode: { contains: q, mode: 'insensitive' } },
+      ];
+    }
 
     if (startDate || endDate) {
       where.createdAt = {};

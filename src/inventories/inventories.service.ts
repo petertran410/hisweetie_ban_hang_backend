@@ -1,9 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class InventoriesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
 
   async getInventoryByBranch(branchId: number, productIds?: number[]) {
     const where: any = { branchId };
@@ -194,6 +203,7 @@ export class InventoriesService {
     productId: number,
     branchId: number,
     data: { damagedQuantity?: number; nearExpiryQuantity?: number },
+    userId?: number,
   ) {
     const inventory = await this.prisma.inventory.findUnique({
       where: {
@@ -219,7 +229,10 @@ export class InventoriesService {
       );
     }
 
-    return this.prisma.inventory.update({
+    const oldDamaged = Number(inventory.damagedQuantity);
+    const oldNearExpiry = Number(inventory.nearExpiryQuantity);
+
+    const updated = await this.prisma.inventory.update({
       where: {
         productId_branchId: { productId, branchId },
       },
@@ -232,5 +245,72 @@ export class InventoriesService {
         }),
       },
     });
+
+    // Audit log
+    const [product, branch, actor] = await Promise.all([
+      this.prisma.product.findUnique({
+        where: { id: productId },
+        select: { code: true, name: true },
+      }),
+      this.prisma.branch.findUnique({
+        where: { id: branchId },
+        select: { name: true },
+      }),
+      userId
+        ? this.prisma.user.findUnique({
+            where: { id: userId },
+            select: { name: true, email: true },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const changes: any[] = [];
+    if (oldDamaged !== newDamaged) {
+      changes.push({
+        field: 'damagedQuantity',
+        label: 'Hàng loại B',
+        from: oldDamaged,
+        to: newDamaged,
+        type: 'field_changed',
+      });
+    }
+    if (oldNearExpiry !== newNearExpiry) {
+      changes.push({
+        field: 'nearExpiryQuantity',
+        label: 'Hàng cận date',
+        from: oldNearExpiry,
+        to: newNearExpiry,
+        type: 'field_changed',
+      });
+    }
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'INVENTORY_CONDITION_UPDATE',
+      entityType: 'inventory_condition',
+      entityId: `${productId}-${branchId}`,
+      entityCode: product?.code,
+      category: getCategoryFromActionCode('INVENTORY_CONDITION_UPDATE'),
+      severity: getSeverityFromActionCode('INVENTORY_CONDITION_UPDATE'),
+      snapshot: {
+        productCode: product?.code,
+        productName: product?.name,
+        branchName: branch?.name,
+        onHand,
+        damagedQuantity: newDamaged,
+        nearExpiryQuantity: newNearExpiry,
+      },
+      changes: changes.length > 0 ? changes : null,
+      message: renderAuditMessage('INVENTORY_CONDITION_UPDATE', {
+        productName: product?.name || `#${productId}`,
+        branchName: branch?.name || `#${branchId}`,
+      }),
+      messageTemplate: 'INVENTORY_CONDITION_UPDATE',
+      userId: userId || 1,
+      userName: actor?.name || actor?.email || 'System',
+      branchId,
+    });
+
+    return updated;
   }
 }

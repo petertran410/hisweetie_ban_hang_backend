@@ -2781,7 +2781,10 @@ export class InvoicesService {
     if (currentUser?.canViewOnlyOwnLoadingInvoices && currentUser?.id) {
       listWhere.packingLoadings = {
         some: {
-          packingLoading: { loadingById: currentUser.id },
+          packingLoading: {
+            loadingById: currentUser.id,
+            cancelledAt: null,
+          },
         },
       };
     }
@@ -3007,7 +3010,14 @@ export class InvoicesService {
         ? { code: invoice.customer.code, name: invoice.customer.name }
         : null,
       order: order,
-      soldBy: soldByName,
+      soldBy:
+        soldByName != null
+          ? typeof soldByName === 'object'
+            ? { name: soldByName.name }
+            : { name: soldByName }
+          : invoice.soldBy
+            ? { name: invoice.soldBy.name }
+            : null,
       branch: invoice.branch ? { name: invoice.branch.name } : null,
       items: (invoice.details || []).map((i: any) => ({
         productId: i.productId,

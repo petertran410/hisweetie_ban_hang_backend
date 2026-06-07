@@ -6,10 +6,37 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateInventoryCheckDto } from './dto/create-inventory-check.dto';
 import { InventoryCheckQueryDto } from './dto/inventory-check-query.dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class InventoryChecksService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
+
+  private buildSnapshot(check: any) {
+    return {
+      code: check.code,
+      branchName: check.branchName || check.branch?.name || null,
+      checkDate: check.checkDate,
+      status: check.status === 2 ? 'Đã hủy' : 'Hoàn thành',
+      note: check.note,
+      createdByName: check.createdByName || check.creator?.name || null,
+      details: (check.details || []).map((d: any) => ({
+        productCode: d.productCode || d.product?.code,
+        productName: d.productName || d.product?.name,
+        currentOnHand: Number(d.currentOnHand ?? 0),
+        damagedQuantity: Number(d.damagedQuantity ?? 0),
+        nearExpiryQuantity: Number(d.nearExpiryQuantity ?? 0),
+      })),
+    };
+  }
 
   async findAll(query: InventoryCheckQueryDto) {
     const page = query.page ? +query.page : 1;
@@ -147,7 +174,7 @@ export class InventoryChecksService {
 
     const code = await this.generateCode();
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       const check = await tx.inventoryCheck.create({
         data: {
           code,
@@ -205,9 +232,33 @@ export class InventoryChecksService {
         },
       });
     });
+
+    if (created) {
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'INVENTORY_CHECK_CREATE',
+        entityType: 'inventory_checks',
+        entityId: created.id.toString(),
+        entityCode: created.code,
+        category: getCategoryFromActionCode('INVENTORY_CHECK_CREATE'),
+        severity: getSeverityFromActionCode('INVENTORY_CHECK_CREATE'),
+        snapshot: this.buildSnapshot(created),
+        message: renderAuditMessage('INVENTORY_CHECK_CREATE', {
+          checkCode: created.code,
+          branchName: branch.name,
+          productCount: dto.items.length,
+        }),
+        messageTemplate: 'INVENTORY_CHECK_CREATE',
+        userId: user.id,
+        userName: user.name,
+        branchId: branch.id,
+      });
+    }
+
+    return created;
   }
 
-  async cancel(id: number) {
+  async cancel(id: number, userId?: number) {
     const check = await this.prisma.inventoryCheck.findUnique({
       where: { id },
       include: { details: true },
@@ -218,7 +269,7 @@ export class InventoryChecksService {
       throw new BadRequestException('Phiếu kiểm đã bị hủy trước đó');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const cancelled = await this.prisma.$transaction(async (tx) => {
       // Validate + rollback theo delta
       for (const detail of check.details) {
         const inventory = await tx.inventory.findUnique({
@@ -283,6 +334,33 @@ export class InventoryChecksService {
         },
       });
     });
+
+    const actor = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, name: true, email: true },
+        })
+      : null;
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'INVENTORY_CHECK_CANCEL',
+      entityType: 'inventory_checks',
+      entityId: id.toString(),
+      entityCode: cancelled.code,
+      category: getCategoryFromActionCode('INVENTORY_CHECK_CANCEL'),
+      severity: getSeverityFromActionCode('INVENTORY_CHECK_CANCEL'),
+      snapshot: this.buildSnapshot(cancelled),
+      message: renderAuditMessage('INVENTORY_CHECK_CANCEL', {
+        checkCode: cancelled.code,
+      }),
+      messageTemplate: 'INVENTORY_CHECK_CANCEL',
+      userId: userId || check.createdById || 1,
+      userName: actor?.name || actor?.email || check.createdByName || 'System',
+      branchId: check.branchId,
+    });
+
+    return cancelled;
   }
 
   private async generateCode(): Promise<string> {

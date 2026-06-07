@@ -132,7 +132,6 @@ export class AllPackingService {
     if (ownerFilterId) {
       where.createdBy = ownerFilterId;
     }
-
     if (search) {
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },

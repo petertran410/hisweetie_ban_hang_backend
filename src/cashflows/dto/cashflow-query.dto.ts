@@ -37,6 +37,15 @@ export class CashFlowQueryDto {
   accountId?: number;
 
   @IsOptional()
+  @IsArray()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    const arr = Array.isArray(value) ? value : String(value).split(',');
+    return arr.map(Number);
+  })
+  accountIds?: number[];
+
+  @IsOptional()
   @IsString()
   partnerType?: string;
 
