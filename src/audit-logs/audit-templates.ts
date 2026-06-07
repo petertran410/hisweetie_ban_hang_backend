@@ -405,6 +405,73 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  ROLE_CREATE: {
+    template: 'Tạo vai trò {roleName}',
+    category: 'setting',
+    severity: 'warning',
+  },
+  ROLE_UPDATE: {
+    template: 'Cập nhật vai trò {roleName}',
+    category: 'setting',
+    severity: 'warning',
+  },
+  ROLE_DELETE: {
+    template: 'Xóa vai trò {roleName}',
+    category: 'setting',
+    severity: 'critical',
+  },
+  ROLE_ASSIGN_PERMISSIONS: {
+    template: 'Phân quyền vai trò {roleName}: {permissionCount} quyền',
+    category: 'setting',
+    severity: 'warning',
+  },
+  ROLE_ASSIGN_BRANCH_PERMISSIONS: {
+    template:
+      'Phân quyền vai trò {roleName} tại chi nhánh {branchName}: {permissionCount} quyền',
+    category: 'setting',
+    severity: 'warning',
+  },
+
+  INVENTORY_CHECK_CREATE: {
+    template:
+      'Tạo phiếu kiểm loại B {checkCode} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  INVENTORY_CHECK_CANCEL: {
+    template: 'Hủy phiếu kiểm loại B {checkCode}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+
+  STOCK_AUDIT_CREATE: {
+    template:
+      'Tạo phiếu kiểm kho {auditCode} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  STOCK_AUDIT_UPDATE: {
+    template: 'Cập nhật phiếu kiểm kho {auditCode}',
+    category: 'inventory',
+    severity: 'info',
+  },
+  STOCK_AUDIT_COMPLETE: {
+    template: 'Hoàn thành phiếu kiểm kho {auditCode}, lệch tổng: {totalDiff}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+  STOCK_AUDIT_CANCEL: {
+    template: 'Hủy phiếu kiểm kho {auditCode}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+
+  INVENTORY_CONDITION_UPDATE: {
+    template: 'Cập nhật tình trạng tồn {productName} tại {branchName}',
+    category: 'inventory',
+    severity: 'info',
+  },
+
   RETURN_ORDER_CREATE: {
     template: 'Tạo phiếu trả hàng {returnOrderCode} từ hóa đơn {invoiceCodes}',
     category: 'return_order',

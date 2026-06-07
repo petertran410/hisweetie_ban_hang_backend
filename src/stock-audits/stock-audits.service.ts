@@ -8,11 +8,23 @@ import { CreateStockAuditDto } from './dto/create-stock-audit.dto';
 import { UpdateStockAuditDto } from './dto/update-stock-audit.dto';
 import { StockAuditQueryDto } from './dto/stock-audit-query.dto';
 import { recalcStockAuditChain } from '../common/inventory-onhand.util';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 const STOCK_AUDIT_STATUS = {
   DRAFT: 1,
   COMPLETED: 2,
   CANCELLED: 3,
+};
+
+const STOCK_AUDIT_STATUS_LABEL: Record<number, string> = {
+  1: 'Phiếu tạm',
+  2: 'Hoàn thành',
+  3: 'Đã hủy',
 };
 
 const INCLUDE_FULL = {
@@ -30,7 +42,43 @@ const INCLUDE_FULL = {
 
 @Injectable()
 export class StockAuditsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogsService: AuditLogsService,
+  ) {}
+
+  private buildSnapshot(audit: any) {
+    const details = audit.details || [];
+    const totalDiff = details.reduce(
+      (s: number, d: any) => s + Number(d.difference ?? 0),
+      0,
+    );
+    return {
+      code: audit.code,
+      branchName: audit.branchName || audit.branch?.name || null,
+      checkDate: audit.checkDate,
+      status: STOCK_AUDIT_STATUS_LABEL[audit.status] || audit.status,
+      note: audit.note,
+      createdByName: audit.createdByName || audit.creator?.name || null,
+      totalDiff,
+      details: details.map((d: any) => ({
+        productCode: d.productCode || d.product?.code,
+        productName: d.productName || d.product?.name,
+        systemQuantity: Number(d.systemQuantity ?? 0),
+        actualQuantity: Number(d.actualQuantity ?? 0),
+        difference: Number(d.difference ?? 0),
+      })),
+    };
+  }
+
+  private async auditUserName(userId?: number): Promise<string> {
+    if (!userId) return 'System';
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true },
+    });
+    return u?.name || u?.email || 'System';
+  }
 
   // ─── Lọc bỏ log thuộc các phiếu kiểm ĐÃ HỦY ────────────────────
   // Log STOCK_AUDIT/STOCK_AUDIT_CANCEL của phiếu có status = CANCELLED không
@@ -297,15 +345,37 @@ export class StockAuditsService {
         },
       });
 
-      return tx.stockAudit.findUnique({
+      const full = await tx.stockAudit.findUnique({
         where: { id: audit.id },
         include: INCLUDE_FULL,
       });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'STOCK_AUDIT_CREATE',
+        entityType: 'stock_audits',
+        entityId: audit.id.toString(),
+        entityCode: audit.code,
+        category: getCategoryFromActionCode('STOCK_AUDIT_CREATE'),
+        severity: getSeverityFromActionCode('STOCK_AUDIT_CREATE'),
+        snapshot: this.buildSnapshot(full),
+        message: renderAuditMessage('STOCK_AUDIT_CREATE', {
+          auditCode: audit.code,
+          branchName: branch.name,
+          productCount: dto.items.length,
+        }),
+        messageTemplate: 'STOCK_AUDIT_CREATE',
+        userId: user.id,
+        userName: user.name,
+        branchId: branch.id,
+      });
+
+      return full;
     });
   }
 
   // ─── Update (chỉ DRAFT) ────────────────────────────────────────
-  async update(id: number, dto: UpdateStockAuditDto) {
+  async update(id: number, dto: UpdateStockAuditDto, userId?: number) {
     const audit = await this.prisma.stockAudit.findUnique({
       where: { id },
       include: { details: true },
@@ -398,10 +468,30 @@ export class StockAuditsService {
         });
       }
 
-      return tx.stockAudit.findUnique({
+      const full = await tx.stockAudit.findUnique({
         where: { id },
         include: INCLUDE_FULL,
       });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'STOCK_AUDIT_UPDATE',
+        entityType: 'stock_audits',
+        entityId: id.toString(),
+        entityCode: audit.code,
+        category: getCategoryFromActionCode('STOCK_AUDIT_UPDATE'),
+        severity: getSeverityFromActionCode('STOCK_AUDIT_UPDATE'),
+        snapshot: this.buildSnapshot(full),
+        message: renderAuditMessage('STOCK_AUDIT_UPDATE', {
+          auditCode: audit.code,
+        }),
+        messageTemplate: 'STOCK_AUDIT_UPDATE',
+        userId: userId || audit.createdById || 1,
+        userName: await this.auditUserName(userId || audit.createdById),
+        branchId: audit.branchId,
+      });
+
+      return full;
     });
   }
 
@@ -501,15 +591,36 @@ export class StockAuditsService {
         },
       });
 
-      return tx.stockAudit.findUnique({
+      const full = await tx.stockAudit.findUnique({
         where: { id },
         include: INCLUDE_FULL,
       });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'STOCK_AUDIT_COMPLETE',
+        entityType: 'stock_audits',
+        entityId: id.toString(),
+        entityCode: audit.code,
+        category: getCategoryFromActionCode('STOCK_AUDIT_COMPLETE'),
+        severity: getSeverityFromActionCode('STOCK_AUDIT_COMPLETE'),
+        snapshot: this.buildSnapshot(full),
+        message: renderAuditMessage('STOCK_AUDIT_COMPLETE', {
+          auditCode: audit.code,
+          totalDiff: this.buildSnapshot(full).totalDiff,
+        }),
+        messageTemplate: 'STOCK_AUDIT_COMPLETE',
+        userId: userId || audit.createdById || 1,
+        userName: user?.name || (await this.auditUserName(userId)),
+        branchId: audit.branchId,
+      });
+
+      return full;
     });
   }
 
   // ─── Cancel (COMPLETED → CANCELLED) ────────────────────────────
-  async cancel(id: number) {
+  async cancel(id: number, userId?: number) {
     const audit = await this.prisma.stockAudit.findUnique({
       where: { id },
       include: { details: true },
@@ -564,10 +675,30 @@ export class StockAuditsService {
         }
       }
 
-      return tx.stockAudit.findUnique({
+      const full = await tx.stockAudit.findUnique({
         where: { id },
         include: INCLUDE_FULL,
       });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'STOCK_AUDIT_CANCEL',
+        entityType: 'stock_audits',
+        entityId: id.toString(),
+        entityCode: audit.code,
+        category: getCategoryFromActionCode('STOCK_AUDIT_CANCEL'),
+        severity: getSeverityFromActionCode('STOCK_AUDIT_CANCEL'),
+        snapshot: this.buildSnapshot(full),
+        message: renderAuditMessage('STOCK_AUDIT_CANCEL', {
+          auditCode: audit.code,
+        }),
+        messageTemplate: 'STOCK_AUDIT_CANCEL',
+        userId: userId || audit.createdById || 1,
+        userName: await this.auditUserName(userId || audit.createdById),
+        branchId: audit.branchId,
+      });
+
+      return full;
     });
   }
 }

@@ -2,13 +2,29 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRoleDto, UpdateRoleDto } from './dto';
 import { PermissionCacheService } from 'src/permission-cache/permission-cache.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  renderAuditMessage,
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class RolesService {
   constructor(
     private prisma: PrismaService,
     private permissionCache: PermissionCacheService,
+    private auditLogsService: AuditLogsService,
   ) {}
+
+  private async resolveUser(userId?: number) {
+    if (!userId) return { id: undefined, name: 'System' };
+    const u = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, email: true },
+    });
+    return { id: userId, name: u?.name || u?.email || 'System' };
+  }
 
   async findAll() {
     return this.prisma.role.findMany({
@@ -48,7 +64,7 @@ export class RolesService {
     return role;
   }
 
-  async create(dto: CreateRoleDto) {
+  async create(dto: CreateRoleDto, userId?: number) {
     const lastRole = await this.prisma.role.findFirst({
       orderBy: { id: 'desc' },
       select: { id: true },
@@ -72,10 +88,30 @@ export class RolesService {
       });
     }
 
+    const actor = await this.resolveUser(userId);
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'ROLE_CREATE',
+      entityType: 'roles',
+      entityId: role.id.toString(),
+      entityCode: role.name,
+      category: getCategoryFromActionCode('ROLE_CREATE'),
+      severity: getSeverityFromActionCode('ROLE_CREATE'),
+      snapshot: {
+        name: role.name,
+        description: role.description,
+        permissionCount: dto.permissionIds?.length || 0,
+      },
+      message: renderAuditMessage('ROLE_CREATE', { roleName: role.name }),
+      messageTemplate: 'ROLE_CREATE',
+      userId: actor.id || 1,
+      userName: actor.name,
+    });
+
     return this.findOne(role.id);
   }
 
-  async update(id: number, dto: UpdateRoleDto) {
+  async update(id: number, dto: UpdateRoleDto, userId?: number) {
     await this.findOne(id);
 
     const role = await this.prisma.role.update({
@@ -105,17 +141,64 @@ export class RolesService {
       await this.bumpUsersOfRole(id);
     }
 
+    const actor = await this.resolveUser(userId);
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'ROLE_UPDATE',
+      entityType: 'roles',
+      entityId: role.id.toString(),
+      entityCode: role.name,
+      category: getCategoryFromActionCode('ROLE_UPDATE'),
+      severity: getSeverityFromActionCode('ROLE_UPDATE'),
+      snapshot: {
+        name: role.name,
+        description: role.description,
+        permissionCount:
+          dto.permissionIds !== undefined ? dto.permissionIds.length : undefined,
+      },
+      message: renderAuditMessage('ROLE_UPDATE', { roleName: role.name }),
+      messageTemplate: 'ROLE_UPDATE',
+      userId: actor.id || 1,
+      userName: actor.name,
+    });
+
     return this.findOne(role.id);
   }
 
-  async remove(id: number) {
-    await this.findOne(id);
+  async remove(id: number, userId?: number) {
+    const existing = await this.findOne(id);
     await this.bumpUsersOfRole(id);
-    return this.prisma.role.delete({ where: { id } });
+    const deleted = await this.prisma.role.delete({ where: { id } });
+
+    const actor = await this.resolveUser(userId);
+    await this.auditLogsService.create({
+      actionType: 'DELETE',
+      actionCode: 'ROLE_DELETE',
+      entityType: 'roles',
+      entityId: id.toString(),
+      entityCode: existing.name,
+      category: getCategoryFromActionCode('ROLE_DELETE'),
+      severity: getSeverityFromActionCode('ROLE_DELETE'),
+      snapshot: {
+        name: existing.name,
+        description: existing.description,
+        permissionCount: existing.rolePermissions?.length || 0,
+      },
+      message: renderAuditMessage('ROLE_DELETE', { roleName: existing.name }),
+      messageTemplate: 'ROLE_DELETE',
+      userId: actor.id || 1,
+      userName: actor.name,
+    });
+
+    return deleted;
   }
 
-  async assignPermissions(id: number, permissionIds: number[]) {
-    await this.findOne(id);
+  async assignPermissions(
+    id: number,
+    permissionIds: number[],
+    userId?: number,
+  ) {
+    const existing = await this.findOne(id);
 
     await this.prisma.rolePermission.deleteMany({
       where: { roleId: id },
@@ -131,6 +214,28 @@ export class RolesService {
     }
 
     await this.bumpUsersOfRole(id);
+
+    const actor = await this.resolveUser(userId);
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'ROLE_ASSIGN_PERMISSIONS',
+      entityType: 'roles',
+      entityId: id.toString(),
+      entityCode: existing.name,
+      category: getCategoryFromActionCode('ROLE_ASSIGN_PERMISSIONS'),
+      severity: getSeverityFromActionCode('ROLE_ASSIGN_PERMISSIONS'),
+      snapshot: {
+        name: existing.name,
+        permissionCount: permissionIds.length,
+      },
+      message: renderAuditMessage('ROLE_ASSIGN_PERMISSIONS', {
+        roleName: existing.name,
+        permissionCount: permissionIds.length,
+      }),
+      messageTemplate: 'ROLE_ASSIGN_PERMISSIONS',
+      userId: actor.id || 1,
+      userName: actor.name,
+    });
 
     return this.findOne(id);
   }
@@ -165,6 +270,7 @@ export class RolesService {
     roleId: number,
     branchId: number,
     permissionIds: number[],
+    userId?: number,
   ): Promise<void> {
     await this.prisma.$transaction([
       this.prisma.roleBranchPermission.deleteMany({
@@ -186,5 +292,41 @@ export class RolesService {
     // Override permission per-branch thay đổi → bump version cho user
     // gán role này (ở mọi chi nhánh) để token cũ mất hiệu lực.
     await this.bumpUsersOfRole(roleId);
+
+    const [role, branch, actor] = await Promise.all([
+      this.prisma.role.findUnique({
+        where: { id: roleId },
+        select: { name: true },
+      }),
+      this.prisma.branch.findUnique({
+        where: { id: branchId },
+        select: { name: true },
+      }),
+      this.resolveUser(userId),
+    ]);
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'ROLE_ASSIGN_BRANCH_PERMISSIONS',
+      entityType: 'roles',
+      entityId: roleId.toString(),
+      entityCode: role?.name,
+      category: getCategoryFromActionCode('ROLE_ASSIGN_BRANCH_PERMISSIONS'),
+      severity: getSeverityFromActionCode('ROLE_ASSIGN_BRANCH_PERMISSIONS'),
+      snapshot: {
+        name: role?.name,
+        branchName: branch?.name,
+        permissionCount: permissionIds.length,
+      },
+      message: renderAuditMessage('ROLE_ASSIGN_BRANCH_PERMISSIONS', {
+        roleName: role?.name || `#${roleId}`,
+        branchName: branch?.name || `#${branchId}`,
+        permissionCount: permissionIds.length,
+      }),
+      messageTemplate: 'ROLE_ASSIGN_BRANCH_PERMISSIONS',
+      userId: actor.id || 1,
+      userName: actor.name,
+      branchId,
+    });
   }
 }

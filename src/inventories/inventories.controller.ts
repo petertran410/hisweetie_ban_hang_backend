@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { UpdateInventoryDto } from './dto';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @ApiTags('Inventories')
 @ApiBearerAuth()
@@ -55,6 +56,7 @@ export class InventoriesController {
     @Param('productId') productId: string,
     @Param('branchId') branchId: string,
     @Body() dto: UpdateInventoryDto,
+    @CurrentUser() user: any,
   ) {
     try {
       return await this.inventoriesService.updateProductCondition(
@@ -64,6 +66,7 @@ export class InventoriesController {
           damagedQuantity: dto.damagedQuantity,
           nearExpiryQuantity: dto.nearExpiryQuantity,
         },
+        user?.id,
       );
     } catch (error: any) {
       throw new BadRequestException(error.message);

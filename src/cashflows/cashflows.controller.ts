@@ -40,6 +40,13 @@ export class CashFlowsController {
     return this.cashFlowsService.getOpeningBalance(query);
   }
 
+  @Get('summary')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Tổng thu/chi toàn bộ tập đã lọc (không phân trang)' })
+  getSummary(@Query() query: CashFlowQueryDto, @CurrentUser() user: any) {
+    return this.cashFlowsService.getSummary(query, user);
+  }
+
   @Get()
   @RequirePermissions('cash_flows:view')
   @ApiOperation({ summary: 'Get all cash flows' })

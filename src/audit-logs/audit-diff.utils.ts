@@ -29,8 +29,11 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
     paidAmount: 'Đã thanh toán',
     debtAmount: 'Công nợ',
     soldById: 'Người bán',
+    soldByName: 'Người bán',
     customerId: 'Khách hàng',
+    customerName: 'Khách hàng',
     branchId: 'Chi nhánh',
+    branchName: 'Chi nhánh',
     priceBookName: 'Bảng giá',
   },
   invoices: {

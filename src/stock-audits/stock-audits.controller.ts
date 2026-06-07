@@ -60,8 +60,12 @@ export class StockAuditsController {
 
   @Put(':id')
   @RequirePermissions('stock_audits:update')
-  update(@Param('id') id: string, @Body() dto: UpdateStockAuditDto) {
-    return this.service.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateStockAuditDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.update(+id, dto, user?.id);
   }
 
   @Put(':id/complete')
@@ -72,7 +76,7 @@ export class StockAuditsController {
 
   @Put(':id/cancel')
   @RequirePermissions('stock_audits:update')
-  cancel(@Param('id') id: string) {
-    return this.service.cancel(+id);
+  cancel(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.cancel(+id, user?.id);
   }
 }

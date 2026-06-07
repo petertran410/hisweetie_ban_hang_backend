@@ -420,6 +420,7 @@ export class CashFlowsService {
       search,
       userId,
       accountId,
+      accountIds,
       partnerType,
       method,
       cashFlowGroupId,
@@ -467,7 +468,9 @@ export class CashFlowsService {
       ];
     }
 
-    if (accountId) {
+    if (accountIds && accountIds.length > 0) {
+      where.accountId = { in: accountIds };
+    } else if (accountId) {
       where.accountId = accountId;
     }
 
@@ -1532,35 +1535,54 @@ export class CashFlowsService {
       return 0;
     }
 
-    const receipts = await this.prisma.cashFlow.aggregate({
-      where: {
-        isReceipt: true,
-        status: 0,
-        transDate: {
-          lt: new Date(startDate),
-        },
-      },
-      _sum: {
-        amount: true,
-      },
+    // Tôn trọng các filter (chi nhánh, phương thức, tài khoản, người tạo, ...)
+    // nhưng KHÔNG dùng khoảng ngày của filter — tồn đầu kỳ là số dư TRƯỚC startDate.
+    const where = this.buildCashFlowExportWhere(filters as CashFlowQueryDto);
+    where.status = 0; // chỉ tính phiếu đã thanh toán
+    where.transDate = { lt: new Date(startDate) };
+
+    const grouped = await this.prisma.cashFlow.groupBy({
+      by: ['isReceipt'],
+      where,
+      _sum: { amount: true },
     });
 
-    const payments = await this.prisma.cashFlow.aggregate({
-      where: {
-        isReceipt: false,
-        status: 0,
-        transDate: {
-          lt: new Date(startDate),
-        },
-      },
-      _sum: {
-        amount: true,
-      },
+    let receipts = 0;
+    let payments = 0;
+    for (const g of grouped) {
+      const amt = Number(g._sum.amount || 0);
+      if (g.isReceipt) receipts = amt;
+      else payments = amt;
+    }
+
+    return receipts - payments;
+  }
+
+  // Tổng thu / tổng chi trên TOÀN BỘ tập đã lọc (không phân trang).
+  // Loại trừ phiếu đã hủy (status = 2) — khớp với cách FE tính trước đây.
+  async getSummary(query: CashFlowQueryDto, currentUser?: any) {
+    const where = this.buildCashFlowExportWhere(query);
+    where.status = { not: 2 };
+
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      where.createdBy = currentUser.id;
+    }
+
+    const grouped = await this.prisma.cashFlow.groupBy({
+      by: ['isReceipt'],
+      where,
+      _sum: { amount: true },
     });
 
-    return (
-      Number(receipts._sum.amount || 0) - Number(payments._sum.amount || 0)
-    );
+    let totalReceipt = 0;
+    let totalPayment = 0;
+    for (const g of grouped) {
+      const amt = Number(g._sum.amount || 0);
+      if (g.isReceipt) totalReceipt = amt;
+      else totalPayment = amt;
+    }
+
+    return { totalReceipt, totalPayment };
   }
 
   async createCustomerPayment(dto: CreateCustomerPaymentDto, userId: number) {
@@ -2322,6 +2344,7 @@ export class CashFlowsService {
       search,
       userId,
       accountId,
+      accountIds,
       partnerType,
       method,
       cashFlowGroupId,
@@ -2359,7 +2382,8 @@ export class CashFlowsService {
       ];
     }
 
-    if (accountId) where.accountId = accountId;
+    if (accountIds && accountIds.length > 0) where.accountId = { in: accountIds };
+    else if (accountId) where.accountId = accountId;
     if (partnerType && partnerType !== 'A') where.partnerType = partnerType;
     if (method && method.length > 0) where.method = { in: method };
     if (cashFlowGroupId && cashFlowGroupId.length > 0) {

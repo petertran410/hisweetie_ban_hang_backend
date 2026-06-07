@@ -65,7 +65,14 @@ export class HttpExceptionFilter implements ExceptionFilter {
       status !== HttpStatus.UNAUTHORIZED &&
       status !== HttpStatus.FORBIDDEN
     ) {
-      this.logger.warn(`${request.method} ${request.url} ${status}`);
+      // Trích message gọn để log dễ debug (vd lý do bị chặn khi hủy phiếu)
+      const reason =
+        typeof message === 'string'
+          ? message
+          : (message?.message ?? '');
+      this.logger.warn(
+        `${request.method} ${request.url} ${status}${reason ? ` - ${reason}` : ''}`,
+      );
     }
 
     response.status(status).json({

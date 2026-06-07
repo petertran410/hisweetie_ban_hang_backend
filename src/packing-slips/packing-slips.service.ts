@@ -19,6 +19,10 @@ import {
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
+import {
+  assertCanCancelPacking,
+  recalcInvoiceStatusAfterPackingCancel,
+} from '../common/packing-status.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -498,8 +502,22 @@ export class PackingSlipsService {
   async remove(id: number, userId?: number) {
     const packingSlip = await this.findOne(id);
 
-    await this.prisma.packingSlip.delete({
-      where: { id },
+    const invoiceIds: number[] = (packingSlip.invoices || []).map(
+      (i: any) => i.invoiceId,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      // Chặn hủy nếu có hóa đơn đã hủy / sai thứ tự bậc
+      await assertCanCancelPacking(tx, invoiceIds, 'giao-hang', id);
+
+      // Soft-cancel: giữ dữ liệu, đánh dấu đã hủy + ai hủy
+      await tx.packingSlip.update({
+        where: { id },
+        data: { cancelledAt: new Date(), cancelledById: userId ?? null },
+      });
+
+      // Hoàn (lùi) trạng thái hóa đơn về bậc cao nhất còn lại
+      await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
     });
 
     if (userId) {
@@ -527,7 +545,7 @@ export class PackingSlipsService {
       });
     }
 
-    return { message: 'Xóa phiếu giao hàng thành công' };
+    return { message: 'Hủy phiếu giao hàng thành công' };
   }
 
   private async generateCode(tx: any): Promise<string> {

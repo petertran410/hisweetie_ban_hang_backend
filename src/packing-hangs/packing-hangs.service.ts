@@ -16,6 +16,10 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
+import {
+  assertCanCancelPacking,
+  recalcInvoiceStatusAfterPackingCancel,
+} from '../common/packing-status.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -317,8 +321,19 @@ export class PackingHangsService {
   async remove(id: number, userId?: number) {
     const packingHang = await this.findOne(id);
 
-    await this.prisma.packingHang.delete({
-      where: { id },
+    const invoiceIds: number[] = (packingHang.invoices || []).map(
+      (i: any) => i.invoiceId,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await assertCanCancelPacking(tx, invoiceIds, 'dong-hang', id);
+
+      await tx.packingHang.update({
+        where: { id },
+        data: { cancelledAt: new Date(), cancelledById: userId ?? null },
+      });
+
+      await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
     });
 
     if (userId) {
@@ -346,7 +361,7 @@ export class PackingHangsService {
       });
     }
 
-    return { message: 'Xóa phiếu treo hàng thành công' };
+    return { message: 'Hủy phiếu treo hàng thành công' };
   }
 
   private async generateCode(tx: any): Promise<string> {

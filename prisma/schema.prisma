@@ -55,9 +55,12 @@ model User {
   createdSuppliers               Supplier[]             @relation("SupplierCreator")
   createdPackingSlips            PackingSlip[]          @relation("PackingSlipCreator")
   paidPackingSlips               PackingSlip[]          @relation("PackingSlipExpensePayer")
+  cancelledPackingSlips          PackingSlip[]          @relation("PackingSlipCancelledBy")
   createdPackingHangs            PackingHang[]          @relation("PackingHangCreator")
+  cancelledPackingHangs          PackingHang[]          @relation("PackingHangCancelledBy")
   createdPackingLoadings         PackingLoading[]       @relation("PackingLoadingCreator")
   loadedPackingLoadings          PackingLoading[]       @relation("PackingLoadingUser")
+  cancelledPackingLoadings       PackingLoading[]       @relation("PackingLoadingCancelledBy")
   createdPrintTemplates          PrintTemplate[]        @relation("PrintTemplateCreator")
   updatedPrintTemplates          PrintTemplate[]        @relation("PrintTemplateUpdater")
   auditLogs                      AuditLog[]             @relation("AuditLogUser")
@@ -1942,11 +1945,14 @@ model PackingSlip {
   expensePayerId   Int?
   note             String?
   createdBy        Int
+  cancelledAt      DateTime?
+  cancelledById    Int?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   branch       Branch                   @relation(fields: [branchId], references: [id])
   creator      User                     @relation("PackingSlipCreator", fields: [createdBy], references: [id])
+  cancelledBy  User?                    @relation("PackingSlipCancelledBy", fields: [cancelledById], references: [id])
   expensePayer User?                    @relation("PackingSlipExpensePayer", fields: [expensePayerId], references: [id])
   invoices     PackingSlipInvoice[]
   images       PackingSlipImage[]
@@ -2011,11 +2017,14 @@ model PackingHang {
   numberOfPackages Int
   note             String?
   createdBy        Int
+  cancelledAt      DateTime?
+  cancelledById    Int?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   branch   Branch               @relation(fields: [branchId], references: [id])
   creator  User                 @relation("PackingHangCreator", fields: [createdBy], references: [id])
+  cancelledBy User?             @relation("PackingHangCancelledBy", fields: [cancelledById], references: [id])
   invoices PackingHangInvoice[]
   images   PackingHangImage[]
 
@@ -2054,12 +2063,15 @@ model PackingLoading {
   numberOfPackages Int
   note             String?
   createdBy        Int
+  cancelledAt      DateTime?
+  cancelledById    Int?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   branch    Branch                  @relation(fields: [branchId], references: [id])
   loadingBy User                    @relation("PackingLoadingUser", fields: [loadingById], references: [id])
   creator   User                    @relation("PackingLoadingCreator", fields: [createdBy], references: [id])
+  cancelledBy User?                 @relation("PackingLoadingCancelledBy", fields: [cancelledById], references: [id])
   invoices  PackingLoadingInvoice[]
   images    PackingLoadingImage[]
 
