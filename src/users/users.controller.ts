@@ -165,6 +165,7 @@ export class UsersController {
       branchIds?: number[];
       canViewOtherStaffData?: boolean;
       canViewOnlyOwnPackings?: boolean;
+      canViewOnlyOwnLoadingInvoices?: boolean;
     },
     @Req() req: any,
   ) {

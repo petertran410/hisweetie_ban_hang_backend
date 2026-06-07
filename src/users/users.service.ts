@@ -290,6 +290,7 @@ export class UsersService {
       branchIds?: number[];
       canViewOtherStaffData?: boolean;
       canViewOnlyOwnPackings?: boolean;
+      canViewOnlyOwnLoadingInvoices?: boolean;
     },
     performedByUserId?: number,
   ) {
@@ -331,6 +332,11 @@ export class UsersService {
 
       if (data.canViewOnlyOwnPackings !== undefined) {
         updateData.canViewOnlyOwnPackings = data.canViewOnlyOwnPackings;
+      }
+
+      if (data.canViewOnlyOwnLoadingInvoices !== undefined) {
+        updateData.canViewOnlyOwnLoadingInvoices =
+          data.canViewOnlyOwnLoadingInvoices;
       }
 
       if (data.branchId !== undefined) {
@@ -442,7 +448,8 @@ export class UsersService {
       data.denyPermissionIds ||
       data.isActive !== undefined ||
       data.canViewOtherStaffData !== undefined ||
-      data.canViewOnlyOwnPackings !== undefined
+      data.canViewOnlyOwnPackings !== undefined ||
+      data.canViewOnlyOwnLoadingInvoices !== undefined
     ) {
       await this.bumpPermissionVersion(id);
     }

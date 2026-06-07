@@ -34,5 +34,9 @@ export class CreateInvoicePaymentDto {
 
   @IsString()
   @IsOptional()
+  sepayReferenceCode?: string;
+
+  @IsString()
+  @IsOptional()
   notes?: string;
 }

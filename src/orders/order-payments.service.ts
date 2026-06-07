@@ -60,6 +60,7 @@ export class OrderPaymentsService {
             dto.description ||
             `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
           sepayTransactionId: dto.sepayTransactionId,
+          sepayReferenceCode: dto.sepayReferenceCode,
           createdBy: userId,
         },
       });
@@ -108,6 +109,7 @@ export class OrderPaymentsService {
           createdBy: userId,
           usedForFinancialReporting: 1,
           customerDebtSnapshot: null,
+          sepayReferenceCode: dto.sepayReferenceCode,
         },
       });
 

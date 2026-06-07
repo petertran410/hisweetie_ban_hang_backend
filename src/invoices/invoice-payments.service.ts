@@ -62,6 +62,7 @@ export class InvoicePaymentsService {
             dto.notes ||
             `Thu tiền hóa đơn ${invoice.code} - Lần ${paymentSequence}`,
           sepayTransactionId: dto.sepayTransactionId,
+          sepayReferenceCode: dto.sepayReferenceCode,
           status: 1,
         },
       });
@@ -98,6 +99,7 @@ export class InvoicePaymentsService {
           createdBy: userId,
           usedForFinancialReporting: 1,
           customerDebtSnapshot: null,
+          sepayReferenceCode: dto.sepayReferenceCode,
         },
       });
 
