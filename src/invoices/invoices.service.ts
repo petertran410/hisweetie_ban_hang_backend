@@ -2763,12 +2763,6 @@ export class InvoicesService {
       INVOICE_STATUS.DELIVERED,
       INVOICE_STATUS.COMPLETED,
     ];
-    const PENDING_STATUSES = [
-      INVOICE_STATUS.PROCESSING,
-      INVOICE_STATUS.PACKED,
-      INVOICE_STATUS.LOADING,
-      INVOICE_STATUS.FAILED_DELIVERY,
-    ];
 
     const baseWhere: any = {
       createdAt: { gte: rangeStart, lte: rangeEnd },
@@ -2776,8 +2770,7 @@ export class InvoicesService {
     };
     if (branchId) baseWhere.branchId = branchId;
 
-    // Danh sách hiển thị: CHỈ hóa đơn đang LOADING (lấy hàng) — để báo giao hàng.
-    // (stats vẫn tính theo PENDING_STATUSES đầy đủ ở dưới)
+    // Danh sách hiển thị + ô "Chưa giao": CHỈ hóa đơn đang LOADING (lấy hàng).
     const listWhere: any = {
       ...baseWhere,
       status: INVOICE_STATUS.LOADING,
@@ -2807,9 +2800,8 @@ export class InvoicesService {
       this.prisma.invoice.count({
         where: { ...baseWhere, status: { in: DELIVERED_STATUSES } },
       }),
-      this.prisma.invoice.count({
-        where: { ...baseWhere, status: { in: PENDING_STATUSES } },
-      }),
+      // "Chưa giao" = số hóa đơn đang LOADING (khớp với danh sách hiển thị bên dưới)
+      this.prisma.invoice.count({ where: listWhere }),
       this.prisma.invoice.count({ where: listWhere }),
       this.prisma.invoice.findMany({
         where: listWhere,
