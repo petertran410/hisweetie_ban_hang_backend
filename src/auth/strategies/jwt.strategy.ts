@@ -62,6 +62,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         canViewOtherStaffData: true,
         canViewOnlyOwnPackings: true,
         canViewOnlyOwnLoadingInvoices: true,
+        bankAccountMapping: {
+          select: { bankAccount: { select: { accountNumber: true } } },
+        },
         userBranches: { select: { branchId: true } },
         userRoles: {
           select: {
@@ -132,6 +135,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       canViewOtherStaffData: fullUser.canViewOtherStaffData,
       canViewOnlyOwnPackings: fullUser.canViewOnlyOwnPackings,
       canViewOnlyOwnLoadingInvoices: fullUser.canViewOnlyOwnLoadingInvoices,
+      bankAccountNumber:
+        fullUser.bankAccountMapping?.bankAccount?.accountNumber ?? null,
     };
 
     // 5. Cache 60s

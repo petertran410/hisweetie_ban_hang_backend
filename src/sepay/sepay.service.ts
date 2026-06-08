@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvoicePaymentsService } from '../invoices/invoice-payments.service';
 import { OrderPaymentsService } from '../orders/order-payments.service';
@@ -20,6 +21,10 @@ export class SepayService {
   ) {}
 
   async handleWebhook(payload: SepayWebhookDto) {
+    // 0. Ghi giao dịch thô vào sepay_transactions (real-time, gồm cả tiền ra
+    //    và giao dịch không khớp mã). Lỗi ở bước này KHÔNG làm webhook fail.
+    await this.recordRawTransaction(payload);
+
     // 1. Chỉ xử lý tiền vào — bỏ qua "out"
     if (payload.transferType !== 'in') {
       return {
@@ -188,5 +193,61 @@ export class SepayService {
     }
 
     return bankAccount?.id;
+  }
+
+  /**
+   * Ghi/cập nhật giao dịch thô vào sepay_transactions (real-time qua webhook).
+   * Ghi MỌI giao dịch (cả 'in' lẫn 'out', kể cả không khớp mã đơn/hóa đơn).
+   * Idempotent theo sepayId — chạy lại nhiều lần không tạo trùng, và KHÔNG
+   * đụng các cột đối soát thủ công (assignedCustomerId/cashFlowId/...).
+   * Lỗi ở đây chỉ log warning, KHÔNG làm webhook fail (tránh Sepay retry liên tục).
+   */
+  private async recordRawTransaction(payload: SepayWebhookDto) {
+    try {
+      const sepayId = String(payload.id);
+      const isIn = payload.transferType === 'in';
+      const amount = Number(payload.transferAmount) || 0;
+
+      const data = {
+        transactionDate: this.parseSepayDate(payload.transactionDate),
+        accountNumber: payload.accountNumber ?? undefined,
+        subAccount: payload.subAccount ?? undefined,
+        amountIn: isIn ? amount : 0,
+        amountOut: isIn ? 0 : amount,
+        accumulated:
+          payload.accumulated !== undefined && payload.accumulated !== null
+            ? Number(payload.accumulated)
+            : undefined,
+        code: payload.code ?? undefined,
+        transactionContent: payload.content ?? undefined,
+        referenceNumber: payload.referenceCode ?? undefined,
+        bankBrandName: payload.gateway ?? undefined,
+        rawPayload: payload as unknown as Prisma.InputJsonValue,
+        syncedAt: new Date(),
+      };
+
+      await this.prisma.sepayTransaction.upsert({
+        where: { sepayId },
+        create: { sepayId, ...data },
+        update: data,
+      });
+    } catch (error) {
+      // Không chặn luồng tạo phiếu thu nếu ghi lịch sử lỗi.
+      this.logger.warn(
+        `Sepay webhook: failed to record raw transaction (tx ${String(
+          payload.id,
+        )}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Parse ngày từ webhook. Sepay trả "yyyy-mm-dd HH:MM:SS" giờ Việt Nam (UTC+7).
+   */
+  private parseSepayDate(value?: string | null): Date | undefined {
+    if (!value) return undefined;
+    const normalized = value.replace(' ', 'T') + '+07:00';
+    const d = new Date(normalized);
+    return isNaN(d.getTime()) ? undefined : d;
   }
 }

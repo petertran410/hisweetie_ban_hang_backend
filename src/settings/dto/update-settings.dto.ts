@@ -20,4 +20,8 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   syncKiotEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  sepayFilterByAccount?: boolean;
 }

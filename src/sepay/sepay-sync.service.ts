@@ -230,15 +230,69 @@ export class SepaySyncService {
   }
 
   /**
+   * Mệnh đề match 1 tài khoản, có xử lý VA (virtual account).
+   * BIDV: bank_accounts lưu VA (vd 96460248888) nhưng Sepay report
+   * accountNumber = TK chính (vd 8601539888) còn subAccount = VA.
+   * Khách luôn chuyển vào VA → mọi giao dịch của VA đều mang subAccount = VA.
+   *   - giao dịch qua VA: subAccount = TK đã chọn
+   *   - giao dịch TK thường (không VA): accountNumber = TK đã chọn VÀ subAccount rỗng
+   */
+  private buildAccountMatchClause(
+    accountNumber: string,
+  ): Prisma.SepayTransactionWhereInput {
+    return {
+      OR: [
+        { subAccount: accountNumber },
+        { accountNumber: accountNumber, subAccount: null },
+      ],
+    };
+  }
+
+  /**
+   * Quyết định ràng buộc tài khoản cho user hiện tại theo Settings.
+   * Trả về:
+   *   - undefined : không lọc (cờ tắt)
+   *   - 'BYPASS'  : cờ bật nhưng user là Admin/Super Admin → xem hết
+   *   - 'NONE'    : cờ bật, user thường nhưng CHƯA gán TK → không thấy gì
+   *   - string    : số tài khoản user được phép xem
+   */
+  private async resolveAccountRestriction(
+    currentUser?: any,
+  ): Promise<string | 'BYPASS' | 'NONE' | undefined> {
+    if (!currentUser) return undefined;
+
+    const settings = await this.prisma.settings.findFirst({
+      select: { sepayFilterByAccount: true },
+    });
+    if (!settings?.sepayFilterByAccount) return undefined;
+
+    const roles: string[] = currentUser.roles || [];
+    if (roles.includes('Super Admin') || roles.includes('Admin')) {
+      return 'BYPASS';
+    }
+
+    // Kế toán: có quyền sepay:view_all → xem toàn bộ giao dịch (bỏ qua lọc TK).
+    const permissions: string[] = currentUser.permissions || [];
+    if (permissions.includes('sepay:view_all')) {
+      return 'BYPASS';
+    }
+
+    const acc = currentUser.bankAccountNumber;
+    if (!acc) return 'NONE';
+    return acc;
+  }
+
+  /**
    * Danh sách giao dịch Sepay đã đồng bộ (đọc bảng sepay_transactions).
    * Có filter + phân trang. Chỉ đọc, không gọi Sepay API.
    */
-  async findAll(query: SepayTransactionQueryDto) {
+  async findAll(query: SepayTransactionQueryDto, currentUser?: any) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(200, Math.max(1, Number(query.limit) || 20));
     const skip = (page - 1) * limit;
 
     const where: Prisma.SepayTransactionWhereInput = {};
+    const andClauses: Prisma.SepayTransactionWhereInput[] = [];
 
     if (query.search) {
       where.OR = [
@@ -248,7 +302,23 @@ export class SepaySyncService {
     }
 
     if (query.accountNumber) {
-      where.accountNumber = query.accountNumber;
+      andClauses.push(this.buildAccountMatchClause(query.accountNumber));
+    }
+
+    // ── Phân quyền theo tài khoản (Settings.sepayFilterByAccount) ──
+    // Khi bật: user thường chỉ thấy record của TK ngân hàng đã gán cho họ.
+    // Admin/Super Admin bypass. User chưa gán TK → không thấy gì.
+    const restrict = await this.resolveAccountRestriction(currentUser);
+    if (restrict === 'NONE') {
+      // Cờ bật nhưng user chưa gán TK → trả rỗng
+      return { data: [], total: 0, page, limit };
+    }
+    if (restrict && restrict !== 'BYPASS') {
+      andClauses.push(this.buildAccountMatchClause(restrict));
+    }
+
+    if (andClauses.length > 0) {
+      where.AND = andClauses;
     }
 
     // in = có tiền vào (amountIn > 0); out = có tiền ra (amountOut > 0)

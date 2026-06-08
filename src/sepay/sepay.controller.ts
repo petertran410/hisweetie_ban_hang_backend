@@ -131,8 +131,11 @@ export class SepayController {
   @Get('transactions')
   @RequirePermissions('sepay:view')
   @ApiOperation({ summary: 'Danh sách biến động số dư (giao dịch Sepay)' })
-  async getTransactions(@Query() query: SepayTransactionQueryDto) {
-    return this.sepaySyncService.findAll(query);
+  async getTransactions(
+    @Query() query: SepayTransactionQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.sepaySyncService.findAll(query, user);
   }
 
   /**
