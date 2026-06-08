@@ -5,6 +5,7 @@ import {
   IsDateString,
   IsArray,
   IsIn,
+  IsBoolean,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -238,4 +239,12 @@ export class InvoiceQueryDto {
   @IsString()
   @IsIn(['empty', 'filled'])
   taxCodeStatus?: 'empty' | 'filled';
+
+  // Chỉ lấy hóa đơn có cảnh báo lệch giá bảng giá 2/3:
+  // hóa đơn chưa hủy, dùng bảng giá 2 hoặc 3, và có ít nhất 1 dòng sản phẩm
+  // bán thực (price - discount) thấp hơn giá niêm yết trong chính bảng giá đó.
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  priceWarning?: boolean;
 }

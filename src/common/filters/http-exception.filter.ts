@@ -16,10 +16,22 @@ import {
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
 
+  /**
+   * Lấy IP thật của client.
+   * Vì app đã set 'trust proxy' = 1, express tự tính req.ip từ X-Forwarded-For
+   * (tin đúng 1 hop nginx) → chống giả mạo. Chỉ fallback khi không có.
+   */
+  private getClientIp(request: Request): string {
+    return request.ip || request.socket?.remoteAddress || 'unknown';
+  }
+
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+
+    const clientIp = this.getClientIp(request);
+    const userAgent = request.headers['user-agent'] || '-';
 
     let status = HttpStatus.INTERNAL_SERVER_ERROR;
     let message: any = 'Internal server error';
@@ -58,7 +70,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Riêng 401/403 (chưa đăng nhập / không có quyền) bỏ qua hẳn để tránh lụt log.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `${request.method} ${request.url}`,
+        `${request.method} ${request.url} - IP ${clientIp} - UA "${userAgent}"`,
         exception instanceof Error ? exception.stack : exception,
       );
     } else if (
@@ -71,7 +83,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           ? message
           : (message?.message ?? '');
       this.logger.warn(
-        `${request.method} ${request.url} ${status}${reason ? ` - ${reason}` : ''}`,
+        `${request.method} ${request.url} ${status}${reason ? ` - ${reason}` : ''} - IP ${clientIp} - UA "${userAgent}"`,
       );
     }
 

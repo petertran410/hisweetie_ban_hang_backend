@@ -1,6 +1,5 @@
 import { ReportsModule } from './reports/reports.module';
-import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_FILTER, APP_PIPE, APP_INTERCEPTOR } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -28,6 +27,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
 import { PermissionsGuard } from './auth/guards/permissions.guard';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { BlockScannerMiddleware } from './common/middleware/block-scanner.middleware';
 import { ValidationPipe } from '@nestjs/common';
 import { TrademarksModule } from './trademarks/trademarks.module';
 import { BranchesModule } from './branches/branches.module';
@@ -58,6 +58,7 @@ import { InventoryChecksModule } from './inventory-checks/inventory-checks.modul
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { MisaSyncModule } from './misa-sync/misa-sync.module';
@@ -74,6 +75,15 @@ import { SepayModule } from './sepay/sepay.module';
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
+    ThrottlerModule.forRoot([
+      {
+        // Giới hạn mặc định toàn cục: 100 request / 60 giây / IP.
+        // Đủ thoải mái cho người dùng thật, nhưng chặn bot quét hàng loạt.
+        name: 'default',
+        ttl: 60000,
+        limit: 100,
+      },
+    ]),
     PrismaModule,
     PermissionCacheModule,
     AuthModule,
@@ -135,6 +145,11 @@ import { SepayModule } from './sepay/sepay.module';
   ],
   providers: [
     {
+      // Chạy đầu tiên: chặn flood/quét theo IP trước khi vào xác thực.
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+    {
       provide: APP_GUARD,
       useClass: JwtAuthGuard,
     },
@@ -152,4 +167,9 @@ import { SepayModule } from './sepay/sepay.module';
     },
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    // Chặn quét trên toàn bộ route (kể cả ngoài prefix /api).
+    consumer.apply(BlockScannerMiddleware).forRoutes('*');
+  }
+}
