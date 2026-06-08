@@ -1275,9 +1275,11 @@ export class InvoicesService {
             saleChannelId: currentInvoice.saleChannelId,
             priceBookId: newPriceBookId,
             priceBookName: newPriceBookName,
-            purchaseDate: dto.purchaseDate
-              ? new Date(dto.purchaseDate)
-              : currentInvoice.purchaseDate,
+            // Hóa đơn con (.xx) là bản sửa của hóa đơn gốc → luôn kế thừa
+            // purchaseDate ("Thời gian") của hóa đơn gốc, bỏ qua dto.purchaseDate
+            // (frontend luôn gửi thời điểm lưu hiện tại). createdAt vẫn là thời
+            // điểm tạo thật của hóa đơn con (cột "Thời gian tạo").
+            purchaseDate: currentInvoice.purchaseDate,
             totalAmount,
             discount: discountAmount,
             discountRatio: dto.discountRatio || 0,
