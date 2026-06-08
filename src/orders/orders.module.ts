@@ -7,9 +7,16 @@ import { PriceBooksModule } from '../price-books/price-books.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { LarkSyncModule } from 'src/lark-sync/lark-sync.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 
 @Module({
-  imports: [PrismaModule, PriceBooksModule, AuditLogsModule, LarkSyncModule],
+  imports: [
+    PrismaModule,
+    PriceBooksModule,
+    AuditLogsModule,
+    LarkSyncModule,
+    PromotionsModule,
+  ],
   controllers: [OrdersController, OrderPaymentsController],
   providers: [OrdersService, OrderPaymentsService],
   exports: [OrdersService, OrderPaymentsService],

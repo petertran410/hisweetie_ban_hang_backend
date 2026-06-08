@@ -8,6 +8,7 @@ import {
   IsNumber,
   IsDecimal,
   IsIn,
+  IsBoolean,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -87,6 +88,42 @@ export class OrderItemDto {
   @IsString()
   @IsOptional()
   serialNumbers?: string;
+
+  @IsString()
+  @IsOptional()
+  @IsIn(['normal', 'gift', 'discounted_buy'])
+  lineType?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isGift?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  promotionId?: number;
+}
+
+export class AppliedPromotionDto {
+  @IsInt()
+  promotionId: number;
+
+  // Lựa chọn quà (khi nhóm Y có nhiều SP, thu ngân chọn 1)
+  @IsOptional()
+  @IsInt()
+  giftProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  giftQuantity?: number;
+
+  // Lựa chọn mua kèm giá KM
+  @IsOptional()
+  @IsInt()
+  discountedBuyProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  discountedBuyQuantity?: number;
 }
 
 export class CreateOrderDto {
@@ -141,6 +178,21 @@ export class CreateOrderDto {
   @ValidateNested({ each: true })
   @Type(() => OrderItemDto)
   items: OrderItemDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  skipPromotions?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  appliedPromotionIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AppliedPromotionDto)
+  appliedPromotions?: AppliedPromotionDto[];
 
   @ValidateNested()
   @Type(() => DeliveryInfoDto)
@@ -202,6 +254,21 @@ export class UpdateOrderDto {
   @Type(() => OrderItemDto)
   @IsOptional()
   items?: OrderItemDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  skipPromotions?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  appliedPromotionIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AppliedPromotionDto)
+  appliedPromotions?: AppliedPromotionDto[];
 
   @ValidateNested()
   @Type(() => DeliveryInfoDto)
