@@ -14,11 +14,22 @@
 // đảm bảo một hành vi tìm kiếm nhất quán toàn hệ thống.
 // ====================================================================
 
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 // Escape ký tự đặc biệt của POSIX regex để từ khóa người dùng không phá cú
 // pháp regex (vd khi gõ "100gr ( 8" có dấu ngoặc).
 const escapeRegex = (t: string) => t.replace(/[.^$*+?()[\]{}|\\]/g, '\\$&');
+
+// Token ngắn hơn ngưỡng này sẽ KHÔNG chạy nhánh LIKE chuỗi-con trên `code` —
+// token 1 ký tự (vd "4") khớp gần như toàn bộ bảng, khiến mảng id trả về phình
+// to và vượt giới hạn bind variable của Postgres (tối đa 32767) khi caller
+// dùng `{ in: matchedIds }`. Nhánh `name` theo ranh giới từ vẫn được giữ.
+const MIN_LIKE_LEN = 2;
+
+// Chốt chặn cuối: giới hạn số id trả về cho mỗi token, phòng trường hợp DB
+// phình to sau này vẫn không bao giờ vượt giới hạn bind variable.
+const PER_TOKEN_LIMIT = 5000;
 
 /**
  * Tìm id sản phẩm khớp từ khóa `search` theo quy tắc khớp-từ-trọn-vẹn.
@@ -35,15 +46,24 @@ export async function searchProductIds(
   if (tokens.length === 0) return [];
 
   const tokenSets = await Promise.all(
-    tokens.map((t) =>
-      prisma.$queryRaw<{ id: number }[]>`
+    tokens.map((t) => {
+      const nameCond = Prisma.sql`unaccent(lower(name)) ~ ('\\m' || unaccent(lower(${escapeRegex(
+        t,
+      )})) || '\\M')`;
+
+      // Chỉ thêm nhánh LIKE chuỗi-con trên `code` khi token đủ dài.
+      const where =
+        t.length >= MIN_LIKE_LEN
+          ? Prisma.sql`${nameCond}
+            OR lower(code) LIKE lower(${`%${t}%`})`
+          : nameCond;
+
+      return prisma.$queryRaw<{ id: number }[]>`
         SELECT id FROM "products"
-        WHERE (
-          unaccent(lower(name)) ~ ('\\m' || unaccent(lower(${escapeRegex(t)})) || '\\M')
-          OR lower(code) LIKE lower(${`%${t}%`})
-        )
-      `,
-    ),
+        WHERE (${where})
+        LIMIT ${PER_TOKEN_LIMIT}
+      `;
+    }),
   );
 
   if (tokenSets.length === 1) return tokenSets[0].map((r) => r.id);
