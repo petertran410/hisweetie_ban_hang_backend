@@ -66,6 +66,7 @@ import { HealthController } from './health/health.controller';
 import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
 import { SepayModule } from './sepay/sepay.module';
+import { PromotionsModule } from './promotions/promotions.module';
 
 @Module({
   controllers: [HealthController],
@@ -142,6 +143,7 @@ import { SepayModule } from './sepay/sepay.module';
     MisaSyncModule,
     SupplierReturnsModule,
     SepayModule,
+    PromotionsModule,
   ],
   providers: [
     {
