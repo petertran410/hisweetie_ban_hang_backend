@@ -46,6 +46,19 @@ class CreateInvoiceDetailDto {
   @IsString()
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: string; // "normal" | "damaged" | "near_expiry"
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['normal', 'gift', 'promo_discount', 'discounted_buy'])
+  lineType?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isGift?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  promotionId?: number;
 }
 
 class CreateInvoiceDeliveryDto {
@@ -101,6 +114,29 @@ class CreateInvoicePaymentItemDto {
   @IsOptional()
   @IsInt()
   accountId?: number;
+}
+
+class AppliedPromotionDto {
+  @IsInt()
+  promotionId: number;
+
+  // Lựa chọn quà (khi nhóm Y có nhiều SP, thu ngân chọn 1)
+  @IsOptional()
+  @IsInt()
+  giftProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  giftQuantity?: number;
+
+  // Lựa chọn mua kèm giá KM
+  @IsOptional()
+  @IsInt()
+  discountedBuyProductId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  discountedBuyQuantity?: number;
 }
 
 export class CreateInvoiceDto {
@@ -164,6 +200,21 @@ export class CreateInvoiceDto {
   items: CreateInvoiceDetailDto[];
 
   @IsOptional()
+  @IsBoolean()
+  skipPromotions?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  appliedPromotionIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AppliedPromotionDto)
+  appliedPromotions?: AppliedPromotionDto[];
+
+  @IsOptional()
   @ValidateNested()
   @Type(() => CreateInvoiceDeliveryDto)
   delivery?: CreateInvoiceDeliveryDto;
@@ -195,5 +246,8 @@ export class CreateInvoiceFromOrderDto {
     totalPrice: number;
     note?: string;
     conditionType?: string; // "normal" | "damaged" | "near_expiry"
+    lineType?: string; // normal | gift | discounted_buy
+    isGift?: boolean;
+    promotionId?: number;
   }[];
 }

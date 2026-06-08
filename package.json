@@ -25,6 +25,7 @@
     "seed:stock-audits": "ts-node prisma/seeds/add-stock-audit-permissions.ts",
     "seed:vat-invoices": "ts-node prisma/seeds/add-vat-invoices-permissions.ts",
     "seed:sepay": "ts-node prisma/seeds/add-sepay-permissions.ts",
+    "seed:promotions": "ts-node prisma/seeds/add-promotions-permissions.ts",
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
     "fix:order-status": "ts-node prisma/seeds/fix-order-status-value.ts",

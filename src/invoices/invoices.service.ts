@@ -30,6 +30,7 @@ import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
+import { PromotionsService } from '../promotions/promotions.service';
 
 @Injectable()
 export class InvoicesService {
@@ -38,6 +39,7 @@ export class InvoicesService {
     private ordersService: OrdersService,
     private auditLogsService: AuditLogsService,
     private packingSlipsService: PackingSlipsService,
+    private promotionsService: PromotionsService,
   ) {}
 
   /**
@@ -813,12 +815,245 @@ export class InvoicesService {
     };
   }
 
+  /**
+   * Re-validate + dựng danh sách dòng hàng hiệu dụng theo khuyến mãi.
+   * - Dòng gift do FE gửi bị bỏ, BE tự sinh lại từ engine (authoritative).
+   * - Dòng discounted_buy của FE được validate với engine (sai → PROMOTION_CHANGED).
+   * - Dòng thường khớp PRODUCT/CATEGORY_DISCOUNT sẽ được cộng thêm discount.
+   * Trả về { effectiveItems, extraInvoiceDiscount, logs }.
+   */
+  private async processPromotions(
+    tx: any,
+    dto: CreateInvoiceDto,
+  ): Promise<{
+    effectiveItems: any[];
+    extraInvoiceDiscount: number;
+    logs: any[];
+  }> {
+    // Bỏ dòng gift do KM engine sinh (có promotionId) — BE tự sinh lại.
+    // GIỮ dòng gift thủ công (thu ngân đánh dấu 🎁, không gắn promotionId).
+    const baseItems = dto.items
+      .filter(
+        (it) =>
+          (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
+      )
+      .map((it) => {
+        const manualGift =
+          (it.lineType || 'normal') === 'gift' && it.promotionId == null;
+        return {
+          productId: it.productId,
+          productCode: it.productCode,
+          productName: it.productName,
+          quantity: Number(it.quantity),
+          price: manualGift ? 0 : Number(it.price),
+          discount: manualGift ? 0 : Number(it.discount || 0),
+          discountRatio: Number(it.discountRatio || 0),
+          totalPrice: manualGift ? 0 : Number(it.totalPrice),
+          note: it.note,
+          conditionType: it.conditionType || 'normal',
+          lineType: manualGift ? 'gift' : it.lineType || 'normal',
+          isGift: manualGift,
+          promotionId: it.promotionId ?? null,
+        };
+      });
+
+    if (dto.skipPromotions || !dto.branchId) {
+      return { effectiveItems: baseItems, extraInvoiceDiscount: 0, logs: [] };
+    }
+
+    // Map lựa chọn quà / mua kèm của thu ngân theo promotionId
+    const choiceMap: Record<number, any> = {};
+    (dto.appliedPromotions ?? []).forEach((c) => {
+      choiceMap[c.promotionId] = c;
+    });
+    const appliedIds =
+      dto.appliedPromotions && dto.appliedPromotions.length > 0
+        ? dto.appliedPromotions.map((c) => c.promotionId)
+        : dto.appliedPromotionIds ?? [];
+
+    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
+    const engineItems = baseItems
+      .filter((it) => it.lineType === 'normal')
+      .map((it) => ({
+        productId: it.productId,
+        quantity: it.quantity,
+        price: it.price,
+        discount: it.discount,
+      }));
+
+    const evalResult = await this.promotionsService.evaluateForInvoice({
+      branchId: dto.branchId,
+      customerId: dto.customerId ?? null,
+      userId: dto.soldById ?? null,
+      purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : new Date(),
+      items: engineItems,
+      appliedPromotionIds: appliedIds,
+    });
+
+    const applied = (evalResult as any).applied as any[];
+    let extraInvoiceDiscount = 0;
+    const logs: any[] = [];
+
+    // Resolve giftLines hiệu dụng cho từng KM (engine tự sinh hoặc theo lựa chọn thu ngân)
+    const resolvedGifts: Record<number, any[]> = {};
+    for (const r of applied) {
+      let giftLines = r.giftLines as any[];
+      // KM cần thu ngân chọn quà (nhóm Y nhiều SP)
+      if (
+        (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
+        r.requiresChoice
+      ) {
+        const choice = choiceMap[r.promotionId];
+        if (choice?.giftProductId) {
+          const opt = (r.rewardOptions || []).find(
+            (o: any) => o.productId === choice.giftProductId,
+          );
+          if (!opt) {
+            throw new BadRequestException(
+              `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+            );
+          }
+          const qty = Math.min(
+            Number(choice.giftQuantity || r.rewardQuantity),
+            Number(r.rewardQuantity),
+          );
+          giftLines = [
+            {
+              productId: opt.productId,
+              productName: opt.productName,
+              quantity: qty,
+              price: 0,
+              promotionId: r.promotionId,
+            },
+          ];
+        } else {
+          // Thu ngân chưa chọn quà → bỏ qua phần tặng của KM này
+          giftLines = [];
+        }
+      }
+      resolvedGifts[r.promotionId] = giftLines;
+    }
+
+    // Lấy code/name + cost cho sản phẩm tặng
+    const giftProductIds = Object.values(resolvedGifts)
+      .flat()
+      .map((g: any) => g.productId);
+    const giftProducts = giftProductIds.length
+      ? await tx.product.findMany({
+          where: { id: { in: giftProductIds } },
+          select: { id: true, code: true, name: true },
+        })
+      : [];
+    const giftProductMap: Record<number, any> = {};
+    giftProducts.forEach((p) => (giftProductMap[p.id] = p));
+
+    const giftCosts = giftProductIds.length
+      ? await tx.inventory.findMany({
+          where: { branchId: dto.branchId, productId: { in: giftProductIds } },
+          select: { productId: true, cost: true },
+        })
+      : [];
+    const costMap: Record<number, number> = {};
+    giftCosts.forEach((c) => (costMap[c.productId] = Number(c.cost)));
+
+    for (const r of applied) {
+      // 1) Giảm giá hóa đơn
+      if (r.type === 'INVOICE_DISCOUNT') {
+        extraInvoiceDiscount += Number(r.discountAmount);
+      }
+
+      // 2) Giảm giá dòng (PRODUCT/CATEGORY_DISCOUNT)
+      for (const dl of r.discountLines) {
+        const target = baseItems.find(
+          (it) => it.productId === dl.productId && it.lineType === 'normal',
+        );
+        if (target) {
+          target.discount += Number(dl.perUnitDiscount);
+          target.totalPrice = (target.price - target.discount) * target.quantity;
+          target.lineType = 'promo_discount';
+          target.promotionId = r.promotionId;
+        }
+      }
+
+      // 3) Hàng tặng (BE tự sinh dòng giá 0). Cho phép tồn âm (chỉ cảnh báo ở FE).
+      const giftLines = resolvedGifts[r.promotionId] || [];
+      for (const g of giftLines) {
+        const p = giftProductMap[g.productId];
+        baseItems.push({
+          productId: g.productId,
+          productCode: p?.code || '',
+          productName: p?.name || g.productName || '',
+          quantity: Number(g.quantity),
+          price: 0,
+          discount: 0,
+          discountRatio: 0,
+          totalPrice: 0,
+          note: undefined,
+          conditionType: 'normal',
+          lineType: 'gift',
+          isGift: true,
+          promotionId: r.promotionId,
+        });
+      }
+
+      // 4) Validate dòng mua kèm giá KM (discounted_buy) do FE gửi.
+      //    Với KM requiresChoice, rewardOptions là tập SP hợp lệ; nếu không thì 1 SP cố định.
+      const allowedBuyIds: number[] =
+        r.requiresChoice && r.type === 'BUY_X_BUY_Y_PRICE'
+          ? (r.rewardOptions || []).map((o: any) => o.productId)
+          : (r.discountedBuyLines || []).map((d: any) => d.productId);
+      const maxBuyQty =
+        r.rewardQuantity != null
+          ? Number(r.rewardQuantity)
+          : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
+      for (const feLine of baseItems.filter(
+        (it) => it.lineType === 'discounted_buy' && it.promotionId === r.promotionId,
+      )) {
+        if (!allowedBuyIds.includes(feLine.productId)) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: sản phẩm mua kèm "${feLine.productName}" không thuộc chương trình "${r.name}"`,
+          );
+        }
+        if (maxBuyQty && feLine.quantity > maxBuyQty) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: số lượng mua kèm "${feLine.productName}" vượt mức cho phép (${maxBuyQty})`,
+          );
+        }
+      }
+
+      const giftValue = giftLines.reduce(
+        (s: number, g: any) => s + (costMap[g.productId] || 0) * Number(g.quantity),
+        0,
+      );
+      logs.push({
+        promotionId: r.promotionId,
+        promotionCode: r.code,
+        promotionName: r.name,
+        type: r.type,
+        discountAmount: Number(r.discountAmount),
+        giftValue,
+        rewardSnapshot: {
+          giftLines,
+          discountLines: r.discountLines,
+          discountedBuyLines: r.discountedBuyLines,
+          rewardOptions: r.rewardOptions,
+        },
+        status: 'applied',
+      });
+    }
+
+    return { effectiveItems: baseItems, extraInvoiceDiscount, logs };
+  }
+
   async create(dto: CreateInvoiceDto, userId: number) {
     return this.prisma.$transaction(
       async (tx) => {
         const code = await this.generateSafeInvoiceCode(tx);
 
-        const totalAmount = dto.items.reduce(
+        const promo = await this.processPromotions(tx, dto);
+        const effectiveItems = promo.effectiveItems;
+
+        const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
         );
@@ -827,8 +1062,9 @@ export class InvoicesService {
         // thì quy đổi sang tiền. Tránh trừ 2 lần khi lưu cả hai.
         const discountAmount =
           dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount
-            : (totalAmount * (dto.discountRatio || 0)) / 100;
+            ? dto.discountAmount + promo.extraInvoiceDiscount
+            : (totalAmount * (dto.discountRatio || 0)) / 100 +
+              promo.extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
         const paidAmount = dto.paidAmount || 0;
         const debtAmount = grandTotal - paidAmount;
@@ -914,7 +1150,7 @@ export class InvoicesService {
             customerDebtSnapshot,
             details: {
               createMany: {
-                data: dto.items.map((item) => ({
+                data: effectiveItems.map((item) => ({
                   productId: item.productId,
                   productCode: item.productCode,
                   productName: item.productName,
@@ -925,6 +1161,9 @@ export class InvoicesService {
                   totalPrice: item.totalPrice,
                   note: item.note,
                   conditionType: item.conditionType || 'normal',
+                  lineType: item.lineType || 'normal',
+                  isGift: item.isGift || false,
+                  promotionId: item.promotionId ?? null,
                 })),
               },
             },
@@ -1029,7 +1268,7 @@ export class InvoicesService {
           select: { id: true, name: true },
         });
 
-        for (const item of dto.items) {
+        for (const item of effectiveItems) {
           const condition = item.conditionType || 'normal';
           const invSnapshot = await tx.inventory.findFirst({
             where: { productId: item.productId, branchId: dto.branchId },
@@ -1065,6 +1304,17 @@ export class InvoicesService {
               partnerId: dto.customerId || null,
               partnerName: customer?.name,
             },
+          });
+        }
+
+        // Ghi log khuyến mãi đã áp + tăng usageCount
+        if (promo.logs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: promo.logs.map((l) => ({ ...l, invoiceId: invoice.id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: promo.logs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
           });
         }
 
@@ -1564,6 +1814,26 @@ export class InvoicesService {
             });
           }
 
+          // Hoàn khuyến mãi: chỉ áp cho hóa đơn bán thẳng (orderId = null).
+          // Hóa đơn tạo từ đơn hàng kế thừa KM của đơn — usageCount/log thuộc về order,
+          // sẽ được hoàn khi hủy chính đơn hàng đó.
+          const revertLogs = await tx.invoicePromotionLog.findMany({
+            where: { invoiceId: id, orderId: null, status: 'applied' },
+            select: { promotionId: true },
+          });
+          if (revertLogs.length > 0) {
+            for (const lg of revertLogs) {
+              await tx.promotion.updateMany({
+                where: { id: lg.promotionId },
+                data: { usageCount: { decrement: 1 } },
+              });
+            }
+            await tx.invoicePromotionLog.updateMany({
+              where: { invoiceId: id, orderId: null, status: 'applied' },
+              data: { status: 'reverted' },
+            });
+          }
+
           const linkedCtns = await tx.returnOrder.findMany({
             where: {
               invoiceId: id,
@@ -1987,6 +2257,9 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: (item as any).conditionType || 'normal',
+              lineType: (item as any).lineType || 'normal',
+              isGift: (item as any).isGift || false,
+              promotionId: (item as any).promotionId ?? null,
             }));
 
       const totalAmount = itemsToInvoice.reduce(
@@ -2045,6 +2318,9 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
+              lineType: (item as any).lineType || 'normal',
+              isGift: (item as any).isGift || false,
+              promotionId: (item as any).promotionId ?? null,
             })),
           },
           ...(order.delivery && {
