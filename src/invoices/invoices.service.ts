@@ -258,6 +258,32 @@ export class InvoicesService {
       };
     }
 
+    // Lọc hóa đơn có cảnh báo lệch giá bảng giá 2/3.
+    // Phản chiếu đúng logic hiển thị icon ở client (useInvoicePriceBookWarnings):
+    // - status <> 2 (chưa hủy)
+    // - priceBookId ∈ {2, 3}
+    // - có ≥1 dòng sản phẩm mà (price - discount) < giá niêm yết của sản phẩm
+    //   đó trong CHÍNH bảng giá của hóa đơn (chỉ xét dòng bảng giá đang active;
+    //   sản phẩm không có trong bảng giá → bỏ qua nhờ EXISTS).
+    // Lấy tập id rồi giao (AND) với các filter còn lại qua where.id; phân trang
+    // và đếm tổng vẫn do Prisma xử lý ở findAll/getTotals như bình thường.
+    if (query.priceWarning) {
+      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
+        SELECT i.id FROM invoices i
+        WHERE i.status <> 2 AND i."priceBookId" IN (2, 3)
+          AND EXISTS (
+            SELECT 1 FROM invoice_details d
+            JOIN price_book_details pbd
+              ON pbd."productId" = d."productId"
+             AND pbd."priceBookId" = i."priceBookId"
+             AND pbd."isActive" = true
+            WHERE d."invoiceId" = i.id
+              AND (d.price - d.discount) < pbd.price
+          )`;
+      const ids = rows.map((r) => Number(r.id));
+      where.id = { in: ids.length ? ids : [-1] };
+    }
+
     return where;
   }
 

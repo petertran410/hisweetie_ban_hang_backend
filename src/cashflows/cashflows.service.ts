@@ -566,6 +566,40 @@ export class CashFlowsService {
       this.prisma.cashFlow.count({ where }),
     ]);
 
+    // Gom partnerId theo partnerType để batch query mã KH / mã NCC (tránh N+1).
+    const customerIds = [
+      ...new Set(
+        cashFlows
+          .filter((cf) => cf.partnerType === 'C' && cf.partnerId)
+          .map((cf) => cf.partnerId as number),
+      ),
+    ];
+    const supplierIds = [
+      ...new Set(
+        cashFlows
+          .filter((cf) => cf.partnerType === 'S' && cf.partnerId)
+          .map((cf) => cf.partnerId as number),
+      ),
+    ];
+
+    const [customers, suppliers] = await Promise.all([
+      customerIds.length
+        ? this.prisma.customer.findMany({
+            where: { id: { in: customerIds } },
+            select: { id: true, code: true, name: true },
+          })
+        : Promise.resolve([]),
+      supplierIds.length
+        ? this.prisma.supplier.findMany({
+            where: { id: { in: supplierIds } },
+            select: { id: true, code: true, name: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const customerMap = new Map(customers.map((c) => [c.id, c] as const));
+    const supplierMap = new Map(suppliers.map((s) => [s.id, s] as const));
+
     const data = cashFlows.map((cashFlow) => ({
       ...cashFlow,
       branchName: cashFlow.branch?.name,
@@ -573,6 +607,14 @@ export class CashFlowsService {
       collectionBranchName: cashFlow.collectionBranch?.name,
       creatorName: cashFlow.creator?.name,
       collectorName: cashFlow.collector?.name ?? cashFlow.creator?.name,
+      customer:
+        cashFlow.partnerType === 'C' && cashFlow.partnerId
+          ? (customerMap.get(cashFlow.partnerId) ?? null)
+          : null,
+      supplier:
+        cashFlow.partnerType === 'S' && cashFlow.partnerId
+          ? (supplierMap.get(cashFlow.partnerId) ?? null)
+          : null,
       debtOffsetTotal:
         cashFlow.returnOrders?.reduce(
           (sum: number, ro: any) => sum + Number(ro.refundAmount),

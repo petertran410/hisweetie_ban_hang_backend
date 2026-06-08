@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
+import helmet from 'helmet';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -13,6 +14,24 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     rawBody: true,
   });
+
+  // Tin tưởng reverse proxy phía trước (nginx publish 3060:80, app chỉ
+  // expose nội bộ trong hisweetie-network → mọi request đều qua đúng 1 hop nginx).
+  // Đặt = 1 (KHÔNG dùng true) để express lấy IP do nginx ghi nhận, chống
+  // client giả mạo header X-Forwarded-For nhằm né rate-limit.
+  app.set('trust proxy', 1);
+
+  // Security headers (chống clickjacking, MIME-sniffing, ...).
+  // - contentSecurityPolicy: tắt vì app có Swagger UI và phục vụ ảnh tĩnh
+  //   cho frontend ở domain khác; bật CSP mặc định dễ chặn nhầm.
+  // - crossOriginResourcePolicy cross-origin: cho phép frontend khác origin
+  //   tải ảnh trong /uploads/.
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
 
   app.useBodyParser('json', { limit: '20mb' });
 

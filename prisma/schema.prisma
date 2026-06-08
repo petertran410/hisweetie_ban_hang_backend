@@ -2413,3 +2413,51 @@ model UploadSession {
   @@index([createdById])
   @@map("upload_sessions")
 }
+
+// Lịch sử giao dịch thô đồng bộ từ Sepay API (GET /userapi/transactions/list).
+// Bảng ĐỘC LẬP — không có quan hệ tới Order/Invoice/CashFlow.
+// Chỉ lưu lịch sử để tra cứu/đối soát; KHÔNG tạo phiếu thu (việc đó do webhook lo).
+// sepayId = field "id" của giao dịch Sepay (cùng định danh với webhook payload.id),
+// dùng làm khóa chống trùng khi đồng bộ lặp lại.
+model SepayTransaction {
+  id                 Int       @id @default(autoincrement())
+  sepayId            String    @unique @map("sepay_id")
+  transactionDate    DateTime? @map("transaction_date")
+  accountNumber      String?   @map("account_number")
+  subAccount         String?   @map("sub_account")
+  amountIn           Decimal   @default(0) @map("amount_in")
+  amountOut          Decimal   @default(0) @map("amount_out")
+  accumulated        Decimal?  @map("accumulated")
+  code               String?
+  transactionContent String?   @map("transaction_content")
+  referenceNumber    String?   @map("reference_number")
+  bankBrandName      String?   @map("bank_brand_name")
+  bankAccountId      String?   @map("bank_account_id")
+  rawPayload         Json?     @map("raw_payload")
+  syncedAt           DateTime  @default(now()) @map("synced_at")
+
+  // ── Luồng đối soát thủ công (gán khách + tạo phiếu thu) ──
+  // KHÔNG dùng FK relation để giữ bảng độc lập, không đụng model Customer/CashFlow/User.
+  // Trạng thái được suy ra on-read (xem SepayMatchService), không lưu cột status:
+  //   - chưa gán khách        → "processing" (đang xử lý)
+  //   - đã gán khách          → "assigned"   (đã xác nhận khách)
+  //   - đã tạo phiếu thu       → "completed"  (hoàn thành)
+  //   - trùng sepayId webhook  → "completed"  (suy ra on-read, không lưu)
+  assignedCustomerId   Int?      @map("assigned_customer_id")
+  assignedCustomerName String?   @map("assigned_customer_name")
+  assignedById         Int?      @map("assigned_by_id")
+  assignedAt           DateTime? @map("assigned_at")
+  cashFlowId           Int?      @map("cash_flow_id")
+  confirmedById        Int?      @map("confirmed_by_id")
+  confirmedAt          DateTime? @map("confirmed_at")
+
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@index([transactionDate])
+  @@index([accountNumber])
+  @@index([referenceNumber])
+  @@index([assignedCustomerId])
+  @@index([cashFlowId])
+  @@map("sepay_transactions")
+}
