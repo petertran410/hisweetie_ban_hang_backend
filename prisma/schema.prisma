@@ -23,10 +23,10 @@ model User {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  canViewOtherStaffData  Boolean @default(false) @map("can_view_other_staff_data")
-  canViewOnlyOwnPackings Boolean @default(false) @map("can_view_only_own_packings")
+  canViewOtherStaffData         Boolean @default(false) @map("can_view_other_staff_data")
+  canViewOnlyOwnPackings        Boolean @default(false) @map("can_view_only_own_packings")
   canViewOnlyOwnLoadingInvoices Boolean @default(false) @map("can_view_only_own_loading_invoices")
-  permissionVersion      Int     @default(1) @map("permission_version")
+  permissionVersion             Int     @default(1) @map("permission_version")
 
   branch                         Branch?                @relation(fields: [branchId], references: [id])
   userBranches                   UserBranch[]
@@ -43,6 +43,7 @@ model User {
   purchaseOrders                 PurchaseOrder[]        @relation("PurchaseOrderBuyer")
   posts                          Post[]                 @relation("PostAuthor")
   priceBookUsers                 PriceBookUser[]
+  promotionUsers                 PromotionUser[]        @relation("PromotionUserRef")
   createdTransfers               Transfer[]             @relation("TransferCreator")
   createdCustomerGroups          CustomerGroup[]        @relation("CustomerGroupCreator")
   createdCustomers               Customer[]             @relation("CustomerCreator")
@@ -293,7 +294,8 @@ model Branch {
   roleBranchPermissions  RoleBranchPermission[]
   userBranchRoles        UserBranchRole[]
 
-  supplierReturns SupplierReturn[]
+  supplierReturns   SupplierReturn[]
+  promotionBranches PromotionBranch[]
 
   @@map("branches")
 }
@@ -358,6 +360,7 @@ model CustomerGroup {
   creator                 User?                    @relation("CustomerGroupCreator", fields: [createdBy], references: [id])
   customerGroupDetails    CustomerGroupDetail[]
   priceBookCustomerGroups PriceBookCustomerGroup[]
+  promotionCustomerGroups PromotionCustomerGroup[]
 
   @@map("customer_groups")
 }
@@ -426,6 +429,7 @@ model Customer {
   creator              User?                 @relation("CustomerCreator", fields: [createdBy], references: [id])
   updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
   priceBookCustomers   PriceBookCustomer[]
+  promotionCustomers   PromotionCustomer[]
 
   @@map("customers")
 }
@@ -717,6 +721,9 @@ model Product {
   inventoryCheckDetails InventoryCheckDetail[]
   stockAuditDetails     StockAuditDetail[]
   supplierReturnDetails SupplierReturnDetail[]
+  promotionBuyRewards   PromotionReward[]      @relation("PromotionBuyProduct")
+  promotionGiftRewards  PromotionReward[]      @relation("PromotionRewardProduct")
+  promotionProducts     PromotionProduct[]     @relation("PromotionProductRef")
 
   @@index([id, name])
   @@map("products")
@@ -954,7 +961,7 @@ model InventoryLog {
   // Thời điểm phát sinh giao dịch (cho phép lùi ngày — vd kiểm kho backdated).
   // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
   transactionDate  DateTime @default(now())
-  createdAt        DateTime  @default(now())
+  createdAt        DateTime @default(now())
   createdByName    String?
 
   product Product @relation(fields: [productId], references: [id])
@@ -1196,17 +1203,18 @@ model Order {
   larkSyncRetries Int       @default(0)
   larkSyncedAt    DateTime?
 
-  customer    Customer?        @relation(fields: [customerId], references: [id])
-  branch      Branch?          @relation(fields: [branchId], references: [id])
-  soldBy      User?            @relation("OrderSeller", fields: [soldById], references: [id])
-  saleChannel SaleChannel?     @relation(fields: [saleChannelId], references: [id])
-  creator     User             @relation("OrderCreator", fields: [createdBy], references: [id])
-  priceBook   PriceBook?       @relation("OrderPriceBook", fields: [priceBookId], references: [id])
-  invoices    Invoice[]
-  items       OrderItem[]
-  payments    OrderPayment[]
-  surcharges  OrderSurcharge[]
-  delivery    OrderDelivery?
+  customer      Customer?             @relation(fields: [customerId], references: [id])
+  branch        Branch?               @relation(fields: [branchId], references: [id])
+  soldBy        User?                 @relation("OrderSeller", fields: [soldById], references: [id])
+  saleChannel   SaleChannel?          @relation(fields: [saleChannelId], references: [id])
+  creator       User                  @relation("OrderCreator", fields: [createdBy], references: [id])
+  priceBook     PriceBook?            @relation("OrderPriceBook", fields: [priceBookId], references: [id])
+  invoices      Invoice[]
+  items         OrderItem[]
+  payments      OrderPayment[]
+  surcharges    OrderSurcharge[]
+  delivery      OrderDelivery?
+  promotionLogs InvoicePromotionLog[]
 
   @@index([larkSyncStatus])
   @@map("orders")
@@ -1230,11 +1238,17 @@ model OrderItem {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
   lineNumber    Int?
+  // Promotion / khuyến mãi
+  lineType      String   @default("normal") // normal | gift | discounted_buy
+  isGift        Boolean  @default(false)
+  promotionId   Int?
 
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id])
+  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product    @relation(fields: [productId], references: [id])
+  promotion Promotion? @relation(fields: [promotionId], references: [id], onDelete: SetNull)
 
   @@unique([orderId, lineNumber])
+  @@index([promotionId])
   @@map("order_items")
 }
 
@@ -1369,6 +1383,7 @@ model Invoice {
   packingLoadings    PackingLoadingInvoice[]
   returnOrders       ReturnOrder[]
   returnOrderDetails ReturnOrderDetail[]
+  promotionLogs      InvoicePromotionLog[]
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
@@ -1391,13 +1406,19 @@ model InvoiceDetail {
   note          String?
   conditionType String   @default("normal")
   serialNumbers String?
+  // Promotion / khuyến mãi
+  lineType      String   @default("normal") // normal | gift | promo_discount | discounted_buy
+  isGift        Boolean  @default(false)
+  promotionId   Int?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  invoice Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product Product? @relation(fields: [productId], references: [id])
+  invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product   Product?   @relation(fields: [productId], references: [id])
+  promotion Promotion? @relation(fields: [promotionId], references: [id], onDelete: SetNull)
 
   @@index([invoiceId])
+  @@index([promotionId])
   @@map("invoice_details")
 }
 
@@ -1930,25 +1951,25 @@ model OrderSupplierExpensesOther {
 }
 
 model PackingSlip {
-  id               Int      @id @default(autoincrement())
-  code             String   @unique
+  id               Int       @id @default(autoincrement())
+  code             String    @unique
   branchId         Int
   numberOfPackages Int
   paymentMethod    String
-  cashAmount       Decimal? @default(0)
-  hasFeeGuiBen     Boolean  @default(false)
-  feeGuiBen        Decimal? @default(0)
-  hasFeeGrab       Boolean  @default(false)
-  feeGrab          Decimal? @default(0)
-  hasCuocGuiHang   Boolean  @default(false)
-  cuocGuiHang      Decimal? @default(0)
+  cashAmount       Decimal?  @default(0)
+  hasFeeGuiBen     Boolean   @default(false)
+  feeGuiBen        Decimal?  @default(0)
+  hasFeeGrab       Boolean   @default(false)
+  feeGrab          Decimal?  @default(0)
+  hasCuocGuiHang   Boolean   @default(false)
+  cuocGuiHang      Decimal?  @default(0)
   expensePayerId   Int?
   note             String?
   createdBy        Int
   cancelledAt      DateTime?
   cancelledById    Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   branch       Branch                   @relation(fields: [branchId], references: [id])
   creator      User                     @relation("PackingSlipCreator", fields: [createdBy], references: [id])
@@ -2011,22 +2032,22 @@ model NoteTemplate {
 }
 
 model PackingHang {
-  id               Int      @id @default(autoincrement())
-  code             String   @unique
+  id               Int       @id @default(autoincrement())
+  code             String    @unique
   branchId         Int
   numberOfPackages Int
   note             String?
   createdBy        Int
   cancelledAt      DateTime?
   cancelledById    Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  branch   Branch               @relation(fields: [branchId], references: [id])
-  creator  User                 @relation("PackingHangCreator", fields: [createdBy], references: [id])
-  cancelledBy User?             @relation("PackingHangCancelledBy", fields: [cancelledById], references: [id])
-  invoices PackingHangInvoice[]
-  images   PackingHangImage[]
+  branch      Branch               @relation(fields: [branchId], references: [id])
+  creator     User                 @relation("PackingHangCreator", fields: [createdBy], references: [id])
+  cancelledBy User?                @relation("PackingHangCancelledBy", fields: [cancelledById], references: [id])
+  invoices    PackingHangInvoice[]
+  images      PackingHangImage[]
 
   @@map("packing_hangs")
 }
@@ -2056,8 +2077,8 @@ model PackingHangImage {
 }
 
 model PackingLoading {
-  id               Int      @id @default(autoincrement())
-  code             String   @unique
+  id               Int       @id @default(autoincrement())
+  code             String    @unique
   branchId         Int
   loadingById      Int
   numberOfPackages Int
@@ -2065,15 +2086,15 @@ model PackingLoading {
   createdBy        Int
   cancelledAt      DateTime?
   cancelledById    Int?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  branch    Branch                  @relation(fields: [branchId], references: [id])
-  loadingBy User                    @relation("PackingLoadingUser", fields: [loadingById], references: [id])
-  creator   User                    @relation("PackingLoadingCreator", fields: [createdBy], references: [id])
-  cancelledBy User?                 @relation("PackingLoadingCancelledBy", fields: [cancelledById], references: [id])
-  invoices  PackingLoadingInvoice[]
-  images    PackingLoadingImage[]
+  branch      Branch                  @relation(fields: [branchId], references: [id])
+  loadingBy   User                    @relation("PackingLoadingUser", fields: [loadingById], references: [id])
+  creator     User                    @relation("PackingLoadingCreator", fields: [createdBy], references: [id])
+  cancelledBy User?                   @relation("PackingLoadingCancelledBy", fields: [cancelledById], references: [id])
+  invoices    PackingLoadingInvoice[]
+  images      PackingLoadingImage[]
 
   @@map("packing_loadings")
 }
@@ -2451,8 +2472,8 @@ model SepayTransaction {
   confirmedById        Int?      @map("confirmed_by_id")
   confirmedAt          DateTime? @map("confirmed_at")
 
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   @@index([transactionDate])
   @@index([accountNumber])
@@ -2460,4 +2481,162 @@ model SepayTransaction {
   @@index([assignedCustomerId])
   @@index([cashFlowId])
   @@map("sepay_transactions")
+}
+
+// ============================ PROMOTION / KHUYẾN MÃI ============================
+
+model Promotion {
+  id                Int       @id @default(autoincrement())
+  code              String    @unique
+  name              String
+  type              String // INVOICE_DISCOUNT | PRODUCT_DISCOUNT | BUY_X_GET_Y | BUY_N_GET_M_SAME | BUY_X_BUY_Y_PRICE | GIFT_BY_INVOICE | CATEGORY_DISCOUNT
+  description       String?
+  isActive          Boolean   @default(false)
+  status            String    @default("draft") // draft | running | paused | stopped | expired
+  priority          Int       @default(0)
+  stackable         Boolean   @default(false)
+  startDate         DateTime?
+  endDate           DateTime?
+  applyTimeFrom     String? // "08:00"
+  applyTimeTo       String? // "22:00"
+  applyWeekdays     Int[]     @default([]) // [1..7], rỗng = mọi ngày
+  forAllBranch      Boolean   @default(true)
+  forAllCustomer    Boolean   @default(true)
+  forAllUser        Boolean   @default(true)
+  minOrderValue     Decimal   @default(0)
+  minQuantity       Decimal   @default(0)
+  maxDiscountAmount Decimal?
+  maxRewardQuantity Decimal?
+  usageLimit        Int?
+  usageCount        Int       @default(0)
+  autoApply         Boolean   @default(true)
+  createdBy         Int
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  rewards        PromotionReward[]
+  branches       PromotionBranch[]
+  customers      PromotionCustomer[]
+  customerGroups PromotionCustomerGroup[]
+  users          PromotionUser[]
+  products       PromotionProduct[]
+  logs           InvoicePromotionLog[]
+  invoiceDetails InvoiceDetail[]
+  orderItems     OrderItem[]
+
+  @@index([isActive, status])
+  @@index([type])
+  @@map("promotions")
+}
+
+model PromotionReward {
+  id              Int      @id @default(autoincrement())
+  promotionId     Int
+  buyProductId    Int?
+  buyCategoryName String?
+  buyQuantity     Decimal  @default(0)
+  rewardType      String // discount_percent | discount_amount | gift | discounted_buy
+  rewardProductId Int?
+  rewardQuantity  Decimal  @default(0)
+  rewardValue     Decimal  @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  promotion     Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  buyProduct    Product?  @relation("PromotionBuyProduct", fields: [buyProductId], references: [id])
+  rewardProduct Product?  @relation("PromotionRewardProduct", fields: [rewardProductId], references: [id])
+
+  @@index([promotionId])
+  @@map("promotion_rewards")
+}
+
+model PromotionProduct {
+  id           Int      @id @default(autoincrement())
+  promotionId  Int
+  role         String // 'buy' (X) | 'reward' (Y)
+  productId    Int?
+  categoryName String?
+  createdAt    DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  product   Product?  @relation("PromotionProductRef", fields: [productId], references: [id])
+
+  @@index([promotionId])
+  @@map("promotion_products")
+}
+
+model PromotionBranch {
+  id          Int      @id @default(autoincrement())
+  promotionId Int
+  branchId    Int
+  createdAt   DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  branch    Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, branchId])
+  @@map("promotion_branches")
+}
+
+model PromotionCustomer {
+  id          Int      @id @default(autoincrement())
+  promotionId Int
+  customerId  Int
+  createdAt   DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, customerId])
+  @@map("promotion_customers")
+}
+
+model PromotionCustomerGroup {
+  id              Int      @id @default(autoincrement())
+  promotionId     Int
+  customerGroupId Int
+  createdAt       DateTime @default(now())
+
+  promotion     Promotion     @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  customerGroup CustomerGroup @relation(fields: [customerGroupId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, customerGroupId])
+  @@map("promotion_customer_groups")
+}
+
+model PromotionUser {
+  id          Int      @id @default(autoincrement())
+  promotionId Int
+  userId      Int
+  createdAt   DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  user      User      @relation("PromotionUserRef", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, userId])
+  @@map("promotion_users")
+}
+
+model InvoicePromotionLog {
+  id             Int      @id @default(autoincrement())
+  invoiceId      Int?
+  orderId        Int?
+  promotionId    Int
+  promotionCode  String
+  promotionName  String
+  type           String
+  discountAmount Decimal  @default(0)
+  giftValue      Decimal  @default(0)
+  rewardSnapshot Json
+  status         String   @default("applied") // applied | reverted
+  createdAt      DateTime @default(now())
+
+  invoice   Invoice?  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  order     Order?    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+
+  @@index([invoiceId])
+  @@index([orderId])
+  @@index([promotionId])
+  @@map("invoice_promotion_logs")
 }

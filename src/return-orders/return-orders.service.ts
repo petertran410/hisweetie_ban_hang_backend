@@ -305,6 +305,14 @@ export class ReturnOrdersService {
 
       const invoiceCodes = invoices.map((inv) => inv.code).join(', ');
 
+      // Cảnh báo (non-blocking) nếu việc trả hàng phá vỡ điều kiện mua-thưởng của KM
+      const promotionWarnings = await this.detectBrokenPromotions(
+        tx,
+        dto,
+        invoices,
+        returnedQuantities,
+      );
+
       await this.auditLogsService.create({
         actionType: 'POST',
         actionCode: 'RETURN_ORDER_CREATE',
@@ -328,8 +336,129 @@ export class ReturnOrdersService {
         branchId: dto.branchId,
       });
 
-      return returnOrder;
+      return { ...returnOrder, _promotionWarnings: promotionWarnings };
     });
+  }
+
+  /**
+   * Phát hiện KM bị phá vỡ điều kiện khi trả hàng (non-blocking).
+   * Logic: với mỗi log KM dạng mua-thưởng (BUY_*) còn 'applied' trên hóa đơn,
+   * nếu số lượng SP mua sau khi trả < buyQuantity của CT → cảnh báo cần xử lý hàng tặng.
+   */
+  private async detectBrokenPromotions(
+    tx: any,
+    dto: CreateReturnOrderDto,
+    invoices: any[],
+    returnedQuantities: Record<string, number>,
+  ): Promise<
+    {
+      invoiceId: number;
+      invoiceCode: string;
+      promotionCode: string;
+      promotionName: string;
+      message: string;
+      giftLines: any[];
+    }[]
+  > {
+    const warnings: any[] = [];
+    const invoiceIds = invoices.map((inv) => inv.id);
+    const logs = await tx.invoicePromotionLog.findMany({
+      where: {
+        invoiceId: { in: invoiceIds },
+        status: 'applied',
+        type: { in: ['BUY_X_GET_Y', 'BUY_N_GET_M_SAME', 'BUY_X_BUY_Y_PRICE'] },
+      },
+      include: { promotion: { include: { rewards: true } } },
+    });
+
+    // Tổng số lượng trả mới (theo invoice-product) cộng dồn với đã trả trước đó
+    const newReturned: Record<string, number> = { ...returnedQuantities };
+    for (const d of dto.details) {
+      const key = `${d.invoiceId}-${d.productId}`;
+      newReturned[key] = (newReturned[key] || 0) + Number(d.requestQuantity);
+    }
+
+    // Resolve danh mục → productIds (parent/middle/child name) cho các CT dùng buyCategoryName
+    const categoryNames = new Set<string>();
+    for (const log of logs) {
+      for (const rw of log.promotion?.rewards ?? []) {
+        if (rw.buyCategoryName) categoryNames.add(rw.buyCategoryName);
+      }
+    }
+    const categoryProductMap: Record<string, number[]> = {};
+    if (categoryNames.size > 0) {
+      const catList = [...categoryNames];
+      const catProducts = await tx.product.findMany({
+        where: {
+          OR: [
+            { parentName: { in: catList } },
+            { middleName: { in: catList } },
+            { childName: { in: catList } },
+          ],
+        },
+        select: {
+          id: true,
+          parentName: true,
+          middleName: true,
+          childName: true,
+        },
+      });
+      for (const cp of catProducts) {
+        for (const name of catList) {
+          if (
+            cp.parentName === name ||
+            cp.middleName === name ||
+            cp.childName === name
+          ) {
+            (categoryProductMap[name] ||= []).push(cp.id);
+          }
+        }
+      }
+    }
+
+    for (const log of logs) {
+      const invoice = invoices.find((inv) => inv.id === log.invoiceId);
+      if (!invoice) continue;
+
+      // Duyệt MỌI reward của CT (không chỉ rewards[0])
+      for (const rw of log.promotion?.rewards ?? []) {
+        // Tập SP "mua" (X): theo buyProductId hoặc theo danh mục buyCategoryName
+        const buyProductIds: number[] = rw.buyProductId
+          ? [rw.buyProductId]
+          : rw.buyCategoryName
+            ? categoryProductMap[rw.buyCategoryName] || []
+            : [];
+        if (buyProductIds.length === 0) continue;
+
+        // Tổng SL còn lại sau khi trả (cộng dồn các SP thuộc nhóm mua)
+        let remainingBought = 0;
+        for (const pid of buyProductIds) {
+          const boughtDetail = invoice.details.find(
+            (de: any) => de.productId === pid && !de.isGift,
+          );
+          if (!boughtDetail) continue;
+          const key = `${log.invoiceId}-${pid}`;
+          remainingBought +=
+            Number(boughtDetail.quantity) - (newReturned[key] || 0);
+        }
+
+        if (remainingBought < Number(rw.buyQuantity)) {
+          const snapshot = (log.rewardSnapshot as any) || {};
+          warnings.push({
+            invoiceId: log.invoiceId,
+            invoiceCode: invoice.code,
+            promotionCode: log.promotionCode,
+            promotionName: log.promotionName,
+            message: `PROMOTION_BROKEN_ON_RETURN: Trả hàng làm số lượng mua (${remainingBought}) không còn đủ điều kiện "${log.promotionName}" (cần ${Number(
+              rw.buyQuantity,
+            )}). Vui lòng xử lý hàng tặng: thu hồi hoặc ghi nhận giá trị vào khoản hoàn tiền.`,
+            giftLines: snapshot.giftLines || [],
+          });
+        }
+      }
+    }
+
+    return warnings;
   }
 
   async confirmStockReceived(

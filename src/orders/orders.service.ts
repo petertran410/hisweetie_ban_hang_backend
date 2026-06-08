@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
+import { OrderItemDto, AppliedPromotionDto } from './dto';
 import {
   convertStatusStringToNumber,
   getStatusLabel,
@@ -24,6 +25,7 @@ import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.ser
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { PromotionsService } from '../promotions/promotions.service';
 
 @Injectable()
 export class OrdersService {
@@ -33,7 +35,231 @@ export class OrdersService {
     private auditLogsService: AuditLogsService,
     private larkOrderSync: LarkOrderSyncService,
     private larkOrderNotification: LarkOrderNotificationService,
+    private promotionsService: PromotionsService,
   ) {}
+
+  /**
+   * Re-validate khuyến mãi cho đơn hàng (mirror InvoicesService.processPromotions).
+   * - Bỏ dòng gift do engine sinh (có promotionId), giữ gift thủ công.
+   * - BE tự sinh lại dòng gift từ engine (authoritative), cộng discount dòng,
+   *   validate discounted_buy, cộng extraDiscount cấp đơn.
+   * Trả về { effectiveItems (shape OrderItemDto), extraDiscount, logs }.
+   */
+  private async processOrderPromotions(
+    tx: any,
+    dto: { items: OrderItemDto[] } & {
+      branchId?: number;
+      customerId?: number;
+      soldById?: number;
+      orderDate?: string;
+      skipPromotions?: boolean;
+      appliedPromotions?: AppliedPromotionDto[];
+      appliedPromotionIds?: number[];
+    },
+  ): Promise<{
+    effectiveItems: OrderItemDto[];
+    extraDiscount: number;
+    logs: any[];
+  }> {
+    // Bỏ dòng gift do engine sinh (có promotionId) — BE tự sinh lại.
+    // GIỮ dòng gift thủ công (đánh dấu gift, không gắn promotionId).
+    const baseItems: OrderItemDto[] = dto.items
+      .filter(
+        (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
+      )
+      .map((it) => {
+        const manualGift =
+          (it.lineType || 'normal') === 'gift' && it.promotionId == null;
+        return {
+          productId: it.productId,
+          quantity: Number(it.quantity),
+          unitPrice: manualGift ? 0 : Number(it.unitPrice),
+          discount: manualGift ? 0 : Number(it.discount || 0),
+          discountRatio: Number(it.discountRatio || 0),
+          note: it.note,
+          serialNumbers: it.serialNumbers,
+          conditionType: it.conditionType || 'normal',
+          lineType: manualGift ? 'gift' : it.lineType || 'normal',
+          isGift: manualGift,
+          promotionId: it.promotionId ?? null,
+        } as OrderItemDto;
+      });
+
+    if (dto.skipPromotions || !dto.branchId) {
+      return { effectiveItems: baseItems, extraDiscount: 0, logs: [] };
+    }
+
+    const choiceMap: Record<number, any> = {};
+    (dto.appliedPromotions ?? []).forEach((c) => {
+      choiceMap[c.promotionId] = c;
+    });
+    const appliedIds =
+      dto.appliedPromotions && dto.appliedPromotions.length > 0
+        ? dto.appliedPromotions.map((c) => c.promotionId)
+        : dto.appliedPromotionIds ?? [];
+
+    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
+    const engineItems = baseItems
+      .filter((it) => (it.lineType || 'normal') === 'normal')
+      .map((it) => ({
+        productId: it.productId,
+        quantity: Number(it.quantity),
+        price: Number(it.unitPrice),
+        discount: Number(it.discount || 0),
+      }));
+
+    const evalResult = await this.promotionsService.evaluateForInvoice({
+      branchId: dto.branchId,
+      customerId: dto.customerId ?? null,
+      userId: dto.soldById ?? null,
+      purchaseDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
+      items: engineItems,
+      appliedPromotionIds: appliedIds,
+    });
+
+    const applied = (evalResult as any).applied as any[];
+    let extraDiscount = 0;
+    const logs: any[] = [];
+
+    // Resolve giftLines hiệu dụng cho từng KM
+    const resolvedGifts: Record<number, any[]> = {};
+    for (const r of applied) {
+      let giftLines = r.giftLines as any[];
+      if (
+        (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
+        r.requiresChoice
+      ) {
+        const choice = choiceMap[r.promotionId];
+        if (choice?.giftProductId) {
+          const opt = (r.rewardOptions || []).find(
+            (o: any) => o.productId === choice.giftProductId,
+          );
+          if (!opt) {
+            throw new BadRequestException(
+              `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+            );
+          }
+          const qty = Math.min(
+            Number(choice.giftQuantity || r.rewardQuantity),
+            Number(r.rewardQuantity),
+          );
+          giftLines = [
+            {
+              productId: opt.productId,
+              productName: opt.productName,
+              quantity: qty,
+              price: 0,
+              promotionId: r.promotionId,
+            },
+          ];
+        } else {
+          giftLines = [];
+        }
+      }
+      resolvedGifts[r.promotionId] = giftLines;
+    }
+
+    const giftProductIds = Object.values(resolvedGifts)
+      .flat()
+      .map((g: any) => g.productId);
+    const giftCosts = giftProductIds.length
+      ? await tx.inventory.findMany({
+          where: { branchId: dto.branchId, productId: { in: giftProductIds } },
+          select: { productId: true, cost: true },
+        })
+      : [];
+    const costMap: Record<number, number> = {};
+    giftCosts.forEach((c) => (costMap[c.productId] = Number(c.cost)));
+
+    for (const r of applied) {
+      // 1) Giảm giá đơn hàng (INVOICE_DISCOUNT)
+      if (r.type === 'INVOICE_DISCOUNT') {
+        extraDiscount += Number(r.discountAmount);
+      }
+
+      // 2) Giảm giá dòng (PRODUCT/CATEGORY_DISCOUNT)
+      for (const dl of r.discountLines) {
+        const target = baseItems.find(
+          (it) =>
+            it.productId === dl.productId &&
+            (it.lineType || 'normal') === 'normal',
+        );
+        if (target) {
+          target.discount =
+            Number(target.discount || 0) + Number(dl.perUnitDiscount);
+          target.lineType = 'promo_discount';
+          target.promotionId = r.promotionId;
+        }
+      }
+
+      // 3) Hàng tặng (BE tự sinh dòng giá 0)
+      const giftLines = resolvedGifts[r.promotionId] || [];
+      for (const g of giftLines) {
+        baseItems.push({
+          productId: g.productId,
+          quantity: Number(g.quantity),
+          unitPrice: 0,
+          discount: 0,
+          discountRatio: 0,
+          note: undefined,
+          serialNumbers: undefined,
+          conditionType: 'normal',
+          lineType: 'gift',
+          isGift: true,
+          promotionId: r.promotionId,
+        } as OrderItemDto);
+      }
+
+      // 4) Validate dòng mua kèm giá KM (discounted_buy) do FE gửi
+      const allowedBuyIds: number[] =
+        r.requiresChoice && r.type === 'BUY_X_BUY_Y_PRICE'
+          ? (r.rewardOptions || []).map((o: any) => o.productId)
+          : (r.discountedBuyLines || []).map((d: any) => d.productId);
+      const maxBuyQty =
+        r.rewardQuantity != null
+          ? Number(r.rewardQuantity)
+          : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
+      for (const feLine of baseItems.filter(
+        (it) =>
+          (it.lineType || 'normal') === 'discounted_buy' &&
+          it.promotionId === r.promotionId,
+      )) {
+        if (!allowedBuyIds.includes(feLine.productId)) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: sản phẩm mua kèm không thuộc chương trình "${r.name}"`,
+          );
+        }
+        if (maxBuyQty && Number(feLine.quantity) > maxBuyQty) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: số lượng mua kèm vượt mức cho phép (${maxBuyQty})`,
+          );
+        }
+      }
+
+      const giftValue = giftLines.reduce(
+        (s: number, g: any) =>
+          s + (costMap[g.productId] || 0) * Number(g.quantity),
+        0,
+      );
+      logs.push({
+        promotionId: r.promotionId,
+        promotionCode: r.code,
+        promotionName: r.name,
+        type: r.type,
+        discountAmount: Number(r.discountAmount),
+        giftValue,
+        rewardSnapshot: {
+          giftLines,
+          discountLines: r.discountLines,
+          discountedBuyLines: r.discountedBuyLines,
+          rewardOptions: r.rewardOptions,
+        },
+        status: 'applied',
+      });
+    }
+
+    return { effectiveItems: baseItems, extraDiscount, logs };
+  }
 
   async create(dto: CreateOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -46,8 +272,11 @@ export class OrdersService {
       }
       const branchId = dto.branchId;
 
+      // Re-validate khuyến mãi: BE sinh lại dòng gift / discount (authoritative)
+      const promo = await this.processOrderPromotions(tx, dto);
+
       const itemsData = await Promise.all(
-        dto.items.map(async (item) => {
+        promo.effectiveItems.map(async (item) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
           });
@@ -68,22 +297,24 @@ export class OrdersService {
             );
           }
 
-          const itemDiscount = item.discount || 0;
-          const itemDiscountRatio = item.discountRatio || 0;
+          const isGift = item.isGift || item.lineType === 'gift';
+          const itemDiscount = isGift ? 0 : item.discount || 0;
+          const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
+          const unitPrice = isGift ? 0 : item.unitPrice;
           const totalPrice =
-            (item.unitPrice - itemDiscount) * item.quantity -
-            (item.unitPrice * item.quantity * itemDiscountRatio) / 100;
+            (unitPrice - itemDiscount) * item.quantity -
+            (unitPrice * item.quantity * itemDiscountRatio) / 100;
           const appliedPrice =
-            item.unitPrice -
+            unitPrice -
             itemDiscount -
-            (item.unitPrice * itemDiscountRatio) / 100;
+            (unitPrice * itemDiscountRatio) / 100;
 
           return {
             productId: item.productId,
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
-            price: item.unitPrice,
+            price: unitPrice,
             appliedPrice: appliedPrice,
             discount: itemDiscount,
             discountRatio: itemDiscountRatio,
@@ -91,6 +322,9 @@ export class OrdersService {
             note: item.note || null,
             serialNumbers: item.serialNumbers || null,
             conditionType: item.conditionType || 'normal',
+            lineType: item.lineType || 'normal',
+            isGift: isGift,
+            promotionId: item.promotionId ?? null,
           };
         }),
       );
@@ -151,7 +385,7 @@ export class OrdersService {
           statusValue: getStatusLabel(orderStatusNumber),
           orderStatus: orderStatusString,
           depositAmount: dto.depositAmount || 0,
-          discount: dto.discountAmount || 0,
+          discount: (dto.discountAmount || 0) + promo.extraDiscount,
           discountRatio: dto.discountRatio || 0,
           description: dto.description,
           createdBy: userId,
@@ -185,6 +419,17 @@ export class OrdersService {
       });
 
       await this.calculateTotals(order.id, tx);
+
+      // Ghi log khuyến mãi đã áp + tăng usageCount (gắn orderId)
+      if (promo.logs.length > 0) {
+        await tx.invoicePromotionLog.createMany({
+          data: promo.logs.map((l) => ({ ...l, orderId: order.id })),
+        });
+        await tx.promotion.updateMany({
+          where: { id: { in: promo.logs.map((l) => l.promotionId) } },
+          data: { usageCount: { increment: 1 } },
+        });
+      }
 
       const finalOrder = await tx.order.findUnique({
         where: { id: order.id },
@@ -257,26 +502,58 @@ export class OrdersService {
         );
       }
 
+      // extraDiscount KM cấp đơn (chỉ tính lại khi items thay đổi)
+      let promoExtraDiscount: number | null = null;
+
       if (dto.items) {
         await tx.orderItem.deleteMany({ where: { orderId: id } });
 
+        // Hoàn lại usageCount + xóa log KM cũ của đơn (sẽ tính lại bên dưới)
+        const oldLogs = await tx.invoicePromotionLog.findMany({
+          where: { orderId: id, status: 'applied' },
+          select: { id: true, promotionId: true },
+        });
+        if (oldLogs.length > 0) {
+          for (const lg of oldLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.deleteMany({
+            where: { orderId: id, status: 'applied' },
+          });
+        }
+
+        // Re-validate KM trên branch hiện tại của đơn (không cho đổi branch)
+        const promo = await this.processOrderPromotions(tx, {
+          ...dto,
+          items: dto.items,
+          branchId: existingOrder.branchId ?? undefined,
+          customerId: dto.customerId ?? existingOrder.customerId ?? undefined,
+          soldById: dto.soldById ?? existingOrder.soldById ?? undefined,
+        });
+        promoExtraDiscount = promo.extraDiscount;
+
         const itemsData = await Promise.all(
-          dto.items.map(async (item) => {
+          promo.effectiveItems.map(async (item) => {
             const product = await tx.product.findUnique({
               where: { id: item.productId },
             });
             if (!product)
               throw new Error(`Product ${item.productId} not found`);
 
-            const itemDiscount = item.discount || 0;
-            const itemDiscountRatio = item.discountRatio || 0;
+            const isGift = item.isGift || item.lineType === 'gift';
+            const itemDiscount = isGift ? 0 : item.discount || 0;
+            const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
+            const unitPrice = isGift ? 0 : item.unitPrice;
             const totalPrice =
-              (item.unitPrice - itemDiscount) * item.quantity -
-              (item.unitPrice * item.quantity * itemDiscountRatio) / 100;
+              (unitPrice - itemDiscount) * item.quantity -
+              (unitPrice * item.quantity * itemDiscountRatio) / 100;
             const appliedPrice =
-              item.unitPrice -
+              unitPrice -
               itemDiscount -
-              (item.unitPrice * itemDiscountRatio) / 100;
+              (unitPrice * itemDiscountRatio) / 100;
 
             return {
               orderId: id,
@@ -284,7 +561,7 @@ export class OrdersService {
               productCode: product.code,
               productName: product.name,
               quantity: item.quantity,
-              price: item.unitPrice,
+              price: unitPrice,
               appliedPrice: appliedPrice,
               discount: itemDiscount,
               discountRatio: itemDiscountRatio,
@@ -292,6 +569,9 @@ export class OrdersService {
               note: item.note || null,
               serialNumbers: item.serialNumbers || null,
               conditionType: item.conditionType || 'normal',
+              lineType: item.lineType || 'normal',
+              isGift: isGift,
+              promotionId: item.promotionId ?? null,
             };
           }),
         );
@@ -299,6 +579,17 @@ export class OrdersService {
         await tx.orderItem.createMany({
           data: itemsData,
         });
+
+        // Ghi log KM mới + tăng usageCount
+        if (promo.logs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: promo.logs.map((l) => ({ ...l, orderId: id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: promo.logs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
+          });
+        }
       }
 
       const updateData: any = {
@@ -308,7 +599,12 @@ export class OrdersService {
         saleChannelId: dto.saleChannelId,
         orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
         paidAmount: dto.paidAmount,
-        discount: dto.discountAmount,
+        discount:
+          dto.discountAmount != null
+            ? (dto.discountAmount || 0) + (promoExtraDiscount ?? 0)
+            : promoExtraDiscount != null
+              ? promoExtraDiscount
+              : undefined,
         discountRatio: dto.discountRatio,
         depositAmount: dto.depositAmount,
         description: dto.description,
@@ -857,6 +1153,18 @@ export class OrdersService {
         throw new Error('Order not found');
       }
 
+      // Hoàn lại usageCount của KM trước khi xóa cứng (log sẽ bị cascade-delete)
+      const promoLogs = await tx.invoicePromotionLog.findMany({
+        where: { orderId: id, status: 'applied' },
+        select: { promotionId: true },
+      });
+      for (const lg of promoLogs) {
+        await tx.promotion.updateMany({
+          where: { id: lg.promotionId },
+          data: { usageCount: { decrement: 1 } },
+        });
+      }
+
       await tx.order.delete({ where: { id } });
 
       const user = await tx.user.findUnique({
@@ -996,6 +1304,24 @@ export class OrdersService {
           debtAmount: 0,
         },
       });
+
+      // Hoàn lại usageCount + đảo log KM của đơn (đơn chưa xuất hóa đơn nên log thuộc về order)
+      const promoLogs = await tx.invoicePromotionLog.findMany({
+        where: { orderId: id, status: 'applied' },
+        select: { id: true, promotionId: true },
+      });
+      if (promoLogs.length > 0) {
+        for (const lg of promoLogs) {
+          await tx.promotion.updateMany({
+            where: { id: lg.promotionId },
+            data: { usageCount: { decrement: 1 } },
+          });
+        }
+        await tx.invoicePromotionLog.updateMany({
+          where: { orderId: id, status: 'applied' },
+          data: { status: 'reverted' },
+        });
+      }
 
       // Log audit hủy đơn hàng
       await this.auditLogsService.create({

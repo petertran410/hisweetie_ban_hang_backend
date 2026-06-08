@@ -7,9 +7,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { OrdersModule } from '../orders/orders.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { PackingSlipsModule } from '../packing-slips/packing-slips.module';
+import { PromotionsModule } from '../promotions/promotions.module';
 
 @Module({
-  imports: [PrismaModule, OrdersModule, AuditLogsModule, PackingSlipsModule],
+  imports: [
+    PrismaModule,
+    OrdersModule,
+    AuditLogsModule,
+    PackingSlipsModule,
+    PromotionsModule,
+  ],
   controllers: [InvoicesController, InvoicePaymentsController],
   providers: [InvoicesService, InvoicePaymentsService],
   exports: [InvoicesService, InvoicePaymentsService],
