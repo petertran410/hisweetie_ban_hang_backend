@@ -641,27 +641,32 @@ export class ReportsService {
     const allowedCustomerIds = activeCustomers.map((c) => c.id);
     if (allowedCustomerIds.length === 0) return [];
 
+    // Tập khách hàng được phép — dùng để lọc kết quả groupBy phía JS.
+    // KHÔNG nhồi `customerId IN (...)` vào where vì khi số khách lớn,
+    // PostgreSQL vượt giới hạn 32767 bind variables trong prepared statement.
+    const allowedSet = new Set(allowedCustomerIds);
+
     const invoiceBaseWhere: any = {
       status: { not: INVOICE_STATUS.CANCELLED },
-      customerId: { in: allowedCustomerIds },
     };
+    if (query.customerId) invoiceBaseWhere.customerId = query.customerId;
     if (query.branchId) invoiceBaseWhere.branchId = query.branchId;
 
     const cashFlowBaseWhere: any = {
       partnerType: 'C',
       status: { not: 2 },
-      partnerId: { in: allowedCustomerIds },
     };
+    if (query.customerId) cashFlowBaseWhere.partnerId = query.customerId;
     if (query.branchId) cashFlowBaseWhere.branchId = query.branchId;
 
     const roBaseWhere: any = {
-      customerId: { in: allowedCustomerIds },
       OR: [
         { status: 2 },
         { status: 4, refundType: 'debt_offset' },
         { status: 4, refundType: 'cash_refund' },
       ],
     };
+    if (query.customerId) roBaseWhere.customerId = query.customerId;
     if (query.branchId) roBaseWhere.branchId = query.branchId;
 
     const sumInvoice = (extra: any) =>
@@ -728,6 +733,8 @@ export class ReportsService {
     for (const id of allowedCustomerIds) {
       map.set(id, { openingDebt: 0, debit: 0, credit: 0, closingDebt: 0 });
     }
+    // Vì where không còn lọc theo allowedCustomerIds nữa, ta lọc tại đây:
+    // chỉ cộng dồn cho khách hàng nằm trong tập được phép.
     const ensure = (id: number) => {
       if (!map.has(id))
         map.set(id, { openingDebt: 0, debit: 0, credit: 0, closingDebt: 0 });
@@ -735,29 +742,29 @@ export class ReportsService {
     };
 
     for (const r of invBefore)
-      if (r.customerId != null)
+      if (r.customerId != null && allowedSet.has(r.customerId))
         ensure(r.customerId).openingDebt += Number(r._sum.grandTotal) || 0;
     for (const r of cfReceiptBefore)
-      if (r.partnerId != null)
+      if (r.partnerId != null && allowedSet.has(r.partnerId))
         ensure(r.partnerId).openingDebt -= Number(r._sum.amount) || 0;
     for (const r of cfPaidBefore)
-      if (r.partnerId != null)
+      if (r.partnerId != null && allowedSet.has(r.partnerId))
         ensure(r.partnerId).openingDebt += Number(r._sum.amount) || 0;
     for (const r of roBefore)
-      if (r.customerId != null)
+      if (r.customerId != null && allowedSet.has(r.customerId))
         ensure(r.customerId).openingDebt -= Number(r._sum.refundAmount) || 0;
 
     for (const r of invIn)
-      if (r.customerId != null)
+      if (r.customerId != null && allowedSet.has(r.customerId))
         ensure(r.customerId).debit += Number(r._sum.grandTotal) || 0;
     for (const r of cfReceiptIn)
-      if (r.partnerId != null)
+      if (r.partnerId != null && allowedSet.has(r.partnerId))
         ensure(r.partnerId).credit += Number(r._sum.amount) || 0;
     for (const r of cfPaidIn)
-      if (r.partnerId != null)
+      if (r.partnerId != null && allowedSet.has(r.partnerId))
         ensure(r.partnerId).credit -= Number(r._sum.amount) || 0;
     for (const r of roIn)
-      if (r.customerId != null)
+      if (r.customerId != null && allowedSet.has(r.customerId))
         ensure(r.customerId).credit += Number(r._sum.refundAmount) || 0;
 
     const result: Array<{ customerId: number } & Row> = [];
