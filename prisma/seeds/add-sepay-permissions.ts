@@ -11,6 +11,14 @@ const NEW_PERMISSIONS = [
     category: 'Tài chính',
   },
   {
+    name: 'sepay:view_all',
+    resource: 'sepay',
+    action: 'view_all',
+    description:
+      'Xem toàn bộ giao dịch Sepay (bỏ qua lọc theo tài khoản) — dành cho kế toán',
+    category: 'Tài chính',
+  },
+  {
     name: 'sepay:sync',
     resource: 'sepay',
     action: 'sync',

@@ -27,8 +27,7 @@ export class SettingsService {
           allowSellWhenOutStock: true,
           syncKiotEnabled: true,
         },
-      });
-    }
+      });    }
 
     return settings;
   }
@@ -42,6 +41,7 @@ export class SettingsService {
       allowSellWhenOrderOutStock: settings.allowSellWhenOrderOutStock,
       allowSellWhenOutStock: settings.allowSellWhenOutStock,
       syncKiotEnabled: settings.syncKiotEnabled,
+      sepayFilterByAccount: settings.sepayFilterByAccount,
     };
 
     const updated = await this.prisma.settings.update({
@@ -52,6 +52,7 @@ export class SettingsService {
         allowSellWhenOrderOutStock: dto.allowSellWhenOrderOutStock,
         allowSellWhenOutStock: dto.allowSellWhenOutStock,
         syncKiotEnabled: dto.syncKiotEnabled,
+        sepayFilterByAccount: dto.sepayFilterByAccount,
       },
     });
 
