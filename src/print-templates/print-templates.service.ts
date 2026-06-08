@@ -432,19 +432,30 @@ export class PrintTemplatesService {
     };
   }
 
-  private deliveryVars(delivery: any) {
+  private deliveryVars(delivery: any, customer?: any) {
     const weight = delivery?.weight ? Number(delivery.weight) : 0;
     const unit = delivery?.weightUnit || 'g';
     const formatted = weight
       ? `${new Intl.NumberFormat('en-US').format(weight)} ${unit}`
       : '';
 
+    // Fallback lấy từ default address của customer khi delivery snapshot trống
+    const defaultAddr = customer?.addresses?.[0];
+
     return {
-      Nguoi_Nhan: delivery?.receiver || '',
-      Dien_Thoai_Nhan: delivery?.contactNumber || '',
-      Dia_Chi_Giao_Hang: delivery?.address || '',
-      Phuong_Xa_Giao_Hang: delivery?.wardName || '',
-      Khu_Vuc_Giao_Hang: delivery?.locationName || '',
+      Nguoi_Nhan: delivery?.receiver || customer?.name || '',
+      Dien_Thoai_Nhan: delivery?.contactNumber || customer?.contactNumber || '',
+      Dia_Chi_Giao_Hang: delivery?.address || defaultAddr?.address || '',
+      Phuong_Xa_Giao_Hang:
+        delivery?.wardName ||
+        defaultAddr?.newWardName ||
+        defaultAddr?.wardName ||
+        '',
+      Khu_Vuc_Giao_Hang:
+        delivery?.locationName ||
+        defaultAddr?.newCityName ||
+        defaultAddr?.cityName ||
+        '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
       Khoi_Luong: formatted,
@@ -514,7 +525,7 @@ export class PrintTemplatesService {
       ...this.dateVars(inv.purchaseDate),
       ...this.customerVars(inv.customer, inv.delivery),
       ...this.staffVars(inv.soldBy, inv.creator),
-      ...this.deliveryVars(inv.delivery),
+      ...this.deliveryVars(inv.delivery, inv.customer),
       ...this.qrVars(inv.soldBy, inv.grandTotal, inv.code),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
@@ -536,7 +547,7 @@ export class PrintTemplatesService {
       ...this.dateVars(o.orderDate),
       ...this.customerVars(o.customer, o.delivery),
       ...this.staffVars(o.soldBy, o.creator),
-      ...this.deliveryVars(o.delivery),
+      ...this.deliveryVars(o.delivery, o.customer),
       ...this.qrVars(o.soldBy, o.grandTotal, o.code),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
