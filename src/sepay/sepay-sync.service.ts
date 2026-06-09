@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuthService } from '../auth/auth.service';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
 import { SepayMatchService } from './sepay-match.service';
 
@@ -53,6 +54,7 @@ export class SepaySyncService {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
     private readonly matchService: SepayMatchService,
+    private readonly authService: AuthService,
   ) {
     this.baseUrl = this.configService.get<string>(
       'SEPAY_API_URL',
@@ -258,6 +260,7 @@ export class SepaySyncService {
    */
   private async resolveAccountRestriction(
     currentUser?: any,
+    branchId?: number,
   ): Promise<string | 'BYPASS' | 'NONE' | undefined> {
     if (!currentUser) return undefined;
 
@@ -272,7 +275,19 @@ export class SepaySyncService {
     }
 
     // Kế toán: có quyền sepay:view_all → xem toàn bộ giao dịch (bỏ qua lọc TK).
-    const permissions: string[] = currentUser.permissions || [];
+    // Quyền có thể được cấp per-branch (roleBranchPermission) nên phải resolve
+    // theo chi nhánh giống PermissionsGuard, không chỉ dựa vào permissions global.
+    let permissions: string[] = currentUser.permissions || [];
+    if (branchId) {
+      try {
+        permissions = await this.authService.getPermissionsForBranch(
+          currentUser.id,
+          branchId,
+        );
+      } catch {
+        // fallback dùng permissions global nếu resolve lỗi
+      }
+    }
     if (permissions.includes('sepay:view_all')) {
       return 'BYPASS';
     }
@@ -283,10 +298,108 @@ export class SepaySyncService {
   }
 
   /**
+   * Tổng hợp giao dịch CẦN XỬ LÝ (status processing) cho thông báo sale:
+   *   - tiền vào (amount_in > 0)
+   *   - chưa gán khách (assigned_customer_id null)
+   *   - chưa tạo phiếu thu (cash_flow_id null)
+   *   - KHÔNG khớp webhook (không có invoice/order payment cùng sepay_id còn hiệu lực)
+   * Tôn trọng phân quyền theo tài khoản (giống findAll).
+   * Trả { count, latestId, latest: { amountIn, accountNumber, bankBrandName } }.
+   */
+  async getPendingSummary(currentUser?: any, branchId?: number) {
+    const empty = {
+      count: 0,
+      latestId: null as number | null,
+      latest: null as {
+        amountIn: string;
+        accountNumber: string | null;
+        bankBrandName: string | null;
+      } | null,
+    };
+
+    const restrict = await this.resolveAccountRestriction(currentUser, branchId);
+    if (restrict === 'NONE') {
+      return empty;
+    }
+
+    // Điều kiện lọc tài khoản (raw SQL) — chỉ khi không bypass và có ràng buộc.
+    const acc =
+      restrict && restrict !== 'BYPASS' ? restrict : undefined;
+    const accClause = acc
+      ? Prisma.sql`AND (st.sub_account = ${acc} OR (st.account_number = ${acc} AND st.sub_account IS NULL))`
+      : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        count: bigint;
+        latest_id: number | null;
+        amount_in: string | null;
+        account_number: string | null;
+        bank_brand_name: string | null;
+      }[]
+    >`
+      SELECT
+        COUNT(*)::bigint AS count,
+        latest.id AS latest_id,
+        latest.amount_in AS amount_in,
+        latest.account_number AS account_number,
+        latest.bank_brand_name AS bank_brand_name
+      FROM sepay_transactions st
+      LEFT JOIN LATERAL (
+        SELECT s2.id, s2.amount_in, s2.account_number, s2.bank_brand_name
+        FROM sepay_transactions s2
+        WHERE s2.amount_in > 0
+          AND s2.assigned_customer_id IS NULL
+          AND s2.cash_flow_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM invoice_payments ip
+            WHERE ip.sepay_transaction_id = s2.sepay_id AND ip.status <> 2
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM order_payments op
+            WHERE op.sepay_transaction_id = s2.sepay_id AND op.status <> 2
+          )
+          ${acc ? Prisma.sql`AND (s2.sub_account = ${acc} OR (s2.account_number = ${acc} AND s2.sub_account IS NULL))` : Prisma.empty}
+        ORDER BY s2.id DESC
+        LIMIT 1
+      ) latest ON TRUE
+      WHERE st.amount_in > 0
+        AND st.assigned_customer_id IS NULL
+        AND st.cash_flow_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM invoice_payments ip
+          WHERE ip.sepay_transaction_id = st.sepay_id AND ip.status <> 2
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM order_payments op
+          WHERE op.sepay_transaction_id = st.sepay_id AND op.status <> 2
+        )
+        ${accClause}
+      GROUP BY latest.id, latest.amount_in, latest.account_number, latest.bank_brand_name
+    `;
+
+    const row = rows[0];
+    if (!row || !row.latest_id) return empty;
+    return {
+      count: Number(row.count),
+      latestId: row.latest_id,
+      latest: {
+        amountIn: row.amount_in ?? '0',
+        accountNumber: row.account_number,
+        bankBrandName: row.bank_brand_name,
+      },
+    };
+  }
+
+  /**
    * Danh sách giao dịch Sepay đã đồng bộ (đọc bảng sepay_transactions).
    * Có filter + phân trang. Chỉ đọc, không gọi Sepay API.
    */
-  async findAll(query: SepayTransactionQueryDto, currentUser?: any) {
+  async findAll(
+    query: SepayTransactionQueryDto,
+    currentUser?: any,
+    branchId?: number,
+  ) {
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(200, Math.max(1, Number(query.limit) || 20));
     const skip = (page - 1) * limit;
@@ -308,7 +421,7 @@ export class SepaySyncService {
     // ── Phân quyền theo tài khoản (Settings.sepayFilterByAccount) ──
     // Khi bật: user thường chỉ thấy record của TK ngân hàng đã gán cho họ.
     // Admin/Super Admin bypass. User chưa gán TK → không thấy gì.
-    const restrict = await this.resolveAccountRestriction(currentUser);
+    const restrict = await this.resolveAccountRestriction(currentUser, branchId);
     if (restrict === 'NONE') {
       // Cờ bật nhưng user chưa gán TK → trả rỗng
       return { data: [], total: 0, page, limit };

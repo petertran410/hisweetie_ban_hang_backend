@@ -2473,6 +2473,7 @@ export class CashFlowsService {
       { header: 'Loại', key: 'flowType', width: 10 },
       { header: 'Nhóm thu/chi', key: 'cashFlowGroupName', width: 20 },
       { header: 'Người nộp/nhận', key: 'partnerName', width: 22 },
+      { header: 'Mã KH/NCC', key: 'partnerCode', width: 16 },
       { header: 'Số điện thoại', key: 'contactNumber', width: 14 },
       { header: 'Giá trị', key: 'amount', width: 16 },
       { header: 'Hình thức TT', key: 'method', width: 14 },
@@ -2510,6 +2511,8 @@ export class CashFlowsService {
           method: true,
           partnerName: true,
           contactNumber: true,
+          partnerType: true,
+          partnerId: true,
           description: true,
           statusValue: true,
           branch: { select: { name: true } },
@@ -2520,8 +2523,52 @@ export class CashFlowsService {
 
       if (batch.length === 0) break;
 
+      // Batch query mã KH (partnerType='C') / mã NCC (partnerType='S') cho lô này.
+      const customerIds = [
+        ...new Set(
+          batch
+            .filter((cf) => cf.partnerType === 'C' && cf.partnerId)
+            .map((cf) => cf.partnerId as number),
+        ),
+      ];
+      const supplierIds = [
+        ...new Set(
+          batch
+            .filter((cf) => cf.partnerType === 'S' && cf.partnerId)
+            .map((cf) => cf.partnerId as number),
+        ),
+      ];
+
+      const [customers, suppliers] = await Promise.all([
+        customerIds.length
+          ? this.prisma.customer.findMany({
+              where: { id: { in: customerIds } },
+              select: { id: true, code: true },
+            })
+          : Promise.resolve([]),
+        supplierIds.length
+          ? this.prisma.supplier.findMany({
+              where: { id: { in: supplierIds } },
+              select: { id: true, code: true },
+            })
+          : Promise.resolve([]),
+      ]);
+
+      const customerCodeMap = new Map(
+        customers.map((c) => [c.id, c.code] as const),
+      );
+      const supplierCodeMap = new Map(
+        suppliers.map((s) => [s.id, s.code] as const),
+      );
+
       for (const cf of batch) {
         stt++;
+        const partnerCode =
+          cf.partnerType === 'C' && cf.partnerId
+            ? (customerCodeMap.get(cf.partnerId) ?? '')
+            : cf.partnerType === 'S' && cf.partnerId
+              ? (supplierCodeMap.get(cf.partnerId) ?? '')
+              : '';
         sheet
           .addRow({
             stt,
@@ -2532,6 +2579,7 @@ export class CashFlowsService {
             flowType: cf.isReceipt ? 'Thu' : 'Chi',
             cashFlowGroupName: cf.cashFlowGroup?.name ?? '',
             partnerName: cf.partnerName ?? '',
+            partnerCode,
             contactNumber: cf.contactNumber ?? '',
             amount: Number(cf.amount),
             method: cf.method ?? '',
