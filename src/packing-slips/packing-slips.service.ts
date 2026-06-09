@@ -409,6 +409,25 @@ export class PackingSlipsService {
   }
 
   /**
+   * Gửi lại (đồng bộ) phiếu chi lên Lark Base một cách thủ công.
+   * Logic upsert nằm trong larkExpenseSync.syncPackingSlipExpenses:
+   *   1. Có record_id đã lưu → update.
+   *   2. Chưa có → search theo "Mã Báo Đơn" trên Lark → update nếu thấy.
+   *   3. Không thấy → tạo mới.
+   * CHỜ kết quả để báo lỗi rõ ràng cho người dùng (khác auto fire-and-forget).
+   */
+  async resendLarkExpense(id: number) {
+    const fullPackingSlip = await this.findOne(id);
+    if (!this.larkExpenseSync.isEnabled()) {
+      throw new ServiceUnavailableException(
+        'Đồng bộ Lark chưa được cấu hình (LARK_EXPENSE_BASE_TOKEN)',
+      );
+    }
+    await this.larkExpenseSync.syncPackingSlipExpenses(fullPackingSlip as any);
+    return { message: 'Đã đồng bộ phiếu chi lên Lark' };
+  }
+
+  /**
    * Gửi lại thông báo giao hàng Zalo nhưng KHÔNG throw (fire-and-forget).
    * Dùng khi gọi tự động từ flow khác (vd: versioning hóa đơn) để không làm
    * fail nghiệp vụ gốc. Tự nuốt + log mọi lỗi.

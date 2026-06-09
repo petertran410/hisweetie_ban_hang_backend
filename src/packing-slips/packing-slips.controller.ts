@@ -63,6 +63,12 @@ export class PackingSlipsController {
     return this.packingSlipsService.resendDeliveryNotification(+id);
   }
 
+  @Post(':id/resend-lark')
+  @RequirePermissions('packing_slips:update')
+  resendLark(@Param('id') id: string) {
+    return this.packingSlipsService.resendLarkExpense(+id);
+  }
+
   @Delete(':id')
   @RequirePermissions('packing_slips:delete')
   remove(@Param('id') id: string, @Req() req: any) {
