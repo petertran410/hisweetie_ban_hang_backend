@@ -164,6 +164,64 @@ export class SyncKiotController {
   }
 
   /**
+   * CHỈ đồng bộ cột accountId của CashFlow (sổ quỹ) theo khoảng transDate.
+   * Map theo `code`; ghi bank_accounts.id nội bộ (từ kiot_viet_id của bank account).
+   * KHÔNG tạo mới, KHÔNG đụng bất kỳ field nào khác (kể cả ngày giờ).
+   *
+   * Body: { fromDate?: string; toDate?: string } — ISO datetime, optional.
+   *   Default fromDate: 2026-04-30T17:00:00.000Z (= 01/05/2026 00:00:00 giờ Asia/Ho_Chi_Minh).
+   *   Default toDate:   2026-05-31T16:59:59.999Z (= 31/05/2026 23:59:59 giờ Asia/Ho_Chi_Minh).
+   * Không update SyncControl.
+   */
+  @Post('cashflows/sync-account-id-by-date-range')
+  async syncCashflowsAccountIdByDateRange(
+    @Body() body?: { fromDate?: string; toDate?: string },
+  ) {
+    if (!(await this.syncService.isSyncEnabled())) {
+      this.logger.warn(
+        '⏭️ Sync disabled, skipping cashflows/sync-account-id-by-date-range',
+      );
+      return { success: false, reason: 'Sync is disabled' };
+    }
+
+    // Default fromDate: 01/05/2026 00:00:00 giờ VN (UTC+7) = 2026-04-30T17:00:00.000Z
+    const DEFAULT_FROM_DATE = '2026-04-30T17:00:00.000Z';
+    // Default toDate: 31/05/2026 23:59:59.999 giờ VN (UTC+7) = 2026-05-31T16:59:59.999Z
+    const DEFAULT_TO_DATE = '2026-05-31T16:59:59.999Z';
+
+    const fromDate = new Date(body?.fromDate ?? DEFAULT_FROM_DATE);
+    const toDate = new Date(body?.toDate ?? DEFAULT_TO_DATE);
+
+    if (isNaN(fromDate.getTime())) {
+      return { success: false, reason: `Invalid fromDate: ${body?.fromDate}` };
+    }
+    if (isNaN(toDate.getTime())) {
+      return { success: false, reason: `Invalid toDate: ${body?.toDate}` };
+    }
+    if (fromDate.getTime() > toDate.getTime()) {
+      return {
+        success: false,
+        reason: `fromDate (${fromDate.toISOString()}) must be <= toDate (${toDate.toISOString()})`,
+      };
+    }
+
+    this.logger.log(
+      `📨 Manual sync cashflow accountId where transDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]`,
+    );
+    const results = await this.syncService.runCashflowsAccountIdByDateRange(
+      fromDate,
+      toDate,
+    );
+    return {
+      success: true,
+      fromDate: fromDate.toISOString(),
+      toDate: toDate.toISOString(),
+      results,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
    * Sync Invoice theo khoảng purchaseDate (batch migration hóa đơn theo ngày).
    * Body: { fromDate?: string; toDate?: string } — ISO datetime, optional.
    *   Default fromDate: 2026-05-24T17:00:00.000Z (= 25/05/2026 00:00 giờ Asia/Ho_Chi_Minh).

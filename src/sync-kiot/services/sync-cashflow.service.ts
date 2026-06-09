@@ -50,6 +50,193 @@ export class SyncCashFlowService extends BaseSyncService {
   }
 
   /**
+   * CHỈ đồng bộ cột `accountId` cho CashFlow đã tồn tại, trong khoảng
+   * transDate [fromDate, toDate]. Không tạo mới, không đụng bất kỳ field nào
+   * khác (kể cả lastSyncedAt / updatedAt).
+   *
+   * CHỈ áp dụng cho phiếu chuyển khoản (KiotViet method = "Transfer", hisweetie
+   * "transfer"). Phiếu tiền mặt / ví điện tử / khác → bỏ qua.
+   *
+   * Mapping:
+   *   - sync_kiot_data.Cashflow.accountId = kiotVietId của bank account (KiotViet).
+   *   - hisweetie.bank_accounts.kiot_viet_id ← khớp với giá trị trên.
+   *   - Ghi hisweetie.cash_flows."accountId" = bank_accounts.id (id nội bộ).
+   *
+   * Khớp record theo `code` (chính xác). Dùng raw SQL UPDATE chỉ cột "accountId"
+   * để tránh @updatedAt tự động cập nhật.
+   */
+  async syncAccountIdByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<{
+    fetched: number;
+    matched: number;
+    updated: number;
+    skippedNoCode: number;
+    skippedNotTransfer: number;
+    skippedNoAccount: number;
+    skippedNoBankAccount: number;
+    skippedNotFound: number;
+    unchanged: number;
+  }> {
+    const transDateFrom = fromDate.toISOString();
+    const transDateTo = toDate.toISOString();
+    this.logger.log(
+      `🔄 [accountId-only] Sync cashflow.accountId where transDate in [${transDateFrom}, ${transDateTo}]...`,
+    );
+
+    // 1. Lấy toàn bộ cashflow trong khoảng ngày từ sync_kiot_data.
+    //    Dùng fetchPage (forward transDateFrom/transDateTo để DB-side filter),
+    //    vì fetchAll chỉ forward được modifiedFrom.
+    const allRecords: any[] = [];
+    let currentItem = 0;
+    const pageSize = 1000;
+    while (true) {
+      const page = await this.api.fetchPage<any>(
+        'cashflows',
+        currentItem,
+        pageSize,
+        undefined,
+        { transDateFrom, transDateTo },
+      );
+      if (!page || !page.data || page.data.length === 0) break;
+      allRecords.push(...page.data);
+      currentItem += page.data.length;
+      if (allRecords.length >= page.total) break;
+    }
+
+    const fetched = allRecords.length;
+    this.logger.log(`📥 [accountId-only] Fetched ${fetched} cashflow records`);
+
+    let matched = 0;
+    let updated = 0;
+    let skippedNoCode = 0;
+    let skippedNotTransfer = 0;
+    let skippedNoAccount = 0;
+    let skippedNoBankAccount = 0;
+    let skippedNotFound = 0;
+    let unchanged = 0;
+
+    // 2. Preload map: bank account kiotVietId → bank account id (nội bộ).
+    const kiotAccountIds = new Set<number>();
+    for (const r of allRecords) {
+      if (r?.accountId != null) kiotAccountIds.add(Number(r.accountId));
+    }
+
+    const bankAccountByKiotId = new Map<number, number>();
+    if (kiotAccountIds.size > 0) {
+      const bankAccounts = await this.prisma.bankAccount.findMany({
+        where: { kiotVietId: { in: [...kiotAccountIds] } },
+        select: { id: true, kiotVietId: true },
+      });
+      for (const ba of bankAccounts) {
+        if (ba.kiotVietId != null)
+          bankAccountByKiotId.set(Number(ba.kiotVietId), ba.id);
+      }
+    }
+
+    // 3. Preload map: code → { id, accountId hiện tại } cho cashflow đã tồn tại.
+    const codes = allRecords
+      .map((r) => r?.code)
+      .filter((c): c is string => typeof c === 'string' && c.length > 0);
+
+    const existingByCode = new Map<
+      string,
+      { id: number; accountId: number | null }
+    >();
+    if (codes.length > 0) {
+      // chunk tránh quá nhiều phần tử trong IN
+      const chunkSize = 1000;
+      for (let i = 0; i < codes.length; i += chunkSize) {
+        const chunk = codes.slice(i, i + chunkSize);
+        const rows = await this.prisma.cashFlow.findMany({
+          where: { code: { in: chunk } },
+          select: { id: true, code: true, accountId: true },
+        });
+        for (const row of rows) {
+          existingByCode.set(row.code, {
+            id: row.id,
+            accountId: row.accountId ?? null,
+          });
+        }
+      }
+    }
+
+    // 4. Duyệt từng record, update raw SQL chỉ cột "accountId".
+    for (const r of allRecords) {
+      const code: string | undefined = r?.code;
+      if (!code) {
+        skippedNoCode++;
+        continue;
+      }
+
+      const existing = existingByCode.get(code);
+      if (!existing) {
+        skippedNotFound++;
+        continue;
+      }
+      matched++;
+
+      // Chỉ xử lý phiếu chuyển khoản. KiotViet ghi method = "Transfer" (in hoa),
+      // hisweetie dùng "transfer" (thường) → so sánh lowercase. Tiền mặt / ví
+      // điện tử / khác đều bỏ qua (không đụng accountId).
+      const methodNorm = String(r.method ?? '')
+        .trim()
+        .toLowerCase();
+      if (methodNorm !== 'transfer') {
+        skippedNotTransfer++;
+        continue;
+      }
+
+      if (r.accountId == null) {
+        skippedNoAccount++;
+        continue;
+      }
+
+      const localBankAccountId = bankAccountByKiotId.get(Number(r.accountId));
+      if (localBankAccountId == null) {
+        skippedNoBankAccount++;
+        this.logger.warn(
+          `⚠️ [accountId-only] CashFlow ${code}: không tìm thấy bank_account ` +
+            `với kiot_viet_id=${r.accountId} → bỏ qua`,
+        );
+        continue;
+      }
+
+      if (existing.accountId === localBankAccountId) {
+        unchanged++;
+        continue;
+      }
+
+      // Raw SQL: chỉ update đúng cột "accountId", KHÔNG đụng updatedAt /
+      // lastSyncedAt / bất kỳ field nào khác. Cột Prisma `accountId` không có
+      // @map nên tên cột Postgres là "accountId".
+      await this.prisma.$executeRaw`
+        UPDATE "cash_flows"
+        SET "accountId" = ${localBankAccountId}
+        WHERE "id" = ${existing.id}
+      `;
+      updated++;
+    }
+
+    const result = {
+      fetched,
+      matched,
+      updated,
+      skippedNoCode,
+      skippedNotTransfer,
+      skippedNoAccount,
+      skippedNoBankAccount,
+      skippedNotFound,
+      unchanged,
+    };
+    this.logger.log(
+      `✅ [accountId-only] Done: ${JSON.stringify(result)}`,
+    );
+    return result;
+  }
+
+  /**
    * Normalize partnerType từ KiotViet sang format hisweetie
    * KiotViet: 'Customer' | '1' → 'C'
    * KiotViet: 'Supplier' | '2' → 'S'

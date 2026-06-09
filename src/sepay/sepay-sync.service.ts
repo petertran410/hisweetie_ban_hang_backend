@@ -314,6 +314,9 @@ export class SepaySyncService {
         amountIn: string;
         accountNumber: string | null;
         bankBrandName: string | null;
+        referenceNumber: string | null;
+        transactionContent: string | null;
+        transactionDate: Date | null;
       } | null,
     };
 
@@ -336,6 +339,9 @@ export class SepaySyncService {
         amount_in: string | null;
         account_number: string | null;
         bank_brand_name: string | null;
+        reference_number: string | null;
+        transaction_content: string | null;
+        transaction_date: Date | null;
       }[]
     >`
       SELECT
@@ -343,10 +349,14 @@ export class SepaySyncService {
         latest.id AS latest_id,
         latest.amount_in AS amount_in,
         latest.account_number AS account_number,
-        latest.bank_brand_name AS bank_brand_name
+        latest.bank_brand_name AS bank_brand_name,
+        latest.reference_number AS reference_number,
+        latest.transaction_content AS transaction_content,
+        latest.transaction_date AS transaction_date
       FROM sepay_transactions st
       LEFT JOIN LATERAL (
-        SELECT s2.id, s2.amount_in, s2.account_number, s2.bank_brand_name
+        SELECT s2.id, s2.amount_in, s2.account_number, s2.bank_brand_name,
+               s2.reference_number, s2.transaction_content, s2.transaction_date
         FROM sepay_transactions s2
         WHERE s2.amount_in > 0
           AND NOT EXISTS (
@@ -379,7 +389,8 @@ export class SepaySyncService {
           WHERE op.sepay_transaction_id = st.sepay_id AND op.status <> 2
         )
         ${accClause}
-      GROUP BY latest.id, latest.amount_in, latest.account_number, latest.bank_brand_name
+      GROUP BY latest.id, latest.amount_in, latest.account_number, latest.bank_brand_name,
+               latest.reference_number, latest.transaction_content, latest.transaction_date
     `;
 
     const row = rows[0];
@@ -391,6 +402,9 @@ export class SepaySyncService {
         amountIn: row.amount_in ?? '0',
         accountNumber: row.account_number,
         bankBrandName: row.bank_brand_name,
+        referenceNumber: row.reference_number,
+        transactionContent: row.transaction_content,
+        transactionDate: row.transaction_date,
       },
     };
   }

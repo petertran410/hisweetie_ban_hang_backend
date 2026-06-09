@@ -288,6 +288,36 @@ export class SyncKiotService {
   }
 
   /**
+   * CHỈ đồng bộ cột `accountId` cho CashFlow trong khoảng transDate
+   * [fromDate, toDate]. Không tạo mới, không cập nhật bất kỳ field nào khác
+   * (kể cả ngày giờ). Map theo `code`, ghi bank_accounts.id (nội bộ).
+   * Không update SyncControl.
+   */
+  async runCashflowsAccountIdByDateRange(
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<Record<string, any>> {
+    this.logger.log(
+      `📦 Starting CashFlow accountId-only sync where transDate in [${fromDate.toISOString()}, ${toDate.toISOString()}]...`,
+    );
+    try {
+      const result = await this.syncCashFlow.syncAccountIdByDateRange(
+        fromDate,
+        toDate,
+      );
+      this.logger.log(
+        `✅ CashFlow accountId-only sync completed: ${JSON.stringify(result)}`,
+      );
+      return { cashFlowsAccountId: { success: true, ...result } };
+    } catch (error: any) {
+      this.logger.error(
+        `❌ CashFlow accountId-only sync failed: ${error.message}`,
+      );
+      return { cashFlowsAccountId: { success: false, error: error.message } };
+    }
+  }
+
+  /**
    * Sync Invoice theo khoảng purchaseDate [fromDate, toDate].
    * Dùng cho batch migration hóa đơn (vd. lấy hết Invoice trong tháng 5/2026).
    * Không update SyncControl (giống pattern runCashflowsByDateRange) để không phá

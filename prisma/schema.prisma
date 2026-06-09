@@ -78,6 +78,7 @@ model User {
   exportedSupplierReturns        SupplierReturn[]       @relation("SupplierReturnExporter")
   refundConfirmedSupplierReturns SupplierReturn[]       @relation("SupplierReturnRefundConfirmer")
   bankAccountMapping             UserBankAccount?
+  notifications                  Notification[]
 
   @@map("users")
 }
@@ -2668,4 +2669,30 @@ model InvoicePromotionLog {
   @@index([orderId])
   @@index([promotionId])
   @@map("invoice_promotion_logs")
+}
+
+/// Thông báo cho người dùng (in-app). Thiết kế tổng quát theo `type`,
+/// trước mắt dùng cho giao dịch Sepay ("sepay_transaction").
+model Notification {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  type      String // vd: "sepay_transaction"
+  title     String
+  body      String?
+  /// Dữ liệu kèm theo (txId, referenceNumber, amountIn, ...). Dùng để render.
+  data      Json?
+  /// Deep-link dựng sẵn để điều hướng khi click.
+  link      String?
+  /// Khóa chống trùng trong cùng (userId, type) — vd sepayId. Sepay retry
+  /// webhook nhiều lần cũng không tạo thông báo lặp.
+  dedupeKey String?   @map("dedupe_key")
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, type, dedupeKey])
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("notifications")
 }

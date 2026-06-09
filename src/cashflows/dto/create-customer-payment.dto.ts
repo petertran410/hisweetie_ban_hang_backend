@@ -63,6 +63,10 @@ export class CreateCustomerPaymentDto {
   description?: string;
 
   @IsOptional()
+  @IsString()
+  sepayReferenceCode?: string;
+
+  @IsOptional()
   @IsBoolean()
   allocateToInvoices?: boolean;
 

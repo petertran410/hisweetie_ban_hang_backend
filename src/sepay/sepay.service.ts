@@ -4,6 +4,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvoicePaymentsService } from '../invoices/invoice-payments.service';
 import { OrderPaymentsService } from '../orders/order-payments.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationFanoutService } from '../notifications/notification-fanout.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 
 @Injectable()
@@ -18,6 +20,8 @@ export class SepayService {
     private configService: ConfigService,
     private invoicePaymentsService: InvoicePaymentsService,
     private orderPaymentsService: OrderPaymentsService,
+    private notificationsService: NotificationsService,
+    private notificationFanoutService: NotificationFanoutService,
   ) {}
 
   async handleWebhook(payload: SepayWebhookDto) {
@@ -226,17 +230,77 @@ export class SepayService {
         syncedAt: new Date(),
       };
 
-      await this.prisma.sepayTransaction.upsert({
+      const saved = await this.prisma.sepayTransaction.upsert({
         where: { sepayId },
         create: { sepayId, ...data },
         update: data,
       });
+
+      // Fan-out thông báo cho user được phép thấy giao dịch (chỉ tiền vào).
+      // Idempotent theo dedupeKey=sepayId → Sepay retry không tạo thông báo lặp.
+      if (isIn && amount > 0) {
+        await this.fanoutSepayNotification(saved);
+      }
     } catch (error) {
       // Không chặn luồng tạo phiếu thu nếu ghi lịch sử lỗi.
       this.logger.warn(
         `Sepay webhook: failed to record raw transaction (tx ${String(
           payload.id,
         )}): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Tạo thông báo in-app cho các user được phép thấy giao dịch tiền vào.
+   * Bọc try/catch riêng — lỗi fan-out không được làm hỏng luồng webhook.
+   */
+  private async fanoutSepayNotification(tx: {
+    id: number;
+    sepayId: string;
+    amountIn: Prisma.Decimal | number;
+    accountNumber: string | null;
+    subAccount: string | null;
+    bankBrandName: string | null;
+    referenceNumber: string | null;
+    transactionContent: string | null;
+  }) {
+    try {
+      const recipients = await this.notificationFanoutService.resolveSepayRecipients(
+        { accountNumber: tx.accountNumber, subAccount: tx.subAccount },
+      );
+      if (recipients.length === 0) return;
+
+      const amount = Number(tx.amountIn) || 0;
+      const bankInfo = [tx.bankBrandName, tx.accountNumber]
+        .filter(Boolean)
+        .join(' - ');
+      const key = tx.referenceNumber || tx.transactionContent || '';
+      const link = key
+        ? `/tai-chinh/bien-dong-so-du?search=${encodeURIComponent(key)}`
+        : '/tai-chinh/bien-dong-so-du';
+
+      await this.notificationsService.createForUsers(recipients, {
+        type: 'sepay_transaction',
+        title: 'Khách vừa chuyển khoản cần xử lý',
+        body: bankInfo || null,
+        link,
+        dedupeKey: tx.sepayId,
+        data: {
+          txId: tx.id,
+          sepayId: tx.sepayId,
+          amountIn: String(amount),
+          accountNumber: tx.accountNumber,
+          bankBrandName: tx.bankBrandName,
+          referenceNumber: tx.referenceNumber,
+          transactionContent: tx.transactionContent,
+        },
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Sepay webhook: fan-out notification failed (tx ${tx.sepayId}): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     }
   }
