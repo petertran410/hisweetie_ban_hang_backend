@@ -157,7 +157,7 @@ export class DashboardService {
         prevCogs,
       ] = await Promise.all([
         this.prisma.invoice.aggregate({
-          where: this.invoiceWhere({ gte: w.start }, branchId),
+          where: this.invoiceWhere({ gte: w.start, lt: w.end }, branchId),
           _sum: { grandTotal: true },
         }),
         this.prisma.invoice.aggregate({
@@ -168,7 +168,7 @@ export class DashboardService {
           _sum: { grandTotal: true },
         }),
         this.prisma.invoice.count({
-          where: this.invoiceWhere({ gte: w.start }, branchId),
+          where: this.invoiceWhere({ gte: w.start, lt: w.end }, branchId),
         }),
         this.prisma.invoice.count({
           where: this.invoiceWhere(
