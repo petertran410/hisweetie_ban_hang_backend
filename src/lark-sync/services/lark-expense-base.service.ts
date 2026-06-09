@@ -65,6 +65,109 @@ export class LarkExpenseBaseService {
   }
 
   /**
+   * Cập nhật 1 record theo record_id. Ném lỗi nếu thất bại (caller bắt
+   * isRecordNotFound để fallback search/create).
+   */
+  async updateRecord(
+    tableId: string,
+    recordId: string,
+    fields: Record<string, any>,
+  ): Promise<void> {
+    if (!this.baseToken) return;
+
+    try {
+      const res = await this.client.bitable.appTableRecord.update({
+        path: {
+          app_token: this.baseToken,
+          table_id: tableId,
+          record_id: recordId,
+        },
+        data: { fields },
+      });
+
+      if (res?.code && res.code !== 0) {
+        const err: any = new Error(
+          res.msg || `Lark API error code: ${res.code}`,
+        );
+        err.code = res.code;
+        throw err;
+      }
+    } catch (error: any) {
+      this.logger.error(
+        `Update expense record ${recordId} table=${tableId} failed: ${error.message}`,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Tìm tất cả record có <fieldName> = value (vd: Mã Báo Đơn = mã phiếu).
+   * Trả về mảng { recordId, text } trong đó text là nội dung field `textField`
+   * (vd: "NỘI DUNG") đã được flatten về string để caller match theo loại phí.
+   */
+  async searchRecordsByField(
+    tableId: string,
+    fieldName: string,
+    value: string,
+    textField: string,
+  ): Promise<Array<{ recordId: string; text: string }>> {
+    if (!this.baseToken) return [];
+
+    try {
+      const res = await this.client.bitable.appTableRecord.search({
+        path: { app_token: this.baseToken, table_id: tableId },
+        data: {
+          field_names: [fieldName, textField],
+          filter: {
+            conjunction: 'and',
+            conditions: [
+              { field_name: fieldName, operator: 'is', value: [value] },
+            ],
+          },
+        },
+      });
+
+      const items = res?.data?.items || [];
+      return items
+        .filter((it): it is typeof it & { record_id: string } => !!it.record_id)
+        .map((it) => ({
+          recordId: it.record_id,
+          text: this.flattenText(it.fields?.[textField]),
+        }));
+    } catch (error: any) {
+      this.logger.error(
+        `Search expense records table=${tableId} ${fieldName}=${value} failed: ${error.message}`,
+      );
+      return [];
+    }
+  }
+
+  /**
+   * Lark text field có thể trả về string, hoặc mảng segment { text }.
+   */
+  private flattenText(value: any): string {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (Array.isArray(value)) {
+      return value
+        .map((seg) => (typeof seg === 'string' ? seg : (seg?.text ?? '')))
+        .join('');
+    }
+    if (typeof value === 'object' && typeof value.text === 'string') {
+      return value.text;
+    }
+    return String(value);
+  }
+
+  /**
+   * Lark trả code 1254043 khi record_id không còn tồn tại.
+   */
+  isRecordNotFound(error: any): boolean {
+    const code = error?.code ?? error?.response?.data?.code ?? error?.errCode;
+    return code === 1254043;
+  }
+
+  /**
    * Upload 1 file (image/pdf/...) vào Lark Drive với parent_type=bitable
    * → trả về file_token để gắn vào field Attachment.
    *

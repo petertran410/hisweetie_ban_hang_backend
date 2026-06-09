@@ -10,9 +10,10 @@ import { PrismaService } from '../prisma/prisma.service';
  *     sepay:view_all ∪ user có tài khoản ngân hàng (UserBankAccount) khớp
  *     accountNumber/subAccount của giao dịch.
  *
- * Lưu ý: tính theo quyền GLOBAL (gộp role + userPermission, trừ deny). Không
- * phân giải theo từng chi nhánh — thông báo là kênh xuyên chi nhánh, chỉ cần
- * xác định "user này có khả năng thấy giao dịch hay không".
+ * Quyền được tính KHỚP với AuthService.getPermissionsForBranch nhưng gộp trên
+ * MỌI chi nhánh user có vai trò: hệ thống cấp quyền chủ yếu qua role theo chi
+ * nhánh (roleBranchPermissions) nên không thể chỉ đọc role global. Một user
+ * coi là "có quyền xem" nếu có sepay:view (hoặc view_all) ở ÍT NHẤT một branch.
  */
 @Injectable()
 export class NotificationFanoutService {
@@ -29,7 +30,8 @@ export class NotificationFanoutService {
     });
     const filterByAccount = !!settings?.sepayFilterByAccount;
 
-    // Nạp 1 lần: user active + role/permission + grant/deny + mapping TK ngân hàng.
+    // Nạp 1 lần: user active + role global + role theo chi nhánh + grant/deny
+    // + override theo chi nhánh + mapping TK ngân hàng.
     const users = await this.prisma.user.findMany({
       where: { isActive: true },
       select: {
@@ -40,7 +42,30 @@ export class NotificationFanoutService {
               select: {
                 name: true,
                 rolePermissions: {
-                  select: { permission: { select: { resource: true, action: true } } },
+                  select: {
+                    permission: { select: { resource: true, action: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
+        userBranchRoles: {
+          select: {
+            branchId: true,
+            role: {
+              select: {
+                name: true,
+                rolePermissions: {
+                  select: {
+                    permission: { select: { resource: true, action: true } },
+                  },
+                },
+                roleBranchPermissions: {
+                  select: {
+                    branchId: true,
+                    permission: { select: { resource: true, action: true } },
+                  },
                 },
               },
             },
@@ -49,6 +74,12 @@ export class NotificationFanoutService {
         userPermissions: {
           select: {
             type: true,
+            permission: { select: { resource: true, action: true } },
+          },
+        },
+        branchPermissions: {
+          select: {
+            granted: true,
             permission: { select: { resource: true, action: true } },
           },
         },
@@ -61,7 +92,10 @@ export class NotificationFanoutService {
     const recipients: number[] = [];
 
     for (const u of users) {
-      const roleNames = u.userRoles.map((ur) => ur.role.name);
+      const roleNames = [
+        ...u.userRoles.map((ur) => ur.role.name),
+        ...u.userBranchRoles.map((ubr) => ubr.role.name),
+      ];
       const isAdmin =
         roleNames.includes('Super Admin') || roleNames.includes('Admin');
 
@@ -91,17 +125,59 @@ export class NotificationFanoutService {
     return recipients;
   }
 
-  /** Gộp quyền từ role + userPermission (grant), loại bỏ deny. */
+  /**
+   * Gộp quyền của user trên MỌI chi nhánh — mô phỏng getPermissionsForBranch
+   * nhưng không giới hạn 1 branch:
+   *   - base = ∪ theo từng branch role (ưu tiên roleBranchPermissions của branch
+   *     đó, fallback rolePermissions) ∪ role global (rolePermissions).
+   *   - cộng userPermissions(grant), trừ userPermissions(deny).
+   *   - áp userBranchPermission: granted → thêm, ngược lại → bớt.
+   */
   private computePermissionKeys(u: {
-    userRoles: { role: { rolePermissions: { permission: { resource: string; action: string } }[] } }[];
+    userRoles: {
+      role: { rolePermissions: { permission: { resource: string; action: string } }[] };
+    }[];
+    userBranchRoles: {
+      branchId: number;
+      role: {
+        rolePermissions: { permission: { resource: string; action: string } }[];
+        roleBranchPermissions: {
+          branchId: number;
+          permission: { resource: string; action: string };
+        }[];
+      };
+    }[];
     userPermissions: { type: string; permission: { resource: string; action: string } }[];
+    branchPermissions: {
+      granted: boolean;
+      permission: { resource: string; action: string };
+    }[];
   }): Set<string> {
     const keys = new Set<string>();
+
+    // Role theo chi nhánh: ưu tiên roleBranchPermissions của đúng branch,
+    // fallback về rolePermissions của role.
+    for (const ubr of u.userBranchRoles) {
+      const branchPerms = ubr.role.roleBranchPermissions.filter(
+        (rbp) => rbp.branchId === ubr.branchId,
+      );
+      const source =
+        branchPerms.length > 0
+          ? branchPerms.map((rbp) => rbp.permission)
+          : ubr.role.rolePermissions.map((rp) => rp.permission);
+      for (const perm of source) {
+        keys.add(`${perm.resource}:${perm.action}`);
+      }
+    }
+
+    // Role global (nếu có) — vd Super Admin.
     for (const ur of u.userRoles) {
       for (const rp of ur.role.rolePermissions) {
         keys.add(`${rp.permission.resource}:${rp.permission.action}`);
       }
     }
+
+    // Grant/deny trực tiếp trên user.
     const deny = new Set<string>();
     for (const up of u.userPermissions) {
       const key = `${up.permission.resource}:${up.permission.action}`;
@@ -109,6 +185,14 @@ export class NotificationFanoutService {
       else if (up.type === 'deny') deny.add(key);
     }
     for (const d of deny) keys.delete(d);
+
+    // Override theo chi nhánh (UserBranchPermission).
+    for (const bp of u.branchPermissions) {
+      const key = `${bp.permission.resource}:${bp.permission.action}`;
+      if (bp.granted) keys.add(key);
+      else keys.delete(key);
+    }
+
     return keys;
   }
 

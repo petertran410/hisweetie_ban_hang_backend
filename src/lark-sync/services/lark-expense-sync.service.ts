@@ -41,6 +41,7 @@ interface PackingSlipForSync {
   feeGrab?: any;
   hasCuocGuiHang: boolean;
   cuocGuiHang?: any;
+  larkExpenseRecordIds?: any;
   expensePayer?: {
     id: number;
     name: string;
@@ -81,6 +82,10 @@ export class LarkExpenseSyncService {
       this.config.get<string>('API_URL') ||
       this.config.get<string>('APP_PUBLIC_URL') ||
       'http://localhost:3060';
+  }
+
+  isEnabled(): boolean {
+    return this.expenseBase.isEnabled();
   }
 
   /**
@@ -184,6 +189,15 @@ export class LarkExpenseSyncService {
     // Map feeName → recordId vừa tạo trên Lark, để lưu lại vào DB.
     const recordMap: Record<string, string> = {};
 
+    // Record_id đã lưu trước đó (nếu phiếu từng sync). Chỉ tái sử dụng khi
+    // cùng table (tránh dùng nhầm record_id của bảng HN cho bảng SG).
+    const stored = this.parseStoredRecords(slip.larkExpenseRecordIds);
+    const storedRecords: Record<string, string> =
+      stored && stored.tableId === target.tableId ? stored.records : {};
+
+    // Cache kết quả search theo mã báo đơn (chỉ gọi 1 lần khi cần fallback).
+    let searchedByCode: Array<{ recordId: string; text: string }> | null = null;
+
     for (const fee of fees) {
       const noiDung = this.buildNoiDung(
         fee.feeName,
@@ -197,6 +211,61 @@ export class LarkExpenseSyncService {
       };
 
       try {
+        // ── Bước 1: đã có record_id lưu sẵn → update thẳng ──
+        const knownId = storedRecords[fee.feeName];
+        if (knownId) {
+          try {
+            await this.expenseBase.updateRecord(
+              target.tableId,
+              knownId,
+              fields,
+            );
+            recordMap[fee.feeName] = knownId;
+            this.logger.log(
+              `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} update record=${knownId}`,
+            );
+            continue;
+          } catch (err: any) {
+            if (!this.expenseBase.isRecordNotFound(err)) throw err;
+            // record bị xoá trên Lark → rơi xuống search/create
+            this.logger.warn(
+              `Record ${knownId} không còn trên Lark (PackingSlip#${slip.id}, ${fee.feeName}) → search/create lại`,
+            );
+          }
+        }
+
+        // ── Bước 2: chưa có / record cũ bị xoá → search theo Mã Báo Đơn ──
+        let matchedId: string | null = null;
+        if (slip.code) {
+          if (searchedByCode === null) {
+            searchedByCode = await this.expenseBase.searchRecordsByField(
+              target.tableId,
+              'Mã Báo Đơn',
+              slip.code,
+              'NỘI DUNG',
+            );
+          }
+          // Match đúng record của loại phí này qua NỘI DUNG (bắt đầu bằng tên phí).
+          // Loại trừ record_id đã gán cho phí khác trong cùng lần chạy.
+          const usedIds = new Set(Object.values(recordMap));
+          const found = searchedByCode.find(
+            (r) =>
+              !usedIds.has(r.recordId) &&
+              r.text.trim().startsWith(fee.feeName),
+          );
+          matchedId = found?.recordId || null;
+        }
+
+        if (matchedId) {
+          await this.expenseBase.updateRecord(target.tableId, matchedId, fields);
+          recordMap[fee.feeName] = matchedId;
+          this.logger.log(
+            `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} matched+update record=${matchedId}`,
+          );
+          continue;
+        }
+
+        // ── Bước 3: không tìm thấy → tạo mới ──
         const recordId = await this.expenseBase.createRecord(
           target.tableId,
           fields,
@@ -205,7 +274,7 @@ export class LarkExpenseSyncService {
           recordMap[fee.feeName] = recordId;
         }
         this.logger.log(
-          `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} record=${recordId}`,
+          `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} create record=${recordId}`,
         );
       } catch (err: any) {
         this.logger.error(
@@ -260,6 +329,21 @@ export class LarkExpenseSyncService {
       };
     }
     return null;
+  }
+
+  /**
+   * Đọc lại record_id đã lưu (cột larkExpenseRecordIds dạng Json).
+   * Trả về { tableId, records } hoặc null nếu không hợp lệ.
+   */
+  private parseStoredRecords(
+    raw: any,
+  ): { tableId: string; records: Record<string, string> } | null {
+    if (!raw || typeof raw !== 'object') return null;
+    const tableId = typeof raw.tableId === 'string' ? raw.tableId : null;
+    const records =
+      raw.records && typeof raw.records === 'object' ? raw.records : null;
+    if (!tableId || !records) return null;
+    return { tableId, records };
   }
 
   private buildNoiDung(
