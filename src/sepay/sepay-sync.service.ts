@@ -349,8 +349,10 @@ export class SepaySyncService {
         SELECT s2.id, s2.amount_in, s2.account_number, s2.bank_brand_name
         FROM sepay_transactions s2
         WHERE s2.amount_in > 0
-          AND s2.assigned_customer_id IS NULL
-          AND s2.cash_flow_id IS NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM sepay_allocations sa
+            WHERE sa.sepay_transaction_id = s2.id
+          )
           AND NOT EXISTS (
             SELECT 1 FROM invoice_payments ip
             WHERE ip.sepay_transaction_id = s2.sepay_id AND ip.status <> 2
@@ -364,8 +366,10 @@ export class SepaySyncService {
         LIMIT 1
       ) latest ON TRUE
       WHERE st.amount_in > 0
-        AND st.assigned_customer_id IS NULL
-        AND st.cash_flow_id IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM sepay_allocations sa
+          WHERE sa.sepay_transaction_id = st.id
+        )
         AND NOT EXISTS (
           SELECT 1 FROM invoice_payments ip
           WHERE ip.sepay_transaction_id = st.sepay_id AND ip.status <> 2
@@ -481,9 +485,6 @@ export class SepaySyncService {
       select: {
         id: true,
         sepayId: true,
-        assignedCustomerId: true,
-        assignedCustomerName: true,
-        cashFlowId: true,
       },
     });
 
@@ -507,14 +508,9 @@ export class SepaySyncService {
   }
 
   /** Gắn thông tin đối soát (match) vào từng giao dịch. */
-  private async attachMatch<
-    T extends {
-      sepayId: string;
-      assignedCustomerId: number | null;
-      assignedCustomerName: string | null;
-      cashFlowId: number | null;
-    },
-  >(rows: T[]) {
+  private async attachMatch<T extends { id: number; sepayId: string }>(
+    rows: T[],
+  ) {
     const matchMap = await this.matchService.buildMatchInfo(rows);
     return rows.map((r) => ({
       ...r,

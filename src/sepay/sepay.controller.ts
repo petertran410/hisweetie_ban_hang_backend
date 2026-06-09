@@ -27,7 +27,7 @@ import { SepaySyncService } from './sepay-sync.service';
 import { SepayMatchService } from './sepay-match.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
-import { AssignCustomerDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
+import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
 
 @ApiTags('Sepay')
 @Controller('sepay')
@@ -166,13 +166,13 @@ export class SepayController {
    */
   @Put('transactions/:id/assign')
   @RequirePermissions('sepay:assign')
-  @ApiOperation({ summary: 'Gán khách hàng cho giao dịch Sepay' })
+  @ApiOperation({ summary: 'Gán (nhiều) khách hàng cho giao dịch Sepay' })
   async assignCustomer(
     @Param('id') id: string,
-    @Body() dto: AssignCustomerDto,
+    @Body() dto: AssignCustomersDto,
     @CurrentUser() user: any,
   ) {
-    return this.sepayMatchService.assignCustomer(
+    return this.sepayMatchService.assignCustomers(
       Number(id),
       dto,
       user?.id || 1,
