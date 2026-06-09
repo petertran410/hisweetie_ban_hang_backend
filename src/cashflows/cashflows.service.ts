@@ -1928,6 +1928,7 @@ export class CashFlowsService {
               collectorUserId: dto.collectorUserId || userId,
               usedForFinancialReporting: 1,
               customerDebtSnapshot: 0,
+              sepayReferenceCode: dto.sepayReferenceCode || null,
             },
           });
           cashFlows.push(cf);
@@ -1994,6 +1995,7 @@ export class CashFlowsService {
                 collectorUserId: dto.collectorUserId || userId,
                 usedForFinancialReporting: 1,
                 customerDebtSnapshot: 0,
+                sepayReferenceCode: dto.sepayReferenceCode || null,
               },
             });
             cashFlows.push(cf);

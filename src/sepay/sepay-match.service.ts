@@ -34,6 +34,9 @@ export interface SepayMatchInfo {
   customers: SepayMatchCustomer[];
   // Mã hóa đơn/đơn hàng (nếu hoàn thành qua webhook)
   refCode: string | null;
+  // Số tiền CHƯA gắn vào khách nào (vd sau khi 1 phiếu thu bị hủy).
+  // = amountIn - tổng tiền các phiếu thu còn hiệu lực.
+  unassignedAmount?: number;
 }
 
 interface TxLite {
@@ -72,7 +75,7 @@ export class SepayMatchService {
     const txIds = transactions.map((t) => t.id);
 
     // ── 1. Webhook payments theo sepayTransactionId (cả invoice + order) ──
-    const [invPays, ordPays, allocations] = await Promise.all([
+    const [invPays, ordPays, allocations, txAmounts] = await Promise.all([
       this.prisma.invoicePayment.findMany({
         where: { sepayTransactionId: { in: sepayIds }, status: { not: 2 } },
         select: {
@@ -101,7 +104,15 @@ export class SepayMatchService {
         where: { sepayTransactionId: { in: txIds } },
         orderBy: { id: 'asc' },
       }),
+      this.prisma.sepayTransaction.findMany({
+        where: { id: { in: txIds } },
+        select: { id: true, amountIn: true },
+      }),
     ]);
+
+    const txAmountMap = new Map(
+      txAmounts.map((t) => [t.id, Number(t.amountIn)] as const),
+    );
 
     const webhookMap = new Map<
       string,
@@ -191,13 +202,34 @@ export class SepayMatchService {
         continue;
       }
 
-      // Có ít nhất 1 phiếu thu còn hiệu lực → completed
-      const anyActiveCf = allocs.some((a) => {
+      const amountIn = Number(txAmountMap.get(tx.id) ?? 0);
+
+      // Phân loại allocation theo trạng thái phiếu thu:
+      //   - cf hủy (status=2)  → BỎ khỏi danh sách khách; tiền quay về "chưa gắn".
+      //   - cf còn hiệu lực     → khách hoàn thành, tiền đã thu hợp lệ.
+      //   - chưa có cf (amount>0 hoặc =0) → khách đã gán, chờ tạo phiếu.
+      const visibleAllocs = allocs.filter((a) => {
+        if (!a.cashFlowId) return true; // chưa tạo phiếu → vẫn hiện
+        const cf = cashFlowMap.get(a.cashFlowId);
+        return cf ? cf.status !== 2 : false; // phiếu đã hủy → ẩn
+      });
+
+      // Tổng tiền các phiếu thu CÒN HIỆU LỰC (đã thu thật sự).
+      const activeCollected = allocs.reduce((s, a) => {
+        if (!a.cashFlowId) return s;
+        const cf = cashFlowMap.get(a.cashFlowId);
+        return cf && cf.status !== 2 ? s + Number(a.amount) : s;
+      }, 0);
+
+      const unassignedAmount =
+        Math.round((amountIn - activeCollected) * 100) / 100;
+
+      const hasActiveCf = allocs.some((a) => {
         const cf = a.cashFlowId ? cashFlowMap.get(a.cashFlowId) : null;
         return cf && cf.status !== 2;
       });
 
-      const matchCustomers: SepayMatchCustomer[] = allocs.map((a) => {
+      const matchCustomers: SepayMatchCustomer[] = visibleAllocs.map((a) => {
         const c = customerMap.get(a.customerId);
         const cf = a.cashFlowId ? cashFlowMap.get(a.cashFlowId) : null;
         return {
@@ -210,11 +242,16 @@ export class SepayMatchService {
         };
       });
 
+      // completed: có phiếu thu hiệu lực VÀ không còn tiền chưa gắn.
+      // assigned : còn tiền chưa gắn (vd 1 phiếu bị hủy) hoặc chưa tạo phiếu.
+      const isCompleted = hasActiveCf && unassignedAmount <= 0;
+
       result.set(tx.sepayId, {
-        status: anyActiveCf ? 'completed' : 'assigned',
-        completedSource: anyActiveCf ? 'manual' : null,
+        status: isCompleted ? 'completed' : 'assigned',
+        completedSource: isCompleted ? 'manual' : null,
         customers: matchCustomers,
         refCode: null,
+        unassignedAmount: unassignedAmount > 0 ? unassignedAmount : 0,
       });
     }
 
@@ -233,8 +270,9 @@ export class SepayMatchService {
 
   /**
    * Sale gán 1 hoặc nhiều khách hàng cho giao dịch (chỉ khi chưa completed).
-   * Ghi đè danh sách allocation (reset về danh sách khách mới, amount=0).
-   * Cho phép đổi/bổ sung khách khi chưa tạo phiếu thu.
+   * GIỮ các allocation đã có phiếu thu còn hiệu lực; chỉ thay phần "đang chờ"
+   * (allocation chưa có phiếu / phiếu đã hủy) bằng danh sách khách mới (amount=0).
+   * Cho phép đổi/bổ sung khách khi chưa tạo phiếu thu cho phần đó.
    */
   async assignCustomers(id: number, dto: AssignCustomersDto, userId: number) {
     const { tx, match } = await this.getTxWithMatch(id);
@@ -254,20 +292,52 @@ export class SepayMatchService {
       throw new NotFoundException('Một số khách hàng không tồn tại');
     }
 
+    // Xác định allocation đã có phiếu thu còn hiệu lực (phải giữ lại).
+    const existingAllocs = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: tx.id },
+    });
+    const activeCashFlowIds = existingAllocs
+      .map((a) => a.cashFlowId)
+      .filter((v): v is number => v != null);
+    const activeCashFlows = activeCashFlowIds.length
+      ? await this.prisma.cashFlow.findMany({
+          where: { id: { in: activeCashFlowIds }, status: { not: 2 } },
+          select: { id: true },
+        })
+      : [];
+    const activeCfIdSet = new Set(activeCashFlows.map((cf) => cf.id));
+    const keptAllocs = existingAllocs.filter(
+      (a) => a.cashFlowId && activeCfIdSet.has(a.cashFlowId),
+    );
+
     await this.prisma.$transaction(async (txc) => {
-      // Reset allocations cũ (chỉ khi chưa có phiếu thu - đã đảm bảo ở trên).
+      // Xóa toàn bộ rồi ghi lại: giữ allocation có phiếu hiệu lực + thêm khách mới (amount=0).
       await txc.sepayAllocation.deleteMany({
         where: { sepayTransactionId: tx.id },
       });
-      await txc.sepayAllocation.createMany({
-        data: customers.map((c) => ({
-          sepayTransactionId: tx.id,
-          customerId: c.id,
-          customerName: c.name,
-          amount: 0,
-          createdById: userId,
-        })),
-      });
+
+      const keptData = keptAllocs.map((a) => ({
+        sepayTransactionId: tx.id,
+        customerId: a.customerId,
+        customerName: a.customerName,
+        amount: a.amount,
+        note: a.note,
+        cashFlowId: a.cashFlowId,
+        createdById: a.createdById,
+        confirmedById: a.confirmedById,
+        confirmedAt: a.confirmedAt,
+      }));
+
+      const newData = customers.map((c) => ({
+        sepayTransactionId: tx.id,
+        customerId: c.id,
+        customerName: c.name,
+        amount: 0,
+        createdById: userId,
+      }));
+
+      await txc.sepayAllocation.createMany({ data: [...keptData, ...newData] });
+
       // Cập nhật cột legacy (khách đầu tiên) để tương thích hiển thị cũ + assignedAt.
       await txc.sepayTransaction.update({
         where: { id: tx.id },
@@ -293,18 +363,52 @@ export class SepayMatchService {
         'Giao dịch đã hoàn thành, không thể bỏ gán khách hàng',
       );
     }
+
+    // Chỉ bỏ gán các allocation CHƯA có phiếu thu còn hiệu lực.
+    // Khách đã lập phiếu (phiếu chưa hủy) phải GIỮ NGUYÊN.
+    const existingAllocs = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: tx.id },
+    });
+    const cashFlowIds = existingAllocs
+      .map((a) => a.cashFlowId)
+      .filter((v): v is number => v != null);
+    const activeCashFlows = cashFlowIds.length
+      ? await this.prisma.cashFlow.findMany({
+          where: { id: { in: cashFlowIds }, status: { not: 2 } },
+          select: { id: true },
+        })
+      : [];
+    const activeCfIdSet = new Set(activeCashFlows.map((cf) => cf.id));
+
+    // ID các allocation cần xóa = chưa có phiếu hoặc phiếu đã hủy.
+    const removableIds = existingAllocs
+      .filter((a) => !a.cashFlowId || !activeCfIdSet.has(a.cashFlowId))
+      .map((a) => a.id);
+    const keptAllocs = existingAllocs.filter(
+      (a) => a.cashFlowId && activeCfIdSet.has(a.cashFlowId),
+    );
+
     await this.prisma.$transaction(async (txc) => {
-      await txc.sepayAllocation.deleteMany({
-        where: { sepayTransactionId: tx.id },
-      });
+      if (removableIds.length > 0) {
+        await txc.sepayAllocation.deleteMany({
+          where: { id: { in: removableIds } },
+        });
+      }
+      // Cập nhật cột legacy: nếu còn allocation giữ lại thì trỏ về khách đầu tiên,
+      // ngược lại reset về null (không còn khách nào gán).
       await txc.sepayTransaction.update({
         where: { id: tx.id },
-        data: {
-          assignedCustomerId: null,
-          assignedCustomerName: null,
-          assignedById: null,
-          assignedAt: null,
-        },
+        data: keptAllocs.length
+          ? {
+              assignedCustomerId: keptAllocs[0].customerId,
+              assignedCustomerName: keptAllocs[0].customerName,
+            }
+          : {
+              assignedCustomerId: null,
+              assignedCustomerName: null,
+              assignedById: null,
+              assignedAt: null,
+            },
       });
     });
     return { success: true };
@@ -334,11 +438,32 @@ export class SepayMatchService {
       throw new BadRequestException('Chưa có phân bổ khách hàng');
     }
 
-    // Validate tổng tiền = amountIn (làm tròn 2 chữ số để tránh lệch float).
+    // Các allocation ĐÃ có phiếu thu còn hiệu lực → giữ nguyên, KHÔNG tạo lại.
+    // Phần tiền cần tạo phiếu mới = amountIn - tổng tiền các phiếu còn hiệu lực.
+    const existingAllocs = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: tx.id },
+    });
+    const activeCashFlowIds = existingAllocs
+      .map((a) => a.cashFlowId)
+      .filter((v): v is number => v != null);
+    const activeCashFlows = activeCashFlowIds.length
+      ? await this.prisma.cashFlow.findMany({
+          where: { id: { in: activeCashFlowIds }, status: { not: 2 } },
+          select: { id: true },
+        })
+      : [];
+    const activeCfIdSet = new Set(activeCashFlows.map((cf) => cf.id));
+    const keptAllocs = existingAllocs.filter(
+      (a) => a.cashFlowId && activeCfIdSet.has(a.cashFlowId),
+    );
+    const collected = keptAllocs.reduce((s, a) => s + Number(a.amount), 0);
+    const remaining = Math.round((amountIn - collected) * 100) / 100;
+
+    // Validate tổng phân bổ MỚI = phần tiền còn lại (chưa gắn).
     const sum = allocations.reduce((s, a) => s + Number(a.amount || 0), 0);
-    if (Math.round(sum * 100) !== Math.round(amountIn * 100)) {
+    if (Math.round(sum * 100) !== Math.round(remaining * 100)) {
       throw new BadRequestException(
-        `Tổng phân bổ (${sum}) phải bằng số tiền giao dịch (${amountIn})`,
+        `Tổng phân bổ (${sum}) phải bằng số tiền chưa gắn (${remaining})`,
       );
     }
     if (allocations.some((a) => !(Number(a.amount) > 0))) {
@@ -372,7 +497,7 @@ export class SepayMatchService {
 
     const createdCashFlows: { customerId: number; cashFlow: any }[] = [];
 
-    // Tạo phiếu thu cho từng khách (mỗi khách 1 phiếu).
+    // Tạo phiếu thu cho từng khách trong phần phân bổ MỚI (mỗi khách 1 phiếu).
     for (const a of allocations) {
       const note =
         a.note ||
@@ -387,6 +512,7 @@ export class SepayMatchService {
           accountId,
           collectorUserId: dto.collectorUserId || userId,
           description: note,
+          sepayReferenceCode: tx.referenceNumber || undefined,
         } as any,
         userId,
       );
@@ -396,32 +522,48 @@ export class SepayMatchService {
       });
     }
 
-    // Ghi lại allocations (amount + note + cashFlowId) — reset rồi tạo mới.
+    // Ghi lại allocations: GIỮ các phiếu còn hiệu lực + thêm phiếu mới.
     await this.prisma.$transaction(async (txc) => {
       await txc.sepayAllocation.deleteMany({
         where: { sepayTransactionId: tx.id },
       });
-      await txc.sepayAllocation.createMany({
-        data: allocations.map((a) => {
-          const cf = createdCashFlows.find((x) => x.customerId === a.customerId);
-          return {
-            sepayTransactionId: tx.id,
-            customerId: a.customerId,
-            customerName: customerById.get(a.customerId)?.name ?? null,
-            amount: Number(a.amount),
-            note: a.note || null,
-            cashFlowId: cf?.cashFlow?.id ?? null,
-            createdById: userId,
-            confirmedById: userId,
-            confirmedAt: new Date(),
-          };
-        }),
+
+      const keptData = keptAllocs.map((a) => ({
+        sepayTransactionId: tx.id,
+        customerId: a.customerId,
+        customerName: a.customerName,
+        amount: a.amount,
+        note: a.note,
+        cashFlowId: a.cashFlowId,
+        createdById: a.createdById,
+        confirmedById: a.confirmedById,
+        confirmedAt: a.confirmedAt,
+      }));
+
+      const newData = allocations.map((a) => {
+        const cf = createdCashFlows.find((x) => x.customerId === a.customerId);
+        return {
+          sepayTransactionId: tx.id,
+          customerId: a.customerId,
+          customerName: customerById.get(a.customerId)?.name ?? null,
+          amount: Number(a.amount),
+          note: a.note || null,
+          cashFlowId: cf?.cashFlow?.id ?? null,
+          createdById: userId,
+          confirmedById: userId,
+          confirmedAt: new Date(),
+        };
       });
-      // Cột legacy: trỏ cashFlowId vào phiếu đầu tiên để tương thích.
+
+      await txc.sepayAllocation.createMany({ data: [...keptData, ...newData] });
+
+      // Cột legacy: trỏ cashFlowId vào phiếu đầu tiên (ưu tiên phiếu giữ lại).
+      const legacyCashFlowId =
+        keptAllocs[0]?.cashFlowId ?? createdCashFlows[0]?.cashFlow?.id ?? null;
       await txc.sepayTransaction.update({
         where: { id: tx.id },
         data: {
-          cashFlowId: createdCashFlows[0]?.cashFlow?.id ?? null,
+          cashFlowId: legacyCashFlowId,
           confirmedById: userId,
           confirmedAt: new Date(),
         },

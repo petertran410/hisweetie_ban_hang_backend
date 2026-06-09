@@ -67,6 +67,7 @@ import { SupplierReturnsModule } from './supplier-returns/supplier-returns.modul
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   controllers: [HealthController],
@@ -144,6 +145,7 @@ import { PromotionsModule } from './promotions/promotions.module';
     SupplierReturnsModule,
     SepayModule,
     PromotionsModule,
+    NotificationsModule,
   ],
   providers: [
     {
