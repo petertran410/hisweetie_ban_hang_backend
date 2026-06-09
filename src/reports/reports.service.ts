@@ -43,6 +43,21 @@ export class ReportsService {
     return where;
   }
 
+  // Loại bỏ hoá đơn của khách hàng đã ngừng hoạt động (isActive = false).
+  // Giữ nguyên hoá đơn khách vãng lai (customerId = null) vì đó không phải
+  // khách ngừng hoạt động. Merge vào where.customer nếu đã có (vd: lọc nhóm KH).
+  private excludeInactiveCustomers(where: any) {
+    if (where.customer) {
+      // Đã có ràng buộc quan hệ customer (vd: lọc theo nhóm KH) → bắt buộc
+      // customer tồn tại, nên chỉ cần thêm isActive = true.
+      where.customer.isActive = true;
+    } else {
+      // Chưa ràng buộc: cho phép KH vãng lai (customer = null) HOẶC KH đang
+      // hoạt động; chỉ loại các KH đã ngừng hoạt động.
+      where.OR = [{ customerId: null }, { customer: { isActive: true } }];
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // SHARED: Build return amount map — query 1 lần duy nhất
   // ═══════════════════════════════════════════════════════════════════════════
@@ -382,6 +397,7 @@ export class ReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async getProductByCustomerPreview(query: ReportQueryDto) {
     const where = this.buildInvoiceWhere(query);
+    this.excludeInactiveCustomers(where);
     const page = query.page || 1;
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
@@ -470,6 +486,7 @@ export class ReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async exportProductByCustomer(query: ReportQueryDto, res: Response) {
     const where = this.buildInvoiceWhere(query);
+    this.excludeInactiveCustomers(where);
     const detailWhere: any = { invoice: where };
 
     // Query aggregate trước

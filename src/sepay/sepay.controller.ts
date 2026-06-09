@@ -134,8 +134,31 @@ export class SepayController {
   async getTransactions(
     @Query() query: SepayTransactionQueryDto,
     @CurrentUser() user: any,
+    @Headers('x-branch-id') branchIdHeader?: string,
   ) {
-    return this.sepaySyncService.findAll(query, user);
+    const branchId = branchIdHeader ? parseInt(branchIdHeader, 10) : undefined;
+    return this.sepaySyncService.findAll(
+      query,
+      user,
+      branchId && !isNaN(branchId) ? branchId : undefined,
+    );
+  }
+
+  /**
+   * Tổng hợp giao dịch cần xử lý (cho thông báo sale). Tôn trọng lọc theo TK.
+   */
+  @Get('transactions/pending')
+  @RequirePermissions('sepay:view')
+  @ApiOperation({ summary: 'Đếm giao dịch Sepay cần xử lý (thông báo)' })
+  async getPendingSummary(
+    @CurrentUser() user: any,
+    @Headers('x-branch-id') branchIdHeader?: string,
+  ) {
+    const branchId = branchIdHeader ? parseInt(branchIdHeader, 10) : undefined;
+    return this.sepaySyncService.getPendingSummary(
+      user,
+      branchId && !isNaN(branchId) ? branchId : undefined,
+    );
   }
 
   /**

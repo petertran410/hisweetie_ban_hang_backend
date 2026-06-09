@@ -9,6 +9,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { InvoicesModule } from '../invoices/invoices.module';
 import { OrdersModule } from '../orders/orders.module';
 import { CashFlowsModule } from '../cashflows/cashflows.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { CashFlowsModule } from '../cashflows/cashflows.module';
     InvoicesModule,
     OrdersModule,
     CashFlowsModule,
+    AuthModule,
     HttpModule.register({ timeout: 120000, maxRedirects: 5 }),
   ],
   controllers: [SepayController],
