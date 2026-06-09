@@ -438,12 +438,8 @@ export class SepaySyncService {
       where.AND = andClauses;
     }
 
-    // in = có tiền vào (amountIn > 0); out = có tiền ra (amountOut > 0)
-    if (query.transferType === 'in') {
-      where.amountIn = { gt: 0 };
-    } else if (query.transferType === 'out') {
-      where.amountOut = { gt: 0 };
-    }
+    // BẮT BUỘC chỉ hiển thị tiền vào (amountIn > 0). Không bao giờ hiện tiền ra.
+    where.amountIn = { gt: 0 };
 
     if (query.dateFrom || query.dateTo) {
       const dateFilter: Prisma.DateTimeFilter = {};
