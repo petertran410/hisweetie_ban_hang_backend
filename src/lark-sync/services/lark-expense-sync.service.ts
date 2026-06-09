@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as fs from 'fs';
 import { join } from 'path';
+import { PrismaService } from '../../prisma/prisma.service';
 import { LarkExpenseBaseService } from './lark-expense-base.service';
 import { LarkUserDirectoryService } from './lark-user-directory.service';
 
@@ -31,6 +32,7 @@ interface FeeItem {
 
 interface PackingSlipForSync {
   id: number;
+  code?: string | null;
   branchId: number;
   createdAt: Date | string;
   hasFeeGuiBen: boolean;
@@ -48,6 +50,9 @@ interface PackingSlipForSync {
     fileUrl: string;
     fileName?: string | null;
     fileType?: string | null;
+  }> | null;
+  images?: Array<{
+    imageUrl: string;
   }> | null;
   invoices?: Array<{
     invoice?: {
@@ -68,6 +73,7 @@ export class LarkExpenseSyncService {
     private readonly expenseBase: LarkExpenseBaseService,
     private readonly userDirectory: LarkUserDirectoryService,
     private readonly config: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     this.tableHN = this.config.get<string>('LARK_EXPENSE_TABLE_HN') || null;
     this.tableSG = this.config.get<string>('LARK_EXPENSE_TABLE_SG') || null;
@@ -119,8 +125,21 @@ export class LarkExpenseSyncService {
         .filter((c): c is string => !!c),
     );
 
-    // Chuẩn bị attachments tokens (1 lần, dùng chung cho cả 3 phí)
-    const attachmentTokens = await this.uploadExpenseFiles(slip);
+    // Chuẩn bị attachments tokens (1 lần, dùng chung cho cả 3 phí).
+    // Thứ tự: chứng từ chi phí trước, ảnh báo đơn sau.
+    const expenseTokens = await this.uploadFilesByUrls(
+      slip.id,
+      (slip.expenseFiles || []).map((f) => ({
+        url: f.fileUrl,
+        fileName: f.fileName,
+        fileType: f.fileType,
+      })),
+    );
+    const imageTokens = await this.uploadFilesByUrls(
+      slip.id,
+      (slip.images || []).map((img) => ({ url: img.imageUrl })),
+    );
+    const attachmentTokens = [...expenseTokens, ...imageTokens];
 
     // Resolve người chi → open_id
     // Ưu tiên larkUserId đã lưu sẵn trong DB (pull từ Lark contact API qua
@@ -152,6 +171,7 @@ export class LarkExpenseSyncService {
     }
 
     const baseFields = {
+      'Mã Báo Đơn': slip.code || '',
       'NĂM/THÁNG/NGÀY': new Date(slip.createdAt).getTime(),
       'Phòng ban': target.phongBan,
       'Số lượng': 1,
@@ -160,6 +180,9 @@ export class LarkExpenseSyncService {
       ...(attachmentTokens.length > 0 ? { 'Chứng từ': attachmentTokens } : {}),
       ...(payerField ? { 'Người Chi': payerField } : {}),
     };
+
+    // Map feeName → recordId vừa tạo trên Lark, để lưu lại vào DB.
+    const recordMap: Record<string, string> = {};
 
     for (const fee of fees) {
       const noiDung = this.buildNoiDung(
@@ -178,12 +201,37 @@ export class LarkExpenseSyncService {
           target.tableId,
           fields,
         );
+        if (recordId) {
+          recordMap[fee.feeName] = recordId;
+        }
         this.logger.log(
           `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} record=${recordId}`,
         );
       } catch (err: any) {
         this.logger.error(
           `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} thất bại: ${err.message}`,
+        );
+      }
+    }
+
+    // Lưu record_id để sau này có thể cập nhật lại trên Lark (best-effort,
+    // chỉ lưu khi có ít nhất 1 record tạo thành công).
+    if (Object.keys(recordMap).length > 0) {
+      try {
+        await this.prisma.packingSlip.update({
+          where: { id: slip.id },
+          data: {
+            larkExpenseRecordIds: {
+              tableId: target.tableId,
+              label: target.label,
+              records: recordMap,
+            },
+            larkExpenseSyncedAt: new Date(),
+          },
+        });
+      } catch (err: any) {
+        this.logger.warn(
+          `Lưu larkExpenseRecordIds PackingSlip#${slip.id} lỗi: ${err.message}`,
         );
       }
     }
@@ -226,30 +274,31 @@ export class LarkExpenseSyncService {
   }
 
   /**
-   * Upload file local (uploads/...) lên Lark Drive (parent_type=bitable_file)
+   * Upload list file local (uploads/...) lên Lark Drive (parent_type=bitable_file)
    * → trả về mảng `{ file_token }` để gắn vào field Attachment.
+   * Dùng chung cho cả chứng từ chi phí lẫn ảnh báo đơn.
    */
-  private async uploadExpenseFiles(
-    slip: PackingSlipForSync,
+  private async uploadFilesByUrls(
+    slipId: number,
+    files: Array<{ url: string; fileName?: string | null; fileType?: string | null }>,
   ): Promise<Array<{ file_token: string }>> {
     const baseToken = this.expenseBase.getBaseToken();
     if (!baseToken) return [];
 
-    const files = slip.expenseFiles || [];
     const tokens: Array<{ file_token: string }> = [];
 
     for (const f of files) {
-      const localPath = this.resolveLocalPath(f.fileUrl);
+      const localPath = this.resolveLocalPath(f.url);
       if (!localPath) {
         this.logger.warn(
-          `PackingSlip #${slip.id}: không resolve được file local từ url ${f.fileUrl}`,
+          `PackingSlip #${slipId}: không resolve được file local từ url ${f.url}`,
         );
         continue;
       }
       try {
         if (!fs.existsSync(localPath)) {
           this.logger.warn(
-            `PackingSlip #${slip.id}: file không tồn tại ${localPath}`,
+            `PackingSlip #${slipId}: file không tồn tại ${localPath}`,
           );
           continue;
         }
@@ -266,7 +315,7 @@ export class LarkExpenseSyncService {
         }
       } catch (err: any) {
         this.logger.warn(
-          `Upload chứng từ "${f.fileName}" PackingSlip#${slip.id} lỗi: ${err.message}`,
+          `Upload file "${f.fileName || f.url}" PackingSlip#${slipId} lỗi: ${err.message}`,
         );
       }
     }

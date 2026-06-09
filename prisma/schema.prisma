@@ -1966,6 +1966,8 @@ model PackingSlip {
   cuocGuiHang      Decimal?  @default(0)
   expensePayerId   Int?
   note             String?
+  larkExpenseRecordIds Json?
+  larkExpenseSyncedAt  DateTime?
   createdBy        Int
   cancelledAt      DateTime?
   cancelledById    Int?
@@ -2482,6 +2484,32 @@ model SepayTransaction {
   @@index([assignedCustomerId])
   @@index([cashFlowId])
   @@map("sepay_transactions")
+}
+
+// Phân bổ 1 giao dịch Sepay cho nhiều khách hàng (1 giao dịch → n khách).
+// Bảng độc lập (không FK relation) — giữ triết lý như SepayTransaction.
+// - Bước sale gán khách: tạo các dòng allocation (amount=0, note=null).
+// - Bước kế toán tạo phiếu thu: cập nhật amount + note cho từng dòng, tạo
+//   1 phiếu thu (CashFlow) riêng cho mỗi khách, lưu cashFlowId vào dòng đó.
+// Tổng amount các dòng = amount_in của giao dịch (validate ở service).
+model SepayAllocation {
+  id                 Int       @id @default(autoincrement())
+  sepayTransactionId Int       @map("sepay_transaction_id")
+  customerId         Int       @map("customer_id")
+  customerName       String?   @map("customer_name")
+  amount             Decimal   @default(0)
+  note               String?
+  cashFlowId         Int?      @map("cash_flow_id")
+  createdById        Int?      @map("created_by_id")
+  confirmedById      Int?      @map("confirmed_by_id")
+  confirmedAt        DateTime? @map("confirmed_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@index([sepayTransactionId])
+  @@index([customerId])
+  @@index([cashFlowId])
+  @@map("sepay_allocations")
 }
 
 // ============================ PROMOTION / KHUYẾN MÃI ============================
