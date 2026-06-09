@@ -2477,6 +2477,7 @@ export class CashFlowsService {
       { header: 'Số điện thoại', key: 'contactNumber', width: 14 },
       { header: 'Giá trị', key: 'amount', width: 16 },
       { header: 'Hình thức TT', key: 'method', width: 14 },
+      { header: 'Tài khoản NH', key: 'bankAccount', width: 24 },
       { header: 'Ghi chú', key: 'description', width: 28 },
       { header: 'Trạng thái', key: 'statusValue', width: 16 },
       { header: 'Người tạo', key: 'creatorName', width: 18 },
@@ -2518,6 +2519,9 @@ export class CashFlowsService {
           branch: { select: { name: true } },
           cashFlowGroup: { select: { name: true } },
           creator: { select: { name: true } },
+          account: {
+            select: { bankCode: true, accountNumber: true, bankName: true },
+          },
         },
       });
 
@@ -2583,6 +2587,9 @@ export class CashFlowsService {
             contactNumber: cf.contactNumber ?? '',
             amount: Number(cf.amount),
             method: cf.method ?? '',
+            bankAccount: cf.account
+              ? `${cf.account.bankCode} - ${cf.account.accountNumber}`
+              : '',
             description: cf.description ?? '',
             statusValue: cf.statusValue ?? '',
             creatorName: cf.creator?.name ?? '',
