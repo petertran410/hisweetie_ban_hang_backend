@@ -86,7 +86,23 @@ export class SupplierReturnsService {
     if (query.branchId) where.branchId = query.branchId;
     if (query.status) where.status = query.status;
     if (query.mode) where.mode = query.mode;
-    if (query.refundType) where.refundType = query.refundType;
+    if (query.refundType) {
+      where.refundType = query.refundType;
+    } else {
+      // Mặc định ẩn CTNCC (manual_offset — cấn trừ tiền trả thừa NCC) khỏi
+      // danh sách phiếu trả hàng nhập. Đối xứng trang trả hàng KH ẩn CTN.
+      // Dùng AND + OR-null vì SQL `<> 'manual_offset'` loại luôn hàng NULL,
+      // và để KHÔNG đụng `where.OR` của bộ lọc search ở trên.
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { refundType: null },
+            { refundType: { not: 'manual_offset' } },
+          ],
+        },
+      ];
+    }
     if (query.createdBy) where.createdBy = query.createdBy;
 
     if (query.fromDate || query.toDate) {

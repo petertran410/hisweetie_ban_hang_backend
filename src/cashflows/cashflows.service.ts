@@ -21,6 +21,7 @@ import {
   getStatusLabel,
 } from '../invoices/dto/invoice-status.constants';
 import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplier-debt.util';
+import { SUPPLIER_DEBT_PO_WHERE } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -2176,6 +2177,110 @@ export class CashFlowsService {
         }
       }
 
+      // ── 1b. Xử lý debtOffsets (cấn trừ tiền trả thừa) ──────────────────────
+      // Đối xứng `createCustomerPayment` (debtOffsets): khi đã trả NCC dư, phần
+      // dư được "cấn trừ" vào các PN còn nợ. Mỗi offset tạo 1 SupplierReturn
+      // `manual_offset` (status=3 COMPLETED) để ghi vết — KHÔNG vào Formula B
+      // (đã loại manual_offset ở SUPPLIER_DEBT_SR_WHERE), chỉ giảm
+      // PurchaseOrder.debtAmount giống InvoicePayment giảm Invoice.debtAmount.
+      const createdManualOffsetIds: number[] = [];
+      if (dto.debtOffsets && dto.debtOffsets.length > 0) {
+        const offsetUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+
+        for (const debtOffset of dto.debtOffsets) {
+          const poData = await tx.purchaseOrder.findUnique({
+            where: { id: debtOffset.purchaseOrderId },
+          });
+
+          if (!poData) {
+            throw new Error(
+              `Không tìm thấy phiếu nhập ID ${debtOffset.purchaseOrderId}`,
+            );
+          }
+          if (poData.supplierId !== dto.supplierId) {
+            throw new Error(
+              `Phiếu nhập ${poData.code} không thuộc về NCC này`,
+            );
+          }
+          if (debtOffset.amount > Number(poData.debtAmount)) {
+            throw new Error(
+              `Số tiền cấn trừ ${debtOffset.amount} vượt quá công nợ ${poData.debtAmount} của phiếu nhập ${poData.code}`,
+            );
+          }
+
+          const newPaidAmount = Number(poData.paidAmount) + debtOffset.amount;
+          const newDebtAmount = Math.max(
+            0,
+            Number(poData.debtAmount) - debtOffset.amount,
+          );
+          await tx.purchaseOrder.update({
+            where: { id: debtOffset.purchaseOrderId },
+            data: {
+              paidAmount: newPaidAmount,
+              debtAmount: newDebtAmount,
+              supplierDebt: newDebtAmount,
+            },
+          });
+
+          const ctnCode = await this.generateCTNCCCode(tx);
+          const createdCtn = await tx.supplierReturn.create({
+            data: {
+              code: ctnCode,
+              mode: 'by_purchase_order',
+              purchaseOrderId: debtOffset.purchaseOrderId,
+              supplierId: dto.supplierId,
+              branchId: dto.branchId,
+              status: 3, // COMPLETED
+              statusValue: 'Hoàn thành',
+              totalReturnAmount: 0,
+              refundAmount: debtOffset.amount,
+              refundType: 'manual_offset',
+              refundedAmount: debtOffset.amount,
+              refundConfirmedBy: userId,
+              refundConfirmedByName: offsetUser?.name || 'System',
+              refundConfirmedAt: dto.transDate
+                ? new Date(dto.transDate)
+                : new Date(),
+              createdBy: userId,
+              createdByName: offsetUser?.name || 'System',
+            },
+          });
+          createdManualOffsetIds.push(createdCtn.id);
+        }
+
+        // Consume PN bị trả thừa (debtAmount < 0): đối xứng `createCustomerPayment`
+        // consume overpaid invoices. Đưa debtAmount âm về 0 bằng phần credit.
+        let creditToConsume = dto.debtOffsets.reduce(
+          (sum: number, d: any) => sum + d.amount,
+          0,
+        );
+        if (creditToConsume > 0) {
+          const overpaidPOs = await tx.purchaseOrder.findMany({
+            where: {
+              supplierId: dto.supplierId,
+              debtAmount: { lt: 0 },
+              ...SUPPLIER_DEBT_PO_WHERE,
+            },
+            select: { id: true, debtAmount: true },
+            orderBy: { purchaseDate: 'asc' },
+          });
+
+          for (const po of overpaidPOs) {
+            if (creditToConsume <= 0) break;
+            const available = Math.abs(Number(po.debtAmount));
+            const consume = Math.min(available, creditToConsume);
+            await tx.purchaseOrder.update({
+              where: { id: po.id },
+              data: { debtAmount: Number(po.debtAmount) + consume },
+            });
+            creditToConsume -= consume;
+          }
+        }
+      }
+
       // ── 2. Tạo CashFlow chi NCC ─────────────────────────────────────────
       let cashFlow: any = null;
       if (dto.totalAmount > 0) {
@@ -2208,6 +2313,15 @@ export class CashFlowsService {
         if (createdPaymentIds.length > 0) {
           await tx.purchaseOrderPayment.updateMany({
             where: { id: { in: createdPaymentIds } },
+            data: { cashFlowId: cashFlow.id },
+          });
+        }
+
+        // Link các SupplierReturn manual_offset (CTNCC) vào cashflow — đối xứng
+        // link CTN bên KH (cashflows.service.ts CTN→cashFlowId).
+        if (createdManualOffsetIds.length > 0) {
+          await tx.supplierReturn.updateMany({
+            where: { id: { in: createdManualOffsetIds } },
             data: { cashFlowId: cashFlow.id },
           });
         }
@@ -2326,6 +2440,27 @@ export class CashFlowsService {
 
   private recalcSupplierDebt(supplierId: number, tx: any) {
     return recalcSupplierDebtUtil(tx, supplierId);
+  }
+
+  /**
+   * Tạo mã CTNCC###### cho SupplierReturn `manual_offset` (cấn trừ tiền trả
+   * thừa NCC). Đối xứng mã `CTN######` của ReturnOrder manual_offset bên KH,
+   * dùng prefix riêng `CTNCC` để không đụng mã `THN######` của phiếu trả hàng
+   * nhập thường.
+   */
+  private async generateCTNCCCode(tx: any): Promise<string> {
+    const prefix = 'CTNCC';
+    const last = await tx.supplierReturn.findFirst({
+      where: { code: { startsWith: prefix } },
+      orderBy: { id: 'desc' },
+      select: { code: true },
+    });
+    let next = 1;
+    if (last?.code?.startsWith(prefix)) {
+      const parsed = parseInt(last.code.slice(prefix.length), 10);
+      if (!isNaN(parsed)) next = parsed + 1;
+    }
+    return `${prefix}${next.toString().padStart(6, '0')}`;
   }
 
   private async generateSafeCashFlowCode(
