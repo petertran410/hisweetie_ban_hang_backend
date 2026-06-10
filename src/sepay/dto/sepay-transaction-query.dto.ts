@@ -28,6 +28,16 @@ export class SepayTransactionQueryDto {
   @IsIn(['in', 'out'])
   transferType?: 'in' | 'out';
 
+  /** Lọc số tiền vào tối thiểu (amountIn >=). Bằng amountMax → lọc chính xác. */
+  @IsOptional()
+  @IsNumberString()
+  amountMin?: string;
+
+  /** Lọc số tiền vào tối đa (amountIn <=). */
+  @IsOptional()
+  @IsNumberString()
+  amountMax?: string;
+
   /** Từ ngày (ISO date hoặc yyyy-mm-dd), lọc theo transactionDate >= */
   @IsOptional()
   @IsString()

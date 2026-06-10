@@ -453,7 +453,18 @@ export class SepaySyncService {
     }
 
     // BẮT BUỘC chỉ hiển thị tiền vào (amountIn > 0). Không bao giờ hiện tiền ra.
-    where.amountIn = { gt: 0 };
+    const amountFilter: Prisma.DecimalFilter = { gt: 0 };
+    const amountMin = Number(query.amountMin);
+    const amountMax = Number(query.amountMax);
+    const hasMin = query.amountMin != null && !isNaN(amountMin);
+    const hasMax = query.amountMax != null && !isNaN(amountMax);
+    // Phòng thủ: nếu min > max (input sai lọt qua), bỏ qua cả hai để không
+    // ép ra kết quả rỗng do nhầm. Frontend đã chặn min > max trước khi gửi.
+    if (!(hasMin && hasMax && amountMin > amountMax)) {
+      if (hasMin) amountFilter.gte = amountMin;
+      if (hasMax) amountFilter.lte = amountMax;
+    }
+    where.amountIn = amountFilter;
 
     if (query.dateFrom || query.dateTo) {
       const dateFilter: Prisma.DateTimeFilter = {};
