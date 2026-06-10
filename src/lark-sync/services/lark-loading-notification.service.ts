@@ -120,7 +120,6 @@ export class LarkLoadingNotificationService {
               select: {
                 id: true,
                 code: true,
-                grandTotal: true,
                 customer: {
                   select: { name: true, contactNumber: true },
                 },
@@ -210,7 +209,6 @@ export class LarkLoadingNotificationService {
     const buildRow = (
       codeContent: string,
       customerContent: string,
-      totalContent: string,
       isHeader = false,
     ) => {
       const cellBg = isHeader ? 'grey' : undefined;
@@ -233,16 +231,12 @@ export class LarkLoadingNotificationService {
         flex_mode: 'none',
         horizontal_spacing: 'small',
         ...(cellBg ? { background_style: cellBg } : {}),
-        columns: [
-          makeCol(2, codeContent),
-          makeCol(3, customerContent),
-          makeCol(2, totalContent),
-        ],
+        columns: [makeCol(2, codeContent), makeCol(3, customerContent)],
       };
     };
 
     const itemRows: any[] = [];
-    itemRows.push(buildRow('**Mã HĐ**', '**Khách hàng**', '**T.Tiền**', true));
+    itemRows.push(buildRow('**Mã HĐ**', '**Khách hàng**', true));
 
     const invoices = loading.invoices || [];
     for (const link of invoices) {
@@ -252,8 +246,7 @@ export class LarkLoadingNotificationService {
       const customerName = customer?.name || '';
       const phone = customer?.contactNumber || '';
       const customerLine = [customerName, phone].filter(Boolean).join('\n');
-      const totalStr = this.formatMoney(inv.grandTotal);
-      itemRows.push(buildRow(invCode, customerLine, totalStr));
+      itemRows.push(buildRow(invCode, customerLine));
     }
 
     const footerLines: string[] = [
@@ -308,12 +301,6 @@ export class LarkLoadingNotificationService {
     const get = (type: string) =>
       parts.find((p) => p.type === type)?.value || '';
     return `${get('hour')}:${get('minute')}:${get('second')} ${get('day')}/${get('month')}/${get('year')}`;
-  }
-
-  private formatMoney(value: any): string {
-    const n = Number(value ?? 0);
-    if (!Number.isFinite(n)) return '0';
-    return n.toLocaleString('en-US', { maximumFractionDigits: 0 });
   }
 
   private formatNumber(value: any): string {
