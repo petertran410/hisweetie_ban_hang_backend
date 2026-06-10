@@ -27,9 +27,13 @@ export class CashFlowQueryDto {
   code?: string[];
 
   @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  userId?: number;
+  @IsArray()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return value;
+    const arr = Array.isArray(value) ? value : String(value).split(',');
+    return arr.map(Number);
+  })
+  userIds?: number[];
 
   @IsOptional()
   @IsInt()
