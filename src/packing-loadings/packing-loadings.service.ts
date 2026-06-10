@@ -20,12 +20,14 @@ import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
+import { LarkLoadingNotificationService } from '../lark-sync/services/lark-loading-notification.service';
 
 @Injectable()
 export class PackingLoadingsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkLoadingNotification: LarkLoadingNotificationService,
   ) {}
 
   async findAll(query: PackingLoadingQueryDto) {
@@ -223,7 +225,21 @@ export class PackingLoadingsService {
       branchId: packingLoading.branchId || undefined,
     });
 
+    // Gửi card thông báo loading vào Lark group theo chi nhánh
+    // (fire-and-forget — lỗi gửi không làm fail việc tạo phiếu)
+    this.larkLoadingNotification.notifyLoadingCreatedAsync(packingLoading.id);
+
     return packingLoading;
+  }
+
+  /**
+   * Gửi lại thủ công card loading lên Lark group.
+   * CHỜ kết quả để báo lỗi rõ ràng cho người dùng.
+   */
+  async resendLarkNotification(id: number) {
+    await this.findOne(id); // đảm bảo tồn tại → 404 nếu không có
+    await this.larkLoadingNotification.resendLoadingNotification(id);
+    return { message: 'Đã gửi lại thông báo loading lên Lark' };
   }
 
   async update(id: number, dto: UpdatePackingLoadingDto, userId?: number) {

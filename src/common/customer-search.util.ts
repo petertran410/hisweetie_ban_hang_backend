@@ -27,9 +27,15 @@ const escapeRegex = (t: string) => t.replace(/[.^$*+?()[\]{}|\\]/g, '\\$&');
 // theo ranh giới từ vẫn được giữ vì 1 ký tự gần như không khớp nhầm.
 const MIN_LIKE_LEN = 2;
 
-// Chốt chặn cuối: giới hạn số id trả về cho mỗi token, phòng trường hợp DB
-// phình to sau này vẫn không bao giờ vượt giới hạn bind variable.
-const PER_TOKEN_LIMIT = 5000;
+// Chốt chặn cuối: giới hạn số id TRẢ VỀ (sau khi đã giao AND mọi token), phòng
+// trường hợp DB phình to sau này vẫn không bao giờ vượt giới hạn bind variable
+// của Postgres (32767) khi caller dùng `{ in: matchedIds }`.
+//
+// Lưu ý: giới hạn này áp lên KẾT QUẢ CUỐI (đã khớp mọi token), KHÔNG áp riêng
+// từng token. Nếu áp từng token thì một token "phổ biến" (vd "Ms" khớp ~9000
+// khách) sẽ bị cắt còn 5000, làm rớt mất khách hợp lệ khỏi phép giao AND — đây
+// chính là bug đã từng xảy ra khi tìm "Ms Hương Giang ...".
+const RESULT_LIMIT = 5000;
 
 /**
  * Tìm id khách hàng khớp từ khóa `search` theo quy tắc khớp-từ-trọn-vẹn cho
@@ -49,34 +55,31 @@ export async function searchCustomerIds(
     .filter(Boolean);
   if (tokens.length === 0) return [];
 
-  const tokenSets = await Promise.all(
-    tokens.map((t) => {
-      const nameCond = Prisma.sql`unaccent(lower(name)) ~ ('\\m' || unaccent(lower(${escapeRegex(
-        t,
-      )})) || '\\M')`;
+  // Mỗi token → một điều kiện khớp. Gộp TẤT CẢ điều kiện bằng AND trong CÙNG
+  // MỘT câu SQL để Postgres tự lọc "khách phải khớp mọi token". Cách này tránh
+  // hoàn toàn việc cắt giới hạn theo từng token (vốn phá AND), và phép giao
+  // diễn ra trên index thay vì trong JS.
+  const tokenConds = tokens.map((t) => {
+    const nameCond = Prisma.sql`unaccent(lower(name)) ~ ('\\m' || unaccent(lower(${escapeRegex(
+      t,
+    )})) || '\\M')`;
 
-      // Chỉ thêm nhánh LIKE chuỗi-con khi token đủ dài (>= MIN_LIKE_LEN).
-      const where =
-        t.length >= MIN_LIKE_LEN
-          ? Prisma.sql`${nameCond}
-            OR lower(code) LIKE lower(${`%${t}%`})
-            OR "contactNumber" LIKE ${`%${t}%`}
-            OR phone LIKE ${`%${t}%`}`
-          : nameCond;
+    // Chỉ thêm nhánh LIKE chuỗi-con khi token đủ dài (>= MIN_LIKE_LEN).
+    return t.length >= MIN_LIKE_LEN
+      ? Prisma.sql`(${nameCond}
+          OR lower(code) LIKE lower(${`%${t}%`})
+          OR "contactNumber" LIKE ${`%${t}%`}
+          OR phone LIKE ${`%${t}%`})`
+      : Prisma.sql`(${nameCond})`;
+  });
 
-      return prisma.$queryRaw<{ id: number }[]>`
-        SELECT id FROM "customers"
-        WHERE (${where})
-        LIMIT ${PER_TOKEN_LIMIT}
-      `;
-    }),
-  );
+  const whereAnd = Prisma.join(tokenConds, ' AND ');
 
-  if (tokenSets.length === 1) return tokenSets[0].map((r) => r.id);
+  const rows = await prisma.$queryRaw<{ id: number }[]>`
+    SELECT id FROM "customers"
+    WHERE ${whereAnd}
+    LIMIT ${RESULT_LIMIT}
+  `;
 
-  // Giao các tập id (AND) — khách hàng phải khớp mọi token.
-  const idSets = tokenSets.map((rows) => new Set(rows.map((r) => r.id)));
-  return tokenSets[0]
-    .filter((r) => idSets.every((s) => s.has(r.id)))
-    .map((r) => r.id);
+  return rows.map((r) => r.id);
 }

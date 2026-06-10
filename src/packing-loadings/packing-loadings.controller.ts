@@ -63,4 +63,10 @@ export class PackingLoadingsController {
     const userId = req.user?.id || 1;
     return this.packingLoadingsService.remove(+id, userId);
   }
+
+  @Post(':id/resend-lark')
+  @RequirePermissions('packing_loadings:update')
+  resendLark(@Param('id') id: string) {
+    return this.packingLoadingsService.resendLarkNotification(+id);
+  }
 }

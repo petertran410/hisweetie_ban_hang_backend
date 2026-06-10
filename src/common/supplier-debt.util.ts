@@ -48,29 +48,83 @@ interface RecalcSupplierDebtOptions {
  *   (KH dùng status=2 OR status=4+debt_offset OR status=4+cash_refund — tương tự
  *    nhưng số status khác do quy ước domain khác.)
  */
+/**
+ * ────────────────────────────────────────────────────────────────────────────
+ * CANONICAL FILTERS / AMOUNTS — nguồn chân lý DÙNG CHUNG cho cả
+ * `recalcSupplierDebt` (Formula B, ghi `Supplier.debt`) lẫn
+ * `SuppliersService.getDebtTimeline` (cột "Dư nợ" zigzag).
+ *
+ * Đối xứng triệt để với phía KH: bên KH header "Nợ hiện tại" === dòng zigzag
+ * mới nhất vì hai hàm dùng CÙNG bộ lọc (vd Invoice `status notIn [2]`). Bên NCC
+ * trước đây hai hàm lọc KHÁC nhau (Formula B KHÔNG loại PN đã hủy, timeline
+ * loại) → header phình to hơn zigzag. Tách predicate ra đây để không bao giờ
+ * lệch lại.
+ *
+ * PN (PurchaseOrder) chỉ có 3 status: 0=DRAFT, 1=COMPLETED, 2=CANCELLED.
+ * (KHÔNG có status 4 — số 4 ở code cũ là copy nhầm từ domain đơn đặt/bán.)
+ * ────────────────────────────────────────────────────────────────────────────
+ */
+
+// PN tính vào nợ: đã chốt (isDraft=false), CHƯA hủy (status≠2), chưa bị xoá mềm.
+export const SUPPLIER_DEBT_PO_WHERE = {
+  isDraft: false,
+  status: { not: 2 },
+  NOT: { code: { contains: '{DEL}' } },
+};
+
+// Giá trị nợ phát sinh của 1 PN = total − discount (đã trừ chiết khấu). Bằng
+// `subTotal` lúc tạo (purchase-orders.service.ts: subTotal = total − discount).
+export function supplierPoDebtAmount(po: {
+  total: any;
+  discount: any;
+}): number {
+  return Number(po.total) - Number(po.discount);
+}
+
+// SupplierReturn offset nợ: STOCK_EXPORTED(2) hoặc COMPLETED(3). status 3 luôn
+// có refundType ∈ (cash_refund | debt_offset) nên không cần lọc refundType.
+export const SUPPLIER_DEBT_SR_WHERE = {
+  status: { in: [2, 3] },
+};
+
+// Số tiền cấn trừ: status 3 (đã hoàn tất) dùng `refundedAmount`, status 2 (mới
+// xuất kho, chưa hoàn tất) dùng `refundAmount`. Tại COMPLETED hai field bằng
+// nhau (supplier-returns.service.ts: refundedAmount = refundAmount).
+export function supplierReturnOffsetAmount(sr: {
+  status: number;
+  refundAmount: any;
+  refundedAmount: any;
+}): number {
+  return sr.status === 3
+    ? Number(sr.refundedAmount)
+    : Number(sr.refundAmount);
+}
+
+// Prefix CashFlow CHI cần loại để tránh trừ đôi (clone PCTUPN khi PDN→PN).
+export const SUPPLIER_DEBT_CASHFLOW_PAID_EXCLUDE_PREFIX = 'PCTUPN';
+
 export async function recalcSupplierDebt(
   tx: any,
   supplierId: number,
   opts: RecalcSupplierDebtOptions = {},
 ): Promise<number> {
-  // 1. PO subTotal (KHÔNG trừ paidAmount — tiền đi qua cashflow)
+  // 1. PO subTotal (KHÔNG trừ paidAmount — tiền đi qua cashflow).
+  //    Dùng SUPPLIER_DEBT_PO_WHERE → loại PN đã hủy (status 2) + xoá mềm {DEL},
+  //    KHỚP chính xác với timeline. Đây là FIX: trước đây thiếu filter status
+  //    nên PN đã hủy vẫn cộng vào nợ → header lớn hơn dòng zigzag.
   const purchaseOrders = await tx.purchaseOrder.findMany({
-    where: { supplierId, isDraft: false },
+    where: { supplierId, ...SUPPLIER_DEBT_PO_WHERE },
     select: { total: true, discount: true },
   });
   const debtFromPurchases = purchaseOrders.reduce(
-    (s: number, po: any) => s + (Number(po.total) - Number(po.discount)),
+    (s: number, po: any) => s + supplierPoDebtAmount(po),
     0,
   );
 
   // `totalInvoiced` = tổng giá trị THỰC mua từ NCC (đã trừ discount). Đối
-  // xứng `Customer.totalPurchased` = sum(Invoice.grandTotal). Trước đây
-  // dùng `total` làm input → bỏ sót discount → filter "NCC mua từ X đến Y"
-  // bị lệch theo discount.
-  const totalInvoicedComputed = purchaseOrders.reduce(
-    (s: number, po: any) => s + (Number(po.total) - Number(po.discount)),
-    0,
-  );
+  // xứng `Customer.totalPurchased` = sum(Invoice.grandTotal). PN đã hủy không
+  // tính là "đã mua" → cùng dùng filter trên.
+  const totalInvoicedComputed = debtFromPurchases;
 
   // 2. CashFlow S — đối xứng KH.
   //    THU (isReceipt=true) cộng vào debt: hoàn tiền/thu lại từ NCC. Không filter prefix.
@@ -97,7 +151,9 @@ export async function recalcSupplierDebt(
       partnerType: 'S',
       isReceipt: false,
       status: { not: 2 },
-      NOT: [{ code: { startsWith: 'PCTUPN' } }],
+      NOT: [
+        { code: { startsWith: SUPPLIER_DEBT_CASHFLOW_PAID_EXCLUDE_PREFIX } },
+      ],
     },
     select: { amount: true },
   });
@@ -106,24 +162,21 @@ export async function recalcSupplierDebt(
     0,
   );
 
-  // 3. SupplierReturn offsets — đối xứng RO offsets của KH (mọi mode)
+  // 3. SupplierReturn offsets — đối xứng RO offsets của KH (mọi mode).
+  //    Dùng SUPPLIER_DEBT_SR_WHERE + supplierReturnOffsetAmount → KHỚP timeline.
   const supplierReturns = await tx.supplierReturn.findMany({
     where: {
       supplierId,
       ...(opts.excludeSupplierReturnId
         ? { NOT: { id: opts.excludeSupplierReturnId } }
         : {}),
-      OR: [
-        { status: 2 }, // STOCK_EXPORTED
-        { status: 3, refundType: 'cash_refund' },
-        { status: 3, refundType: 'debt_offset' },
-      ],
+      ...SUPPLIER_DEBT_SR_WHERE,
     },
-    select: { refundAmount: true },
+    select: { status: true, refundAmount: true, refundedAmount: true },
   });
   const totalSupplierReturnOffsets =
     supplierReturns.reduce(
-      (s: number, sr: any) => s + Number(sr.refundAmount),
+      (s: number, sr: any) => s + supplierReturnOffsetAmount(sr),
       0,
     ) + (opts.extraSupplierReturnOffset || 0);
 

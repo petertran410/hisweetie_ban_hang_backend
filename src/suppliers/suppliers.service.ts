@@ -11,6 +11,13 @@ import {
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import {
+  SUPPLIER_DEBT_PO_WHERE,
+  SUPPLIER_DEBT_SR_WHERE,
+  SUPPLIER_DEBT_CASHFLOW_PAID_EXCLUDE_PREFIX,
+  supplierPoDebtAmount,
+  supplierReturnOffsetAmount,
+} from '../common/supplier-debt.util';
 
 @Injectable()
 export class SuppliersService {
@@ -581,13 +588,14 @@ export class SuppliersService {
 
     const timeline: any[] = [];
 
-    // 1. Lấy purchase orders → cộng nợ
+    // 1. Lấy purchase orders → cộng nợ.
+    //    Dùng SUPPLIER_DEBT_PO_WHERE — CÙNG filter với Formula B
+    //    (recalcSupplierDebt) để cột "Dư nợ" zigzag KHỚP header "Nợ hiện tại".
+    //    PN chỉ có status 0=DRAFT,1=COMPLETED,2=CANCELLED (không có status 4).
     const purchaseOrders = await this.prisma.purchaseOrder.findMany({
       where: {
         supplierId,
-        isDraft: false,
-        status: { notIn: [2, 4] },
-        NOT: { code: { contains: '{DEL}' } },
+        ...SUPPLIER_DEBT_PO_WHERE,
       },
       select: {
         id: true,
@@ -613,7 +621,10 @@ export class SuppliersService {
         code: po.code,
         date: po.purchaseDate,
         createdAt: po.createdAt,
-        amount: Number(po.subTotal),
+        // total − discount (KHỚP supplierPoDebtAmount của Formula B). Trước
+        // đây dùng subTotal; tại thời điểm tạo subTotal = total − discount nên
+        // bằng nhau, nhưng thống nhất 1 nguồn để không lệch nếu data cũ lệch.
+        amount: supplierPoDebtAmount(po),
         description: `Nhập hàng ${po.code}`,
         debtSnapshot: 0,
         branch: po.branch,
@@ -632,7 +643,9 @@ export class SuppliersService {
         partnerType: 'S',
         partnerId: supplierId,
         status: { not: 2 },
-        NOT: [{ code: { startsWith: 'PCTUPN' } }],
+        NOT: [
+          { code: { startsWith: SUPPLIER_DEBT_CASHFLOW_PAID_EXCLUDE_PREFIX } },
+        ],
       },
       select: {
         id: true,
@@ -668,13 +681,13 @@ export class SuppliersService {
       });
     }
 
-    // 3. Lấy supplier returns đã xuất kho hoặc đã hoàn thành → trừ nợ
-    //    Đối xứng với Formula B: SR offsets gồm STOCK_EXPORTED(2) và COMPLETED(3).
-    //    KHÔNG lọc CANCELLED(4) hay DRAFT(5).
+    // 3. Lấy supplier returns đã xuất kho hoặc đã hoàn thành → trừ nợ.
+    //    Dùng SUPPLIER_DEBT_SR_WHERE — CÙNG filter với Formula B: SR offsets
+    //    gồm STOCK_EXPORTED(2) và COMPLETED(3). KHÔNG lọc CANCELLED(4)/DRAFT(5).
     const supplierReturns = await this.prisma.supplierReturn.findMany({
       where: {
         supplierId,
-        status: { in: [2, 3] },
+        ...SUPPLIER_DEBT_SR_WHERE,
       },
       select: {
         id: true,
@@ -697,9 +710,9 @@ export class SuppliersService {
     });
 
     for (const sr of supplierReturns) {
-      // status=2 (STOCK_EXPORTED) chưa có refundedAmount → dùng refundAmount
-      const amount =
-        sr.status === 3 ? Number(sr.refundedAmount) : Number(sr.refundAmount);
+      // status=3 (COMPLETED) dùng refundedAmount, status=2 (STOCK_EXPORTED)
+      // dùng refundAmount — KHỚP supplierReturnOffsetAmount của Formula B.
+      const amount = supplierReturnOffsetAmount(sr);
 
       const displayDate =
         sr.status === 3
