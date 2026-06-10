@@ -81,10 +81,17 @@ export function supplierPoDebtAmount(po: {
   return Number(po.total) - Number(po.discount);
 }
 
-// SupplierReturn offset nợ: STOCK_EXPORTED(2) hoặc COMPLETED(3). status 3 luôn
-// có refundType ∈ (cash_refund | debt_offset) nên không cần lọc refundType.
+// SupplierReturn offset nợ: STOCK_EXPORTED(2) hoặc COMPLETED(3) với refundType
+// thực (cash_refund | debt_offset). CỐ TÌNH loại `manual_offset` — đối xứng
+// customer-debt.util.ts (RO offsets chỉ gồm debt_offset/cash_refund, KHÔNG
+// gồm CTN manual_offset). manual_offset chỉ tái phân bổ credit giữa các PN,
+// KHÔNG đổi tổng nợ → không được tính vào Formula B lẫn timeline.
 export const SUPPLIER_DEBT_SR_WHERE = {
-  status: { in: [2, 3] },
+  OR: [
+    { status: 2 }, // STOCK_EXPORTED
+    { status: 3, refundType: 'cash_refund' }, // COMPLETED + hoàn tiền
+    { status: 3, refundType: 'debt_offset' }, // COMPLETED + cấn trừ nợ
+  ],
 };
 
 // Số tiền cấn trừ: status 3 (đã hoàn tất) dùng `refundedAmount`, status 2 (mới
