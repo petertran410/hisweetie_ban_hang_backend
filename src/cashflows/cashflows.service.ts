@@ -418,7 +418,7 @@ export class CashFlowsService {
       branchIds,
       code,
       search,
-      userId,
+      userIds,
       accountId,
       accountIds,
       partnerType,
@@ -444,8 +444,8 @@ export class CashFlowsService {
 
     if (currentUser && !currentUser.canViewOtherStaffData) {
       where.createdBy = currentUser.id;
-    } else if (userId) {
-      where.createdBy = userId;
+    } else if (userIds?.length) {
+      where.createdBy = { in: userIds };
     }
 
     if (!code?.length && branchIds && branchIds.length > 0) {
@@ -2386,7 +2386,7 @@ export class CashFlowsService {
       branchIds,
       code,
       search,
-      userId,
+      userIds,
       accountId,
       accountIds,
       partnerType,
@@ -2403,8 +2403,8 @@ export class CashFlowsService {
 
     const where: any = {};
 
-    if (userId) {
-      where.createdBy = userId;
+    if (userIds?.length) {
+      where.createdBy = { in: userIds };
     }
 
     if (!code?.length && branchIds && branchIds.length > 0) {
