@@ -13,6 +13,11 @@ export interface VatComputableLine {
   quantity: VatNumeric;
   price: VatNumeric;
   discount?: VatNumeric | null;
+  /**
+   * % VAT riêng của dòng (vd lấy từ product.vat). Nếu không set thì dùng
+   * tham số vatRate của computeInvoiceVat (mặc định MISA_VAT_RATE = 8).
+   */
+  vatRate?: number | null;
 }
 
 /** Chấp nhận cả Prisma Decimal (có toString/valueOf) lẫn number/string. */
@@ -90,7 +95,7 @@ export function computeInvoiceVat(
   let totalAfterTax = 0;
 
   for (const line of lines) {
-    const result = computeLineVat(line, vatRate);
+    const result = computeLineVat(line, line.vatRate ?? vatRate);
     lineResults.push(result);
     totalPreTax += result.amountBeforeTax;
     totalVat += result.vatAmount;

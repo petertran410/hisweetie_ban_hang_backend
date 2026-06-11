@@ -670,6 +670,7 @@ export class InvoicesService {
                   id: true,
                   code: true,
                   name: true,
+                  vat: true,
                   misa_code: true,
                   misa_name: true,
                   misa_unit: true,
@@ -689,6 +690,7 @@ export class InvoicesService {
           quantity: d.quantity,
           price: d.price,
           discount: d.discount,
+          vatRate: Number((d.product as any)?.vat ?? 8),
         })),
       );
       const missingMisaCode = (invoice.details || []).some(
@@ -737,6 +739,7 @@ export class InvoicesService {
               quantity: true,
               price: true,
               discount: true,
+              product: { select: { vat: true } },
             },
           },
         },
@@ -754,6 +757,7 @@ export class InvoicesService {
             quantity: d.quantity,
             price: d.price,
             discount: d.discount,
+            vatRate: Number((d.product as any)?.vat ?? 8),
           })),
         );
         totalPreTax += vat.totalPreTax;
