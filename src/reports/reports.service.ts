@@ -31,6 +31,7 @@ export class ReportsService {
     if (query.customerId) where.customerId = query.customerId;
     if (query.soldById) where.soldById = query.soldById;
     if (query.saleChannelId) where.saleChannelId = query.saleChannelId;
+    if (query.priceBookId) where.priceBookId = query.priceBookId;
 
     if (query.customerGroupId) {
       where.customer = {
@@ -1188,5 +1189,107 @@ export class ReportsService {
 
     sheet.commit();
     await workbook.commit();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // CHART (top 20) cho báo cáo Khách hàng
+  // ═══════════════════════════════════════════════════════════════════════════
+  private async loadCustomerNames(ids: number[]) {
+    const customers = ids.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, code: true, name: true },
+        })
+      : [];
+    return new Map(customers.map((c) => [c.id, c]));
+  }
+
+  // Bán hàng: doanh thu (grandTotal) theo khách, top 20
+  async getCustomerSalesChart(query: ReportQueryDto) {
+    const where = this.buildInvoiceWhere(query);
+    this.excludeInactiveCustomers(where);
+    const grouped = await this.prisma.invoice.groupBy({
+      by: ['customerId'],
+      where,
+      _sum: { grandTotal: true },
+    });
+    const rows = grouped
+      .filter((g) => g.customerId != null)
+      .map((g) => ({
+        customerId: g.customerId as number,
+        value: Number(g._sum.grandTotal) || 0,
+      }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 20);
+    const cmap = await this.loadCustomerNames(rows.map((r) => r.customerId));
+    return rows.map((r) => {
+      const c = cmap.get(r.customerId);
+      return {
+        subject: c?.name || 'Khách lẻ',
+        value: r.value,
+        total: r.value,
+        extra1: c?.code || null,
+      };
+    });
+  }
+
+  // Hàng bán theo khách: doanh thu (totalPrice) theo khách, top 20
+  async getProductByCustomerChart(query: ReportQueryDto) {
+    const where = this.buildInvoiceWhere(query);
+    this.excludeInactiveCustomers(where);
+    const grouped = await this.prisma.invoiceDetail.groupBy({
+      by: ['invoiceId'],
+      where: { invoice: where },
+      _sum: { totalPrice: true },
+    });
+    // Map invoiceId → customerId
+    const invoiceIds = grouped.map((g) => g.invoiceId);
+    const invoices = invoiceIds.length
+      ? await this.prisma.invoice.findMany({
+          where: { id: { in: invoiceIds } },
+          select: { id: true, customerId: true },
+        })
+      : [];
+    const invCustomer = new Map(invoices.map((i) => [i.id, i.customerId]));
+    const byCustomer = new Map<number, number>();
+    for (const g of grouped) {
+      const cid = invCustomer.get(g.invoiceId);
+      if (cid == null) continue;
+      byCustomer.set(
+        cid,
+        (byCustomer.get(cid) || 0) + (Number(g._sum.totalPrice) || 0),
+      );
+    }
+    const rows = Array.from(byCustomer.entries())
+      .map(([customerId, value]) => ({ customerId, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 20);
+    const cmap = await this.loadCustomerNames(rows.map((r) => r.customerId));
+    return rows.map((r) => {
+      const c = cmap.get(r.customerId);
+      return {
+        subject: c?.name || 'Khách lẻ',
+        value: r.value,
+        total: r.value,
+        extra1: c?.code || null,
+      };
+    });
+  }
+
+  // Công nợ: nợ cuối kỳ theo khách, top 20
+  async getCustomerDebtChart(query: ReportQueryDto) {
+    const aggregates = await this.aggregateCustomerDebt(query);
+    aggregates.sort((a, b) => b.closingDebt - a.closingDebt);
+    const top = aggregates.slice(0, 20);
+    const cmap = await this.loadCustomerNames(top.map((a) => a.customerId));
+    return top.map((a) => {
+      const c = cmap.get(a.customerId);
+      return {
+        subject: c?.name || 'Khách lẻ',
+        value: a.closingDebt,
+        total: a.closingDebt,
+        extra1: c?.code || null,
+      };
+    });
   }
 }
