@@ -235,6 +235,40 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  ORDER_SUPPLIER_COMPLETE: {
+    template:
+      'Chốt hoàn thành đặt hàng nhập {orderSupplierCode} (NCC không giao nốt phần còn thiếu)',
+    category: 'order_supplier',
+    severity: 'info',
+  },
+
+  VEHICLE_SHIPMENT_CREATE: {
+    template: 'Tạo phiếu ghép xe {vehicleShipmentCode}',
+    category: 'order_supplier',
+    severity: 'info',
+  },
+  VEHICLE_SHIPMENT_UPDATE: {
+    template: 'Cập nhật phiếu ghép xe {vehicleShipmentCode}',
+    category: 'order_supplier',
+    severity: 'info',
+  },
+  VEHICLE_SHIPMENT_CANCEL: {
+    template: 'Hủy phiếu ghép xe {vehicleShipmentCode}',
+    category: 'order_supplier',
+    severity: 'warning',
+  },
+  VEHICLE_SHIPMENT_CREATE_PO: {
+    template: 'Tạo {count} phiếu nhập từ phiếu ghép xe {vehicleShipmentCode}',
+    category: 'order_supplier',
+    severity: 'info',
+  },
+  VEHICLE_SHIPMENT_RESOLVE_ITEM: {
+    template:
+      'Xử lý chênh lệch sau nhập trên phiếu ghép xe {vehicleShipmentCode}',
+    category: 'order_supplier',
+    severity: 'info',
+  },
+
   CASHFLOW_CREATE: {
     template: '{flowType} tiền {amount} - {description}',
     category: 'payment',

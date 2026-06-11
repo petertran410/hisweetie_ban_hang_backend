@@ -102,9 +102,7 @@ export function supplierReturnOffsetAmount(sr: {
   refundAmount: any;
   refundedAmount: any;
 }): number {
-  return sr.status === 3
-    ? Number(sr.refundedAmount)
-    : Number(sr.refundAmount);
+  return sr.status === 3 ? Number(sr.refundedAmount) : Number(sr.refundAmount);
 }
 
 // Prefix CashFlow CHI cần loại để tránh trừ đôi (clone PCTUPN khi PDN→PN).

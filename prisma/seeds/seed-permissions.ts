@@ -681,6 +681,36 @@ const permissionsData: PermissionData[] = [
     category: 'Nhà cung cấp',
   },
 
+  // Vehicle Shipments (Ghép xe)
+  {
+    name: 'vehicle_shipments:view',
+    resource: 'vehicle_shipments',
+    action: 'view',
+    description: 'Xem ghép xe',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'vehicle_shipments:create',
+    resource: 'vehicle_shipments',
+    action: 'create',
+    description: 'Tạo ghép xe',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'vehicle_shipments:update',
+    resource: 'vehicle_shipments',
+    action: 'update',
+    description: 'Sửa/hủy ghép xe',
+    category: 'Nhà cung cấp',
+  },
+  {
+    name: 'vehicle_shipments:delete',
+    resource: 'vehicle_shipments',
+    action: 'delete',
+    description: 'Xóa ghép xe',
+    category: 'Nhà cung cấp',
+  },
+
   // Packing Slips
   {
     name: 'packing_slips:view',

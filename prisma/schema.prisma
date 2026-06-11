@@ -79,6 +79,7 @@ model User {
   refundConfirmedSupplierReturns SupplierReturn[]       @relation("SupplierReturnRefundConfirmer")
   bankAccountMapping             UserBankAccount?
   notifications                  Notification[]
+  createdVehicleShipments        VehicleShipment[]      @relation("VehicleShipmentCreator")
 
   @@map("users")
 }
@@ -297,6 +298,7 @@ model Branch {
 
   supplierReturns   SupplierReturn[]
   promotionBranches PromotionBranch[]
+  vehicleShipments  VehicleShipment[]
 
   @@map("branches")
 }
@@ -725,6 +727,7 @@ model Product {
   promotionBuyRewards   PromotionReward[]      @relation("PromotionBuyProduct")
   promotionGiftRewards  PromotionReward[]      @relation("PromotionRewardProduct")
   promotionProducts     PromotionProduct[]     @relation("PromotionProductRef")
+  vehicleShipmentItems  VehicleShipmentItem[]
 
   @@index([id, name])
   @@map("products")
@@ -1499,36 +1502,38 @@ model InvoiceDelivery {
 }
 
 model PurchaseOrder {
-  id              Int       @id @default(autoincrement())
-  code            String    @unique
-  kiotVietId      BigInt?   @unique @map("kiot_viet_id")
-  lastSyncedAt    DateTime? @map("last_synced_at")
-  orderSupplierId Int?
-  supplierId      Int
-  branchId        Int?
-  purchaseDate    DateTime  @default(now())
-  total           Decimal   @default(0)
-  totalAmount     Decimal   @default(0)
-  discount        Decimal   @default(0)
-  discountRatio   Decimal   @default(0)
-  subTotal        Decimal   @default(0)
-  paidAmount      Decimal   @default(0)
-  debtAmount      Decimal   @default(0)
-  status          Int       @default(0)
-  statusValue     String?
-  supplierDebt    Decimal   @default(0)
-  supplierOldDebt Decimal   @default(0)
-  isDraft         Boolean   @default(false)
-  partnerType     String?
-  description     String?
-  purchaseById    Int?
-  createdBy       Int
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                Int       @id @default(autoincrement())
+  code              String    @unique
+  kiotVietId        BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt      DateTime? @map("last_synced_at")
+  orderSupplierId   Int?
+  supplierId        Int
+  branchId          Int?
+  vehicleShipmentId Int?
+  purchaseDate      DateTime  @default(now())
+  total             Decimal   @default(0)
+  totalAmount       Decimal   @default(0)
+  discount          Decimal   @default(0)
+  discountRatio     Decimal   @default(0)
+  subTotal          Decimal   @default(0)
+  paidAmount        Decimal   @default(0)
+  debtAmount        Decimal   @default(0)
+  status            Int       @default(0)
+  statusValue       String?
+  supplierDebt      Decimal   @default(0)
+  supplierOldDebt   Decimal   @default(0)
+  isDraft           Boolean   @default(false)
+  partnerType       String?
+  description       String?
+  purchaseById      Int?
+  createdBy         Int
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   orderSupplier         OrderSupplier?           @relation(fields: [orderSupplierId], references: [id])
   supplier              Supplier                 @relation(fields: [supplierId], references: [id])
   branch                Branch?                  @relation(fields: [branchId], references: [id])
+  vehicleShipment       VehicleShipment?         @relation(fields: [vehicleShipmentId], references: [id])
   purchaseBy            User?                    @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
   creator               User                     @relation("PurchaseOrderCreator", fields: [createdBy], references: [id])
   items                 PurchaseOrderItem[]
@@ -1873,14 +1878,15 @@ model OrderSupplier {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  supplier       Supplier                     @relation(fields: [supplierId], references: [id])
-  branch         Branch?                      @relation(fields: [branchId], references: [id])
-  user           User?                        @relation("OrderSupplierUser", fields: [userId], references: [id])
-  creator        User                         @relation("OrderSupplierCreator", fields: [createdBy], references: [id])
-  items          OrderSupplierItem[]
-  expensesOthers OrderSupplierExpensesOther[]
-  purchaseOrders PurchaseOrder[]
-  payments       OrderSupplierPayment[]
+  supplier             Supplier                     @relation(fields: [supplierId], references: [id])
+  branch               Branch?                      @relation(fields: [branchId], references: [id])
+  user                 User?                        @relation("OrderSupplierUser", fields: [userId], references: [id])
+  creator              User                         @relation("OrderSupplierCreator", fields: [createdBy], references: [id])
+  items                OrderSupplierItem[]
+  expensesOthers       OrderSupplierExpensesOther[]
+  purchaseOrders       PurchaseOrder[]
+  payments             OrderSupplierPayment[]
+  vehicleShipmentItems VehicleShipmentItem[]
 
   @@map("order_suppliers")
 }
@@ -1933,6 +1939,54 @@ model OrderSupplierItem {
   @@map("order_supplier_items")
 }
 
+/// Phiếu ghép xe (vehicle shipment) — tầng điều phối optional giữa PDN
+/// (OrderSupplier) và PN (PurchaseOrder). Gom hàng từ nhiều PDN (có thể nhiều
+/// NCC) lên 1 chuyến xe. KHÔNG tác động kho/tiền/công nợ — chỉ theo dõi SL ghép.
+/// Tồn kho + thẻ kho vẫn chỉ phát sinh ở PN khi bấm "Tạo phiếu nhập".
+model VehicleShipment {
+  id          Int      @id @default(autoincrement())
+  code        String   @unique
+  status      Int      @default(0) // 0 Phiếu tạm, 1 Đã xác nhận giao, 2 Đã nhập, 3 Đã hủy
+  statusValue String?
+  branchId    Int? // chi nhánh nhận hàng (đích)
+  vehicleInfo String? // biển số / tài xế (free text)
+  description String?
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  branch         Branch?               @relation(fields: [branchId], references: [id])
+  creator        User                  @relation("VehicleShipmentCreator", fields: [createdBy], references: [id])
+  items          VehicleShipmentItem[]
+  purchaseOrders PurchaseOrder[]
+
+  @@map("vehicle_shipments")
+}
+
+model VehicleShipmentItem {
+  id                Int      @id @default(autoincrement())
+  vehicleShipmentId Int
+  orderSupplierId   Int
+  productId         Int
+  productCode       String
+  productName       String
+  quantity          Decimal // SL ghép lên xe (dự kiến)
+  // Xử lý chênh lệch sau nhập (per sản phẩm): pending | returned | kept
+  // - pending : chưa xử lý, phần thiếu vẫn giữ chỗ (chưa trả về "còn để ghép")
+  // - returned: chuyển phần thiếu về "còn lại" (cho ghép/đặt lại)
+  // - kept    : chấp nhận thiếu, không trả về
+  postImportStatus  String   @default("pending")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  vehicleShipment VehicleShipment @relation(fields: [vehicleShipmentId], references: [id], onDelete: Cascade)
+  orderSupplier   OrderSupplier   @relation(fields: [orderSupplierId], references: [id])
+  product         Product         @relation(fields: [productId], references: [id])
+
+  @@unique([vehicleShipmentId, orderSupplierId, productId])
+  @@map("vehicle_shipment_items")
+}
+
 model OrderSupplierExpensesOther {
   id                 Int      @id @default(autoincrement())
   orderSupplierId    Int
@@ -1953,27 +2007,27 @@ model OrderSupplierExpensesOther {
 }
 
 model PackingSlip {
-  id               Int       @id @default(autoincrement())
-  code             String    @unique
-  branchId         Int
-  numberOfPackages Int
-  paymentMethod    String
-  cashAmount       Decimal?  @default(0)
-  hasFeeGuiBen     Boolean   @default(false)
-  feeGuiBen        Decimal?  @default(0)
-  hasFeeGrab       Boolean   @default(false)
-  feeGrab          Decimal?  @default(0)
-  hasCuocGuiHang   Boolean   @default(false)
-  cuocGuiHang      Decimal?  @default(0)
-  expensePayerId   Int?
-  note             String?
+  id                   Int       @id @default(autoincrement())
+  code                 String    @unique
+  branchId             Int
+  numberOfPackages     Int
+  paymentMethod        String
+  cashAmount           Decimal?  @default(0)
+  hasFeeGuiBen         Boolean   @default(false)
+  feeGuiBen            Decimal?  @default(0)
+  hasFeeGrab           Boolean   @default(false)
+  feeGrab              Decimal?  @default(0)
+  hasCuocGuiHang       Boolean   @default(false)
+  cuocGuiHang          Decimal?  @default(0)
+  expensePayerId       Int?
+  note                 String?
   larkExpenseRecordIds Json?
   larkExpenseSyncedAt  DateTime?
-  createdBy        Int
-  cancelledAt      DateTime?
-  cancelledById    Int?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdBy            Int
+  cancelledAt          DateTime?
+  cancelledById        Int?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   branch       Branch                   @relation(fields: [branchId], references: [id])
   creator      User                     @relation("PackingSlipCreator", fields: [createdBy], references: [id])

@@ -37,7 +37,9 @@ export class PromotionsController {
   }
 
   @Post('evaluate')
-  @ApiOperation({ summary: 'Kiểm tra khuyến mãi áp dụng cho giỏ hàng hiện tại' })
+  @ApiOperation({
+    summary: 'Kiểm tra khuyến mãi áp dụng cho giỏ hàng hiện tại',
+  })
   evaluate(@Body() dto: EvaluatePromotionDto) {
     return this.promotionsService.evaluate(dto);
   }

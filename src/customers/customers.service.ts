@@ -1945,9 +1945,7 @@ export class CustomersService {
             // Excel serial number (vd: "45824") — xlsx parse ngày thành số
             const serial = Number(row.transDate);
             if (!isNaN(serial) && serial > 30000 && serial < 60000) {
-              const parsed = new Date(
-                Math.round((serial - 25569) * 86400000),
-              );
+              const parsed = new Date(Math.round((serial - 25569) * 86400000));
               if (!isNaN(parsed.getTime())) transDate = parsed;
             } else {
               const parsed = new Date(row.transDate);

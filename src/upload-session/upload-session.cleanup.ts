@@ -17,9 +17,7 @@ export class UploadSessionCleanup {
         this.logger.log(`Đã đóng ${count} phiên upload hết hạn`);
       }
     } catch (err) {
-      this.logger.error(
-        `Cleanup phiên upload lỗi: ${(err as Error).message}`,
-      );
+      this.logger.error(`Cleanup phiên upload lỗi: ${(err as Error).message}`);
     }
   }
 }

@@ -111,7 +111,8 @@ export async function computeOnHandFromLogs(
   });
   const activeKeys = await getActiveLogKeys(tx, logs);
   return logs.reduce(
-    (s: number, l: any) => (isLogActive(l, activeKeys) ? s + Number(l.quantity) : s),
+    (s: number, l: any) =>
+      isLogActive(l, activeKeys) ? s + Number(l.quantity) : s,
     0,
   );
 }
@@ -162,11 +163,7 @@ export async function recalcStockAuditChain(
 ): Promise<number> {
   const logs = await tx.inventoryLog.findMany({
     where: { productId, branchId },
-    orderBy: [
-      { transactionDate: 'asc' },
-      { createdAt: 'asc' },
-      { id: 'asc' },
-    ],
+    orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
     select: {
       id: true,
       quantity: true,

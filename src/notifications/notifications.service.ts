@@ -27,7 +27,9 @@ export class NotificationsService {
     userIds: number[],
     input: CreateNotificationInput,
   ): Promise<number> {
-    const uniqueIds = [...new Set(userIds)].filter((id) => Number.isInteger(id));
+    const uniqueIds = [...new Set(userIds)].filter((id) =>
+      Number.isInteger(id),
+    );
     if (uniqueIds.length === 0) return 0;
 
     const rows = uniqueIds.map((userId) => ({
@@ -51,19 +53,14 @@ export class NotificationsService {
    * Danh sách thông báo của 1 user, phân trang cursor-based theo id giảm dần.
    * Trả kèm unreadCount để FE cập nhật badge cùng lúc.
    */
-  async listForUser(
-    userId: number,
-    opts: { cursor?: number; limit?: number },
-  ) {
+  async listForUser(userId: number, opts: { cursor?: number; limit?: number }) {
     const limit = Math.min(50, Math.max(1, opts.limit ?? 20));
 
     const rows = await this.prisma.notification.findMany({
       where: { userId },
       orderBy: { id: 'desc' },
       take: limit + 1,
-      ...(opts.cursor
-        ? { cursor: { id: opts.cursor }, skip: 1 }
-        : {}),
+      ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     });
 
     const hasMore = rows.length > limit;
@@ -91,7 +88,9 @@ export class NotificationsService {
   }
 
   /** Đánh dấu toàn bộ thông báo chưa đọc của user là đã đọc. */
-  async markAllRead(userId: number): Promise<{ success: boolean; count: number }> {
+  async markAllRead(
+    userId: number,
+  ): Promise<{ success: boolean; count: number }> {
     const res = await this.prisma.notification.updateMany({
       where: { userId, readAt: null },
       data: { readAt: new Date() },

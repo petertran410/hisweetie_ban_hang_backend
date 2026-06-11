@@ -27,7 +27,8 @@ export class SettingsService {
           allowSellWhenOutStock: true,
           syncKiotEnabled: true,
         },
-      });    }
+      });
+    }
 
     return settings;
   }

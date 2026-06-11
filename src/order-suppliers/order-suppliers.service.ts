@@ -224,6 +224,16 @@ export class OrderSuppliersService {
           },
         },
         payments: true,
+        vehicleShipmentItems: {
+          where: { vehicleShipment: { status: { not: 3 } } },
+          select: {
+            productId: true,
+            quantity: true,
+            vehicleShipmentId: true,
+            postImportStatus: true,
+            vehicleShipment: { select: { status: true } },
+          },
+        },
       },
     });
 
@@ -231,7 +241,73 @@ export class OrderSuppliersService {
       throw new NotFoundException('Order supplier not found');
     }
 
-    return orderSupplier;
+    // ── Tính các mốc số lượng per sản phẩm ───────────────────────────────────
+    // received: tổng SL đã nhập qua PN active (isDraft=false, status≠2)
+    // shippedTotal: tổng SL ghép xe (mọi xe chưa hủy) — dùng cho cột "Ghép xe"
+    // reserved: phần ghép xe đang GIỮ CHỖ (đối xứng getQuantityMap):
+    //   • xe chưa nhập (status 0/1): giữ full SL ghép
+    //   • xe đã nhập (status 2): chỉ giữ phần THIẾU = max(ghép − nhận của xe đó,0)
+    //     khi postImportStatus ∈ {pending,kept}; 'returned' → 0
+    // remaining (Còn lại) = max(ordered − received − reserved, 0)
+    const receivedByProduct: Record<number, number> = {};
+    const receivedByVehicleProduct = new Map<string, number>(); // `${vehId}:${pId}`
+    for (const po of orderSupplier.purchaseOrders) {
+      const active = !(po as any).isDraft && (po as any).status !== 2;
+      if (!active) continue;
+      const vehId = (po as any).vehicleShipmentId as number | null;
+      for (const it of po.items) {
+        receivedByProduct[it.productId] =
+          (receivedByProduct[it.productId] || 0) + Number(it.quantity);
+        if (vehId != null) {
+          const vk = `${vehId}:${it.productId}`;
+          receivedByVehicleProduct.set(
+            vk,
+            (receivedByVehicleProduct.get(vk) || 0) + Number(it.quantity),
+          );
+        }
+      }
+    }
+
+    const shippedTotalByProduct: Record<number, number> = {};
+    const reservedByProduct: Record<number, number> = {};
+    for (const vi of orderSupplier.vehicleShipmentItems as any[]) {
+      const shipQty = Number(vi.quantity);
+      shippedTotalByProduct[vi.productId] =
+        (shippedTotalByProduct[vi.productId] || 0) + shipQty;
+
+      const vehStatus = vi.vehicleShipment?.status ?? 0;
+      let reserved: number;
+      if (vehStatus === 2) {
+        if (vi.postImportStatus === 'returned') {
+          reserved = 0;
+        } else {
+          const recv =
+            receivedByVehicleProduct.get(
+              `${vi.vehicleShipmentId}:${vi.productId}`,
+            ) || 0;
+          reserved = Math.max(shipQty - recv, 0);
+        }
+      } else {
+        reserved = shipQty;
+      }
+      reservedByProduct[vi.productId] =
+        (reservedByProduct[vi.productId] || 0) + reserved;
+    }
+
+    const itemsEnriched = (orderSupplier.items as any[]).map((item) => {
+      const ordered = Number(item.quantity);
+      const received = receivedByProduct[item.productId] || 0;
+      const reserved = reservedByProduct[item.productId] || 0;
+      return {
+        ...item,
+        receivedQty: received,
+        shippedQty: shippedTotalByProduct[item.productId] || 0,
+        reservedQty: reserved,
+        remainingQty: Math.max(ordered - received - reserved, 0),
+      };
+    });
+
+    return { ...orderSupplier, items: itemsEnriched };
   }
 
   async create(dto: CreateOrderSupplierDto, userId: number) {
@@ -800,6 +876,58 @@ export class OrderSuppliersService {
       });
 
       return { message: 'Hủy phiếu đặt hàng nhập thành công' };
+    });
+  }
+
+  /**
+   * Chốt hoàn thành PDN thủ công khi NCC không giao nốt phần còn thiếu
+   * (vd 100 đặt / 99 nhập). Set status=3 + toComplete=true để
+   * `updateOrderSupplierStatus` (phía PN) không hạ cấp về "Nhập một phần".
+   */
+  async completeOrderSupplier(id: number, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const orderSupplier = await tx.orderSupplier.findUnique({
+        where: { id },
+        include: { supplier: { select: { id: true, name: true } } },
+      });
+      if (!orderSupplier) {
+        throw new NotFoundException('Không tìm thấy phiếu đặt hàng nhập');
+      }
+      if (orderSupplier.status === 4) {
+        throw new BadRequestException('Phiếu đặt hàng nhập đã hủy');
+      }
+      if (orderSupplier.status === 3 && orderSupplier.toComplete) {
+        throw new BadRequestException('Phiếu đặt hàng nhập đã hoàn thành');
+      }
+
+      const updated = await tx.orderSupplier.update({
+        where: { id },
+        data: { status: 3, statusValue: 'Hoàn thành', toComplete: true },
+      });
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'ORDER_SUPPLIER_COMPLETE',
+        entityType: 'order_suppliers',
+        entityId: id.toString(),
+        entityCode: orderSupplier.code,
+        category: getCategoryFromActionCode('ORDER_SUPPLIER_COMPLETE'),
+        severity: getSeverityFromActionCode('ORDER_SUPPLIER_COMPLETE'),
+        message: renderAuditMessage('ORDER_SUPPLIER_COMPLETE', {
+          orderSupplierCode: orderSupplier.code,
+        }),
+        messageTemplate: 'ORDER_SUPPLIER_COMPLETE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: orderSupplier.branchId || user?.branchId || undefined,
+      });
+
+      return updated;
     });
   }
 

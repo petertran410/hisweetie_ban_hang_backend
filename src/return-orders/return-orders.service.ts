@@ -443,7 +443,7 @@ export class ReturnOrdersService {
         }
 
         if (remainingBought < Number(rw.buyQuantity)) {
-          const snapshot = (log.rewardSnapshot as any) || {};
+          const snapshot = log.rewardSnapshot || {};
           warnings.push({
             invoiceId: log.invoiceId,
             invoiceCode: invoice.code,

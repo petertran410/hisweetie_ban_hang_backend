@@ -113,6 +113,17 @@ export class OrderSuppliersController {
     return this.orderSuppliersService.remove(+id, userId);
   }
 
+  @Put(':id/complete')
+  @RequirePermissions('order_suppliers:update')
+  @ApiOperation({
+    summary:
+      'Chốt hoàn thành PDN thủ công khi NCC không giao nốt phần còn thiếu',
+  })
+  complete(@Param('id') id: string, @Req() req: any) {
+    const userId = req.user?.id || 1;
+    return this.orderSuppliersService.completeOrderSupplier(+id, userId);
+  }
+
   @Post(':id/payments')
   @RequirePermissions('order_suppliers:update')
   createPayment(

@@ -402,8 +402,7 @@ export class StockAuditsService {
       }
 
       // checkDate hiệu lực để tính tồn thời điểm (mới nếu có, không thì giữ cũ)
-      const effectiveCheckDate: Date =
-        headerData.checkDate ?? audit.checkDate;
+      const effectiveCheckDate: Date = headerData.checkDate ?? audit.checkDate;
 
       // Update items
       if (dto.items?.length) {

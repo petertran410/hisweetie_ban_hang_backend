@@ -500,8 +500,7 @@ export class SepayMatchService {
     // Tạo phiếu thu cho từng khách trong phần phân bổ MỚI (mỗi khách 1 phiếu).
     for (const a of allocations) {
       const note =
-        a.note ||
-        `Sepay đối soát: ${tx.transactionContent || ''}`.trim();
+        a.note || `Sepay đối soát: ${tx.transactionContent || ''}`.trim();
       const result = await this.cashFlowsService.createCustomerPayment(
         {
           customerId: a.customerId,

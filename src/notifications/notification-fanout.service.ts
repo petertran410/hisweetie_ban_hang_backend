@@ -135,7 +135,9 @@ export class NotificationFanoutService {
    */
   private computePermissionKeys(u: {
     userRoles: {
-      role: { rolePermissions: { permission: { resource: string; action: string } }[] };
+      role: {
+        rolePermissions: { permission: { resource: string; action: string } }[];
+      };
     }[];
     userBranchRoles: {
       branchId: number;
@@ -147,7 +149,10 @@ export class NotificationFanoutService {
         }[];
       };
     }[];
-    userPermissions: { type: string; permission: { resource: string; action: string } }[];
+    userPermissions: {
+      type: string;
+      permission: { resource: string; action: string };
+    }[];
     branchPermissions: {
       granted: boolean;
       permission: { resource: string; action: string };

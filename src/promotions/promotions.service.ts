@@ -110,7 +110,8 @@ export class PromotionsService {
 
   async update(id: number, dto: UpdatePromotionDto, _userId: number) {
     const promo = await this.prisma.promotion.findUnique({ where: { id } });
-    if (!promo) throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
 
     if (dto.code || dto.type || dto.rewards) {
       this.validatePayload({ ...promo, ...dto } as any);
@@ -128,7 +129,8 @@ export class PromotionsService {
       const dup = await this.prisma.promotion.findUnique({
         where: { code: dto.code },
       });
-      if (dup) throw new BadRequestException(`Mã khuyến mãi "${dto.code}" đã tồn tại`);
+      if (dup)
+        throw new BadRequestException(`Mã khuyến mãi "${dto.code}" đã tồn tại`);
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -143,8 +145,13 @@ export class PromotionsService {
       if (dto.customerIds !== undefined || dto.forAllCustomer !== undefined) {
         await tx.promotionCustomer.deleteMany({ where: { promotionId: id } });
       }
-      if (dto.customerGroupIds !== undefined || dto.forAllCustomer !== undefined) {
-        await tx.promotionCustomerGroup.deleteMany({ where: { promotionId: id } });
+      if (
+        dto.customerGroupIds !== undefined ||
+        dto.forAllCustomer !== undefined
+      ) {
+        await tx.promotionCustomerGroup.deleteMany({
+          where: { promotionId: id },
+        });
       }
       if (dto.userIds !== undefined || dto.forAllUser !== undefined) {
         await tx.promotionUser.deleteMany({ where: { promotionId: id } });
@@ -195,7 +202,9 @@ export class PromotionsService {
               : undefined,
           customers:
             dto.forAllCustomer === false && dto.customerIds
-              ? { create: dto.customerIds.map((customerId) => ({ customerId })) }
+              ? {
+                  create: dto.customerIds.map((customerId) => ({ customerId })),
+                }
               : undefined,
           customerGroups:
             dto.forAllCustomer === false && dto.customerGroupIds
@@ -224,7 +233,11 @@ export class PromotionsService {
 
   /** Dựng các dòng promotion_products từ rewards (buyItems → role 'buy', rewardItems → role 'reward'). */
   private buildProductRows(rewards: any[]) {
-    const rows: { role: string; productId: number | null; categoryName: string | null }[] = [];
+    const rows: {
+      role: string;
+      productId: number | null;
+      categoryName: string | null;
+    }[] = [];
     for (const r of rewards) {
       for (const b of r.buyItems ?? []) {
         rows.push({
@@ -249,10 +262,13 @@ export class PromotionsService {
       where: { id },
       include: { rewards: true },
     });
-    if (!promo) throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
     if (isActive) {
       if (promo.rewards.length === 0)
-        throw new BadRequestException('Chương trình chưa có cấu hình phần thưởng');
+        throw new BadRequestException(
+          'Chương trình chưa có cấu hình phần thưởng',
+        );
       if (promo.endDate && new Date() > promo.endDate)
         throw new BadRequestException('Chương trình đã hết hạn, không thể bật');
     }
@@ -264,7 +280,8 @@ export class PromotionsService {
 
   async stop(id: number) {
     const promo = await this.prisma.promotion.findUnique({ where: { id } });
-    if (!promo) throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
     return this.prisma.promotion.update({
       where: { id },
       data: { isActive: false, status: 'stopped' },
@@ -315,13 +332,18 @@ export class PromotionsService {
       include: {
         rewards: { include: { buyProduct: true, rewardProduct: true } },
         branches: true,
-        customers: { include: { customer: { select: { id: true, name: true, phone: true } } } },
+        customers: {
+          include: {
+            customer: { select: { id: true, name: true, phone: true } },
+          },
+        },
         customerGroups: true,
         users: true,
         products: { include: { product: true } },
       },
     });
-    if (!promo) throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
     return promo;
   }
 
@@ -482,17 +504,12 @@ export class PromotionsService {
           { OR: [{ startDate: null }, { startDate: { lte: now } }] },
           { OR: [{ endDate: null }, { endDate: { gte: now } }] },
           {
-            OR: [
-              { forAllBranch: true },
-              { branches: { some: { branchId } } },
-            ],
+            OR: [{ forAllBranch: true }, { branches: { some: { branchId } } }],
           },
           {
             OR: [
               { forAllCustomer: true },
-              ...(customerId
-                ? [{ customers: { some: { customerId } } }]
-                : []),
+              ...(customerId ? [{ customers: { some: { customerId } } }] : []),
               ...(customerGroupIds.length
                 ? [
                     {
@@ -519,10 +536,16 @@ export class PromotionsService {
     return promos.map((p) => {
       const buyItems = p.products
         .filter((pp) => pp.role === 'buy')
-        .map((pp) => ({ productId: pp.productId, categoryName: pp.categoryName }));
+        .map((pp) => ({
+          productId: pp.productId,
+          categoryName: pp.categoryName,
+        }));
       const rewardItems = p.products
         .filter((pp) => pp.role === 'reward')
-        .map((pp) => ({ productId: pp.productId, categoryName: pp.categoryName }));
+        .map((pp) => ({
+          productId: pp.productId,
+          categoryName: pp.categoryName,
+        }));
       return {
         id: p.id,
         code: p.code,
@@ -678,7 +701,10 @@ export class PromotionsService {
    * danh sách tương ứng không được rỗng — tránh KM bị vô hiệu âm thầm.
    */
   private validateScope(dto: Partial<CreatePromotionDto>) {
-    if (dto.forAllBranch === false && !(dto.branchIds && dto.branchIds.length > 0))
+    if (
+      dto.forAllBranch === false &&
+      !(dto.branchIds && dto.branchIds.length > 0)
+    )
       throw new BadRequestException(
         'Đã chọn áp dụng chi nhánh cụ thể — vui lòng chọn ít nhất 1 chi nhánh',
       );
@@ -706,8 +732,15 @@ export class PromotionsService {
       throw new BadRequestException('Cần ít nhất 1 cấu hình phần thưởng');
 
     const rw = rewards[0];
-    const hasBuy = !!(rw.buyProductId || rw.buyCategoryName || (rw.buyItems && rw.buyItems.length > 0));
-    const hasReward = !!(rw.rewardProductId || (rw.rewardItems && rw.rewardItems.length > 0));
+    const hasBuy = !!(
+      rw.buyProductId ||
+      rw.buyCategoryName ||
+      (rw.buyItems && rw.buyItems.length > 0)
+    );
+    const hasReward = !!(
+      rw.rewardProductId ||
+      (rw.rewardItems && rw.rewardItems.length > 0)
+    );
     switch (dto.type) {
       case 'BUY_X_GET_Y':
         if (!hasBuy || !rw.buyQuantity || !hasReward || !rw.rewardQuantity)
@@ -729,7 +762,9 @@ export class PromotionsService {
         break;
       case 'INVOICE_DISCOUNT':
         if (rw.rewardValue == null || rw.rewardValue <= 0)
-          throw new BadRequestException('Giảm giá hóa đơn cần giá trị giảm > 0');
+          throw new BadRequestException(
+            'Giảm giá hóa đơn cần giá trị giảm > 0',
+          );
         break;
       case 'PRODUCT_DISCOUNT':
         if (!rw.buyProductId || rw.rewardValue == null)
