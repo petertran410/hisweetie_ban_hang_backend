@@ -50,9 +50,7 @@ export async function searchCustomerIds(
   // Tách token theo MỌI ký tự không phải chữ/số (Unicode-aware), để dấu câu
   // như "-", "(", ")", "," trong tên (vd "Ms Giang - Hoàng Mai, Hà Nội (Sale)")
   // tự bị loại, không trở thành token rác phá điều kiện AND.
-  const tokens = normalized
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter(Boolean);
+  const tokens = normalized.split(/[^\p{L}\p{N}]+/u).filter(Boolean);
   if (tokens.length === 0) return [];
 
   // Mỗi token → một điều kiện khớp. Gộp TẤT CẢ điều kiện bằng AND trong CÙNG

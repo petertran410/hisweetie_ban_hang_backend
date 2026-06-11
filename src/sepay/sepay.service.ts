@@ -266,9 +266,11 @@ export class SepayService {
     transactionContent: string | null;
   }) {
     try {
-      const recipients = await this.notificationFanoutService.resolveSepayRecipients(
-        { accountNumber: tx.accountNumber, subAccount: tx.subAccount },
-      );
+      const recipients =
+        await this.notificationFanoutService.resolveSepayRecipients({
+          accountNumber: tx.accountNumber,
+          subAccount: tx.subAccount,
+        });
       if (recipients.length === 0) return;
 
       const amount = Number(tx.amountIn) || 0;

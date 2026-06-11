@@ -68,9 +68,7 @@ export class LarkLoadingNotificationService {
 
     const chatId = this.config.get<string>(envKey);
     if (!chatId) {
-      throw new ServiceUnavailableException(
-        `Env ${envKey} chưa được cấu hình`,
-      );
+      throw new ServiceUnavailableException(`Env ${envKey} chưa được cấu hình`);
     }
 
     await this.sendCard(loading, chatId, envKey, { throwOnError: true });
@@ -258,7 +256,10 @@ export class LarkLoadingNotificationService {
     return {
       config: { wide_screen_mode: true },
       header: {
-        title: { tag: 'plain_text', content: 'PHIẾU LOADING — XẾP HÀNG LÊN XE' },
+        title: {
+          tag: 'plain_text',
+          content: 'PHIẾU LOADING — XẾP HÀNG LÊN XE',
+        },
         template: 'orange',
       },
       elements: [

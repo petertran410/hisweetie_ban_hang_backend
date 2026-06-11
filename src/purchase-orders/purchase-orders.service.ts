@@ -298,414 +298,431 @@ export class PurchaseOrdersService {
     dto: CreatePurchaseOrderFromOrderSupplierDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const orderSupplier = await tx.orderSupplier.findUnique({
-        where: { id: orderSupplierId },
-        include: {
-          items: true,
-          payments: { where: { status: { not: 2 } } },
-          purchaseOrders: {
-            include: { items: true },
-          },
-          supplier: {
-            select: {
-              id: true,
-              code: true,
-              name: true,
-              contactNumber: true,
-              address: true,
-              debt: true,
-            },
+    return this.prisma.$transaction((tx) =>
+      this.createOneFromOrderSupplierTx(tx, orderSupplierId, dto, userId),
+    );
+  }
+
+  /**
+   * Lõi tạo 1 PN từ PDN, nhận sẵn `tx` để gọi lặp trong cùng một transaction
+   * (phục vụ luồng ghép xe: 1 xe → N PN). Hành vi giữ nguyên 100% so với bản
+   * cũ — `createFromOrderSupplier` giờ chỉ là wrapper mở transaction.
+   *
+   * `vehicleShipmentId` (optional): gắn PN về phiếu ghép xe nguồn (Đường 2).
+   * Đường 1 (gọi trực tiếp) truyền undefined → PN.vehicleShipmentId = null.
+   */
+  async createOneFromOrderSupplierTx(
+    tx: any,
+    orderSupplierId: number,
+    dto: CreatePurchaseOrderFromOrderSupplierDto,
+    userId: number,
+    vehicleShipmentId?: number,
+  ) {
+    const orderSupplier = await tx.orderSupplier.findUnique({
+      where: { id: orderSupplierId },
+      include: {
+        items: true,
+        payments: { where: { status: { not: 2 } } },
+        purchaseOrders: {
+          include: { items: true },
+        },
+        supplier: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            contactNumber: true,
+            address: true,
+            debt: true,
           },
         },
+      },
+    });
+
+    if (!orderSupplier) {
+      throw new NotFoundException('Phiếu đặt hàng nhập không tồn tại');
+    }
+    if (orderSupplier.status === 4) {
+      throw new BadRequestException(
+        'Không thể tạo phiếu nhập từ phiếu đặt hàng đã hủy',
+      );
+    }
+    if (orderSupplier.status === 3) {
+      throw new BadRequestException('Phiếu đặt hàng đã hoàn thành');
+    }
+
+    const branchId = dto.branchId ?? orderSupplier.branchId ?? undefined;
+    if (!branchId) {
+      throw new BadRequestException(
+        'Phiếu đặt hàng nhập không có thông tin chi nhánh',
+      );
+    }
+
+    // Tính số đã nhận theo từng product qua các PN active (không phải DRAFT,
+    // không phải CANCELLED) — đối xứng `invoicedQuantities` phía bán.
+    const activePOs = orderSupplier.purchaseOrders.filter(
+      (po: any) => !po.isDraft && po.status !== 2,
+    );
+    const receivedQuantities: Record<number, number> = {};
+    activePOs.forEach((po: any) => {
+      po.items.forEach((d: any) => {
+        if (d.productId != null) {
+          receivedQuantities[d.productId] =
+            (receivedQuantities[d.productId] || 0) + Number(d.quantity);
+        }
       });
+    });
 
-      if (!orderSupplier) {
-        throw new NotFoundException('Phiếu đặt hàng nhập không tồn tại');
-      }
-      if (orderSupplier.status === 4) {
-        throw new BadRequestException(
-          'Không thể tạo phiếu nhập từ phiếu đặt hàng đã hủy',
-        );
-      }
-      if (orderSupplier.status === 3) {
-        throw new BadRequestException('Phiếu đặt hàng đã hoàn thành');
-      }
+    const remainingItems = orderSupplier.items
+      .map((item: any) => {
+        const received = receivedQuantities[item.productId] || 0;
+        const remaining = Number(item.quantity) - received;
+        return { ...item, remainingQuantity: remaining };
+      })
+      .filter((item: any) => item.remainingQuantity > 0);
 
-      const branchId = dto.branchId ?? orderSupplier.branchId ?? undefined;
-      if (!branchId) {
-        throw new BadRequestException(
-          'Phiếu đặt hàng nhập không có thông tin chi nhánh',
-        );
-      }
-
-      // Tính số đã nhận theo từng product qua các PN active (không phải DRAFT,
-      // không phải CANCELLED) — đối xứng `invoicedQuantities` phía bán.
-      const activePOs = orderSupplier.purchaseOrders.filter(
-        (po: any) => !po.isDraft && po.status !== 2,
+    if (remainingItems.length === 0) {
+      throw new BadRequestException(
+        'Tất cả sản phẩm trong phiếu đặt hàng đã được nhập',
       );
-      const receivedQuantities: Record<number, number> = {};
-      activePOs.forEach((po: any) => {
-        po.items.forEach((d: any) => {
-          if (d.productId != null) {
-            receivedQuantities[d.productId] =
-              (receivedQuantities[d.productId] || 0) + Number(d.quantity);
-          }
-        });
-      });
+    }
 
-      const remainingItems = orderSupplier.items
-        .map((item: any) => {
-          const received = receivedQuantities[item.productId] || 0;
-          const remaining = Number(item.quantity) - received;
-          return { ...item, remainingQuantity: remaining };
-        })
-        .filter((item: any) => item.remainingQuantity > 0);
+    // Discount còn lại: PDN.discount − Σ PN.discount đã dùng (đối xứng
+    // `remainingDiscount` phía bán). DTO có thể override nếu user nhập tay.
+    const usedDiscount = activePOs.reduce(
+      (sum: number, po: any) => sum + Number(po.discount),
+      0,
+    );
+    const remainingDiscount = Number(orderSupplier.discount) - usedDiscount;
+    const fallbackDiscount = remainingDiscount > 0 ? remainingDiscount : 0;
 
-      if (remainingItems.length === 0) {
-        throw new BadRequestException(
-          'Tất cả sản phẩm trong phiếu đặt hàng đã được nhập',
-        );
-      }
+    const isFirstPN = activePOs.length === 0;
 
-      // Discount còn lại: PDN.discount − Σ PN.discount đã dùng (đối xứng
-      // `remainingDiscount` phía bán). DTO có thể override nếu user nhập tay.
-      const usedDiscount = activePOs.reduce(
-        (sum: number, po: any) => sum + Number(po.discount),
-        0,
-      );
-      const remainingDiscount = Number(orderSupplier.discount) - usedDiscount;
-      const fallbackDiscount = remainingDiscount > 0 ? remainingDiscount : 0;
+    // Tổng tiền đã trả ở PDN — chỉ kế thừa khi đây là PN ĐẦU TIÊN
+    // (đối xứng `isFirstInvoice` phía bán).
+    const totalPaidFromOrderSupplier = isFirstPN
+      ? orderSupplier.payments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount),
+          0,
+        )
+      : 0;
 
-      const isFirstPN = activePOs.length === 0;
+    // Đối xứng `invoices.service.ts:1541-1542`: `additionalPayment` là tổng
+    // tiền user trả THÊM khi tạo PN (cached). `dto.payments` chỉ là metadata
+    // chia phương thức để tạo PurchaseOrderPayment + CashFlow records — TỔNG
+    // các phần tử trong `dto.payments` PHẢI BẰNG `additionalPayment` (FE
+    // responsibility). Nếu user chỉ gửi 1 trong 2, tự suy ra cái còn lại.
+    const additionalFromField = Number(dto.additionalPayment || 0);
+    const additionalFromList = (dto.payments || []).reduce(
+      (sum: number, p: any) => sum + Number(p.amount || 0),
+      0,
+    );
+    const additionalPayment =
+      additionalFromField > 0 ? additionalFromField : additionalFromList;
+    const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
 
-      // Tổng tiền đã trả ở PDN — chỉ kế thừa khi đây là PN ĐẦU TIÊN
-      // (đối xứng `isFirstInvoice` phía bán).
-      const totalPaidFromOrderSupplier = isFirstPN
-        ? orderSupplier.payments.reduce(
-            (sum: number, p: any) => sum + Number(p.amount),
-            0,
-          )
-        : 0;
-
-      // Đối xứng `invoices.service.ts:1541-1542`: `additionalPayment` là tổng
-      // tiền user trả THÊM khi tạo PN (cached). `dto.payments` chỉ là metadata
-      // chia phương thức để tạo PurchaseOrderPayment + CashFlow records — TỔNG
-      // các phần tử trong `dto.payments` PHẢI BẰNG `additionalPayment` (FE
-      // responsibility). Nếu user chỉ gửi 1 trong 2, tự suy ra cái còn lại.
-      const additionalFromField = Number(dto.additionalPayment || 0);
-      const additionalFromList = (dto.payments || []).reduce(
-        (sum: number, p: any) => sum + Number(p.amount || 0),
-        0,
-      );
-      const additionalPayment =
-        additionalFromField > 0 ? additionalFromField : additionalFromList;
-      const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
-
-      // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
-      const itemsToReceive = (
-        dto.items && dto.items.length > 0
-          ? dto.items
-          : remainingItems.map((item: any) => ({
-              productId: item.productId,
-              productCode: item.productCode,
-              productName: item.productName,
-              quantity: item.remainingQuantity,
-              price: Number(item.price),
-              discount: Number(item.discount) || 0,
-              discountRatio: 0,
-              totalPrice:
-                (Number(item.price) - (Number(item.discount) || 0)) *
-                item.remainingQuantity,
-              description: item.description,
-            }))
-      ) as any[];
-
-      const itemsData = await Promise.all(
-        itemsToReceive.map(async (item) => {
-          // dto.items có sẵn productCode/productName, fallback nếu không có.
-          let productCode = item.productCode;
-          let productName = item.productName;
-          if (!productCode || !productName) {
-            const product = await tx.product.findUnique({
-              where: { id: item.productId },
-            });
-            if (!product) {
-              throw new NotFoundException(
-                `Product ${item.productId} not found`,
-              );
-            }
-            productCode = productCode || product.code;
-            productName = productName || product.name;
-          }
-          const totalPrice =
-            item.totalPrice !== undefined
-              ? Number(item.totalPrice)
-              : (Number(item.price) - (Number(item.discount) || 0)) *
-                Number(item.quantity);
-
-          return {
+    // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
+    const itemsToReceive = (
+      dto.items && dto.items.length > 0
+        ? dto.items
+        : remainingItems.map((item: any) => ({
             productId: item.productId,
-            productCode,
-            productName,
-            quantity: item.quantity,
-            price: item.price,
-            discount: item.discount || 0,
-            discountRatio: item.discountRatio || 0,
-            totalPrice,
+            productCode: item.productCode,
+            productName: item.productName,
+            quantity: item.remainingQuantity,
+            price: Number(item.price),
+            discount: Number(item.discount) || 0,
+            discountRatio: 0,
+            totalPrice:
+              (Number(item.price) - (Number(item.discount) || 0)) *
+              item.remainingQuantity,
             description: item.description,
-          };
-        }),
-      );
+          }))
+    ) as any[];
 
-      const total = itemsData.reduce(
-        (sum, item) => sum + Number(item.totalPrice),
-        0,
-      );
-
-      const dtoDiscountAmount = dto.discountRatio
-        ? (total * dto.discountRatio) / 100
-        : dto.discount !== undefined
-          ? Number(dto.discount)
-          : null;
-
-      const discountAmount =
-        dtoDiscountAmount !== null ? dtoDiscountAmount : fallbackDiscount;
-
-      // Validate trùng với check trong create(): tổng discount của các PN của
-      // PDN không được vượt PDN.discount.
-      if (usedDiscount + discountAmount > Number(orderSupplier.discount)) {
-        const available = Number(orderSupplier.discount) - usedDiscount;
-        throw new BadRequestException(
-          `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${available}`,
-        );
-      }
-
-      const subTotal = total - discountAmount;
-      const debtAmount = subTotal - totalPaid;
-
-      const supplierOldDebt = Number(orderSupplier.supplier?.debt || 0);
-
-      // User được phép tự nhập mã PN khi tạo từ PDN (fromOSPayload.code).
-      const code = await this.resolvePurchaseOrderCode(tx, dto.code);
-
-      const purchaseOrder = await tx.purchaseOrder.create({
-        data: {
-          code,
-          orderSupplierId: orderSupplier.id,
-          supplierId: orderSupplier.supplierId,
-          branchId,
-          purchaseDate: dto.purchaseDate
-            ? new Date(dto.purchaseDate)
-            : new Date(),
-          total,
-          totalAmount: total,
-          discount: discountAmount,
-          discountRatio: dto.discountRatio || 0,
-          subTotal,
-          paidAmount: totalPaid,
-          debtAmount,
-          status: dto.isDraft ? 0 : 1,
-          statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
-          supplierOldDebt,
-          supplierDebt: debtAmount,
-          isDraft: dto.isDraft || false,
-          partnerType: dto.partnerType,
-          description: dto.description,
-          purchaseById: dto.purchaseById ?? orderSupplier.userId ?? undefined,
-          createdBy: userId,
-          items: {
-            create: itemsData,
-          },
-        },
-        include: {
-          items: true,
-        },
-      });
-
-      if (!dto.isDraft) {
-        await this.updateInventory(purchaseOrder.id, tx);
-      }
-
-      // CLONE OrderSupplierPayment → PurchaseOrderPayment + CashFlow `PCTUPN`
-      // (đối xứng phía bán: OrderPayment → InvoicePayment + CashFlow `TTTU`).
-      // CashFlow gốc `PCPDN######` của PDN GIỮ NGUYÊN — `recalcSupplierDebt`
-      // dùng filter `NOT startsWith 'PCTUPN'` để tránh trừ đôi.
-      const cashFlowIdsToUpdate: number[] = [];
-      let cloneSeq = 0;
-      if (isFirstPN && totalPaidFromOrderSupplier > 0 && !dto.isDraft) {
-        for (const osPayment of orderSupplier.payments) {
-          cloneSeq++;
-          const paymentCode = `PCTU${purchaseOrder.code}-${cloneSeq}`;
-
-          const cashFlow = await tx.cashFlow.create({
-            data: {
-              code: paymentCode,
-              branchId,
-              cashFlowGroupId: 9,
-              isReceipt: false,
-              amount: osPayment.amount,
-              transDate: osPayment.paymentDate,
-              method: osPayment.paymentMethod || 'cash',
-              accountId: osPayment.accountId ?? null,
-              partnerType: 'S',
-              partnerId: orderSupplier.supplierId,
-              partnerName: orderSupplier.supplier?.name,
-              contactNumber: orderSupplier.supplier?.contactNumber,
-              address: orderSupplier.supplier?.address,
-              description: `Chi tiền tạm ứng từ phiếu đặt hàng nhập ${orderSupplier.code} sang phiếu nhập ${purchaseOrder.code}`,
-              status: 0,
-              statusValue: 'Đã thanh toán',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-              supplierDebtSnapshot: null,
-            },
+    const itemsData = await Promise.all(
+      itemsToReceive.map(async (item) => {
+        // dto.items có sẵn productCode/productName, fallback nếu không có.
+        let productCode = item.productCode;
+        let productName = item.productName;
+        if (!productCode || !productName) {
+          const product = await tx.product.findUnique({
+            where: { id: item.productId },
           });
-          cashFlowIdsToUpdate.push(cashFlow.id);
-
-          await tx.purchaseOrderPayment.create({
-            data: {
-              code: paymentCode,
-              purchaseOrderId: purchaseOrder.id,
-              amount: osPayment.amount,
-              paymentDate: osPayment.paymentDate,
-              paymentMethod: osPayment.paymentMethod || 'cash',
-              accountId: osPayment.accountId ?? null,
-              description: `Thanh toán từ phiếu đặt hàng nhập ${orderSupplier.code}`,
-              status: 1,
-              statusValue: 'Đã thanh toán',
-              cashFlowId: cashFlow.id,
-            },
-          });
+          if (!product) {
+            throw new NotFoundException(`Product ${item.productId} not found`);
+          }
+          productCode = productCode || product.code;
+          productName = productName || product.name;
         }
-      }
+        const totalPrice =
+          item.totalPrice !== undefined
+            ? Number(item.totalPrice)
+            : (Number(item.price) - (Number(item.discount) || 0)) *
+              Number(item.quantity);
 
-      // Thanh toán THÊM khi tạo PN — tạo CashFlow + PurchaseOrderPayment với
-      // prefix `PCPN######` chuẩn (đối xứng `TT{invoice.code}-N` phía bán).
-      if (additionalPayment > 0 && !dto.isDraft) {
-        const additionalPayments =
-          dto.payments && dto.payments.length > 0
-            ? dto.payments
-            : [{ method: 'cash', amount: additionalPayment } as any];
+        return {
+          productId: item.productId,
+          productCode,
+          productName,
+          quantity: item.quantity,
+          price: item.price,
+          discount: item.discount || 0,
+          discountRatio: item.discountRatio || 0,
+          totalPrice,
+          description: item.description,
+        };
+      }),
+    );
 
-        for (const payment of additionalPayments) {
-          const amount = Number(payment.amount || 0);
-          if (amount <= 0) continue;
+    const total = itemsData.reduce(
+      (sum, item) => sum + Number(item.totalPrice),
+      0,
+    );
 
-          const paymentCode = await this.generatePCPNCode(tx);
+    const dtoDiscountAmount = dto.discountRatio
+      ? (total * dto.discountRatio) / 100
+      : dto.discount !== undefined
+        ? Number(dto.discount)
+        : null;
 
-          const cashFlow = await tx.cashFlow.create({
-            data: {
-              code: paymentCode,
-              branchId,
-              cashFlowGroupId: 9,
-              isReceipt: false,
-              amount,
-              transDate: dto.purchaseDate
-                ? new Date(dto.purchaseDate)
-                : new Date(),
-              method: payment.method || 'cash',
-              accountId: payment.accountId ?? null,
-              partnerType: 'S',
-              partnerId: orderSupplier.supplierId,
-              partnerName: orderSupplier.supplier?.name,
-              contactNumber: orderSupplier.supplier?.contactNumber,
-              address: orderSupplier.supplier?.address,
-              description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
-              status: 0,
-              statusValue: 'Đã thanh toán',
-              createdBy: userId,
-              usedForFinancialReporting: 1,
-              supplierDebtSnapshot: null,
-            },
-          });
-          cashFlowIdsToUpdate.push(cashFlow.id);
+    const discountAmount =
+      dtoDiscountAmount !== null ? dtoDiscountAmount : fallbackDiscount;
 
-          await tx.purchaseOrderPayment.create({
-            data: {
-              code: paymentCode,
-              purchaseOrderId: purchaseOrder.id,
-              amount,
-              paymentDate: dto.purchaseDate
-                ? new Date(dto.purchaseDate)
-                : new Date(),
-              paymentMethod: payment.method || 'cash',
-              accountId: payment.accountId ?? null,
-              description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
-              status: 1,
-              statusValue: 'Đã thanh toán',
-              cashFlowId: cashFlow.id,
-            },
-          });
-        }
-      }
+    // Validate trùng với check trong create(): tổng discount của các PN của
+    // PDN không được vượt PDN.discount.
+    if (usedDiscount + discountAmount > Number(orderSupplier.discount)) {
+      const available = Number(orderSupplier.discount) - usedDiscount;
+      throw new BadRequestException(
+        `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${available}`,
+      );
+    }
 
-      await this.updateSupplierDebt(orderSupplier.supplierId, tx);
-      await this.updateOrderSupplierStatus(orderSupplier.id, tx);
+    const subTotal = total - discountAmount;
+    const debtAmount = subTotal - totalPaid;
 
-      // Sau recalc, snapshot supplier debt vào các CashFlow vừa tạo (PCTUPN
-      // clone + PCPN additional). Đối xứng `invoices.service.ts:1845-1854`.
-      if (cashFlowIdsToUpdate.length > 0) {
-        const updatedSupplier = await tx.supplier.findUnique({
-          where: { id: orderSupplier.supplierId },
-          select: { debt: true },
-        });
-        await tx.cashFlow.updateMany({
-          where: { id: { in: cashFlowIdsToUpdate } },
+    const supplierOldDebt = Number(orderSupplier.supplier?.debt || 0);
+
+    // User được phép tự nhập mã PN khi tạo từ PDN (fromOSPayload.code).
+    const code = await this.resolvePurchaseOrderCode(tx, dto.code);
+
+    const purchaseOrder = await tx.purchaseOrder.create({
+      data: {
+        code,
+        orderSupplierId: orderSupplier.id,
+        supplierId: orderSupplier.supplierId,
+        branchId,
+        vehicleShipmentId: vehicleShipmentId ?? null,
+        purchaseDate: dto.purchaseDate
+          ? new Date(dto.purchaseDate)
+          : new Date(),
+        total,
+        totalAmount: total,
+        discount: discountAmount,
+        discountRatio: dto.discountRatio || 0,
+        subTotal,
+        paidAmount: totalPaid,
+        debtAmount,
+        status: dto.isDraft ? 0 : 1,
+        statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
+        supplierOldDebt,
+        supplierDebt: debtAmount,
+        isDraft: dto.isDraft || false,
+        partnerType: dto.partnerType,
+        description: dto.description,
+        purchaseById: dto.purchaseById ?? orderSupplier.userId ?? undefined,
+        createdBy: userId,
+        items: {
+          create: itemsData,
+        },
+      },
+      include: {
+        items: true,
+      },
+    });
+
+    if (!dto.isDraft) {
+      await this.updateInventory(purchaseOrder.id, tx);
+    }
+
+    // CLONE OrderSupplierPayment → PurchaseOrderPayment + CashFlow `PCTUPN`
+    // (đối xứng phía bán: OrderPayment → InvoicePayment + CashFlow `TTTU`).
+    // CashFlow gốc `PCPDN######` của PDN GIỮ NGUYÊN — `recalcSupplierDebt`
+    // dùng filter `NOT startsWith 'PCTUPN'` để tránh trừ đôi.
+    const cashFlowIdsToUpdate: number[] = [];
+    let cloneSeq = 0;
+    if (isFirstPN && totalPaidFromOrderSupplier > 0 && !dto.isDraft) {
+      for (const osPayment of orderSupplier.payments) {
+        cloneSeq++;
+        const paymentCode = `PCTU${purchaseOrder.code}-${cloneSeq}`;
+
+        const cashFlow = await tx.cashFlow.create({
           data: {
-            supplierDebtSnapshot: updatedSupplier
-              ? Number(updatedSupplier.debt)
-              : null,
+            code: paymentCode,
+            branchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount: osPayment.amount,
+            transDate: osPayment.paymentDate,
+            method: osPayment.paymentMethod || 'cash',
+            accountId: osPayment.accountId ?? null,
+            partnerType: 'S',
+            partnerId: orderSupplier.supplierId,
+            partnerName: orderSupplier.supplier?.name,
+            contactNumber: orderSupplier.supplier?.contactNumber,
+            address: orderSupplier.supplier?.address,
+            description: `Chi tiền tạm ứng từ phiếu đặt hàng nhập ${orderSupplier.code} sang phiếu nhập ${purchaseOrder.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+        cashFlowIdsToUpdate.push(cashFlow.id);
+
+        await tx.purchaseOrderPayment.create({
+          data: {
+            code: paymentCode,
+            purchaseOrderId: purchaseOrder.id,
+            amount: osPayment.amount,
+            paymentDate: osPayment.paymentDate,
+            paymentMethod: osPayment.paymentMethod || 'cash',
+            accountId: osPayment.accountId ?? null,
+            description: `Thanh toán từ phiếu đặt hàng nhập ${orderSupplier.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
           },
         });
       }
+    }
 
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true, branchId: true },
+    // Thanh toán THÊM khi tạo PN — tạo CashFlow + PurchaseOrderPayment với
+    // prefix `PCPN######` chuẩn (đối xứng `TT{invoice.code}-N` phía bán).
+    if (additionalPayment > 0 && !dto.isDraft) {
+      const additionalPayments =
+        dto.payments && dto.payments.length > 0
+          ? dto.payments
+          : [{ method: 'cash', amount: additionalPayment } as any];
+
+      for (const payment of additionalPayments) {
+        const amount = Number(payment.amount || 0);
+        if (amount <= 0) continue;
+
+        const paymentCode = await this.generatePCPNCode(tx);
+
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount,
+            transDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : new Date(),
+            method: payment.method || 'cash',
+            accountId: payment.accountId ?? null,
+            partnerType: 'S',
+            partnerId: orderSupplier.supplierId,
+            partnerName: orderSupplier.supplier?.name,
+            contactNumber: orderSupplier.supplier?.contactNumber,
+            address: orderSupplier.supplier?.address,
+            description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+        cashFlowIdsToUpdate.push(cashFlow.id);
+
+        await tx.purchaseOrderPayment.create({
+          data: {
+            code: paymentCode,
+            purchaseOrderId: purchaseOrder.id,
+            amount,
+            paymentDate: dto.purchaseDate
+              ? new Date(dto.purchaseDate)
+              : new Date(),
+            paymentMethod: payment.method || 'cash',
+            accountId: payment.accountId ?? null,
+            description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
+          },
+        });
+      }
+    }
+
+    await this.updateSupplierDebt(orderSupplier.supplierId, tx);
+    await this.updateOrderSupplierStatus(orderSupplier.id, tx);
+
+    // Sau recalc, snapshot supplier debt vào các CashFlow vừa tạo (PCTUPN
+    // clone + PCPN additional). Đối xứng `invoices.service.ts:1845-1854`.
+    if (cashFlowIdsToUpdate.length > 0) {
+      const updatedSupplier = await tx.supplier.findUnique({
+        where: { id: orderSupplier.supplierId },
+        select: { debt: true },
       });
-
-      const branch = await tx.branch.findUnique({
-        where: { id: branchId },
-        select: { name: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'PURCHASE_ORDER_CREATE',
-        entityType: 'purchase_orders',
-        entityId: purchaseOrder.id.toString(),
-        entityCode: purchaseOrder.code,
-        category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
-        severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
-        snapshot: this.buildPurchaseOrderSnapshot(
-          purchaseOrder,
-          orderSupplier.supplier?.name,
-          branch?.name,
-        ),
-        message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
-          purchaseOrderCode: purchaseOrder.code,
-          supplierName: orderSupplier.supplier?.name || 'N/A',
-        }),
-        messageTemplate: 'PURCHASE_ORDER_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: purchaseOrder.branchId || user?.branchId || undefined,
-      });
-
-      return tx.purchaseOrder.findUnique({
-        where: { id: purchaseOrder.id },
-        include: {
-          orderSupplier: true,
-          supplier: true,
-          branch: true,
-          purchaseBy: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-          items: { include: { product: true } },
-          payments: true,
-          surcharges: true,
+      await tx.cashFlow.updateMany({
+        where: { id: { in: cashFlowIdsToUpdate } },
+        data: {
+          supplierDebtSnapshot: updatedSupplier
+            ? Number(updatedSupplier.debt)
+            : null,
         },
       });
+    }
+
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true, branchId: true },
+    });
+
+    const branch = await tx.branch.findUnique({
+      where: { id: branchId },
+      select: { name: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PURCHASE_ORDER_CREATE',
+      entityType: 'purchase_orders',
+      entityId: purchaseOrder.id.toString(),
+      entityCode: purchaseOrder.code,
+      category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
+      severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
+      snapshot: this.buildPurchaseOrderSnapshot(
+        purchaseOrder,
+        orderSupplier.supplier?.name,
+        branch?.name,
+      ),
+      message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
+        purchaseOrderCode: purchaseOrder.code,
+        supplierName: orderSupplier.supplier?.name || 'N/A',
+      }),
+      messageTemplate: 'PURCHASE_ORDER_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: purchaseOrder.branchId || user?.branchId || undefined,
+    });
+
+    return tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrder.id },
+      include: {
+        orderSupplier: true,
+        supplier: true,
+        branch: true,
+        purchaseBy: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+        items: { include: { product: true } },
+        payments: true,
+        surcharges: true,
+      },
     });
   }
 
@@ -1368,6 +1385,29 @@ export class PurchaseOrdersService {
         await this.updateOrderSupplierStatus(purchaseOrder.orderSupplierId, tx);
       }
 
+      // Nếu PN sinh từ phiếu ghép xe: khi xe không còn PN active nào → đưa xe
+      // về "Đã xác nhận giao" (1) để có thể tạo lại phiếu nhập.
+      if (purchaseOrder.vehicleShipmentId) {
+        const remainingActivePOs = await tx.purchaseOrder.count({
+          where: {
+            vehicleShipmentId: purchaseOrder.vehicleShipmentId,
+            status: { not: 2 },
+          },
+        });
+        if (remainingActivePOs === 0) {
+          const shipment = await tx.vehicleShipment.findUnique({
+            where: { id: purchaseOrder.vehicleShipmentId },
+            select: { status: true },
+          });
+          if (shipment && shipment.status === 2) {
+            await tx.vehicleShipment.update({
+              where: { id: purchaseOrder.vehicleShipmentId },
+              data: { status: 1, statusValue: 'Đã xác nhận giao' },
+            });
+          }
+        }
+      }
+
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { name: true, email: true, branchId: true },
@@ -1407,6 +1447,12 @@ export class PurchaseOrdersService {
     });
 
     if (!orderSupplier) return;
+
+    // PDN đã được chốt Hoàn thành thủ công (toComplete=true) hoặc đã ở trạng
+    // thái Hoàn thành (3): KHÔNG hạ cấp về "Nhập một phần" khi có PN mới/bị hủy.
+    if (orderSupplier.toComplete || orderSupplier.status === 3) {
+      return;
+    }
 
     const allPurchaseOrders = await tx.purchaseOrder.findMany({
       where: { orderSupplierId: orderSupplierId, isDraft: false },
@@ -1503,6 +1549,11 @@ export class PurchaseOrdersService {
           transactionPrice: Number(item.price),
           partnerId: purchaseOrder.supplierId,
           partnerName: purchaseOrder.supplier?.name || null,
+          // Neo thẻ kho theo ngày nhập hàng (purchaseDate), KHÔNG để default
+          // now(). Nếu không, mỗi lần sửa/nhận lại phiếu sẽ tạo log mới mang
+          // thời điểm hiện tại → thẻ kho hiển thị sai timeline (vd phiếu lùi
+          // ngày bị nhảy lên ngày sửa).
+          transactionDate: purchaseOrder.purchaseDate,
         },
       });
     }

@@ -60,9 +60,7 @@ export class UploadSessionController {
     @Res() res: Response,
   ) {
     if (!token) {
-      res
-        .status(400)
-        .send(renderMobileUploadPage({ error: 'Thiếu token' }));
+      res.status(400).send(renderMobileUploadPage({ error: 'Thiếu token' }));
       return;
     }
     try {
@@ -76,13 +74,11 @@ export class UploadSessionController {
         }),
       );
     } catch (err) {
-      res
-        .status(400)
-        .send(
-          renderMobileUploadPage({
-            error: (err as Error).message || 'Phiên không hợp lệ',
-          }),
-        );
+      res.status(400).send(
+        renderMobileUploadPage({
+          error: (err as Error).message || 'Phiên không hợp lệ',
+        }),
+      );
     }
   }
 

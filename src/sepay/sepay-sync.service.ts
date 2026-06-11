@@ -320,14 +320,16 @@ export class SepaySyncService {
       } | null,
     };
 
-    const restrict = await this.resolveAccountRestriction(currentUser, branchId);
+    const restrict = await this.resolveAccountRestriction(
+      currentUser,
+      branchId,
+    );
     if (restrict === 'NONE') {
       return empty;
     }
 
     // Điều kiện lọc tài khoản (raw SQL) — chỉ khi không bypass và có ràng buộc.
-    const acc =
-      restrict && restrict !== 'BYPASS' ? restrict : undefined;
+    const acc = restrict && restrict !== 'BYPASS' ? restrict : undefined;
     const accClause = acc
       ? Prisma.sql`AND (st.sub_account = ${acc} OR (st.account_number = ${acc} AND st.sub_account IS NULL))`
       : Prisma.empty;
@@ -439,7 +441,10 @@ export class SepaySyncService {
     // ── Phân quyền theo tài khoản (Settings.sepayFilterByAccount) ──
     // Khi bật: user thường chỉ thấy record của TK ngân hàng đã gán cho họ.
     // Admin/Super Admin bypass. User chưa gán TK → không thấy gì.
-    const restrict = await this.resolveAccountRestriction(currentUser, branchId);
+    const restrict = await this.resolveAccountRestriction(
+      currentUser,
+      branchId,
+    );
     if (restrict === 'NONE') {
       // Cờ bật nhưng user chưa gán TK → trả rỗng
       return { data: [], total: 0, page, limit };
@@ -522,7 +527,7 @@ export class SepaySyncService {
     });
     // Giữ đúng thứ tự đã sort
     const orderIndex = new Map(pageIds.map((id, i) => [id, i]));
-    rows.sort((a, b) => (orderIndex.get(a.id)! - orderIndex.get(b.id)!));
+    rows.sort((a, b) => orderIndex.get(a.id)! - orderIndex.get(b.id)!);
 
     const withMatch = await this.attachMatch(rows);
     return { data: withMatch, total, page, limit };

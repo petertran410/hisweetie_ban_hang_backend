@@ -198,7 +198,10 @@ function getRewardItems(rw: EngineReward): EngineProductRef[] {
 }
 
 /** Tổng SL trong giỏ khớp BẤT KỲ buyItem (gộp nhóm X). */
-function sumBoughtQty(ctx: EngineContext, buyItems: EngineProductRef[]): number {
+function sumBoughtQty(
+  ctx: EngineContext,
+  buyItems: EngineProductRef[],
+): number {
   return ctx.items
     .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
     .reduce((s, it) => s + it.quantity, 0);
@@ -271,7 +274,11 @@ export function computeReward(
   const rw = p.rewards[0];
   const base: Omit<
     PromotionResult,
-    'discountAmount' | 'giftLines' | 'discountedBuyLines' | 'discountLines' | 'scope'
+    | 'discountAmount'
+    | 'giftLines'
+    | 'discountedBuyLines'
+    | 'discountLines'
+    | 'scope'
   > = {
     promotionId: p.id,
     code: p.code,
@@ -442,7 +449,11 @@ export function computeReward(
     case 'BUY_X_BUY_Y_PRICE': {
       const buyItems = getBuyItems(rw);
       const rewardItems = getRewardItems(rw);
-      if (buyItems.length === 0 || rw.buyQuantity <= 0 || rewardItems.length === 0)
+      if (
+        buyItems.length === 0 ||
+        rw.buyQuantity <= 0 ||
+        rewardItems.length === 0
+      )
         return null;
       const boughtQty = sumBoughtQty(ctx, buyItems);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
@@ -496,9 +507,10 @@ export function computeReward(
  * MVP: KHÔNG cộng dồn. Mỗi scope giữ 1 KM tốt nhất.
  * KM giảm hóa đơn (scope=INVOICE) được phép kèm thêm 1 KM scope khác.
  */
-export function resolveConflicts(
-  results: PromotionResult[],
-): { eligible: PromotionResult[]; conflicts: { promotionIds: number[]; reason: string }[] } {
+export function resolveConflicts(results: PromotionResult[]): {
+  eligible: PromotionResult[];
+  conflicts: { promotionIds: number[]; reason: string }[];
+} {
   const conflicts: { promotionIds: number[]; reason: string }[] = [];
   const byScope = new Map<string, PromotionResult[]>();
   for (const r of results) {
@@ -516,8 +528,10 @@ export function resolveConflicts(
     // Ưu tiên: priority desc -> giá trị (discount + giftValueProxy) desc -> id nhỏ hơn
     const sorted = [...arr].sort((a, b) => {
       if (b.priority !== a.priority) return b.priority - a.priority;
-      const va = a.discountAmount + a.giftLines.reduce((s, g) => s + g.quantity, 0);
-      const vb = b.discountAmount + b.giftLines.reduce((s, g) => s + g.quantity, 0);
+      const va =
+        a.discountAmount + a.giftLines.reduce((s, g) => s + g.quantity, 0);
+      const vb =
+        b.discountAmount + b.giftLines.reduce((s, g) => s + g.quantity, 0);
       if (vb !== va) return vb - va;
       return a.promotionId - b.promotionId;
     });

@@ -1,5 +1,6 @@
 import { ReportsModule } from './reports/reports.module';
-import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';import { ConfigModule } from '@nestjs/config';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_FILTER, APP_PIPE, APP_INTERCEPTOR } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
@@ -45,6 +46,7 @@ import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
+import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.module';
 import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
 import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
@@ -129,6 +131,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     DestructionsModule,
     SupplierGroupsModule,
     OrderSuppliersModule,
+    VehicleShipmentsModule,
     PackingSlipsModule,
     PackingHangsModule,
     PackingLoadingsModule,

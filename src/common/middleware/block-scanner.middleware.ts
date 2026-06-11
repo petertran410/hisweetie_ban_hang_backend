@@ -53,7 +53,9 @@ export class BlockScannerMiddleware implements NestMiddleware {
         req.socket?.remoteAddress ||
         'unknown';
       const ua = req.headers['user-agent'] || '-';
-      this.logger.warn(`Blocked scan ${req.method} ${path} - IP ${ip} - UA "${ua}"`);
+      this.logger.warn(
+        `Blocked scan ${req.method} ${path} - IP ${ip} - UA "${ua}"`,
+      );
       res.status(403).json({ statusCode: 403, message: 'Forbidden' });
       return;
     }

@@ -96,7 +96,7 @@ export class OrdersService {
     const appliedIds =
       dto.appliedPromotions && dto.appliedPromotions.length > 0
         ? dto.appliedPromotions.map((c) => c.promotionId)
-        : dto.appliedPromotionIds ?? [];
+        : (dto.appliedPromotionIds ?? []);
 
     // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
     const engineItems = baseItems
@@ -305,9 +305,7 @@ export class OrdersService {
             (unitPrice - itemDiscount) * item.quantity -
             (unitPrice * item.quantity * itemDiscountRatio) / 100;
           const appliedPrice =
-            unitPrice -
-            itemDiscount -
-            (unitPrice * itemDiscountRatio) / 100;
+            unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
 
           return {
             productId: item.productId,
@@ -551,9 +549,7 @@ export class OrdersService {
               (unitPrice - itemDiscount) * item.quantity -
               (unitPrice * item.quantity * itemDiscountRatio) / 100;
             const appliedPrice =
-              unitPrice -
-              itemDiscount -
-              (unitPrice * itemDiscountRatio) / 100;
+              unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
 
             return {
               orderId: id,

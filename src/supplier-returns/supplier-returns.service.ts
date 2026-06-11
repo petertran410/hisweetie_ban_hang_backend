@@ -96,10 +96,7 @@ export class SupplierReturnsService {
       where.AND = [
         ...(where.AND || []),
         {
-          OR: [
-            { refundType: null },
-            { refundType: { not: 'manual_offset' } },
-          ],
+          OR: [{ refundType: null }, { refundType: { not: 'manual_offset' } }],
         },
       ];
     }

@@ -12,7 +12,12 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
-import { getActiveLogKeys, isLogActive, computeOnHandFromLogs, recalcStockAuditChain } from '../common/inventory-onhand.util';
+import {
+  getActiveLogKeys,
+  isLogActive,
+  computeOnHandFromLogs,
+  recalcStockAuditChain,
+} from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
 
 @Injectable()
@@ -317,10 +322,7 @@ export class ProductsService {
       WHERE p.id = ANY($1::int[])
       GROUP BY p.id, p."createdAt"
       ORDER BY COALESCE(SUM(inv."${invField}"), 0) ${dir}, p."createdAt" DESC
-    `.replace(
-      '$BRANCH_FILTER$',
-      this.inventoryBranchFilterClause(),
-    );
+    `.replace('$BRANCH_FILTER$', this.inventoryBranchFilterClause());
   }
 
   private inventoryBranchFilterClause(): string {
@@ -1581,7 +1583,11 @@ export class ProductsService {
     // chấp nhận đánh đổi để gộp/lọc chính xác trước khi paginate.
     const rawLogs = await this.prisma.inventoryLog.findMany({
       where,
-      orderBy: [{ transactionDate: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+      orderBy: [
+        { transactionDate: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
     });
 
     // Bước 1: lọc bỏ log thuộc các chứng từ đã hủy hoặc đã bị xóa cứng.

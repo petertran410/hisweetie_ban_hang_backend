@@ -154,7 +154,9 @@ export class RolesService {
         name: role.name,
         description: role.description,
         permissionCount:
-          dto.permissionIds !== undefined ? dto.permissionIds.length : undefined,
+          dto.permissionIds !== undefined
+            ? dto.permissionIds.length
+            : undefined,
       },
       message: renderAuditMessage('ROLE_UPDATE', { roleName: role.name }),
       messageTemplate: 'ROLE_UPDATE',

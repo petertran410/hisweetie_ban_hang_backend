@@ -79,9 +79,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     ) {
       // Trích message gọn để log dễ debug (vd lý do bị chặn khi hủy phiếu)
       const reason =
-        typeof message === 'string'
-          ? message
-          : (message?.message ?? '');
+        typeof message === 'string' ? message : (message?.message ?? '');
       this.logger.warn(
         `${request.method} ${request.url} ${status}${reason ? ` - ${reason}` : ''} - IP ${clientIp} - UA "${userAgent}"`,
       );

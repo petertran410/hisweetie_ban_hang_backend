@@ -230,9 +230,7 @@ export class SyncCashFlowService extends BaseSyncService {
       skippedNotFound,
       unchanged,
     };
-    this.logger.log(
-      `✅ [accountId-only] Done: ${JSON.stringify(result)}`,
-    );
+    this.logger.log(`✅ [accountId-only] Done: ${JSON.stringify(result)}`);
     return result;
   }
 

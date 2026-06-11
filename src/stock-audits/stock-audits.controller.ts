@@ -49,7 +49,11 @@ export class StockAuditsController {
   @RequirePermissions('stock_audits:view')
   previewStock(
     @Body()
-    body: { branchId: number; productIds: number[]; checkDate: string },
+    body: {
+      branchId: number;
+      productIds: number[];
+      checkDate: string;
+    },
   ) {
     return this.service.previewStockAtDate(
       body.branchId,

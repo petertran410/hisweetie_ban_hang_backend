@@ -714,9 +714,7 @@ export class MisaDictionaryService {
    * Danh sách nhân viên phụ trách (Misa account object với isEmployee = true).
    * Dùng cho dropdown filter "Nhân viên phụ trách" ở trang hóa đơn VAT.
    */
-  async findEmployees(): Promise<
-    { id: string; code: string; name: string }[]
-  > {
+  async findEmployees(): Promise<{ id: string; code: string; name: string }[]> {
     const employees = await this.prisma.misaAccountObject.findMany({
       where: { isEmployee: true, inactive: false },
       select: {

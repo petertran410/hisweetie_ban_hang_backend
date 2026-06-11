@@ -233,7 +233,9 @@ export class SyncKiotController {
     @Body() body?: { fromDate?: string; toDate?: string },
   ) {
     if (!(await this.syncService.isSyncEnabled())) {
-      this.logger.warn('⏭️ Sync disabled, skipping invoices/by-date-range sync');
+      this.logger.warn(
+        '⏭️ Sync disabled, skipping invoices/by-date-range sync',
+      );
       return { success: false, reason: 'Sync is disabled' };
     }
 

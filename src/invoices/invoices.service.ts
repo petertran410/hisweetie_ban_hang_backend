@@ -834,8 +834,7 @@ export class InvoicesService {
     // GIỮ dòng gift thủ công (thu ngân đánh dấu 🎁, không gắn promotionId).
     const baseItems = dto.items
       .filter(
-        (it) =>
-          (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
+        (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
         const manualGift =
@@ -869,7 +868,7 @@ export class InvoicesService {
     const appliedIds =
       dto.appliedPromotions && dto.appliedPromotions.length > 0
         ? dto.appliedPromotions.map((c) => c.promotionId)
-        : dto.appliedPromotionIds ?? [];
+        : (dto.appliedPromotionIds ?? []);
 
     // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
     const engineItems = baseItems
@@ -969,7 +968,8 @@ export class InvoicesService {
         );
         if (target) {
           target.discount += Number(dl.perUnitDiscount);
-          target.totalPrice = (target.price - target.discount) * target.quantity;
+          target.totalPrice =
+            (target.price - target.discount) * target.quantity;
           target.lineType = 'promo_discount';
           target.promotionId = r.promotionId;
         }
@@ -1007,7 +1007,8 @@ export class InvoicesService {
           ? Number(r.rewardQuantity)
           : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
       for (const feLine of baseItems.filter(
-        (it) => it.lineType === 'discounted_buy' && it.promotionId === r.promotionId,
+        (it) =>
+          it.lineType === 'discounted_buy' && it.promotionId === r.promotionId,
       )) {
         if (!allowedBuyIds.includes(feLine.productId)) {
           throw new BadRequestException(
@@ -1022,7 +1023,8 @@ export class InvoicesService {
       }
 
       const giftValue = giftLines.reduce(
-        (s: number, g: any) => s + (costMap[g.productId] || 0) * Number(g.quantity),
+        (s: number, g: any) =>
+          s + (costMap[g.productId] || 0) * Number(g.quantity),
         0,
       );
       logs.push({
@@ -2318,9 +2320,9 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
-              lineType: (item as any).lineType || 'normal',
-              isGift: (item as any).isGift || false,
-              promotionId: (item as any).promotionId ?? null,
+              lineType: item.lineType || 'normal',
+              isGift: item.isGift || false,
+              promotionId: item.promotionId ?? null,
             })),
           },
           ...(order.delivery && {

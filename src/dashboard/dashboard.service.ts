@@ -242,8 +242,7 @@ export class DashboardService {
       const lastRevenueNum = Number(lastRevenue._sum.grandTotal || 0);
       const profit = currentRevenueNum - currCogs;
       const prevProfit = lastRevenueNum - prevCogs;
-      const marginAvg =
-        currentRevenueNum > 0 ? profit / currentRevenueNum : 0;
+      const marginAvg = currentRevenueNum > 0 ? profit / currentRevenueNum : 0;
       const codAmount = Number(codResult[0]?.amount || 0);
       const codCount = Number(codResult[0]?.cnt || 0);
 
@@ -537,10 +536,7 @@ export class DashboardService {
       ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
 
-    const trunc =
-      range === 'today' || range === 'yesterday'
-        ? 'hour'
-        : 'day'; // week & month đều gom theo ngày
+    const trunc = range === 'today' || range === 'yesterday' ? 'hour' : 'day'; // week & month đều gom theo ngày
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -630,10 +626,17 @@ export class DashboardService {
    * So sánh các chi nhánh đang hoạt động theo trục thời gian (stacked bar).
    * Trả { labels, branches: [{ id, name, data[] }] }.
    */
-  async getBranchComparison(range: RangeKey = 'week', metric: 'rev' | 'profit' = 'rev') {
+  async getBranchComparison(
+    range: RangeKey = 'week',
+    metric: 'rev' | 'profit' = 'rev',
+  ) {
     const w = this.getRangeWindow(range);
     const trunc =
-      range === 'today' || range === 'yesterday' ? 'hour' : range === 'week' ? 'day' : 'week';
+      range === 'today' || range === 'yesterday'
+        ? 'hour'
+        : range === 'week'
+          ? 'day'
+          : 'week';
 
     const valueCol =
       metric === 'profit'
@@ -664,7 +667,8 @@ export class DashboardService {
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today' || range === 'yesterday') return String(dt.getHours()).padStart(2, '0');
+      if (range === 'today' || range === 'yesterday')
+        return String(dt.getHours()).padStart(2, '0');
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
@@ -850,14 +854,12 @@ export class DashboardService {
         );
         return {
           code: inv.code,
-          partner:
-            inv.customer?.name || inv.customerName || 'Khách vãng lai',
+          partner: inv.customer?.name || inv.customerName || 'Khách vãng lai',
           branchName: inv.branch?.name || '',
           value: Number(inv.debtAmount),
           ageDays,
           time: inv.purchaseDate,
-          status:
-            ageDays > 30 ? 'overdue' : ageDays > 0 ? 'due' : 'in_term',
+          status: ageDays > 30 ? 'overdue' : ageDays > 0 ? 'due' : 'in_term',
         };
       });
     }

@@ -458,7 +458,10 @@ export class PackingSlipsService {
    * hình ảnh (imageUrls), hình thức thanh toán (paymentMethod + cashAmount),
    * ghi chú (note).
    */
-  private hasNotifiableChange(oldSlip: any, dto: UpdatePackingSlipDto): boolean {
+  private hasNotifiableChange(
+    oldSlip: any,
+    dto: UpdatePackingSlipDto,
+  ): boolean {
     if (
       dto.numberOfPackages !== undefined &&
       dto.numberOfPackages !== oldSlip.numberOfPackages

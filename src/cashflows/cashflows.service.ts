@@ -2201,9 +2201,7 @@ export class CashFlowsService {
             );
           }
           if (poData.supplierId !== dto.supplierId) {
-            throw new Error(
-              `Phiếu nhập ${poData.code} không thuộc về NCC này`,
-            );
+            throw new Error(`Phiếu nhập ${poData.code} không thuộc về NCC này`);
           }
           if (debtOffset.amount > Number(poData.debtAmount)) {
             throw new Error(
@@ -2561,7 +2559,8 @@ export class CashFlowsService {
       ];
     }
 
-    if (accountIds && accountIds.length > 0) where.accountId = { in: accountIds };
+    if (accountIds && accountIds.length > 0)
+      where.accountId = { in: accountIds };
     else if (accountId) where.accountId = accountId;
     if (partnerType && partnerType !== 'A') where.partnerType = partnerType;
     if (method && method.length > 0) where.method = { in: method };

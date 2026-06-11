@@ -250,14 +250,17 @@ export class LarkExpenseSyncService {
           const usedIds = new Set(Object.values(recordMap));
           const found = searchedByCode.find(
             (r) =>
-              !usedIds.has(r.recordId) &&
-              r.text.trim().startsWith(fee.feeName),
+              !usedIds.has(r.recordId) && r.text.trim().startsWith(fee.feeName),
           );
           matchedId = found?.recordId || null;
         }
 
         if (matchedId) {
-          await this.expenseBase.updateRecord(target.tableId, matchedId, fields);
+          await this.expenseBase.updateRecord(
+            target.tableId,
+            matchedId,
+            fields,
+          );
           recordMap[fee.feeName] = matchedId;
           this.logger.log(
             `Sync expense [${fee.feeName}] PackingSlip#${slip.id} → ${target.label} matched+update record=${matchedId}`,
@@ -364,7 +367,11 @@ export class LarkExpenseSyncService {
    */
   private async uploadFilesByUrls(
     slipId: number,
-    files: Array<{ url: string; fileName?: string | null; fileType?: string | null }>,
+    files: Array<{
+      url: string;
+      fileName?: string | null;
+      fileType?: string | null;
+    }>,
   ): Promise<Array<{ file_token: string }>> {
     const baseToken = this.expenseBase.getBaseToken();
     if (!baseToken) return [];
