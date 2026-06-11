@@ -843,11 +843,73 @@ export class PurchaseOrdersService {
     return this.prisma.$transaction(async (tx) => {
       const existing = await tx.purchaseOrder.findUnique({
         where: { id },
-        include: { items: true },
+        include: { items: true, payments: true },
       });
 
       if (!existing) {
         throw new NotFoundException('Purchase order not found');
+      }
+
+      // ─── Đổi nhà cung cấp ───────────────────────────────────────────────
+      // Khi user đổi NCC trên PN đã hoàn thành: PN trước đó đã phát sinh nợ
+      // (subTotal) và có thể đã có CashFlow chi tiền cho NCC cũ. Để kế toán
+      // đúng, phải: (1) ghi supplierId mới, (2) re-point mọi CashFlow + thông
+      // tin partner sang NCC mới, (3) recalc nợ cả 2 NCC. Theo Formula B
+      // (supplier-debt.util.ts), nợ phát sinh bám theo PO.supplierId còn tiền
+      // đã trả bám theo cashFlow.partnerId — nên phải đồng bộ cả hai.
+      //
+      // Một số trường hợp bị CHẶN để tránh phá vỡ đối soát kế toán:
+      //   - PN tạo từ phiếu đặt hàng nhập (orderSupplierId != null): tiền tạm
+      //     ứng nằm ở CashFlow gốc của PDN (vẫn thuộc NCC của PDN). Đổi NCC
+      //     riêng cho PN sẽ làm lệch PDN ↔ PN.
+      //   - PN có phiếu trả hàng NCC active: SupplierReturn giữ supplierId
+      //     riêng, đổi NCC của PN sẽ phá vỡ đối soát trả hàng.
+      const SUPPLIER_RETURN_CANCELLED = 4;
+      const supplierChanged =
+        dto.supplierId !== undefined && dto.supplierId !== existing.supplierId;
+
+      let newSupplier: {
+        id: number;
+        name: string | null;
+        contactNumber: string | null;
+        address: string | null;
+        debt: any;
+      } | null = null;
+
+      if (supplierChanged) {
+        if (existing.orderSupplierId) {
+          throw new BadRequestException(
+            'Phiếu nhập này được tạo từ phiếu đặt hàng nhập nên không thể đổi nhà cung cấp. Vui lòng hủy phiếu và tạo lại từ đúng nhà cung cấp.',
+          );
+        }
+
+        const activeSupplierReturns = await tx.supplierReturn.count({
+          where: {
+            purchaseOrderId: id,
+            status: { not: SUPPLIER_RETURN_CANCELLED },
+          },
+        });
+        if (activeSupplierReturns > 0) {
+          throw new BadRequestException(
+            'Phiếu nhập này đã có phiếu trả hàng nhà cung cấp nên không thể đổi nhà cung cấp. Vui lòng xử lý/hủy các phiếu trả hàng liên quan trước.',
+          );
+        }
+
+        newSupplier = await tx.supplier.findUnique({
+          where: { id: dto.supplierId },
+          select: {
+            id: true,
+            name: true,
+            contactNumber: true,
+            address: true,
+            debt: true,
+          },
+        });
+        if (!newSupplier) {
+          throw new NotFoundException(
+            `Nhà cung cấp ${dto.supplierId} không tồn tại`,
+          );
+        }
       }
 
       // ─── Semantic tồn kho theo isDraft ──────────────────────────────────
@@ -1065,6 +1127,15 @@ export class PurchaseOrdersService {
         purchaseById: dto.purchaseById,
       };
 
+      // Đổi NCC: ghi supplierId mới + cập nhật lại snapshot nợ đầu kỳ
+      // (supplierOldDebt) theo nợ hiện tại của NCC mới TRƯỚC khi PN này được
+      // cộng vào. Bug cũ: updateData thiếu hẳn supplierId nên dù FE gửi NCC
+      // mới, DB vẫn giữ NCC cũ → recalc nợ vô nghĩa.
+      if (supplierChanged && newSupplier) {
+        updateData.supplierId = newSupplier.id;
+        updateData.supplierOldDebt = Number(newSupplier.debt || 0);
+      }
+
       // Cho phép user đổi mã PN khi update — đối xứng PDN/SX.
       // `dto.code === undefined`: giữ nguyên. Có giá trị: trim + check duplicate
       // (loại trừ chính phiếu này).
@@ -1083,6 +1154,53 @@ export class PurchaseOrdersService {
         data: updateData,
       });
 
+      // ─── Re-point CashFlow chi tiền sang NCC mới ────────────────────────
+      // Các CashFlow (PCPN######, PCTU...) của PN này đang mang partnerId =
+      // NCC cũ. Theo Formula B, tiền đã trả bám theo cashFlow.partnerId. Nếu
+      // không chuyển, NCC cũ sẽ dư có (đã trả nhưng mất đơn mua) còn NCC mới
+      // nợ phồng đúng phần đã trả. Re-point để nợ NCC mới = subTotal − đã_trả.
+      const repointedCashFlowIds: number[] = [];
+      if (supplierChanged && newSupplier) {
+        const paymentCodes = (existing.payments || [])
+          .map((p: any) => p.code)
+          .filter((c: any): c is string => !!c);
+        const explicitCashFlowIds = (existing.payments || [])
+          .map((p: any) => p.cashFlowId)
+          .filter((cid: any): cid is number => typeof cid === 'number');
+
+        const orConditions: any[] = [];
+        if (explicitCashFlowIds.length > 0) {
+          orConditions.push({ id: { in: explicitCashFlowIds } });
+        }
+        if (paymentCodes.length > 0) {
+          orConditions.push({ code: { in: paymentCodes } });
+        }
+
+        if (orConditions.length > 0) {
+          const relatedCashFlows = await tx.cashFlow.findMany({
+            where: {
+              OR: orConditions,
+              partnerType: 'S',
+              partnerId: existing.supplierId,
+            },
+            select: { id: true },
+          });
+          const cashFlowIds = relatedCashFlows.map((cf: any) => cf.id);
+          if (cashFlowIds.length > 0) {
+            await tx.cashFlow.updateMany({
+              where: { id: { in: cashFlowIds } },
+              data: {
+                partnerId: newSupplier.id,
+                partnerName: newSupplier.name,
+                contactNumber: newSupplier.contactNumber,
+                address: newSupplier.address,
+              },
+            });
+            repointedCashFlowIds.push(...cashFlowIds);
+          }
+        }
+      }
+
       const branchId = dto.branchId || existing.branchId;
       // Apply tồn theo SL mới chỉ khi PN sau update là Hoàn thành (!willBeDraft).
       // PN chuyển sang/giữ Phiếu tạm → tồn không cộng (đã restore SL cũ ở trên
@@ -1094,6 +1212,39 @@ export class PurchaseOrdersService {
       await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
       if (dto.supplierId && dto.supplierId !== existing.supplierId) {
         await this.updateSupplierDebt(existing.supplierId, tx);
+      }
+
+      // Sau khi đổi NCC: cập nhật snapshot nợ NCC mới lên các CashFlow vừa
+      // re-point (để timeline NCC mới hiển thị đúng) và chuyển partner trên
+      // thẻ kho (InventoryLog) sang NCC mới. Số lượng tồn KHÔNG đổi vì sản
+      // phẩm và chi nhánh không thay đổi — chỉ đổi nhãn nhà cung cấp.
+      if (supplierChanged && newSupplier) {
+        if (repointedCashFlowIds.length > 0) {
+          const updatedNewSupplier = await tx.supplier.findUnique({
+            where: { id: newSupplier.id },
+            select: { debt: true },
+          });
+          await tx.cashFlow.updateMany({
+            where: { id: { in: repointedCashFlowIds } },
+            data: {
+              supplierDebtSnapshot: updatedNewSupplier
+                ? Number(updatedNewSupplier.debt)
+                : null,
+            },
+          });
+        }
+
+        await tx.inventoryLog.updateMany({
+          where: {
+            refType: 'purchase_order',
+            transactionType: 'PURCHASE',
+            refId: id,
+          },
+          data: {
+            partnerId: newSupplier.id,
+            partnerName: newSupplier.name,
+          },
+        });
       }
 
       const orderSupplierId = existing.orderSupplierId;

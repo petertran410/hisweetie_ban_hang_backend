@@ -235,7 +235,21 @@ export class OrderSuppliersService {
         supplier: { select: { id: true, code: true, name: true } },
         branch: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
-        items: true,
+        items: {
+          include: {
+            product: {
+              select: {
+                kiotVietId: true,
+                weight: true,
+                weightUnit: true,
+                parentName: true,
+                middleName: true,
+                childName: true,
+                tradeMark: { select: { name: true } },
+              },
+            },
+          },
+        },
         purchaseOrders: {
           where: { isDraft: false, status: { not: 2 } },
           select: { items: { select: { productId: true, quantity: true } } },
@@ -243,6 +257,52 @@ export class OrderSuppliersService {
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    // Lấy cửa khẩu / số hợp đồng / ngày về kho qua phiếu ghép xe MỚI NHẤT
+    // (chưa hủy) chứa từng (orderSupplierId, productId).
+    const osIds = orderSuppliers.map((o) => o.id);
+    const vehicleByKey = new Map<
+      string,
+      {
+        borderGateName: string | null;
+        contractNo: string | null;
+        expectedArrivalDate: Date | null;
+        actualArrivalDate: Date | null;
+      }
+    >();
+    if (osIds.length > 0) {
+      const shipItems = await this.prisma.vehicleShipmentItem.findMany({
+        where: {
+          orderSupplierId: { in: osIds },
+          vehicleShipment: { status: { not: 3 } },
+        },
+        select: {
+          orderSupplierId: true,
+          productId: true,
+          vehicleShipment: {
+            select: {
+              vehicleInfo: true,
+              expectedArrivalDate: true,
+              actualArrivalDate: true,
+              createdAt: true,
+              borderGate: { select: { name: true } },
+            },
+          },
+        },
+        orderBy: { vehicleShipment: { createdAt: 'desc' } },
+      });
+      // Vì đã sort xe mới nhất trước, chỉ giữ bản ghi đầu tiên cho mỗi key.
+      for (const si of shipItems) {
+        const key = `${si.orderSupplierId}:${si.productId}`;
+        if (vehicleByKey.has(key)) continue;
+        vehicleByKey.set(key, {
+          borderGateName: si.vehicleShipment?.borderGate?.name ?? null,
+          contractNo: si.vehicleShipment?.vehicleInfo ?? null,
+          expectedArrivalDate: si.vehicleShipment?.expectedArrivalDate ?? null,
+          actualArrivalDate: si.vehicleShipment?.actualArrivalDate ?? null,
+        });
+      }
+    }
 
     // Nếu có search theo SP, chỉ giữ dòng khớp mã/tên.
     const term = (search || '').trim().toLowerCase();
@@ -276,6 +336,20 @@ export class OrderSuppliersService {
         if (term && !matchHeader && !matchProductSearch(item)) continue;
         const ordered = Number(item.quantity);
         const received = receivedByProduct[item.productId] || 0;
+        const product = (item as any).product;
+        const unitWeight = product?.weight ? Number(product.weight) : 0;
+        const unitGram =
+          (product?.weightUnit || 'kg').toLowerCase() === 'g'
+            ? unitWeight
+            : unitWeight * 1000;
+        const productGroup = [
+          product?.parentName,
+          product?.middleName,
+          product?.childName,
+        ]
+          .filter(Boolean)
+          .join(' / ');
+        const veh = vehicleByKey.get(`${os.id}:${item.productId}`);
         flat.push({
           orderSupplierId: os.id,
           orderSupplierCode: os.code,
@@ -294,6 +368,26 @@ export class OrderSuppliersService {
           price: Number(item.price),
           discount: Number(item.discount || 0),
           subTotal: Number(item.subTotal),
+          factoryPrice:
+            item.factoryPrice != null ? Number(item.factoryPrice) : null,
+          factorySubTotal:
+            item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
+          // Phân bổ (từ item)
+          allocation: Number(item.allocation || 0),
+          allocationSuppliers: Number(item.allocationSuppliers || 0),
+          allocationThirdParty: Number(item.allocationThirdParty || 0),
+          description: item.description || null,
+          // Từ product
+          kiotVietId: product?.kiotVietId ? String(product.kiotVietId) : null,
+          unitWeightGram: unitGram,
+          totalWeightKg: (unitGram * ordered) / 1000,
+          tradeMarkName: product?.tradeMark?.name ?? null,
+          productGroup: productGroup || null,
+          // Từ phiếu ghép xe mới nhất
+          borderGateName: veh?.borderGateName ?? null,
+          contractNo: veh?.contractNo ?? null,
+          expectedArrivalDate: veh?.expectedArrivalDate ?? null,
+          actualArrivalDate: veh?.actualArrivalDate ?? null,
         });
       }
     }
@@ -301,6 +395,41 @@ export class OrderSuppliersService {
     const total = flat.length;
     const data = flat.slice(currentItem, currentItem + pageSize);
     return { data, total, pageSize, currentItem };
+  }
+
+  /**
+   * Cập nhật inline giá nhà máy / thành tiền nhà máy của 1 dòng sản phẩm
+   * (xác định bằng cặp orderSupplierId + productId) từ trang "Đặt hàng nhập
+   * chi tiết". Hai trường độc lập nhau: sửa factoryPrice KHÔNG tự tính lại
+   * factorySubTotal. Truyền null để xóa giá trị (cho phép trống).
+   */
+  async updateItemFactoryPrice(
+    orderSupplierId: number,
+    productId: number,
+    dto: { factoryPrice?: number | null; factorySubTotal?: number | null },
+  ) {
+    const item = await this.prisma.orderSupplierItem.findUnique({
+      where: { orderSupplierId_productId: { orderSupplierId, productId } },
+    });
+
+    if (!item) {
+      throw new NotFoundException(
+        `Không tìm thấy dòng sản phẩm ${productId} trong phiếu ${orderSupplierId}`,
+      );
+    }
+
+    const data: {
+      factoryPrice?: number | null;
+      factorySubTotal?: number | null;
+    } = {};
+    if ('factoryPrice' in dto) data.factoryPrice = dto.factoryPrice ?? null;
+    if ('factorySubTotal' in dto)
+      data.factorySubTotal = dto.factorySubTotal ?? null;
+
+    return this.prisma.orderSupplierItem.update({
+      where: { orderSupplierId_productId: { orderSupplierId, productId } },
+      data,
+    });
   }
 
   async findOne(id: number) {
@@ -465,6 +594,15 @@ export class OrderSuppliersService {
 
           const subTotal = (item.price - (item.discount || 0)) * item.quantity;
 
+          const factoryPrice =
+            item.factoryPrice != null ? item.factoryPrice : null;
+          const factorySubTotal =
+            item.factorySubTotal != null
+              ? item.factorySubTotal
+              : factoryPrice != null
+                ? factoryPrice * item.quantity
+                : null;
+
           return {
             productId: item.productId,
             productCode: product.code,
@@ -473,6 +611,8 @@ export class OrderSuppliersService {
             price: item.price,
             discount: item.discount || 0,
             subTotal,
+            factoryPrice,
+            factorySubTotal,
             description: item.description,
             orderQuantity: item.quantity,
           };
@@ -673,6 +813,15 @@ export class OrderSuppliersService {
             const subTotal =
               (item.price - (item.discount || 0)) * item.quantity;
 
+            const factoryPrice =
+              item.factoryPrice != null ? item.factoryPrice : null;
+            const factorySubTotal =
+              item.factorySubTotal != null
+                ? item.factorySubTotal
+                : factoryPrice != null
+                  ? factoryPrice * item.quantity
+                  : null;
+
             return {
               orderSupplierId: id,
               productId: item.productId,
@@ -682,6 +831,8 @@ export class OrderSuppliersService {
               price: item.price,
               discount: item.discount || 0,
               subTotal,
+              factoryPrice,
+              factorySubTotal,
               description: item.description,
               orderQuantity: item.quantity,
             };
