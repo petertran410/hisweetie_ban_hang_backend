@@ -56,6 +56,7 @@ export class OrderSuppliersService {
   async findAll(query: OrderSupplierQueryDto) {
     const {
       branchId,
+      branchIds,
       supplierId,
       status,
       createdById,
@@ -93,7 +94,11 @@ export class OrderSuppliersService {
         },
       ];
     }
-    if (branchId) where.branchId = branchId;
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
     if (supplierId) where.supplierId = supplierId;
     if (status !== undefined && status.length > 0) {
       where.status = status.length === 1 ? status[0] : { in: status };

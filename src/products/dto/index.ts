@@ -481,6 +481,46 @@ export class ProductQueryDto {
   @IsString()
   childName?: string;
 
+  // ── Multi-select: cho phép lọc nhiều giá trị cùng lúc ──
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(String);
+    return String(value)
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  })
+  parentNames?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(String);
+    return String(value)
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  })
+  middleNames?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(String);
+    return String(value)
+      .split(',')
+      .map((v) => v.trim())
+      .filter(Boolean);
+  })
+  childNames?: string[];
+
   @IsOptional()
   @IsString()
   stockStatus?: string;
@@ -489,6 +529,19 @@ export class ProductQueryDto {
   @IsInt()
   @Type(() => Number)
   tradeMarkId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    return String(value)
+      .split(',')
+      .map((v) => Number(v.trim()))
+      .filter((n) => !Number.isNaN(n));
+  })
+  tradeMarkIds?: number[];
 
   @IsOptional()
   @IsBoolean()

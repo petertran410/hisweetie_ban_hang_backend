@@ -9,7 +9,7 @@ import {
   Min,
   IsIn,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 export const SUPPLIER_RETURN_STATUS = {
   REQUEST: 1,
@@ -188,9 +188,31 @@ export class SupplierReturnQueryDto {
   supplierId?: number;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [Number(value)];
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  supplierIds?: number[];
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [Number(value)];
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  branchIds?: number[];
 
   @IsOptional()
   @Type(() => Number)

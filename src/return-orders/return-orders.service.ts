@@ -55,7 +55,11 @@ export class ReturnOrdersService {
       ];
     }
 
-    if (query.branchId) where.branchId = query.branchId;
+    if (query.branchIds && query.branchIds.length > 0) {
+      where.branchId = { in: query.branchIds };
+    } else if (query.branchId) {
+      where.branchId = query.branchId;
+    }
     if (query.status) where.status = query.status;
     if (query.customerId) where.customerId = query.customerId;
     if (query.createdBy) where.createdBy = query.createdBy;

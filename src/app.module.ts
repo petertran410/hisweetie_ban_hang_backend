@@ -47,6 +47,7 @@ import { DestructionsModule } from './destructions/destructions.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.module';
+import { BorderGatesModule } from './border-gates/border-gates.module';
 import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
 import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
@@ -132,6 +133,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SupplierGroupsModule,
     OrderSuppliersModule,
     VehicleShipmentsModule,
+    BorderGatesModule,
     PackingSlipsModule,
     PackingHangsModule,
     PackingLoadingsModule,

@@ -315,6 +315,9 @@ export class VehicleShipmentsService {
       currentItem = 0,
       search,
       branchId,
+      branchIds,
+      borderGateId,
+      createdById,
       status,
       createdDateFrom,
       createdDateTo,
@@ -342,7 +345,13 @@ export class VehicleShipmentsService {
         },
       ];
     }
-    if (branchId) where.branchId = branchId;
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
+    if (borderGateId) where.borderGateId = borderGateId;
+    if (createdById) where.createdBy = createdById;
     if (status !== undefined) where.status = status;
     if (createdDateFrom || createdDateTo) {
       where.createdAt = {};
@@ -357,6 +366,7 @@ export class VehicleShipmentsService {
         take: pageSize,
         include: {
           branch: { select: { id: true, name: true } },
+          borderGate: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
           items: {
             include: {
@@ -384,10 +394,19 @@ export class VehicleShipmentsService {
       where: { id },
       include: {
         branch: { select: { id: true, name: true } },
+        borderGate: { select: { id: true, name: true } },
         creator: { select: { id: true, name: true } },
         items: {
           include: {
-            product: { select: { id: true, code: true, name: true } },
+            product: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                weight: true,
+                weightUnit: true,
+              },
+            },
             orderSupplier: {
               select: {
                 id: true,
@@ -428,18 +447,31 @@ export class VehicleShipmentsService {
       }
     }
 
+    let totalWeightKg = 0;
     const itemsWithDiff = (shipment.items || []).map((it: any) => {
       const shippedQty = Number(it.quantity);
-      const received = receivedMap.get(`${it.orderSupplierId}:${it.productId}`) || 0;
+      const received =
+        receivedMap.get(`${it.orderSupplierId}:${it.productId}`) || 0;
+      // Quy đổi trọng lượng đơn vị về kg (weightUnit có thể là 'g' hoặc 'kg').
+      const unitWeight = it.product?.weight ? Number(it.product.weight) : 0;
+      const unitKg =
+        (it.product?.weightUnit || 'kg').toLowerCase() === 'g'
+          ? unitWeight / 1000
+          : unitWeight;
+      const lineWeightKg = unitKg * shippedQty;
+      totalWeightKg += lineWeightKg;
       return {
         ...it,
         shipped: shippedQty,
         received,
         diff: shippedQty - received, // >0 thiếu, <0 dư
+        unitWeight,
+        weightUnit: it.product?.weightUnit || 'kg',
+        lineWeightKg,
       };
     });
 
-    return { ...shipment, items: itemsWithDiff };
+    return { ...shipment, items: itemsWithDiff, totalWeightKg };
   }
 
   /**
@@ -460,6 +492,8 @@ export class VehicleShipmentsService {
         code: true,
         orderDate: true,
         branchId: true,
+        status: true,
+        statusValue: true,
         supplier: { select: { id: true, code: true, name: true } },
         items: {
           select: {
@@ -468,6 +502,13 @@ export class VehicleShipmentsService {
             productName: true,
             quantity: true,
             price: true,
+            product: {
+              select: {
+                middleName: true,
+                weight: true,
+                weightUnit: true,
+              },
+            },
           },
         },
       },
@@ -477,10 +518,16 @@ export class VehicleShipmentsService {
     const osIds = orderSuppliers.map((o) => o.id);
     const qtyMap = await this.getQuantityMap(osIds);
 
+    // Chỉ giữ sản phẩm có nguồn gốc nhập khẩu: middleName chứa "nhập khẩu"
+    // (không phân biệt hoa thường, bỏ dấu cách thừa).
+    const isImported = (middleName?: string | null): boolean =>
+      !!middleName && middleName.toLowerCase().includes('nhập khẩu');
+
     const rows: any[] = [];
     for (const os of orderSuppliers) {
       const availableItems: any[] = [];
       for (const item of os.items) {
+        if (!isImported(item.product?.middleName)) continue;
         const entry = qtyMap.get(`${os.id}:${item.productId}`);
         const remaining = entry
           ? entry.ordered - entry.received - entry.shipped
@@ -491,6 +538,8 @@ export class VehicleShipmentsService {
             productCode: item.productCode,
             productName: item.productName,
             price: Number(item.price),
+            weight: item.product?.weight ? Number(item.product.weight) : 0,
+            weightUnit: item.product?.weightUnit || 'kg',
             ordered: entry?.ordered ?? Number(item.quantity),
             received: entry?.received ?? 0,
             shipped: entry?.shipped ?? 0,
@@ -504,6 +553,8 @@ export class VehicleShipmentsService {
           code: os.code,
           orderDate: os.orderDate,
           branchId: os.branchId,
+          status: os.status,
+          statusValue: os.statusValue,
           supplier: os.supplier,
           items: availableItems,
         });
@@ -533,7 +584,12 @@ export class VehicleShipmentsService {
           status,
           statusValue: getVehicleShipmentStatusLabel(status),
           branchId: dto.branchId ?? null,
+          borderGateId: dto.borderGateId ?? null,
           vehicleInfo: dto.vehicleInfo,
+          files: (dto.files ?? undefined) as any,
+          expectedArrivalDate: dto.expectedArrivalDate
+            ? new Date(dto.expectedArrivalDate)
+            : null,
           description: dto.description,
           createdBy: userId,
           items: { create: itemsData },
@@ -618,7 +674,20 @@ export class VehicleShipmentsService {
         data: {
           code: nextCode,
           branchId: nextBranchId,
+          borderGateId:
+            dto.borderGateId !== undefined
+              ? dto.borderGateId
+              : existing.borderGateId,
           vehicleInfo: dto.vehicleInfo ?? existing.vehicleInfo,
+          files: (dto.files !== undefined
+            ? dto.files
+            : (existing.files ?? undefined)) as any,
+          expectedArrivalDate:
+            dto.expectedArrivalDate !== undefined
+              ? dto.expectedArrivalDate
+                ? new Date(dto.expectedArrivalDate)
+                : null
+              : existing.expectedArrivalDate,
           description: dto.description ?? existing.description,
           status: nextStatus,
           statusValue: getVehicleShipmentStatusLabel(nextStatus),
@@ -894,7 +963,11 @@ export class VehicleShipmentsService {
 
         const updatedShipment = await tx.vehicleShipment.update({
           where: { id },
-          data: { status: 2, statusValue: getVehicleShipmentStatusLabel(2) },
+          data: {
+            status: 2,
+            statusValue: getVehicleShipmentStatusLabel(2),
+            actualArrivalDate: new Date(), // ngày xe về kho thực tế = lúc nhập hàng
+          },
         });
 
         const user = await tx.user.findUnique({
