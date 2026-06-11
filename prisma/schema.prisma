@@ -691,6 +691,9 @@ model Product {
   conversionValue Decimal   @default(1)
   weight          Decimal?
   weightUnit      String?   @default("kg")
+  vat             Decimal   @default(8)
+  shippingWeight  Decimal?
+  shippingWeightUnit String? @default("g") @map("shipping_weight_unit")
   attributesText  String?
   isRewardPoint   Boolean   @default(true)
   isActive        Boolean   @default(true)
@@ -1927,6 +1930,8 @@ model OrderSupplierItem {
   allocationThirdParty Decimal  @default(0)
   orderQuantity        Decimal  @default(0)
   subTotal             Decimal
+  factoryPrice         Decimal?
+  factorySubTotal      Decimal?
   description          String?
   orderByNumber        Int?
   createdAt            DateTime @default(now())

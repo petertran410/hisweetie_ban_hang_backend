@@ -566,6 +566,16 @@ export class ProductsService {
         width: 14,
         value: (p) => (p.weight != null ? Number(p.weight) : ''),
       },
+      shippingWeight: {
+        header: 'Trọng lượng vận chuyển',
+        width: 20,
+        value: (p) => (p.shippingWeight != null ? Number(p.shippingWeight) : ''),
+      },
+      vat: {
+        header: 'VAT (%)',
+        width: 10,
+        value: (p) => (p.vat != null ? Number(p.vat) : 8),
+      },
       isDirectSale: {
         header: 'Được bán trực tiếp',
         width: 18,
@@ -617,6 +627,8 @@ export class ProductsService {
       'unit',
       'images',
       'weight',
+      'shippingWeight',
+      'vat',
       'isDirectSale',
       'isActive',
       'description',
@@ -812,6 +824,9 @@ export class ProductsService {
           conversionValue: productData.conversionValue,
           weight: productData.weight,
           weightUnit: productData.weightUnit,
+          vat: productData.vat ?? 8,
+          shippingWeight: productData.shippingWeight,
+          shippingWeightUnit: productData.shippingWeightUnit ?? 'g',
           attributesText,
           isRewardPoint: productData.isRewardPoint,
           isActive: productData.isActive ?? true,
@@ -1799,6 +1814,12 @@ export class ProductsService {
       basePrice: product.basePrice ? Number(product.basePrice) : 0,
       weight: product.weight ? Number(product.weight) : 0,
       weightUnit: product.weightUnit,
+      vat: product.vat !== null && product.vat !== undefined ? Number(product.vat) : 8,
+      shippingWeight:
+        product.shippingWeight !== null && product.shippingWeight !== undefined
+          ? Number(product.shippingWeight)
+          : null,
+      shippingWeightUnit: product.shippingWeightUnit ?? 'g',
       unit: product.unit,
       type: product.type,
       isActive: product.isActive,

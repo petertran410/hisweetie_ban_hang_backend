@@ -31,6 +31,16 @@ class OrderSupplierItemDto {
 
   @ApiProperty({ required: false })
   @IsOptional()
+  @IsNumber()
+  factoryPrice?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsNumber()
+  factorySubTotal?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
   @IsString()
   description?: string;
 }
@@ -52,6 +62,18 @@ class CreateOrderSupplierItemDto {
   @IsString()
   @IsOptional()
   description?: string;
+}
+
+export class UpdateOrderSupplierItemFactoryPriceDto {
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsNumber()
+  factoryPrice?: number | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsNumber()
+  factorySubTotal?: number | null;
 }
 
 export class CreateOrderSupplierDto {

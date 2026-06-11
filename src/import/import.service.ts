@@ -98,6 +98,17 @@ export class ImportService {
       else if (headerLower === 'trọng lượng' || headerLower === 'trong luong')
         columnMap['weight'] = colNumber;
       else if (
+        headerLower.includes('trọng lượng vận chuyển') ||
+        headerLower.includes('trong luong van chuyen')
+      )
+        columnMap['shippingWeight'] = colNumber;
+      else if (
+        headerLower === 'vat' ||
+        headerLower.includes('thuế') ||
+        headerLower.includes('thue')
+      )
+        columnMap['vat'] = colNumber;
+      else if (
         headerLower.includes('bán trực tiếp') ||
         headerLower.includes('ban truc tiep')
       )
@@ -184,6 +195,10 @@ export class ImportService {
         relatedCode: getCellStr(row, 'relatedCode'),
         imageUrls: getCellStr(row, 'imageUrls'),
         weight: getCellNum(row, 'weight'),
+        shippingWeight: getCellStr(row, 'shippingWeight')
+          ? getCellNum(row, 'shippingWeight')
+          : null,
+        vat: getCellStr(row, 'vat') ? getCellNum(row, 'vat') : null,
         isDirectSale: getCellStr(row, 'isDirectSale') === '1',
         description: getCellStr(row, 'description'),
         componentsText: getCellStr(row, 'componentsText'),
@@ -259,6 +274,10 @@ export class ImportService {
             basePrice: row.basePrice,
             unit: row.unit || undefined,
             weight: row.weight || undefined,
+            ...(row.shippingWeight !== null && {
+              shippingWeight: row.shippingWeight,
+            }),
+            ...(row.vat !== null && { vat: row.vat }),
             isDirectSale: row.isDirectSale,
             attributesText: row.attributesText || undefined,
           };
@@ -332,6 +351,10 @@ export class ImportService {
               basePrice: row.basePrice,
               unit: row.unit || undefined,
               weight: row.weight || undefined,
+              ...(row.shippingWeight !== null && {
+                shippingWeight: row.shippingWeight,
+              }),
+              ...(row.vat !== null && { vat: row.vat }),
               isDirectSale: row.isDirectSale,
               description: row.description || undefined,
               attributesText: row.attributesText || undefined,
@@ -733,6 +756,8 @@ export class ImportService {
       { header: 'Mã hàng cha (đơn vị)', key: 'relatedCode', width: 18 },
       { header: 'Ảnh (url1,url2,...)', key: 'imageUrls', width: 30 },
       { header: 'Trọng lượng', key: 'weight', width: 12 },
+      { header: 'Trọng lượng vận chuyển', key: 'shippingWeight', width: 20 },
+      { header: 'VAT (%)', key: 'vat', width: 10 },
       { header: 'Bán trực tiếp (0/1)', key: 'isDirectSale', width: 18 },
       { header: 'Mô tả', key: 'description', width: 40 },
       {
@@ -776,6 +801,8 @@ export class ImportService {
       relatedCode: '',
       imageUrls: '',
       weight: 25,
+      shippingWeight: 26,
+      vat: 8,
       isDirectSale: '0',
       description: 'Bột mì đa dụng 25kg',
       componentsText: '',
@@ -801,6 +828,8 @@ export class ImportService {
       relatedCode: '',
       imageUrls: '',
       weight: 0,
+      shippingWeight: 0,
+      vat: 10,
       isDirectSale: '1',
       description: '',
       componentsText: 'HH000001:0.5:gram,HH000003:2:quantity',

@@ -175,6 +175,20 @@ export class CreateProductDto {
   weightUnit?: string;
 
   @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  vat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  shippingWeight?: number;
+
+  @IsOptional()
+  @IsString()
+  shippingWeightUnit?: string;
+
+  @IsOptional()
   @IsString()
   attributesText?: string;
 
@@ -335,6 +349,20 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsOptional()
   @IsString()
   weightUnit?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  vat?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  shippingWeight?: number;
+
+  @IsOptional()
+  @IsString()
+  shippingWeightUnit?: string;
 
   @IsOptional()
   @IsString()

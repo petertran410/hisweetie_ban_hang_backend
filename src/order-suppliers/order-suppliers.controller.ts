@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -18,6 +19,7 @@ import {
   OrderSupplierQueryDto,
   CreateOrderSupplierPaymentDto,
   CancelOrderSupplierDto,
+  UpdateOrderSupplierItemFactoryPriceDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -71,6 +73,24 @@ export class OrderSuppliersController {
   @RequirePermissions('order_suppliers:view')
   getDetailItems(@Query() query: OrderSupplierQueryDto) {
     return this.orderSuppliersService.getDetailItems(query);
+  }
+
+  @Patch('items/:orderSupplierId/:productId/factory-price')
+  @RequirePermissions('order_suppliers:update')
+  @ApiOperation({
+    summary:
+      'Cập nhật inline giá nhà máy / thành tiền nhà máy của 1 dòng sản phẩm trong PĐN',
+  })
+  updateItemFactoryPrice(
+    @Param('orderSupplierId') orderSupplierId: string,
+    @Param('productId') productId: string,
+    @Body() dto: UpdateOrderSupplierItemFactoryPriceDto,
+  ) {
+    return this.orderSuppliersService.updateItemFactoryPrice(
+      +orderSupplierId,
+      +productId,
+      dto,
+    );
   }
 
   @Get(':id')
