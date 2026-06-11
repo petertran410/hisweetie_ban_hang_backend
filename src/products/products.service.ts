@@ -137,8 +137,12 @@ export class ProductsService {
       parentName,
       middleName,
       childName,
+      parentNames,
+      middleNames,
+      childNames,
       stockStatus,
       tradeMarkId,
+      tradeMarkIds,
       isDirectSale,
       priceBookId,
       onlyInPriceBook,
@@ -179,11 +183,21 @@ export class ProductsService {
 
     if (types && types.length > 0) where.type = { in: types };
 
-    if (parentName) where.parentName = parentName;
-    if (middleName) where.middleName = middleName;
-    if (childName) where.childName = childName;
+    if (parentNames && parentNames.length > 0)
+      where.parentName = { in: parentNames };
+    else if (parentName) where.parentName = parentName;
 
-    if (tradeMarkId) where.tradeMarkId = tradeMarkId;
+    if (middleNames && middleNames.length > 0)
+      where.middleName = { in: middleNames };
+    else if (middleName) where.middleName = middleName;
+
+    if (childNames && childNames.length > 0)
+      where.childName = { in: childNames };
+    else if (childName) where.childName = childName;
+
+    if (tradeMarkIds && tradeMarkIds.length > 0)
+      where.tradeMarkId = { in: tradeMarkIds };
+    else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
     if (stockStatus === 'instock') {
@@ -387,8 +401,12 @@ export class ProductsService {
       parentName,
       middleName,
       childName,
+      parentNames,
+      middleNames,
+      childNames,
       stockStatus,
       tradeMarkId,
+      tradeMarkIds,
       isDirectSale,
       priceBookId,
       onlyInPriceBook,
@@ -422,11 +440,21 @@ export class ProductsService {
     if (isActive !== undefined) where.isActive = isActive;
     if (type !== undefined) where.type = type;
     if (types && types.length > 0) where.type = { in: types };
-    if (parentName) where.parentName = parentName;
-    if (middleName) where.middleName = middleName;
-    if (childName) where.childName = childName;
+    if (parentNames && parentNames.length > 0)
+      where.parentName = { in: parentNames };
+    else if (parentName) where.parentName = parentName;
 
-    if (tradeMarkId) where.tradeMarkId = tradeMarkId;
+    if (middleNames && middleNames.length > 0)
+      where.middleName = { in: middleNames };
+    else if (middleName) where.middleName = middleName;
+
+    if (childNames && childNames.length > 0)
+      where.childName = { in: childNames };
+    else if (childName) where.childName = childName;
+
+    if (tradeMarkIds && tradeMarkIds.length > 0)
+      where.tradeMarkId = { in: tradeMarkIds };
+    else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
     if (stockStatus === 'instock') {

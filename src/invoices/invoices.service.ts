@@ -65,6 +65,8 @@ export class InvoicesService {
       toPurchaseDate,
       fromCreatedDate,
       toCreatedDate,
+      fromUpdatedDate,
+      toUpdatedDate,
       invoiceCodeSearch,
       productSearch,
       customerSearch,
@@ -194,6 +196,12 @@ export class InvoicesService {
       where.createdAt = {};
       if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
       if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
+
+    if (fromUpdatedDate || toUpdatedDate) {
+      where.updatedAt = {};
+      if (fromUpdatedDate) where.updatedAt.gte = new Date(fromUpdatedDate);
+      if (toUpdatedDate) where.updatedAt.lte = new Date(toUpdatedDate);
     }
 
     // Filter theo người tạo (chỉ áp dụng khi user có quyền xem data người khác)

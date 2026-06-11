@@ -204,6 +204,15 @@ export class PurchaseOrderQueryDto {
   supplierId?: number;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [];
+  })
+  @IsArray()
+  supplierIds?: number[];
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   branchId?: number;

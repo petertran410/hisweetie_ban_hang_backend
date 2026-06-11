@@ -82,8 +82,16 @@ export class SupplierReturnsService {
       ];
     }
 
-    if (query.supplierId) where.supplierId = query.supplierId;
-    if (query.branchId) where.branchId = query.branchId;
+    if (query.supplierIds && query.supplierIds.length > 0) {
+      where.supplierId = { in: query.supplierIds };
+    } else if (query.supplierId) {
+      where.supplierId = query.supplierId;
+    }
+    if (query.branchIds && query.branchIds.length > 0) {
+      where.branchId = { in: query.branchIds };
+    } else if (query.branchId) {
+      where.branchId = query.branchId;
+    }
     if (query.status) where.status = query.status;
     if (query.mode) where.mode = query.mode;
     if (query.refundType) {

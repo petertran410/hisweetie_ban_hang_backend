@@ -8,7 +8,7 @@ import {
   IsString,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Type, Transform } from 'class-transformer';
 
 /**
  * Một dòng hàng ghép lên xe: SP của một PDN (orderSupplierId) với SL ghép.
@@ -24,6 +24,27 @@ export class VehicleShipmentItemDto {
   quantity: number;
 }
 
+/** File đính kèm phiếu xe (số hợp đồng, chứng từ...). */
+export class VehicleFileDto {
+  @IsString()
+  filename: string;
+
+  @IsString()
+  url: string;
+
+  @IsOptional()
+  @IsNumber()
+  size?: number;
+
+  @IsOptional()
+  @IsString()
+  mimetype?: string;
+
+  @IsOptional()
+  @IsString()
+  originalname?: string;
+}
+
 export class CreateVehicleShipmentDto {
   @IsString()
   @IsOptional()
@@ -32,6 +53,10 @@ export class CreateVehicleShipmentDto {
   @IsInt()
   @IsOptional()
   branchId?: number;
+
+  @IsInt()
+  @IsOptional()
+  borderGateId?: number;
 
   @IsString()
   @IsOptional()
@@ -51,6 +76,16 @@ export class CreateVehicleShipmentDto {
 
   @IsArray()
   @ValidateNested({ each: true })
+  @Type(() => VehicleFileDto)
+  @IsOptional()
+  files?: VehicleFileDto[];
+
+  @IsDateString()
+  @IsOptional()
+  expectedArrivalDate?: string;
+
+  @IsArray()
+  @ValidateNested({ each: true })
   @Type(() => VehicleShipmentItemDto)
   items: VehicleShipmentItemDto[];
 }
@@ -64,6 +99,10 @@ export class UpdateVehicleShipmentDto {
   @IsOptional()
   branchId?: number;
 
+  @IsInt()
+  @IsOptional()
+  borderGateId?: number;
+
   @IsString()
   @IsOptional()
   vehicleInfo?: string;
@@ -75,6 +114,16 @@ export class UpdateVehicleShipmentDto {
   @IsInt()
   @IsOptional()
   status?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VehicleFileDto)
+  @IsOptional()
+  files?: VehicleFileDto[];
+
+  @IsDateString()
+  @IsOptional()
+  expectedArrivalDate?: string;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -102,6 +151,25 @@ export class VehicleShipmentQueryDto {
   @Type(() => Number)
   @IsInt()
   branchId?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [];
+  })
+  @IsArray()
+  branchIds?: number[];
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  borderGateId?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  createdById?: number;
 
   @IsOptional()
   @Type(() => Number)

@@ -732,6 +732,7 @@ export class PurchaseOrdersService {
       currentItem = 0,
       search,
       supplierId,
+      supplierIds,
       branchId,
       branchIds,
       createdById,
@@ -744,9 +745,30 @@ export class PurchaseOrdersService {
     const where: any = {};
 
     if (search) {
-      where.OR = [{ code: { contains: search, mode: 'insensitive' } }];
+      // Tìm theo mã phiếu, mã/đặt hàng nhập, tên/mã nhà cung cấp,
+      // và tên/mã sản phẩm trong các dòng phiếu.
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { orderSupplier: { code: { contains: search, mode: 'insensitive' } } },
+        { supplier: { name: { contains: search, mode: 'insensitive' } } },
+        { supplier: { code: { contains: search, mode: 'insensitive' } } },
+        {
+          items: {
+            some: {
+              OR: [
+                { productName: { contains: search, mode: 'insensitive' } },
+                { productCode: { contains: search, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
+      ];
     }
-    if (supplierId) where.supplierId = supplierId;
+    if (supplierIds && supplierIds.length > 0) {
+      where.supplierId = { in: supplierIds };
+    } else if (supplierId) {
+      where.supplierId = supplierId;
+    }
     if (branchIds && branchIds.length > 0) {
       where.branchId = { in: branchIds };
     } else if (branchId) {

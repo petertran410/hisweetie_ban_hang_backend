@@ -1944,23 +1944,43 @@ model OrderSupplierItem {
 /// NCC) lên 1 chuyến xe. KHÔNG tác động kho/tiền/công nợ — chỉ theo dõi SL ghép.
 /// Tồn kho + thẻ kho vẫn chỉ phát sinh ở PN khi bấm "Tạo phiếu nhập".
 model VehicleShipment {
-  id          Int      @id @default(autoincrement())
-  code        String   @unique
-  status      Int      @default(0) // 0 Phiếu tạm, 1 Đã xác nhận giao, 2 Đã nhập, 3 Đã hủy
-  statusValue String?
-  branchId    Int? // chi nhánh nhận hàng (đích)
-  vehicleInfo String? // biển số / tài xế (free text)
-  description String?
-  createdBy   Int
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id                  Int       @id @default(autoincrement())
+  code                String    @unique
+  status              Int       @default(0) // 0 Phiếu tạm, 1 Đã xác nhận giao, 2 Đã nhập, 3 Đã hủy
+  statusValue         String?
+  branchId            Int? // chi nhánh nhận hàng (đích)
+  borderGateId        Int? // cửa khẩu (master data, có thể thêm/sửa)
+  vehicleInfo         String? // số hợp đồng (label FE: "Số hợp đồng")
+  files               Json? // danh sách file đính kèm: [{ filename, url, size, mimetype, originalname }]
+  expectedArrivalDate DateTime? // ngày dự kiến xe về kho
+  actualArrivalDate   DateTime? // ngày xe về kho thực tế (set khi createPurchaseOrders)
+  description         String?
+  createdBy           Int
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   branch         Branch?               @relation(fields: [branchId], references: [id])
+  borderGate     BorderGate?           @relation(fields: [borderGateId], references: [id])
   creator        User                  @relation("VehicleShipmentCreator", fields: [createdBy], references: [id])
   items          VehicleShipmentItem[]
   purchaseOrders PurchaseOrder[]
 
   @@map("vehicle_shipments")
+}
+
+/// Cửa khẩu — master data cho phiếu ghép xe, cho phép thêm/sửa như nhóm KH.
+model BorderGate {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdBy   Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  vehicleShipments VehicleShipment[]
+
+  @@map("border_gates")
 }
 
 model VehicleShipmentItem {
