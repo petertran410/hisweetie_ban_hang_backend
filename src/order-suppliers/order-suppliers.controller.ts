@@ -67,6 +67,12 @@ export class OrderSuppliersController {
     );
   }
 
+  @Get('detail-items')
+  @RequirePermissions('order_suppliers:view')
+  getDetailItems(@Query() query: OrderSupplierQueryDto) {
+    return this.orderSuppliersService.getDetailItems(query);
+  }
+
   @Get(':id')
   @RequirePermissions('order_suppliers:view')
   findOne(@Param('id') id: string) {

@@ -173,6 +173,136 @@ export class OrderSuppliersService {
     };
   }
 
+  /**
+   * Bảng phẳng tất cả dòng sản phẩm của các PĐN khớp filter — phục vụ trang
+   * "Đặt hàng nhập chi tiết". Mỗi dòng = 1 OrderSupplierItem kèm thông tin phiếu
+   * (mã PDN, NCC, chi nhánh, trạng thái) và các mốc SL (đặt / đã nhập / còn lại).
+   * Filter dùng chung với findAll. Phân trang ở mức dòng sản phẩm.
+   */
+  async getDetailItems(query: OrderSupplierQueryDto) {
+    const {
+      branchId,
+      branchIds,
+      supplierId,
+      status,
+      createdById,
+      userId,
+      createdDateFrom,
+      createdDateTo,
+      pageSize = 15,
+      currentItem = 0,
+      search,
+    } = query;
+
+    const where: any = {};
+    if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { supplier: { name: { contains: search, mode: 'insensitive' } } },
+        { supplier: { code: { contains: search, mode: 'insensitive' } } },
+        {
+          items: {
+            some: {
+              OR: [
+                { productCode: { contains: search, mode: 'insensitive' } },
+                { productName: { contains: search, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
+      ];
+    }
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    } else if (branchId) {
+      where.branchId = branchId;
+    }
+    if (supplierId) where.supplierId = supplierId;
+    if (status !== undefined && status.length > 0) {
+      where.status = status.length === 1 ? status[0] : { in: status };
+    }
+    if (createdById) where.createdBy = createdById;
+    if (userId) where.userId = userId;
+    if (createdDateFrom || createdDateTo) {
+      where.createdAt = {};
+      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
+      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
+    }
+
+    const orderSuppliers = await this.prisma.orderSupplier.findMany({
+      where,
+      include: {
+        supplier: { select: { id: true, code: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+        items: true,
+        purchaseOrders: {
+          where: { isDraft: false, status: { not: 2 } },
+          select: { items: { select: { productId: true, quantity: true } } },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Nếu có search theo SP, chỉ giữ dòng khớp mã/tên.
+    const term = (search || '').trim().toLowerCase();
+    const matchProductSearch = (it: any) => {
+      if (!term) return true;
+      // Khi search khớp ở cấp phiếu (mã PDN/NCC) thì giữ toàn bộ dòng; nếu
+      // không, lọc theo mã/tên SP. Ở đây áp lọc SP để bảng phẳng gọn hơn.
+      return (
+        (it.productCode || '').toLowerCase().includes(term) ||
+        (it.productName || '').toLowerCase().includes(term)
+      );
+    };
+
+    const flat: any[] = [];
+    for (const os of orderSuppliers) {
+      const receivedByProduct: Record<number, number> = {};
+      for (const po of os.purchaseOrders) {
+        for (const it of po.items) {
+          receivedByProduct[it.productId] =
+            (receivedByProduct[it.productId] || 0) + Number(it.quantity);
+        }
+      }
+      // Khi search, nếu khớp ở cấp phiếu (mã PDN/NCC) thì hiển thị mọi dòng.
+      const matchHeader =
+        !!term &&
+        ((os.code || '').toLowerCase().includes(term) ||
+          (os.supplier?.name || '').toLowerCase().includes(term) ||
+          (os.supplier?.code || '').toLowerCase().includes(term));
+
+      for (const item of os.items) {
+        if (term && !matchHeader && !matchProductSearch(item)) continue;
+        const ordered = Number(item.quantity);
+        const received = receivedByProduct[item.productId] || 0;
+        flat.push({
+          orderSupplierId: os.id,
+          orderSupplierCode: os.code,
+          orderDate: os.orderDate,
+          status: os.status,
+          statusValue: getOrderSupplierStatusLabel(os.status),
+          supplier: os.supplier,
+          branch: os.branch,
+          creator: os.creator,
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          orderedQty: ordered,
+          receivedQty: received,
+          remainingQty: Math.max(ordered - received, 0),
+          price: Number(item.price),
+          discount: Number(item.discount || 0),
+          subTotal: Number(item.subTotal),
+        });
+      }
+    }
+
+    const total = flat.length;
+    const data = flat.slice(currentItem, currentItem + pageSize);
+    return { data, total, pageSize, currentItem };
+  }
+
   async findOne(id: number) {
     const orderSupplier = await this.prisma.orderSupplier.findUnique({
       where: { id },
