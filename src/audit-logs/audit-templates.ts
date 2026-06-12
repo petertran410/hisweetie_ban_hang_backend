@@ -322,6 +322,27 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  INTERNAL_USE_CREATE: {
+    template: 'Tạo phiếu xuất dùng nội bộ {internalUseCode}',
+    category: 'internal_use',
+    severity: 'info',
+  },
+  INTERNAL_USE_UPDATE: {
+    template: 'Cập nhật phiếu xuất dùng nội bộ {internalUseCode}',
+    category: 'internal_use',
+    severity: 'info',
+  },
+  INTERNAL_USE_DELETE: {
+    template: 'Xóa phiếu xuất dùng nội bộ {internalUseCode}',
+    category: 'internal_use',
+    severity: 'warning',
+  },
+  INTERNAL_USE_CANCEL: {
+    template: 'Hủy phiếu xuất dùng nội bộ {internalUseCode}',
+    category: 'internal_use',
+    severity: 'warning',
+  },
+
   PACKING_SLIP_CREATE: {
     template: 'Tạo phiếu đóng hàng {packingCode}',
     category: 'packing',
