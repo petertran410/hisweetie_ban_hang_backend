@@ -80,6 +80,6 @@ export class ReturnOrdersController {
   @Put(':id/cancel')
   @RequirePermissions('return_orders:cancel')
   cancel(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
-    return this.returnOrdersService.cancel(id, user.id);
+    return this.returnOrdersService.cancel(id, user.id, user.roles);
   }
 }

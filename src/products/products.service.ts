@@ -223,6 +223,7 @@ export class ProductsService {
       tradeMark: true,
       variant: true,
       images: true,
+      documents: true,
       inventories: inventoriesInclude,
       comboComponents: {
         include: {
@@ -732,6 +733,7 @@ export class ProductsService {
         variant: true,
         tradeMark: true,
         images: true,
+        documents: true,
         inventories: {
           include: { branch: true },
         },
@@ -769,6 +771,7 @@ export class ProductsService {
   async create(dto: CreateProductDto, userId?: number) {
     const {
       imageUrls,
+      documents,
       components,
       initialInventory,
       branchId,
@@ -851,6 +854,18 @@ export class ProductsService {
           data: imageUrls.map((url) => ({
             productId: product.id,
             image: url,
+          })),
+        });
+      }
+
+      if (documents && documents.length > 0) {
+        await tx.productDocument.createMany({
+          data: documents.map((doc) => ({
+            productId: product.id,
+            url: doc.url,
+            originalName: doc.originalName ?? null,
+            mimetype: doc.mimetype ?? null,
+            size: doc.size ?? null,
           })),
         });
       }
@@ -1023,6 +1038,7 @@ export class ProductsService {
           variant: true,
           tradeMark: true,
           images: true,
+          documents: true,
           inventories: {
             include: { branch: true },
           },
@@ -1043,6 +1059,7 @@ export class ProductsService {
       where: { id },
       include: {
         images: true,
+        documents: true,
         comboComponents: true,
         inventories: true,
         variant: true,
@@ -1063,6 +1080,7 @@ export class ProductsService {
 
     const {
       imageUrls,
+      documents,
       components,
       initialInventory,
       branchId,
@@ -1143,6 +1161,21 @@ export class ProductsService {
             data: imageUrls.map((url) => ({
               productId: id,
               image: url,
+            })),
+          });
+        }
+      }
+
+      if (documents !== undefined) {
+        await tx.productDocument.deleteMany({ where: { productId: id } });
+        if (documents.length > 0) {
+          await tx.productDocument.createMany({
+            data: documents.map((doc) => ({
+              productId: id,
+              url: doc.url,
+              originalName: doc.originalName ?? null,
+              mimetype: doc.mimetype ?? null,
+              size: doc.size ?? null,
             })),
           });
         }
@@ -1561,6 +1594,7 @@ export class ProductsService {
           variant: true,
           tradeMark: true,
           images: true,
+          documents: true,
           inventories: {
             include: { branch: true },
           },

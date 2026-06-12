@@ -73,6 +73,24 @@ export class ProductComponentDto {
   inputMode?: string;
 }
 
+export class ProductDocumentDto {
+  @IsString()
+  url: string;
+
+  @IsOptional()
+  @IsString()
+  originalName?: string;
+
+  @IsOptional()
+  @IsString()
+  mimetype?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  size?: number;
+}
+
 export class CreateProductDto {
   @IsString()
   code: string;
@@ -212,6 +230,12 @@ export class CreateProductDto {
   @IsArray()
   @IsString({ each: true })
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductDocumentDto)
+  documents?: ProductDocumentDto[];
 
   @IsOptional()
   @IsArray()
@@ -393,6 +417,12 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
 
   @IsOptional()
   imageUrls?: string[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductDocumentDto)
+  documents?: ProductDocumentDto[];
 
   @IsOptional()
   @IsBoolean()

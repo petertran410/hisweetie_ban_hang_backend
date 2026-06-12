@@ -248,6 +248,8 @@ export class OrderSuppliersService {
                 tradeMark: { select: { name: true } },
               },
             },
+            productionStage: { select: { id: true, name: true } },
+            factory: { select: { id: true, name: true } },
           },
         },
         purchaseOrders: {
@@ -383,6 +385,11 @@ export class OrderSuppliersService {
           totalWeightKg: (unitGram * ordered) / 1000,
           tradeMarkName: product?.tradeMark?.name ?? null,
           productGroup: productGroup || null,
+          // Giai đoạn hiện tại / nhà máy (master data, gán per dòng)
+          productionStageId: (item as any).productionStageId ?? null,
+          productionStageName: (item as any).productionStage?.name ?? null,
+          factoryId: (item as any).factoryId ?? null,
+          factoryName: (item as any).factory?.name ?? null,
           // Từ phiếu ghép xe mới nhất
           borderGateName: veh?.borderGateName ?? null,
           contractNo: veh?.contractNo ?? null,
@@ -425,6 +432,40 @@ export class OrderSuppliersService {
     if ('factoryPrice' in dto) data.factoryPrice = dto.factoryPrice ?? null;
     if ('factorySubTotal' in dto)
       data.factorySubTotal = dto.factorySubTotal ?? null;
+
+    return this.prisma.orderSupplierItem.update({
+      where: { orderSupplierId_productId: { orderSupplierId, productId } },
+      data,
+    });
+  }
+
+  /**
+   * Cập nhật inline giai đoạn hiện tại / nhà máy của 1 dòng sản phẩm
+   * (xác định bằng cặp orderSupplierId + productId) từ trang "Đặt hàng nhập
+   * chi tiết". Hai trường độc lập nhau. Truyền null để bỏ chọn.
+   */
+  async updateItemStageFactory(
+    orderSupplierId: number,
+    productId: number,
+    dto: { productionStageId?: number | null; factoryId?: number | null },
+  ) {
+    const item = await this.prisma.orderSupplierItem.findUnique({
+      where: { orderSupplierId_productId: { orderSupplierId, productId } },
+    });
+
+    if (!item) {
+      throw new NotFoundException(
+        `Không tìm thấy dòng sản phẩm ${productId} trong phiếu ${orderSupplierId}`,
+      );
+    }
+
+    const data: {
+      productionStageId?: number | null;
+      factoryId?: number | null;
+    } = {};
+    if (dto.productionStageId !== undefined)
+      data.productionStageId = dto.productionStageId ?? null;
+    if (dto.factoryId !== undefined) data.factoryId = dto.factoryId ?? null;
 
     return this.prisma.orderSupplierItem.update({
       where: { orderSupplierId_productId: { orderSupplierId, productId } },

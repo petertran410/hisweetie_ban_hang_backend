@@ -20,6 +20,7 @@ import {
   CreateOrderSupplierPaymentDto,
   CancelOrderSupplierDto,
   UpdateOrderSupplierItemFactoryPriceDto,
+  UpdateOrderSupplierItemStageFactoryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -87,6 +88,24 @@ export class OrderSuppliersController {
     @Body() dto: UpdateOrderSupplierItemFactoryPriceDto,
   ) {
     return this.orderSuppliersService.updateItemFactoryPrice(
+      +orderSupplierId,
+      +productId,
+      dto,
+    );
+  }
+
+  @Patch('items/:orderSupplierId/:productId/stage-factory')
+  @RequirePermissions('order_suppliers:update')
+  @ApiOperation({
+    summary:
+      'Cập nhật inline giai đoạn hiện tại / nhà máy của 1 dòng sản phẩm trong PĐN',
+  })
+  updateItemStageFactory(
+    @Param('orderSupplierId') orderSupplierId: string,
+    @Param('productId') productId: string,
+    @Body() dto: UpdateOrderSupplierItemStageFactoryDto,
+  ) {
+    return this.orderSuppliersService.updateItemStageFactory(
       +orderSupplierId,
       +productId,
       dto,
