@@ -712,6 +712,7 @@ model Product {
   productUnits          Product[]              @relation("ProductUnits")
   attributes            ProductAttribute[]
   images                ProductImage[]
+  documents             ProductDocument[]
   inventories           Inventory[]
   priceBookDetails      PriceBookDetail[]
   orderItems            OrderItem[]
@@ -778,6 +779,21 @@ model ProductImage {
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
   @@map("product_images")
+}
+
+model ProductDocument {
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  url          String
+  originalName String?  @map("original_name")
+  mimetype     String?
+  size         Int?
+  createdAt    DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("product_documents")
 }
 
 // ==================== STOCK AUDIT (Kiểm kho) ====================
@@ -1995,16 +2011,51 @@ model OrderSupplierItem {
   subTotal             Decimal
   factoryPrice         Decimal?
   factorySubTotal      Decimal?
+  productionStageId    Int?
+  factoryId            Int?
   description          String?
   orderByNumber        Int?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  orderSupplier OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
-  product       Product       @relation(fields: [productId], references: [id])
+  orderSupplier   OrderSupplier                  @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
+  product         Product                        @relation(fields: [productId], references: [id])
+  productionStage PurchaseOrderProductionStage?  @relation(fields: [productionStageId], references: [id])
+  factory         Factory?                       @relation(fields: [factoryId], references: [id])
 
   @@unique([orderSupplierId, productId])
   @@map("order_supplier_items")
+}
+
+/// Giai đoạn hiện tại của dòng đặt hàng nhập — master data, cho phép thêm/sửa
+/// như cửa khẩu (BorderGate). Gán cho từng dòng order_supplier_items.
+model PurchaseOrderProductionStage {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdBy   Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderSupplierItems OrderSupplierItem[]
+
+  @@map("purchase_order_production_stage")
+}
+
+/// Nhà máy — master data cho dòng đặt hàng nhập, cho phép thêm/sửa như cửa khẩu.
+model Factory {
+  id          Int      @id @default(autoincrement())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdBy   Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  orderSupplierItems OrderSupplierItem[]
+
+  @@map("factories")
 }
 
 /// Phiếu ghép xe (vehicle shipment) — tầng điều phối optional giữa PDN
