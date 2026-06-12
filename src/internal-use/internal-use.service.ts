@@ -501,25 +501,13 @@ export class InternalUseService {
             },
             data: { onHand: { increment: detail.quantity } },
           });
-
-          await tx.inventoryLog.create({
-            data: {
-              productId: detail.productId,
-              productCode: detail.productCode,
-              productName: detail.productName,
-              branchId: internalUse.branchId,
-              branchName: internalUse.branchName,
-              transactionType: 'INTERNAL_USE_CANCEL',
-              refCode: internalUse.code,
-              refType: 'internal_use',
-              refId: internalUse.id,
-              quantity: Number(detail.quantity),
-              costPrice: Number(detail.cost),
-              transactionPrice: null,
-              partnerName: null,
-            },
-          });
         }
+
+        // Xóa các dòng thẻ kho gốc của phiếu (transactionType INTERNAL_USE)
+        // — không để lại dấu vết trên thẻ kho sản phẩm sau khi hủy.
+        await tx.inventoryLog.deleteMany({
+          where: { refType: 'internal_use', refId: internalUse.id },
+        });
       });
     }
 
