@@ -52,6 +52,8 @@ model User {
   cashFlowsCollected             CashFlow[]             @relation("CashFlowCollector")
   createdProductions             Production[]           @relation("ProductionCreator")
   createdDestructions            Destruction[]          @relation("DestructionCreator")
+  createdInternalUses            InternalUse[]          @relation("InternalUseCreator")
+  usedInternalUses               InternalUse[]          @relation("InternalUseUser")
   createdSupplierGroups          SupplierGroup[]        @relation("SupplierGroupCreator")
   createdSuppliers               Supplier[]             @relation("SupplierCreator")
   createdPackingSlips            PackingSlip[]          @relation("PackingSlipCreator")
@@ -284,6 +286,7 @@ model Branch {
   productionsSource      Production[]           @relation("ProductionSource")
   productionsDestination Production[]           @relation("ProductionDestination")
   destructions           Destruction[]
+  internalUses           InternalUse[]
   packingSlips           PackingSlip[]
   packingHangs           PackingHang[]
   packingLoadings        PackingLoading[]
@@ -720,6 +723,7 @@ model Product {
   transferDetails       TransferDetail[]
   productions           Production[]
   destructionDetails    DestructionDetail[]
+  internalUseDetails    InternalUseDetail[]
   orderSupplierItems    OrderSupplierItem[]
   returnOrderDetails    ReturnOrderDetail[]
   inventoryLogs         InventoryLog[]
@@ -1848,6 +1852,65 @@ model DestructionDetail {
   product     Product     @relation(fields: [productId], references: [id])
 
   @@map("destruction_details")
+}
+
+model InternalUse {
+  id            Int       @id @default(autoincrement())
+  code          String    @unique
+  branchId      Int
+  branchName    String
+  status        Int       @default(1)
+  transDate     DateTime?
+  purposeId     Int
+  userId        Int?
+  userName      String?
+  createdById   Int
+  createdByName String
+  description   String?
+  totalValue    Decimal   @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  branch  Branch              @relation(fields: [branchId], references: [id])
+  creator User                @relation("InternalUseCreator", fields: [createdById], references: [id])
+  user    User?               @relation("InternalUseUser", fields: [userId], references: [id])
+  purpose InternalUsePurpose  @relation(fields: [purposeId], references: [id])
+  details InternalUseDetail[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([transDate])
+  @@map("internal_uses")
+}
+
+model InternalUseDetail {
+  id            Int      @id @default(autoincrement())
+  internalUseId Int
+  productId     Int
+  productCode   String
+  productName   String
+  unit          String?
+  quantity      Decimal
+  cost          Decimal
+  value         Decimal
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  internalUse InternalUse @relation(fields: [internalUseId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id])
+
+  @@map("internal_use_details")
+}
+
+model InternalUsePurpose {
+  id        Int     @id @default(autoincrement())
+  name      String
+  order     Int     @default(999)
+  isDeleted Boolean @default(false)
+
+  internalUses InternalUse[]
+
+  @@map("internal_use_purposes")
 }
 
 model OrderSupplier {
