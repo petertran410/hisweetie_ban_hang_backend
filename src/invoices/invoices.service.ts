@@ -347,7 +347,7 @@ export class InvoicesService {
           paidAmount: true,
           returnOrders: {
             where: {
-              status: { gte: 2 },
+              status: { gte: 2, not: 5 },
               code: { startsWith: 'TH' },
             },
             select: {
@@ -452,7 +452,7 @@ export class InvoicesService {
       delivery: true,
       returnOrders: {
         where: {
-          status: { gte: 2 }, // Đã nhập kho trở lên
+          status: { gte: 2, not: 5 }, // Đã nhập kho trở lên, loại trừ Đã hủy (5)
           code: { startsWith: 'TH' }, // CHỈ LẤY PHIẾU TRẢ HÀNG, KHÔNG LẤY CTN
         },
         select: {
@@ -474,14 +474,14 @@ export class InvoicesService {
       // để tránh fetch all ids vào memory
       let aggregateExpr: string;
       if (sortField === 'returnOrderAmount') {
-        aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0)`;
+        aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.status <> 5 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0)`;
       } else if (sortField === 'cashRefundAmount') {
         aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status = 4 AND ro."refundType" = 'cash_refund' AND ro.code LIKE 'TH%' THEN ro."refundedAmount" ELSE 0 END), 0)`;
       } else if (sortField === 'debtOffsetAmount') {
         aggregateExpr = `COALESCE(SUM(CASE WHEN ro.status = 4 AND ro."refundType" = 'debt_offset' AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0)`;
       } else {
         // remainingAmount ≈ grand_total - paid_amount - returnOrderAmount
-        aggregateExpr = `(i."grandTotal" - i."paidAmount" - COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0))`;
+        aggregateExpr = `(i."grandTotal" - i."paidAmount" - COALESCE(SUM(CASE WHEN ro.status >= 2 AND ro.status <> 5 AND ro.code LIKE 'TH%' THEN ro."refundAmount" ELSE 0 END), 0))`;
       }
 
       const sortDirSql = sortDir === 'asc' ? 'ASC' : 'DESC';
@@ -3263,8 +3263,9 @@ export class InvoicesService {
 
       const refundAmount = Number(ro.refundAmount || 0);
 
-      // Trả hàng: Tổng refundAmount từ các phiếu đã nhập kho (status >= 2)
-      if (ro.status >= 2) {
+      // Trả hàng: Tổng refundAmount từ các phiếu đã nhập kho (status 2/3/4),
+      // loại trừ phiếu đã hủy (status 5)
+      if (ro.status >= 2 && ro.status !== 5) {
         totalReturnAmount += refundAmount;
       }
 
