@@ -48,6 +48,8 @@ import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.module';
 import { BorderGatesModule } from './border-gates/border-gates.module';
+import { ProductionStagesModule } from './production-stages/production-stages.module';
+import { FactoriesModule } from './factories/factories.module';
 import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
 import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
@@ -134,6 +136,8 @@ import { NotificationsModule } from './notifications/notifications.module';
     OrderSuppliersModule,
     VehicleShipmentsModule,
     BorderGatesModule,
+    ProductionStagesModule,
+    FactoriesModule,
     PackingSlipsModule,
     PackingHangsModule,
     PackingLoadingsModule,

@@ -927,14 +927,16 @@ export class ReturnOrdersService {
     });
   }
 
-  async cancel(id: number, userId: number) {
+  async cancel(id: number, userId: number, roles: string[] = []) {
     return this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
           details: true,
+          invoice: { select: { id: true, debtAmount: true, grandTotal: true } },
+          branch: { select: { name: true } },
           customer: {
-            select: { id: true, totalDebt: true },
+            select: { id: true, totalDebt: true, name: true },
           },
         },
       });
@@ -943,7 +945,15 @@ export class ReturnOrdersService {
         throw new NotFoundException('Không tìm thấy phiếu trả hàng');
       }
 
-      if (returnOrder.status === RETURN_ORDER_STATUS.COMPLETED) {
+      // Chỉ Admin/Super Admin mới được hủy phiếu đã hoàn thành (status 4).
+      // Các role khác vẫn bị chặn như cũ.
+      const isAdmin = roles.some(
+        (r) => r === 'Super Admin' || r === 'Admin',
+      );
+      const wasCompleted =
+        returnOrder.status === RETURN_ORDER_STATUS.COMPLETED;
+
+      if (wasCompleted && !isAdmin) {
         throw new BadRequestException(
           'Không thể hủy phiếu trả hàng đã hoàn thành',
         );
@@ -953,7 +963,13 @@ export class ReturnOrdersService {
         throw new BadRequestException('Phiếu trả hàng đã bị hủy');
       }
 
-      if (returnOrder.status === RETURN_ORDER_STATUS.STOCK_RECEIVED) {
+      // Rollback tồn kho: kho được cộng từ bước 2 (confirm-stock) nên cả phiếu ở
+      // STOCK_RECEIVED (2) lẫn COMPLETED (4) đều cần trừ lại đúng số đã cộng.
+      const stockWasIncreased =
+        returnOrder.status === RETURN_ORDER_STATUS.STOCK_RECEIVED ||
+        wasCompleted;
+
+      if (stockWasIncreased) {
         for (const detail of returnOrder.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty > 0) {
@@ -980,8 +996,63 @@ export class ReturnOrdersService {
               },
               data: rollbackData,
             });
+
+            // Ghi InventoryLog đảo chiều để thẻ kho khớp với việc rollback.
+            await tx.inventoryLog.create({
+              data: {
+                productId: detail.productId,
+                productCode: detail.productCode,
+                productName: detail.productName,
+                branchId: returnOrder.branchId,
+                branchName: returnOrder.branch?.name || '',
+                transactionType: 'RETURN_CANCEL',
+                refCode: returnOrder.code,
+                refType: 'return_order',
+                refId: returnOrder.id,
+                quantity: -confirmedQty,
+                costPrice: 0,
+                transactionPrice: Number(detail.returnPrice),
+                partnerId: returnOrder.customerId || null,
+                partnerName: returnOrder.customer?.name || null,
+                note: 'Hủy phiếu trả hàng',
+              },
+            });
           }
         }
+
+        // Khôi phục công nợ hóa đơn: bước 2 đã giảm debtAmount bằng refundAmount.
+        // Cộng lại (cap theo grandTotal) và set lại trạng thái hóa đơn.
+        const refundAmount = Number(returnOrder.refundAmount || 0);
+        if (returnOrder.invoice && refundAmount > 0) {
+          const restoredDebt = Math.min(
+            Number(returnOrder.invoice.grandTotal),
+            Number(returnOrder.invoice.debtAmount) + refundAmount,
+          );
+          const invoiceStatus = restoredDebt <= 0 ? 1 : 3;
+          await tx.invoice.update({
+            where: { id: returnOrder.invoice.id },
+            data: {
+              debtAmount: restoredDebt,
+              status: invoiceStatus,
+              statusValue:
+                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
+            },
+          });
+        }
+      }
+
+      // Hủy mềm phiếu chi hoàn tiền (chỉ có khi refundType = cash_refund ở bước 4).
+      // Giữ bản ghi để lưu vết, đánh dấu Đã hủy + loại khỏi báo cáo tài chính.
+      // Formula A lọc cashFlow status != 2 nên recalc bên dưới sẽ ra số đúng.
+      if (wasCompleted && returnOrder.cashFlowId) {
+        await tx.cashFlow.update({
+          where: { id: returnOrder.cashFlowId },
+          data: {
+            status: 2,
+            statusValue: 'Đã hủy',
+            usedForFinancialReporting: 0,
+          },
+        });
       }
 
       const user = await tx.user.findUnique({
@@ -998,6 +1069,8 @@ export class ReturnOrdersService {
         },
       });
 
+      // RO chuyển sang status 5 → tự loại khỏi debtOffsets của Formula A.
+      // CashFlow chi đã status=2 → loại khỏi totalCashFlowPaidOut. Recalc khôi phục đúng nợ.
       if (returnOrder.customerId) {
         await recalcCustomerDebt(tx, returnOrder.customerId);
       }
@@ -1010,8 +1083,16 @@ export class ReturnOrdersService {
         entityCode: returnOrder.code,
         category: 'return_order',
         severity: 'warning',
-        snapshot: { code: returnOrder.code },
-        message: `Hủy phiếu trả hàng ${returnOrder.code}`,
+        snapshot: {
+          code: returnOrder.code,
+          previousStatus: returnOrder.status,
+          cancelledAfterCompleted: wasCompleted,
+          refundType: returnOrder.refundType,
+          cashFlowId: returnOrder.cashFlowId,
+        },
+        message: wasCompleted
+          ? `Hủy phiếu trả hàng đã hoàn thành ${returnOrder.code}`
+          : `Hủy phiếu trả hàng ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_CANCEL',
         userId,
         userName: user?.name || 'System',

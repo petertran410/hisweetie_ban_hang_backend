@@ -76,6 +76,18 @@ export class UpdateOrderSupplierItemFactoryPriceDto {
   factorySubTotal?: number | null;
 }
 
+export class UpdateOrderSupplierItemStageFactoryDto {
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsInt()
+  productionStageId?: number | null;
+
+  @ApiProperty({ required: false, nullable: true })
+  @IsOptional()
+  @IsInt()
+  factoryId?: number | null;
+}
+
 export class CreateOrderSupplierDto {
   @ApiProperty({
     required: false,
