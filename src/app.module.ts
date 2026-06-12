@@ -44,6 +44,7 @@ import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 import { NoteTemplatesModule } from './note-templates/note-templates.module';
 import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
+import { InternalUseModule } from './internal-use/internal-use.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.module';
@@ -130,6 +131,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     NoteTemplatesModule,
     ProductionsModule,
     DestructionsModule,
+    InternalUseModule,
     SupplierGroupsModule,
     OrderSuppliersModule,
     VehicleShipmentsModule,
