@@ -12,3 +12,11 @@ export function getSupplierScope(req: any): number | null {
   const supplierId = req?.user?.supplierId;
   return typeof supplierId === 'number' && supplierId > 0 ? supplierId : null;
 }
+
+/**
+ * Giống getSupplierScope nhưng nhận trực tiếp object user (vd từ @CurrentUser()).
+ */
+export function getSupplierScopeFromUser(user: any): number | null {
+  const supplierId = user?.supplierId;
+  return typeof supplierId === 'number' && supplierId > 0 ? supplierId : null;
+}

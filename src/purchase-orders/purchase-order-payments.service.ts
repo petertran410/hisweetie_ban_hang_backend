@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   getCategoryFromActionCode,
@@ -166,7 +166,22 @@ export class PurchaseOrderPaymentsService {
     });
   }
 
-  async findAllByPurchaseOrder(purchaseOrderId: number) {
+  async findAllByPurchaseOrder(
+    purchaseOrderId: number,
+    supplierScope?: number | null,
+  ) {
+    // Scope NCC: chặn nhân viên NCC xem thanh toán của phiếu NCC khác.
+    if (supplierScope != null) {
+      const po = await this.prisma.purchaseOrder.findUnique({
+        where: { id: purchaseOrderId },
+        select: { supplierId: true },
+      });
+      if (!po || po.supplierId !== supplierScope) {
+        throw new ForbiddenException(
+          'Không có quyền xem dữ liệu của nhà cung cấp khác',
+        );
+      }
+    }
     return this.prisma.purchaseOrderPayment.findMany({
       where: { purchaseOrderId },
       orderBy: { paymentDate: 'desc' },
