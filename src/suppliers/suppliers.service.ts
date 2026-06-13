@@ -168,6 +168,201 @@ export class SuppliersService {
     };
   }
 
+  /**
+   * Xuất danh sách nhà cung cấp ra Excel (.xlsx) theo đúng bộ lọc đang áp dụng.
+   * Dùng chung logic build `where` với findAll để kết quả khớp với bảng đang xem.
+   * Stream theo batch 500 dòng để không nạp toàn bộ vào RAM (đối xứng
+   * customers.service.ts:exportCustomers).
+   */
+  async exportSuppliers(
+    query: SupplierQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const {
+      code,
+      name,
+      contactNumber,
+      orderBy = 'createdAt',
+      orderDirection = 'desc',
+      groupId,
+      branchId,
+      createdDateFrom,
+      createdDateTo,
+      totalInvoicedFrom,
+      totalInvoicedTo,
+      debtFrom,
+      debtTo,
+      isActive,
+    } = query;
+
+    // ── where building: GIỮ NGUYÊN logic của findAll ────────────────────────
+    const where: Prisma.SupplierWhereInput = {};
+
+    if (code) {
+      where.code = { contains: code, mode: 'insensitive' };
+    }
+
+    if (name) {
+      where.name = { contains: name, mode: 'insensitive' };
+    }
+
+    if (contactNumber) {
+      where.OR = [
+        { contactNumber: { contains: contactNumber, mode: 'insensitive' } },
+      ];
+    }
+
+    if (groupId) {
+      where.supplierGroupDetails = {
+        some: {
+          supplierGroupId: groupId,
+        },
+      };
+    }
+
+    if (branchId) {
+      where.branchId = branchId;
+    }
+
+    if (createdDateFrom || createdDateTo) {
+      where.createdAt = {};
+      if (createdDateFrom) {
+        where.createdAt.gte = new Date(createdDateFrom);
+      }
+      if (createdDateTo) {
+        const endDate = new Date(createdDateTo);
+        endDate.setHours(23, 59, 59, 999);
+        where.createdAt.lte = endDate;
+      }
+    }
+
+    if (totalInvoicedFrom !== undefined || totalInvoicedTo !== undefined) {
+      where.totalInvoiced = {};
+      if (totalInvoicedFrom !== undefined) {
+        where.totalInvoiced.gte = totalInvoicedFrom;
+      }
+      if (totalInvoicedTo !== undefined) {
+        where.totalInvoiced.lte = totalInvoicedTo;
+      }
+    }
+
+    if (debtFrom !== undefined || debtTo !== undefined) {
+      where.debt = {};
+      if (debtFrom !== undefined) {
+        where.debt.gte = debtFrom;
+      }
+      if (debtTo !== undefined) {
+        where.debt.lte = debtTo;
+      }
+    }
+
+    if (isActive !== undefined) {
+      where.isActive = isActive;
+    }
+    // ── kết thúc where building ──────────────────────────────────────────────
+
+    const supplierCount = await this.prisma.supplier.count({ where });
+
+    if (supplierCount === 0) {
+      res.end();
+      return;
+    }
+
+    // ── Stream Excel ─────────────────────────────────────────────────────────
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Nhà cung cấp');
+
+    sheet.columns = [
+      { header: 'Mã nhà cung cấp', key: 'code', width: 18 },
+      { header: 'Tên nhà cung cấp', key: 'name', width: 28 },
+      { header: 'Điện thoại', key: 'contactNumber', width: 16 },
+      { header: 'Email', key: 'email', width: 24 },
+      { header: 'Mã số thuế', key: 'taxCode', width: 16 },
+      { header: 'Công ty', key: 'organization', width: 24 },
+      { header: 'Nhóm nhà cung cấp', key: 'groups', width: 22 },
+      { header: 'Địa chỉ', key: 'address', width: 30 },
+      { header: 'Khu vực', key: 'location', width: 18 },
+      { header: 'Phường/Xã', key: 'wardName', width: 18 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Nợ hiện tại', key: 'debt', width: 16 },
+      { header: 'Tổng mua', key: 'totalInvoiced', width: 16 },
+      { header: 'Tổng mua trừ trả hàng', key: 'totalInvoicedWithoutReturn', width: 22 },
+      { header: 'Trạng thái', key: 'isActive', width: 18 },
+      { header: 'Ghi chú', key: 'comments', width: 24 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 14 },
+      { header: 'Người tạo', key: 'createdByName', width: 20 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.supplier.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { [orderBy]: orderDirection },
+        include: {
+          branch: { select: { id: true, name: true } },
+          creator: { select: { id: true, name: true } },
+          supplierGroupDetails: {
+            include: { supplierGroup: { select: { id: true, name: true } } },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const s of batch) {
+        const groups =
+          s.supplierGroupDetails
+            ?.map((d) => d.supplierGroup?.name)
+            .filter(Boolean)
+            .join('|') ?? '';
+
+        const row = sheet.addRow({
+          code: s.code ?? '',
+          name: s.name ?? '',
+          contactNumber: s.contactNumber ?? '',
+          email: s.email ?? '',
+          taxCode: s.taxCode ?? '',
+          organization: s.organization ?? '',
+          groups,
+          address: s.address ?? '',
+          location: s.location ?? '',
+          wardName: s.wardName ?? '',
+          branchName: s.branch?.name ?? '',
+          debt: Number(s.debt ?? 0),
+          totalInvoiced: Number(s.totalInvoiced ?? 0),
+          totalInvoicedWithoutReturn: Number(s.totalInvoicedWithoutReturn ?? 0),
+          isActive: s.isActive ? 'Đang hoạt động' : 'Ngừng hoạt động',
+          comments: s.comments ?? '',
+          createdAt: new Date(s.createdAt).toLocaleDateString('vi-VN'),
+          createdByName: s.creator?.name ?? '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
   async findOne(id: number) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { id },
