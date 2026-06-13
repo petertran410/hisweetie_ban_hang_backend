@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -66,7 +67,7 @@ export class SupplierReturnsService {
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
 
-  async findAll(query: SupplierReturnQueryDto) {
+  async findAll(query: SupplierReturnQueryDto, supplierScope?: number | null) {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
@@ -116,6 +117,9 @@ export class SupplierReturnsService {
       if (query.toDate) where.createdAt.lte = new Date(query.toDate);
     }
 
+    // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
+    if (supplierScope != null) where.supplierId = supplierScope;
+
     const [data, total] = await Promise.all([
       this.prisma.supplierReturn.findMany({
         where,
@@ -142,7 +146,7 @@ export class SupplierReturnsService {
 
   // ─── findOne ─────────────────────────────────────────────────────────────────
 
-  async findOne(id: number) {
+  async findOne(id: number, supplierScope?: number | null) {
     const record = await this.prisma.supplierReturn.findUnique({
       where: { id },
       include: {
@@ -165,6 +169,13 @@ export class SupplierReturnsService {
 
     if (!record)
       throw new NotFoundException('Không tìm thấy phiếu trả hàng nhập');
+
+    // Scope NCC: chặn nhân viên NCC xem phiếu của nhà cung cấp khác.
+    if (supplierScope != null && record.supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
+    }
     return record;
   }
 

@@ -22,6 +22,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { getSupplierScopeFromUser } from '../auth/supplier-scope.util';
 
 @ApiTags('Supplier Returns')
 @ApiBearerAuth()
@@ -32,14 +33,17 @@ export class SupplierReturnsController {
 
   @Get()
   @RequirePermissions('supplier_returns:view')
-  findAll(@Query() query: SupplierReturnQueryDto) {
-    return this.supplierReturnsService.findAll(query);
+  findAll(@Query() query: SupplierReturnQueryDto, @CurrentUser() user: any) {
+    return this.supplierReturnsService.findAll(
+      query,
+      getSupplierScopeFromUser(user),
+    );
   }
 
   @Get(':id')
   @RequirePermissions('supplier_returns:view')
-  findOne(@Param('id', ParseIntPipe) id: number) {
-    return this.supplierReturnsService.findOne(id);
+  findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
+    return this.supplierReturnsService.findOne(id, getSupplierScopeFromUser(user));
   }
 
   @Post()

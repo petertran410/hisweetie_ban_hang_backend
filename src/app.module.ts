@@ -65,7 +65,7 @@ import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
-import { SyncKiotModule } from './sync-kiot/sync-kiot.module';
+// import { SyncKiotModule } from './sync-kiot/sync-kiot.module'; // disabled: bỏ hoàn toàn sync-kiot
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { MisaSyncModule } from './misa-sync/misa-sync.module';
 import { HealthController } from './health/health.controller';
@@ -150,7 +150,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     InventoryChecksModule,
     StockAuditsModule,
     CashFlowCollectionBranchesModule,
-    SyncKiotModule,
+    // SyncKiotModule, // disabled: bỏ hoàn toàn sync-kiot
     LarkSyncModule,
     MisaSyncModule,
     SupplierReturnsModule,

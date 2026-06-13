@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSupplierDto, UpdateSupplierDto, SupplierQueryDto } from './dto';
 import { Prisma } from '@prisma/client';
@@ -28,7 +28,7 @@ export class SuppliersService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: SupplierQueryDto) {
+  async findAll(query: SupplierQueryDto, supplierScope?: number | null) {
     const {
       code,
       name,
@@ -111,6 +111,11 @@ export class SuppliersService {
       where.isActive = isActive;
     }
 
+    // Scope NCC: nhân viên NCC chỉ thấy đúng nhà cung cấp của mình.
+    if (supplierScope != null) {
+      where.id = supplierScope;
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.supplier.findMany({
         where,
@@ -177,6 +182,7 @@ export class SuppliersService {
   async exportSuppliers(
     query: SupplierQueryDto,
     res: Response,
+    supplierScope?: number | null,
   ): Promise<void> {
     const {
       code,
@@ -260,6 +266,11 @@ export class SuppliersService {
       where.isActive = isActive;
     }
     // ── kết thúc where building ──────────────────────────────────────────────
+
+    // Scope NCC: nhân viên NCC chỉ xuất đúng nhà cung cấp của mình.
+    if (supplierScope != null) {
+      where.id = supplierScope;
+    }
 
     const supplierCount = await this.prisma.supplier.count({ where });
 
@@ -363,7 +374,12 @@ export class SuppliersService {
     await workbook.commit();
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, supplierScope?: number | null) {
+    if (supplierScope != null && id !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
+    }
     const supplier = await this.prisma.supplier.findUnique({
       where: { id },
       include: {
@@ -401,7 +417,7 @@ export class SuppliersService {
     return supplier;
   }
 
-  async findByCode(code: string) {
+  async findByCode(code: string, supplierScope?: number | null) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { code },
       include: {
@@ -427,6 +443,12 @@ export class SuppliersService {
 
     if (!supplier) {
       throw new NotFoundException(`Supplier with code ${code} not found`);
+    }
+
+    if (supplierScope != null && supplier.id !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
     }
 
     return supplier;
@@ -773,7 +795,12 @@ export class SuppliersService {
     };
   }
 
-  async getDebtTimeline(supplierId: number) {
+  async getDebtTimeline(supplierId: number, supplierScope?: number | null) {
+    if (supplierScope != null && supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
+    }
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: supplierId },
       select: { id: true, debt: true },
@@ -986,8 +1013,15 @@ export class SuppliersService {
 
   // ── Export lịch sử thanh toán NCC (timeline) ────────────────────────────────
   // Đối xứng customers.service.ts:exportDebtTimeline.
-  async exportDebtTimeline(supplierId: number, res: Response): Promise<void> {
-    const { data: timeline } = await this.getDebtTimeline(supplierId);
+  async exportDebtTimeline(
+    supplierId: number,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const { data: timeline } = await this.getDebtTimeline(
+      supplierId,
+      supplierScope,
+    );
 
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: supplierId },
@@ -1075,7 +1109,13 @@ export class SuppliersService {
       showNote?: boolean;
     },
     res: Response,
+    supplierScope?: number | null,
   ): Promise<void> {
+    if (supplierScope != null && supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
+    }
     const supplier = await this.prisma.supplier.findUnique({
       where: { id: supplierId },
       select: {

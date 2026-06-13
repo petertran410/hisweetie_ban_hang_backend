@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -726,7 +727,7 @@ export class PurchaseOrdersService {
     });
   }
 
-  async findAll(query: PurchaseOrderQueryDto) {
+  async findAll(query: PurchaseOrderQueryDto, supplierScope?: number | null) {
     const {
       pageSize = 15,
       currentItem = 0,
@@ -784,6 +785,9 @@ export class PurchaseOrdersService {
       if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
     }
 
+    // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
+    if (supplierScope != null) where.supplierId = supplierScope;
+
     const [data, total] = await Promise.all([
       this.prisma.purchaseOrder.findMany({
         where,
@@ -812,7 +816,7 @@ export class PurchaseOrdersService {
     return { data, total, pageSize, currentItem };
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, supplierScope?: number | null) {
     const purchaseOrder = await this.prisma.purchaseOrder.findUnique({
       where: { id },
       include: {
@@ -834,6 +838,13 @@ export class PurchaseOrdersService {
 
     if (!purchaseOrder) {
       throw new NotFoundException('Purchase order not found');
+    }
+
+    // Scope NCC: chặn nhân viên NCC xem phiếu của nhà cung cấp khác.
+    if (supplierScope != null && purchaseOrder.supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
     }
 
     return purchaseOrder;

@@ -18,6 +18,7 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 import { Response } from 'express';
+import { getSupplierScope } from '../auth/supplier-scope.util';
 
 @ApiTags('Suppliers')
 @ApiBearerAuth()
@@ -29,8 +30,8 @@ export class SuppliersController {
   @Get()
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy danh sách nhà cung cấp' })
-  findAll(@Query() query: SupplierQueryDto) {
-    return this.suppliersService.findAll(query);
+  findAll(@Query() query: SupplierQueryDto, @Req() req: any) {
+    return this.suppliersService.findAll(query, getSupplierScope(req));
   }
 
   @Post('import-balance-adjustments')
@@ -46,6 +47,7 @@ export class SuppliersController {
   async exportSuppliers(
     @Query() query: SupplierQueryDto,
     @Res() res: Response,
+    @Req() req: any,
   ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -60,20 +62,28 @@ export class SuppliersController {
       `attachment; filename=DanhSachNhaCungCap_${ts}.xlsx`,
     );
 
-    await this.suppliersService.exportSuppliers(query, res);
+    await this.suppliersService.exportSuppliers(
+      query,
+      res,
+      getSupplierScope(req),
+    );
   }
 
   @Get(':id/debt-timeline')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy lịch sử công nợ nhà cung cấp' })
-  getDebtTimeline(@Param('id') id: string) {
-    return this.suppliersService.getDebtTimeline(+id);
+  getDebtTimeline(@Param('id') id: string, @Req() req: any) {
+    return this.suppliersService.getDebtTimeline(+id, getSupplierScope(req));
   }
 
   @Get(':id/export-debt-timeline')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Xuất lịch sử giao dịch nhà cung cấp' })
-  async exportDebtTimeline(@Param('id') id: string, @Res() res: Response) {
+  async exportDebtTimeline(
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -87,7 +97,11 @@ export class SuppliersController {
       `attachment; filename=LichSuThanhToan_NCC${id}_${ts}.xlsx`,
     );
 
-    await this.suppliersService.exportDebtTimeline(+id, res);
+    await this.suppliersService.exportDebtTimeline(
+      +id,
+      res,
+      getSupplierScope(req),
+    );
   }
 
   @Get(':id/export-debt')
@@ -106,6 +120,7 @@ export class SuppliersController {
     @Query('showTotal') showTotal: string,
     @Query('showNote') showNote: string,
     @Res() res: Response,
+    @Req() req: any,
   ) {
     const toBool = (v?: string) => v === 'true';
 
@@ -124,21 +139,22 @@ export class SuppliersController {
         showNote: toBool(showNote),
       },
       res,
+      getSupplierScope(req),
     );
   }
 
   @Get(':id')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy chi tiết nhà cung cấp theo ID' })
-  findOne(@Param('id') id: string) {
-    return this.suppliersService.findOne(+id);
+  findOne(@Param('id') id: string, @Req() req: any) {
+    return this.suppliersService.findOne(+id, getSupplierScope(req));
   }
 
   @Get('code/:code')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy chi tiết nhà cung cấp theo Code' })
-  findByCode(@Param('code') code: string) {
-    return this.suppliersService.findByCode(code);
+  findByCode(@Param('code') code: string, @Req() req: any) {
+    return this.suppliersService.findByCode(code, getSupplierScope(req));
   }
 
   @Post()

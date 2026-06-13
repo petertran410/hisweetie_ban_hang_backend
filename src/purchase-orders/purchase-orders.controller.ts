@@ -22,6 +22,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { getSupplierScope } from '../auth/supplier-scope.util';
 
 @ApiTags('Purchase Orders')
 @ApiBearerAuth()
@@ -35,14 +36,14 @@ export class PurchaseOrdersController {
 
   @Get()
   @RequirePermissions('purchase_orders:view')
-  findAll(@Query() query: PurchaseOrderQueryDto) {
-    return this.purchaseOrdersService.findAll(query);
+  findAll(@Query() query: PurchaseOrderQueryDto, @Req() req: any) {
+    return this.purchaseOrdersService.findAll(query, getSupplierScope(req));
   }
 
   @Get(':id')
   @RequirePermissions('purchase_orders:view')
-  findOne(@Param('id') id: string) {
-    return this.purchaseOrdersService.findOne(+id);
+  findOne(@Param('id') id: string, @Req() req: any) {
+    return this.purchaseOrdersService.findOne(+id, getSupplierScope(req));
   }
 
   @Post()
@@ -114,8 +115,11 @@ export class PurchaseOrdersController {
 
   @Get(':id/payments')
   @RequirePermissions('purchase_orders:view')
-  getPayments(@Param('id') id: string) {
-    return this.purchaseOrderPaymentsService.findAllByPurchaseOrder(+id);
+  getPayments(@Param('id') id: string, @Req() req: any) {
+    return this.purchaseOrderPaymentsService.findAllByPurchaseOrder(
+      +id,
+      getSupplierScope(req),
+    );
   }
 
   @Delete('payments/:paymentId')
