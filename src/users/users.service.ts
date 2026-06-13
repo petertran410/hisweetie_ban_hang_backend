@@ -101,6 +101,7 @@ export class UsersService {
       where: { id },
       include: {
         branch: { select: { id: true, name: true } },
+        supplier: { select: { id: true, name: true } },
         userBranches: {
           include: { branch: { select: { id: true, name: true } } },
         },
@@ -161,6 +162,7 @@ export class UsersService {
       password: string;
       phone?: string;
       branchId?: number;
+      supplierId?: number | null;
       roleIds?: number[];
       permissionIds?: number[];
       denyPermissionIds?: number[];
@@ -199,6 +201,8 @@ export class UsersService {
           password: hashedPassword,
           phone: data.phone,
           branchId: data.branchId && data.branchId > 0 ? data.branchId : null,
+          supplierId:
+            data.supplierId && data.supplierId > 0 ? data.supplierId : null,
           isActive: data.isActive ?? true,
         },
       });
@@ -283,6 +287,7 @@ export class UsersService {
       password?: string;
       phone?: string;
       branchId?: number;
+      supplierId?: number | null;
       isActive?: boolean;
       roleIds?: number[];
       permissionIds?: number[];
@@ -342,6 +347,17 @@ export class UsersService {
       if (data.branchId !== undefined) {
         updateData.branchId =
           data.branchId && data.branchId > 0 ? data.branchId : null;
+      }
+
+      // Đổi NCC (scope dữ liệu) → tăng permissionVersion để buộc nạp lại
+      // req.user (đang cache theo permissionVersion) ở lần request kế tiếp.
+      if (data.supplierId !== undefined) {
+        const newSupplierId =
+          data.supplierId && data.supplierId > 0 ? data.supplierId : null;
+        updateData.supplierId = newSupplierId;
+        if (newSupplierId !== user.supplierId) {
+          updateData.permissionVersion = { increment: 1 };
+        }
       }
 
       if (data.password) {

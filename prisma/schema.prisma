@@ -19,6 +19,7 @@ model User {
   googleId     String?   @unique
   larkUserId   String?   @unique @map("lark_user_id")
   branchId     Int?
+  supplierId   Int?      @map("supplier_id")
   isActive     Boolean   @default(true)
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
@@ -29,6 +30,7 @@ model User {
   permissionVersion             Int     @default(1) @map("permission_version")
 
   branch                         Branch?                @relation(fields: [branchId], references: [id])
+  supplier                       Supplier?              @relation("SupplierStaff", fields: [supplierId], references: [id])
   userBranches                   UserBranch[]
   userRoles                      UserRole[]
   userPermissions                UserPermission[]
@@ -525,6 +527,7 @@ model Supplier {
   orderSuppliers       OrderSupplier[]
 
   supplierReturns SupplierReturn[]
+  staffUsers      User[]                @relation("SupplierStaff")
 
   @@map("suppliers")
 }
@@ -705,6 +708,11 @@ model Product {
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
   priceBookId     Int?
+
+  // Thông tin công bố sản phẩm
+  publicationLocation Json?     @map("publication_location") // { address, cityCode, cityName, districtCode, districtName, wardCode, wardName, newCityCode, newCityName, newWardCode, newWardName }
+  publicationDate     DateTime? @map("publication_date")
+  publicationLink     String?   @map("publication_link")
 
   tradeMark             TradeMark?             @relation(fields: [tradeMarkId], references: [id])
   variant               ProductVariant?        @relation(fields: [variantId], references: [id])

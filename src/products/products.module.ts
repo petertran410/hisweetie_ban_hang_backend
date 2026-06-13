@@ -5,9 +5,16 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { OrdersModule } from '../orders/orders.module';
 import { OrderSuppliersModule } from '../order-suppliers/order-suppliers.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [PrismaModule, AuditLogsModule, OrdersModule, OrderSuppliersModule],
+  imports: [
+    PrismaModule,
+    AuditLogsModule,
+    OrdersModule,
+    OrderSuppliersModule,
+    AuthModule,
+  ],
   controllers: [ProductsController],
   providers: [ProductsService],
   exports: [ProductsService],

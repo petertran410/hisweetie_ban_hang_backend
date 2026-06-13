@@ -9,6 +9,7 @@ import {
   Query,
   Req,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -21,6 +22,16 @@ import {
   CreatePurchaseOrdersFromVehicleDto,
   ResolveVehicleItemDto,
 } from './dto';
+import { getSupplierScope } from '../auth/supplier-scope.util';
+
+/** Chặn tài khoản nhân viên nhà cung cấp thao tác ghi (ghép xe là việc nội bộ). */
+function assertNotSupplierStaff(req: any) {
+  if (getSupplierScope(req) != null) {
+    throw new ForbiddenException(
+      'Tài khoản nhà cung cấp không có quyền thao tác này',
+    );
+  }
+}
 
 @ApiTags('Vehicle Shipments')
 @ApiBearerAuth()
@@ -31,8 +42,8 @@ export class VehicleShipmentsController {
 
   @Get()
   @RequirePermissions('vehicle_shipments:view')
-  findAll(@Query() query: VehicleShipmentQueryDto) {
-    return this.vehicleShipmentsService.findAll(query);
+  findAll(@Query() query: VehicleShipmentQueryDto, @Req() req: any) {
+    return this.vehicleShipmentsService.findAll(query, getSupplierScope(req));
   }
 
   @Get('available-items')
@@ -40,21 +51,23 @@ export class VehicleShipmentsController {
   @ApiOperation({
     summary: 'Danh sách PDN + SP còn có thể ghép xe (Đặt − Nhập − Ghép > 0)',
   })
-  getAvailableItems(@Query('branchId') branchId?: string) {
+  getAvailableItems(@Req() req: any, @Query('branchId') branchId?: string) {
     return this.vehicleShipmentsService.getAvailableItems(
       branchId ? +branchId : undefined,
+      getSupplierScope(req),
     );
   }
 
   @Get(':id')
   @RequirePermissions('vehicle_shipments:view')
-  findOne(@Param('id') id: string) {
-    return this.vehicleShipmentsService.findOne(+id);
+  findOne(@Param('id') id: string, @Req() req: any) {
+    return this.vehicleShipmentsService.findOne(+id, getSupplierScope(req));
   }
 
   @Post()
   @RequirePermissions('vehicle_shipments:create')
   create(@Body() dto: CreateVehicleShipmentDto, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.vehicleShipmentsService.create(dto, userId);
   }
@@ -66,6 +79,7 @@ export class VehicleShipmentsController {
     @Body() dto: UpdateVehicleShipmentDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.vehicleShipmentsService.update(+id, dto, userId);
   }
@@ -74,6 +88,7 @@ export class VehicleShipmentsController {
   @RequirePermissions('vehicle_shipments:update')
   @ApiOperation({ summary: 'Hủy mềm phiếu ghép xe' })
   cancel(@Param('id') id: string, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.vehicleShipmentsService.cancel(+id, userId);
   }
@@ -88,6 +103,7 @@ export class VehicleShipmentsController {
     @Body() dto: CreatePurchaseOrdersFromVehicleDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.vehicleShipmentsService.createPurchaseOrders(+id, dto, userId);
   }
@@ -102,6 +118,7 @@ export class VehicleShipmentsController {
     @Body() dto: ResolveVehicleItemDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.vehicleShipmentsService.resolveItem(+id, dto, userId);
   }
