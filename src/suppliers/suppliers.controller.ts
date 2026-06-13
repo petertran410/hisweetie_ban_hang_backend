@@ -40,6 +40,29 @@ export class SuppliersController {
     return this.suppliersService.importBalanceAdjustments(dto);
   }
 
+  @Get('export')
+  @RequirePermissions('suppliers:export')
+  @ApiOperation({ summary: 'Xuất danh sách nhà cung cấp' })
+  async exportSuppliers(
+    @Query() query: SupplierQueryDto,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DanhSachNhaCungCap_${ts}.xlsx`,
+    );
+
+    await this.suppliersService.exportSuppliers(query, res);
+  }
+
   @Get(':id/debt-timeline')
   @RequirePermissions('suppliers:view')
   @ApiOperation({ summary: 'Lấy lịch sử công nợ nhà cung cấp' })
