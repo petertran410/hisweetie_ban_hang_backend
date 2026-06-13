@@ -631,27 +631,38 @@ export class PrintTemplatesService {
   }
 
   private mapTransfer(t: any) {
+    const receivedDate = this.dateVars(t.receivedDate);
     return {
       Ten_Cua_Hang: t.fromBranch?.name || '',
       Dia_Chi_Cua_Hang: t.fromBranch?.address || '',
       So_Dien_Thoai_Cua_Hang: t.fromBranch?.contactNumber || '',
       ...this.dateVars(t.transferredDate || t.createdAt),
+      // Ngày nhận (chi nhánh đích) — tách riêng để không đè ngày chuyển
+      Ngay_Nhan: receivedDate.Ngay,
+      Thang_Nhan: receivedDate.Thang,
+      Nam_Nhan: receivedDate.Nam,
       Ma_Chuyen_Hang: t.code || '',
       Chi_Nhanh_Nguon: t.fromBranchName || t.fromBranch?.name || '',
       Chi_Nhanh_Dich: t.toBranchName || t.toBranch?.name || '',
       Nhan_Vien_Ban_Hang: t.creator?.name || '',
       Nguoi_Lap: t.createdByName || t.creator?.name || '',
+      // Ghi_Chu giữ nguyên = ghi chú bên chuyển (backward-compat)
       Ghi_Chu: t.noteBySource || '',
+      Ghi_Chu_Chuyen: t.noteBySource || '',
+      Ghi_Chu_Nhan: t.noteByDestination || '',
       Tong_Tien_Chuyen: this.money(t.totalTransfer),
+      Tong_Tien_Nhan: this.money(t.totalReceive),
       items: (t.details || []).map((d: any) => ({
         Ma_Hang: d.productCode || '',
         Ten_Hang_Hoa: d.productName || '',
         Don_Vi_Tinh: '',
         So_Luong: Number(d.sendQuantity),
+        So_Luong_Nhan: Number(d.receivedQuantity),
         Don_Gia: this.money(d.sendPrice),
         Don_Gia_Sau_Chiet_Khau: this.money(d.sendPrice),
         Ghi_Chu_Hang_Hoa: '',
         Thanh_Tien: this.money(d.totalTransfer),
+        Thanh_Tien_Nhan: this.money(d.totalReceive),
       })),
     };
   }
