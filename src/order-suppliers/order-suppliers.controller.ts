@@ -10,6 +10,7 @@ import {
   Query,
   UseGuards,
   Req,
+  ForbiddenException,
 } from '@nestjs/common';
 import { OrderSuppliersService } from './order-suppliers.service';
 import { OrderSupplierPaymentsService } from './order-supplier-payments.service';
@@ -25,6 +26,16 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { getSupplierScope } from '../auth/supplier-scope.util';
+
+/** Chặn tài khoản nhân viên nhà cung cấp thao tác ghi (tạo/sửa/xóa phiếu). */
+function assertNotSupplierStaff(req: any) {
+  if (getSupplierScope(req) != null) {
+    throw new ForbiddenException(
+      'Tài khoản nhà cung cấp không có quyền thao tác này',
+    );
+  }
+}
 
 @ApiTags('Order Suppliers')
 @ApiBearerAuth()
@@ -38,13 +49,14 @@ export class OrderSuppliersController {
 
   @Get()
   @RequirePermissions('order_suppliers:view')
-  findAll(@Query() query: OrderSupplierQueryDto) {
-    return this.orderSuppliersService.findAll(query);
+  findAll(@Query() query: OrderSupplierQueryDto, @Req() req: any) {
+    return this.orderSuppliersService.findAll(query, getSupplierScope(req));
   }
 
   @Get('confirmed-summary')
   @RequirePermissions('order_suppliers:view')
   getConfirmedSummary(
+    @Req() req: any,
     @Query('productIds') productIds?: string,
     @Query('branchId') branchId?: string,
   ) {
@@ -55,25 +67,31 @@ export class OrderSuppliersController {
     return this.orderSuppliersService.getConfirmedSummary(
       ids,
       branchId ? +branchId : undefined,
+      getSupplierScope(req),
     );
   }
 
   @Get('confirmed-by-product')
   @RequirePermissions('order_suppliers:view')
   getConfirmedByProduct(
+    @Req() req: any,
     @Query('productId') productId: string,
     @Query('branchId') branchId?: string,
   ) {
     return this.orderSuppliersService.getConfirmedByProduct(
       +productId,
       branchId ? +branchId : undefined,
+      getSupplierScope(req),
     );
   }
 
   @Get('detail-items')
   @RequirePermissions('order_suppliers:view')
-  getDetailItems(@Query() query: OrderSupplierQueryDto) {
-    return this.orderSuppliersService.getDetailItems(query);
+  getDetailItems(@Query() query: OrderSupplierQueryDto, @Req() req: any) {
+    return this.orderSuppliersService.getDetailItems(
+      query,
+      getSupplierScope(req),
+    );
   }
 
   @Patch('items/:orderSupplierId/:productId/factory-price')
@@ -86,11 +104,13 @@ export class OrderSuppliersController {
     @Param('orderSupplierId') orderSupplierId: string,
     @Param('productId') productId: string,
     @Body() dto: UpdateOrderSupplierItemFactoryPriceDto,
+    @Req() req: any,
   ) {
     return this.orderSuppliersService.updateItemFactoryPrice(
       +orderSupplierId,
       +productId,
       dto,
+      getSupplierScope(req),
     );
   }
 
@@ -104,23 +124,26 @@ export class OrderSuppliersController {
     @Param('orderSupplierId') orderSupplierId: string,
     @Param('productId') productId: string,
     @Body() dto: UpdateOrderSupplierItemStageFactoryDto,
+    @Req() req: any,
   ) {
     return this.orderSuppliersService.updateItemStageFactory(
       +orderSupplierId,
       +productId,
       dto,
+      getSupplierScope(req),
     );
   }
 
   @Get(':id')
   @RequirePermissions('order_suppliers:view')
-  findOne(@Param('id') id: string) {
-    return this.orderSuppliersService.findOne(+id);
+  findOne(@Param('id') id: string, @Req() req: any) {
+    return this.orderSuppliersService.findOne(+id, getSupplierScope(req));
   }
 
   @Post()
   @RequirePermissions('order_suppliers:create')
   create(@Body() dto: CreateOrderSupplierDto, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.create(dto, userId);
   }
@@ -132,6 +155,7 @@ export class OrderSuppliersController {
     @Body() dto: UpdateOrderSupplierDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.update(+id, dto, userId);
   }
@@ -147,6 +171,7 @@ export class OrderSuppliersController {
     @Body() dto: CancelOrderSupplierDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.cancelOrderSupplier(+id, dto, userId);
   }
@@ -154,6 +179,7 @@ export class OrderSuppliersController {
   @Delete(':id')
   @RequirePermissions('order_suppliers:delete')
   remove(@Param('id') id: string, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.remove(+id, userId);
   }
@@ -165,6 +191,7 @@ export class OrderSuppliersController {
       'Chốt hoàn thành PDN thủ công khi NCC không giao nốt phần còn thiếu',
   })
   complete(@Param('id') id: string, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSuppliersService.completeOrderSupplier(+id, userId);
   }
@@ -176,6 +203,7 @@ export class OrderSuppliersController {
     @Body() dto: CreateOrderSupplierPaymentDto,
     @Req() req: any,
   ) {
+    assertNotSupplierStaff(req);
     dto.orderSupplierId = +id;
     const userId = req.user?.id || 1;
     return this.orderSupplierPaymentsService.create(dto, userId);
@@ -183,13 +211,17 @@ export class OrderSuppliersController {
 
   @Get(':id/payments')
   @RequirePermissions('order_suppliers:view')
-  getPayments(@Param('id') id: string) {
-    return this.orderSupplierPaymentsService.findAllByOrderSupplier(+id);
+  getPayments(@Param('id') id: string, @Req() req: any) {
+    return this.orderSupplierPaymentsService.findAllByOrderSupplier(
+      +id,
+      getSupplierScope(req),
+    );
   }
 
   @Delete('payments/:paymentId')
   @RequirePermissions('order_suppliers:delete')
   removePayment(@Param('paymentId') paymentId: string, @Req() req: any) {
+    assertNotSupplierStaff(req);
     const userId = req.user?.id || 1;
     return this.orderSupplierPaymentsService.remove(+paymentId, userId);
   }

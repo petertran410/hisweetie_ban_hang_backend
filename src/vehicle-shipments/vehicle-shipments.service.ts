@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -309,7 +310,7 @@ export class VehicleShipmentsService {
   // Queries
   // ---------------------------------------------------------------------------
 
-  async findAll(query: VehicleShipmentQueryDto) {
+  async findAll(query: VehicleShipmentQueryDto, supplierScope?: number | null) {
     const {
       pageSize = 15,
       currentItem = 0,
@@ -359,6 +360,13 @@ export class VehicleShipmentsService {
       if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
     }
 
+    // Scope NCC: chỉ trả phiếu ghép xe có chứa hàng của NCC này.
+    if (supplierScope != null) {
+      where.items = {
+        some: { orderSupplier: { supplierId: supplierScope } },
+      };
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.vehicleShipment.findMany({
         where,
@@ -374,6 +382,7 @@ export class VehicleShipmentsService {
                 select: {
                   id: true,
                   code: true,
+                  supplierId: true,
                   supplier: { select: { id: true, code: true, name: true } },
                 },
               },
@@ -386,10 +395,19 @@ export class VehicleShipmentsService {
       this.prisma.vehicleShipment.count({ where }),
     ]);
 
+    // Ẩn dòng item của NCC khác (giữ nguyên các số tổng toàn phiếu).
+    if (supplierScope != null) {
+      for (const vs of data as any[]) {
+        vs.items = (vs.items || []).filter(
+          (it: any) => it.orderSupplier?.supplierId === supplierScope,
+        );
+      }
+    }
+
     return { data, total, pageSize, currentItem };
   }
 
-  async findOne(id: number) {
+  async findOne(id: number, supplierScope?: number | null) {
     const shipment = await this.prisma.vehicleShipment.findUnique({
       where: { id },
       include: {
@@ -411,6 +429,7 @@ export class VehicleShipmentsService {
               select: {
                 id: true,
                 code: true,
+                supplierId: true,
                 supplier: { select: { id: true, code: true, name: true } },
               },
             },
@@ -423,6 +442,18 @@ export class VehicleShipmentsService {
     });
     if (!shipment) {
       throw new NotFoundException('Không tìm thấy phiếu ghép xe');
+    }
+
+    // Scope NCC: chặn nếu phiếu không chứa hàng của NCC này.
+    if (supplierScope != null) {
+      const hasOwnItem = (shipment.items || []).some(
+        (it: any) => it.orderSupplier?.supplierId === supplierScope,
+      );
+      if (!hasOwnItem) {
+        throw new ForbiddenException(
+          'Không có quyền xem dữ liệu của nhà cung cấp khác',
+        );
+      }
     }
 
     // Thực nhận theo từng (orderSupplierId, productId) qua các PN active gắn
@@ -471,19 +502,29 @@ export class VehicleShipmentsService {
       };
     });
 
-    return { ...shipment, items: itemsWithDiff, totalWeightKg };
+    // Ẩn dòng của NCC khác (tổng totalWeightKg vẫn tính trên toàn phiếu).
+    const visibleItems =
+      supplierScope != null
+        ? itemsWithDiff.filter(
+            (it: any) => it.orderSupplier?.supplierId === supplierScope,
+          )
+        : itemsWithDiff;
+
+    return { ...shipment, items: visibleItems, totalWeightKg };
   }
 
   /**
    * Danh sách các dòng (PDN + SP) còn có thể ghép xe (remaining > 0).
    * Dùng cho form tạo/sửa xe để người dùng chọn hàng.
    */
-  async getAvailableItems(branchId?: number) {
+  async getAvailableItems(branchId?: number, supplierScope?: number | null) {
     // Lấy PDN ở trạng thái Đã xác nhận NCC (1) hoặc Nhập một phần (2).
     const orderSupplierWhere: any = { status: { in: [1, 2] } };
     if (branchId && !Number.isNaN(branchId)) {
       orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
+    // Scope NCC: chỉ lấy PDN của nhà cung cấp này.
+    if (supplierScope != null) orderSupplierWhere.supplierId = supplierScope;
 
     const orderSuppliers = await this.prisma.orderSupplier.findMany({
       where: orderSupplierWhere,

@@ -772,6 +772,9 @@ export class ProductsService {
     const {
       imageUrls,
       documents,
+      publicationLocation,
+      publicationDate,
+      publicationLink,
       components,
       initialInventory,
       branchId,
@@ -835,6 +838,11 @@ export class ProductsService {
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
           isPieceUnit: productData.isPieceUnit ?? false,
+          publicationLocation: publicationLocation
+            ? (publicationLocation as any)
+            : undefined,
+          publicationDate: publicationDate ? new Date(publicationDate) : undefined,
+          publicationLink: publicationLink ?? undefined,
           masterUnitId: masterUnitId,
           ...(masterUnitId && { masterUnitId }),
           ...(tradeMarkId && {
@@ -1081,6 +1089,9 @@ export class ProductsService {
     const {
       imageUrls,
       documents,
+      publicationLocation,
+      publicationDate,
+      publicationLink,
       components,
       initialInventory,
       branchId,
@@ -1111,6 +1122,15 @@ export class ProductsService {
           basePrice:
             basePrice !== undefined ? basePrice : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
+          ...(publicationLocation !== undefined && {
+            publicationLocation: publicationLocation as any,
+          }),
+          ...(publicationDate !== undefined && {
+            publicationDate: publicationDate ? new Date(publicationDate) : null,
+          }),
+          ...(publicationLink !== undefined && {
+            publicationLink: publicationLink || null,
+          }),
           ...(parentName !== undefined && { parentName: parentName || null }),
           ...(middleName !== undefined && { middleName: middleName || null }),
           ...(childName !== undefined && { childName: childName || null }),

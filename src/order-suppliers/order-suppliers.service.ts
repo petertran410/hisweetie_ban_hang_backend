@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -53,7 +54,7 @@ export class OrderSuppliersService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: OrderSupplierQueryDto) {
+  async findAll(query: OrderSupplierQueryDto, supplierScope?: number | null) {
     const {
       branchId,
       branchIds,
@@ -115,6 +116,9 @@ export class OrderSuppliersService {
         where.createdAt.lte = new Date(createdDateTo);
       }
     }
+
+    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
+    if (supplierScope != null) where.supplierId = supplierScope;
 
     const [data, total] = await Promise.all([
       this.prisma.orderSupplier.findMany({
@@ -179,7 +183,10 @@ export class OrderSuppliersService {
    * (mã PDN, NCC, chi nhánh, trạng thái) và các mốc SL (đặt / đã nhập / còn lại).
    * Filter dùng chung với findAll. Phân trang ở mức dòng sản phẩm.
    */
-  async getDetailItems(query: OrderSupplierQueryDto) {
+  async getDetailItems(
+    query: OrderSupplierQueryDto,
+    supplierScope?: number | null,
+  ) {
     const {
       branchId,
       branchIds,
@@ -228,6 +235,9 @@ export class OrderSuppliersService {
       if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
       if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
     }
+
+    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
+    if (supplierScope != null) where.supplierId = supplierScope;
 
     const orderSuppliers = await this.prisma.orderSupplier.findMany({
       where,
@@ -414,6 +424,7 @@ export class OrderSuppliersService {
     orderSupplierId: number,
     productId: number,
     dto: { factoryPrice?: number | null; factorySubTotal?: number | null },
+    supplierScope?: number | null,
   ) {
     const item = await this.prisma.orderSupplierItem.findUnique({
       where: { orderSupplierId_productId: { orderSupplierId, productId } },
@@ -424,6 +435,8 @@ export class OrderSuppliersService {
         `Không tìm thấy dòng sản phẩm ${productId} trong phiếu ${orderSupplierId}`,
       );
     }
+
+    await this.assertOrderSupplierInScope(orderSupplierId, supplierScope);
 
     const data: {
       factoryPrice?: number | null;
@@ -448,6 +461,7 @@ export class OrderSuppliersService {
     orderSupplierId: number,
     productId: number,
     dto: { productionStageId?: number | null; factoryId?: number | null },
+    supplierScope?: number | null,
   ) {
     const item = await this.prisma.orderSupplierItem.findUnique({
       where: { orderSupplierId_productId: { orderSupplierId, productId } },
@@ -458,6 +472,8 @@ export class OrderSuppliersService {
         `Không tìm thấy dòng sản phẩm ${productId} trong phiếu ${orderSupplierId}`,
       );
     }
+
+    await this.assertOrderSupplierInScope(orderSupplierId, supplierScope);
 
     const data: {
       productionStageId?: number | null;
@@ -473,7 +489,27 @@ export class OrderSuppliersService {
     });
   }
 
-  async findOne(id: number) {
+  /**
+   * Đảm bảo phiếu đặt hàng nhập thuộc phạm vi NCC của user (nếu user là nhân
+   * viên NCC). Ném ForbiddenException nếu phiếu thuộc NCC khác.
+   */
+  private async assertOrderSupplierInScope(
+    orderSupplierId: number,
+    supplierScope?: number | null,
+  ) {
+    if (supplierScope == null) return;
+    const os = await this.prisma.orderSupplier.findUnique({
+      where: { id: orderSupplierId },
+      select: { supplierId: true },
+    });
+    if (!os || os.supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền thao tác trên dữ liệu của nhà cung cấp khác',
+      );
+    }
+  }
+
+  async findOne(id: number, supplierScope?: number | null) {
     const orderSupplier = await this.prisma.orderSupplier.findUnique({
       where: { id },
       include: {
@@ -544,6 +580,13 @@ export class OrderSuppliersService {
 
     if (!orderSupplier) {
       throw new NotFoundException('Order supplier not found');
+    }
+
+    // Scope NCC: chặn nhân viên NCC xem phiếu của nhà cung cấp khác.
+    if (supplierScope != null && orderSupplier.supplierId !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
     }
 
     // ── Tính các mốc số lượng per sản phẩm ───────────────────────────────────
@@ -1317,7 +1360,11 @@ export class OrderSuppliersService {
    * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
    * Đối xứng `OrdersService.getPendingSummary` của phía bán.
    */
-  async getConfirmedSummary(productIds: number[], branchId?: number) {
+  async getConfirmedSummary(
+    productIds: number[],
+    branchId?: number,
+    supplierScope?: number | null,
+  ) {
     if (!productIds || productIds.length === 0) {
       return {} as Record<number, number>;
     }
@@ -1329,6 +1376,7 @@ export class OrderSuppliersService {
       // Lấy cả phiếu không gắn chi nhánh (branchId = null) — áp dụng cho mọi CN
       orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
+    if (supplierScope != null) orderSupplierWhere.supplierId = supplierScope;
 
     const items = await this.prisma.orderSupplierItem.findMany({
       where: {
@@ -1388,7 +1436,11 @@ export class OrderSuppliersService {
    *
    * Đối xứng `OrdersService.getPendingByProduct` của phía bán.
    */
-  async getConfirmedByProduct(productId: number, branchId?: number) {
+  async getConfirmedByProduct(
+    productId: number,
+    branchId?: number,
+    supplierScope?: number | null,
+  ) {
     if (!productId || Number.isNaN(productId)) return [];
 
     const orderSupplierWhere: any = {
@@ -1398,6 +1450,7 @@ export class OrderSuppliersService {
       // Lấy cả phiếu không gắn chi nhánh (branchId = null) — áp dụng cho mọi CN
       orderSupplierWhere.OR = [{ branchId }, { branchId: null }];
     }
+    if (supplierScope != null) orderSupplierWhere.supplierId = supplierScope;
 
     const items = await this.prisma.orderSupplierItem.findMany({
       where: {

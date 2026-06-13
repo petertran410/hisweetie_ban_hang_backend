@@ -64,6 +64,20 @@ const permissionsData: PermissionData[] = [
     description: 'Xem giá vốn sản phẩm',
     category: 'Sản phẩm',
   },
+  {
+    name: 'products:view_sale_price',
+    resource: 'products',
+    action: 'view_sale_price',
+    description: 'Xem giá bán sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
+    name: 'products:view_publication',
+    resource: 'products',
+    action: 'view_publication',
+    description: 'Xem thông tin công bố sản phẩm',
+    category: 'Sản phẩm',
+  },
 
   // Categories
   {

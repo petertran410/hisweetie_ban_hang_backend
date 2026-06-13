@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, ForbiddenException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderSupplierPaymentDto } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -178,7 +178,23 @@ export class OrderSupplierPaymentsService {
     });
   }
 
-  async findAllByOrderSupplier(orderSupplierId: number) {
+  async findAllByOrderSupplier(
+    orderSupplierId: number,
+    supplierScope?: number | null,
+  ) {
+    // Scope NCC: chặn nhân viên NCC xem công nợ/thanh toán của phiếu NCC khác.
+    if (supplierScope != null) {
+      const os = await this.prisma.orderSupplier.findUnique({
+        where: { id: orderSupplierId },
+        select: { supplierId: true },
+      });
+      if (!os || os.supplierId !== supplierScope) {
+        throw new ForbiddenException(
+          'Không có quyền xem dữ liệu của nhà cung cấp khác',
+        );
+      }
+    }
+
     // 1. Payments trực tiếp trên order supplier (PCPDN)
     const directPayments = await this.prisma.orderSupplierPayment.findMany({
       where: { orderSupplierId },

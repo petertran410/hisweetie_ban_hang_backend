@@ -6,6 +6,7 @@ import {
   Min,
   IsArray,
   IsInt,
+  IsDateString,
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
@@ -89,6 +90,56 @@ export class ProductDocumentDto {
   @IsNumber()
   @Type(() => Number)
   size?: number;
+}
+
+export class PublicationLocationDto {
+  @IsOptional()
+  @IsString()
+  publisher?: string;
+
+  @IsOptional()
+  @IsString()
+  address?: string;
+
+  @IsOptional()
+  @IsString()
+  cityCode?: string;
+
+  @IsOptional()
+  @IsString()
+  cityName?: string;
+
+  @IsOptional()
+  @IsString()
+  districtCode?: string;
+
+  @IsOptional()
+  @IsString()
+  districtName?: string;
+
+  @IsOptional()
+  @IsString()
+  wardCode?: string;
+
+  @IsOptional()
+  @IsString()
+  wardName?: string;
+
+  @IsOptional()
+  @IsString()
+  newCityCode?: string;
+
+  @IsOptional()
+  @IsString()
+  newCityName?: string;
+
+  @IsOptional()
+  @IsString()
+  newWardCode?: string;
+
+  @IsOptional()
+  @IsString()
+  newWardName?: string;
 }
 
 export class CreateProductDto {
@@ -236,6 +287,19 @@ export class CreateProductDto {
   @ValidateNested({ each: true })
   @Type(() => ProductDocumentDto)
   documents?: ProductDocumentDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PublicationLocationDto)
+  publicationLocation?: PublicationLocationDto;
+
+  @IsOptional()
+  @IsDateString()
+  publicationDate?: string;
+
+  @IsOptional()
+  @IsString()
+  publicationLink?: string;
 
   @IsOptional()
   @IsArray()
@@ -423,6 +487,19 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @ValidateNested({ each: true })
   @Type(() => ProductDocumentDto)
   documents?: ProductDocumentDto[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PublicationLocationDto)
+  publicationLocation?: PublicationLocationDto;
+
+  @IsOptional()
+  @IsDateString()
+  publicationDate?: string;
+
+  @IsOptional()
+  @IsString()
+  publicationLink?: string;
 
   @IsOptional()
   @IsBoolean()
