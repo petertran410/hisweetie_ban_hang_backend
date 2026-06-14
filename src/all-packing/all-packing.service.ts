@@ -183,6 +183,20 @@ export class AllPackingService {
                 },
               },
             },
+            consignment: {
+              select: {
+                id: true,
+                code: true,
+                grandTotal: true,
+                customer: {
+                  select: {
+                    id: true,
+                    name: true,
+                    contactNumber: true,
+                  },
+                },
+              },
+            },
           },
         },
         images: true,
@@ -261,6 +275,20 @@ export class AllPackingService {
                 },
               },
             },
+            consignment: {
+              select: {
+                id: true,
+                code: true,
+                grandTotal: true,
+                customer: {
+                  select: {
+                    id: true,
+                    name: true,
+                    contactNumber: true,
+                  },
+                },
+              },
+            },
           },
         },
         images: true,
@@ -329,6 +357,20 @@ export class AllPackingService {
                 code: true,
                 customerId: true,
                 purchaseDate: true,
+                grandTotal: true,
+                customer: {
+                  select: {
+                    id: true,
+                    name: true,
+                    contactNumber: true,
+                  },
+                },
+              },
+            },
+            consignment: {
+              select: {
+                id: true,
+                code: true,
                 grandTotal: true,
                 customer: {
                   select: {

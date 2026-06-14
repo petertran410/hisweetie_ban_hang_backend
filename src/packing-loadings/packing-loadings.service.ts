@@ -21,6 +21,10 @@ import {
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
 import { LarkLoadingNotificationService } from '../lark-sync/services/lark-loading-notification.service';
+import {
+  applyPackingToConsignments,
+  recalcConsignmentStatusAfterPackingCancel,
+} from '../common/consignment-packing.util';
 
 @Injectable()
 export class PackingLoadingsService {
@@ -87,6 +91,18 @@ export class PackingLoadingsService {
                   },
                 },
               },
+              consignment: {
+                select: {
+                  id: true,
+                  code: true,
+                  customerId: true,
+                  consignDate: true,
+                  grandTotal: true,
+                  customer: {
+                    select: { id: true, name: true, contactNumber: true },
+                  },
+                },
+              },
             },
           },
           images: true,
@@ -126,6 +142,18 @@ export class PackingLoadingsService {
                 },
               },
             },
+            consignment: {
+              select: {
+                id: true,
+                code: true,
+                customerId: true,
+                consignDate: true,
+                grandTotal: true,
+                customer: {
+                  select: { id: true, name: true, contactNumber: true },
+                },
+              },
+            },
           },
         },
         images: true,
@@ -140,7 +168,42 @@ export class PackingLoadingsService {
   }
 
   async create(dto: CreatePackingLoadingDto, userId: number) {
+    const isConsignment =
+      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+
     const packingLoading = await this.prisma.$transaction(async (tx) => {
+      if (isConsignment) {
+        const code = await this.generateCode(tx);
+        const created = await tx.packingLoading.create({
+          data: {
+            code,
+            branchId: dto.branchId,
+            loadingById: dto.loadingById,
+            numberOfPackages: dto.numberOfPackages,
+            note: dto.note,
+            createdBy: userId,
+            invoices: {
+              create: dto.consignmentIds!.map((consignmentId) => ({
+                consignmentId,
+              })),
+            },
+            images: dto.imageUrls
+              ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
+              : undefined,
+          },
+          include: {
+            branch: true,
+            creator: true,
+            loadingBy: true,
+            invoices: { include: { invoice: true, consignment: true } },
+            images: true,
+          },
+        });
+
+        await applyPackingToConsignments(tx, dto.consignmentIds!, 'loading');
+        return created;
+      }
+
       const invoices = await tx.invoice.findMany({
         where: { id: { in: dto.invoiceIds } },
         select: { id: true, branchId: true, orderId: true },
@@ -170,7 +233,7 @@ export class PackingLoadingsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
+            create: dto.invoiceIds!.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
             ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
@@ -227,7 +290,9 @@ export class PackingLoadingsService {
 
     // Gửi card thông báo loading vào Lark group theo chi nhánh
     // (fire-and-forget — lỗi gửi không làm fail việc tạo phiếu)
-    this.larkLoadingNotification.notifyLoadingCreatedAsync(packingLoading.id);
+    if (!isConsignment) {
+      this.larkLoadingNotification.notifyLoadingCreatedAsync(packingLoading.id);
+    }
 
     return packingLoading;
   }
@@ -330,19 +395,29 @@ export class PackingLoadingsService {
   async remove(id: number, userId?: number) {
     const packingLoading = await this.findOne(id);
 
-    const invoiceIds: number[] = (packingLoading.invoices || []).map(
-      (i: any) => i.invoiceId,
-    );
+    const invoiceIds: number[] = (packingLoading.invoices || [])
+      .map((i: any) => i.invoiceId)
+      .filter((v: any) => v != null);
+    const consignmentIds: number[] = (packingLoading.invoices || [])
+      .map((i: any) => i.consignmentId)
+      .filter((v: any) => v != null);
 
     await this.prisma.$transaction(async (tx) => {
-      await assertCanCancelPacking(tx, invoiceIds, 'loading', id);
+      if (invoiceIds.length > 0) {
+        await assertCanCancelPacking(tx, invoiceIds, 'loading', id);
+      }
 
       await tx.packingLoading.update({
         where: { id },
         data: { cancelledAt: new Date(), cancelledById: userId ?? null },
       });
 
-      await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      if (invoiceIds.length > 0) {
+        await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      }
+      if (consignmentIds.length > 0) {
+        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+      }
     });
 
     if (userId) {

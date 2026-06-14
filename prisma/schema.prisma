@@ -39,6 +39,8 @@ model User {
   createdInvoices                Invoice[]              @relation("InvoiceCreator")
   soldInvoices                   Invoice[]              @relation("InvoiceSeller")
   createdPayments                OrderPayment[]         @relation("PaymentCreator")
+  createdConsignments            Consignment[]          @relation("ConsignmentCreator")
+  soldConsignments               Consignment[]          @relation("ConsignmentSeller")
   createdOrderSuppliers          OrderSupplier[]        @relation("OrderSupplierCreator")
   orderSuppliers                 OrderSupplier[]        @relation("OrderSupplierUser")
   createdPurchaseOrders          PurchaseOrder[]        @relation("PurchaseOrderCreator")
@@ -282,6 +284,7 @@ model Branch {
   customers              Customer[]
   suppliers              Supplier[]
   orderSuppliers         OrderSupplier[]
+  consignments           Consignment[]
   transfersFrom          Transfer[]             @relation("TransferFrom")
   transfersTo            Transfer[]             @relation("TransferTo")
   cashFlows              CashFlow[]
@@ -295,6 +298,7 @@ model Branch {
   auditLogs              AuditLog[]             @relation("AuditLogBranch")
   userBranchPermissions  UserBranchPermission[]
   returnOrders           ReturnOrder[]
+  consignmentReturns     ConsignmentReturn[]
   inventoryLogs          InventoryLog[]
   inventoryChecks        InventoryCheck[]
   stockAudits            StockAudit[]
@@ -431,8 +435,10 @@ model Customer {
   orders               Order[]
   invoices             Invoice[]             @relation("InvoiceCustomer")
   parentInvoices       Invoice[]             @relation("InvoiceParentCustomer")
+  consignments         Consignment[]
   returnOrders         ReturnOrder[]         @relation("ReturnOrderCustomer")
   parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
+  consignmentReturns   ConsignmentReturn[]   @relation("ConsignmentReturnCustomer")
   addresses            CustomerAddress[]
   creator              User?                 @relation("CustomerCreator", fields: [createdBy], references: [id])
   updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
@@ -669,45 +675,45 @@ model ProductVariant {
 }
 
 model Product {
-  id              Int       @id @default(autoincrement())
-  code            String    @unique
-  kiotVietId      BigInt?   @unique @map("kiot_viet_id")
-  lastSyncedAt    DateTime? @map("last_synced_at")
-  name            String
-  fullName        String?
-  description     String?
-  orderTemplate   String?
-  parentName      String?   @map("parent_name")
-  middleName      String?   @map("middle_name")
-  childName       String?   @map("child_name")
+  id                 Int       @id @default(autoincrement())
+  code               String    @unique
+  kiotVietId         BigInt?   @unique @map("kiot_viet_id")
+  lastSyncedAt       DateTime? @map("last_synced_at")
+  name               String
+  fullName           String?
+  description        String?
+  orderTemplate      String?
+  parentName         String?   @map("parent_name")
+  middleName         String?   @map("middle_name")
+  childName          String?   @map("child_name")
   // Misa product mapping
-  misa_code       String    @default("")
-  misa_name       String    @default("")
-  misa_unit       String    @default("")
-  isCommerce      Boolean   @default(false)
-  tradeMarkId     Int?
-  variantId       Int?
-  masterProductId Int?
-  masterUnitId    Int?
-  type            Int       @default(2)
-  allowsSale      Boolean   @default(true)
-  hasVariants     Boolean   @default(false)
-  basePrice       Decimal   @default(0)
-  unit            String?
-  conversionValue Decimal   @default(1)
-  weight          Decimal?
-  weightUnit      String?   @default("kg")
-  vat             Decimal   @default(8)
-  shippingWeight  Decimal?
-  shippingWeightUnit String? @default("g") @map("shipping_weight_unit")
-  attributesText  String?
-  isRewardPoint   Boolean   @default(true)
-  isActive        Boolean   @default(true)
-  isDirectSale    Boolean   @default(false)
-  isPieceUnit     Boolean   @default(false)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
-  priceBookId     Int?
+  misa_code          String    @default("")
+  misa_name          String    @default("")
+  misa_unit          String    @default("")
+  isCommerce         Boolean   @default(false)
+  tradeMarkId        Int?
+  variantId          Int?
+  masterProductId    Int?
+  masterUnitId       Int?
+  type               Int       @default(2)
+  allowsSale         Boolean   @default(true)
+  hasVariants        Boolean   @default(false)
+  basePrice          Decimal   @default(0)
+  unit               String?
+  conversionValue    Decimal   @default(1)
+  weight             Decimal?
+  weightUnit         String?   @default("kg")
+  vat                Decimal   @default(8)
+  shippingWeight     Decimal?
+  shippingWeightUnit String?   @default("g") @map("shipping_weight_unit")
+  attributesText     String?
+  isRewardPoint      Boolean   @default(true)
+  isActive           Boolean   @default(true)
+  isDirectSale       Boolean   @default(false)
+  isPieceUnit        Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  priceBookId        Int?
 
   // Thông tin công bố sản phẩm
   publicationLocation Json?     @map("publication_location") // { address, cityCode, cityName, districtCode, districtName, wardCode, wardName, newCityCode, newCityName, newWardCode, newWardName }
@@ -726,6 +732,7 @@ model Product {
   orderItems            OrderItem[]
   invoiceDetails        InvoiceDetail[]
   purchaseOrderItems    PurchaseOrderItem[]
+  consignmentItems      ConsignmentItem[]
   comboComponents       ProductComponent[]     @relation("ComboComponents")
   componentOf           ProductComponent[]     @relation("ComponentOf")
   priceBook             PriceBook?             @relation(fields: [priceBookId], references: [id])
@@ -735,6 +742,7 @@ model Product {
   internalUseDetails    InternalUseDetail[]
   orderSupplierItems    OrderSupplierItem[]
   returnOrderDetails    ReturnOrderDetail[]
+  consignmentReturnDetails ConsignmentReturnDetail[]
   inventoryLogs         InventoryLog[]
   productionComponents  ProductionComponent[]
   inventoryCheckDetails InventoryCheckDetail[]
@@ -993,6 +1001,7 @@ model InventoryLog {
   partnerId        Int?
   partnerName      String?
   note             String?
+  manufactureDate  DateTime?
   // Thời điểm phát sinh giao dịch (cho phép lùi ngày — vd kiểm kho backdated).
   // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
   transactionDate  DateTime @default(now())
@@ -1037,6 +1046,7 @@ model PriceBook {
   Product                 Product[]
   orders                  Order[]                  @relation("OrderPriceBook")
   invoices                Invoice[]                @relation("InvoicePriceBook")
+  consignments            Consignment[]            @relation("ConsignmentPriceBook")
 
   @@map("price_books")
 }
@@ -1125,8 +1135,9 @@ model SaleChannel {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
-  orders   Order[]
-  invoices Invoice[]
+  orders       Order[]
+  invoices     Invoice[]
+  consignments Consignment[]
 
   @@map("sale_channels")
 }
@@ -1368,6 +1379,7 @@ model Invoice {
   kiotVietId             BigInt?        @unique @map("kiot_viet_id")
   lastSyncedAt           DateTime?      @map("last_synced_at")
   orderId                Int?
+  consignmentId          Int?
   customerId             Int?
   parentCustomerId       Int?
   branchId               Int?
@@ -1402,6 +1414,7 @@ model Invoice {
   updatedAt              DateTime       @updatedAt
 
   order              Order?                  @relation(fields: [orderId], references: [id])
+  consignment        Consignment?            @relation(fields: [consignmentId], references: [id])
   customer           Customer?               @relation("InvoiceCustomer", fields: [customerId], references: [id])
   parentCustomer     Customer?               @relation("InvoiceParentCustomer", fields: [parentCustomerId], references: [id])
   branch             Branch?                 @relation(fields: [branchId], references: [id])
@@ -1440,6 +1453,7 @@ model InvoiceDetail {
   totalPrice    Decimal
   note          String?
   conditionType String   @default("normal")
+  manufactureDate DateTime?
   serialNumbers String?
   // Promotion / khuyến mãi
   lineType      String   @default("normal") // normal | gift | promo_discount | discounted_buy
@@ -2026,13 +2040,155 @@ model OrderSupplierItem {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  orderSupplier   OrderSupplier                  @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
-  product         Product                        @relation(fields: [productId], references: [id])
-  productionStage PurchaseOrderProductionStage?  @relation(fields: [productionStageId], references: [id])
-  factory         Factory?                       @relation(fields: [factoryId], references: [id])
+  orderSupplier   OrderSupplier                 @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
+  product         Product                       @relation(fields: [productId], references: [id])
+  productionStage PurchaseOrderProductionStage? @relation(fields: [productionStageId], references: [id])
+  factory         Factory?                      @relation(fields: [factoryId], references: [id])
 
   @@unique([orderSupplierId, productId])
   @@map("order_supplier_items")
+}
+
+/// Phiếu ký gửi (gửi hàng tại kho/điểm bán của khách).
+/// B1: tạo phiếu (PENDING/CONFIRMED) — không trừ kho, không tính công nợ.
+/// B2: xử lý kho (PACKED/LOADING/DELIVERED) — trừ kho thật tại PACKED.
+/// B3: xuất hóa đơn (1 phiếu : N hóa đơn) — lúc này mới tính công nợ.
+/// Số đã xuất hóa đơn KHÔNG lưu cột riêng; luôn derive từ các invoice con.
+model Consignment {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  customerId    Int?
+  branchId      Int?
+  soldById      Int?
+  saleChannelId Int?
+  priceBookId   Int?
+  priceBookName String?
+  consignDate   DateTime @default(now())
+  totalAmount   Decimal  @default(0)
+  discount      Decimal  @default(0)
+  discountRatio Decimal  @default(0)
+  grandTotal    Decimal  @default(0)
+  status        Int      @default(1)
+  statusValue   String?
+  consignStatus String   @default("pending")
+  toComplete    Boolean  @default(false)
+  description   String?
+  createdBy     Int
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer    Customer?         @relation(fields: [customerId], references: [id])
+  branch      Branch?           @relation(fields: [branchId], references: [id])
+  soldBy      User?             @relation("ConsignmentSeller", fields: [soldById], references: [id])
+  saleChannel SaleChannel?      @relation(fields: [saleChannelId], references: [id])
+  creator     User              @relation("ConsignmentCreator", fields: [createdBy], references: [id])
+  priceBook   PriceBook?        @relation("ConsignmentPriceBook", fields: [priceBookId], references: [id])
+  items       ConsignmentItem[]
+  invoices    Invoice[]
+  delivery    ConsignmentDelivery?
+  packingSlips    PackingSlipInvoice[]
+  packingHangs    PackingHangInvoice[]
+  packingLoadings PackingLoadingInvoice[]
+  returns         ConsignmentReturn[]
+
+  @@map("consignments")
+}
+
+model ConsignmentItem {
+  id            Int      @id @default(autoincrement())
+  consignmentId Int
+  productId     Int
+  productCode   String
+  productName   String
+  quantity      Decimal  @default(0) @db.Decimal(18, 4)
+  price         Decimal  @default(0) @db.Decimal(18, 2)
+  discount      Decimal  @default(0) @db.Decimal(18, 2)
+  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
+  totalPrice    Decimal  @default(0) @db.Decimal(18, 2)
+  note          String?
+  manufactureDate DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  consignment Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id])
+
+  @@unique([consignmentId, productId])
+  @@map("consignment_items")
+}
+
+model ConsignmentDelivery {
+  id            Int       @id @default(autoincrement())
+  consignmentId Int       @unique
+  receiver      String
+  contactNumber String
+  address       String
+  locationName  String?
+  wardName      String?
+  weight        Decimal?
+  weightUnit    String?   @default("g")
+  length        Decimal?
+  width         Decimal?
+  height        Decimal?
+  noteForDriver String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  consignment Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
+
+  @@map("consignment_deliveries")
+}
+
+/// Hoàn hàng ký gửi — khách trả lại hàng đã ký gửi (chưa xuất hóa đơn).
+/// Luồng 2 bước: REQUEST (1) -> STOCK_RECEIVED (2, hoàn kho). CANCELLED (5).
+/// Không phát sinh công nợ/hoàn tiền (ký gửi B1/B2 chưa có nợ).
+model ConsignmentReturn {
+  id              Int      @id @default(autoincrement())
+  code            String   @unique
+  consignmentId   Int
+  consignmentCode String
+  customerId      Int?
+  branchId        Int
+  status          Int      @default(1)
+  statusValue     String?
+  totalReturnQuantity Decimal @default(0) @db.Decimal(18, 4)
+  note            String?
+  receivedById    Int?
+  createdBy       Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  consignment Consignment              @relation(fields: [consignmentId], references: [id])
+  customer    Customer?                @relation("ConsignmentReturnCustomer", fields: [customerId], references: [id])
+  branch      Branch                   @relation(fields: [branchId], references: [id])
+  details     ConsignmentReturnDetail[]
+
+  @@index([consignmentId])
+  @@index([customerId])
+  @@index([branchId])
+  @@index([status])
+  @@map("consignment_returns")
+}
+
+model ConsignmentReturnDetail {
+  id                Int     @id @default(autoincrement())
+  consignmentReturnId Int
+  productId         Int
+  productCode       String
+  productName       String
+  consignedQuantity Decimal @default(0) @db.Decimal(18, 4)
+  returnQuantity    Decimal @default(0) @db.Decimal(18, 4)
+  goodQuantity      Decimal @default(0) @db.Decimal(18, 4)
+  damagedQuantity   Decimal @default(0) @db.Decimal(18, 4)
+  nearExpiryQuantity Decimal @default(0) @db.Decimal(18, 4)
+  manufactureDate   DateTime?
+  note              String?
+
+  consignmentReturn ConsignmentReturn @relation(fields: [consignmentReturnId], references: [id], onDelete: Cascade)
+  product           Product           @relation(fields: [productId], references: [id])
+
+  @@index([consignmentReturnId])
+  @@map("consignment_return_details")
 }
 
 /// Giai đoạn hiện tại của dòng đặt hàng nhập — master data, cho phép thêm/sửa
@@ -2190,13 +2346,16 @@ model PackingSlip {
 model PackingSlipInvoice {
   id            Int      @id @default(autoincrement())
   packingSlipId Int
-  invoiceId     Int
+  invoiceId     Int?
+  consignmentId Int?
   createdAt     DateTime @default(now())
 
-  packingSlip PackingSlip @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
-  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
+  packingSlip PackingSlip  @relation(fields: [packingSlipId], references: [id], onDelete: Cascade)
+  invoice     Invoice?     @relation(fields: [invoiceId], references: [id])
+  consignment Consignment? @relation(fields: [consignmentId], references: [id])
 
   @@unique([packingSlipId, invoiceId])
+  @@unique([packingSlipId, consignmentId])
   @@map("packing_slip_invoices")
 }
 
@@ -2260,13 +2419,16 @@ model PackingHang {
 model PackingHangInvoice {
   id            Int      @id @default(autoincrement())
   packingHangId Int
-  invoiceId     Int
+  invoiceId     Int?
+  consignmentId Int?
   createdAt     DateTime @default(now())
 
-  packingHang PackingHang @relation(fields: [packingHangId], references: [id], onDelete: Cascade)
-  invoice     Invoice     @relation(fields: [invoiceId], references: [id])
+  packingHang PackingHang  @relation(fields: [packingHangId], references: [id], onDelete: Cascade)
+  invoice     Invoice?     @relation(fields: [invoiceId], references: [id])
+  consignment Consignment? @relation(fields: [consignmentId], references: [id])
 
   @@unique([packingHangId, invoiceId])
+  @@unique([packingHangId, consignmentId])
   @@map("packing_hang_invoices")
 }
 
@@ -2307,13 +2469,16 @@ model PackingLoading {
 model PackingLoadingInvoice {
   id               Int      @id @default(autoincrement())
   packingLoadingId Int
-  invoiceId        Int
+  invoiceId        Int?
+  consignmentId    Int?
   createdAt        DateTime @default(now())
 
   packingLoading PackingLoading @relation(fields: [packingLoadingId], references: [id], onDelete: Cascade)
-  invoice        Invoice        @relation(fields: [invoiceId], references: [id])
+  invoice        Invoice?       @relation(fields: [invoiceId], references: [id])
+  consignment    Consignment?   @relation(fields: [consignmentId], references: [id])
 
   @@unique([packingLoadingId, invoiceId])
+  @@unique([packingLoadingId, consignmentId])
   @@map("packing_loading_invoices")
 }
 
