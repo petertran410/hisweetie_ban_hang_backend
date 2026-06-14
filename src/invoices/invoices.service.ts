@@ -20,6 +20,12 @@ import {
   getStatusLabel as getOrderStatusLabel,
 } from '../orders/dto/order-status.constants';
 import { OrdersService } from '../orders/orders.service';
+import { ConsignmentsService } from '../consignments/consignments.service';
+import {
+  CONSIGNMENT_STATUS,
+  getStatusLabel as getConsignmentStatusLabel,
+} from '../consignments/dto/consignment-status.constants';
+import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   renderAuditMessage,
@@ -38,6 +44,7 @@ export class InvoicesService {
   constructor(
     private prisma: PrismaService,
     private ordersService: OrdersService,
+    private consignmentsService: ConsignmentsService,
     private auditLogsService: AuditLogsService,
     private packingSlipsService: PackingSlipsService,
     private promotionsService: PromotionsService,
@@ -2668,6 +2675,317 @@ export class InvoicesService {
   }
 
   /**
+   * B3 — Xuất hóa đơn từ phiếu ký gửi. Mirror createFromOrder NHƯNG:
+   *   - KHÔNG trừ kho / KHÔNG ghi inventoryLog SALE (kho đã trừ ở B2 - PACKED).
+   *   - Set invoice.consignmentId; lúc này mới phát sinh công nợ khách
+   *     (recalcCustomerDebt cộng theo bảng invoices).
+   *   - Hỗ trợ xuất nhiều hóa đơn (xuất từng phần): số đã xuất derive từ các
+   *     hóa đơn con; sau khi tạo gọi updateConsignmentStatusByInvoices() để
+   *     chuyển phiếu sang "Ký gửi một phần" / "Hoàn thành".
+   */
+  async createFromConsignment(
+    consignmentId: number,
+    dto: CreateInvoiceFromConsignmentDto,
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const consignment = await tx.consignment.findUnique({
+        where: { id: consignmentId },
+        include: {
+          items: true,
+          invoices: {
+            where: { status: { not: INVOICE_STATUS.CANCELLED } },
+            include: { details: true },
+          },
+          customer: {
+            select: {
+              id: true,
+              name: true,
+              contactNumber: true,
+              totalDebt: true,
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!consignment)
+        throw new NotFoundException('Không tìm thấy phiếu ký gửi');
+      if (consignment.status === CONSIGNMENT_STATUS.CANCELLED) {
+        throw new BadRequestException(
+          'Không thể xuất hóa đơn từ phiếu ký gửi đã hủy',
+        );
+      }
+      if (consignment.status === CONSIGNMENT_STATUS.COMPLETED) {
+        throw new BadRequestException('Phiếu ký gửi đã hoàn thành');
+      }
+      // Phải đã giao hàng (đã trừ kho ở B2) mới được xuất hóa đơn.
+      if (consignment.status < CONSIGNMENT_STATUS.DELIVERED) {
+        throw new BadRequestException(
+          'Phiếu chưa giao hàng (chưa xử lý kho) — không thể xuất hóa đơn',
+        );
+      }
+      if (!consignment.branchId) {
+        throw new BadRequestException('Phiếu không có thông tin chi nhánh');
+      }
+
+      // Số đã xuất hóa đơn theo product (derive từ các hóa đơn con).
+      const invoicedQuantities: Record<number, number> = {};
+      consignment.invoices.forEach((inv) => {
+        inv.details.forEach((d) => {
+          if (d.productId != null) {
+            invoicedQuantities[d.productId] =
+              (invoicedQuantities[d.productId] || 0) + Number(d.quantity);
+          }
+        });
+      });
+
+      const remainingItems = consignment.items
+        .map((item) => {
+          const invoiced = invoicedQuantities[item.productId] || 0;
+          const remaining = Number(item.quantity) - invoiced;
+          return { ...item, remainingQuantity: remaining };
+        })
+        .filter((item) => item.remainingQuantity > 0);
+
+      if (remainingItems.length === 0) {
+        throw new BadRequestException(
+          'Tất cả sản phẩm trong phiếu ký gửi đã được xuất hóa đơn',
+        );
+      }
+
+      const usedDiscount = consignment.invoices.reduce(
+        (sum, inv) => sum + Number(inv.discount),
+        0,
+      );
+      const remainingDiscount = Number(consignment.discount) - usedDiscount;
+      const discountForThisInvoice =
+        remainingDiscount > 0 ? remainingDiscount : 0;
+
+      const code = await this.generateSafeInvoiceCode(tx, 'HDKG');
+      const isFirstInvoice = consignment.invoices.length === 0;
+
+      const additionalPayment = Number(dto.additionalPayment || 0);
+      const totalPaid = additionalPayment;
+
+      const itemsToInvoice =
+        dto.items && dto.items.length > 0
+          ? dto.items
+          : remainingItems.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: item.remainingQuantity,
+              price: Number(item.price),
+              discount: Number(item.discount),
+              discountRatio: Number(item.discountRatio),
+              totalPrice:
+                (Number(item.price) - Number(item.discount)) *
+                item.remainingQuantity,
+              note: item.note,
+              conditionType: 'normal',
+              manufactureDate: item.manufactureDate ?? null,
+            }));
+
+      const mfgDateByProduct: Record<number, Date | null> = {};
+      for (const ci of consignment.items) {
+        mfgDateByProduct[ci.productId] = ci.manufactureDate ?? null;
+      }
+
+      const totalAmount = itemsToInvoice.reduce(
+        (sum, item) => sum + item.totalPrice,
+        0,
+      );
+      const grandTotal = totalAmount - discountForThisInvoice;
+      const debtAmount = grandTotal - totalPaid;
+
+      // Hàng đã giao ở B2 → hóa đơn ký gửi tạo ở DELIVERED (đã giao).
+      const status = INVOICE_STATUS.DELIVERED;
+
+      const invoice = await tx.invoice.create({
+        data: {
+          code,
+          consignmentId: consignment.id,
+          customerId: consignment.customerId,
+          parentCustomerId: consignment.customerId,
+          branchId: consignment.branchId,
+          soldById: dto.soldById ?? consignment.soldById,
+          saleChannelId: consignment.saleChannelId,
+          priceBookId: consignment.priceBookId,
+          priceBookName: consignment.priceBookName,
+          purchaseDate: new Date(),
+          totalAmount,
+          discount: discountForThisInvoice,
+          discountRatio: 0,
+          grandTotal,
+          paidAmount: totalPaid,
+          debtAmount,
+          status,
+          statusValue: getStatusLabel(status),
+          description: consignment.description,
+          createdBy: userId,
+          customerDebtSnapshot: null,
+          details: {
+            create: itemsToInvoice.map((item) => ({
+              productId: item.productId,
+              productCode: item.productCode,
+              productName: item.productName,
+              quantity: item.quantity,
+              price: item.price,
+              discount: item.discount,
+              discountRatio: item.discountRatio,
+              totalPrice: item.totalPrice,
+              note: item.note,
+              conditionType: item.conditionType || 'normal',
+              manufactureDate:
+                (item as any).manufactureDate ??
+                mfgDateByProduct[item.productId] ??
+                null,
+            })),
+          },
+        },
+        include: {
+          details: true,
+          payments: true,
+          customer: {
+            include: {
+              addresses: {
+                where: { isDefault: true },
+                take: 1,
+                select: { address: true },
+              },
+            },
+          },
+          priceBook: true,
+        },
+      });
+
+      const cashFlowIdsToUpdate: number[] = [];
+
+      if (dto.payments && dto.payments.length > 0) {
+        for (const payment of dto.payments) {
+          const seq = await tx.invoicePayment.count({
+            where: { invoiceId: invoice.id },
+          });
+          const paymentCode = `TT${invoice.code}-${seq + 1}`;
+
+          const cashFlow = await tx.cashFlow.create({
+            data: {
+              code: paymentCode,
+              branchId: invoice.branchId || 1,
+              cashFlowGroupId: 3,
+              isReceipt: true,
+              amount: payment.amount,
+              transDate: new Date(),
+              method: payment.method || 'cash',
+              accountId: null,
+              partnerType: 'C',
+              partnerId: invoice.customerId,
+              partnerName: invoice.customer?.name,
+              contactNumber: invoice.customer?.contactNumber,
+              address: invoice.customer?.addresses?.[0]?.address || null,
+              description: `Thu tiền thanh toán khi xuất hóa đơn ký gửi ${invoice.code}`,
+              status: 0,
+              statusValue: 'Đã thanh toán',
+              createdBy: userId,
+              usedForFinancialReporting: 1,
+              customerDebtSnapshot: null,
+            },
+          });
+
+          cashFlowIdsToUpdate.push(cashFlow.id);
+
+          await tx.invoicePayment.create({
+            data: {
+              code: paymentCode,
+              invoiceId: invoice.id,
+              amount: payment.amount,
+              paymentDate: new Date(),
+              paymentMethod: payment.method,
+              description: `Thanh toán khi xuất hóa đơn ký gửi ${invoice.code}`,
+              status: 1,
+              cashFlowId: cashFlow.id,
+            },
+          });
+        }
+      }
+
+      // KHÔNG trừ kho ở đây — kho đã trừ tại B2 (CONSIGNMENT_OUT).
+
+      // Cập nhật trạng thái phiếu ký gửi theo các hóa đơn (một phần / hoàn thành).
+      await this.consignmentsService.updateConsignmentStatusByInvoices(
+        consignment.id,
+        tx,
+      );
+
+      // Lúc này MỚI tính công nợ khách (recalcCustomerDebt cộng theo invoices).
+      if (consignment.customerId) {
+        await this.updateCustomerTotals(consignment.customerId, tx);
+
+        const updatedCustomer = await tx.customer.findUnique({
+          where: { id: consignment.customerId },
+          select: { totalDebt: true },
+        });
+        const finalCustomerDebtSnapshot = updatedCustomer
+          ? Number(updatedCustomer.totalDebt)
+          : null;
+
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: { customerDebtSnapshot: finalCustomerDebtSnapshot },
+        });
+
+        if (cashFlowIdsToUpdate.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: { id: { in: cashFlowIdsToUpdate } },
+            data: { customerDebtSnapshot: finalCustomerDebtSnapshot },
+          });
+        }
+      }
+
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'INVOICE_CREATE',
+        entityType: 'invoices',
+        entityId: invoice.id.toString(),
+        entityCode: invoice.code,
+        category: getCategoryFromActionCode('INVOICE_CREATE'),
+        severity: getSeverityFromActionCode('INVOICE_CREATE'),
+        message: renderAuditMessage('INVOICE_CREATE', {
+          invoiceCode: invoice.code,
+          orderCode: consignment.code,
+          customerName: invoice.customer?.name || 'N/A',
+        }),
+        messageTemplate: 'INVOICE_CREATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: invoice.branchId || undefined,
+      });
+
+      return tx.invoice.findUnique({
+        where: { id: invoice.id },
+        include: {
+          details: true,
+          payments: true,
+          customer: true,
+          branch: true,
+          soldBy: true,
+          consignment: { select: { code: true } },
+        },
+      });
+    });
+  }
+
+  /**
    * Quyết định việc SỬA hóa đơn có cần tạo phiên bản mới (mã có hậu tố .xx) hay không.
    *
    * Trả về true (→ hủy HĐ cũ + clone HĐ .xx) khi có BẤT KỲ thay đổi nào sau:
@@ -2761,8 +3079,10 @@ export class InvoicesService {
     return `${basePart}.${String(nextSuffix).padStart(2, '0')}`;
   }
 
-  private async generateSafeInvoiceCode(tx: any): Promise<string> {
-    const prefix = 'HD';
+  private async generateSafeInvoiceCode(
+    tx: any,
+    prefix = 'HD',
+  ): Promise<string> {
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
     const maxAttempts = 10;

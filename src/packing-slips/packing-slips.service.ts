@@ -20,6 +20,10 @@ import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
 import {
+  applyPackingToConsignments,
+  recalcConsignmentStatusAfterPackingCancel,
+} from '../common/consignment-packing.util';
+import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
@@ -90,6 +94,18 @@ export class PackingSlipsService {
                   },
                 },
               },
+              consignment: {
+                select: {
+                  id: true,
+                  code: true,
+                  customerId: true,
+                  consignDate: true,
+                  grandTotal: true,
+                  customer: {
+                    select: { id: true, name: true, contactNumber: true },
+                  },
+                },
+              },
             },
           },
           images: true,
@@ -151,6 +167,9 @@ export class PackingSlipsService {
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {
+    const isConsignment =
+      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
 
@@ -171,7 +190,9 @@ export class PackingSlipsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
+            create: isConsignment
+              ? dto.consignmentIds!.map((consignmentId) => ({ consignmentId }))
+              : dto.invoiceIds!.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
             ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
@@ -192,24 +213,29 @@ export class PackingSlipsService {
           branch: true,
           creator: true,
           expensePayer: true,
-          invoices: { include: { invoice: true } },
+          invoices: { include: { invoice: true, consignment: true } },
           images: true,
           expenseFiles: true,
         },
       });
 
-      await tx.invoice.updateMany({
-        where: {
-          id: { in: dto.invoiceIds },
-          status: {
-            notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+      if (isConsignment) {
+        // Giao hàng → DELIVERED (+ trừ kho lần đầu rời CONFIRMED)
+        await applyPackingToConsignments(tx, dto.consignmentIds!, 'giao-hang');
+      } else {
+        await tx.invoice.updateMany({
+          where: {
+            id: { in: dto.invoiceIds },
+            status: {
+              notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+            },
           },
-        },
-        data: {
-          status: INVOICE_STATUS.DELIVERED,
-          statusValue: getStatusLabel(INVOICE_STATUS.DELIVERED),
-        },
-      });
+          data: {
+            status: INVOICE_STATUS.DELIVERED,
+            statusValue: getStatusLabel(INVOICE_STATUS.DELIVERED),
+          },
+        });
+      }
 
       return created;
     });
@@ -240,8 +266,10 @@ export class PackingSlipsService {
 
     // Notify n8n webhook để gửi tin nhắn Zalo "Báo đơn giao hàng thành công".
     // Lấy lại bản đầy đủ relation (đặc biệt là invoice.customer) để build payload.
-    try {
-      const fullPackingSlip = await this.findOne(packingSlip.id);
+    // Bỏ qua với phiếu ký gửi (không có hóa đơn để thông báo).
+    if (!isConsignment) {
+      try {
+        const fullPackingSlip = await this.findOne(packingSlip.id);
       // Không await để response API tạo packing slip không bị chờ webhook.
       // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
       void this.n8nNotifyService
@@ -260,10 +288,11 @@ export class PackingSlipsService {
           console.error('larkExpenseSync unexpected error:', err);
         });
     } catch (err) {
-      console.error(
-        'Failed to load packing slip for n8n notify:',
-        (err as Error).message,
-      );
+        console.error(
+          'Failed to load packing slip for n8n notify:',
+          (err as Error).message,
+        );
+      }
     }
 
     return packingSlip;
@@ -524,13 +553,18 @@ export class PackingSlipsService {
   async remove(id: number, userId?: number) {
     const packingSlip = await this.findOne(id);
 
-    const invoiceIds: number[] = (packingSlip.invoices || []).map(
-      (i: any) => i.invoiceId,
-    );
+    const invoiceIds: number[] = (packingSlip.invoices || [])
+      .map((i: any) => i.invoiceId)
+      .filter((v: any) => v != null);
+    const consignmentIds: number[] = (packingSlip.invoices || [])
+      .map((i: any) => i.consignmentId)
+      .filter((v: any) => v != null);
 
     await this.prisma.$transaction(async (tx) => {
       // Chặn hủy nếu có hóa đơn đã hủy / sai thứ tự bậc
-      await assertCanCancelPacking(tx, invoiceIds, 'giao-hang', id);
+      if (invoiceIds.length > 0) {
+        await assertCanCancelPacking(tx, invoiceIds, 'giao-hang', id);
+      }
 
       // Soft-cancel: giữ dữ liệu, đánh dấu đã hủy + ai hủy
       await tx.packingSlip.update({
@@ -539,7 +573,12 @@ export class PackingSlipsService {
       });
 
       // Hoàn (lùi) trạng thái hóa đơn về bậc cao nhất còn lại
-      await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      if (invoiceIds.length > 0) {
+        await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      }
+      if (consignmentIds.length > 0) {
+        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+      }
     });
 
     if (userId) {
