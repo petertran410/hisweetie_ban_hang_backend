@@ -1,26 +1,20 @@
-import { IsOptional, IsInt, IsArray, IsString } from 'class-validator';
+import { IsOptional, IsInt, IsString } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
 export class ProductionQueryDto {
   @IsOptional()
-  @IsArray()
-  @Type(() => Number)
   @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      return value.split(',').map(Number);
-    }
-    return Array.isArray(value) ? value.map(Number) : [Number(value)];
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    return value.split(',').map(Number);
   })
   branchIds?: number[];
 
   @IsOptional()
-  @IsArray()
-  @Type(() => Number)
   @Transform(({ value }) => {
-    if (typeof value === 'string') {
-      return value.split(',').map(Number);
-    }
-    return Array.isArray(value) ? value.map(Number) : [Number(value)];
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    return value.split(',').map(Number);
   })
   status?: number[];
 
