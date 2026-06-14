@@ -4,9 +4,15 @@ export class CreatePackingHangDto {
   @IsInt()
   branchId: number;
 
+  @IsOptional()
   @IsArray()
   @IsInt({ each: true })
-  invoiceIds: number[];
+  invoiceIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  consignmentIds?: number[];
 
   @IsInt()
   numberOfPackages: number;

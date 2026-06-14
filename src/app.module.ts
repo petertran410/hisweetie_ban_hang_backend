@@ -14,6 +14,7 @@ import { CustomerTypesModule } from './customer-types/customer-types.module';
 import { CustomersModule } from './customers/customers.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { OrdersModule } from './orders/orders.module';
+import { ConsignmentsModule } from './consignments/consignments.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { UploadModule } from './upload/upload.module';
 import { UploadSessionModule } from './upload-session/upload-session.module';
@@ -59,6 +60,7 @@ import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { PrintTemplatesModule } from './print-templates/print-templates.module';
 import { BankAccountsModule } from './bank-accounts/bank-accounts.module';
 import { ReturnOrdersModule } from './return-orders/return-orders.module';
+import { ConsignmentReturnsModule } from './consignment-returns/consignment-returns.module';
 import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
@@ -112,6 +114,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     CustomerGroupsModule,
     SuppliersModule,
     OrdersModule,
+    ConsignmentsModule,
     InvoicesModule,
     PurchaseOrdersModule,
     PriceBooksModule,
@@ -147,6 +150,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     BankAccountsModule,
     UserBankAccountsModule,
     ReturnOrdersModule,
+    ConsignmentReturnsModule,
     InventoryChecksModule,
     StockAuditsModule,
     CashFlowCollectionBranchesModule,

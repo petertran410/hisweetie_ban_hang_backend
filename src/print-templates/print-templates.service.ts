@@ -225,6 +225,8 @@ export class PrintTemplatesService {
         return this.mapInvoice(await this.loadInvoice(entityId));
       case 'order':
         return this.mapOrder(await this.loadOrder(entityId));
+      case 'consignment':
+        return this.mapConsignment(await this.loadConsignment(entityId));
       case 'order_supplier':
         return this.mapOrderSupplier(await this.loadOrderSupplier(entityId));
       case 'purchase_order':
@@ -309,6 +311,35 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('Order not found');
+    return entity;
+  }
+
+  private async loadConsignment(id: number) {
+    const entity = await this.prisma.consignment.findUnique({
+      where: { id },
+      include: {
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
+        soldBy: {
+          include: {
+            bankAccountMapping: {
+              include: { bankAccount: true },
+            },
+          },
+        },
+        creator: true,
+        branch: true,
+        delivery: true,
+        items: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('Consignment not found');
     return entity;
   }
 
@@ -563,6 +594,27 @@ export class PrintTemplatesService {
     };
   }
 
+  private mapConsignment(c: any) {
+    return {
+      ...this.storeVars(c.branch),
+      ...this.dateVars(c.consignDate),
+      ...this.customerVars(c.customer, c.delivery),
+      ...this.staffVars(c.soldBy, c.creator),
+      ...this.deliveryVars(c.delivery, c.customer),
+      ...this.qrVars(c.soldBy, c.grandTotal, c.code),
+      Ma_Ky_Gui: c.code || '',
+      Ma_Don_Hang: c.code || '',
+      Ghi_Chu: c.description || '',
+      Tong_Tien_Hang: this.money(c.totalAmount),
+      Giam_Gia: this.money(c.discount),
+      Tong_Can_Thanh_Toan: this.money(c.grandTotal),
+      Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
+        Number(c.grandTotal || 0),
+      ),
+      items: (c.items || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
   private mapOrderSupplier(os: any) {
     return {
       ...this.storeVars(os.branch),
@@ -706,6 +758,9 @@ export class PrintTemplatesService {
       Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
       Ghi_Chu_Hang_Hoa: item.note || item.description || '',
       Thanh_Tien: this.money(item.totalPrice || item.subTotal),
+      NSX: item.manufactureDate
+        ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
+        : '',
     };
   }
 

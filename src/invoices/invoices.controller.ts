@@ -18,6 +18,7 @@ import {
   InvoiceQueryDto,
   CreateInvoiceFromOrderDto,
 } from './dto';
+import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -223,6 +224,20 @@ export class InvoicesController {
     @CurrentUser() user: any,
   ) {
     return this.invoicesService.createFromOrder(+orderId, dto, user.id);
+  }
+
+  @Post('from-consignment/:consignmentId')
+  @RequirePermissions('invoices:create')
+  createFromConsignment(
+    @Param('consignmentId') consignmentId: string,
+    @Body() dto: CreateInvoiceFromConsignmentDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.invoicesService.createFromConsignment(
+      +consignmentId,
+      dto,
+      user.id,
+    );
   }
 
   @Delete(':id')
