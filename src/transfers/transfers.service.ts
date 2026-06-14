@@ -17,6 +17,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class TransfersService {
@@ -674,6 +675,15 @@ export class TransfersService {
           },
         });
       }
+
+      // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nguồn).
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+      );
     });
   }
 
@@ -737,6 +747,15 @@ export class TransfersService {
           });
         }
       }
+
+      // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nguồn).
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+      );
     });
   }
 
@@ -806,6 +825,15 @@ export class TransfersService {
           });
         }
       }
+
+      // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nhận).
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.toBranchId,
+        })),
+      );
     });
   }
 
@@ -867,6 +895,15 @@ export class TransfersService {
         });
       }
     }
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nhận).
+    await recalcOnHandForPairs(
+      this.prisma,
+      transfer.details.map((d) => ({
+        productId: d.productId,
+        branchId: transfer.toBranchId,
+      })),
+    );
   }
 
   async cancelTransfer(id: number, dto: CancelTransferDto, userId?: number) {
@@ -1058,6 +1095,19 @@ export class TransfersService {
           }
         }
       }
+
+      // NGUỒN CHÂN LÝ: phiếu đã hủy (status=4) → mọi log transfer thành
+      // inactive → recalc loại sạch tác động transfer khỏi cả 2 chi nhánh.
+      await recalcOnHandForPairs(tx, [
+        ...transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+        ...transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.toBranchId,
+        })),
+      ]);
     });
 
     if (userId) {

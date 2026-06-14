@@ -1,0 +1,23 @@
+# Git
+.git
+.gitignore
+
+# Secrets / env — KHÔNG đưa vào image
+.env
+.env.*
+
+# Dependencies & build output (image tự cài/build lại)
+node_modules
+dist
+
+# Uploads (mount qua volume, không cần trong image)
+uploads-sandbox
+
+# Tài liệu, không cần cho runtime
+*.md
+
+# Local/dev
+.vscode
+.idea
+npm-debug.log*
+yarn-error.log*

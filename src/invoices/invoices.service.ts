@@ -27,6 +27,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
@@ -1332,6 +1333,16 @@ export class InvoicesService {
           });
         }
 
+        // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi đã ghi log SALE cho
+        // mọi item, recalc lại onHand từ thẻ kho (đè giá trị decrement rời rạc).
+        await recalcOnHandForPairs(
+          tx,
+          effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: dto.branchId!,
+          })),
+        );
+
         if (dto.customerId) {
           await this.updateCustomerTotals(dto.customerId, tx);
         }
@@ -1724,6 +1735,20 @@ export class InvoicesService {
           });
         }
 
+        // NGUỒN CHÂN LÝ: recalc onHand cho mọi sản phẩm bị ảnh hưởng (hoàn kho
+        // HĐ cũ đã hủy + trừ kho HĐ mới). Σ log active tự loại log HĐ cũ
+        // (status=2) và cộng log HĐ mới.
+        await recalcOnHandForPairs(tx, [
+          ...currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+          ...dto.items.map((item) => ({
+            productId: item.productId,
+            branchId: newInvoice.branchId || 1,
+          })),
+        ]);
+
         if (newInvoice.customerId) {
           await this.updateCustomerTotals(newInvoice.customerId, tx);
         }
@@ -2066,6 +2091,21 @@ export class InvoicesService {
           priceBook: true,
         },
       });
+
+      // NGUỒN CHÂN LÝ: khi hủy hóa đơn (status=2 vừa ghi ở trên), log SALE trở
+      // thành inactive → recalc onHand = Σ log active cho các sản phẩm của HĐ.
+      if (
+        dto.status === INVOICE_STATUS.CANCELLED &&
+        currentInvoice.branchId
+      ) {
+        await recalcOnHandForPairs(
+          tx,
+          currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId!,
+          })),
+        );
+      }
 
       if (shouldUpdateCustomerDebt && currentInvoice.customerId) {
         await recalcCustomerDebt(tx, currentInvoice.customerId);
@@ -2523,6 +2563,14 @@ export class InvoicesService {
           },
         });
       }
+
+      await recalcOnHandForPairs(
+        tx,
+        itemsToInvoice.map((i) => ({
+          productId: i.productId,
+          branchId: order.branchId,
+        })),
+      );
 
       const allInvoicedQty: Record<number, number> = {};
       const updatedInvoices = await tx.invoice.findMany({
