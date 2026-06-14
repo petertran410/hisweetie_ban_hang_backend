@@ -20,6 +20,10 @@ import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
+import {
+  applyPackingToConsignments,
+  recalcConsignmentStatusAfterPackingCancel,
+} from '../common/consignment-packing.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -84,6 +88,18 @@ export class PackingHangsService {
                   },
                 },
               },
+              consignment: {
+                select: {
+                  id: true,
+                  code: true,
+                  customerId: true,
+                  consignDate: true,
+                  grandTotal: true,
+                  customer: {
+                    select: { id: true, name: true, contactNumber: true },
+                  },
+                },
+              },
             },
           },
           images: true,
@@ -136,7 +152,42 @@ export class PackingHangsService {
   }
 
   async create(dto: CreatePackingHangDto, userId: number) {
+    const isConsignment =
+      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+
     const packingHang = await this.prisma.$transaction(async (tx) => {
+      if (isConsignment) {
+        const code = await this.generateCode(tx);
+        const created = await tx.packingHang.create({
+          data: {
+            code,
+            branchId: dto.branchId,
+            numberOfPackages: dto.numberOfPackages,
+            note: dto.note,
+            createdBy: userId,
+            invoices: {
+              create: dto.consignmentIds!.map((consignmentId) => ({
+                consignmentId,
+              })),
+            },
+            images: dto.imageUrls
+              ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
+              : undefined,
+          },
+          include: {
+            branch: true,
+            creator: true,
+            invoices: { include: { invoice: true, consignment: true } },
+            images: true,
+          },
+        });
+
+        // Đóng hàng → PACKED (+ trừ kho lần đầu rời CONFIRMED)
+        await applyPackingToConsignments(tx, dto.consignmentIds!, 'dong-hang');
+
+        return created;
+      }
+
       const invoices = await tx.invoice.findMany({
         where: {
           id: { in: dto.invoiceIds },
@@ -170,7 +221,7 @@ export class PackingHangsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds.map((invoiceId) => ({
+            create: dto.invoiceIds!.map((invoiceId) => ({
               invoiceId,
             })),
           },
@@ -321,19 +372,29 @@ export class PackingHangsService {
   async remove(id: number, userId?: number) {
     const packingHang = await this.findOne(id);
 
-    const invoiceIds: number[] = (packingHang.invoices || []).map(
-      (i: any) => i.invoiceId,
-    );
+    const invoiceIds: number[] = (packingHang.invoices || [])
+      .map((i: any) => i.invoiceId)
+      .filter((v: any) => v != null);
+    const consignmentIds: number[] = (packingHang.invoices || [])
+      .map((i: any) => i.consignmentId)
+      .filter((v: any) => v != null);
 
     await this.prisma.$transaction(async (tx) => {
-      await assertCanCancelPacking(tx, invoiceIds, 'dong-hang', id);
+      if (invoiceIds.length > 0) {
+        await assertCanCancelPacking(tx, invoiceIds, 'dong-hang', id);
+      }
 
       await tx.packingHang.update({
         where: { id },
         data: { cancelledAt: new Date(), cancelledById: userId ?? null },
       });
 
-      await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      if (invoiceIds.length > 0) {
+        await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
+      }
+      if (consignmentIds.length > 0) {
+        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+      }
     });
 
     if (userId) {
