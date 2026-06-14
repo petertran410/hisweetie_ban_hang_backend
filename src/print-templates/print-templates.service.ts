@@ -227,6 +227,10 @@ export class PrintTemplatesService {
         return this.mapOrder(await this.loadOrder(entityId));
       case 'consignment':
         return this.mapConsignment(await this.loadConsignment(entityId));
+      case 'consignment_return':
+        return this.mapConsignmentReturn(
+          await this.loadConsignmentReturn(entityId),
+        );
       case 'order_supplier':
         return this.mapOrderSupplier(await this.loadOrderSupplier(entityId));
       case 'purchase_order':
@@ -340,6 +344,29 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('Consignment not found');
+    return entity;
+  }
+
+  private async loadConsignmentReturn(id: number) {
+    const entity = await this.prisma.consignmentReturn.findUnique({
+      where: { id },
+      include: {
+        branch: true,
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
+        consignment: {
+          include: { creator: true, delivery: true },
+        },
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('ConsignmentReturn not found');
     return entity;
   }
 
@@ -612,6 +639,34 @@ export class PrintTemplatesService {
         Number(c.grandTotal || 0),
       ),
       items: (c.items || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
+  private mapConsignmentReturn(r: any) {
+    const c = r.consignment;
+    return {
+      ...this.storeVars(r.branch),
+      ...this.dateVars(r.createdAt),
+      ...this.customerVars(r.customer, c?.delivery),
+      ...this.deliveryVars(c?.delivery, r.customer),
+      Ma_Hoan_Ky_Gui: r.code || '',
+      Ma_Ky_Gui: r.consignmentCode || c?.code || '',
+      Nguoi_Lap: c?.creator?.name || '',
+      Nhan_Vien_Ban_Hang: c?.creator?.name || '',
+      Ghi_Chu: r.note || '',
+      Tong_SL_Hoan: Number(r.totalReturnQuantity || 0),
+      items: (r.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || d.product?.code || '',
+        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        NSX: d.manufactureDate
+          ? new Date(d.manufactureDate).toLocaleDateString('vi-VN')
+          : '',
+        SL_Hoan: Number(d.returnQuantity || 0),
+        Hang_Tot: Number(d.goodQuantity || 0),
+        Loai_B: Number(d.damagedQuantity || 0),
+        Can_Date: Number(d.nearExpiryQuantity || 0),
+        Ghi_Chu_Hang_Hoa: d.note || '',
+      })),
     };
   }
 
