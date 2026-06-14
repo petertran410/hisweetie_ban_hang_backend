@@ -148,6 +148,20 @@ export class ProductsController {
     await this.productsService.exportProducts(query, res);
   }
 
+  @Get('reconcile-check')
+  @RequirePermissions('products:view')
+  reconcileCheck(@Query('productId') productId?: string) {
+    return this.productsService.reconcileCheck(
+      productId ? +productId : undefined,
+    );
+  }
+
+  @Get('low-stock')
+  @RequirePermissions('products:view')
+  checkLowStock() {
+    return this.productsService.checkLowStock();
+  }
+
   @Get(':id/inventory-logs')
   @RequirePermissions('products:view')
   findInventoryLogs(
@@ -199,11 +213,5 @@ export class ProductsController {
   remove(@Param('id') id: string, @Req() req: any) {
     const userId = req.user?.id;
     return this.productsService.remove(+id, userId);
-  }
-
-  @Get('low-stock')
-  @RequirePermissions('products:view')
-  checkLowStock() {
-    return this.productsService.checkLowStock();
   }
 }

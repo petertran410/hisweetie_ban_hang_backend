@@ -67,7 +67,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     // Chỉ log error (kèm stack) cho lỗi server (5xx) hoặc exception không xác định.
     // Lỗi client 4xx là hành vi mong đợi (validation, không tìm thấy, ...) → log gọn 1 dòng.
-    // Riêng 401/403 (chưa đăng nhập / không có quyền) bỏ qua hẳn để tránh lụt log.
+    // Riêng 401/403 (chưa đăng nhập / không có quyền) và 404 (path không tồn tại,
+    // chủ yếu do bot/scanner dò đường) bỏ qua hẳn để tránh lụt log.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         `${request.method} ${request.url} - IP ${clientIp} - UA "${userAgent}"`,
@@ -75,7 +76,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       );
     } else if (
       status !== HttpStatus.UNAUTHORIZED &&
-      status !== HttpStatus.FORBIDDEN
+      status !== HttpStatus.FORBIDDEN &&
+      status !== HttpStatus.NOT_FOUND
     ) {
       // Trích message gọn để log dễ debug (vd lý do bị chặn khi hủy phiếu)
       const reason =

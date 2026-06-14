@@ -1790,6 +1790,95 @@ export class ProductsService {
     );
   }
 
+  /**
+   * RECONCILE-CHECK (CHỈ ĐỌC — không ghi gì).
+   * So sánh Inventory.onHand đã lưu vs Σ log ACTIVE (nguồn chân lý từ
+   * inventory-onhand.util). Trả về danh sách (product, branch) bị LỆCH để
+   * giám sát drift. Dùng cùng bộ lọc getActiveLogKeys/isLogActive như thẻ kho
+   * và recalcInventoryOnHand → kết quả khớp tuyệt đối với cách hệ thống định
+   * nghĩa tồn kho.
+   *
+   * @param productId  (tùy chọn) chỉ kiểm 1 sản phẩm.
+   */
+  async reconcileCheck(productId?: number) {
+    const invWhere: any = {};
+    if (productId) invWhere.productId = productId;
+
+    const inventories = await this.prisma.inventory.findMany({
+      where: invWhere,
+      select: {
+        productId: true,
+        branchId: true,
+        onHand: true,
+        product: { select: { code: true, name: true } },
+        branch: { select: { name: true } },
+      },
+    });
+
+    // Tải toàn bộ log liên quan 1 lần (theo productId nếu có) rồi tính
+    // activeKeys chung — tránh N+1 query như gọi computeOnHandFromLogs từng cặp.
+    const logWhere: any = {};
+    if (productId) logWhere.productId = productId;
+    const logs = await this.prisma.inventoryLog.findMany({
+      where: logWhere,
+      select: {
+        productId: true,
+        branchId: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+      },
+    });
+
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+
+    // Σ quantity log active theo cặp (productId|branchId).
+    const sumMap = new Map<string, number>();
+    for (const l of logs) {
+      if (!isLogActive(l, activeKeys)) continue;
+      const key = `${l.productId}|${l.branchId}`;
+      sumMap.set(key, (sumMap.get(key) ?? 0) + Number(l.quantity));
+    }
+
+    const mismatches: Array<{
+      productId: number;
+      branchId: number;
+      productCode: string;
+      productName: string;
+      branchName: string;
+      onHand: number;
+      sumLogs: number;
+      diff: number;
+    }> = [];
+
+    for (const inv of inventories) {
+      const key = `${inv.productId}|${inv.branchId}`;
+      const onHand = Number(inv.onHand);
+      const sumLogs = sumMap.get(key) ?? 0;
+      const diff = onHand - sumLogs;
+      if (diff !== 0) {
+        mismatches.push({
+          productId: inv.productId,
+          branchId: inv.branchId,
+          productCode: inv.product?.code ?? '',
+          productName: inv.product?.name ?? '',
+          branchName: inv.branch?.name ?? '',
+          onHand,
+          sumLogs,
+          diff,
+        });
+      }
+    }
+
+    mismatches.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+    return {
+      checkedInventories: inventories.length,
+      mismatchCount: mismatches.length,
+      mismatches,
+    };
+  }
+
   private async generateSafeProductCode(tx: any): Promise<string> {
     const prefix = 'SP';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
