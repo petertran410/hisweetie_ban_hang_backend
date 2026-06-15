@@ -2593,7 +2593,11 @@ export class InvoicesService {
         });
       });
 
-      await this.ordersService['updateOrderStatusByInvoices'](order.id, tx);
+      await this.ordersService['updateOrderStatusByInvoices'](
+        order.id,
+        tx,
+        dto.forceComplete ?? false,
+      );
 
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
@@ -2744,10 +2748,28 @@ export class InvoicesService {
         });
       });
 
+      // Số đã hoàn về kho theo product (consignmentReturn đã nhận hàng = 2).
+      // Phần này cũng làm giảm "ký gửi còn lại" giống xuất hóa đơn.
+      const receivedReturns = await tx.consignmentReturn.findMany({
+        where: { consignmentId, status: 2 },
+        include: { details: true },
+      });
+      const returnedQuantities: Record<number, number> = {};
+      receivedReturns.forEach((ro: any) => {
+        ro.details.forEach((d: any) => {
+          if (d.productId != null) {
+            returnedQuantities[d.productId] =
+              (returnedQuantities[d.productId] || 0) +
+              Number(d.returnQuantity || 0);
+          }
+        });
+      });
+
       const remainingItems = consignment.items
         .map((item) => {
           const invoiced = invoicedQuantities[item.productId] || 0;
-          const remaining = Number(item.quantity) - invoiced;
+          const returned = returnedQuantities[item.productId] || 0;
+          const remaining = Number(item.quantity) - invoiced - returned;
           return { ...item, remainingQuantity: remaining };
         })
         .filter((item) => item.remainingQuantity > 0);
@@ -2756,6 +2778,22 @@ export class InvoicesService {
         throw new BadRequestException(
           'Tất cả sản phẩm trong phiếu ký gửi đã được xuất hóa đơn',
         );
+      }
+
+      // Chặn xuất vượt phần còn lại (FE gửi quantity tùy ý qua dto.items).
+      if (dto.items && dto.items.length > 0) {
+        const remainingByProduct: Record<number, number> = {};
+        remainingItems.forEach((item) => {
+          remainingByProduct[item.productId] = item.remainingQuantity;
+        });
+        for (const reqItem of dto.items) {
+          const allowed = remainingByProduct[reqItem.productId] ?? 0;
+          if (Number(reqItem.quantity) > allowed) {
+            throw new BadRequestException(
+              `Số lượng xuất hóa đơn (${reqItem.quantity}) vượt quá số còn lại (${allowed}) của sản phẩm ${reqItem.productCode || reqItem.productId}`,
+            );
+          }
+        }
       }
 
       const usedDiscount = consignment.invoices.reduce(
