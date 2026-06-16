@@ -21,6 +21,7 @@ import {
 } from './dto';
 import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 
 @Injectable()
@@ -640,6 +641,19 @@ export class ReturnOrdersService {
         }
       }
 
+      // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log RETURN cho mọi
+      // item, recalc lại onHand (đè increment rời rạc). KHÔNG đụng
+      // damaged/nearExpiry — các field đó vẫn do upsert ở trên quản lý.
+      await recalcOnHandForPairs(
+        tx,
+        dto.details.map((d) => {
+          const detail = returnOrder.details.find(
+            (rd) => rd.id === d.detailId,
+          );
+          return { productId: detail?.productId, branchId: returnOrder.branchId };
+        }),
+      );
+
       const updatedDetails = await tx.returnOrderDetail.findMany({
         where: { returnOrderId: id },
       });
@@ -1068,6 +1082,18 @@ export class ReturnOrdersService {
             RETURN_ORDER_STATUS_LABELS[RETURN_ORDER_STATUS.CANCELLED],
         },
       });
+
+      // NGUỒN CHÂN LÝ: RO đã CANCELLED (status=5) → mọi log RETURN/RETURN_CANCEL
+      // trỏ refId này thành inactive → recalc đưa onHand về Σ log active.
+      if (stockWasIncreased && returnOrder.branchId) {
+        await recalcOnHandForPairs(
+          tx,
+          returnOrder.details.map((d) => ({
+            productId: d.productId,
+            branchId: returnOrder.branchId,
+          })),
+        );
+      }
 
       // RO chuyển sang status 5 → tự loại khỏi debtOffsets của Formula A.
       // CashFlow chi đã status=2 → loại khỏi totalCashFlowPaidOut. Recalc khôi phục đúng nợ.

@@ -17,6 +17,7 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class DestructionsService {
@@ -381,6 +382,15 @@ export class DestructionsService {
             },
           });
         }
+
+        // NGUỒN CHÂN LÝ: status=3 → log DESTRUCTION rớt khỏi Σ active. Recalc.
+        await recalcOnHandForPairs(
+          tx,
+          destruction.details.map((detail: any) => ({
+            productId: detail.productId,
+            branchId: destruction.branchId,
+          })),
+        );
       }
     });
 
@@ -496,6 +506,15 @@ export class DestructionsService {
         },
       });
     }
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active. Recalc sau khi ghi log DESTRUCTION.
+    await recalcOnHandForPairs(
+      tx,
+      destruction.details.map((detail: any) => ({
+        productId: detail.productId,
+        branchId: destruction.branchId,
+      })),
+    );
   }
 
   private buildDestructionSnapshot(d: any) {

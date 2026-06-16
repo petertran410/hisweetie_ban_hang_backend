@@ -19,6 +19,7 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class InternalUseService {
@@ -508,6 +509,16 @@ export class InternalUseService {
         await tx.inventoryLog.deleteMany({
           where: { refType: 'internal_use', refId: internalUse.id },
         });
+
+        // NGUỒN CHÂN LÝ: sau khi xóa log INTERNAL_USE, recalc onHand = Σ log
+        // active (loại hẳn phần đã xuất của phiếu vừa hủy).
+        await recalcOnHandForPairs(
+          tx,
+          internalUse.details.map((detail: any) => ({
+            productId: detail.productId,
+            branchId: internalUse.branchId,
+          })),
+        );
       });
     }
 
@@ -672,6 +683,16 @@ export class InternalUseService {
         },
       });
     }
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log INTERNAL_USE
+    // cho mọi dòng, recalc lại onHand từ thẻ kho.
+    await recalcOnHandForPairs(
+      tx,
+      internalUse.details.map((detail: any) => ({
+        productId: detail.productId,
+        branchId: internalUse.branchId,
+      })),
+    );
   }
 
   private buildSnapshot(d: any) {

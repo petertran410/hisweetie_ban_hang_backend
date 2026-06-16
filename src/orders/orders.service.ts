@@ -1065,7 +1065,11 @@ export class OrdersService {
     });
   }
 
-  async updateOrderStatusByInvoices(orderId: number, tx: any) {
+  async updateOrderStatusByInvoices(
+    orderId: number,
+    tx: any,
+    forceComplete = false,
+  ) {
     const order = await tx.order.findUnique({
       where: { id: orderId },
       include: { items: true },
@@ -1106,6 +1110,16 @@ export class OrdersService {
     }
 
     if (isFullyInvoiced) {
+      await tx.order.update({
+        where: { id: orderId },
+        data: {
+          status: 3,
+          statusValue: getStatusLabel(3),
+          orderStatus: 'completed',
+        },
+      });
+    } else if (forceComplete) {
+      // Người dùng chọn "Kết thúc đơn hàng" dù còn mã xuất thiếu → ép hoàn thành.
       await tx.order.update({
         where: { id: orderId },
         data: {

@@ -33,6 +33,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
@@ -1339,6 +1340,16 @@ export class InvoicesService {
           });
         }
 
+        // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi đã ghi log SALE cho
+        // mọi item, recalc lại onHand từ thẻ kho (đè giá trị decrement rời rạc).
+        await recalcOnHandForPairs(
+          tx,
+          effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: dto.branchId!,
+          })),
+        );
+
         if (dto.customerId) {
           await this.updateCustomerTotals(dto.customerId, tx);
         }
@@ -1731,6 +1742,20 @@ export class InvoicesService {
           });
         }
 
+        // NGUỒN CHÂN LÝ: recalc onHand cho mọi sản phẩm bị ảnh hưởng (hoàn kho
+        // HĐ cũ đã hủy + trừ kho HĐ mới). Σ log active tự loại log HĐ cũ
+        // (status=2) và cộng log HĐ mới.
+        await recalcOnHandForPairs(tx, [
+          ...currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+          ...dto.items.map((item) => ({
+            productId: item.productId,
+            branchId: newInvoice.branchId || 1,
+          })),
+        ]);
+
         if (newInvoice.customerId) {
           await this.updateCustomerTotals(newInvoice.customerId, tx);
         }
@@ -2073,6 +2098,21 @@ export class InvoicesService {
           priceBook: true,
         },
       });
+
+      // NGUỒN CHÂN LÝ: khi hủy hóa đơn (status=2 vừa ghi ở trên), log SALE trở
+      // thành inactive → recalc onHand = Σ log active cho các sản phẩm của HĐ.
+      if (
+        dto.status === INVOICE_STATUS.CANCELLED &&
+        currentInvoice.branchId
+      ) {
+        await recalcOnHandForPairs(
+          tx,
+          currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId!,
+          })),
+        );
+      }
 
       if (shouldUpdateCustomerDebt && currentInvoice.customerId) {
         await recalcCustomerDebt(tx, currentInvoice.customerId);
@@ -2531,6 +2571,14 @@ export class InvoicesService {
         });
       }
 
+      await recalcOnHandForPairs(
+        tx,
+        itemsToInvoice.map((i) => ({
+          productId: i.productId,
+          branchId: order.branchId,
+        })),
+      );
+
       const allInvoicedQty: Record<number, number> = {};
       const updatedInvoices = await tx.invoice.findMany({
         where: { orderId: order.id, status: { not: INVOICE_STATUS.CANCELLED } },
@@ -2545,7 +2593,11 @@ export class InvoicesService {
         });
       });
 
-      await this.ordersService['updateOrderStatusByInvoices'](order.id, tx);
+      await this.ordersService['updateOrderStatusByInvoices'](
+        order.id,
+        tx,
+        dto.forceComplete ?? false,
+      );
 
       if (order.customerId) {
         await this.updateCustomerTotals(order.customerId, tx);
@@ -2696,10 +2748,28 @@ export class InvoicesService {
         });
       });
 
+      // Số đã hoàn về kho theo product (consignmentReturn đã nhận hàng = 2).
+      // Phần này cũng làm giảm "ký gửi còn lại" giống xuất hóa đơn.
+      const receivedReturns = await tx.consignmentReturn.findMany({
+        where: { consignmentId, status: 2 },
+        include: { details: true },
+      });
+      const returnedQuantities: Record<number, number> = {};
+      receivedReturns.forEach((ro: any) => {
+        ro.details.forEach((d: any) => {
+          if (d.productId != null) {
+            returnedQuantities[d.productId] =
+              (returnedQuantities[d.productId] || 0) +
+              Number(d.returnQuantity || 0);
+          }
+        });
+      });
+
       const remainingItems = consignment.items
         .map((item) => {
           const invoiced = invoicedQuantities[item.productId] || 0;
-          const remaining = Number(item.quantity) - invoiced;
+          const returned = returnedQuantities[item.productId] || 0;
+          const remaining = Number(item.quantity) - invoiced - returned;
           return { ...item, remainingQuantity: remaining };
         })
         .filter((item) => item.remainingQuantity > 0);
@@ -2708,6 +2778,22 @@ export class InvoicesService {
         throw new BadRequestException(
           'Tất cả sản phẩm trong phiếu ký gửi đã được xuất hóa đơn',
         );
+      }
+
+      // Chặn xuất vượt phần còn lại (FE gửi quantity tùy ý qua dto.items).
+      if (dto.items && dto.items.length > 0) {
+        const remainingByProduct: Record<number, number> = {};
+        remainingItems.forEach((item) => {
+          remainingByProduct[item.productId] = item.remainingQuantity;
+        });
+        for (const reqItem of dto.items) {
+          const allowed = remainingByProduct[reqItem.productId] ?? 0;
+          if (Number(reqItem.quantity) > allowed) {
+            throw new BadRequestException(
+              `Số lượng xuất hóa đơn (${reqItem.quantity}) vượt quá số còn lại (${allowed}) của sản phẩm ${reqItem.productCode || reqItem.productId}`,
+            );
+          }
+        }
       }
 
       const usedDiscount = consignment.invoices.reduce(

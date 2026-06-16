@@ -35,9 +35,15 @@ export class ProductionsService {
     } = query;
 
     const where: any = {};
+    const and: any[] = [];
 
     if (branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
+      and.push({
+        OR: [
+          { sourceBranchId: { in: branchIds } },
+          { destinationBranchId: { in: branchIds } },
+        ],
+      });
     }
 
     if (status && status.length > 0) {
@@ -55,11 +61,17 @@ export class ProductionsService {
     }
 
     if (search) {
-      where.OR = [
-        { code: { contains: search, mode: 'insensitive' } },
-        { productName: { contains: search, mode: 'insensitive' } },
-        { productCode: { contains: search, mode: 'insensitive' } },
-      ];
+      and.push({
+        OR: [
+          { code: { contains: search, mode: 'insensitive' } },
+          { productName: { contains: search, mode: 'insensitive' } },
+          { productCode: { contains: search, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    if (and.length > 0) {
+      where.AND = and;
     }
 
     const [total, data] = await Promise.all([

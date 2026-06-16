@@ -233,6 +233,12 @@ export class CreateInvoiceFromOrderDto {
   @IsNumber()
   soldById?: number;
 
+  // Khi đơn hàng có ít nhất 1 mã xuất thiếu so với số lượng đặt, FE hỏi người dùng
+  // có muốn kết thúc đơn hàng không. true => ép hoàn thành (status 3) thay vì Ra 1 phần HĐ (status 6).
+  @IsOptional()
+  @IsBoolean()
+  forceComplete?: boolean;
+
   @IsArray()
   @IsOptional()
   items?: {
