@@ -15,6 +15,7 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class ProductionsService {
@@ -188,7 +189,12 @@ export class ProductionsService {
           dto.sourceBranchId,
           dto.destinationBranchId,
           dto.quantity,
-          dto.components, // ← truyền actualComponents
+          dto.components, // ← actualComponents
+          {
+            id: production.id,
+            code: production.code,
+            manufacturedDate: production.manufacturedDate,
+          },
         );
       }
 
@@ -323,6 +329,13 @@ export class ProductionsService {
             production.destinationBranchId,
             Number(dto.quantity ?? production.quantity),
             dto.components,
+            {
+              id: production.id,
+              code: production.code,
+              manufacturedDate: dto.manufacturedDate
+                ? new Date(dto.manufacturedDate)
+                : production.manufacturedDate,
+            },
           );
         }
 
@@ -371,12 +384,20 @@ export class ProductionsService {
         });
 
         if (product && production.autoDeductComponents) {
+          // LOG-TRUTH: đổi status → 3 (CANCELLED) TRƯỚC để active-finder loại
+          // toàn bộ log của phiếu (PRODUCTION_OUT/IN, refType='production',
+          // status!=3) khỏi Σ, rồi recalc đưa onHand component@source +
+          // thành phẩm@dest về Σ log active (tự khôi phục đúng số đã trừ/cộng).
+          await tx.production.update({
+            where: { id },
+            data: { status: 3 },
+          });
+
           await this.reverseInventoryChanges(
             tx,
             product,
             production.sourceBranchId,
             production.destinationBranchId,
-            Number(production.quantity),
           );
         }
       }
@@ -422,13 +443,42 @@ export class ProductionsService {
   async remove(id: number, userId?: number) {
     const production = await this.prisma.production.findUnique({
       where: { id },
+      include: {
+        product: {
+          include: {
+            comboComponents: { include: { componentProduct: true } },
+          },
+        },
+      },
     });
 
     if (!production) {
       throw new NotFoundException(`Production with id ${id} not found`);
     }
 
-    await this.prisma.production.delete({ where: { id } });
+    // LOG-TRUTH: xóa cứng phiếu trong transaction; log PRODUCTION_OUT/IN trỏ
+    // refId này sẽ thành inactive (active-finder không tìm thấy phiếu) → recalc
+    // đưa onHand component@source + thành phẩm@dest về Σ log active. Chỉ recalc
+    // khi phiếu ĐÃ hoàn thành (status=2) vì chỉ khi đó mới có log để loại.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.production.delete({ where: { id } });
+
+      if (production.status === 2 && production.product) {
+        const affectedPairs: { productId: number; branchId: number }[] = [
+          {
+            productId: production.productId,
+            branchId: production.destinationBranchId,
+          },
+        ];
+        for (const comp of production.product.comboComponents) {
+          affectedPairs.push({
+            productId: comp.componentProductId,
+            branchId: production.sourceBranchId,
+          });
+        }
+        await recalcOnHandForPairs(tx, affectedPairs);
+      }
+    });
 
     if (userId) {
       const user = await this.prisma.user.findUnique({
@@ -511,7 +561,18 @@ export class ProductionsService {
     destinationBranchId: number,
     quantity: number,
     actualComponents?: { componentProductId: number; actualGrams: number }[],
+    production?: { id: number; code: string; manufacturedDate?: Date | null },
   ) {
+    // refCode/refId neo log về chính phiếu sản xuất → active-finder
+    // (status != 3) loại log khi phiếu bị hủy/xóa. transactionDate neo theo
+    // manufacturedDate để phiếu lùi ngày đứng đúng vị trí trên thẻ kho.
+    const refCode = production?.code || '';
+    const refId = production?.id || 0;
+    const transactionDate = production?.manufacturedDate || new Date();
+
+    // Gom các cặp (productId, branchId) bị tác động để recalc cuối hàm.
+    const affectedPairs: { productId: number; branchId: number }[] = [];
+
     for (const comp of product.comboComponents) {
       const componentProduct = comp.componentProduct;
       const componentWeight = componentProduct.weight
@@ -525,78 +586,18 @@ export class ProductionsService {
         (a) => a.componentProductId === comp.componentProductId,
       );
 
-      // ─── PIECE MODE: trừ kho theo số chiếc trực tiếp ───────────────
-      if (comp.inputMode === 'piece') {
-        const totalPiecesToDeduct = actual
+      // PIECE-LIKE: trừ kho theo số chiếc trực tiếp. Áp dụng cho cả
+      // inputMode='piece' LẪN trường hợp component không có weight
+      // (weightInGrams===0) — tránh chia 0 / throw oan ở nhánh gram.
+      const isPieceLike = comp.inputMode === 'piece' || weightInGrams === 0;
+
+      const unitsToDeduct = isPieceLike
+        ? actual
           ? actual.actualGrams // field này chứa số chiếc thực tế khi piece mode
-          : Number(comp.quantity) * Number(quantity);
-
-        const sourceInventory = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-        });
-
-        if (!sourceInventory) {
-          throw new NotFoundException(
-            `Inventory for component ${componentProduct.name} not found at source branch`,
-          );
-        }
-
-        if (Number(sourceInventory.onHand) < totalPiecesToDeduct) {
-          throw new BadRequestException(
-            `Insufficient inventory for component ${componentProduct.name}. Required: ${totalPiecesToDeduct}, Available: ${sourceInventory.onHand}`,
-          );
-        }
-
-        const newOnHand = Number(sourceInventory.onHand) - totalPiecesToDeduct;
-        const newTotalWeight = newOnHand * weightInGrams;
-
-        await tx.inventory.update({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-          data: { onHand: newOnHand, totalWeight: newTotalWeight },
-        });
-
-        await tx.inventoryLog.create({
-          data: {
-            productId: comp.componentProductId,
-            productCode: componentProduct.code,
-            productName: componentProduct.name,
-            branchId: sourceBranchId,
-            branchName: '',
-            transactionType: 'PRODUCTION_OUT',
-            refCode: '',
-            refType: 'production',
-            refId: 0,
-            quantity: -totalPiecesToDeduct,
-            costPrice: Number(sourceInventory.cost),
-            transactionPrice: null,
-          },
-        });
-        continue; // ← skip gram logic bên dưới
-      }
-      // ───────────────────────────────────────────────────────────────
-
-      // GRAM MODE (logic gốc)
-      if (weightInGrams === 0) {
-        throw new BadRequestException(
-          `Component ${componentProduct.name} must have weight defined`,
-        );
-      }
-
-      const totalGramsToDeduct = actual
-        ? actual.actualGrams
-        : Number(comp.quantity) * Number(quantity);
-
-      const unitsToDeduct = totalGramsToDeduct / weightInGrams;
+          : Number(comp.quantity) * Number(quantity)
+        : (actual
+            ? actual.actualGrams
+            : Number(comp.quantity) * Number(quantity)) / weightInGrams;
 
       const sourceInventory = await tx.inventory.findUnique({
         where: {
@@ -619,188 +620,31 @@ export class ProductionsService {
         );
       }
 
-      const newOnHand = Number(sourceInventory.onHand) - unitsToDeduct;
-      const newTotalWeight = newOnHand * weightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-        data: { onHand: newOnHand, totalWeight: newTotalWeight },
-      });
-
       await tx.inventoryLog.create({
         data: {
           productId: comp.componentProductId,
           productCode: componentProduct.code,
           productName: componentProduct.name,
           branchId: sourceBranchId,
-          branchName: '',
+          branchName: sourceInventory.branchName || '',
           transactionType: 'PRODUCTION_OUT',
-          refCode: '',
+          refCode,
           refType: 'production',
-          refId: 0,
+          refId,
           quantity: -unitsToDeduct,
-          costPrice: sourceInventory ? Number(sourceInventory.cost) : 0,
+          costPrice: Number(sourceInventory.cost),
           transactionPrice: null,
+          transactionDate,
         },
+      });
+
+      affectedPairs.push({
+        productId: comp.componentProductId,
+        branchId: sourceBranchId,
       });
     }
 
-    const productWeight = product.weight ? Number(product.weight) : 0;
-    const productWeightUnit = product.weightUnit || 'g';
-    const productWeightInGrams =
-      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
-
-    const destInventory = await tx.inventory.findUnique({
-      where: {
-        productId_branchId: {
-          productId: product.id,
-          branchId: destinationBranchId,
-        },
-      },
-    });
-
-    if (destInventory) {
-      const newOnHand = Number(destInventory.onHand) + Number(quantity);
-      const newTotalWeight = newOnHand * productWeightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: product.id,
-            branchId: destinationBranchId,
-          },
-        },
-        data: {
-          onHand: newOnHand,
-          totalWeight: newTotalWeight,
-        },
-      });
-    } else {
-      const destBranch = await tx.branch.findUnique({
-        where: { id: destinationBranchId },
-      });
-
-      const totalWeight = Number(quantity) * productWeightInGrams;
-
-      await tx.inventory.create({
-        data: {
-          productId: product.id,
-          productCode: product.code,
-          productName: product.name,
-          branchId: destinationBranchId,
-          branchName: destBranch?.name || '',
-          cost: 0,
-          onHand: Number(quantity),
-          totalWeight: totalWeight,
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
-        },
-      });
-    }
-  }
-
-  private async reverseInventoryChanges(
-    tx: any,
-    product: any,
-    sourceBranchId: number,
-    destinationBranchId: number,
-    quantity: number,
-  ) {
-    for (const comp of product.comboComponents) {
-      const componentProduct = comp.componentProduct;
-      const componentWeight = componentProduct.weight
-        ? Number(componentProduct.weight)
-        : 0;
-      const componentWeightUnit = componentProduct.weightUnit || 'g';
-      const weightInGrams =
-        componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
-
-      // ─── PIECE MODE ─────────────────────────────────────────────────
-      if (comp.inputMode === 'piece') {
-        const totalPiecesToRestore = Number(comp.quantity) * Number(quantity);
-
-        const sourceInventory = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-        });
-
-        if (!sourceInventory) {
-          throw new NotFoundException(
-            `Inventory for component ${componentProduct.name} not found at source branch`,
-          );
-        }
-
-        const newOnHand = Number(sourceInventory.onHand) + totalPiecesToRestore;
-        const newTotalWeight = newOnHand * weightInGrams;
-
-        await tx.inventory.update({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-          data: { onHand: newOnHand, totalWeight: newTotalWeight },
-        });
-        continue; // ← skip gram logic
-      }
-      // ─────────────────────────────────────────────────────────────────
-
-      // GRAM MODE (logic gốc)
-      if (weightInGrams === 0) {
-        throw new BadRequestException(
-          `Component ${componentProduct.name} must have weight defined`,
-        );
-      }
-
-      const requiredGrams = Number(comp.quantity) * Number(quantity);
-      const unitsToRestore = requiredGrams / weightInGrams;
-
-      const sourceInventory = await tx.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-      });
-
-      if (!sourceInventory) {
-        throw new NotFoundException(
-          `Inventory for component ${componentProduct.name} not found at source branch`,
-        );
-      }
-
-      const newOnHand = Number(sourceInventory.onHand) + unitsToRestore;
-      const newTotalWeight = newOnHand * weightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-        data: { onHand: newOnHand, totalWeight: newTotalWeight },
-      });
-    }
-
-    const productWeight = product.weight ? Number(product.weight) : 0;
-    const productWeightUnit = product.weightUnit || 'g';
-    const productWeightInGrams =
-      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
-
+    // ─── Thành phẩm nhập kho đích: ghi log PRODUCTION_IN ──────────────────
     const destInventory = await tx.inventory.findUnique({
       where: {
         productId_branchId: {
@@ -811,26 +655,77 @@ export class ProductionsService {
     });
 
     if (!destInventory) {
-      throw new NotFoundException(
-        `Inventory for product ${product.name} not found at destination branch`,
-      );
+      // Khởi tạo bản ghi tồn (onHand=0) — giá trị thật sẽ do recalc set lại
+      // theo Σ log active. Tạo trước để recalc có chỗ ghi.
+      const destBranch = await tx.branch.findUnique({
+        where: { id: destinationBranchId },
+      });
+      await tx.inventory.create({
+        data: {
+          productId: product.id,
+          productCode: product.code,
+          productName: product.name,
+          branchId: destinationBranchId,
+          branchName: destBranch?.name || '',
+          cost: 0,
+          onHand: 0,
+          totalWeight: 0,
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+      });
     }
 
-    const newOnHand = Number(destInventory.onHand) - Number(quantity);
-    const newTotalWeight = newOnHand * productWeightInGrams;
-
-    await tx.inventory.update({
-      where: {
-        productId_branchId: {
-          productId: product.id,
-          branchId: destinationBranchId,
-        },
-      },
+    await tx.inventoryLog.create({
       data: {
-        onHand: newOnHand,
-        totalWeight: newTotalWeight,
+        productId: product.id,
+        productCode: product.code,
+        productName: product.name,
+        branchId: destinationBranchId,
+        branchName: destInventory?.branchName || '',
+        transactionType: 'PRODUCTION_IN',
+        refCode,
+        refType: 'production',
+        refId,
+        quantity: Number(quantity),
+        costPrice: destInventory ? Number(destInventory.cost) : 0,
+        transactionPrice: null,
+        transactionDate,
       },
     });
+
+    affectedPairs.push({
+      productId: product.id,
+      branchId: destinationBranchId,
+    });
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi đã ghi mọi log
+    // PRODUCTION_OUT/IN, recalc lại onHand từ thẻ kho.
+    await recalcOnHandForPairs(tx, affectedPairs);
+  }
+
+  // LOG-TRUTH: phiếu đã được set status=3 (CANCELLED) TRƯỚC khi gọi hàm này,
+  // nên active-finder (status!=3) tự loại mọi log PRODUCTION_OUT/IN của phiếu
+  // khỏi Σ. Chỉ cần recalc onHand cho component@source + thành phẩm@dest →
+  // tự khôi phục đúng số đã trừ/cộng (KHÔNG cộng/trừ tay, KHÔNG ghi log đối ứng).
+  private async reverseInventoryChanges(
+    tx: any,
+    product: any,
+    sourceBranchId: number,
+    destinationBranchId: number,
+  ) {
+    const affectedPairs: { productId: number; branchId: number }[] = [
+      { productId: product.id, branchId: destinationBranchId },
+    ];
+    for (const comp of product.comboComponents) {
+      affectedPairs.push({
+        productId: comp.componentProductId,
+        branchId: sourceBranchId,
+      });
+    }
+    await recalcOnHandForPairs(tx, affectedPairs);
   }
 
   private buildProductionSnapshot(production: any) {
