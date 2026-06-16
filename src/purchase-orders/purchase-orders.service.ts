@@ -19,6 +19,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class PurchaseOrdersService {
@@ -1258,6 +1259,28 @@ export class PurchaseOrdersService {
         });
       }
 
+      // NGUỒN CHÂN LÝ: recalc onHand cho MỌI cặp (product, branch) bị đụng —
+      // gồm sản phẩm cũ (có thể bị gỡ khỏi phiếu → log đã xóa) lẫn sản phẩm
+      // mới, ở cả branch cũ lẫn branch mới (trường hợp đổi chi nhánh).
+      // updateInventory() chỉ recalc item mới nên cần phủ thêm tại đây.
+      {
+        const affectedProductIds = new Set<number>([
+          ...existing.items.map((it: any) => it.productId),
+          ...(dto.items?.map((it) => it.productId) ?? []),
+        ]);
+        const affectedBranchIds = new Set<number>();
+        if (existing.branchId) affectedBranchIds.add(existing.branchId);
+        if (branchId) affectedBranchIds.add(branchId);
+
+        const pairs: Array<{ productId: number; branchId: number }> = [];
+        for (const bId of affectedBranchIds) {
+          for (const pId of affectedProductIds) {
+            pairs.push({ productId: pId, branchId: bId });
+          }
+        }
+        await recalcOnHandForPairs(tx, pairs);
+      }
+
       const orderSupplierId = existing.orderSupplierId;
       if (orderSupplierId) {
         await this.updateOrderSupplierStatus(orderSupplierId, tx);
@@ -1388,6 +1411,19 @@ export class PurchaseOrdersService {
       const orderSupplierId = purchaseOrder.orderSupplierId;
 
       await tx.purchaseOrder.delete({ where: { id } });
+
+      // NGUỒN CHÂN LÝ: sau khi xóa cứng PN, log PURCHASE trỏ refId này thành
+      // inactive (PO không còn) → recalc đưa onHand về Σ log active.
+      if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
+        await recalcOnHandForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
+      }
+
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
 
       // Cập nhật trạng thái PDN nếu PN này thuộc PDN — đối xứng `update()` và
@@ -1563,6 +1599,18 @@ export class PurchaseOrdersService {
 
       // Recalc Supplier.debt — filter status≠2 tự loại PN/payment vừa hủy.
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
+
+      // NGUỒN CHÂN LÝ: PN status=2 → log PURCHASE rớt khỏi Σ active. Recalc
+      // onHand cho mọi sản phẩm của phiếu (chỉ khi PN từng cộng tồn).
+      if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
+        await recalcOnHandForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
+      }
 
       // Cập nhật trạng thái PDN nếu PN này thuộc PDN.
       if (purchaseOrder.orderSupplierId) {
@@ -1741,6 +1789,15 @@ export class PurchaseOrdersService {
         },
       });
     }
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active sau khi đã ghi log PURCHASE.
+    await recalcOnHandForPairs(
+      tx,
+      purchaseOrder.items.map((item: any) => ({
+        productId: item.productId,
+        branchId: purchaseOrder.branchId,
+      })),
+    );
   }
 
   private async restoreInventory(purchaseOrderId: number, tx: any) {
@@ -1762,6 +1819,10 @@ export class PurchaseOrdersService {
         },
       });
     }
+    // LƯU Ý: KHÔNG recalc ở đây. restoreInventory được gọi khi log PURCHASE
+    // CÒN active (update flow xóa log SAU; cancel set status=2 SAU). Recalc tại
+    // đây sẽ cộng lại quantity sai. Recalc được đặt ở từng call site, SAU khi
+    // log đã xóa / PN đã status=2.
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {

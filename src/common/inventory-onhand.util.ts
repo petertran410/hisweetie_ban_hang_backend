@@ -140,6 +140,24 @@ export async function recalcInventoryOnHand(
   return onHand;
 }
 
+// Tiện ích: recalc onHand cho NHIỀU cặp (productId, branchId) — dùng sau khi
+// một chứng từ ghi/void log ở nhiều dòng. Tự khử trùng lặp cặp. Dùng
+// recalcStockAuditChain để KHỚP TUYỆT ĐỐI với "Tồn cuối" trên thẻ kho
+// (re-anchor delta phiếu kiểm), thay vì Σ thô.
+export async function recalcOnHandForPairs(
+  tx: any,
+  pairs: Array<{ productId: number | null | undefined; branchId: number | null | undefined }>,
+): Promise<void> {
+  const seen = new Set<string>();
+  for (const p of pairs) {
+    if (p.productId == null || p.branchId == null) continue;
+    const key = `${p.productId}|${p.branchId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    await recalcStockAuditChain(tx, p.productId, p.branchId);
+  }
+}
+
 // ====================================================================
 // RE-ANCHOR chuỗi phiếu kiểm (Cách A).
 //

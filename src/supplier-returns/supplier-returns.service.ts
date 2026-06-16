@@ -17,6 +17,7 @@ import {
   SUPPLIER_RETURN_STATUS_LABELS,
 } from './dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 
 @Injectable()
 export class SupplierReturnsService {
@@ -649,6 +650,17 @@ export class SupplierReturnsService {
         });
       }
 
+      // NGUỒN CHÂN LÝ: onHand = Σ log active. Recalc sau khi ghi log
+      // SUPPLIER_RETURN cho mọi item (đè decrement rời rạc). damaged/nearExpiry
+      // giữ nguyên theo deductData bên trên.
+      await recalcOnHandForPairs(
+        tx,
+        supplierReturn.details.map((d) => ({
+          productId: d.productId,
+          branchId: supplierReturn.branchId,
+        })),
+      );
+
       // ── Tính refundAmount ─────────────────────────────────────────────────
       const updatedDetails = await tx.supplierReturnDetail.findMany({
         where: { supplierReturnId: id },
@@ -932,6 +944,18 @@ export class SupplierReturnsService {
             SUPPLIER_RETURN_STATUS_LABELS[SUPPLIER_RETURN_STATUS.CANCELLED],
         },
       });
+
+      // NGUỒN CHÂN LÝ: status=5 → log SUPPLIER_RETURN inactive → recalc cộng
+      // lại onHand (damaged/nearExpiry đã restore thủ công ở trên).
+      if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
+        await recalcOnHandForPairs(
+          tx,
+          supplierReturn.details.map((d) => ({
+            productId: d.productId,
+            branchId: supplierReturn.branchId,
+          })),
+        );
+      }
 
       // Phiếu bị hủy → loại khỏi offsets của Formula B → recalc để hoàn nợ NCC
       // (đối xứng return-orders.cancel L848-850).
