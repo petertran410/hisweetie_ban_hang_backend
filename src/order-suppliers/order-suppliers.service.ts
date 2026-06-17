@@ -676,7 +676,16 @@ export class OrderSuppliersService {
             );
           }
 
-          const subTotal = (item.price - (item.discount || 0)) * item.quantity;
+          // Nếu client KHÔNG gửi price (user không có quyền xem giá vốn) thì
+          // tự lấy giá vốn hiện tại của sản phẩm theo chi nhánh. Không ép = 0.
+          const price = await this.resolveItemPrice(
+            tx,
+            item.price,
+            item.productId,
+            dto.branchId,
+          );
+
+          const subTotal = (price - (item.discount || 0)) * item.quantity;
 
           const factoryPrice =
             item.factoryPrice != null ? item.factoryPrice : null;
@@ -692,7 +701,7 @@ export class OrderSuppliersService {
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
-            price: item.price,
+            price,
             discount: item.discount || 0,
             subTotal,
             factoryPrice,
@@ -894,8 +903,16 @@ export class OrderSuppliersService {
               );
             }
 
+            // Resolve giá vốn nếu client không gửi (thiếu quyền xem giá vốn).
+            const price = await this.resolveItemPrice(
+              tx,
+              item.price,
+              item.productId,
+              dto.branchId ?? existing.branchId ?? undefined,
+            );
+
             const subTotal =
-              (item.price - (item.discount || 0)) * item.quantity;
+              (price - (item.discount || 0)) * item.quantity;
 
             const factoryPrice =
               item.factoryPrice != null ? item.factoryPrice : null;
@@ -912,7 +929,7 @@ export class OrderSuppliersService {
               productCode: product.code,
               productName: product.name,
               quantity: item.quantity,
-              price: item.price,
+              price,
               discount: item.discount || 0,
               subTotal,
               factoryPrice,
@@ -1676,6 +1693,32 @@ export class OrderSuppliersService {
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
     await recalcSupplierDebt(tx, supplierId);
+  }
+
+  /**
+   * Resolve đơn giá nhập cho 1 dòng item.
+   * - Nếu client gửi `price` (user có quyền xem giá vốn) → dùng nguyên giá đó.
+   * - Nếu KHÔNG gửi (user bị ẩn giá vốn nên FE không có dữ liệu) → tự lấy giá
+   *   vốn hiện tại của sản phẩm theo chi nhánh từ inventory. KHÔNG ép = 0 để
+   *   đơn giá luôn đúng dù người tạo không được phép nhìn thấy giá.
+   */
+  private async resolveItemPrice(
+    tx: any,
+    price: number | undefined | null,
+    productId: number,
+    branchId?: number | null,
+  ): Promise<number> {
+    if (price !== undefined && price !== null && !Number.isNaN(Number(price))) {
+      return Number(price);
+    }
+    if (branchId) {
+      const inventory = await tx.inventory.findUnique({
+        where: { productId_branchId: { productId, branchId } },
+        select: { cost: true },
+      });
+      if (inventory) return Number(inventory.cost);
+    }
+    return 0;
   }
 
   /**
