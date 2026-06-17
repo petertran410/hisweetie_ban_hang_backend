@@ -93,7 +93,11 @@ export class ProductsService {
   }
 
   private calculateManufacturingCost(
-    components: { componentProductId: number; quantity: number }[],
+    components: {
+      componentProductId: number;
+      quantity: number;
+      inputMode?: string;
+    }[],
     componentProducts: any[],
     costMap: Map<number, number>,
     productType: number,
@@ -103,6 +107,15 @@ export class ProductsService {
       const quantity = Number(comp.quantity);
 
       if (productType === 4) {
+        // ─── PIECE / CARTON MODE ──────────────────────────────────
+        // Tính theo đơn vị: cost/đơn-vị × quantity. CARTON: quantity=1/N
+        // → mỗi thành phẩm gánh cost-thùng/N. Đặt TRƯỚC check weight===0
+        // vì thùng không có khối lượng (weight=0).
+        if (comp.inputMode === 'piece' || comp.inputMode === 'carton') {
+          return sum + componentCost * quantity;
+        }
+        // ───────────────────────────────────────────────────────────
+
         const componentProduct = componentProducts.find(
           (p) => p.id === comp.componentProductId,
         );
