@@ -20,9 +20,15 @@ class OrderSupplierItemDto {
   @IsNumber()
   quantity: number;
 
-  @ApiProperty()
+  @ApiProperty({
+    required: false,
+    description:
+      'Đơn giá nhập. Có thể bỏ trống nếu user không có quyền xem giá vốn — ' +
+      'backend sẽ tự lấy giá vốn hiện tại của sản phẩm theo chi nhánh.',
+  })
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()
