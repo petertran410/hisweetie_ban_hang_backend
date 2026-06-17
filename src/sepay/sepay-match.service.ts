@@ -481,6 +481,51 @@ export class SepayMatchService {
       throw new NotFoundException('Một số khách hàng không tồn tại');
     }
 
+    // Validate phân bổ vào hóa đơn (nếu có): mỗi hóa đơn phải thuộc đúng khách
+    // và tổng tiền gắn vào hóa đơn không vượt số tiền phân bổ cho khách đó.
+    // Phần chênh lệch (amount - Σ invoices) sẽ ghi nhận thành credit của khách.
+    const invoiceIds = allocations.flatMap((a) =>
+      (a.invoices || []).map((inv) => inv.invoiceId),
+    );
+    if (invoiceIds.length > 0) {
+      const invoices = await this.prisma.invoice.findMany({
+        where: { id: { in: invoiceIds } },
+        select: { id: true, code: true, customerId: true },
+      });
+      const invoiceById = new Map(invoices.map((i) => [i.id, i] as const));
+
+      for (const a of allocations) {
+        if (!a.invoices || a.invoices.length === 0) continue;
+
+        let invSum = 0;
+        for (const inv of a.invoices) {
+          const found = invoiceById.get(inv.invoiceId);
+          if (!found) {
+            throw new NotFoundException(
+              `Không tìm thấy hóa đơn ID ${inv.invoiceId}`,
+            );
+          }
+          if (found.customerId !== a.customerId) {
+            throw new BadRequestException(
+              `Hóa đơn ${found.code} không thuộc về khách hàng được phân bổ`,
+            );
+          }
+          if (!(Number(inv.amount) > 0)) {
+            throw new BadRequestException(
+              `Số tiền gắn vào hóa đơn ${found.code} phải > 0`,
+            );
+          }
+          invSum += Number(inv.amount);
+        }
+
+        if (Math.round(invSum * 100) > Math.round(Number(a.amount) * 100)) {
+          throw new BadRequestException(
+            `Tổng tiền gắn vào hóa đơn (${invSum}) vượt số tiền thu của khách (${a.amount})`,
+          );
+        }
+      }
+    }
+
     // Resolve accountId từ số tài khoản nhận của giao dịch (nếu khớp BankAccount)
     let accountId: number | undefined;
     if (tx.accountNumber) {
@@ -501,6 +546,11 @@ export class SepayMatchService {
     for (const a of allocations) {
       const note =
         a.note || `Sepay đối soát: ${tx.transactionContent || ''}`.trim();
+      // Nếu có phân bổ hóa đơn → tạo InvoicePayment trừ trực tiếp công nợ hóa đơn.
+      // Phần dư (amount - Σ invoices) tự ghi nhận thành credit (Formula A xử lý).
+      const invoiceAllocs = (a.invoices || []).filter(
+        (inv) => Number(inv.amount) > 0,
+      );
       const result = await this.cashFlowsService.createCustomerPayment(
         {
           customerId: a.customerId,
@@ -512,6 +562,15 @@ export class SepayMatchService {
           collectorUserId: dto.collectorUserId || userId,
           description: note,
           sepayReferenceCode: tx.referenceNumber || undefined,
+          ...(invoiceAllocs.length > 0
+            ? {
+                allocateToInvoices: true,
+                invoices: invoiceAllocs.map((inv) => ({
+                  invoiceId: inv.invoiceId,
+                  amount: Number(inv.amount),
+                })),
+              }
+            : {}),
         } as any,
         userId,
       );

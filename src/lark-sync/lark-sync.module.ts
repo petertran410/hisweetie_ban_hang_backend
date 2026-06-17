@@ -9,6 +9,8 @@ import { LarkLoadingNotificationService } from './services/lark-loading-notifica
 import { LarkExpenseBaseService } from './services/lark-expense-base.service';
 import { LarkUserDirectoryService } from './services/lark-user-directory.service';
 import { LarkExpenseSyncService } from './services/lark-expense-sync.service';
+import { LarkCustomerBaseService } from './services/lark-customer-base.service';
+import { LarkCustomerSyncService } from './services/lark-customer-sync.service';
 import { LarkSyncController } from './lark-sync.controller';
 import { LarkSyncCron } from './lark-sync.cron';
 
@@ -24,6 +26,8 @@ import { LarkSyncCron } from './lark-sync.cron';
     LarkExpenseBaseService,
     LarkUserDirectoryService,
     LarkExpenseSyncService,
+    LarkCustomerBaseService,
+    LarkCustomerSyncService,
     LarkSyncCron,
   ],
   exports: [
@@ -31,6 +35,7 @@ import { LarkSyncCron } from './lark-sync.cron';
     LarkOrderNotificationService,
     LarkLoadingNotificationService,
     LarkExpenseSyncService,
+    LarkCustomerSyncService,
   ],
 })
 export class LarkSyncModule {}

@@ -427,6 +427,11 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  larkRecordId    String?
+  larkSyncStatus  String    @default("PENDING")
+  larkSyncRetries Int       @default(0)
+  larkSyncedAt    DateTime?
+
   parent               Customer?             @relation("CustomerHierarchy", fields: [parentId], references: [id])
   children             Customer[]            @relation("CustomerHierarchy")
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
@@ -445,6 +450,7 @@ model Customer {
   priceBookCustomers   PriceBookCustomer[]
   promotionCustomers   PromotionCustomer[]
 
+  @@index([larkSyncStatus])
   @@map("customers")
 }
 

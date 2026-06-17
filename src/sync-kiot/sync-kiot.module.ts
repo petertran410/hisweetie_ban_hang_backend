@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { HttpModule } from '@nestjs/axios';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
+import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 
 import { SyncKiotApiService } from './sync-kiot-api.service';
 import { SyncKiotService } from './sync-kiot.service';
@@ -31,6 +32,7 @@ import { SyncReturnOrderService } from './services/sync-return-order.service';
   imports: [
     PrismaModule,
     ConfigModule,
+    LarkSyncModule,
     HttpModule.register({ timeout: 30000, maxRedirects: 5 }),
   ],
   controllers: [SyncKiotController],

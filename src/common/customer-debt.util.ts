@@ -4,6 +4,20 @@ interface RecalcDebtOptions {
   totalPurchased?: number; // ghi luôn totalPurchased (cho invoices.service)
 }
 
+/**
+ * Hook đẩy khách hàng lên Lark khi công nợ biến động.
+ * recalcCustomerDebt là plain function (không DI được), nên LarkCustomerSyncService
+ * tự đăng ký callback lúc khởi tạo qua setCustomerChangedHook(). Mọi nguồn biến
+ * động tiền (orders, invoices, payments, return, cashflow, import...) đều đi qua
+ * recalcCustomerDebt nên hook ở đây bắt được hết.
+ */
+type CustomerChangedHook = (customerId: number) => void;
+let onCustomerChanged: CustomerChangedHook | null = null;
+
+export function setCustomerChangedHook(fn: CustomerChangedHook | null): void {
+  onCustomerChanged = fn;
+}
+
 // Formula A — NGUỒN CHÂN LÝ DUY NHẤT. Tính nợ RIÊNG của 1 khách, ghi + trả về totalDebt.
 export async function recalcCustomerDebt(
   tx: any,
@@ -82,6 +96,14 @@ export async function recalcCustomerDebt(
         ? { totalDebt, totalPurchased: opts.totalPurchased }
         : { totalDebt },
   });
+
+  // Đẩy lên Lark (fire-and-forget). Bọc try/catch để không bao giờ ảnh hưởng
+  // transaction nghiệp vụ nếu hook lỗi.
+  try {
+    onCustomerChanged?.(customerId);
+  } catch {
+    /* noop — sync Lark không được phép làm hỏng luồng công nợ */
+  }
 
   return totalDebt;
 }

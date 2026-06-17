@@ -24,12 +24,14 @@ import { searchCustomerIds } from '../common/customer-search.util';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
+import { LarkCustomerSyncService } from '../lark-sync/services/lark-customer-sync.service';
 
 @Injectable()
 export class CustomersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkCustomerSync: LarkCustomerSyncService,
   ) {}
 
   async exportCustomers(
@@ -839,6 +841,9 @@ export class CustomersService {
       });
     }
 
+    // Đẩy khách hàng mới lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+    this.larkCustomerSync.syncSingleAsync(customer.id);
+
     return {
       ...customer,
       customerGroupDetails: customerGroupDetails.map((detail) => ({
@@ -1014,6 +1019,9 @@ export class CustomersService {
         },
       },
     );
+
+    // Đẩy thay đổi khách hàng lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+    this.larkCustomerSync.syncSingleAsync(customer.id);
 
     return {
       ...customer,

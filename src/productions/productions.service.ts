@@ -217,8 +217,11 @@ export class ProductionsService {
               componentName: componentProduct?.name || '',
               formulaGrams: c.formulaGrams,
               actualGrams: c.actualGrams,
+              // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
               unitsDeducted:
-                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                weightInGrams > 0
+                  ? c.actualGrams / weightInGrams
+                  : c.actualGrams,
             };
           }),
         );
@@ -297,8 +300,11 @@ export class ProductionsService {
               componentName: componentProduct?.name || '',
               formulaGrams: c.formulaGrams,
               actualGrams: c.actualGrams,
+              // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
               unitsDeducted:
-                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                weightInGrams > 0
+                  ? c.actualGrams / weightInGrams
+                  : c.actualGrams,
             };
           });
 
@@ -362,8 +368,11 @@ export class ProductionsService {
                 componentName: componentProduct?.name || '',
                 formulaGrams: c.formulaGrams,
                 actualGrams: c.actualGrams,
+                // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
                 unitsDeducted:
-                  weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                  weightInGrams > 0
+                    ? c.actualGrams / weightInGrams
+                    : c.actualGrams,
               };
             }),
           );
@@ -526,10 +535,13 @@ export class ProductionsService {
       });
 
       if (inventory) {
-        // ─── PIECE MODE ─────────────────────────────────────────────
-        if (comp.inputMode === 'piece') {
-          const totalPieces = Number(comp.quantity) * Number(quantity);
-          totalCost += Number(inventory.cost) * totalPieces;
+        // ─── PIECE / CARTON MODE ────────────────────────────────────
+        // Cả hai mode tính cost theo đơn vị: cost/đơn-vị × tổng-đơn-vị.
+        // CARTON: comp.quantity = 1/N (N = sức chứa) → mỗi thành phẩm gánh
+        // cost-thùng/N; nhân quantity sản xuất ra tổng số thùng tiêu hao.
+        if (comp.inputMode === 'piece' || comp.inputMode === 'carton') {
+          const totalUnits = Number(comp.quantity) * Number(quantity);
+          totalCost += Number(inventory.cost) * totalUnits;
           continue;
         }
         // ─────────────────────────────────────────────────────────────
@@ -586,14 +598,20 @@ export class ProductionsService {
         (a) => a.componentProductId === comp.componentProductId,
       );
 
-      // PIECE-LIKE: trừ kho theo số chiếc trực tiếp. Áp dụng cho cả
-      // inputMode='piece' LẪN trường hợp component không có weight
-      // (weightInGrams===0) — tránh chia 0 / throw oan ở nhánh gram.
-      const isPieceLike = comp.inputMode === 'piece' || weightInGrams === 0;
+      // PIECE-LIKE: trừ kho theo số đơn vị trực tiếp. Áp dụng cho
+      // inputMode='piece', inputMode='carton' (thùng — quantity=1/N), LẪN
+      // trường hợp component không có weight (weightInGrams===0) — tránh
+      // chia 0 / throw oan ở nhánh gram.
+      // CARTON: comp.quantity = 1/N → comp.quantity × quantity = số thùng
+      // tiêu hao (phân số, KHÔNG làm tròn để các đợt cộng dồn khít nhau).
+      const isPieceLike =
+        comp.inputMode === 'piece' ||
+        comp.inputMode === 'carton' ||
+        weightInGrams === 0;
 
       const unitsToDeduct = isPieceLike
         ? actual
-          ? actual.actualGrams // field này chứa số chiếc thực tế khi piece mode
+          ? actual.actualGrams // field này chứa số đơn vị thực tế khi piece/carton
           : Number(comp.quantity) * Number(quantity)
         : (actual
             ? actual.actualGrams

@@ -19,6 +19,18 @@ export class AssignCustomersDto {
   customerIds!: number[];
 }
 
+/** Phân bổ số tiền của 1 khách vào 1 hóa đơn cụ thể (để tạo InvoicePayment). */
+export class AllocationInvoiceItemDto {
+  @IsInt()
+  @Type(() => Number)
+  invoiceId!: number;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  amount!: number;
+}
+
 /** Một dòng phân bổ tiền cho 1 khách khi tạo phiếu thu. */
 export class AllocationItemDto {
   @IsInt()
@@ -33,6 +45,17 @@ export class AllocationItemDto {
   @IsOptional()
   @IsString()
   note?: string;
+
+  /**
+   * Phân bổ tiền của khách này vào từng hóa đơn còn nợ.
+   * Tổng invoices.amount phải <= amount (phần thiếu ghi nhận thành credit).
+   * Nếu rỗng/không gửi → phiếu thu chỉ cộng credit (hành vi cũ).
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AllocationInvoiceItemDto)
+  invoices?: AllocationInvoiceItemDto[];
 }
 
 /**
