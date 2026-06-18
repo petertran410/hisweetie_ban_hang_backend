@@ -106,6 +106,7 @@ export class MisaSyncController {
       return await this.misaVoucherService.createSaleVoucherFromInvoice(
         invoiceCode,
         body?.buyerOverride,
+        body?.force,
       );
     } catch (error) {
       this.logger.error(
@@ -143,6 +144,7 @@ export class MisaSyncController {
     return this.misaVoucherService.createVouchersBulk(
       body.invoiceCodes,
       body.buyerOverrides,
+      body.force,
     );
   }
 

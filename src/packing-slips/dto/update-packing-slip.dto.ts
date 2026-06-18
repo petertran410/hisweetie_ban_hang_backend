@@ -14,4 +14,7 @@ export class UpdatePackingSlipDto extends PartialType(CreatePackingSlipDto) {
 
   @Type(() => Number)
   cuocGuiHang?: number;
+
+  @Type(() => Number)
+  cuocNhanHang?: number;
 }

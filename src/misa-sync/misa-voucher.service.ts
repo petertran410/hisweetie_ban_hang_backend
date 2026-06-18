@@ -43,9 +43,12 @@ export class MisaVoucherService {
   async createSaleVoucherFromInvoice(
     invoiceCode: string,
     buyerOverride?: MisaBuyerOverrideDto,
+    force = false,
   ): Promise<{ success: boolean; orgRefId: string | null; message: string }> {
     this.logger.log(
-      `🧾 Creating Misa voucher for invoice code: ${invoiceCode}`,
+      `🧾 Creating Misa voucher for invoice code: ${invoiceCode}${
+        force ? ' (force re-push)' : ''
+      }`,
     );
 
     try {
@@ -100,7 +103,7 @@ export class MisaVoucherService {
         };
       }
 
-      if (invoice.misaSyncStatus === 'SYNCED' || invoice.misaOrgRefId) {
+      if (!force && (invoice.misaSyncStatus === 'SYNCED' || invoice.misaOrgRefId)) {
         return {
           success: false,
           orgRefId: invoice.misaOrgRefId,
@@ -163,6 +166,10 @@ export class MisaVoucherService {
             misaSyncedAt: new Date(),
             misaSyncRetries: { increment: 1 },
             misaErrorMessage: null,
+            // Force re-push: chờ callback Misa xác nhận lại từ đầu.
+            ...(force
+              ? { misaConfirmed: false, misaCallbackReceivedAt: null }
+              : {}),
           },
         });
       } else {
@@ -741,6 +748,7 @@ export class MisaVoucherService {
   async createVouchersBulk(
     invoiceCodes: string[],
     buyerOverrides?: Record<string, MisaBuyerOverrideDto>,
+    force = false,
   ): Promise<{
     success: boolean;
     message: string;
@@ -772,6 +780,7 @@ export class MisaVoucherService {
         const result = await this.createSaleVoucherFromInvoice(
           invoiceCode,
           buyerOverrides?.[invoiceCode],
+          force,
         );
         results.push({
           invoiceCode,

@@ -457,6 +457,10 @@ export class SepaySyncService {
       where.AND = andClauses;
     }
 
+    // ── Lọc ẩn: mặc định chỉ hiện giao dịch CHƯA ẩn (hiddenAt = null).
+    // hidden=true → chỉ giao dịch ĐÃ ẩn (để xem lại / bỏ ẩn).
+    where.hiddenAt = query.hidden === 'true' ? { not: null } : null;
+
     // BẮT BUỘC chỉ hiển thị tiền vào (amountIn > 0). Không bao giờ hiện tiền ra.
     const amountFilter: Prisma.DecimalFilter = { gt: 0 };
     const amountMin = Number(query.amountMin);
@@ -531,6 +535,38 @@ export class SepaySyncService {
 
     const withMatch = await this.attachMatch(rows);
     return { data: withMatch, total, page, limit };
+  }
+
+  /** Ẩn 1 giao dịch khỏi danh sách (ẩn chung toàn hệ thống). */
+  async hideTransaction(id: number, userId?: number) {
+    const existing = await this.prisma.sepayTransaction.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new Error('Không tìm thấy giao dịch');
+    }
+    await this.prisma.sepayTransaction.update({
+      where: { id },
+      data: { hiddenAt: new Date(), hiddenById: userId ?? null },
+    });
+    return { success: true };
+  }
+
+  /** Bỏ ẩn 1 giao dịch — hiển thị lại trong danh sách. */
+  async unhideTransaction(id: number) {
+    const existing = await this.prisma.sepayTransaction.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new Error('Không tìm thấy giao dịch');
+    }
+    await this.prisma.sepayTransaction.update({
+      where: { id },
+      data: { hiddenAt: null, hiddenById: null },
+    });
+    return { success: true };
   }
 
   /** Gắn thông tin đối soát (match) vào từng giao dịch. */

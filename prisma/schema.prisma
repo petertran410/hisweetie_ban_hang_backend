@@ -2328,6 +2328,8 @@ model PackingSlip {
   feeGrab              Decimal?  @default(0)
   hasCuocGuiHang       Boolean   @default(false)
   cuocGuiHang          Decimal?  @default(0)
+  hasCuocNhanHang      Boolean   @default(false)
+  cuocNhanHang         Decimal?  @default(0)
   expensePayerId       Int?
   note                 String?
   larkExpenseRecordIds Json?
@@ -2848,6 +2850,12 @@ model SepayTransaction {
   confirmedById        Int?      @map("confirmed_by_id")
   confirmedAt          DateTime? @map("confirmed_at")
 
+  // ── Ẩn giao dịch khỏi danh sách (ẩn chung toàn hệ thống) ──
+  // hiddenAt != null  → giao dịch bị ẩn, không hiện trong danh sách mặc định.
+  // Vẫn xem lại được qua filter ?hidden=true và có thể bỏ ẩn.
+  hiddenAt   DateTime? @map("hidden_at")
+  hiddenById Int?      @map("hidden_by_id")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -2856,6 +2864,7 @@ model SepayTransaction {
   @@index([referenceNumber])
   @@index([assignedCustomerId])
   @@index([cashFlowId])
+  @@index([hiddenAt])
   @@map("sepay_transactions")
 }
 

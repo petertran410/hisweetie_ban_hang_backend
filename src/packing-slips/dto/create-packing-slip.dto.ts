@@ -71,6 +71,13 @@ export class CreatePackingSlipDto {
   @IsNumber()
   cuocGuiHang?: number;
 
+  @IsBoolean()
+  hasCuocNhanHang: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  cuocNhanHang?: number;
+
   @IsOptional()
   @IsInt()
   expensePayerId?: number | null;

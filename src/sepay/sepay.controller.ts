@@ -4,6 +4,7 @@ import {
   Get,
   Put,
   Delete,
+  Patch,
   Body,
   Param,
   Query,
@@ -205,5 +206,25 @@ export class SepayController {
       dto,
       user?.id || 1,
     );
+  }
+
+  /**
+   * Ẩn 1 giao dịch khỏi danh sách (ẩn chung toàn hệ thống).
+   */
+  @Patch('transactions/:id/hide')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Ẩn giao dịch Sepay khỏi danh sách' })
+  async hideTransaction(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.sepaySyncService.hideTransaction(Number(id), user?.id);
+  }
+
+  /**
+   * Bỏ ẩn 1 giao dịch — hiển thị lại trong danh sách.
+   */
+  @Patch('transactions/:id/unhide')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Bỏ ẩn giao dịch Sepay' })
+  async unhideTransaction(@Param('id') id: string) {
+    return this.sepaySyncService.unhideTransaction(Number(id));
   }
 }
