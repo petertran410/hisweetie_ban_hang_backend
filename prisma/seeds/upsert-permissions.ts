@@ -45,6 +45,13 @@ interface PermissionSeed {
 // ───────────────────────────────────────────────────────────────────────────
 const PERMISSIONS: PermissionSeed[] = [
   {
+    resource: 'misa',
+    action: 'link',
+    description:
+      'Liên kết dữ liệu Misa: gắn mã hàng hóa Misa cho sản phẩm và gắn nhân viên phụ trách (Misa) cho khách hàng',
+    category: 'Misa',
+  },
+  {
     resource: 'order_suppliers',
     action: 'view_price',
     description: 'Xem đơn giá / giảm giá / thành tiền trên phiếu đặt hàng nhập',

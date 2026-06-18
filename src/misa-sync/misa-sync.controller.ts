@@ -6,10 +6,12 @@ import {
   Logger,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/permissions.decorator';
 import { MisaCallbackRequestDto } from './dto';
 import { MisaBulkVoucherRequestDto, MisaCreateVoucherRequestDto } from './dto';
 import { MisaDictionaryService } from './misa-dictionary.service';
@@ -27,12 +29,29 @@ export class MisaSyncController {
   ) {}
 
   @Get('employees')
-  @RequirePermissions('vat_invoices:view')
+  @RequireAnyPermission('vat_invoices:view', 'misa:link')
   @ApiOperation({
     summary: 'Danh sách nhân viên phụ trách (Misa, isEmployee = true)',
   })
   async getEmployees(): Promise<{ id: string; code: string; name: string }[]> {
     return this.misaDictionaryService.findEmployees();
+  }
+
+  @Get('inventory-items')
+  @RequirePermissions('misa:link')
+  @ApiOperation({
+    summary: 'Tìm kiếm vật tư hàng hóa Misa để liên kết với sản phẩm',
+  })
+  async getInventoryItems(
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+  ): Promise<
+    { id: string; code: string; name: string; unitName: string | null }[]
+  > {
+    return this.misaDictionaryService.findInventoryItems(
+      search,
+      limit ? Number(limit) : undefined,
+    );
   }
 
   @Post('dictionary/sync')
