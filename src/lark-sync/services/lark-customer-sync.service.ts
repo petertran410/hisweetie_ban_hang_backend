@@ -43,6 +43,14 @@ export class LarkCustomerSyncService
   private readonly tableId: string | null;
   private readonly MAX_RETRIES = 3;
 
+  // ★ Debounce queue: gom customerId rồi flush sau DEBOUNCE_MS.
+  // Lý do: recalcCustomerDebt gọi hook BÊN TRONG transaction chưa commit.
+  // Nếu đọc DB + đẩy Lark ngay (connection khác) sẽ đọc trúng giá trị CŨ
+  // (READ COMMITTED). Hoãn vài giây → tx đã commit → đọc đúng totalDebt mới,
+  // đồng thời gộp nhiều lần recalc trong 1 thao tác thành 1 lần đẩy.
+  private readonly DEBOUNCE_MS = 4000;
+  private readonly pendingTimers = new Map<number, NodeJS.Timeout>();
+
   constructor(
     private readonly larkBase: LarkCustomerBaseService,
     private readonly prisma: PrismaService,
@@ -58,14 +66,38 @@ export class LarkCustomerSyncService
 
   /**
    * Đăng ký hook vào recalcCustomerDebt — bắt mọi biến động công nợ real-time.
+   * Dùng debounce để đảm bảo transaction đã commit trước khi đọc DB đẩy Lark.
    */
   onModuleInit(): void {
-    setCustomerChangedHook((customerId) => this.syncSingleAsync(customerId));
+    setCustomerChangedHook((customerId) => this.enqueueSync(customerId));
     this.logger.log('✅ Registered customer-debt change hook for Lark sync');
   }
 
   onModuleDestroy(): void {
     setCustomerChangedHook(null);
+    for (const timer of this.pendingTimers.values()) clearTimeout(timer);
+    this.pendingTimers.clear();
+  }
+
+  /**
+   * Lên lịch sync 1 khách hàng (debounce). Mỗi customerId chỉ giữ 1 timer;
+   * lần gọi sau reset lại đồng hồ → chỉ đẩy 1 lần sau khi yên ổn DEBOUNCE_MS.
+   */
+  enqueueSync(customerId: number): void {
+    if (!this.isEnabled()) return;
+
+    const existing = this.pendingTimers.get(customerId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(customerId);
+      this.syncSingleAsync(customerId);
+    }, this.DEBOUNCE_MS);
+
+    // Không giữ event loop sống chỉ vì timer này
+    if (typeof timer.unref === 'function') timer.unref();
+
+    this.pendingTimers.set(customerId, timer);
   }
 
   private isEnabled(): boolean {

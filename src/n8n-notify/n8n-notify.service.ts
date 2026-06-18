@@ -50,6 +50,8 @@ interface PackingSlipForNotify {
   feeGrab?: any;
   hasCuocGuiHang?: boolean;
   cuocGuiHang?: any;
+  hasCuocNhanHang?: boolean;
+  cuocNhanHang?: any;
   note?: string | null;
   invoices?: PackingSlipInvoice[];
   images?: PackingSlipImage[];
@@ -162,6 +164,8 @@ export class N8nNotifyService {
         feeGrab: this.toNumber(ps.feeGrab),
         hasCuocGuiHang: !!ps.hasCuocGuiHang,
         cuocGuiHang: this.toNumber(ps.cuocGuiHang),
+        hasCuocNhanHang: !!ps.hasCuocNhanHang,
+        cuocNhanHang: this.toNumber(ps.cuocNhanHang),
         note: ps.note ?? null,
         imageUrls,
         invoices,

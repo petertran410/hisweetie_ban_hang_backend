@@ -41,6 +41,8 @@ interface PackingSlipForSync {
   feeGrab?: any;
   hasCuocGuiHang: boolean;
   cuocGuiHang?: any;
+  hasCuocNhanHang: boolean;
+  cuocNhanHang?: any;
   larkExpenseRecordIds?: any;
   expensePayer?: {
     id: number;
@@ -115,6 +117,10 @@ export class LarkExpenseSyncService {
     if (slip.hasCuocGuiHang) {
       const v = this.toNumber(slip.cuocGuiHang);
       if (v > 0) fees.push({ amount: v, feeName: 'Cước gửi hàng' });
+    }
+    if (slip.hasCuocNhanHang) {
+      const v = this.toNumber(slip.cuocNhanHang);
+      if (v > 0) fees.push({ amount: v, feeName: 'Cước nhận hàng' });
     }
 
     if (fees.length === 0) return;

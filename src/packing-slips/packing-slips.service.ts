@@ -186,6 +186,8 @@ export class PackingSlipsService {
           feeGrab: dto.feeGrab || 0,
           hasCuocGuiHang: dto.hasCuocGuiHang,
           cuocGuiHang: dto.cuocGuiHang || 0,
+          hasCuocNhanHang: dto.hasCuocNhanHang,
+          cuocNhanHang: dto.cuocNhanHang || 0,
           expensePayerId: dto.expensePayerId ?? null,
           note: dto.note,
           createdBy: userId,
@@ -313,6 +315,8 @@ export class PackingSlipsService {
         feeGrab: dto.feeGrab || 0,
         hasCuocGuiHang: dto.hasCuocGuiHang,
         cuocGuiHang: dto.cuocGuiHang || 0,
+        hasCuocNhanHang: dto.hasCuocNhanHang,
+        cuocNhanHang: dto.cuocNhanHang || 0,
         note: dto.note,
       };
 
@@ -637,6 +641,7 @@ export class PackingSlipsService {
       feeGuiBen: Number(ps.feeGuiBen || 0),
       feeGrab: Number(ps.feeGrab || 0),
       cuocGuiHang: Number(ps.cuocGuiHang || 0),
+      cuocNhanHang: Number(ps.cuocNhanHang || 0),
       note: ps.note,
       invoices: (ps.invoices || []).map((i: any) => ({
         invoiceId: i.invoiceId,

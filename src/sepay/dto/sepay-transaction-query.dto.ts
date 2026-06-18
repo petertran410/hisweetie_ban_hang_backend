@@ -52,4 +52,13 @@ export class SepayTransactionQueryDto {
   @IsOptional()
   @IsIn(['processing', 'assigned', 'completed'])
   status?: 'processing' | 'assigned' | 'completed';
+
+  /**
+   * Lọc theo trạng thái ẩn:
+   *   - không truyền / 'false' → chỉ giao dịch CHƯA ẩn (mặc định)
+   *   - 'true'                 → chỉ giao dịch ĐÃ ẩn (để xem lại / bỏ ẩn)
+   */
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  hidden?: 'true' | 'false';
 }
