@@ -405,8 +405,107 @@ export class PromotionsService {
     };
   }
 
-  // --------------------------- EVALUATE ---------------------------
+  /**
+   * Thống kê hàng bán / hàng khuyến mãi của 1 chương trình.
+   * - Hàng bán: dòng lineType normal | promo_discount có gắn promotionId.
+   * - Hàng KM: dòng lineType gift | discounted_buy.
+   * Loại trừ HĐ/đơn đã hủy (status=2). Gộp chung invoice + order theo productId.
+   */
+  async getStats(id: number) {
+    const promo = await this.prisma.promotion.findUnique({
+      where: { id },
+      select: { id: true, usageLimit: true, usageCount: true, maxRewardQuantity: true },
+    });
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
 
+    const [invoiceLines, orderLines] = await this.prisma.$transaction([
+      this.prisma.invoiceDetail.findMany({
+        where: { promotionId: id, invoice: { status: { not: 2 } } },
+        select: {
+          productId: true,
+          productCode: true,
+          productName: true,
+          quantity: true,
+          lineType: true,
+        },
+      }),
+      this.prisma.orderItem.findMany({
+        where: { promotionId: id, order: { status: { not: 2 } } },
+        select: {
+          productId: true,
+          productCode: true,
+          productName: true,
+          quantity: true,
+          lineType: true,
+        },
+      }),
+    ]);
+
+    const SOLD = new Set(['normal', 'promo_discount']);
+    const PROMO = new Set(['gift', 'discounted_buy']);
+    const map = new Map<
+      number,
+      { productId: number; code: string; name: string; soldQty: number; promoQty: number }
+    >();
+    const addLine = (l: {
+      productId: number | null;
+      productCode: string;
+      productName: string;
+      quantity: any;
+      lineType: string;
+    }) => {
+      if (l.productId == null) return;
+      const key = l.productId;
+      const row =
+        map.get(key) ||
+        {
+          productId: key,
+          code: l.productCode,
+          name: l.productName,
+          soldQty: 0,
+          promoQty: 0,
+        };
+      const qty = Number(l.quantity);
+      if (SOLD.has(l.lineType)) row.soldQty += qty;
+      else if (PROMO.has(l.lineType)) row.promoQty += qty;
+      map.set(key, row);
+    };
+    invoiceLines.forEach(addLine);
+    orderLines.forEach(addLine);
+
+    const items = [...map.values()].sort((a, b) => b.soldQty - a.soldQty);
+    const totals = items.reduce(
+      (acc, it) => ({
+        soldQty: acc.soldQty + it.soldQty,
+        promoQty: acc.promoQty + it.promoQty,
+      }),
+      { soldQty: 0, promoQty: 0 },
+    );
+
+    const usageLimit = promo.usageLimit;
+    const usageCount = promo.usageCount;
+    const maxRewardQuantity =
+      promo.maxRewardQuantity != null ? Number(promo.maxRewardQuantity) : null;
+
+    return {
+      items,
+      totals,
+      limits: {
+        usageLimit,
+        usageCount,
+        usageRemaining: usageLimit != null ? usageLimit - usageCount : null,
+        maxRewardQuantity,
+        rewardIssued: totals.promoQty,
+        rewardRemaining:
+          maxRewardQuantity != null
+            ? maxRewardQuantity - totals.promoQty
+            : null,
+      },
+    };
+  }
+
+  // --------------------------- EVALUATE ---------------------------
   async evaluate(dto: EvaluatePromotionDto) {
     if (!dto.items || dto.items.length === 0)
       throw new BadRequestException('Giỏ hàng trống');

@@ -282,7 +282,7 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        details: { include: { product: true } },
+        details: { include: { product: true, promotion: { select: { code: true, name: true } } } },
       },
     });
     if (!entity) throw new NotFoundException('Invoice not found');
@@ -311,7 +311,7 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        items: { include: { product: true } },
+        items: { include: { product: true, promotion: { select: { code: true, name: true } } } },
       },
     });
     if (!entity) throw new NotFoundException('Order not found');
@@ -803,9 +803,37 @@ export class PrintTemplatesService {
         ? Number(item.appliedPrice)
         : price - discount - (price * discountRatio) / 100;
 
+    // Phân loại dòng theo KM:
+    // - gift/discounted_buy → hàng thưởng (reward)
+    // - normal/promo_discount + có promotionId → hàng thuộc CT khuyến mãi (dòng X)
+    // - còn lại → hàng bán thường
+    const lineType = item.lineType || 'normal';
+    const isReward =
+      item.isGift || lineType === 'gift' || lineType === 'discounted_buy';
+    const isPromoBuy =
+      !isReward &&
+      (lineType === 'normal' || lineType === 'promo_discount') &&
+      item.promotionId != null;
+
+    let loaiDongKM = '';
+    if (lineType === 'gift' || item.isGift) loaiDongKM = 'Quà tặng';
+    else if (lineType === 'discounted_buy') loaiDongKM = 'Mua kèm KM';
+    else if (isPromoBuy) loaiDongKM = 'Hàng KM';
+
+    const baseName = item.productName || item.product?.name || '';
+    // Nhãn chèn mặc định vào tên hàng (hiện ngay trên template cũ, chỉ chữ).
+    const nameSuffix =
+      lineType === 'gift' || item.isGift
+        ? ' (Quà KM)'
+        : lineType === 'discounted_buy'
+          ? ' (Mua kèm KM)'
+          : isPromoBuy
+            ? ' (KM)'
+            : '';
+
     return {
       Ma_Hang: item.productCode || item.product?.code || '',
-      Ten_Hang_Hoa: item.productName || item.product?.name || '',
+      Ten_Hang_Hoa: baseName + nameSuffix,
       Don_Vi_Tinh: item.product?.unit || '',
       So_Luong: Number(item.quantity),
       Don_Gia: this.money(item.price),
@@ -816,6 +844,11 @@ export class PrintTemplatesService {
       NSX: item.manufactureDate
         ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
         : '',
+      // Biến KM (item-variable) — người dùng có thể chèn vào template để tạo cột riêng.
+      Loai_Dong_KM: loaiDongKM,
+      La_Hang_KM: isReward || isPromoBuy ? '1' : '',
+      Ma_KM: item.promotion?.code || '',
+      Ten_KM: item.promotion?.name || '',
     };
   }
 
