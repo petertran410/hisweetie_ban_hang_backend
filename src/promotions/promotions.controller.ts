@@ -62,6 +62,12 @@ export class PromotionsController {
     return this.promotionsService.getUsage(id);
   }
 
+  @Get(':id/stats')
+  @RequirePermissions('promotions:view')
+  getStats(@Param('id', ParseIntPipe) id: number) {
+    return this.promotionsService.getStats(id);
+  }
+
   @Post()
   @RequirePermissions('promotions:create')
   create(@Body() dto: CreatePromotionDto, @CurrentUser() user: any) {

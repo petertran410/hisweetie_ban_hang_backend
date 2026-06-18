@@ -192,6 +192,21 @@ export class OrdersService {
         }
       }
 
+      // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
+      // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
+      const matchedIds: number[] = (r as any).matchedProductIds || [];
+      if (matchedIds.length) {
+        for (const it of baseItems) {
+          if (
+            (it.lineType || 'normal') === 'normal' &&
+            it.promotionId == null &&
+            matchedIds.includes(it.productId)
+          ) {
+            it.promotionId = r.promotionId;
+          }
+        }
+      }
+
       // 3) Hàng tặng (BE tự sinh dòng giá 0)
       const giftLines = resolvedGifts[r.promotionId] || [];
       for (const g of giftLines) {
