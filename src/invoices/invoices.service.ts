@@ -797,6 +797,7 @@ export class InvoicesService {
         details: {
           include: {
             product: { include: { inventories: true } },
+            promotion: { select: { id: true, code: true, name: true } },
           },
         },
         payments: true,
