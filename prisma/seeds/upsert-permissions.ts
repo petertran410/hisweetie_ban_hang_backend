@@ -45,36 +45,41 @@ interface PermissionSeed {
 // ───────────────────────────────────────────────────────────────────────────
 const PERMISSIONS: PermissionSeed[] = [
   {
-    resource: 'misa',
-    action: 'link',
-    description:
-      'Liên kết dữ liệu Misa: gắn mã hàng hóa Misa cho sản phẩm và gắn nhân viên phụ trách (Misa) cho khách hàng',
-    category: 'Misa',
+    resource: 'products',
+    action: 'link_misa',
+    description: 'Gắn mã hàng hóa Misa cho sản phẩm',
+    category: 'Sản phẩm',
   },
   {
-    resource: 'order_suppliers',
-    action: 'view_price',
-    description: 'Xem đơn giá / giảm giá / thành tiền trên phiếu đặt hàng nhập',
-    category: 'Nhà cung cấp',
+    resource: 'customers',
+    action: 'link_misa',
+    description: 'Gắn nhân viên phụ trách (Misa) cho khách hàng',
+    category: 'Khách hàng',
   },
-  {
-    resource: 'order_suppliers',
-    action: 'view_factory_price',
-    description: 'Xem đơn giá nhà máy (NM) trên phiếu đặt hàng nhập',
-    category: 'Nhà cung cấp',
-  },
-  {
-    resource: 'order_suppliers',
-    action: 'view_stage_factory',
-    description: 'Xem giai đoạn hiện tại & tên nhà máy trên đặt hàng nhập chi tiết',
-    category: 'Nhà cung cấp',
-  },
-  {
-    resource: 'order_suppliers',
-    action: 'edit_stage_factory',
-    description: 'Sửa giai đoạn hiện tại & tên nhà máy trên đặt hàng nhập chi tiết',
-    category: 'Nhà cung cấp',
-  },
+  // {
+  //   resource: 'order_suppliers',
+  //   action: 'view_price',
+  //   description: 'Xem đơn giá / giảm giá / thành tiền trên phiếu đặt hàng nhập',
+  //   category: 'Nhà cung cấp',
+  // },
+  // {
+  //   resource: 'order_suppliers',
+  //   action: 'view_factory_price',
+  //   description: 'Xem đơn giá nhà máy (NM) trên phiếu đặt hàng nhập',
+  //   category: 'Nhà cung cấp',
+  // },
+  // {
+  //   resource: 'order_suppliers',
+  //   action: 'view_stage_factory',
+  //   description: 'Xem giai đoạn hiện tại & tên nhà máy trên đặt hàng nhập chi tiết',
+  //   category: 'Nhà cung cấp',
+  // },
+  // {
+  //   resource: 'order_suppliers',
+  //   action: 'edit_stage_factory',
+  //   description: 'Sửa giai đoạn hiện tại & tên nhà máy trên đặt hàng nhập chi tiết',
+  //   category: 'Nhà cung cấp',
+  // },
 ];
 
 async function main() {

@@ -29,7 +29,7 @@ export class MisaSyncController {
   ) {}
 
   @Get('employees')
-  @RequireAnyPermission('vat_invoices:view', 'misa:link')
+  @RequireAnyPermission('vat_invoices:view', 'customers:link_misa')
   @ApiOperation({
     summary: 'Danh sách nhân viên phụ trách (Misa, isEmployee = true)',
   })
@@ -38,7 +38,7 @@ export class MisaSyncController {
   }
 
   @Get('inventory-items')
-  @RequirePermissions('misa:link')
+  @RequirePermissions('products:link_misa')
   @ApiOperation({
     summary: 'Tìm kiếm vật tư hàng hóa Misa để liên kết với sản phẩm',
   })
