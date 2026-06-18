@@ -731,4 +731,46 @@ export class MisaDictionaryService {
       name: e.accountObjectName,
     }));
   }
+
+  /**
+   * Tìm kiếm vật tư hàng hóa Misa (để liên kết với sản phẩm trên UI).
+   * Lọc theo mã/tên gần giống, chỉ lấy item đang hoạt động.
+   */
+  async findInventoryItems(
+    search?: string,
+    limit = 50,
+  ): Promise<
+    { id: string; code: string; name: string; unitName: string | null }[]
+  > {
+    const keyword = search?.trim();
+
+    const items = await this.prisma.misaInventoryItem.findMany({
+      where: {
+        inactive: false,
+        ...(keyword
+          ? {
+              OR: [
+                { inventoryItemCode: { contains: keyword, mode: 'insensitive' } },
+                { inventoryItemName: { contains: keyword, mode: 'insensitive' } },
+              ],
+            }
+          : {}),
+      },
+      select: {
+        inventoryItemId: true,
+        inventoryItemCode: true,
+        inventoryItemName: true,
+        unitName: true,
+      },
+      orderBy: { inventoryItemCode: 'asc' },
+      take: Math.min(Math.max(limit, 1), 100),
+    });
+
+    return items.map((i) => ({
+      id: i.inventoryItemId,
+      code: i.inventoryItemCode,
+      name: i.inventoryItemName,
+      unitName: i.unitName,
+    }));
+  }
 }

@@ -39,6 +39,10 @@ export class CreateCustomerDto {
   invoiceEmail?: string;
   @IsOptional() @IsString() invoicePhone?: string;
   @IsOptional() @IsString() invoiceDvqhnsCode?: string;
+  // Misa: nhân viên phụ trách (account object có isEmployee = true)
+  @IsOptional() @IsString() misaEmployeeId?: string;
+  @IsOptional() @IsString() misaEmployeeCode?: string;
+  @IsOptional() @IsString() misaEmployeeName?: string;
   @IsOptional()
   @IsArray()
   @IsInt({ each: true })

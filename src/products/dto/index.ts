@@ -173,6 +173,19 @@ export class CreateProductDto {
   @IsString()
   childName?: string;
 
+  // Misa product mapping
+  @IsOptional()
+  @IsString()
+  misa_code?: string;
+
+  @IsOptional()
+  @IsString()
+  misa_name?: string;
+
+  @IsOptional()
+  @IsString()
+  misa_unit?: string;
+
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
