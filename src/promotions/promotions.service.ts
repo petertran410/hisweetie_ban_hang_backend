@@ -16,6 +16,8 @@ import {
   EngineItem,
   evaluatePromotions,
 } from './promotion-engine';
+import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
+import { ORDER_STATUS } from '../orders/dto/order-status.constants';
 
 @Injectable()
 export class PromotionsService {
@@ -363,7 +365,10 @@ export class PromotionsService {
   async getUsage(id: number) {
     const [orders, invoices] = await this.prisma.$transaction([
       this.prisma.order.findMany({
-        where: { items: { some: { promotionId: id } } },
+        where: {
+          items: { some: { promotionId: id } },
+          status: { not: ORDER_STATUS.CANCELLED },
+        },
         select: {
           id: true,
           code: true,
@@ -375,7 +380,10 @@ export class PromotionsService {
         take: 200,
       }),
       this.prisma.invoice.findMany({
-        where: { details: { some: { promotionId: id } } },
+        where: {
+          details: { some: { promotionId: id } },
+          status: { not: INVOICE_STATUS.CANCELLED },
+        },
         select: {
           id: true,
           code: true,
@@ -409,7 +417,7 @@ export class PromotionsService {
    * Thống kê hàng bán / hàng khuyến mãi của 1 chương trình.
    * - Hàng bán: dòng lineType normal | promo_discount có gắn promotionId.
    * - Hàng KM: dòng lineType gift | discounted_buy.
-   * Loại trừ HĐ/đơn đã hủy (status=2). Gộp chung invoice + order theo productId.
+   * CHỈ tính trên hóa đơn (invoice), KHÔNG tính đơn đặt hàng. Loại trừ HĐ Đã hủy.
    */
   async getStats(id: number) {
     const promo = await this.prisma.promotion.findUnique({
@@ -419,28 +427,19 @@ export class PromotionsService {
     if (!promo)
       throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
 
-    const [invoiceLines, orderLines] = await this.prisma.$transaction([
-      this.prisma.invoiceDetail.findMany({
-        where: { promotionId: id, invoice: { status: { not: 2 } } },
-        select: {
-          productId: true,
-          productCode: true,
-          productName: true,
-          quantity: true,
-          lineType: true,
-        },
-      }),
-      this.prisma.orderItem.findMany({
-        where: { promotionId: id, order: { status: { not: 2 } } },
-        select: {
-          productId: true,
-          productCode: true,
-          productName: true,
-          quantity: true,
-          lineType: true,
-        },
-      }),
-    ]);
+    const invoiceLines = await this.prisma.invoiceDetail.findMany({
+      where: {
+        promotionId: id,
+        invoice: { status: { not: INVOICE_STATUS.CANCELLED } },
+      },
+      select: {
+        productId: true,
+        productCode: true,
+        productName: true,
+        quantity: true,
+        lineType: true,
+      },
+    });
 
     const SOLD = new Set(['normal', 'promo_discount']);
     const PROMO = new Set(['gift', 'discounted_buy']);
@@ -472,7 +471,6 @@ export class PromotionsService {
       map.set(key, row);
     };
     invoiceLines.forEach(addLine);
-    orderLines.forEach(addLine);
 
     const items = [...map.values()].sort((a, b) => b.soldQty - a.soldQty);
     const totals = items.reduce(

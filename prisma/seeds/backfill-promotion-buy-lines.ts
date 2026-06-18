@@ -120,6 +120,46 @@ async function main() {
     }
   }
 
+  // Nguồn 2 (cho invoice): HĐ tạo-từ-đơn ghi log với orderId, KHÔNG có invoiceId,
+  // nên nhánh log ở trên không stamp được invoice. Thay vào đó suy KM trực tiếp từ
+  // dòng reward (gift / discounted_buy) đã gắn promotionId trên chính HĐ đó.
+  const rewardDetails = await prisma.invoiceDetail.findMany({
+    where: {
+      promotionId: { not: null },
+      lineType: { in: ['gift', 'discounted_buy'] },
+    },
+    select: { invoiceId: true, promotionId: true },
+  });
+  const invPromoMap = new Map<number, Set<number>>();
+  for (const d of rewardDetails) {
+    if (!invPromoMap.has(d.invoiceId)) invPromoMap.set(d.invoiceId, new Set());
+    invPromoMap.get(d.invoiceId)!.add(d.promotionId!);
+  }
+  console.log(
+    `  → ${invPromoMap.size} HĐ có dòng reward gắn KM (nguồn suy dòng X)`,
+  );
+
+  for (const [invoiceId, promoSet] of invPromoMap) {
+    for (const promotionId of promoSet) {
+      let buyIds = buyIdsCache.get(promotionId);
+      if (!buyIds) {
+        buyIds = await resolveBuyProductIds(promotionId);
+        buyIdsCache.set(promotionId, buyIds);
+      }
+      if (buyIds.length === 0) continue;
+      const res = await prisma.invoiceDetail.updateMany({
+        where: {
+          invoiceId,
+          productId: { in: buyIds },
+          lineType: 'normal',
+          promotionId: null,
+        },
+        data: { promotionId },
+      });
+      invoiceUpdated += res.count;
+    }
+  }
+
   console.log(`✅ Hoàn tất:`);
   console.log(`   - invoice_details cập nhật: ${invoiceUpdated}`);
   console.log(`   - order_items cập nhật:     ${orderUpdated}`);
