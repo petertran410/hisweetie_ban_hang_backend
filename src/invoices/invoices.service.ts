@@ -35,7 +35,7 @@ import {
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
-import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
+import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
 
@@ -4392,6 +4392,428 @@ export class InvoicesService {
                   break;
                 case 'totalPrice':
                   row[col.key] = Number(detail.totalPrice);
+                  break;
+                default:
+                  row[col.key] = '';
+              }
+            } else {
+              row[col.key] = '';
+            }
+          }
+
+          sheet.addRow(row).commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  // ─── EXPORT VAT: Catalog cột chi tiết (1 dòng/sản phẩm, có VAT từng dòng) ───
+  getVatDetailColumns(): Array<{ key: string; header: string; width: number }> {
+    return [
+      { key: 'branchName', header: 'Chi nhánh', width: 18 },
+      { key: 'invoiceCode', header: 'Mã hóa đơn', width: 16 },
+      { key: 'purchaseDate', header: 'Thời gian', width: 18 },
+      { key: 'createdAt', header: 'Thời gian tạo', width: 18 },
+      { key: 'updatedAt', header: 'Ngày cập nhật', width: 18 },
+      { key: 'orderCode', header: 'Mã đặt hàng', width: 16 },
+      { key: 'customerCode', header: 'Mã khách hàng', width: 14 },
+      { key: 'customerName', header: 'Tên khách hàng', width: 22 },
+      { key: 'customerPhone', header: 'Điện thoại', width: 14 },
+      { key: 'customerTaxCode', header: 'Mã số thuế', width: 16 },
+      { key: 'customerInvoiceAddress', header: 'Địa chỉ xuất HĐ', width: 28 },
+      { key: 'misaEmployeeCode', header: 'Mã NV phụ trách', width: 16 },
+      { key: 'misaEmployeeName', header: 'Nhân viên phụ trách', width: 20 },
+      { key: 'soldByName', header: 'Người bán', width: 18 },
+      { key: 'creatorName', header: 'Người tạo', width: 18 },
+      { key: 'description', header: 'Ghi chú', width: 22 },
+      { key: 'misaStatusValue', header: 'Trạng thái Misa', width: 16 },
+      { key: 'misaOrgRefId', header: 'Mã chứng từ Misa', width: 26 },
+      { key: 'misaSyncedAt', header: 'Thời gian đồng bộ', width: 18 },
+      { key: 'missingMisaCode', header: 'Thiếu mã Misa', width: 14 },
+      { key: 'misaErrorMessage', header: 'Lỗi Misa', width: 30 },
+      { key: 'grandTotal', header: 'Tổng HĐ (gốc)', width: 16 },
+      { key: 'invoicePreTax', header: 'Tiền trước thuế (HĐ)', width: 18 },
+      { key: 'invoiceVat', header: 'Thuế VAT (HĐ)', width: 16 },
+      { key: 'invoiceAfterTax', header: 'Tiền sau thuế (HĐ)', width: 18 },
+      // ── Cột mức sản phẩm ──
+      { key: 'productCode', header: 'Mã hàng', width: 14 },
+      { key: 'productName', header: 'Tên hàng', width: 28 },
+      { key: 'misaCode', header: 'Mã Misa hàng hóa', width: 18 },
+      { key: 'misaUnit', header: 'ĐVT Misa', width: 12 },
+      { key: 'productNote', header: 'Ghi chú hàng hóa', width: 22 },
+      { key: 'quantity', header: 'Số lượng', width: 12 },
+      { key: 'vatRate', header: 'Thuế suất (%)', width: 12 },
+      { key: 'unitPriceAfterTax', header: 'Đơn giá sau thuế', width: 16 },
+      { key: 'unitPriceBeforeTax', header: 'Đơn giá trước thuế', width: 18 },
+      { key: 'linePreTax', header: 'Thành tiền trước thuế', width: 18 },
+      { key: 'lineVat', header: 'Tiền thuế VAT', width: 16 },
+      { key: 'lineAfterTax', header: 'Thành tiền sau thuế', width: 18 },
+    ];
+  }
+
+  /** Chuyển status hóa đơn (số) → nhãn trạng thái Misa cho file xuất. */
+  private misaStatusLabel(status?: string | null): string {
+    switch (status) {
+      case 'SYNCED':
+        return 'Đã đồng bộ';
+      case 'FAILED':
+        return 'Thất bại';
+      case 'PENDING':
+        return 'Chờ xử lý';
+      case 'SKIP':
+        return 'Bỏ qua';
+      default:
+        return 'Bỏ qua';
+    }
+  }
+
+  // ─── EXPORT VAT 1: Tổng quan (1 dòng/hóa đơn, có cột VAT) ───────────────────
+  async exportVatOverview(
+    query: InvoiceQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn VAT tổng quan');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 16 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Mã số thuế', key: 'customerTaxCode', width: 16 },
+      { header: 'Địa chỉ xuất HĐ', key: 'customerInvoiceAddress', width: 28 },
+      { header: 'Nhân viên phụ trách', key: 'misaEmployeeName', width: 20 },
+      { header: 'Tiền trước thuế', key: 'invoicePreTax', width: 16 },
+      { header: 'Thuế VAT', key: 'invoiceVat', width: 16 },
+      { header: 'Tiền sau thuế', key: 'invoiceAfterTax', width: 16 },
+      { header: 'Tổng HĐ (gốc)', key: 'grandTotal', width: 16 },
+      { header: 'Trạng thái Misa', key: 'misaStatusValue', width: 16 },
+      { header: 'Mã chứng từ Misa', key: 'misaOrgRefId', width: 26 },
+      { header: 'Thời gian đồng bộ', key: 'misaSyncedAt', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          grandTotal: true,
+          misaSyncStatus: true,
+          misaOrgRefId: true,
+          misaSyncedAt: true,
+          branch: { select: { name: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              taxCode: true,
+              identificationNumber: true,
+              invoiceAddress: true,
+              misaEmployeeCode: true,
+              misaEmployeeName: true,
+            },
+          },
+          details: {
+            select: {
+              quantity: true,
+              price: true,
+              discount: true,
+              product: { select: { vat: true } },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        stt++;
+        const vat = computeInvoiceVat(
+          (inv.details || []).map((d) => ({
+            quantity: d.quantity,
+            price: d.price,
+            discount: d.discount,
+            vatRate: Number((d.product as any)?.vat ?? 8),
+          })),
+        );
+        sheet
+          .addRow({
+            stt,
+            branchName: inv.branch?.name ?? '',
+            invoiceCode: inv.code,
+            purchaseDate: new Date(inv.purchaseDate),
+            customerCode: inv.customer?.code ?? '',
+            customerName: inv.customer?.name ?? 'Khách lẻ',
+            customerTaxCode:
+              inv.customer?.taxCode ??
+              inv.customer?.identificationNumber ??
+              '',
+            customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
+            misaEmployeeName:
+              inv.customer?.misaEmployeeName ??
+              inv.customer?.misaEmployeeCode ??
+              '',
+            invoicePreTax: vat.totalPreTax,
+            invoiceVat: vat.totalVat,
+            invoiceAfterTax: vat.totalAfterTax,
+            grandTotal: Number(inv.grandTotal),
+            misaStatusValue: this.misaStatusLabel(inv.misaSyncStatus),
+            misaOrgRefId: inv.misaOrgRefId ?? '',
+            misaSyncedAt: inv.misaSyncedAt
+              ? new Date(inv.misaSyncedAt)
+              : '',
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  // ─── EXPORT VAT 2: Chi tiết (1 dòng/sản phẩm, VAT từng dòng) ────────────────
+  async exportVatDetail(
+    query: InvoiceQueryDto,
+    selectedColumns: string[],
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+    const catalog = this.getVatDetailColumns();
+
+    const activeCols =
+      selectedColumns.length > 0
+        ? catalog.filter((c) => selectedColumns.includes(c.key))
+        : catalog;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn VAT chi tiết');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      ...activeCols.map((c) => ({
+        header: c.header,
+        key: c.key,
+        width: c.width,
+      })),
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          createdAt: true,
+          updatedAt: true,
+          grandTotal: true,
+          description: true,
+          misaSyncStatus: true,
+          misaOrgRefId: true,
+          misaSyncedAt: true,
+          misaErrorMessage: true,
+          branch: { select: { name: true } },
+          order: { select: { code: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+              taxCode: true,
+              identificationNumber: true,
+              invoiceAddress: true,
+              misaEmployeeCode: true,
+              misaEmployeeName: true,
+            },
+          },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: {
+              productCode: true,
+              productName: true,
+              note: true,
+              quantity: true,
+              price: true,
+              discount: true,
+              product: {
+                select: {
+                  vat: true,
+                  misa_code: true,
+                  misa_unit: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        const lines = (inv.details || []).map((d) => ({
+          quantity: d.quantity,
+          price: d.price,
+          discount: d.discount,
+          vatRate: Number((d.product as any)?.vat ?? 8),
+        }));
+        const invVat = computeInvoiceVat(lines);
+        const missingMisaCode = (inv.details || []).some(
+          (d) =>
+            !d.product?.misa_code || d.product.misa_code.trim() === '',
+        );
+
+        const invData: Record<string, any> = {
+          branchName: inv.branch?.name ?? '',
+          invoiceCode: inv.code,
+          purchaseDate: new Date(inv.purchaseDate),
+          createdAt: new Date(inv.createdAt),
+          updatedAt: new Date(inv.updatedAt),
+          orderCode: inv.order?.code ?? '',
+          customerCode: inv.customer?.code ?? '',
+          customerName: inv.customer?.name ?? 'Khách lẻ',
+          customerPhone:
+            inv.customer?.contactNumber ??
+            (inv.customer as any)?.phone ??
+            '',
+          customerTaxCode:
+            inv.customer?.taxCode ??
+            inv.customer?.identificationNumber ??
+            '',
+          customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
+          misaEmployeeCode: inv.customer?.misaEmployeeCode ?? '',
+          misaEmployeeName: inv.customer?.misaEmployeeName ?? '',
+          soldByName: inv.soldBy?.name ?? '',
+          creatorName: inv.creator?.name ?? '',
+          description: inv.description ?? '',
+          misaStatusValue: this.misaStatusLabel(inv.misaSyncStatus),
+          misaOrgRefId: inv.misaOrgRefId ?? '',
+          misaSyncedAt: inv.misaSyncedAt ? new Date(inv.misaSyncedAt) : '',
+          missingMisaCode: missingMisaCode ? 'Có' : 'Không',
+          misaErrorMessage: inv.misaErrorMessage ?? '',
+          grandTotal: Number(inv.grandTotal),
+          invoicePreTax: invVat.totalPreTax,
+          invoiceVat: invVat.totalVat,
+          invoiceAfterTax: invVat.totalAfterTax,
+        };
+
+        const detailEntries = inv.details?.length
+          ? inv.details
+          : [null];
+
+        for (let i = 0; i < detailEntries.length; i++) {
+          const detail = detailEntries[i];
+          stt++;
+          const row: Record<string, any> = { stt };
+
+          const vatRate = detail
+            ? Number((detail.product as any)?.vat ?? 8)
+            : 0;
+          const lineVat = detail
+            ? computeLineVat(
+                {
+                  quantity: detail.quantity,
+                  price: detail.price,
+                  discount: detail.discount,
+                },
+                vatRate,
+              )
+            : null;
+
+          for (const col of activeCols) {
+            if (col.key in invData) {
+              row[col.key] = invData[col.key];
+            } else if (detail) {
+              switch (col.key) {
+                case 'productCode':
+                  row[col.key] = detail.productCode ?? '';
+                  break;
+                case 'productName':
+                  row[col.key] = detail.productName ?? '';
+                  break;
+                case 'misaCode':
+                  row[col.key] = (detail.product as any)?.misa_code ?? '';
+                  break;
+                case 'misaUnit':
+                  row[col.key] = (detail.product as any)?.misa_unit ?? '';
+                  break;
+                case 'productNote':
+                  row[col.key] = detail.note ?? '';
+                  break;
+                case 'quantity':
+                  row[col.key] = Number(detail.quantity);
+                  break;
+                case 'vatRate':
+                  row[col.key] = vatRate;
+                  break;
+                case 'unitPriceAfterTax':
+                  row[col.key] = lineVat?.unitPriceAfterTax ?? 0;
+                  break;
+                case 'unitPriceBeforeTax':
+                  row[col.key] = lineVat?.unitPrice ?? 0;
+                  break;
+                case 'linePreTax':
+                  row[col.key] = lineVat?.amountBeforeTax ?? 0;
+                  break;
+                case 'lineVat':
+                  row[col.key] = lineVat?.vatAmount ?? 0;
+                  break;
+                case 'lineAfterTax':
+                  row[col.key] = lineVat?.amountAfterTax ?? 0;
                   break;
                 default:
                   row[col.key] = '';

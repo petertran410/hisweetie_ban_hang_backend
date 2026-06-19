@@ -15,6 +15,7 @@ import { CustomersModule } from './customers/customers.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { OrdersModule } from './orders/orders.module';
 import { ConsignmentsModule } from './consignments/consignments.module';
+import { ContractsModule } from './contracts/contracts.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { UploadModule } from './upload/upload.module';
 import { UploadSessionModule } from './upload-session/upload-session.module';
@@ -115,6 +116,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SuppliersModule,
     OrdersModule,
     ConsignmentsModule,
+    ContractsModule,
     InvoicesModule,
     PurchaseOrdersModule,
     PriceBooksModule,
