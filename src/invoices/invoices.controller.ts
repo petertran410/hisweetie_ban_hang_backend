@@ -146,6 +146,58 @@ export class InvoicesController {
     return this.invoicesService.getVatTotals(query, user);
   }
 
+  @Get('vat/export-detail/columns')
+  @RequirePermissions('vat_invoices:export')
+  @ApiOperation({ summary: 'Catalog cột export chi tiết hóa đơn VAT' })
+  getVatDetailColumns() {
+    return this.invoicesService.getVatDetailColumns();
+  }
+
+  @Get('vat/export')
+  @RequirePermissions('vat_invoices:export')
+  @ApiOperation({ summary: 'Xuất Excel hóa đơn VAT tổng quan' })
+  async exportVatOverview(
+    @Query() query: InvoiceQueryDto,
+    @Res() res: Response,
+  ) {
+    const ts = Date.now();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=HoaDonVAT_TongQuan_${ts}.xlsx`,
+    );
+    await this.invoicesService.exportVatOverview(query, res);
+  }
+
+  @Get('vat/export-detail')
+  @RequirePermissions('vat_invoices:export')
+  @ApiOperation({ summary: 'Xuất Excel hóa đơn VAT chi tiết' })
+  async exportVatDetail(
+    @Query() query: InvoiceQueryDto,
+    @Query('columns') columnsParam: string,
+    @Res() res: Response,
+  ) {
+    const selectedColumns = columnsParam
+      ? columnsParam
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      : [];
+    const ts = Date.now();
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=HoaDonVAT_ChiTiet_${ts}.xlsx`,
+    );
+    await this.invoicesService.exportVatDetail(query, selectedColumns, res);
+  }
+
   @Get('export')
   @RequirePermissions('invoices:view')
   @ApiOperation({ summary: 'Xuất Excel hóa đơn tổng quan' })

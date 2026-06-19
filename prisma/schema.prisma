@@ -52,6 +52,7 @@ model User {
   createdCustomerGroups          CustomerGroup[]        @relation("CustomerGroupCreator")
   createdCustomers               Customer[]             @relation("CustomerCreator")
   updatedCustomers               Customer[]             @relation("CustomerUpdater")
+  createdContracts               Contract[]             @relation("ContractCreator")
   cashFlowsCreated               CashFlow[]             @relation("CashFlowCreator")
   cashFlowsCollected             CashFlow[]             @relation("CashFlowCollector")
   createdProductions             Production[]           @relation("ProductionCreator")
@@ -449,6 +450,7 @@ model Customer {
   updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
   priceBookCustomers   PriceBookCustomer[]
   promotionCustomers   PromotionCustomer[]
+  contracts            Contract[]
 
   @@index([larkSyncStatus])
   @@map("customers")
@@ -3076,4 +3078,42 @@ model Notification {
   @@index([userId, readAt])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+/// Hợp đồng ký điện tử qua Documenso. Bảng proxy: lưu trạng thái + tham chiếu
+/// envelope bên Documenso, không lưu nội dung PDF (PDF đã ký tải về uploads/contracts/).
+model Contract {
+  id             Int     @id @default(autoincrement())
+  customerId     Int     @map("customer_id")
+  title          String
+  /// Nguồn tạo: "template" (từ template Documenso) | "upload" (PDF tải lên)
+  source         String  @default("template")
+  /// Envelope id bên Documenso (vd "envelope_abc123"). Unique để webhook map ngược.
+  documensoId    String? @unique @map("documenso_id")
+  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
+  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
+  externalId     String? @unique @map("external_id")
+  recipientEmail String? @map("recipient_email")
+  /// Trạng thái: DRAFT | SENT | SIGNED | REJECTED | EXPIRED | CANCELLED
+  status         String  @default("DRAFT")
+  /// Link ký Documenso trả về khi distribute (để mở lại / gửi cho khách).
+  signingUrl     String? @map("signing_url")
+  /// Đường dẫn PDF đã ký tải về (vd /uploads/contracts/xxx.pdf).
+  signedFileUrl  String? @map("signed_file_url")
+  /// Lý do từ chối nếu khách reject.
+  rejectReason   String? @map("reject_reason")
+
+  sentAt   DateTime? @map("sent_at")
+  signedAt DateTime? @map("signed_at")
+
+  createdBy Int?     @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  creator  User?    @relation("ContractCreator", fields: [createdBy], references: [id])
+
+  @@index([customerId])
+  @@index([status])
+  @@map("contracts")
 }
