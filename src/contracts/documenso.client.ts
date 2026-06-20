@@ -473,18 +473,24 @@ export class DocumensoClient {
   }
 
   /**
-   * Gửi document cho recipient. POST /envelope/distribute  body {envelopeId}.
-   * Trả về recipients kèm signingUrl.
+   * Gửi document cho recipient. POST /envelope/distribute  body {envelopeId, meta?}.
+   * Trả về recipients kèm signingUrl. emailSettings cho phép tắt bớt email tự động
+   * của Documenso (vd documentCompleted — vì mình tự gửi mail hoàn tất qua Lark Mail).
    */
-  async distribute(envelopeId: string): Promise<DocumensoEnvelopeResult> {
+  async distribute(
+    envelopeId: string,
+    emailSettings?: Record<string, boolean>,
+  ): Promise<DocumensoEnvelopeResult> {
     this.ensureConfigured();
+    const body: any = { envelopeId };
+    if (emailSettings) {
+      body.meta = { emailSettings };
+    }
     try {
       const res = await firstValueFrom(
-        this.httpService.post(
-          `${this.baseUrl}/envelope/distribute`,
-          { envelopeId },
-          { headers: { ...this.authHeaders, 'Content-Type': 'application/json' } },
-        ),
+        this.httpService.post(`${this.baseUrl}/envelope/distribute`, body, {
+          headers: { ...this.authHeaders, 'Content-Type': 'application/json' },
+        }),
       );
       return this.normalizeEnvelope(res.data);
     } catch (err) {
