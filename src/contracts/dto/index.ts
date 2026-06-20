@@ -12,8 +12,10 @@ import { Type } from 'class-transformer';
 
 export const CONTRACT_STATUSES = [
   'DRAFT',
-  'SENT',
-  'SIGNED',
+  'REVIEW_SENT',   // Phase 1: đã gửi bản xem cho khách (Lark Mail)
+  'REVIEW_APPROVED', // Khách đồng ý nội dung
+  'SENT',           // Phase 2: đã gửi bản ký Documenso cho khách
+  'SIGNED',         // Khách đã ký xong
   'REJECTED',
   'EXPIRED',
   'CANCELLED',

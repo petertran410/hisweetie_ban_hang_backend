@@ -74,12 +74,26 @@ export class ContractsController {
 
   @Post('from-template')
   @RequirePermissions('contracts:create')
-  @ApiOperation({ summary: 'Tạo & gửi hợp đồng từ template Documenso' })
+  @ApiOperation({ summary: 'Tạo & gửi bản XEM TRƯỚC hợp đồng (Lark Mail)' })
   async createFromTemplate(
     @Body() dto: CreateFromTemplateDto,
     @CurrentUser() user: any,
   ) {
     return this.contractsService.createFromTemplate(dto, user?.id);
+  }
+
+  @Post(':id/approve-review')
+  @RequirePermissions('contracts:send')
+  @ApiOperation({ summary: 'Đánh dấu khách đã đồng ý nội dung (bản xem trước)' })
+  async approveReview(@Param('id') id: string) {
+    return this.contractsService.approveReview(Number(id));
+  }
+
+  @Post(':id/send-for-signing')
+  @RequirePermissions('contracts:send')
+  @ApiOperation({ summary: 'Gửi bản KÝ điện tử cho khách (Documenso)' })
+  async sendForSigning(@Param('id') id: string) {
+    return this.contractsService.sendForSigning(Number(id));
   }
 
   @Post('upload')

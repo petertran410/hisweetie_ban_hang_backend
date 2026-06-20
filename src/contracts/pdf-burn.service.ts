@@ -29,6 +29,20 @@ export interface BurnTextItem {
   align?: 'left' | 'center' | 'right';
 }
 
+/**
+ * Một ảnh (PNG) cần "nung" vào PDF — dùng cho chữ ký + con dấu công ty. Toạ độ
+ * theo % giống BurnTextItem. Ảnh được fit GỌN trong ô (giữ tỉ lệ, căn giữa).
+ */
+export interface BurnImageItem {
+  page: number; // 1-based
+  xPercent: number;
+  yPercent: number;
+  widthPercent: number;
+  heightPercent: number;
+  /** PNG buffer (nền trong suốt). */
+  imageBuffer: Buffer;
+}
+
 @Injectable()
 export class PdfBurnService {
   private readonly logger = new Logger(PdfBurnService.name);
@@ -130,5 +144,119 @@ export class PdfBurnService {
 
     const out = await pdfDoc.save();
     return Buffer.from(out);
+  }
+
+  /**
+   * Vẽ text + ảnh (chữ ký/con dấu công ty) lên PDF trong 1 lần load. Trả buffer
+   * PDF mới. Dùng cho Phase 2: PDF có sẵn text + dấu công ty TRƯỚC khi đẩy sang
+   * Documenso (phải nung trước khi cert.p12 niêm phong, nếu không sẽ phá chữ ký số).
+   */
+  async burnTextAndImages(
+    pdfBuffer: Buffer,
+    textItems: BurnTextItem[],
+    imageItems: BurnImageItem[],
+  ): Promise<Buffer> {
+    if (!textItems.length && !imageItems.length) return pdfBuffer;
+    this.loadFonts();
+
+    const pdfDoc = await PDFDocument.load(pdfBuffer);
+    pdfDoc.registerFontkit(fontkit);
+    const font = await pdfDoc.embedFont(this.fontRegularBytes!, {
+      subset: true,
+    });
+    const pages = pdfDoc.getPages();
+
+    // --- Text ---
+    for (const item of textItems) {
+      this.drawTextItem(pages, font, item);
+    }
+
+    // --- Images (chữ ký + dấu) ---
+    for (const item of imageItems) {
+      const pageIndex = (item.page || 1) - 1;
+      if (pageIndex < 0 || pageIndex >= pages.length) {
+        this.logger.warn(`burnImage: page ${item.page} ngoài phạm vi — bỏ qua`);
+        continue;
+      }
+      if (!item.imageBuffer?.length) continue;
+      const page = pages[pageIndex];
+      const { width: pw, height: ph } = page.getSize();
+
+      let png;
+      try {
+        png = await pdfDoc.embedPng(item.imageBuffer);
+      } catch (e) {
+        this.logger.warn(`burnImage: nhúng PNG lỗi — bỏ qua: ${e}`);
+        continue;
+      }
+
+      const boxX = (item.xPercent / 100) * pw;
+      const boxYTop = (item.yPercent / 100) * ph;
+      const boxW = (item.widthPercent / 100) * pw;
+      const boxH = (item.heightPercent / 100) * ph;
+
+      // Fit giữ tỉ lệ trong ô, căn giữa.
+      const scale = Math.min(boxW / png.width, boxH / png.height);
+      const drawW = png.width * scale;
+      const drawH = png.height * scale;
+      const drawX = boxX + (boxW - drawW) / 2;
+      // pdf-lib gốc dưới-trái; ô đo từ trên xuống.
+      const drawYTop = boxYTop + (boxH - drawH) / 2;
+      const drawY = ph - drawYTop - drawH;
+
+      page.drawImage(png, { x: drawX, y: drawY, width: drawW, height: drawH });
+    }
+
+    const out = await pdfDoc.save();
+    return Buffer.from(out);
+  }
+
+  /** Vẽ 1 ô text vào trang (tách riêng để dùng chung). */
+  private drawTextItem(
+    pages: any[],
+    font: any,
+    item: BurnTextItem,
+  ): void {
+    const pageIndex = (item.page || 1) - 1;
+    if (pageIndex < 0 || pageIndex >= pages.length) {
+      this.logger.warn(`burnText: page ${item.page} ngoài phạm vi — bỏ qua`);
+      return;
+    }
+    const page = pages[pageIndex];
+    const { width: pw, height: ph } = page.getSize();
+
+    const boxX = (item.xPercent / 100) * pw;
+    const boxYTop = (item.yPercent / 100) * ph;
+    const boxW = (item.widthPercent / 100) * pw;
+    const boxH = (item.heightPercent / 100) * ph;
+
+    const value = String(item.value ?? '');
+    if (!value) return;
+
+    let fontSize =
+      item.fontSize && item.fontSize > 0 ? item.fontSize : boxH * 0.7;
+    fontSize = Math.max(6, Math.min(fontSize, 48));
+    let textWidth = font.widthOfTextAtSize(value, fontSize);
+    while (textWidth > boxW && fontSize > 6) {
+      fontSize -= 0.5;
+      textWidth = font.widthOfTextAtSize(value, fontSize);
+    }
+
+    let drawX = boxX;
+    const align = item.align || 'left';
+    if (align === 'center') drawX = boxX + (boxW - textWidth) / 2;
+    else if (align === 'right') drawX = boxX + (boxW - textWidth);
+
+    const boxCenterFromTop = boxYTop + boxH / 2;
+    const baselineFromTop = boxCenterFromTop + fontSize * 0.35;
+    const drawY = ph - baselineFromTop;
+
+    page.drawText(value, {
+      x: drawX,
+      y: drawY,
+      size: fontSize,
+      font,
+      color: rgb(0, 0, 0),
+    });
   }
 }

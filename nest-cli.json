@@ -9,6 +9,11 @@
         "include": "contracts/assets/fonts/*.ttf",
         "outDir": "dist/src",
         "watchAssets": true
+      },
+      {
+        "include": "contracts/assets/signatures/*",
+        "outDir": "dist/src",
+        "watchAssets": true
       }
     ]
   }
