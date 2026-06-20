@@ -49,6 +49,22 @@ export class ContractsController {
     return this.contractsService.findAll(query);
   }
 
+  @Get('templates')
+  @RequirePermissions('contracts:create')
+  @ApiOperation({ summary: 'Danh sách loại hợp đồng (template Documenso)' })
+  async listTemplates() {
+    return this.contractsService.listTemplates();
+  }
+
+  @Get('templates/:id/fields')
+  @RequirePermissions('contracts:create')
+  @ApiOperation({
+    summary: 'Field công ty cần điền của template (FE render form động)',
+  })
+  async getTemplateFields(@Param('id') id: string) {
+    return this.contractsService.getTemplateFields(Number(id));
+  }
+
   @Get(':id')
   @RequirePermissions('contracts:view')
   @ApiOperation({ summary: 'Chi tiết hợp đồng' })
@@ -100,6 +116,21 @@ export class ContractsController {
     res.send(buffer);
   }
 
+  @Get(':id/preview')
+  @RequirePermissions('contracts:view')
+  @ApiOperation({ summary: 'Xem trước PDF đã ký (inline)' })
+  async preview(@Param('id') id: string, @Res() res: Response) {
+    const { buffer, filename } = await this.contractsService.getSignedPdf(
+      Number(id),
+    );
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `inline; filename="${filename}"`,
+      'Content-Length': buffer.length,
+    });
+    res.send(buffer);
+  }
+
   /**
    * Webhook Documenso. Verify header X-Documenso-Secret (plain string)
    * bằng so sánh constant-time. KHÔNG phải HMAC.
@@ -109,7 +140,9 @@ export class ContractsController {
   @ApiOperation({ summary: 'Webhook Documenso (document lifecycle)' })
   async webhook(
     @Headers('x-documenso-secret') receivedSecret: string,
-    @Body() dto: DocumensoWebhookDto,
+    // Nhận raw object (không qua DTO) — Documenso gửi kèm field thừa (webhookEndpoint)
+    // mà global ValidationPipe (forbidNonWhitelisted) sẽ chặn → 400. Validate thủ công.
+    @Body() body: Record<string, any>,
   ) {
     const secret = this.configService.get<string>('DOCUMENSO_WEBHOOK_SECRET');
     if (!secret) {
@@ -123,10 +156,10 @@ export class ContractsController {
       });
       throw new UnauthorizedException('Unauthorized');
     }
-    if (!dto?.event || !dto?.payload) {
+    if (!body?.event || !body?.payload) {
       throw new BadRequestException('Payload webhook không hợp lệ');
     }
-    return this.contractsService.handleWebhook(dto);
+    return this.contractsService.handleWebhook(body as DocumensoWebhookDto);
   }
 
   private verifySecret(received: string, expected: string): boolean {

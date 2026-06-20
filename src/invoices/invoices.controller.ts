@@ -78,11 +78,13 @@ export class InvoicesController {
     @Query('branchId') branchId?: string,
     @Query('pageSize') pageSize?: string,
     @Query('search') search?: string,
+    @Query('excludeDelivered') excludeDelivered?: string,
   ) {
     return this.invoicesService.findForPacking({
       branchId: branchId ? +branchId : undefined,
       pageSize: pageSize ? +pageSize : 100,
       search,
+      excludeDelivered: excludeDelivered === 'true' || excludeDelivered === '1',
     });
   }
 

@@ -7,6 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumensoClient, PrefillField } from './documenso.client';
+import { PdfBurnService } from './pdf-burn.service';
 import {
   CreateFromTemplateDto,
   UploadContractDto,
@@ -25,12 +26,23 @@ export class ContractsService {
     private readonly prisma: PrismaService,
     private readonly documenso: DocumensoClient,
     private readonly configService: ConfigService,
+    private readonly pdfBurn: PdfBurnService,
   ) {
     const tpl = this.configService.get<string>('DOCUMENSO_TEMPLATE_ID');
     this.defaultTemplateId = tpl ? Number(tpl) : undefined;
   }
 
   // ---------- Queries ----------
+
+  /** Danh sách loại hợp đồng (template Documenso) cho FE chọn. */
+  async listTemplates() {
+    return this.documenso.listTemplates();
+  }
+
+  /** Field do recipient "công ty" (ASSISTANT) điền — FE render form động. */
+  async getTemplateFields(templateId: number) {
+    return this.documenso.getAssistantFields(templateId);
+  }
 
   async findAll(query: ContractQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
@@ -96,47 +108,102 @@ export class ContractsService {
       );
     }
 
-    // Lấy template để map label → fieldId + tìm recipient slot.
+    // Lấy template để biết recipient slot + toạ độ field công ty (readOnly) +
+    // field khách (chữ ký, ô khách điền).
     const template = await this.documenso.getTemplate(templateId);
 
-    const signerRecipient =
-      template.recipients?.find((r) => r.role === 'SIGNER') ||
-      template.recipients?.[0];
-    if (!signerRecipient) {
+    const customerRecipient = this.documenso.findCustomerRecipient(template);
+    if (!customerRecipient) {
       throw new BadRequestException(
         'Template không có recipient để gán khách hàng.',
       );
     }
 
-    const prefillFields = this.buildPrefillFields(
-      template,
-      dto.prefill as Record<string, string | undefined> | undefined,
-    );
     const title = dto.title || `Hợp đồng - ${customer.name}`;
     const externalId = `contract-cus${customer.id}-${Date.now()}`;
 
-    const envelope = await this.documenso.useTemplate({
-      templateId,
-      recipients: [
-        {
-          id: signerRecipient.id,
-          email: recipientEmail,
-          name: customer.name,
-        },
-      ],
-      prefillFields,
-      override: { title },
-      distributeDocument: true,
+    // Map prefill {fieldId: value} từ FE.
+    const prefillMap = new Map<number, string>();
+    if (dto.prefillFields?.length) {
+      for (const p of dto.prefillFields) {
+        if (p.value !== undefined && p.value !== null && p.value !== '') {
+          prefillMap.set(p.fieldId, String(p.value));
+        }
+      }
+    }
+
+    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
+    const allFields = template.fields || [];
+
+    // (1) Field công ty = readOnly → "nung" text thẳng vào PDF (không viền).
+    const burnItems = allFields
+      .filter((f) => f.fieldMeta?.readOnly === true)
+      .filter((f) => !SIGNATURE_TYPES.includes((f.type || '').toUpperCase()))
+      .map((f) => {
+        const value =
+          prefillMap.get(f.id) ??
+          (f.fieldMeta?.text ? String(f.fieldMeta.text) : '');
+        return {
+          page: Number(f.page) || 1,
+          xPercent: Number(f.positionX),
+          yPercent: Number(f.positionY),
+          widthPercent: Number(f.width),
+          heightPercent: Number(f.height),
+          value,
+          fontSize: f.fieldMeta?.fontSize
+            ? Number(f.fieldMeta.fontSize)
+            : undefined,
+          align:
+            (f.fieldMeta?.textAlign as 'left' | 'center' | 'right') || 'left',
+        };
+      })
+      .filter((it) => it.value !== '');
+
+    // (2) Field khách = KHÔNG readOnly (chữ ký, ngày, ô khách điền) → giữ làm
+    // field Documenso cho khách thao tác khi ký.
+    const customerFields = allFields
+      .filter((f) => f.fieldMeta?.readOnly !== true)
+      .map((f) => ({
+        type: (f.type || 'TEXT').toUpperCase(),
+        page: Number(f.page) || 1,
+        positionX: Number(f.positionX),
+        positionY: Number(f.positionY),
+        width: Number(f.width),
+        height: Number(f.height),
+        fieldMeta: this.sanitizeFieldMeta(f.fieldMeta),
+      }));
+
+    // Tải PDF gốc của template (chưa có field) → vẽ text công ty lên.
+    const envelopeItemId =
+      (template as any).envelopeItems?.[0]?.id ||
+      allFields[0]?.envelopeItemId;
+    if (!envelopeItemId) {
+      throw new BadRequestException(
+        'Không xác định được file PDF gốc của template.',
+      );
+    }
+    const originalPdf =
+      await this.documenso.downloadEnvelopeItemPdf(envelopeItemId);
+    const burnedPdf = await this.pdfBurn.burnText(originalPdf, burnItems);
+
+    // Tạo document MỚI từ PDF đã nung text, chỉ kèm field khách.
+    const envelope = await this.documenso.createEnvelopeWithFields({
+      title,
+      recipientEmail,
+      recipientName: customer.name,
       externalId,
+      fileBuffer: burnedPdf,
+      fileName: `${title}.pdf`,
+      fields: customerFields,
     });
 
-    // template/use trả draft (chưa có signingUrl). distribute để gửi + lấy signingUrl.
+    // distribute để gửi + lấy signingUrl.
     let result = envelope;
     if (envelope.envelopeId) {
       try {
         result = await this.documenso.distribute(envelope.envelopeId);
       } catch (e) {
-        this.logger.warn(`distribute sau useTemplate lỗi: ${e}`);
+        this.logger.warn(`distribute sau createEnvelope lỗi: ${e}`);
       }
     }
 
@@ -149,6 +216,8 @@ export class ContractsService {
         customerId: customer.id,
         title,
         source: 'template',
+        templateId,
+        templateTitle: template.title || null,
         documensoId: result.envelopeId || envelope.envelopeId || null,
         externalId,
         recipientEmail,
@@ -163,6 +232,29 @@ export class ContractsService {
     });
 
     return contract;
+  }
+
+  /**
+   * Lọc fieldMeta giữ các thuộc tính hợp lệ khi tạo field mới (bỏ text/readOnly
+   * thừa). Documenso validate fieldMeta theo type nên chỉ giữ key an toàn.
+   */
+  private sanitizeFieldMeta(
+    fieldMeta?: Record<string, any>,
+  ): Record<string, any> | undefined {
+    if (!fieldMeta) return undefined;
+    const out: Record<string, any> = {};
+    const keep = [
+      'label',
+      'placeholder',
+      'required',
+      'fontSize',
+      'textAlign',
+      'type',
+    ];
+    for (const k of keep) {
+      if (fieldMeta[k] !== undefined) out[k] = fieldMeta[k];
+    }
+    return Object.keys(out).length ? out : undefined;
   }
 
   /**
@@ -195,6 +287,73 @@ export class ContractsService {
       });
     }
     return result;
+  }
+
+  /**
+   * Prefill id-based (động): FE gửi {fieldId, value}. Khớp field trong template
+   * để lấy type chuẩn rồi build PrefillField. Bỏ field không thuộc template.
+   * value giữ dạng string (Documenso v2.13 nhận string cho mọi loại text-like;
+   * CHECKBOX/RADIO/DROPDOWN cũng nhận chuỗi giá trị đã chọn).
+   */
+  private buildPrefillFieldsById(
+    template: { fields: any[] },
+    items: { fieldId: number; value: string }[],
+  ): PrefillField[] {
+    const result: PrefillField[] = [];
+    for (const item of items) {
+      if (item.value === undefined || item.value === null || item.value === '')
+        continue;
+      const field = template.fields?.find((f) => f.id === item.fieldId);
+      if (!field) {
+        this.logger.warn(
+          `Prefill: fieldId=${item.fieldId} không thuộc template — bỏ qua`,
+        );
+        continue;
+      }
+      result.push({
+        id: field.id,
+        type: (field.type || 'TEXT').toLowerCase(),
+        value: String(item.value),
+      });
+    }
+    return result;
+  }
+
+  /**
+   * Khóa (readOnly) các field thuộc recipient CÔNG TY trong envelope vừa tạo.
+   * (Không còn dùng trong flow chính — field công ty đã đặt readOnly sẵn ở
+   * template. Giữ lại cho trường hợp cần khóa động.)
+   */
+  private async lockCompanyFields(
+    envelopeId: string,
+    customerEmail: string,
+  ): Promise<void> {
+    const raw = await this.documenso.getEnvelopeRaw(envelopeId);
+    const recipients: any[] = raw?.recipients || [];
+    const fields: any[] = raw?.fields || [];
+
+    // Recipient khách trong envelope mới (email đã được thay bằng khách thật).
+    const customer = recipients.find(
+      (r) =>
+        (r.email || '').trim().toLowerCase() ===
+        customerEmail.trim().toLowerCase(),
+    );
+    const customerId = customer?.id;
+
+    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
+    // Field công ty = không thuộc recipient khách + không phải chữ ký + đã có giá trị.
+    const companyFields = fields
+      .filter((f) => f.recipientId !== customerId)
+      .filter((f) => !SIGNATURE_TYPES.includes((f.type || '').toUpperCase()))
+      .filter((f) => f.inserted === true || f.customText || f.fieldMeta?.text)
+      .map((f) => ({
+        id: f.id,
+        type: f.type,
+        fieldMeta: f.fieldMeta || {},
+      }));
+
+    if (companyFields.length === 0) return;
+    await this.documenso.setFieldsReadOnly(envelopeId, companyFields);
   }
 
   // ---------- Upload PDF ----------
@@ -268,6 +427,53 @@ export class ContractsService {
     }
     if (contract.status === 'SIGNED') {
       throw new BadRequestException('Hợp đồng đã ký, không thể gửi lại');
+    }
+
+    // Đồng bộ trạng thái thực tế bên Documenso trước khi gửi lại. Documenso chỉ
+    // cho distribute khi document còn DRAFT/PENDING; các trạng thái cuối
+    // (COMPLETED/REJECTED/CANCELLED) sẽ báo lỗi 500 "Can not send...".
+    const current = await this.documenso.getEnvelope(contract.documensoId);
+    const docStatus = (current.status || '').toUpperCase();
+
+    if (docStatus === 'COMPLETED') {
+      let signedFileUrl = contract.signedFileUrl;
+      try {
+        if (current.documentNumericId != null) {
+          signedFileUrl = await this.downloadAndStoreSignedPdf(
+            contract.id,
+            current.documentNumericId,
+          );
+        }
+      } catch (e) {
+        this.logger.warn(`resend: tải PDF đã ký lỗi: ${e}`);
+      }
+      await this.prisma.contract.update({
+        where: { id },
+        data: { status: 'SIGNED', signedAt: new Date(), signedFileUrl },
+      });
+      throw new BadRequestException(
+        'Hợp đồng đã được ký xong — đã cập nhật lại trạng thái. Vui lòng tải PDF.',
+      );
+    }
+
+    if (docStatus === 'REJECTED') {
+      await this.prisma.contract.update({
+        where: { id },
+        data: { status: 'REJECTED' },
+      });
+      throw new BadRequestException(
+        'Khách hàng đã từ chối ký hợp đồng này — không thể gửi lại. Vui lòng tạo hợp đồng mới.',
+      );
+    }
+
+    if (docStatus === 'CANCELLED') {
+      await this.prisma.contract.update({
+        where: { id },
+        data: { status: 'CANCELLED' },
+      });
+      throw new BadRequestException(
+        'Hợp đồng đã bị hủy bên Documenso — không thể gửi lại.',
+      );
     }
 
     const result = await this.documenso.distribute(contract.documensoId);
