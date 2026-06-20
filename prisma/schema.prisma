@@ -3097,17 +3097,26 @@ model Contract {
   /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
   externalId     String? @unique @map("external_id")
   recipientEmail String? @map("recipient_email")
-  /// Trạng thái: DRAFT | SENT | SIGNED | REJECTED | EXPIRED | CANCELLED
+  /// Trạng thái: DRAFT | REVIEW_SENT | REVIEW_APPROVED | SENT | SIGNED | REJECTED | EXPIRED | CANCELLED
+  /// - REVIEW_SENT: đã gửi bản xem trước (chưa có ô ký) cho khách qua Lark Mail.
+  /// - REVIEW_APPROVED: khách đồng ý nội dung (nhân viên đánh dấu trong POS).
+  /// - SENT: đã gửi bản ký (Documenso) cho khách.
+  /// - SIGNED: khách đã ký xong (PDF hoàn tất, đã niêm phong số).
   status         String  @default("DRAFT")
   /// Link ký Documenso trả về khi distribute (để mở lại / gửi cho khách).
   signingUrl     String? @map("signing_url")
   /// Đường dẫn PDF đã ký tải về (vd /uploads/contracts/xxx.pdf).
   signedFileUrl  String? @map("signed_file_url")
+  /// Đường dẫn PDF bản review đã nung text (để xem lại / đính kèm Lark Mail).
+  reviewFileUrl  String? @map("review_file_url")
+  /// Prefill khách điền ở bước tạo (JSON [{fieldId,value}]) — dùng lại khi gửi bản ký.
+  prefillData    String? @map("prefill_data")
   /// Lý do từ chối nếu khách reject.
   rejectReason   String? @map("reject_reason")
 
-  sentAt   DateTime? @map("sent_at")
-  signedAt DateTime? @map("signed_at")
+  reviewSentAt DateTime? @map("review_sent_at")
+  sentAt       DateTime? @map("sent_at")
+  signedAt     DateTime? @map("signed_at")
 
   createdBy Int?     @map("created_by")
   createdAt DateTime @default(now()) @map("created_at")

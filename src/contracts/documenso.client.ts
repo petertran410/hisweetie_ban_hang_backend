@@ -363,6 +363,32 @@ export class DocumensoClient {
   }
 
   /**
+   * Tải PDF gốc thuần (không field overlay) của template — lấy trực tiếp từ
+   * templateDocumentData (base64), KHÔNG qua envelope/item. Dùng để nung text
+   * vào bản xem (review) và bản ký (sign). GET /template/{id}
+   */
+  async downloadTemplateRawPdf(templateId: number): Promise<Buffer> {
+    this.ensureConfigured();
+    try {
+      const res = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/template/${templateId}`, {
+          headers: this.authHeaders,
+        }),
+      );
+      const tdd = res.data?.templateDocumentData;
+      if (!tdd?.data) {
+        throw new InternalServerErrorException(
+          'Template không có document data (templateDocumentData)',
+        );
+      }
+      const buf = Buffer.from(tdd.data, 'base64');
+      return buf;
+    } catch (err) {
+      this.handleError('downloadTemplateRawPdf', err);
+    }
+  }
+
+  /**
    * Tải PDF gốc của 1 envelope item (PDF chưa có chữ ký, dùng làm nền để vẽ
    * text công ty rồi tạo document mới). GET /envelope/item/{id}/download
    */
