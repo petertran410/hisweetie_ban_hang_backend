@@ -430,7 +430,11 @@ export class ContractsService {
     let result = envelope;
     if (envelope.envelopeId) {
       try {
-        result = await this.documenso.distribute(envelope.envelopeId);
+        result = await this.documenso.distribute(envelope.envelopeId, {
+          // Tắt email hoàn tất của Documenso — mình tự gửi Lark Mail Phase 4 kèm PDF.
+          documentCompleted: false,
+          ownerDocumentCompleted: false,
+        });
       } catch (e) {
         this.logger.warn(`distribute sau createEnvelope lỗi: ${e}`);
       }
@@ -600,7 +604,10 @@ export class ContractsService {
       fileName: file.originalname || 'contract.pdf',
     });
 
-    const distributed = await this.documenso.distribute(envelope.envelopeId);
+    const distributed = await this.documenso.distribute(envelope.envelopeId, {
+      documentCompleted: false,
+      ownerDocumentCompleted: false,
+    });
     const signingUrl = distributed.recipients?.find(
       (r) => r.email === recipientEmail,
     )?.signingUrl;
@@ -673,7 +680,10 @@ export class ContractsService {
       );
     }
 
-    const result = await this.documenso.distribute(contract.documensoId);
+    const result = await this.documenso.distribute(contract.documensoId, {
+      documentCompleted: false,
+      ownerDocumentCompleted: false,
+    });
     const signingUrl = result.recipients?.find(
       (r) => r.email === contract.recipientEmail,
     )?.signingUrl;
