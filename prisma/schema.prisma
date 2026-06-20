@@ -3111,6 +3111,8 @@ model Contract {
   reviewFileUrl  String? @map("review_file_url")
   /// Prefill khách điền ở bước tạo (JSON [{fieldId,value}]) — dùng lại khi gửi bản ký.
   prefillData    String? @map("prefill_data")
+  /// Token bí mật để khách đồng ý/từ chối bản dự thảo từ link trong email (Phase 1).
+  reviewToken    String? @unique @map("review_token")
   /// Lý do từ chối nếu khách reject.
   rejectReason   String? @map("reject_reason")
 

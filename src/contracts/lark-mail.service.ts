@@ -87,16 +87,43 @@ export class LarkMailService {
   /** Email bản xem trước (Phase 1) — khách xem nội dung, chưa ký. */
   buildReviewHtml(params: {
     customerName: string;
-    contractTitle: string;
+    reviewUrl: string;
   }): string {
+    const approveUrl = `${params.reviewUrl}?action=approve`;
+    const rejectUrl = `${params.reviewUrl}?action=reject`;
     return `
       <div style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">
-        <p>Kính gửi <strong>${escapeHtml(params.customerName)}</strong>,</p>
-        <p>Diệp Trà xin gửi tới Quý khách bản xem trước hợp đồng
-        <strong>${escapeHtml(params.contractTitle)}</strong> (đính kèm).</p>
-        <p>Quý khách vui lòng kiểm tra nội dung. Nếu đồng ý, vui lòng phản hồi lại
-        email này để chúng tôi gửi bản ký điện tử chính thức.</p>
-        <p>Trân trọng,<br/>Diệp Trà</p>
+        <p>Kính gửi Quý khách <strong>${escapeHtml(params.customerName)}</strong>,</p>
+        <p>Công ty Diệp Trà trân trọng gửi tới Quý khách <strong>bản dự thảo hợp đồng</strong>
+        để xem trước và rà soát nội dung (xem file đính kèm).</p>
+        <p>Đây là <strong>bản nháp chưa có giá trị ký kết</strong>. Quý khách vui lòng
+        kiểm tra kỹ các thông tin: tên đơn vị, mã số thuế, địa chỉ, tài khoản và
+        các điều khoản trong hợp đồng.</p>
+        <p>Sau khi rà soát, vui lòng chọn một trong hai phương án dưới đây:</p>
+        <table cellpadding="0" cellspacing="0" style="margin:20px 0">
+          <tr>
+            <td style="padding-right:12px">
+              <a href="${approveUrl}"
+                 style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;
+                        padding:12px 28px;border-radius:6px;font-weight:bold;font-size:15px">
+                ✓ Đồng ý &amp; tiến hành ký
+              </a>
+            </td>
+            <td>
+              <a href="${rejectUrl}"
+                 style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;
+                        padding:12px 28px;border-radius:6px;font-weight:bold;font-size:15px">
+                ✗ Không đồng ý
+              </a>
+            </td>
+          </tr>
+        </table>
+        <p style="font-size:13px;color:#666">
+          Khi nhấn <strong>"Đồng ý &amp; tiến hành ký"</strong>, chúng tôi sẽ gửi ngay
+          bản hợp đồng điện tử chính thức để Quý khách ký. Nếu cần điều chỉnh, vui lòng
+          nhấn <strong>"Không đồng ý"</strong> hoặc phản hồi email này kèm nội dung cần sửa.
+        </p>
+        <p>Trân trọng cảm ơn,<br/><strong>Công ty TNHH Xuất Nhập Khẩu Hi Sweetie Việt Nam</strong></p>
       </div>
     `;
   }
@@ -108,12 +135,15 @@ export class LarkMailService {
   }): string {
     return `
       <div style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">
-        <p>Kính gửi <strong>${escapeHtml(params.customerName)}</strong>,</p>
-        <p>Hợp đồng <strong>${escapeHtml(params.contractTitle)}</strong> đã được
-        hai bên ký kết hoàn tất. File hợp đồng có đầy đủ chữ ký điện tử được đính
-        kèm trong email này.</p>
-        <p>Cảm ơn Quý khách đã hợp tác cùng Diệp Trà.</p>
-        <p>Trân trọng,<br/>Diệp Trà</p>
+        <p>Kính gửi Quý khách <strong>${escapeHtml(params.customerName)}</strong>,</p>
+        <p>Hợp đồng <strong>${escapeHtml(params.contractTitle)}</strong> đã được hai bên ký kết hoàn tất.
+        Chúng tôi xin gửi lại Quý khách file hợp đồng có đầy đủ chữ ký điện tử
+        của hai bên (file đính kèm).</p>
+        <p>Hợp đồng này có giá trị pháp lý kể từ ngày ký. Quý khách vui lòng lưu giữ
+        file này để làm căn cứ thực hiện hợp đồng.</p>
+        <p>Trân trọng cảm ơn Quý khách đã tin tưởng hợp tác cùng
+        <strong>Công ty TNHH Xuất Nhập Khẩu Hi Sweetie Việt Nam</strong>.</p>
+        <p>Trân trọng,<br/><strong>Công ty TNHH Xuất Nhập Khẩu Hi Sweetie Việt Nam</strong></p>
       </div>
     `;
   }

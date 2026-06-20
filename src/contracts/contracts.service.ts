@@ -15,6 +15,7 @@ import {
   ContractQueryDto,
   DocumensoWebhookDto,
 } from './dto';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -136,13 +137,21 @@ export class ContractsService {
       burnedPdf,
     );
 
+    // Sinh token bí mật cho khách xác nhận/từ chối bản dự thảo.
+    const reviewToken = crypto.randomBytes(32).toString('base64url');
+    const publicUrl =
+      this.configService.get<string>('CONTRACT_PUBLIC_URL') ||
+      this.configService.get<string>('API_URL') ||
+      'http://localhost:3060';
+    const reviewUrl = `${publicUrl}/api/contracts/review/${reviewToken}`;
+
     // Gửi Lark Mail bản xem trước.
     await this.larkMail.sendMailWithPdf({
       to: recipientEmail,
-      subject: `[Diệp Trà] Bản xem trước hợp đồng: ${title}`,
+      subject: `[Diệp Trà] Bản dự thảo hợp đồng — Quý khách vui lòng rà soát và phản hồi`,
       html: this.larkMail.buildReviewHtml({
         customerName: customer.name,
-        contractTitle: title,
+        reviewUrl,
       }),
       pdfBuffer: burnedPdf,
       pdfFileName: `${title}.pdf`,
@@ -159,6 +168,7 @@ export class ContractsService {
         recipientEmail,
         status: 'REVIEW_SENT',
         reviewFileUrl,
+        reviewToken,
         prefillData: dto.prefillFields?.length
           ? JSON.stringify(dto.prefillFields)
           : null,
@@ -194,10 +204,10 @@ export class ContractsService {
 
     await this.larkMail.sendMailWithPdf({
       to: contract.recipientEmail,
-      subject: `[Diệp Trà] Bản xem trước hợp đồng: ${contract.title}`,
+      subject: `[Diệp Trà] Bản dự thảo hợp đồng (gửi lại) — Quý khách vui lòng rà soát và phản hồi`,
       html: this.larkMail.buildReviewHtml({
         customerName: contract.customer?.name || '',
-        contractTitle: contract.title,
+        reviewUrl: `${this.configService.get<string>('CONTRACT_PUBLIC_URL') || this.configService.get<string>('API_URL') || 'http://localhost:3060'}/api/contracts/review/${contract.reviewToken}`,
       }),
       pdfBuffer: buffer,
       pdfFileName: `${contract.title}.pdf`,
@@ -227,6 +237,69 @@ export class ContractsService {
         customer: { select: { id: true, code: true, name: true, email: true } },
       },
     });
+  }
+
+  /** Tìm hợp đồng theo reviewToken (cho trang xác nhận public). */
+  async findByReviewToken(token: string) {
+    if (!token) throw new NotFoundException('Liên kết không hợp lệ');
+    const contract = await this.prisma.contract.findUnique({
+      where: { reviewToken: token },
+      include: { customer: { select: { name: true } } },
+    });
+    if (!contract) throw new NotFoundException('Liên kết không hợp lệ');
+    return contract;
+  }
+
+  /**
+   * Khách bấm "Đồng ý" từ email → xác nhận bản dự thảo → tự động gửi bản ký
+   * (Phase 2). Idempotent: nếu đã gửi ký rồi thì không gửi lại.
+   */
+  async approveReviewByToken(
+    token: string,
+  ): Promise<{ status: string; alreadyProcessed: boolean }> {
+    const contract = await this.findByReviewToken(token);
+
+    // Đã chuyển sang bước ký (hoặc xa hơn) → không xử lý lại.
+    if (
+      ['SENT', 'SIGNED', 'REJECTED', 'CANCELLED'].includes(contract.status)
+    ) {
+      return { status: contract.status, alreadyProcessed: true };
+    }
+    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
+      throw new BadRequestException('Hợp đồng không ở bước xem trước.');
+    }
+
+    // Đánh dấu duyệt rồi gửi bản ký (Phase 2).
+    await this.prisma.contract.update({
+      where: { id: contract.id },
+      data: { status: 'REVIEW_APPROVED' },
+    });
+    await this.sendForSigning(contract.id);
+    return { status: 'SENT', alreadyProcessed: false };
+  }
+
+  /** Khách bấm "Không đồng ý" từ email → đánh dấu từ chối bản dự thảo. */
+  async rejectReviewByToken(
+    token: string,
+    reason?: string,
+  ): Promise<{ status: string; alreadyProcessed: boolean }> {
+    const contract = await this.findByReviewToken(token);
+    if (['REJECTED', 'CANCELLED'].includes(contract.status)) {
+      return { status: contract.status, alreadyProcessed: true };
+    }
+    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
+      throw new BadRequestException(
+        'Hợp đồng đã chuyển bước, không thể từ chối tại đây.',
+      );
+    }
+    await this.prisma.contract.update({
+      where: { id: contract.id },
+      data: {
+        status: 'REJECTED',
+        rejectReason: reason?.trim() || 'Khách từ chối bản dự thảo',
+      },
+    });
+    return { status: 'REJECTED', alreadyProcessed: false };
   }
 
   // ===================================================================
