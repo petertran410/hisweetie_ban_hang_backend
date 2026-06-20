@@ -194,12 +194,27 @@ export class PackingHangsService {
         },
         select: {
           id: true,
+          code: true,
+          status: true,
           branchId: true,
         },
       });
 
       if (invoices.length === 0) {
         throw new BadRequestException('Không tìm thấy hóa đơn');
+      }
+
+      // Chặn đóng hàng cho hóa đơn đã giao hàng thành công (DELIVERED)
+      // hoặc đã hoàn thành (COMPLETED).
+      const delivered = invoices.find(
+        (inv) =>
+          inv.status === INVOICE_STATUS.DELIVERED ||
+          inv.status === INVOICE_STATUS.COMPLETED,
+      );
+      if (delivered) {
+        throw new BadRequestException(
+          `Hóa đơn ${delivered.code} đã giao hàng, không thể đóng hàng`,
+        );
       }
 
       const firstBranchId = invoices[0].branchId;
@@ -249,7 +264,11 @@ export class PackingHangsService {
         where: {
           id: { in: dto.invoiceIds },
           status: {
-            notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+            notIn: [
+              INVOICE_STATUS.CANCELLED,
+              INVOICE_STATUS.COMPLETED,
+              INVOICE_STATUS.DELIVERED,
+            ],
           },
         },
         data: {

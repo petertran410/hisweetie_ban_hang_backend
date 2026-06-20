@@ -6,6 +6,7 @@ import {
   IsIn,
   ValidateNested,
   IsObject,
+  IsArray,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -46,6 +47,18 @@ export class ContractPrefillDto {
   phone?: string;
 }
 
+/**
+ * Một field điền sẵn dạng id-based (động theo template). FE gửi fieldId lấy từ
+ * GET /contracts/templates/:id/fields. value luôn là string (BE tự ép theo type).
+ */
+export class PrefillFieldItemDto {
+  @IsInt()
+  fieldId: number;
+
+  @IsString()
+  value: string;
+}
+
 export class CreateFromTemplateDto {
   @IsInt()
   customerId: number;
@@ -64,6 +77,16 @@ export class CreateFromTemplateDto {
   @IsEmail()
   recipientEmail?: string;
 
+  /**
+   * Prefill động id-based (ưu tiên). Mỗi item map 1 field công ty điền.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PrefillFieldItemDto)
+  prefillFields?: PrefillFieldItemDto[];
+
+  /** (Cũ) prefill label-based — giữ tương thích ngược, optional. */
   @IsOptional()
   @IsObject()
   @ValidateNested()

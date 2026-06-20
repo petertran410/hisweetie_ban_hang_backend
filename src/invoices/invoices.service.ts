@@ -3423,12 +3423,21 @@ export class InvoicesService {
     branchId?: number;
     pageSize?: number;
     search?: string;
+    excludeDelivered?: boolean;
   }) {
-    const { branchId, pageSize = 100, search } = query;
+    const { branchId, pageSize = 100, search, excludeDelivered } = query;
     const take = Math.min(Math.max(pageSize, 1), 200);
 
     const where: any = {};
     if (branchId) where.branchId = branchId;
+
+    // Khi tạo phiếu LOADING / ĐÓNG HÀNG: loại hóa đơn đã giao hàng thành công
+    // (DELIVERED) hoặc đã hoàn thành (COMPLETED) — không cho báo đơn lại.
+    if (excludeDelivered) {
+      where.status = {
+        notIn: [INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED],
+      };
+    }
 
     const keyword = search?.trim();
     if (keyword) {

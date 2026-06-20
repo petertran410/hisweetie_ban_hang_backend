@@ -3088,6 +3088,9 @@ model Contract {
   title          String
   /// Nguồn tạo: "template" (từ template Documenso) | "upload" (PDF tải lên)
   source         String  @default("template")
+  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
+  templateId     Int?    @map("template_id")
+  templateTitle  String? @map("template_title")
   /// Envelope id bên Documenso (vd "envelope_abc123"). Unique để webhook map ngược.
   documensoId    String? @unique @map("documenso_id")
   /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
