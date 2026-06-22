@@ -19,6 +19,7 @@ import {
   recalcStockAuditChain,
 } from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class ProductsService {
@@ -27,6 +28,7 @@ export class ProductsService {
     private auditLogsService: AuditLogsService,
     private ordersService: OrdersService,
     private orderSuppliersService: OrderSuppliersService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   private parseAttributes(
@@ -1067,6 +1069,8 @@ export class ProductsService {
         });
       }
 
+      this.larkProductSync.enqueueSync(product.id);
+
       return tx.product.findUnique({
         where: { id: product.id },
         include: {
@@ -1659,6 +1663,8 @@ export class ProductsService {
           branchId: user?.branchId || undefined,
         });
       }
+
+      this.larkProductSync.enqueueSync(id);
 
       return tx.product.findUnique({
         where: { id },

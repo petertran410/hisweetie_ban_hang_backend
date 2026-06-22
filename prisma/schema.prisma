@@ -723,6 +723,12 @@ model Product {
   updatedAt          DateTime  @updatedAt
   priceBookId        Int?
 
+  // Lark sync
+  larkRecordId    String?
+  larkSyncStatus  String    @default("PENDING")
+  larkSyncRetries Int       @default(0)
+  larkSyncedAt    DateTime?
+
   // Thông tin công bố sản phẩm
   publicationLocation Json?     @map("publication_location") // { address, cityCode, cityName, districtCode, districtName, wardCode, wardName, newCityCode, newCityName, newWardCode, newWardName }
   publicationDate     DateTime? @map("publication_date")
@@ -762,6 +768,7 @@ model Product {
   vehicleShipmentItems  VehicleShipmentItem[]
 
   @@index([id, name])
+  @@index([larkSyncStatus])
   @@map("products")
 }
 
