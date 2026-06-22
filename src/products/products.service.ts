@@ -809,13 +809,27 @@ export class ProductsService {
       ...productData
     } = dto;
 
-    console.log('[DEBUG CREATE] costScope:', costScope);
-    console.log('[DEBUG CREATE] costBranchIds:', costBranchIds);
-    console.log('[DEBUG CREATE] typeof costBranchIds:', typeof costBranchIds);
-    console.log(
-      '[DEBUG CREATE] Array.isArray(costBranchIds):',
-      Array.isArray(costBranchIds),
-    );
+    // Phòng vệ NaN (xem update()): loại số không hợp lệ trước khi đưa vào Prisma.
+    const sanitizeNumber = (v: any): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const safePurchasePrice = sanitizeNumber(purchasePrice);
+    const safeBasePrice = sanitizeNumber(basePrice);
+    const safeStockQuantity = sanitizeNumber(stockQuantity);
+    const safeMinStockAlert = sanitizeNumber(minStockAlert);
+    const safeMaxStockAlert = sanitizeNumber(maxStockAlert);
+    for (const key of [
+      'weight',
+      'vat',
+      'shippingWeight',
+      'conversionValue',
+    ] as const) {
+      if (
+        key in productData &&
+        sanitizeNumber((productData as any)[key]) === undefined
+      ) {
+        delete (productData as any)[key];
+      }
+    }
 
     const name = dto.name;
     const attributesText = dto.attributesText || null;
@@ -838,7 +852,7 @@ export class ProductsService {
           type: productData.type || 2,
           allowsSale: productData.allowsSale,
           hasVariants: productData.hasVariants,
-          basePrice: basePrice || 0,
+          basePrice: safeBasePrice ?? 0,
           unit: productData.unit,
           conversionValue: productData.conversionValue,
           weight: productData.weight,
@@ -896,10 +910,10 @@ export class ProductsService {
         select: { id: true, name: true },
       });
 
-      const cost = purchasePrice || 0;
-      const onHand = stockQuantity || 0;
-      const minQuality = minStockAlert || 0;
-      const maxQuality = maxStockAlert || 0;
+      const cost = safePurchasePrice ?? 0;
+      const onHand = safeStockQuantity ?? 0;
+      const minQuality = safeMinStockAlert ?? 0;
+      const maxQuality = safeMaxStockAlert ?? 0;
 
       let branchesToCreateInventory: { id: number; name: string }[] = [];
 
@@ -1126,6 +1140,31 @@ export class ProductsService {
       ...productData
     } = dto;
 
+    // Phòng vệ NaN: client có thể gửi NaN khi giá trị số được derive từ dữ liệu
+    // đã bị strip (vd giá vốn bị ẩn theo quyền → Number(undefined) = NaN). Prisma
+    // không nhận NaN cho cột Decimal → ném PrismaClientValidationError ("Dữ liệu
+    // không hợp lệ"). Loại bỏ mọi số không hợp lệ trước khi đưa vào Prisma.
+    const sanitizeNumber = (v: any): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+
+    const safePurchasePrice = sanitizeNumber(purchasePrice);
+    const safeBasePrice = sanitizeNumber(basePrice);
+    const safeStockQuantity = sanitizeNumber(stockQuantity);
+    const safeMinStockAlert = sanitizeNumber(minStockAlert);
+    const safeMaxStockAlert = sanitizeNumber(maxStockAlert);
+
+    // Làm sạch các field số nằm trong productData (đổ thẳng vào product.update).
+    for (const key of [
+      'weight',
+      'vat',
+      'shippingWeight',
+      'conversionValue',
+    ] as const) {
+      if (key in productData && sanitizeNumber((productData as any)[key]) === undefined) {
+        delete (productData as any)[key];
+      }
+    }
+
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.product.update({
         where: { id },
@@ -1133,7 +1172,7 @@ export class ProductsService {
           ...productData,
           fullName,
           basePrice:
-            basePrice !== undefined ? basePrice : currentProduct.basePrice,
+            safeBasePrice !== undefined ? safeBasePrice : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
           ...(publicationLocation !== undefined && {
             publicationLocation: publicationLocation as any,
@@ -1214,10 +1253,10 @@ export class ProductsService {
         }
       }
 
-      const cost = purchasePrice;
-      const onHand = stockQuantity;
-      const minQuality = minStockAlert;
-      const maxQuality = maxStockAlert;
+      const cost = safePurchasePrice;
+      const onHand = safeStockQuantity;
+      const minQuality = safeMinStockAlert;
+      const maxQuality = safeMaxStockAlert;
 
       // Đọc giá trị onHand cũ để so sánh sau khi upsert
       let oldOnHand: number | null = null;
