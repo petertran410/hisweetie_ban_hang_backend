@@ -199,13 +199,14 @@ export class SepayService {
     const sepayId =
       'ext_' + crypto.createHash('sha256').update(message).digest('hex');
 
-    // Resolve bank brand name từ bảng bank_accounts (nếu có số TK khớp).
-    const bankBrandName = parsed.accountNumber
-      ? await this.resolveBankBrandName(parsed.accountNumber)
-      : undefined;
+    // Resolve tài khoản ngân hàng từ bảng bank_accounts (nếu có số TK khớp).
+    const bankAccount = parsed.accountNumber
+      ? await this.resolveBankAccount(parsed.accountNumber)
+      : null;
 
     const data = {
-      transactionDate: parsed.transactionDate ?? new Date(),
+      // Tin nhắn chỉ có ngày, không có giờ → dùng thời điểm nhận tin (đủ giờ phút giây).
+      transactionDate: new Date(),
       accountNumber: parsed.accountNumber ?? undefined,
       subAccount: undefined,
       amountIn: parsed.amountIn,
@@ -215,7 +216,9 @@ export class SepayService {
       code: undefined,
       transactionContent: parsed.transactionContent ?? message,
       referenceNumber: parsed.referenceNumber ?? undefined,
-      bankBrandName,
+      // bankBrandName = mã ngân hàng (bankCode), khớp dữ liệu sync Sepay.
+      bankBrandName: bankAccount?.bankCode ?? undefined,
+      bankAccountId: bankAccount ? String(bankAccount.id) : undefined,
       rawPayload: body as unknown as Prisma.InputJsonValue,
       syncedAt: new Date(),
     };
@@ -262,7 +265,6 @@ export class SepayService {
     accumulated?: number;
     transactionContent?: string;
     referenceNumber?: string;
-    transactionDate?: Date;
   } {
     const stripNumber = (s: string) => Number(s.replace(/[.,\s]/g, '')) || 0;
 
@@ -289,15 +291,6 @@ export class SepayService {
     const balanceMatch = message.match(/So\s*du\s*[:\s]\s*([\d.,]+)/i);
     const accumulated = balanceMatch ? stripNumber(balanceMatch[1]) : undefined;
 
-    // NGAY dd/mm/yyyy trong nội dung (giờ VN). Không có → để service fallback now().
-    const dateMatch = message.match(/NGAY\s*(\d{2})\/(\d{2})\/(\d{4})/i);
-    let transactionDate: Date | undefined;
-    if (dateMatch) {
-      const [, dd, mm, yyyy] = dateMatch;
-      const d = this.parseSepayDate(`${yyyy}-${mm}-${dd} 00:00:00`);
-      if (d) transactionDate = d;
-    }
-
     // TID <số> làm mã tham chiếu (nếu có).
     const referenceNumber = message.match(/TID\s*[:\s]?\s*(\w+)/i)?.[1];
 
@@ -322,25 +315,24 @@ export class SepayService {
       accumulated,
       transactionContent: transactionContent || undefined,
       referenceNumber,
-      transactionDate,
     };
   }
 
   /**
-   * Resolve bank brand name từ bảng bank_accounts theo accountNumber.
-   * Không throw — nếu không khớp thì bankBrandName = null, không cản upsert.
+   * Resolve tài khoản ngân hàng từ bảng bank_accounts theo accountNumber.
+   * Trả { id, bankCode } để set bankAccountId + bankBrandName.
+   * Không throw — không khớp thì null, không cản upsert.
    */
-  private async resolveBankBrandName(
+  private async resolveBankAccount(
     accountNumber: string,
-  ): Promise<string | undefined> {
+  ): Promise<{ id: number; bankCode: string } | null> {
     try {
-      const bank = await this.prisma.bankAccount.findFirst({
+      return await this.prisma.bankAccount.findFirst({
         where: { accountNumber },
-        select: { bankName: true },
+        select: { id: true, bankCode: true },
       });
-      return bank?.bankName;
     } catch {
-      return undefined;
+      return null;
     }
   }
 
