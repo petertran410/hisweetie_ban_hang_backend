@@ -82,6 +82,7 @@ export class OrdersService {
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: it.promotionId ?? null,
+          enabledPromotionIds: it.enabledPromotionIds,
         } as OrderItemDto;
       });
 
@@ -106,6 +107,7 @@ export class OrdersService {
         quantity: Number(it.quantity),
         price: Number(it.unitPrice),
         discount: Number(it.discount || 0),
+        enabledPromotionIds: it.enabledPromotionIds,
       }));
 
     const evalResult = await this.promotionsService.evaluateForInvoice({
