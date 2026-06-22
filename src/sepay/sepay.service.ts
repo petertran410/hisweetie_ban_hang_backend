@@ -199,6 +199,11 @@ export class SepayService {
     const sepayId =
       'ext_' + crypto.createHash('sha256').update(message).digest('hex');
 
+    // Resolve bank brand name từ bảng bank_accounts (nếu có số TK khớp).
+    const bankBrandName = parsed.accountNumber
+      ? await this.resolveBankBrandName(parsed.accountNumber)
+      : undefined;
+
     const data = {
       transactionDate: parsed.transactionDate ?? new Date(),
       accountNumber: parsed.accountNumber ?? undefined,
@@ -210,7 +215,7 @@ export class SepayService {
       code: undefined,
       transactionContent: parsed.transactionContent ?? message,
       referenceNumber: parsed.referenceNumber ?? undefined,
-      bankBrandName: undefined,
+      bankBrandName,
       rawPayload: body as unknown as Prisma.InputJsonValue,
       syncedAt: new Date(),
     };
@@ -319,6 +324,24 @@ export class SepayService {
       referenceNumber,
       transactionDate,
     };
+  }
+
+  /**
+   * Resolve bank brand name từ bảng bank_accounts theo accountNumber.
+   * Không throw — nếu không khớp thì bankBrandName = null, không cản upsert.
+   */
+  private async resolveBankBrandName(
+    accountNumber: string,
+  ): Promise<string | undefined> {
+    try {
+      const bank = await this.prisma.bankAccount.findFirst({
+        where: { accountNumber },
+        select: { bankName: true },
+      });
+      return bank?.bankName;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
