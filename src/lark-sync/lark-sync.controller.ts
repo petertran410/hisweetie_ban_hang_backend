@@ -3,6 +3,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
 import { LarkCustomerSyncService } from './services/lark-customer-sync.service';
+import { LarkProductSyncService } from './services/lark-product-sync.service';
 import { Public } from 'src/auth/decorators/public.decorator';
 
 @ApiTags('Lark Sync')
@@ -13,6 +14,7 @@ export class LarkSyncController {
   constructor(
     private readonly orderSync: LarkOrderSyncService,
     private readonly customerSync: LarkCustomerSyncService,
+    private readonly productSync: LarkProductSyncService,
   ) {}
 
   @Post('orders/full')
@@ -62,6 +64,32 @@ export class LarkSyncController {
   })
   async syncCustomersNow() {
     const result = await this.customerSync.syncPendingAndFailed();
+    return { ok: true, ...result, timestamp: new Date().toISOString() };
+  }
+
+  @Post('products/full')
+  @ApiOperation({
+    summary: 'Full sync toàn bộ sản phẩm lên Lark',
+  })
+  async fullSyncProducts() {
+    const result = await this.productSync.fullSync();
+    return { ok: true, ...result, timestamp: new Date().toISOString() };
+  }
+
+  @Post('products/retry')
+  @ApiOperation({ summary: 'Retry các sản phẩm PENDING/FAILED' })
+  async retryProducts() {
+    const result = await this.productSync.syncPendingAndFailed();
+    return { ok: true, ...result, timestamp: new Date().toISOString() };
+  }
+
+  @Public()
+  @Post('products/sync-now')
+  @ApiOperation({
+    summary: 'Sync sản phẩm PENDING/FAILED lên Lark ngay lập tức',
+  })
+  async syncProductsNow() {
+    const result = await this.productSync.syncPendingAndFailed();
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
 }

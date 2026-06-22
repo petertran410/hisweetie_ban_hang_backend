@@ -6,6 +6,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { OrdersModule } from '../orders/orders.module';
 import { OrderSuppliersModule } from '../order-suppliers/order-suppliers.module';
 import { AuthModule } from '../auth/auth.module';
+import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { AuthModule } from '../auth/auth.module';
     OrdersModule,
     OrderSuppliersModule,
     AuthModule,
+    LarkSyncModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService],
