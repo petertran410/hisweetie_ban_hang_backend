@@ -7,7 +7,11 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumensoClient } from './documenso.client';
-import { PdfBurnService, BurnImageItem, BurnTextItem } from './pdf-burn.service';
+import {
+  PdfBurnService,
+  BurnImageItem,
+  BurnTextItem,
+} from './pdf-burn.service';
 import { LarkMailService } from './lark-mail.service';
 import {
   CreateFromTemplateDto,
@@ -66,7 +70,9 @@ export class ContractsService {
       this.prisma.contract.findMany({
         where,
         include: {
-          customer: { select: { id: true, code: true, name: true, email: true } },
+          customer: {
+            select: { id: true, code: true, name: true, email: true },
+          },
         },
         orderBy: { createdAt: 'desc' },
         skip: (page - 1) * pageSize,
@@ -131,11 +137,7 @@ export class ContractsService {
     const { burnedPdf } = await this.buildReviewPdf(template, prefillMap);
 
     // Lưu PDF review về local để xem lại / đính kèm.
-    const reviewFileUrl = this.storePdf(
-      externalId,
-      'review',
-      burnedPdf,
-    );
+    const reviewFileUrl = this.storePdf(externalId, 'review', burnedPdf);
 
     // Sinh token bí mật cho khách xác nhận/từ chối bản dự thảo.
     const reviewToken = crypto.randomBytes(32).toString('base64url');
@@ -260,9 +262,7 @@ export class ContractsService {
     const contract = await this.findByReviewToken(token);
 
     // Đã chuyển sang bước ký (hoặc xa hơn) → không xử lý lại.
-    if (
-      ['SENT', 'SIGNED', 'REJECTED', 'CANCELLED'].includes(contract.status)
-    ) {
+    if (['SENT', 'SIGNED', 'REJECTED', 'CANCELLED'].includes(contract.status)) {
       return { status: contract.status, alreadyProcessed: true };
     }
     if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
@@ -850,9 +850,7 @@ export class ContractsService {
   }
 
   /** envelope_xxx → numeric document id (qua GET /envelope). */
-  private async resolveDocumentNumericId(
-    documensoId: string,
-  ): Promise<number> {
+  private async resolveDocumentNumericId(documensoId: string): Promise<number> {
     const env = await this.documenso.getEnvelope(documensoId);
     if (env.documentNumericId == null) {
       throw new BadRequestException(
@@ -875,10 +873,7 @@ export class ContractsService {
   /** Đọc PDF đã lưu local từ relative URL. Trả null nếu không có. */
   private readStoredPdf(relativeUrl?: string | null): Buffer | null {
     if (!relativeUrl) return null;
-    const localPath = path.join(
-      process.cwd(),
-      relativeUrl.replace(/^\//, ''),
-    );
+    const localPath = path.join(process.cwd(), relativeUrl.replace(/^\//, ''));
     if (!fs.existsSync(localPath)) return null;
     return fs.readFileSync(localPath);
   }
