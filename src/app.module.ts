@@ -67,7 +67,8 @@ import { InventoryChecksModule } from './inventory-checks/inventory-checks.modul
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 // import { SyncKiotModule } from './sync-kiot/sync-kiot.module'; // disabled: bỏ hoàn toàn sync-kiot
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { MisaSyncModule } from './misa-sync/misa-sync.module';
@@ -168,7 +169,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     {
       // Chạy đầu tiên: chặn flood/quét theo IP trước khi vào xác thực.
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
     {
       provide: APP_GUARD,

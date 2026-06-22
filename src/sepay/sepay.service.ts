@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
+import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { InvoicePaymentsService } from '../invoices/invoice-payments.service';
 import { OrderPaymentsService } from '../orders/order-payments.service';
@@ -162,6 +163,154 @@ export class SepayService {
       success: true,
       message: 'Order payment created',
       paymentId: (result as any).payment?.id,
+    };
+  }
+
+  /**
+   * Nhận tin nhắn ngân hàng thô từ nguồn ngoài (MacroDroid gửi thẳng vào backend).
+   * Body là object đầy đủ chứa field `body_message` (đoạn SMS ngân hàng).
+   *
+   * Parse `body_message` → tạo/cập nhật 1 record sepay_transactions.
+   * Idempotent: sepayId = "ext_" + SHA256(body_message) nên gửi lại cùng tin nhắn
+   * chỉ upsert đè, KHÔNG tạo trùng.
+   *
+   * CHỈ lưu lịch sử thô + fan-out thông báo (nếu tiền vào). KHÔNG tự match đơn/
+   * hóa đơn, KHÔNG tạo phiếu thu — việc gán khách + tạo phiếu thu do người dùng
+   * tự làm qua luồng đối soát thủ công hiện có.
+   */
+  async handleExternalMessage(body: any) {
+    const message: string | undefined =
+      typeof body?.body_message === 'string' ? body.body_message : undefined;
+
+    if (!message || !message.trim()) {
+      throw new BadRequestException('Thiếu body_message');
+    }
+
+    const parsed = this.parseBankMessage(message);
+
+    // sepayId idempotent theo nội dung tin nhắn (chống tạo trùng khi retry).
+    const sepayId =
+      'ext_' + crypto.createHash('sha256').update(message).digest('hex');
+
+    const data = {
+      transactionDate: parsed.transactionDate ?? new Date(),
+      accountNumber: parsed.accountNumber ?? undefined,
+      subAccount: undefined,
+      amountIn: parsed.amountIn,
+      amountOut: parsed.amountOut,
+      accumulated:
+        parsed.accumulated !== undefined ? parsed.accumulated : undefined,
+      code: undefined,
+      transactionContent: parsed.transactionContent ?? message,
+      referenceNumber: parsed.referenceNumber ?? undefined,
+      bankBrandName: undefined,
+      rawPayload: body as unknown as Prisma.InputJsonValue,
+      syncedAt: new Date(),
+    };
+
+    const existing = await this.prisma.sepayTransaction.findUnique({
+      where: { sepayId },
+      select: { id: true },
+    });
+
+    const saved = await this.prisma.sepayTransaction.upsert({
+      where: { sepayId },
+      create: { sepayId, ...data },
+      update: data,
+    });
+
+    // Fan-out thông báo cho user được phép thấy giao dịch (chỉ tiền vào).
+    // Idempotent theo dedupeKey=sepayId → gửi lại không tạo thông báo lặp.
+    if (parsed.amountIn > 0) {
+      await this.fanoutSepayNotification(saved);
+    }
+
+    return {
+      success: true,
+      sepayId,
+      isCreated: !existing,
+      amountIn: parsed.amountIn,
+      amountOut: parsed.amountOut,
+    };
+  }
+
+  /**
+   * Parse đoạn tin nhắn ngân hàng dạng:
+   *   TK 19039846694018
+   *   So tien GD:-1,463,400        (dấu - = tiền chi, dấu + = tiền vào)
+   *   So du:298,359,688
+   *   GD THE QUA POS ... NGAY 20/06/2026 ... TID 20981908
+   *
+   * Trả về các trường đã chuẩn hóa để map vào SepayTransaction.
+   */
+  private parseBankMessage(message: string): {
+    accountNumber?: string;
+    amountIn: number;
+    amountOut: number;
+    accumulated?: number;
+    transactionContent?: string;
+    referenceNumber?: string;
+    transactionDate?: Date;
+  } {
+    const stripNumber = (s: string) => Number(s.replace(/[.,\s]/g, '')) || 0;
+
+    // TK <số>
+    const accountNumber = message.match(/TK\s*[:\s]?\s*(\d+)/i)?.[1];
+
+    // So tien GD: dấu +/- + số (có dấu phẩy/chấm ngăn cách)
+    const amountMatch = message.match(
+      /So\s*tien\s*GD\s*[:\s]\s*([+-]?)\s*([\d.,]+)/i,
+    );
+    let amountIn = 0;
+    let amountOut = 0;
+    if (amountMatch) {
+      const sign = amountMatch[1];
+      const value = stripNumber(amountMatch[2]);
+      if (sign === '-') {
+        amountOut = value;
+      } else {
+        amountIn = value;
+      }
+    }
+
+    // So du: <số>
+    const balanceMatch = message.match(/So\s*du\s*[:\s]\s*([\d.,]+)/i);
+    const accumulated = balanceMatch ? stripNumber(balanceMatch[1]) : undefined;
+
+    // NGAY dd/mm/yyyy trong nội dung (giờ VN). Không có → để service fallback now().
+    const dateMatch = message.match(/NGAY\s*(\d{2})\/(\d{2})\/(\d{4})/i);
+    let transactionDate: Date | undefined;
+    if (dateMatch) {
+      const [, dd, mm, yyyy] = dateMatch;
+      const d = this.parseSepayDate(`${yyyy}-${mm}-${dd} 00:00:00`);
+      if (d) transactionDate = d;
+    }
+
+    // TID <số> làm mã tham chiếu (nếu có).
+    const referenceNumber = message.match(/TID\s*[:\s]?\s*(\w+)/i)?.[1];
+
+    // Nội dung giao dịch = dòng mô tả (loại các dòng TK / So tien GD / So du).
+    const transactionContent = message
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(
+        (l) =>
+          l &&
+          !/^TK\b/i.test(l) &&
+          !/^So\s*tien\s*GD/i.test(l) &&
+          !/^So\s*du/i.test(l),
+      )
+      .join(' ')
+      .trim();
+
+    return {
+      accountNumber,
+      amountIn,
+      amountOut,
+      accumulated,
+      transactionContent: transactionContent || undefined,
+      referenceNumber,
+      transactionDate,
     };
   }
 
