@@ -179,11 +179,18 @@ export class SepayService {
    * tự làm qua luồng đối soát thủ công hiện có.
    */
   async handleExternalMessage(body: any) {
-    const message: string | undefined =
-      typeof body?.body_message === 'string' ? body.body_message : undefined;
+    // Chấp nhận 2 dạng input:
+    //   - text/plain  → body là string (chính là đoạn tin nhắn). MacroDroid.
+    //   - application/json → body là object có field body_message. Lark anycross.
+    let message: string | undefined;
+    if (typeof body === 'string') {
+      message = body;
+    } else if (typeof body?.body_message === 'string') {
+      message = body.body_message;
+    }
 
     if (!message || !message.trim()) {
-      throw new BadRequestException('Thiếu body_message');
+      throw new BadRequestException('Thiếu nội dung tin nhắn (body_message)');
     }
 
     const parsed = this.parseBankMessage(message);
