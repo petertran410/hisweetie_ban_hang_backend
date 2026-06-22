@@ -59,6 +59,11 @@ class CreateInvoiceDetailDto {
   @IsOptional()
   @IsInt()
   promotionId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  enabledPromotionIds?: number[];
 }
 
 class CreateInvoiceDeliveryDto {
@@ -255,5 +260,6 @@ export class CreateInvoiceFromOrderDto {
     lineType?: string; // normal | gift | discounted_buy
     isGift?: boolean;
     promotionId?: number;
+    enabledPromotionIds?: number[];
   }[];
 }

@@ -874,6 +874,7 @@ export class InvoicesService {
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: it.promotionId ?? null,
+          enabledPromotionIds: it.enabledPromotionIds,
         };
       });
 
@@ -899,6 +900,7 @@ export class InvoicesService {
         quantity: it.quantity,
         price: it.price,
         discount: it.discount,
+        enabledPromotionIds: it.enabledPromotionIds,
       }));
 
     const evalResult = await this.promotionsService.evaluateForInvoice({
@@ -1029,6 +1031,7 @@ export class InvoicesService {
           lineType: 'gift',
           isGift: true,
           promotionId: r.promotionId,
+          enabledPromotionIds: undefined,
         });
       }
 

@@ -101,6 +101,11 @@ export class OrderItemDto {
   @IsOptional()
   @IsInt()
   promotionId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  enabledPromotionIds?: number[];
 }
 
 export class AppliedPromotionDto {

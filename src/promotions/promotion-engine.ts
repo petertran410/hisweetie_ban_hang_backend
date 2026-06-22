@@ -13,6 +13,10 @@ export interface EngineItem {
   parentName?: string | null;
   middleName?: string | null;
   childName?: string | null;
+  // Opt-in per-line: danh sách promotionId mà thu ngân bật KM cho dòng này.
+  // undefined => không lọc (giữ hành vi cũ cho auto-apply / luồng ngoài POS).
+  // [] hoặc mảng => chỉ tính dòng này cho promotion nằm trong mảng.
+  enabledPromotionIds?: number[];
 }
 
 export interface EngineProductRef {
@@ -197,25 +201,42 @@ function getRewardItems(rw: EngineReward): EngineProductRef[] {
   return [];
 }
 
-/** Tổng SL trong giỏ khớp BẤT KỲ buyItem (gộp nhóm X). */
+/** Dòng này có được thu ngân bật KM cho promotion đang xét không.
+ * undefined => không lọc (giữ hành vi cũ). */
+function itemEnabledForPromo(it: EngineItem, promotionId: number): boolean {
+  if (it.enabledPromotionIds === undefined) return true;
+  return it.enabledPromotionIds.includes(promotionId);
+}
+
+/** Tổng SL trong giỏ khớp BẤT KỲ buyItem (gộp nhóm X), chỉ tính dòng opt-in. */
 function sumBoughtQty(
   ctx: EngineContext,
   buyItems: EngineProductRef[],
+  promotionId: number,
 ): number {
   return ctx.items
-    .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
+    .filter(
+      (it) =>
+        itemEnabledForPromo(it, promotionId) &&
+        buyItems.some((ref) => itemMatchesRef(it, ref)),
+    )
     .reduce((s, it) => s + it.quantity, 0);
 }
 
-/** Các productId trong giỏ khớp điều kiện mua X. */
+/** Các productId trong giỏ khớp điều kiện mua X, chỉ tính dòng opt-in. */
 function matchedProductIds(
   ctx: EngineContext,
   buyItems: EngineProductRef[],
+  promotionId: number,
 ): number[] {
   return [
     ...new Set(
       ctx.items
-        .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
+        .filter(
+          (it) =>
+            itemEnabledForPromo(it, promotionId) &&
+            buyItems.some((ref) => itemMatchesRef(it, ref)),
+        )
         .map((it) => it.productId),
     ),
   ];
@@ -383,7 +404,7 @@ export function computeReward(
     case 'BUY_N_GET_M_SAME': {
       const buyItems = getBuyItems(rw);
       if (buyItems.length === 0 || rw.buyQuantity <= 0) return null;
-      const boughtQty = sumBoughtQty(ctx, buyItems);
+      const boughtQty = sumBoughtQty(ctx, buyItems, p.id);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
       let giftQty = times * Number(rw.rewardQuantity);
@@ -395,13 +416,7 @@ export function computeReward(
       // BUY_X_GET_Y: tặng SP thuộc nhóm Y (rewardItems).
       let options: RewardOption[];
       if (p.type === 'BUY_N_GET_M_SAME') {
-        const boughtIds = [
-          ...new Set(
-            ctx.items
-              .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
-              .map((it) => it.productId),
-          ),
-        ];
+        const boughtIds = matchedProductIds(ctx, buyItems, p.id);
         options = boughtIds.map((productId) => ({
           productId,
           productName: nameOf(productId),
@@ -442,7 +457,7 @@ export function computeReward(
         rewardQuantity: giftQty,
         rewardOptions: options,
         requiresChoice,
-        matchedProductIds: matchedProductIds(ctx, buyItems),
+        matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
       };
     }
 
@@ -455,7 +470,7 @@ export function computeReward(
         rewardItems.length === 0
       )
         return null;
-      const boughtQty = sumBoughtQty(ctx, buyItems);
+      const boughtQty = sumBoughtQty(ctx, buyItems, p.id);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
       let buyableQty = times * Number(rw.rewardQuantity);
@@ -493,7 +508,7 @@ export function computeReward(
         rewardOptions: options,
         promoPrice,
         requiresChoice,
-        matchedProductIds: matchedProductIds(ctx, buyItems),
+        matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
       };
     }
 

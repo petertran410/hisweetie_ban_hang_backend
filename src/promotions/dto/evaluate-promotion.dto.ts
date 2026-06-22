@@ -21,6 +21,11 @@ export class EvaluateItemDto {
   @IsOptional()
   @IsNumber()
   discount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  enabledPromotionIds?: number[];
 }
 
 export class EvaluatePromotionDto {
