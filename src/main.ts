@@ -34,6 +34,8 @@ async function bootstrap() {
   );
 
   app.useBodyParser('json', { limit: '20mb' });
+  // text/plain cho nguồn ngoài gửi tin nhắn thô (vd MacroDroid) — không bọc JSON.
+  app.useBodyParser('text', { type: ['text/plain'], limit: '1mb' });
 
   app.enableCors({
     origin: (origin, callback) => {

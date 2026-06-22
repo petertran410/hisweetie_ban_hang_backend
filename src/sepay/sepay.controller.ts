@@ -123,6 +123,8 @@ export class SepayController {
   })
   async handleExternalMessage(
     @Headers('x-external-secret') secretHeader: string,
+    @Query('X-External-Secret') secretQueryUpper: string,
+    @Query('secret') secretQueryLower: string,
     @Body() body: any,
   ) {
     const secret = this.configService.get<string>('SEPAY_EXTERNAL_SECRET');
@@ -132,9 +134,14 @@ export class SepayController {
       );
     }
 
-    if (!secretHeader) {
+    // Chấp nhận secret ở header (khuyến nghị) hoặc query (tương thích cấu hình
+    // MacroDroid hiện tại). Query bị ghi vào log → nên ưu tiên dùng header.
+    const received =
+      secretHeader || secretQueryUpper || secretQueryLower || '';
+
+    if (!received) {
       throw new UnauthorizedException(
-        'Missing X-External-Secret header',
+        'Missing X-External-Secret (header hoặc query)',
       );
     }
 
@@ -142,7 +149,7 @@ export class SepayController {
     let valid = false;
     try {
       const expectedBuf = Buffer.from(secret);
-      const receivedBuf = Buffer.from(secretHeader);
+      const receivedBuf = Buffer.from(received);
       valid =
         expectedBuf.length === receivedBuf.length &&
         crypto.timingSafeEqual(expectedBuf, receivedBuf);
