@@ -108,6 +108,56 @@ export class SepayController {
   }
 
   /**
+   * Nhận tin nhắn SMS ngân hàng từ MacroDroid gửi thẳng vào backend.
+   * Auth bằng shared secret (X-External-Secret header) thay vì HMAC vì
+   * MacroDroid không hỗ trợ ký HMAC.
+   *
+   * Body là object đầy đủ chứa field `body_message` (đoạn SMS ngân hàng).
+   * Idempotent: cùng body_message → upsert (không trùng record).
+   */
+  @Public()
+  @Post('external-message')
+  @ApiOperation({
+    summary:
+      'Nhận tin nhắn ngân hàng từ MacroDroid (SMS forwarding)',
+  })
+  async handleExternalMessage(
+    @Headers('x-external-secret') secretHeader: string,
+    @Body() body: any,
+  ) {
+    const secret = this.configService.get<string>('SEPAY_EXTERNAL_SECRET');
+    if (!secret) {
+      throw new InternalServerErrorException(
+        'SEPAY_EXTERNAL_SECRET chưa được cấu hình',
+      );
+    }
+
+    if (!secretHeader) {
+      throw new UnauthorizedException(
+        'Missing X-External-Secret header',
+      );
+    }
+
+    // timingSafeEqual chống timing attack
+    let valid = false;
+    try {
+      const expectedBuf = Buffer.from(secret);
+      const receivedBuf = Buffer.from(secretHeader);
+      valid =
+        expectedBuf.length === receivedBuf.length &&
+        crypto.timingSafeEqual(expectedBuf, receivedBuf);
+    } catch {
+      valid = false;
+    }
+
+    if (!valid) {
+      throw new UnauthorizedException('Invalid secret');
+    }
+
+    return this.sepayService.handleExternalMessage(body);
+  }
+
+  /**
    * Đồng bộ toàn bộ lịch sử giao dịch Sepay vào bảng sepay_transactions.
    * KHÔNG tạo phiếu thu / KHÔNG đụng đơn / hóa đơn / sổ quỹ — chỉ lưu lịch sử thô.
    * Idempotent: chạy lại nhiều lần không tạo trùng (upsert theo sepayId).
