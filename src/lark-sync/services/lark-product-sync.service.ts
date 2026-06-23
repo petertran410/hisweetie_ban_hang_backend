@@ -475,7 +475,7 @@ export class LarkProductSyncService {
       [LARK_PRODUCT_FIELDS.NGUON_GOC]: product.middleName || '',
       [LARK_PRODUCT_FIELDS.LOAI_HANG]: product.parentName || '',
       [LARK_PRODUCT_FIELDS.DANH_MUC]: product.childName || '',
-      [LARK_PRODUCT_FIELDS.CHO_PHEP_BAN]: toYesNo(product.allowsSale),
+      [LARK_PRODUCT_FIELDS.CHO_PHEP_BAN]: toYesNo(product.isDirectSale),
       [LARK_PRODUCT_FIELDS.HANG_KINH_DOANH]: toYesNo(product.isActive),
       [LARK_PRODUCT_FIELDS.NGAY_TAO]: product.createdAt
         ? new Date(product.createdAt).getTime()
