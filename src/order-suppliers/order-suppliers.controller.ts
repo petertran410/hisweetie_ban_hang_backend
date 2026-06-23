@@ -134,6 +134,24 @@ export class OrderSuppliersController {
     );
   }
 
+  @Get('latest-supplier-prices')
+  @RequirePermissions('order_suppliers:view')
+  getLatestSupplierPrices(
+    @Query('supplierId') supplierId?: string,
+    @Query('productIds') productIds?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.orderSuppliersService.getLatestSupplierPrices(
+      supplierId ? +supplierId : 0,
+      ids,
+      branchId ? +branchId : undefined,
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('order_suppliers:view')
   findOne(@Param('id') id: string, @Req() req: any) {

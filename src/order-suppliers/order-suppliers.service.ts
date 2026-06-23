@@ -677,12 +677,14 @@ export class OrderSuppliersService {
           }
 
           // Nếu client KHÔNG gửi price (user không có quyền xem giá vốn) thì
-          // tự lấy giá vốn hiện tại của sản phẩm theo chi nhánh. Không ép = 0.
+          // tự tìm: (1) giá NCC gần nhất theo supplierId, (2) giá vốn CN.
+          // Không ép = 0 để đơn giá luôn đúng dù người tạo không được phép nhìn thấy giá.
           const price = await this.resolveItemPrice(
             tx,
             item.price,
             item.productId,
             dto.branchId,
+            dto.supplierId,
           );
 
           const subTotal = (price - (item.discount || 0)) * item.quantity;
@@ -903,12 +905,14 @@ export class OrderSuppliersService {
               );
             }
 
-            // Resolve giá vốn nếu client không gửi (thiếu quyền xem giá vốn).
+            // Resolve giá nếu client không gửi (thiếu quyền xem giá vốn):
+            // (1) giá NCC gần nhất, (2) giá vốn CN.
             const price = await this.resolveItemPrice(
               tx,
               item.price,
               item.productId,
               dto.branchId ?? existing.branchId ?? undefined,
+              dto.supplierId ?? existing.supplierId ?? undefined,
             );
 
             const subTotal =
@@ -1377,6 +1381,64 @@ export class OrderSuppliersService {
    * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
    * Đối xứng `OrdersService.getPendingSummary` của phía bán.
    */
+  /**
+   * Giá nhập gần nhất của từng sản phẩm theo MỘT nhà cung cấp.
+   * Lấy cột `price` (đơn giá nhập, KHÔNG trừ giảm giá) của dòng thuộc phiếu
+   * đặt hàng nhập gần nhất (theo orderDate desc) của cặp supplier + product.
+   * Loại trừ phiếu Đã hủy (status = 4).
+   * Sản phẩm chưa có lịch sử với NCC này → fallback giá vốn hiện tại theo chi
+   * nhánh (inventory.cost) nếu truyền branchId. Endpoint chạy ở BE nên KHÔNG bị
+   * strip giá vốn theo quyền → dùng làm "giá nền" thống nhất cho mọi user.
+   * Trả về { [productId]: number | null } — null nếu không có cả hai nguồn.
+   */
+  async getLatestSupplierPrices(
+    supplierId: number,
+    productIds: number[],
+    branchId?: number,
+  ): Promise<Record<number, number | null>> {
+    const result: Record<number, number | null> = {};
+    if (!supplierId || Number.isNaN(supplierId) || !productIds?.length) {
+      return result;
+    }
+    productIds.forEach((id) => (result[id] = null));
+
+    const items = await this.prisma.orderSupplierItem.findMany({
+      where: {
+        productId: { in: productIds },
+        orderSupplier: { supplierId, status: { not: 4 } },
+      },
+      select: {
+        productId: true,
+        price: true,
+        orderSupplier: { select: { orderDate: true } },
+      },
+      orderBy: [{ orderSupplier: { orderDate: 'desc' } }, { id: 'desc' }],
+    });
+
+    // Đã sort theo phiếu mới nhất trước → dòng đầu tiên gặp cho mỗi product là gần nhất.
+    for (const it of items) {
+      if (result[it.productId] == null) {
+        result[it.productId] = Number(it.price);
+      }
+    }
+
+    // Fallback giá vốn chi nhánh cho sản phẩm chưa từng nhập từ NCC này.
+    if (branchId && !Number.isNaN(branchId)) {
+      const missing = productIds.filter((id) => result[id] == null);
+      if (missing.length > 0) {
+        const invs = await this.prisma.inventory.findMany({
+          where: { productId: { in: missing }, branchId },
+          select: { productId: true, cost: true },
+        });
+        for (const inv of invs) {
+          result[inv.productId] = Number(inv.cost);
+        }
+      }
+    }
+
+    return result;
+  }
+
   async getConfirmedSummary(
     productIds: number[],
     branchId?: number,
@@ -1707,9 +1769,23 @@ export class OrderSuppliersService {
     price: number | undefined | null,
     productId: number,
     branchId?: number | null,
+    supplierId?: number | null,
   ): Promise<number> {
     if (price !== undefined && price !== null && !Number.isNaN(Number(price))) {
       return Number(price);
+    }
+    // Giá nhập gần nhất theo NCC (loại phiếu Đã hủy). Áp dụng cho cả user không
+    // có quyền xem giá vốn (FE không gửi price) → nghiệp vụ đồng nhất mọi user.
+    if (supplierId) {
+      const latest = await tx.orderSupplierItem.findFirst({
+        where: {
+          productId,
+          orderSupplier: { supplierId, status: { not: 4 } },
+        },
+        select: { price: true },
+        orderBy: [{ orderSupplier: { orderDate: 'desc' } }, { id: 'desc' }],
+      });
+      if (latest) return Number(latest.price);
     }
     if (branchId) {
       const inventory = await tx.inventory.findUnique({
