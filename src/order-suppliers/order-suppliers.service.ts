@@ -442,8 +442,12 @@ export class OrderSuppliersService {
       factoryPrice?: number | null;
       factorySubTotal?: number | null;
     } = {};
-    if ('factoryPrice' in dto) data.factoryPrice = dto.factoryPrice ?? null;
-    if ('factorySubTotal' in dto)
+    // Dùng !== undefined (không phải `in`) để tránh bị class-transformer
+    // tự tạo key undefined cho field optional: như vậy field không gửi lên
+    // sẽ KHÔNG bị ghi đè về null trong DB.
+    if (dto.factoryPrice !== undefined)
+      data.factoryPrice = dto.factoryPrice ?? null;
+    if (dto.factorySubTotal !== undefined)
       data.factorySubTotal = dto.factorySubTotal ?? null;
 
     return this.prisma.orderSupplierItem.update({
