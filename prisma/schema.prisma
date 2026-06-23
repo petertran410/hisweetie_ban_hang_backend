@@ -1618,13 +1618,26 @@ model PurchaseOrderItem {
   totalPrice      Decimal
   description     String?
   serialNumbers   String?
+  // Số thứ tự dòng trong phiếu (1, 2, 3, ...). Dùng cho unique key thay vì
+  // productId để cho phép cùng 1 sản phẩm xuất hiện nhiều dòng (vd 1 dòng
+  // hàng thường + 1 dòng loại B). Nullable để an toàn với data cũ trước
+  // migration — sau khi backfill sẽ set NOT NULL trong bước tiếp theo.
+  lineNumber      Int?
+  // Phân loại hàng nhập: "normal" (hàng thường, mặc định) hoặc "damaged"
+  // (loại B = bục rách). Khi hoàn thành phiếu, phần "damaged" sẽ cộng thêm
+  // vào Inventory.damagedQuantity (giữ nguyên quy ước damaged <= onHand).
+  conditionType   String   @default("normal")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
 
-  @@unique([purchaseOrderId, productId])
+  // Unique theo (purchaseOrderId, lineNumber) thay vì (purchaseOrderId, productId)
+  // để 1 phiếu có thể có nhiều dòng cùng productId (phân biệt qua lineNumber +
+  // conditionType). Mirror với OrderItem pattern (order_items schema line 1311).
+  @@unique([purchaseOrderId, lineNumber])
+  @@index([productId])
   @@map("purchase_order_items")
 }
 

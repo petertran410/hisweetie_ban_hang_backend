@@ -35,7 +35,7 @@ export class PurchaseOrdersService {
       const code = await this.resolvePurchaseOrderCode(tx, dto.code);
 
       const itemsData = await Promise.all(
-        dto.items.map(async (item) => {
+        dto.items.map(async (item, index) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
           });
@@ -62,6 +62,12 @@ export class PurchaseOrdersService {
             discountRatio: item.discountRatio || 0,
             totalPrice,
             description: item.description,
+            // Số thứ tự dòng (1, 2, 3...). Ưu tiên FE gửi sẵn (vd khi sửa
+            // PN đã có), fallback generate theo index — đảm bảo unique key
+            // (purchaseOrderId, lineNumber) luôn khác nhau trong cùng phiếu.
+            lineNumber: item.lineNumber ?? index + 1,
+            // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
+            conditionType: item.conditionType || 'normal',
           };
         }),
       );
@@ -443,7 +449,7 @@ export class PurchaseOrdersService {
     ) as any[];
 
     const itemsData = await Promise.all(
-      itemsToReceive.map(async (item) => {
+      itemsToReceive.map(async (item, index) => {
         // dto.items có sẵn productCode/productName, fallback nếu không có.
         let productCode = item.productCode;
         let productName = item.productName;
@@ -473,6 +479,14 @@ export class PurchaseOrdersService {
           discountRatio: item.discountRatio || 0,
           totalPrice,
           description: item.description,
+          // Tương tự create(): lineNumber ưu tiên FE gửi, fallback index+1.
+          // Khi tạo PN từ PDN, items thường không gửi lineNumber nên BE tự
+          // generate tuần tự 1, 2, 3...
+          lineNumber: item.lineNumber ?? index + 1,
+          // PDN không có phân loại hàng → mặc định "normal". Nếu FE muốn
+          // đánh dấu hàng nào là loại B khi tạo từ PDN, gửi conditionType
+          // trong dto.items[]. Hiện form FE chưa expose → luôn "normal".
+          conditionType: item.conditionType || 'normal',
         };
       }),
     );
@@ -932,6 +946,13 @@ export class PurchaseOrdersService {
       // false     true         rút SL cũ khỏi tồn — pre-check đủ tồn
       // false     false        delta = newQty - oldQty — pre-check phần giảm
       //
+      // Với phân loại hàng (loại B = damaged): onHand chỉ chứa phần "normal";
+      // phần "damaged" đi vào damagedQuantity. Khi user sửa:
+      //   - Đổi 1 dòng từ "damaged" SL=5 sang "normal" SL=5:
+      //     onHand phải đủ chỗ cho +5 (trừ đi 5 damagedQuantity cũ trước).
+      //   - Đổi từ "normal" SL=5 sang "damaged" SL=5:
+      //     onHand phải đủ chỗ để giảm -5; damagedQuantity phải đủ chỗ để cộng.
+      //
       // Mọi pre-check đều xảy ra TRƯỚC khi thực thi. Nếu không pass, throw để
       // rollback transaction, tồn kho và DB không bị đụng vào.
       const wasDraft = existing.isDraft;
@@ -939,11 +960,23 @@ export class PurchaseOrdersService {
       const branchUnchanged =
         dto.branchId === undefined || dto.branchId === existing.branchId;
 
-      // Helper: build map productId → tổng SL từ list items
-      const buildQtyMap = (items: { productId: number; quantity: any }[]) => {
-        const m = new Map<number, number>();
+      // Helper: build map productId → { goodQty, damagedQty } từ list items.
+      // Mỗi SP có thể xuất hiện nhiều dòng (cùng productId khác lineNumber);
+      // cộng dồn từng dòng vào bucket tương ứng theo conditionType.
+      const buildQtyMap = (items: any[]) => {
+        const m = new Map<
+          number,
+          { goodQty: number; damagedQty: number }
+        >();
         for (const it of items) {
-          m.set(it.productId, (m.get(it.productId) || 0) + Number(it.quantity));
+          const existing2 = m.get(it.productId) || { goodQty: 0, damagedQty: 0 };
+          const qty = Number(it.quantity) || 0;
+          if (it.conditionType === 'damaged') {
+            existing2.damagedQty += qty;
+          } else {
+            existing2.goodQty += qty;
+          }
+          m.set(it.productId, existing2);
         }
         return m;
       };
@@ -954,28 +987,55 @@ export class PurchaseOrdersService {
       // (hoặc giữ nguyên existing nếu dto không gửi items); nếu đổi branch thì
       // tại branch cũ = 0 cho mọi product.
       const newQtyMap = (() => {
-        if (!branchUnchanged) return new Map<number, number>();
+        if (!branchUnchanged)
+          return new Map<number, { goodQty: number; damagedQty: number }>();
         if (dto.items) return buildQtyMap(dto.items);
         return oldQtyMap; // không gửi items, giữ nguyên
       })();
 
-      // Tính danh sách (productId, decrease) cần pre-check tồn:
-      //   - wasDraft=false, willBeDraft=true: rút toàn bộ oldQty (decrease=oldQty).
-      //   - wasDraft=false, willBeDraft=false: chỉ check phần giảm (delta âm).
+      // Tính danh sách (productId, decreaseOnHand, decreaseDamaged) cần pre-check tồn:
+      //   - wasDraft=false, willBeDraft=true: rút toàn bộ oldQty (cả good + damaged).
+      //   - wasDraft=false, willBeDraft=false: chỉ check phần giảm (delta âm)
+      //     cho từng bucket riêng biệt.
       //   - wasDraft=true: tồn chưa cộng từ trước → không cần check.
-      const productsToCheck: { productId: number; decrease: number }[] = [];
+      const productsToCheck: {
+        productId: number;
+        decreaseOnHand: number;
+        decreaseDamaged: number;
+      }[] = [];
       if (!wasDraft && existing.branchId) {
-        if (willBeDraft) {
-          for (const [productId, oldQty] of oldQtyMap.entries()) {
-            if (oldQty > 0)
-              productsToCheck.push({ productId, decrease: oldQty });
+        const productIds = new Set<number>([
+          ...oldQtyMap.keys(),
+          ...newQtyMap.keys(),
+        ]);
+        for (const productId of productIds) {
+          const oldQ = oldQtyMap.get(productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
+          const newQ = newQtyMap.get(productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
+          let decreaseOnHand = 0;
+          let decreaseDamaged = 0;
+          if (willBeDraft) {
+            // Rút toàn bộ tồn cũ (cả 2 bucket).
+            decreaseOnHand = oldQ.goodQty;
+            decreaseDamaged = oldQ.damagedQty;
+          } else {
+            // Chỉ check phần giảm (delta âm) cho từng bucket.
+            const deltaGood = newQ.goodQty - oldQ.goodQty;
+            const deltaDamaged = newQ.damagedQty - oldQ.damagedQty;
+            if (deltaGood < 0) decreaseOnHand = -deltaGood;
+            if (deltaDamaged < 0) decreaseDamaged = -deltaDamaged;
           }
-        } else {
-          for (const [productId, oldQty] of oldQtyMap.entries()) {
-            const newQty = newQtyMap.get(productId) ?? 0;
-            const delta = newQty - oldQty;
-            if (delta < 0)
-              productsToCheck.push({ productId, decrease: -delta });
+          if (decreaseOnHand > 0 || decreaseDamaged > 0) {
+            productsToCheck.push({
+              productId,
+              decreaseOnHand,
+              decreaseDamaged,
+            });
           }
         }
       }
@@ -996,15 +1056,30 @@ export class PurchaseOrdersService {
           select: { name: true },
         });
 
-        for (const { productId, decrease } of productsToCheck) {
+        for (const {
+          productId,
+          decreaseOnHand,
+          decreaseDamaged,
+        } of productsToCheck) {
           const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          if (onHand < decrease) {
-            const productLabel = inv?.product
-              ? `${inv.product.code} - ${inv.product.name}`
-              : `productId=${productId}`;
+          const damagedQuantity = inv ? Number(inv.damagedQuantity || 0) : 0;
+          const productLabel = inv?.product
+            ? `${inv.product.code} - ${inv.product.name}`
+            : `productId=${productId}`;
+
+          // Check bucket onHand riêng (không tính damaged vì bucket này là
+          // phần "hàng thường" theo semantic mới — damaged đi vào bucket
+          // riêng damagedQuantity).
+          if (onHand < decreaseOnHand) {
             throw new BadRequestException(
-              `Không thể giảm số lượng "${productLabel}" trong phiếu nhập: tồn kho hiện tại tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${onHand}, không đủ để giảm ${decrease}. Vui lòng xử lý các phiếu xuất/bán/chuyển kho liên quan trước.`,
+              `Không thể giảm số lượng "${productLabel}" trong phiếu nhập: tồn kho hàng thường tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${onHand}, không đủ để giảm ${decreaseOnHand}. Vui lòng xử lý các phiếu xuất/bán/chuyển kho liên quan trước.`,
+            );
+          }
+          // Check bucket damagedQuantity riêng (nếu có giảm phần loại B).
+          if (decreaseDamaged > 0 && damagedQuantity < decreaseDamaged) {
+            throw new BadRequestException(
+              `Không thể giảm số lượng loại B "${productLabel}" trong phiếu nhập: tồn kho loại B tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${damagedQuantity}, không đủ để giảm ${decreaseDamaged}.`,
             );
           }
         }
@@ -1033,7 +1108,7 @@ export class PurchaseOrdersService {
         });
 
         const itemsData = await Promise.all(
-          dto.items.map(async (item) => {
+          dto.items.map(async (item, index) => {
             const product = await tx.product.findUnique({
               where: { id: item.productId },
             });
@@ -1061,6 +1136,12 @@ export class PurchaseOrdersService {
               discountRatio: item.discountRatio || 0,
               totalPrice,
               description: item.description,
+              // Số thứ tự dòng (1, 2, 3...) — ưu tiên FE gửi sẵn, fallback
+              // theo index. Đảm bảo unique key (purchaseOrderId, lineNumber)
+              // không trùng trong cùng phiếu.
+              lineNumber: item.lineNumber ?? index + 1,
+              // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
+              conditionType: item.conditionType || 'normal',
             };
           }),
         );
@@ -1500,10 +1581,15 @@ export class PurchaseOrdersService {
       }
 
       // ─── Hoàn nguyên kho an toàn ────────────────────────────────────────
-      // KHÔNG dùng `decrement` blind: phải kiểm tra `onHand` hiện tại của
-      // chi nhánh để không bao giờ làm tồn kho âm. Nếu hàng đã được bán/
-      // chuyển/hủy đi rồi thì không thể hủy PN này được nữa — yêu cầu
-      // user xử lý các phiếu hậu kỳ trước.
+      // KHÔNG dùng `decrement` blind: phải kiểm tra `onHand` và
+      // `damagedQuantity` hiện tại của chi nhánh để không bao giờ làm tồn
+      // kho âm. Nếu hàng đã được bán/ chuyển/hủy đi rồi thì không thể hủy
+      // PN này được nữa — yêu cầu user xử lý các phiếu hậu kỳ trước.
+      //
+      // Với phân loại hàng (loại B = damaged): rollback đúng bucket theo
+      // conditionType. onHand cho hàng thường, damagedQuantity cho hàng
+      // bục rách. damagedQuantity ≤ onHand luôn được giữ vì khi tăng cả 2
+      // đồng thời lúc tạo, lúc giảm cũng đồng thời theo cùng tỉ lệ.
       //
       // Lưu ý: PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn
       // (semantic mới của create/update) → khi hủy không cần rút tồn ra.
@@ -1523,29 +1609,70 @@ export class PurchaseOrdersService {
         const invMap = new Map<number, any>();
         inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
 
+        // Pre-check: tổng giảm tồn (cả 2 bucket) cho mỗi product phải đủ.
+        // Cộng dồn vì 1 product có thể xuất hiện nhiều dòng (khác
+        // conditionType) trong cùng phiếu.
+        const totalDecrease = new Map<
+          number,
+          { onHand: number; damaged: number }
+        >();
         for (const item of purchaseOrder.items) {
-          const inv = invMap.get(item.productId);
+          const cur = totalDecrease.get(item.productId) || {
+            onHand: 0,
+            damaged: 0,
+          };
+          if (item.conditionType === 'damaged') {
+            cur.damaged += Number(item.quantity);
+          } else {
+            cur.onHand += Number(item.quantity);
+          }
+          totalDecrease.set(item.productId, cur);
+        }
+
+        for (const [productId, decrease] of totalDecrease.entries()) {
+          const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          const qty = Number(item.quantity);
-          if (onHand < qty) {
+          const damagedQuantity = inv
+            ? Number(inv.damagedQuantity || 0)
+            : 0;
+          if (onHand < decrease.onHand) {
             const productLabel = inv?.product
               ? `${inv.product.code} - ${inv.product.name}`
-              : `productId=${item.productId}`;
+              : `productId=${productId}`;
             throw new BadRequestException(
-              `Không thể hủy phiếu nhập: tồn kho hiện tại của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${onHand}, nhỏ hơn số đã nhập (${qty}). Vui lòng xử lý các phiếu xuất/chuyển kho liên quan trước.`,
+              `Không thể hủy phiếu nhập: tồn kho hàng thường của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${onHand}, nhỏ hơn số đã nhập (${decrease.onHand}). Vui lòng xử lý các phiếu xuất/chuyển kho liên quan trước.`,
+            );
+          }
+          if (decrease.damaged > 0 && damagedQuantity < decrease.damaged) {
+            const productLabel = inv?.product
+              ? `${inv.product.code} - ${inv.product.name}`
+              : `productId=${productId}`;
+            throw new BadRequestException(
+              `Không thể hủy phiếu nhập: tồn kho loại B của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${damagedQuantity}, nhỏ hơn số đã nhập (${decrease.damaged}).`,
             );
           }
         }
 
+        // Apply: rollback đúng bucket theo từng dòng. Vì 1 product có thể có
+        // nhiều dòng (cùng productId khác conditionType), dùng update nhiều
+        // lần theo từng dòng cho khớp với logic cũ. Alternative: gộp
+        // thành 1 updateMany với decrement theo tổng decrease — giữ vòng
+        // lặp để dễ đọc và đối xứng với logic updateInventory.
         for (const item of purchaseOrder.items) {
           const inv = invMap.get(item.productId);
           if (!inv) continue;
-          await tx.inventory.update({
-            where: { id: inv.id },
-            data: {
-              onHand: { decrement: Number(item.quantity) },
-            },
-          });
+          const qty = Number(item.quantity);
+          if (item.conditionType === 'damaged') {
+            await tx.inventory.update({
+              where: { id: inv.id },
+              data: { damagedQuantity: { decrement: qty } },
+            });
+          } else {
+            await tx.inventory.update({
+              where: { id: inv.id },
+              data: { onHand: { decrement: qty } },
+            });
+          }
         }
       }
 
@@ -1751,20 +1878,41 @@ export class PurchaseOrdersService {
     if (!purchaseOrder || !purchaseOrder.branchId) return;
 
     for (const item of purchaseOrder.items) {
+      const qty = Number(item.quantity);
+      // Phân chia quantity theo conditionType:
+      //   - "normal" → goodQty cộng vào Inventory.onHand
+      //   - "damaged" (loại B) → damagedQty cộng vào Inventory.damagedQuantity
+      // Phần damaged vẫn nằm trong tổng tồn (onHand tăng đúng qty), nhưng
+      // damagedQuantity là bucket phụ đánh dấu bao nhiêu trong tổng là
+      // bục rách. Quy ước: damagedQuantity ≤ onHand luôn được validate ở
+      // inventories.service.ts:226-230 và ở pre-check update() phía trên.
+      const isDamaged = item.conditionType === 'damaged';
+      const goodQty = isDamaged ? 0 : qty;
+      const damagedQty = isDamaged ? qty : 0;
+
       const invSnapshot = await tx.inventory.findFirst({
         where: { productId: item.productId, branchId: purchaseOrder.branchId },
       });
 
+      // TỒN KHO: cộng goodQty vào onHand, cộng damagedQty vào damagedQuantity.
+      // Nếu damagedQty = 0, conditional spread bỏ qua field damagedQuantity
+      // (giữ nguyên giá trị cũ). Tương tự cho onHand.
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
           branchId: purchaseOrder.branchId,
         },
         data: {
-          onHand: { increment: Number(item.quantity) },
+          ...(goodQty > 0 && { onHand: { increment: goodQty } }),
+          ...(damagedQty > 0 && {
+            damagedQuantity: { increment: damagedQty },
+          }),
         },
       });
 
+      // THẺ KHO: giữ convention 1 row = 1 log, ghi tổng quantity (cả good +
+      // damaged) như cũ. Nếu là dòng loại B, gắn tag note để truy vết khi
+      // xem thẻ kho.
       await tx.inventoryLog.create({
         data: {
           productId: item.productId,
@@ -1776,7 +1924,7 @@ export class PurchaseOrdersService {
           refCode: purchaseOrder.code,
           refType: 'purchase_order',
           refId: purchaseOrder.id,
-          quantity: Number(item.quantity),
+          quantity: qty,
           costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
           transactionPrice: Number(item.price),
           partnerId: purchaseOrder.supplierId,
@@ -1786,6 +1934,7 @@ export class PurchaseOrdersService {
           // thời điểm hiện tại → thẻ kho hiển thị sai timeline (vd phiếu lùi
           // ngày bị nhảy lên ngày sửa).
           transactionDate: purchaseOrder.purchaseDate,
+          note: isDamaged ? 'Hàng loại B' : null,
         },
       });
     }
@@ -1809,13 +1958,22 @@ export class PurchaseOrdersService {
     if (!purchaseOrder || !purchaseOrder.branchId) return;
 
     for (const item of purchaseOrder.items) {
+      const qty = Number(item.quantity);
+      // Rollback đúng bucket theo conditionType:
+      //   - "damaged" (loại B) → giảm damagedQuantity
+      //   - "normal" → giảm onHand
+      // Tương ứng với logic updateInventory() phía trên để revert chính xác.
+      const isDamaged = item.conditionType === 'damaged';
+
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
           branchId: purchaseOrder.branchId,
         },
         data: {
-          onHand: { decrement: Number(item.quantity) },
+          ...(isDamaged
+            ? { damagedQuantity: { decrement: qty } }
+            : { onHand: { decrement: qty } }),
         },
       });
     }
@@ -1978,6 +2136,11 @@ export class PurchaseOrdersService {
         price: Number(item.price),
         discount: Number(item.discount || 0),
         totalPrice: Number(item.totalPrice),
+        // Thêm 2 field mới để audit log hiển thị rõ dòng nào là loại B
+        // và số thứ tự dòng. Khi mở rộng truy vết kế toán, có thể filter
+        // theo conditionType để thống kê tổng hàng loại B theo thời gian.
+        lineNumber: item.lineNumber ?? null,
+        conditionType: item.conditionType || 'normal',
       })),
     };
   }
