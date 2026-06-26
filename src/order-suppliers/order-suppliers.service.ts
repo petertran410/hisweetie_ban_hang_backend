@@ -817,6 +817,12 @@ export class OrderSuppliersService {
             amount: dto.paymentAmount,
             transDate: new Date(),
             method: cashFlowMethod,
+            // Gắn tài khoản ngân hàng công ty khi chuyển khoản để đối chiếu
+            // sao kê + lọc sổ quỹ theo tài khoản.
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? dto.paymentAccountId ?? null
+                : null,
             partnerType: 'S',
             partnerId: orderSupplier.supplierId,
             partnerName: orderSupplier.supplier?.name,
@@ -838,6 +844,10 @@ export class OrderSuppliersService {
             amount: dto.paymentAmount,
             paymentDate: new Date(),
             paymentMethod: dto.paymentMethod || 'cash',
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? dto.paymentAccountId ?? null
+                : null,
             description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
@@ -911,6 +921,37 @@ export class OrderSuppliersService {
       let currentPaidAmount = Number(existing.paidAmount);
       let productQty = Number(existing.productQty);
 
+      // 1. Chỉ block xóa sản phẩm khỏi phiếu đặt khi sản phẩm đó đã được nhập kho
+      // qua các phiếu nhập hàng liên kết (chưa hủy).
+      if (dto.items) {
+        const incomingProductIds = dto.items.map(item => item.productId);
+        const deletedProductIds = existing.items
+          .map(item => item.productId)
+          .filter(prodId => !incomingProductIds.includes(prodId));
+
+        if (deletedProductIds.length > 0) {
+          const hasReceived = await tx.purchaseOrderItem.findFirst({
+            where: {
+              productId: { in: deletedProductIds },
+              purchaseOrder: {
+                orderSupplierId: id,
+                status: { not: 4 } // Trừ các phiếu nhập đã bị hủy
+              }
+            },
+            select: {
+              productId: true,
+              productName: true,
+            }
+          });
+
+          if (hasReceived) {
+            throw new BadRequestException(
+              `Sản phẩm "${hasReceived.productName}" đã phát sinh phiếu nhập hàng liên quan. Không thể xóa sản phẩm này khỏi phiếu đặt.`,
+            );
+          }
+        }
+      }
+
       if (dto.items) {
         await tx.orderSupplierItem.deleteMany({
           where: { orderSupplierId: id },
@@ -983,14 +1024,91 @@ export class OrderSuppliersService {
         productQty = itemsData.length;
       }
 
-      // Đối xứng `Order.update` phía bán: KHÔNG tạo payment + cashflow trực
-      // tiếp trong update. Mỗi lần save form sẽ tạo MỚI một CashFlow → user
-      // dễ vô tình nhân đôi/nhân ba khoản chi. Ép user dùng endpoint riêng
-      // `POST /api/order-suppliers/:id/payments` cho thanh toán bổ sung.
+      // Cho phép đặt cọc / trả thêm cho NCC ngay khi cập nhật phiếu. Mỗi lần
+      // submit form chỉ tạo MỚI một payment khi `dto.paymentAmount > 0` (FE
+      // gửi undefined khi không thanh toán → không bao giờ nhân đôi khoản cũ).
       if (dto.paymentAmount && dto.paymentAmount > 0) {
-        throw new BadRequestException(
-          'Không thể thanh toán trực tiếp khi cập nhật phiếu đặt hàng nhập. Vui lòng dùng chức năng thanh toán riêng.',
-        );
+        const payBranchId = dto.branchId ?? existing.branchId;
+        const paySupplierId = dto.supplierId ?? existing.supplierId;
+
+        // Bắt buộc PDN có chi nhánh trước khi tạo CashFlow (tránh fallback ?? 1
+        // ghi sai chi nhánh tiền chi) — đối xứng nhánh `create`.
+        if (!payBranchId) {
+          throw new NotFoundException(
+            'Phiếu đặt hàng nhập chưa có chi nhánh. Vui lòng chọn chi nhánh trước khi thanh toán.',
+          );
+        }
+
+        const paymentCode = await this.generatePaymentCode(tx);
+
+        let cashFlowMethod = 'cash';
+        if (dto.paymentMethod === 'transfer') {
+          cashFlowMethod = 'transfer';
+        } else if (dto.paymentMethod === 'card') {
+          cashFlowMethod = 'card';
+        }
+
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: payBranchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount: dto.paymentAmount,
+            transDate: new Date(),
+            method: cashFlowMethod,
+            // Gắn tài khoản ngân hàng công ty khi chuyển khoản để đối chiếu
+            // sao kê + lọc sổ quỹ theo tài khoản.
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? dto.paymentAccountId ?? null
+                : null,
+            partnerType: 'S',
+            partnerId: paySupplierId,
+            partnerName: existing.supplier?.name,
+            contactNumber: existing.supplier?.contactNumber,
+            address: existing.supplier?.address,
+            description: `Chi tiền đặt hàng nhập ${existing.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+
+        await tx.orderSupplierPayment.create({
+          data: {
+            code: paymentCode,
+            orderSupplierId: id,
+            amount: dto.paymentAmount,
+            paymentDate: new Date(),
+            paymentMethod: dto.paymentMethod || 'cash',
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? dto.paymentAccountId ?? null
+                : null,
+            description: `Trả tiền đặt hàng nhập ${existing.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
+          },
+        });
+
+        // Recalc Supplier.debt global (Formula B) + snapshot vào CashFlow.
+        await this.updateSupplierDebt(paySupplierId, tx);
+        const paidSupplier = await tx.supplier.findUnique({
+          where: { id: paySupplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlow.id },
+          data: {
+            supplierDebtSnapshot: paidSupplier
+              ? Number(paidSupplier.debt)
+              : null,
+          },
+        });
       }
 
       // Recompute paidAmount từ active payments (mirror Order.calculateTotals)
@@ -1012,14 +1130,19 @@ export class OrderSuppliersService {
           ? existing.code
           : await this.resolveOrderSupplierCode(tx, dto.code, id);
 
-      // Chuẩn hoá currency/exchangeRate. Cho phép update — nhưng chỉ khi PDN
-      // chưa có phiếu nhập hàng (PurchaseOrder) nào. Nếu đã có PN thì tỉ giá
-      // đã được kế thừa xuống PN rồi, không thể đổi ngược (giữ audit nhất
-      // quán). Nếu client vẫn gửi currency/exchangeRate mà đã có PN → báo lỗi.
+      // 2. Chỉ block thay đổi tiền tệ/tỉ giá khi có sự thay đổi thực tế so với DB
+      // và đã phát sinh phiếu nhập hàng liên quan.
       let nextCurrency = existing.currency || 'VND';
       let nextExchangeRate: number | null =
         existing.exchangeRate != null ? Number(existing.exchangeRate) : 1;
-      if (dto.currency !== undefined || dto.exchangeRate !== undefined) {
+
+      const incomingCurrency = dto.currency !== undefined ? dto.currency.toUpperCase() : undefined;
+      const incomingExchangeRate = dto.exchangeRate !== undefined ? Number(dto.exchangeRate) : undefined;
+
+      const isCurrencyChanged = incomingCurrency !== undefined && incomingCurrency !== nextCurrency;
+      const isExchangeRateChanged = incomingExchangeRate !== undefined && incomingExchangeRate !== nextExchangeRate;
+
+      if (isCurrencyChanged || isExchangeRateChanged) {
         const hasPurchaseOrder = await tx.purchaseOrder.findFirst({
           where: { orderSupplierId: id },
           select: { id: true },
@@ -1030,25 +1153,23 @@ export class OrderSuppliersService {
               'Không thể thay đổi tiền tệ/tỉ giá vì sẽ làm lệch dữ liệu các phiếu nhập đã phát sinh.',
           );
         }
-        if (dto.currency !== undefined) {
-          const c = dto.currency.toUpperCase();
-          if (!['VND', 'CNY'].includes(c)) {
+        if (incomingCurrency !== undefined) {
+          if (!['VND', 'CNY'].includes(incomingCurrency)) {
             throw new BadRequestException(
-              `currency không hợp lệ: ${c}. Chỉ chấp nhận VND hoặc CNY.`,
+              `currency không hợp lệ: ${incomingCurrency}. Chỉ chấp nhận VND hoặc CNY.`,
             );
           }
-          nextCurrency = c;
+          nextCurrency = incomingCurrency;
         }
         if (nextCurrency === 'VND') {
           nextExchangeRate = 1;
-        } else if (dto.exchangeRate !== undefined) {
-          const r = Number(dto.exchangeRate);
-          if (!(r > 0)) {
+        } else if (incomingExchangeRate !== undefined) {
+          if (!(incomingExchangeRate > 0)) {
             throw new BadRequestException(
               'Khi currency = CNY thì exchangeRate phải > 0',
             );
           }
-          nextExchangeRate = r;
+          nextExchangeRate = incomingExchangeRate;
         }
       }
 

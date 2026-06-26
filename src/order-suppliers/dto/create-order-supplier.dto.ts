@@ -165,6 +165,17 @@ export class CreateOrderSupplierDto {
   @IsString()
   paymentMethod?: string;
 
+  @ApiProperty({
+    required: false,
+    description:
+      'Id tài khoản ngân hàng công ty dùng để chuyển khoản cho NCC. ' +
+      'Chỉ cần khi paymentMethod = "transfer". Map vào CashFlow.accountId và ' +
+      'OrderSupplierPayment.accountId để đối chiếu sao kê ngân hàng.',
+  })
+  @IsOptional()
+  @IsInt()
+  paymentAccountId?: number;
+
   @ApiProperty({ required: false, description: 'Dự kiến ngày nhập hàng' })
   @IsOptional()
   @IsDateString()
