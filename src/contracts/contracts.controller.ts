@@ -84,7 +84,9 @@ export class ContractsController {
 
   @Post(':id/approve-review')
   @RequirePermissions('contracts:send')
-  @ApiOperation({ summary: 'Đánh dấu khách đã đồng ý nội dung (bản xem trước)' })
+  @ApiOperation({
+    summary: 'Đánh dấu khách đã đồng ý nội dung (bản xem trước)',
+  })
   async approveReview(@Param('id') id: string) {
     return this.contractsService.approveReview(Number(id));
   }
@@ -126,26 +128,32 @@ export class ContractsController {
 
     // Đã xử lý xong trước đó → hiện trạng thái.
     if (['SENT', 'SIGNED'].includes(contract.status)) {
-      return res.type('html').send(
-        this.htmlPage(
-          'Đã xác nhận',
-          'Quý khách đã đồng ý bản dự thảo. Bản hợp đồng điện tử để ký đã được gửi tới email của Quý khách. Vui lòng kiểm tra hộp thư.',
-          'success',
-        ),
-      );
+      return res
+        .type('html')
+        .send(
+          this.htmlPage(
+            'Đã xác nhận',
+            'Quý khách đã đồng ý bản dự thảo. Bản hợp đồng điện tử để ký đã được gửi tới email của Quý khách. Vui lòng kiểm tra hộp thư.',
+            'success',
+          ),
+        );
     }
     if (contract.status === 'REJECTED') {
-      return res.type('html').send(
-        this.htmlPage(
-          'Đã ghi nhận',
-          'Quý khách đã từ chối bản dự thảo này. Nhân viên Diệp Trà sẽ liên hệ lại để điều chỉnh.',
-          'neutral',
-        ),
-      );
+      return res
+        .type('html')
+        .send(
+          this.htmlPage(
+            'Đã ghi nhận',
+            'Quý khách đã từ chối bản dự thảo này. Nhân viên Diệp Trà sẽ liên hệ lại để điều chỉnh.',
+            'neutral',
+          ),
+        );
     }
 
     const isReject = action === 'reject';
-    const title = isReject ? 'Xác nhận KHÔNG đồng ý' : 'Xác nhận đồng ý hợp đồng';
+    const title = isReject
+      ? 'Xác nhận KHÔNG đồng ý'
+      : 'Xác nhận đồng ý hợp đồng';
     const desc = isReject
       ? 'Quý khách xác nhận <strong>không đồng ý</strong> với bản dự thảo hợp đồng này? Nhân viên Diệp Trà sẽ liên hệ lại để điều chỉnh.'
       : 'Quý khách xác nhận <strong>đồng ý</strong> với nội dung bản dự thảo? Sau khi xác nhận, chúng tôi sẽ gửi bản hợp đồng điện tử chính thức tới email để Quý khách ký.';
@@ -170,13 +178,15 @@ export class ContractsController {
   async approveByToken(@Param('token') token: string, @Res() res: Response) {
     try {
       await this.contractsService.approveReviewByToken(token);
-      return res.type('html').send(
-        this.htmlPage(
-          'Cảm ơn Quý khách!',
-          'Quý khách đã đồng ý bản dự thảo. Chúng tôi vừa gửi bản hợp đồng điện tử chính thức tới email của Quý khách. Vui lòng kiểm tra hộp thư để ký.',
-          'success',
-        ),
-      );
+      return res
+        .type('html')
+        .send(
+          this.htmlPage(
+            'Cảm ơn Quý khách!',
+            'Quý khách đã đồng ý bản dự thảo. Chúng tôi vừa gửi bản hợp đồng điện tử chính thức tới email của Quý khách. Vui lòng kiểm tra hộp thư để ký.',
+            'success',
+          ),
+        );
     } catch (e: any) {
       return res
         .status(400)
@@ -184,7 +194,8 @@ export class ContractsController {
         .send(
           this.htmlPage(
             'Không thể xử lý',
-            e?.message || 'Đã có lỗi xảy ra. Vui lòng liên hệ nhân viên Diệp Trà.',
+            e?.message ||
+              'Đã có lỗi xảy ra. Vui lòng liên hệ nhân viên Diệp Trà.',
             'error',
           ),
         );
@@ -197,13 +208,15 @@ export class ContractsController {
   async rejectByToken(@Param('token') token: string, @Res() res: Response) {
     try {
       await this.contractsService.rejectReviewByToken(token);
-      return res.type('html').send(
-        this.htmlPage(
-          'Đã ghi nhận',
-          'Cảm ơn Quý khách đã phản hồi. Nhân viên Diệp Trà sẽ liên hệ lại để điều chỉnh nội dung hợp đồng.',
-          'neutral',
-        ),
-      );
+      return res
+        .type('html')
+        .send(
+          this.htmlPage(
+            'Đã ghi nhận',
+            'Cảm ơn Quý khách đã phản hồi. Nhân viên Diệp Trà sẽ liên hệ lại để điều chỉnh nội dung hợp đồng.',
+            'neutral',
+          ),
+        );
     } catch (e: any) {
       return res
         .status(400)
@@ -211,7 +224,8 @@ export class ContractsController {
         .send(
           this.htmlPage(
             'Không thể xử lý',
-            e?.message || 'Đã có lỗi xảy ra. Vui lòng liên hệ nhân viên Diệp Trà.',
+            e?.message ||
+              'Đã có lỗi xảy ra. Vui lòng liên hệ nhân viên Diệp Trà.',
             'error',
           ),
         );
@@ -315,7 +329,10 @@ export class ContractsController {
     message: string,
     type: 'success' | 'error' | 'neutral',
   ): string {
-    const colors: Record<string, { bg: string; text: string; border: string; icon: string }> = {
+    const colors: Record<
+      string,
+      { bg: string; text: string; border: string; icon: string }
+    > = {
       success: { bg: '#f0fdf4', text: '#166534', border: '#bbf7d0', icon: '✓' },
       error: { bg: '#fef2f2', text: '#991b1b', border: '#fecaca', icon: '✗' },
       neutral: { bg: '#f9fafb', text: '#374151', border: '#e5e7eb', icon: 'ℹ' },

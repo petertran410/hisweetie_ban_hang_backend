@@ -10,10 +10,7 @@ import {
   ParseIntPipe,
 } from '@nestjs/common';
 import { ConsignmentReturnsService } from './consignment-returns.service';
-import {
-  CreateConsignmentReturnDto,
-  ConsignmentReturnQueryDto,
-} from './dto';
+import { CreateConsignmentReturnDto, ConsignmentReturnQueryDto } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';

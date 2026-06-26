@@ -5,8 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // @pdf-lib/fontkit export khác nhau giữa CJS/ESM — lấy đúng instance.
-const fontkit: any =
-  (fontkitModule as any).default || (fontkitModule as any);
+const fontkit: any = (fontkitModule as any).default || (fontkitModule as any);
 
 /**
  * Một ô text cần "nung" thẳng vào PDF (chữ in cứng, KHÔNG viền — khác field
@@ -111,7 +110,8 @@ export class PdfBurnService {
 
       // Cỡ chữ: ưu tiên fontSize cho trước, nếu không thì ~70% chiều cao ô,
       // rồi co lại nếu quá rộng so với ô.
-      let fontSize = item.fontSize && item.fontSize > 0 ? item.fontSize : boxH * 0.7;
+      let fontSize =
+        item.fontSize && item.fontSize > 0 ? item.fontSize : boxH * 0.7;
       fontSize = Math.max(6, Math.min(fontSize, 48));
       let textWidth = font.widthOfTextAtSize(value, fontSize);
       while (textWidth > boxW && fontSize > 6) {
@@ -212,11 +212,7 @@ export class PdfBurnService {
   }
 
   /** Vẽ 1 ô text vào trang (tách riêng để dùng chung). */
-  private drawTextItem(
-    pages: any[],
-    font: any,
-    item: BurnTextItem,
-  ): void {
+  private drawTextItem(pages: any[], font: any, item: BurnTextItem): void {
     const pageIndex = (item.page || 1) - 1;
     if (pageIndex < 0 || pageIndex >= pages.length) {
       this.logger.warn(`burnText: page ${item.page} ngoài phạm vi — bỏ qua`);

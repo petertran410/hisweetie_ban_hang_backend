@@ -647,10 +647,11 @@ export class ReturnOrdersService {
       await recalcOnHandForPairs(
         tx,
         dto.details.map((d) => {
-          const detail = returnOrder.details.find(
-            (rd) => rd.id === d.detailId,
-          );
-          return { productId: detail?.productId, branchId: returnOrder.branchId };
+          const detail = returnOrder.details.find((rd) => rd.id === d.detailId);
+          return {
+            productId: detail?.productId,
+            branchId: returnOrder.branchId,
+          };
         }),
       );
 
@@ -961,11 +962,8 @@ export class ReturnOrdersService {
 
       // Chỉ Admin/Super Admin mới được hủy phiếu đã hoàn thành (status 4).
       // Các role khác vẫn bị chặn như cũ.
-      const isAdmin = roles.some(
-        (r) => r === 'Super Admin' || r === 'Admin',
-      );
-      const wasCompleted =
-        returnOrder.status === RETURN_ORDER_STATUS.COMPLETED;
+      const isAdmin = roles.some((r) => r === 'Super Admin' || r === 'Admin');
+      const wasCompleted = returnOrder.status === RETURN_ORDER_STATUS.COMPLETED;
 
       if (wasCompleted && !isAdmin) {
         throw new BadRequestException(

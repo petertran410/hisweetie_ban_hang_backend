@@ -43,7 +43,10 @@ export class SupplierReturnsController {
   @Get(':id')
   @RequirePermissions('supplier_returns:view')
   findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
-    return this.supplierReturnsService.findOne(id, getSupplierScopeFromUser(user));
+    return this.supplierReturnsService.findOne(
+      id,
+      getSupplierScopeFromUser(user),
+    );
   }
 
   @Post()

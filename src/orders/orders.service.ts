@@ -196,7 +196,7 @@ export class OrdersService {
 
       // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
       // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
-      const matchedIds: number[] = (r as any).matchedProductIds || [];
+      const matchedIds: number[] = r.matchedProductIds || [];
       if (matchedIds.length) {
         for (const it of baseItems) {
           if (

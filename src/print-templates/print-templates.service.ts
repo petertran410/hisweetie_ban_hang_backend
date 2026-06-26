@@ -282,7 +282,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        details: { include: { product: true, promotion: { select: { code: true, name: true } } } },
+        details: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Invoice not found');
@@ -311,7 +316,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        items: { include: { product: true, promotion: { select: { code: true, name: true } } } },
+        items: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Order not found');

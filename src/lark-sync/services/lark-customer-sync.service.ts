@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LarkCustomerBaseService } from './lark-customer-base.service';
@@ -36,9 +41,7 @@ const CUSTOMER_INCLUDE = {
 } as const;
 
 @Injectable()
-export class LarkCustomerSyncService
-  implements OnModuleInit, OnModuleDestroy
-{
+export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LarkCustomerSyncService.name);
   private readonly tableId: string | null;
   private readonly MAX_RETRIES = 3;
@@ -318,7 +321,9 @@ export class LarkCustomerSyncService
           });
 
           success += validCustomers.length;
-          this.logger.log(`✅ Batch updated ${validCustomers.length} customers`);
+          this.logger.log(
+            `✅ Batch updated ${validCustomers.length} customers`,
+          );
         } catch (error: any) {
           this.logger.error(
             `❌ Batch update failed after verify: ${error.message}`,

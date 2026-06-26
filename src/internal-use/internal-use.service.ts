@@ -167,7 +167,9 @@ export class InternalUseService {
   }
 
   async create(dto: CreateInternalUseDto, userId: number) {
-    const creator = await this.prisma.user.findUnique({ where: { id: userId } });
+    const creator = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
     const branch = await this.prisma.branch.findUnique({
       where: { id: dto.branchId },
     });
@@ -570,10 +572,7 @@ export class InternalUseService {
 
   private async resolveDetailCosts<
     T extends { productId: number; quantity: number | string; cost?: number },
-  >(
-    details: T[],
-    branchId: number,
-  ): Promise<(T & { cost: number })[]> {
+  >(details: T[], branchId: number): Promise<(T & { cost: number })[]> {
     return Promise.all(
       details.map(async (detail) => {
         if (detail.cost !== undefined && detail.cost !== null) {
@@ -640,7 +639,9 @@ export class InternalUseService {
         },
       });
 
-      const costPrice = inventory ? Number(inventory.cost) : Number(detail.cost);
+      const costPrice = inventory
+        ? Number(inventory.cost)
+        : Number(detail.cost);
 
       if (inventory) {
         const newOnHand = Number(inventory.onHand) - Number(detail.quantity);

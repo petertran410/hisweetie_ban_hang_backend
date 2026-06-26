@@ -7,6 +7,8 @@ import {
   IsArray,
   ValidateNested,
   IsDateString,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
@@ -167,4 +169,29 @@ export class CreateOrderSupplierDto {
   @IsOptional()
   @IsDateString()
   orderDate?: string;
+
+  @ApiProperty({
+    required: false,
+    enum: ['VND', 'CNY'],
+    default: 'VND',
+    description:
+      'Mã tiền tệ áp dụng cho phiếu (VND mặc định). Khi supplier thuộc nhóm ' +
+      'nước ngoài (vd supplierGroupId = 1), FE sẽ gửi CNY kèm exchangeRate.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['VND', 'CNY'])
+  currency?: string;
+
+  @ApiProperty({
+    required: false,
+    default: 1,
+    description:
+      'Tỉ giá quy đổi (1 đơn vị currency = X VND). Ví dụ: 3500 = 1 CNY = 3500 VND. ' +
+      'Mặc định 1. Bắt buộc > 0 khi currency = CNY.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  exchangeRate?: number;
 }

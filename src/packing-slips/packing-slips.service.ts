@@ -167,8 +167,7 @@ export class PackingSlipsService {
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {
-    const isConsignment =
-      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
 
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
@@ -272,24 +271,24 @@ export class PackingSlipsService {
     if (!isConsignment) {
       try {
         const fullPackingSlip = await this.findOne(packingSlip.id);
-      // Không await để response API tạo packing slip không bị chờ webhook.
-      // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
-      void this.n8nNotifyService
-        .notifyDelivery(fullPackingSlip as any)
-        .catch((err) => {
-          // Phòng ngừa, dù service đã tự log
+        // Không await để response API tạo packing slip không bị chờ webhook.
+        // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
+        void this.n8nNotifyService
+          .notifyDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            // Phòng ngừa, dù service đã tự log
 
-          console.error('notifyDelivery unexpected error:', err);
-        });
+            console.error('notifyDelivery unexpected error:', err);
+          });
 
-      // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
-      // Best-effort: lỗi ở đây không ảnh hưởng response.
-      void this.larkExpenseSync
-        .syncPackingSlipExpenses(fullPackingSlip as any)
-        .catch((err) => {
-          console.error('larkExpenseSync unexpected error:', err);
-        });
-    } catch (err) {
+        // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
+        // Best-effort: lỗi ở đây không ảnh hưởng response.
+        void this.larkExpenseSync
+          .syncPackingSlipExpenses(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('larkExpenseSync unexpected error:', err);
+          });
+      } catch (err) {
         console.error(
           'Failed to load packing slip for n8n notify:',
           (err as Error).message,

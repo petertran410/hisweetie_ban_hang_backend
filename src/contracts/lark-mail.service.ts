@@ -23,8 +23,7 @@ export class LarkMailService {
   private readonly fromAddress: string;
 
   constructor(private readonly configService: ConfigService) {
-    this.fromAddress =
-      this.configService.get<string>('LARK_SMTP_USER') || '';
+    this.fromAddress = this.configService.get<string>('LARK_SMTP_USER') || '';
     this.fromName =
       this.configService.get<string>('LARK_SMTP_FROM_NAME') || 'Diệp Trà';
   }
@@ -34,7 +33,8 @@ export class LarkMailService {
 
     const host =
       this.configService.get<string>('LARK_SMTP_HOST') || 'smtp.larksuite.com';
-    const port = Number(this.configService.get<string>('LARK_SMTP_PORT')) || 465;
+    const port =
+      Number(this.configService.get<string>('LARK_SMTP_PORT')) || 465;
     const secureRaw = this.configService.get<string>('LARK_SMTP_SECURE');
     const secure = secureRaw ? secureRaw === 'true' : port === 465;
     const user = this.configService.get<string>('LARK_SMTP_USER') || '';
@@ -85,10 +85,7 @@ export class LarkMailService {
   }
 
   /** Email bản xem trước (Phase 1) — khách xem nội dung, chưa ký. */
-  buildReviewHtml(params: {
-    customerName: string;
-    reviewUrl: string;
-  }): string {
+  buildReviewHtml(params: { customerName: string; reviewUrl: string }): string {
     const approveUrl = `${params.reviewUrl}?action=approve`;
     const rejectUrl = `${params.reviewUrl}?action=reject`;
     return `

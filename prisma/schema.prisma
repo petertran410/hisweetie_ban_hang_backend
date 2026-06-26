@@ -1582,6 +1582,11 @@ model PurchaseOrder {
   statusValue       String?
   supplierDebt      Decimal   @default(0)
   supplierOldDebt   Decimal   @default(0)
+  // Tiền tệ & tỉ giá kế thừa từ OrderSupplier (snapshot). Mặc định VND với
+  // tỉ giá 1. Khi OrderSupplier có currency = 'CNY' thì khi tạo PurchaseOrder
+  // từ OrderSupplier, 2 cột này sẽ inherit theo.
+  currency           String?   @default("VND") @map("currency")
+  exchangeRate       Decimal?  @default(1) @map("exchange_rate")
   isDraft           Boolean   @default(false)
   partnerType       String?
   description       String?
@@ -1627,6 +1632,13 @@ model PurchaseOrderItem {
   // (loại B = bục rách). Khi hoàn thành phiếu, phần "damaged" sẽ cộng thêm
   // vào Inventory.damagedQuantity (giữ nguyên quy ước damaged <= onHand).
   conditionType   String   @default("normal")
+  // Đơn giá gốc theo tiền tệ gốc (vd CNY) — kế thừa từ OrderSupplierItem
+  // khi tạo PurchaseOrder từ OrderSupplier. Null nếu phiếu nhập tạo trực
+  // tiếp (không qua PDN) hoặc PDN không có thông tin tỉ giá.
+  factoryPrice         Decimal?  @map("factory_price")
+  // Thành tiền đã quy đổi sang VND — kế thừa từ OrderSupplierItem.factorySubTotal.
+  // Null trong cùng điều kiện với factoryPrice.
+  factorySubTotal      Decimal?  @map("factory_sub_total")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -2006,6 +2018,15 @@ model OrderSupplier {
   viewPrice          Boolean   @default(true)
   supplierDebt       Decimal   @default(0)
   supplierOldDebt    Decimal   @default(0)
+  // Tiền tệ & tỉ giá áp dụng cho phiếu đặt hàng nhập này. Mặc định VND với
+  // tỉ giá 1. Khi supplier thuộc nhóm nước ngoài (vd supplierGroupId = 1),
+  // FE sẽ tự động load tỉ giá CNY→VND mới nhất từ ExchangeRateModule lúc tạo
+  // form và lưu snapshot vào 2 cột này. Tỉ giá có thể được refresh thủ công
+  // qua nút "Cập nhật tỉ giá" ở form (chỉ khi chưa có phiếu nhập hàng liên
+  // quan). Cột factoryPrice/factorySubTotal trên OrderSupplierItem lưu giá
+  // trị quy đổi sang VND (để tương thích ngược với data cũ + đồng bộ Lark).
+  currency           String?   @default("VND") @map("currency")
+  exchangeRate       Decimal?  @default(1) @map("exchange_rate")
   createdBy          Int
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -3150,4 +3171,21 @@ model Contract {
   @@index([customerId])
   @@index([status])
   @@map("contracts")
+}
+
+/// Cache tỉ giá ngoại tệ. Dùng để cache response từ fxratesapi.com (hoặc
+/// nguồn khác) — tránh gọi API quá nhiều lần. Mỗi cặp (base, target) chỉ
+/// giữ 1 dòng; `fetchedAt` để ExchangeRateService quyết định có cần refresh
+/// hay không (TTL 15 phút theo cấu hình).
+model ExchangeRate {
+  id        Int      @id @default(autoincrement())
+  base      String
+  target    String
+  rate      Decimal
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([base, target])
+  @@map("exchange_rates")
 }
