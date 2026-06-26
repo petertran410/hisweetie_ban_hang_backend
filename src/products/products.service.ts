@@ -585,7 +585,8 @@ export class ProductsService {
       shippingWeight: {
         header: 'Trọng lượng vận chuyển',
         width: 20,
-        value: (p) => (p.shippingWeight != null ? Number(p.shippingWeight) : ''),
+        value: (p) =>
+          p.shippingWeight != null ? Number(p.shippingWeight) : '',
       },
       vat: {
         header: 'VAT (%)',
@@ -870,7 +871,9 @@ export class ProductsService {
           publicationLocation: publicationLocation
             ? (publicationLocation as any)
             : undefined,
-          publicationDate: publicationDate ? new Date(publicationDate) : undefined,
+          publicationDate: publicationDate
+            ? new Date(publicationDate)
+            : undefined,
           publicationLink: publicationLink ?? undefined,
           masterUnitId: masterUnitId,
           ...(masterUnitId && { masterUnitId }),
@@ -1164,7 +1167,10 @@ export class ProductsService {
       'shippingWeight',
       'conversionValue',
     ] as const) {
-      if (key in productData && sanitizeNumber((productData as any)[key]) === undefined) {
+      if (
+        key in productData &&
+        sanitizeNumber((productData as any)[key]) === undefined
+      ) {
         delete (productData as any)[key];
       }
     }
@@ -1176,7 +1182,9 @@ export class ProductsService {
           ...productData,
           fullName,
           basePrice:
-            safeBasePrice !== undefined ? safeBasePrice : currentProduct.basePrice,
+            safeBasePrice !== undefined
+              ? safeBasePrice
+              : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
           ...(publicationLocation !== undefined && {
             publicationLocation: publicationLocation as any,
@@ -2015,7 +2023,10 @@ export class ProductsService {
       basePrice: product.basePrice ? Number(product.basePrice) : 0,
       weight: product.weight ? Number(product.weight) : 0,
       weightUnit: product.weightUnit,
-      vat: product.vat !== null && product.vat !== undefined ? Number(product.vat) : 8,
+      vat:
+        product.vat !== null && product.vat !== undefined
+          ? Number(product.vat)
+          : 8,
       shippingWeight:
         product.shippingWeight !== null && product.shippingWeight !== undefined
           ? Number(product.shippingWeight)

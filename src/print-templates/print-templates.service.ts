@@ -282,7 +282,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        details: { include: { product: true, promotion: { select: { code: true, name: true } } } },
+        details: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Invoice not found');
@@ -311,7 +316,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        items: { include: { product: true, promotion: { select: { code: true, name: true } } } },
+        items: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Order not found');
@@ -708,7 +718,7 @@ export class PrintTemplatesService {
       Da_Thanh_Toan: this.money(po.paidAmount),
       Con_Lai: this.money(Number(po.total || 0) - Number(po.paidAmount || 0)),
       Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(Number(po.total || 0)),
-      items: (po.items || []).map((i: any) => this.mapItem(i)),
+      items: (po.items || []).map((i: any) => this.mapItemPurchaseOrder(i)),
     };
   }
 
@@ -837,6 +847,8 @@ export class PrintTemplatesService {
       Don_Vi_Tinh: item.product?.unit || '',
       So_Luong: Number(item.quantity),
       Don_Gia: this.money(item.price),
+      Chiet_Khau_Phan_Tram: discountRatio ? String(discountRatio) : '',
+      Chiet_Khau_Tien: discount ? this.money(discount) : '',
       Giam_Gia_Don_Gia: this.money(item.discount),
       Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
       Ghi_Chu_Hang_Hoa: item.note || item.description || '',
@@ -849,6 +861,36 @@ export class PrintTemplatesService {
       La_Hang_KM: isReward || isPromoBuy ? '1' : '',
       Ma_KM: item.promotion?.code || '',
       Ten_KM: item.promotion?.name || '',
+    };
+  }
+
+  // Mapper riêng cho phiếu nhập hàng (purchase_order):
+  // - Bỏ Giam_Gia_Don_Gia (trùng ý nghĩa với Don_Gia_Sau_Chiet_Khau)
+  // - Bỏ Loai_Dong_KM / La_Hang_KM / Ma_KM / Ten_KM (phiếu nhập không cần KM)
+  // - Bổ sung Chiet_Khau_Phan_Tram + Chiet_Khau_Tien
+  private mapItemPurchaseOrder(item: any) {
+    const price = Number(item.price || 0);
+    const discount = Number(item.discount || 0);
+    const discountRatio = Number(item.discountRatio || 0);
+    const priceAfterDiscount =
+      item.appliedPrice != null
+        ? Number(item.appliedPrice)
+        : price - discount - (price * discountRatio) / 100;
+
+    return {
+      Ma_Hang: item.productCode || item.product?.code || '',
+      Ten_Hang_Hoa: item.productName || item.product?.name || '',
+      Don_Vi_Tinh: item.product?.unit || '',
+      So_Luong: Number(item.quantity),
+      Don_Gia: this.money(price),
+      Chiet_Khau_Phan_Tram: discountRatio ? String(discountRatio) : '',
+      Chiet_Khau_Tien: discount ? this.money(discount) : '',
+      Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
+      Ghi_Chu_Hang_Hoa: item.note || item.description || '',
+      Thanh_Tien: this.money(item.totalPrice || item.subTotal),
+      NSX: item.manufactureDate
+        ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
+        : '',
     };
   }
 

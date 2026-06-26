@@ -27,7 +27,8 @@ export class BorderGatesService {
     userId: number,
   ) {
     const name = (dto.name || '').trim();
-    if (!name) throw new BadRequestException('Tên cửa khẩu không được để trống');
+    if (!name)
+      throw new BadRequestException('Tên cửa khẩu không được để trống');
     const existing = await this.prisma.borderGate.findFirst({
       where: { name },
     });

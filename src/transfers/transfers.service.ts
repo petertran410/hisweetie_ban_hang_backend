@@ -9,6 +9,7 @@ import {
   UpdateTransferDto,
   TransferQueryDto,
   CancelTransferDto,
+  ConfirmShortageDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -494,6 +495,10 @@ export class TransfersService {
       await this.incrementInventoryFromBranch(id);
     } else if (oldStatus === 2 && newStatus === 3) {
       await this.incrementInventoryToBranch(id);
+      // Hoàn shortage về kho chuyển: kho nhận nhận ít hơn → kho chuyển
+      // vẫn giữ lại phần chênh lệch. Pattern y hệt KiotViet — dùng
+      // receivedQuantity làm con số vừa trừ kho chuyển vừa cộng kho nhận.
+      await this.returnShortageToFromBranch(id);
     } else if (oldStatus === 3 && newStatus === 2) {
       await this.decrementInventoryToBranch(id);
     }
@@ -837,6 +842,110 @@ export class TransfersService {
     });
   }
 
+  /**
+   * Hoàn shortage về kho chuyển — chạy ngay sau khi kho nhận xác nhận
+   * "Đã nhận" (status 2→3). Nếu kho nhận nhận ít hơn số chuyển, phần
+   * chênh lệch vẫn còn thực tế ở kho chuyển → cộng lại vào tồn kho
+   * kho chuyển.
+   *
+   * Pattern y hệt KiotViet: dùng `TRANSFER_OUT` với quantity dương
+   * (gộp với dòng -sendQuantity trước đó sẽ triệt tiêu về -receivedQty).
+   * Nhờ vậy "Tồn cuối" trên thẻ kho kho chuyển khớp tuyệt đối với
+   * onHand sau khi recalc.
+   *
+   * Idempotent: nếu log hoàn shortage đã tồn tại (refType='transfer',
+   * refId=transferId, transactionType='TRANSFER_OUT', quantity>0,
+   * note chứa 'Hoàn shortage') thì bỏ qua — đảm bảo an toàn khi
+   * confirmShortage được gọi 2 lần.
+   */
+  private async returnShortageToFromBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { details: true, fromBranch: true },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const shortage =
+          Number(detail.sendQuantity) - Number(detail.receivedQuantity);
+        if (shortage <= 0) continue;
+
+        // Idempotent check: nếu đã ghi log hoàn shortage cho dòng này
+        // thì skip (tránh cộng 2 lần khi user F5/refresh dialog).
+        const existing = await tx.inventoryLog.findFirst({
+          where: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+            transactionType: 'TRANSFER_OUT',
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: shortage,
+            note: {
+              contains: 'Hoàn shortage',
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+        });
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+          data: {
+            onHand: { increment: shortage },
+          },
+        });
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.fromBranchId,
+            branchName: transfer.fromBranch?.name || '',
+            transactionType: 'TRANSFER_OUT',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: Number(shortage),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+            note: `Hoàn shortage - phiếu ${transfer.code}`,
+          },
+        });
+      }
+
+      // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nguồn).
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+      );
+    });
+  }
+
   private async decrementInventoryToBranch(transferId: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
@@ -904,6 +1013,69 @@ export class TransfersService {
         branchId: transfer.toBranchId,
       })),
     );
+  }
+
+  /**
+   * Đảm bảo shortage được hoàn về kho chuyển (idempotent).
+   *
+   * Logic nghiệp vụ: khi kho nhận nhận ít hơn số chuyển, phần chênh lệch
+   * (sendQty - receivedQty) vẫn thực tế ở kho chuyển → cộng lại tồn kho
+   * kho chuyển. Method này idempotent — chạy nhiều lần vẫn an toàn.
+   *
+   * Lưu ý: Logic này ĐÃ ĐƯỢC tự động gọi khi transition status 2→3
+   * (xem `update()` → `returnShortageToFromBranch`). Method `confirmShortage`
+   * này tồn tại để:
+   *  - Cho phép frontend force-sync nếu cần (vd sau lỗi mạng).
+   *  - Đảm bảo idempotency cho retry từ client.
+   *  - Ghi audit log để truy vết.
+   */
+  async confirmShortage(id: number, _dto: ConfirmShortageDto, userId?: number) {
+    const transfer = await this.findOne(id);
+
+    if (transfer.status === 4) {
+      throw new BadRequestException('Phiếu chuyển hàng đã bị hủy');
+    }
+    if (transfer.status !== 3) {
+      throw new BadRequestException(
+        'Chỉ có thể xác nhận shortage sau khi kho nhận đã nhận hàng (status=3)',
+      );
+    }
+
+    // Đếm số SP có shortage để ghi audit log
+    const shortageCount = transfer.details.filter(
+      (d) => Number(d.sendQuantity) > Number(d.receivedQuantity),
+    ).length;
+
+    // Gọi lại logic hoàn shortage (idempotent)
+    await this.returnShortageToFromBranch(id);
+
+    if (userId && shortageCount > 0) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'TRANSFER_SHORTAGE_RESOLVE',
+        entityType: 'transfers',
+        entityId: id.toString(),
+        entityCode: transfer.code,
+        category: getCategoryFromActionCode('TRANSFER_SHORTAGE_RESOLVE'),
+        severity: getSeverityFromActionCode('TRANSFER_SHORTAGE_RESOLVE'),
+        snapshot: this.buildTransferSnapshot(transfer),
+        message: renderAuditMessage('TRANSFER_SHORTAGE_RESOLVE', {
+          transferCode: transfer.code,
+          shortageCount,
+        }),
+        messageTemplate: 'TRANSFER_SHORTAGE_RESOLVE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: transfer.fromBranchId,
+      });
+    }
+
+    return this.findOne(id);
   }
 
   async cancelTransfer(id: number, dto: CancelTransferDto, userId?: number) {
@@ -1050,6 +1222,48 @@ export class TransfersService {
               partnerName: null,
             },
           });
+
+          // Nếu trước đó shortage đã được resolve (RETURN_TO_SOURCE/WRITE_OFF),
+          // cần đảo ngược log hoàn shortage bằng log TRANSFER_CANCEL âm để
+          // triệt tiêu về 0. Nếu không: triệt tiêu, tồn kho bị cộng thêm 1 lần.
+          const shortage =
+            Number(detail.sendQuantity) - Number(detail.receivedQuantity);
+          if (shortage > 0) {
+            // Tìm log "Hoàn shortage" tương ứng để đảo chiều
+            const shortageLog = await tx.inventoryLog.findFirst({
+              where: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+                transactionType: 'TRANSFER_OUT',
+                refType: 'transfer',
+                refId: transfer.id,
+                note: { contains: 'Hoàn shortage' },
+              },
+              orderBy: { id: 'desc' },
+            });
+            if (shortageLog) {
+              // Ghi log đảo chiều (-shortage) với transactionType TRANSFER_CANCEL
+              // để cùng refType='transfer' bị loại khi transfer.status=4.
+              await tx.inventoryLog.create({
+                data: {
+                  productId: detail.productId,
+                  productCode: detail.productCode,
+                  productName: detail.productName,
+                  branchId: transfer.fromBranchId,
+                  branchName: transfer.fromBranch?.name || '',
+                  transactionType: 'TRANSFER_CANCEL',
+                  refCode: transfer.code,
+                  refType: 'transfer',
+                  refId: transfer.id,
+                  quantity: -Number(shortageLog.quantity),
+                  costPrice: fromInv ? Number(fromInv.cost) : 0,
+                  transactionPrice: null,
+                  partnerName: null,
+                  note: `Đảo chiều Hoàn shortage do hủy phiếu ${transfer.code}`,
+                },
+              });
+            }
+          }
 
           // Trừ tồn ở chi nhánh nhận đúng số lượng đã nhận thực tế
           // (atomic decrement, không overwrite — cho phép âm vì hệ thống đã chấp nhận tồn âm)

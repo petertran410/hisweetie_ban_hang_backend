@@ -1000,7 +1000,7 @@ export class InvoicesService {
 
       // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
       // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
-      const matchedIds: number[] = (r as any).matchedProductIds || [];
+      const matchedIds: number[] = r.matchedProductIds || [];
       if (matchedIds.length) {
         for (const it of baseItems) {
           if (
@@ -2120,10 +2120,7 @@ export class InvoicesService {
 
       // NGUỒN CHÂN LÝ: khi hủy hóa đơn (status=2 vừa ghi ở trên), log SALE trở
       // thành inactive → recalc onHand = Σ log active cho các sản phẩm của HĐ.
-      if (
-        dto.status === INVOICE_STATUS.CANCELLED &&
-        currentInvoice.branchId
-      ) {
+      if (dto.status === INVOICE_STATUS.CANCELLED && currentInvoice.branchId) {
         await recalcOnHandForPairs(
           tx,
           currentInvoice.details.map((d) => ({
@@ -2899,7 +2896,7 @@ export class InvoicesService {
               note: item.note,
               conditionType: item.conditionType || 'normal',
               manufactureDate:
-                (item as any).manufactureDate ??
+                item.manufactureDate ??
                 mfgDateByProduct[item.productId] ??
                 null,
             })),
@@ -4589,9 +4586,7 @@ export class InvoicesService {
             customerCode: inv.customer?.code ?? '',
             customerName: inv.customer?.name ?? 'Khách lẻ',
             customerTaxCode:
-              inv.customer?.taxCode ??
-              inv.customer?.identificationNumber ??
-              '',
+              inv.customer?.taxCode ?? inv.customer?.identificationNumber ?? '',
             customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
             misaEmployeeName:
               inv.customer?.misaEmployeeName ??
@@ -4603,9 +4598,7 @@ export class InvoicesService {
             grandTotal: Number(inv.grandTotal),
             misaStatusValue: this.misaStatusLabel(inv.misaSyncStatus),
             misaOrgRefId: inv.misaOrgRefId ?? '',
-            misaSyncedAt: inv.misaSyncedAt
-              ? new Date(inv.misaSyncedAt)
-              : '',
+            misaSyncedAt: inv.misaSyncedAt ? new Date(inv.misaSyncedAt) : '',
           })
           .commit();
       }
@@ -4726,8 +4719,7 @@ export class InvoicesService {
         }));
         const invVat = computeInvoiceVat(lines);
         const missingMisaCode = (inv.details || []).some(
-          (d) =>
-            !d.product?.misa_code || d.product.misa_code.trim() === '',
+          (d) => !d.product?.misa_code || d.product.misa_code.trim() === '',
         );
 
         const invData: Record<string, any> = {
@@ -4740,13 +4732,9 @@ export class InvoicesService {
           customerCode: inv.customer?.code ?? '',
           customerName: inv.customer?.name ?? 'Khách lẻ',
           customerPhone:
-            inv.customer?.contactNumber ??
-            (inv.customer as any)?.phone ??
-            '',
+            inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
           customerTaxCode:
-            inv.customer?.taxCode ??
-            inv.customer?.identificationNumber ??
-            '',
+            inv.customer?.taxCode ?? inv.customer?.identificationNumber ?? '',
           customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
           misaEmployeeCode: inv.customer?.misaEmployeeCode ?? '',
           misaEmployeeName: inv.customer?.misaEmployeeName ?? '',
@@ -4764,9 +4752,7 @@ export class InvoicesService {
           invoiceAfterTax: invVat.totalAfterTax,
         };
 
-        const detailEntries = inv.details?.length
-          ? inv.details
-          : [null];
+        const detailEntries = inv.details?.length ? inv.details : [null];
 
         for (let i = 0; i < detailEntries.length; i++) {
           const detail = detailEntries[i];

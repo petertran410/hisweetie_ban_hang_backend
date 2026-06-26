@@ -7,7 +7,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateStockAuditDto } from './dto/create-stock-audit.dto';
 import { UpdateStockAuditDto } from './dto/update-stock-audit.dto';
 import { StockAuditQueryDto } from './dto/stock-audit-query.dto';
-import { recalcStockAuditChain } from '../common/inventory-onhand.util';
+import {
+  recalcStockAuditChain,
+  getActiveLogKeys,
+  isLogActive,
+} from '../common/inventory-onhand.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   renderAuditMessage,
@@ -80,49 +84,25 @@ export class StockAuditsService {
     return u?.name || u?.email || 'System';
   }
 
-  // ─── Lọc bỏ log thuộc các phiếu kiểm ĐÃ HỦY ────────────────────
-  // Log STOCK_AUDIT/STOCK_AUDIT_CANCEL của phiếu có status = CANCELLED không
-  // được tính vào tồn (thẻ kho cũng ẩn chúng). Cặp +delta/−delta của 1 phiếu
-  // hủy có thể lệch transactionDate nên KHÔNG tự triệt tiêu khi cộng theo mốc
-  // thời gian — phải loại hẳn theo refId của phiếu đã hủy.
-  private async filterOutCancelledAuditLogs(
-    tx: any,
-    logs: { refType?: string | null; refId?: number | null; quantity: any }[],
-  ): Promise<{ quantity: any }[]> {
-    const auditIds = [
-      ...new Set(
-        logs
-          .filter((l) => l.refType === 'stock_audit' && l.refId)
-          .map((l) => l.refId as number),
-      ),
-    ];
-    if (auditIds.length === 0) return logs;
-    const cancelled = await tx.stockAudit.findMany({
-      where: { id: { in: auditIds }, status: STOCK_AUDIT_STATUS.CANCELLED },
-      select: { id: true },
-    });
-    const cancelledSet = new Set(cancelled.map((a: any) => a.id));
-    return logs.filter(
-      (l) => l.refType !== 'stock_audit' || !cancelledSet.has(l.refId),
-    );
-  }
-
-  // ─── Tồn kho tại thời điểm kiểm (point-in-time, LOG-BASED) ──────
-  // Tồn ngay TRƯỚC thời điểm `checkDate` = TỔNG các giao dịch THẬT (InventoryLog)
-  // có transactionDate < checkDate. Chỉ tính những gì đã ghi vào thẻ kho:
-  //   stockBefore(T) = Σ quantity(log.transactionDate < T)
-  // → Nếu trước thời điểm kiểm KHÔNG có giao dịch nào thì tồn = 0 (không tính
-  //   "tồn ảo" khởi tạo sản phẩm chưa từng ghi log). Khớp đúng với thẻ kho.
-  // Loại bỏ: (a) log của phiếu kiểm đang xử lý (`excludeAuditId`), (b) log của
-  // mọi phiếu kiểm ĐÃ HỦY.
+  // ─── Nguồn chân lý DUY NHẤT cho tồn tại thời điểm ─────────────────
+  // Khớp tuyệt đối với "Tồn cuối" trong thẻ kho (findInventoryLogs):
+  //   1. Dùng cùng bộ lọc cancelled (getActiveLogKeys + isLogActive) — bao
+  //      gồm TẤT CẢ 8 refType (invoice, purchase_order, transfer, production,
+  //      destruction, return_order, supplier_return, stock_audit).
+  //   2. Merge các log cùng (refType|refCode|transactionType) — tránh double
+  //      count khi 1 chứng từ ghi nhiều dòng log cùng key.
+  //   3. Ẩn dòng gộp có tổng quantity = 0 (NGOẠI TRỪ STOCK_AUDIT — giữ làm
+  //      mốc neo tuyệt đối, giống findInventoryLogs).
+  // Trước đây getStockBeforeDate chỉ filter cancelled cho `stock_audit` →
+  // form kiểm kho hiển thị cột "Tồn kho" sai (vd sản phẩm TD: -28 thay vì
+  // -12 do 2 hóa đơn đã hủy có tổng SL 16 chưa được loại).
   private async getStockBeforeDate(
-    tx: any,
     productId: number,
     branchId: number,
     checkDate: Date,
     excludeAuditId?: number,
   ): Promise<number> {
-    const earlierLogs = await tx.inventoryLog.findMany({
+    const logs = await this.prisma.inventoryLog.findMany({
       where: {
         productId,
         branchId,
@@ -131,22 +111,30 @@ export class StockAuditsService {
           ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
           : {}),
       },
-      select: { quantity: true, refType: true, refId: true },
+      select: {
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
     });
-    const active = await this.filterOutCancelledAuditLogs(tx, earlierLogs);
-    return active.reduce((s: number, l: any) => s + Number(l.quantity), 0);
+
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+    return this.mergeAndSumActiveLogs(active);
   }
 
   // ─── Tổng toàn bộ giao dịch (Σ log) của 1 sản phẩm tại 1 chi nhánh ──
   // Dùng để set lại onHand = Σ log sau khi kiểm — giữ onHand luôn khớp với
-  // thẻ kho (loại bỏ tồn ảo không có log + log phiếu kiểm đã hủy).
+  // thẻ kho. Cùng bộ lọc + merge với getStockBeforeDate để 1 nguồn chân lý.
   private async getTotalLogSum(
-    tx: any,
     productId: number,
     branchId: number,
     excludeAuditId?: number,
   ): Promise<number> {
-    const logs = await tx.inventoryLog.findMany({
+    const logs = await this.prisma.inventoryLog.findMany({
       where: {
         productId,
         branchId,
@@ -154,15 +142,62 @@ export class StockAuditsService {
           ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
           : {}),
       },
-      select: { quantity: true, refType: true, refId: true },
+      select: {
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
     });
-    const active = await this.filterOutCancelledAuditLogs(tx, logs);
-    return active.reduce((s: number, l: any) => s + Number(l.quantity), 0);
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+    return this.mergeAndSumActiveLogs(active);
+  }
+
+  // Helper: gộp log cùng (refType|refCode|transactionType) → sum quantity,
+  // bỏ dòng gộp có tổng = 0 (trừ STOCK_AUDIT). Cùng logic findInventoryLogs.
+  private mergeAndSumActiveLogs(
+    logs: Array<{
+      quantity: any;
+      refType?: string | null;
+      refCode?: string | null;
+      transactionType: string;
+    }>,
+  ): number {
+    type Row = (typeof logs)[number];
+    const mergedMap = new Map<string, Row>();
+    const ungrouped: Row[] = [];
+
+    for (const log of logs) {
+      if (!log.refCode) {
+        ungrouped.push(log);
+        continue;
+      }
+      const key = `${log.refType}|${log.refCode}|${log.transactionType}`;
+      const existing = mergedMap.get(key);
+      if (!existing) {
+        mergedMap.set(key, { ...log });
+      } else {
+        existing.quantity =
+          (Number(existing.quantity) + Number(log.quantity)) as any;
+      }
+    }
+
+    const merged = [...mergedMap.values(), ...ungrouped].filter(
+      (log) =>
+        !log.refCode ||
+        log.transactionType === 'STOCK_AUDIT' ||
+        Number(log.quantity) !== 0,
+    );
+    return merged.reduce((s, l) => s + Number(l.quantity), 0);
   }
 
   // ─── Preview tồn tại thời điểm cho nhiều sản phẩm (phục vụ UI form) ──
-  // Trả về { productId: stockAtMoment } để form hiển thị cột "Tồn kho" đúng
-  // theo checkDate trước khi lưu — khớp với cách `complete` tính difference.
+  // Tối ưu N+1: load TẤT CẢ log của TẤT CẢ productIds trong 1 query, tính
+  // activeKeys chung 1 lần, sau đó group theo productId.
+  // Trả về { productId: stockAtMoment } — khớp thẻ kho và complete.
   async previewStockAtDate(
     branchId: number,
     productIds: number[],
@@ -170,14 +205,33 @@ export class StockAuditsService {
   ): Promise<Record<number, number>> {
     const date = checkDate ? new Date(checkDate) : new Date();
     const unique = [...new Set(productIds)].filter((id) => !!id);
+    if (unique.length === 0) return {};
+
+    const logs = await this.prisma.inventoryLog.findMany({
+      where: { productId: { in: unique }, branchId, transactionDate: { lt: date } },
+      select: {
+        productId: true,
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
+    });
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+
+    // Group theo productId, áp dụng merge trong từng nhóm.
+    const byProduct = new Map<number, typeof active>();
+    for (const l of active) {
+      const arr = byProduct.get(l.productId) ?? [];
+      arr.push(l);
+      byProduct.set(l.productId, arr);
+    }
     const result: Record<number, number> = {};
     for (const pid of unique) {
-      result[pid] = await this.getStockBeforeDate(
-        this.prisma,
-        pid,
-        branchId,
-        date,
-      );
+      result[pid] = this.mergeAndSumActiveLogs(byProduct.get(pid) ?? []);
     }
     return result;
   }
@@ -303,7 +357,7 @@ export class StockAuditsService {
     for (const id of uniqueIds) {
       systemQtyMap.set(
         id,
-        await this.getStockBeforeDate(this.prisma, id, dto.branchId, checkDate),
+        await this.getStockBeforeDate(id, dto.branchId, checkDate),
       );
     }
 
@@ -429,7 +483,6 @@ export class StockAuditsService {
           systemQtyMap.set(
             pid,
             await this.getStockBeforeDate(
-              tx,
               pid,
               audit.branchId,
               effectiveCheckDate,
@@ -534,7 +587,6 @@ export class StockAuditsService {
         // Tính lại tồn TẠI THỜI ĐIỂM kiểm theo LOG (Σ giao dịch thật trước
         // checkDate) ngay lúc Hoàn thành. difference = thực tế − tồn-log-trước.
         const systemQty = await this.getStockBeforeDate(
-          tx,
           detail.productId,
           audit.branchId,
           checkDate,

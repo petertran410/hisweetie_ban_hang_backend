@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSupplierDto, UpdateSupplierDto, SupplierQueryDto } from './dto';
 import { Prisma } from '@prisma/client';
@@ -300,7 +304,11 @@ export class SuppliersService {
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Nợ hiện tại', key: 'debt', width: 16 },
       { header: 'Tổng mua', key: 'totalInvoiced', width: 16 },
-      { header: 'Tổng mua trừ trả hàng', key: 'totalInvoicedWithoutReturn', width: 22 },
+      {
+        header: 'Tổng mua trừ trả hàng',
+        key: 'totalInvoicedWithoutReturn',
+        width: 22,
+      },
       { header: 'Trạng thái', key: 'isActive', width: 18 },
       { header: 'Ghi chú', key: 'comments', width: 24 },
       { header: 'Ngày tạo', key: 'createdAt', width: 14 },

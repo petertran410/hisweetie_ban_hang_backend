@@ -143,6 +143,10 @@ export class PurchaseOrdersService {
           statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
           supplierOldDebt,
           supplierDebt: debtAmount,
+          // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
+          // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
+          currency: 'VND',
+          exchangeRate: 1,
           isDraft: dto.isDraft || false,
           partnerType: dto.partnerType,
           description: dto.description,
@@ -429,6 +433,13 @@ export class PurchaseOrdersService {
       additionalFromField > 0 ? additionalFromField : additionalFromList;
     const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
 
+    // Map productId → OrderSupplierItem để lookup factoryPrice/factorySubTotal
+    // khi tạo PurchaseOrderItem từ PDN (kế thừa tỉ giá).
+    const osItemByProductId = new Map<number, any>();
+    for (const it of orderSupplier.items as any[]) {
+      osItemByProductId.set(it.productId, it);
+    }
+
     // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
     const itemsToReceive = (
       dto.items && dto.items.length > 0
@@ -445,6 +456,15 @@ export class PurchaseOrdersService {
               (Number(item.price) - (Number(item.discount) || 0)) *
               item.remainingQuantity,
             description: item.description,
+            // Kế thừa factoryPrice/factorySubTotal từ OrderSupplierItem
+            // tương ứng (nếu có). Khi dto.items không gửi thì BE vẫn có thể
+            // điền từ remainingItems (đã spread factory* từ orderSupplier.items).
+            factoryPrice:
+              item.factoryPrice != null ? Number(item.factoryPrice) : null,
+            factorySubTotal:
+              item.factorySubTotal != null
+                ? Number(item.factorySubTotal)
+                : null,
           }))
     ) as any[];
 
@@ -469,6 +489,23 @@ export class PurchaseOrdersService {
             : (Number(item.price) - (Number(item.discount) || 0)) *
               Number(item.quantity);
 
+        // Kế thừa factoryPrice/factorySubTotal. Ưu tiên giá trị dto gửi
+        // (nếu có), fallback lookup từ orderSupplier.items theo productId.
+        // Nếu cả 2 đều không có → null (PN tạo trực tiếp).
+        const osItem = osItemByProductId.get(item.productId);
+        const factoryPrice =
+          item.factoryPrice != null
+            ? Number(item.factoryPrice)
+            : osItem && osItem.factoryPrice != null
+              ? Number(osItem.factoryPrice)
+              : null;
+        const factorySubTotal =
+          item.factorySubTotal != null
+            ? Number(item.factorySubTotal)
+            : osItem && osItem.factorySubTotal != null
+              ? Number(osItem.factorySubTotal)
+              : null;
+
         return {
           productId: item.productId,
           productCode,
@@ -487,6 +524,9 @@ export class PurchaseOrdersService {
           // đánh dấu hàng nào là loại B khi tạo từ PDN, gửi conditionType
           // trong dto.items[]. Hiện form FE chưa expose → luôn "normal".
           conditionType: item.conditionType || 'normal',
+          // Kế thừa tỉ giá từ OrderSupplierItem.
+          factoryPrice,
+          factorySubTotal,
         };
       }),
     );
@@ -543,6 +583,13 @@ export class PurchaseOrdersService {
         statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
         supplierOldDebt,
         supplierDebt: debtAmount,
+        // Kế thừa currency/exchangeRate từ OrderSupplier (snapshot). PDN
+        // có CNY thì PN sẽ giữ nguyên — không re-quy đổi.
+        currency: orderSupplier.currency || 'VND',
+        exchangeRate:
+          orderSupplier.exchangeRate != null
+            ? Number(orderSupplier.exchangeRate)
+            : 1,
         isDraft: dto.isDraft || false,
         partnerType: dto.partnerType,
         description: dto.description,
@@ -964,12 +1011,12 @@ export class PurchaseOrdersService {
       // Mỗi SP có thể xuất hiện nhiều dòng (cùng productId khác lineNumber);
       // cộng dồn từng dòng vào bucket tương ứng theo conditionType.
       const buildQtyMap = (items: any[]) => {
-        const m = new Map<
-          number,
-          { goodQty: number; damagedQty: number }
-        >();
+        const m = new Map<number, { goodQty: number; damagedQty: number }>();
         for (const it of items) {
-          const existing2 = m.get(it.productId) || { goodQty: 0, damagedQty: 0 };
+          const existing2 = m.get(it.productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
           const qty = Number(it.quantity) || 0;
           if (it.conditionType === 'damaged') {
             existing2.damagedQty += qty;
@@ -1632,9 +1679,7 @@ export class PurchaseOrdersService {
         for (const [productId, decrease] of totalDecrease.entries()) {
           const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          const damagedQuantity = inv
-            ? Number(inv.damagedQuantity || 0)
-            : 0;
+          const damagedQuantity = inv ? Number(inv.damagedQuantity || 0) : 0;
           if (onHand < decrease.onHand) {
             const productLabel = inv?.product
               ? `${inv.product.code} - ${inv.product.name}`

@@ -16,7 +16,11 @@ export class SyncCustomerService extends BaseSyncService {
   protected readonly endpoint = 'customers';
   protected concurrency = 8;
 
-  constructor(prisma: PrismaService, api: SyncKiotApiService, private readonly larkCustomerSync: LarkCustomerSyncService) {
+  constructor(
+    prisma: PrismaService,
+    api: SyncKiotApiService,
+    private readonly larkCustomerSync: LarkCustomerSyncService,
+  ) {
     super(prisma, api);
   }
 

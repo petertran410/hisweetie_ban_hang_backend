@@ -132,7 +132,8 @@ export class EodReportsService {
       Prisma.sql`i."purchaseDate" >= ${start}`,
       Prisma.sql`i."purchaseDate" <= ${end}`,
     ];
-    if (query.branchId) conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
+    if (query.branchId)
+      conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
     const where = Prisma.join(conds, ' AND ');
 
     const rows = await this.prisma.$queryRaw<any[]>`
@@ -237,7 +238,8 @@ export class EodReportsService {
       Prisma.sql`i."purchaseDate" >= ${start}`,
       Prisma.sql`i."purchaseDate" <= ${end}`,
     ];
-    if (query.branchId) conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
+    if (query.branchId)
+      conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
     const where = Prisma.join(conds, ' AND ');
 
     const rows = await this.prisma.$queryRaw<any[]>`

@@ -168,8 +168,7 @@ export class PackingLoadingsService {
   }
 
   async create(dto: CreatePackingLoadingDto, userId: number) {
-    const isConsignment =
-      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
 
     const packingLoading = await this.prisma.$transaction(async (tx) => {
       if (isConsignment) {
@@ -206,7 +205,13 @@ export class PackingLoadingsService {
 
       const invoices = await tx.invoice.findMany({
         where: { id: { in: dto.invoiceIds } },
-        select: { id: true, code: true, status: true, branchId: true, orderId: true },
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          branchId: true,
+          orderId: true,
+        },
       });
 
       if (invoices.length === 0) {

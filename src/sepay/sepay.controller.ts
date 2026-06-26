@@ -118,8 +118,7 @@ export class SepayController {
   @Public()
   @Post('external-message')
   @ApiOperation({
-    summary:
-      'Nhận tin nhắn ngân hàng từ MacroDroid (SMS forwarding)',
+    summary: 'Nhận tin nhắn ngân hàng từ MacroDroid (SMS forwarding)',
   })
   async handleExternalMessage(
     @Headers('x-external-secret') secretHeader: string,
@@ -136,8 +135,7 @@ export class SepayController {
 
     // Chấp nhận secret ở header (khuyến nghị) hoặc query (tương thích cấu hình
     // MacroDroid hiện tại). Query bị ghi vào log → nên ưu tiên dùng header.
-    const received =
-      secretHeader || secretQueryUpper || secretQueryLower || '';
+    const received = secretHeader || secretQueryUpper || secretQueryLower || '';
 
     if (!received) {
       throw new UnauthorizedException(

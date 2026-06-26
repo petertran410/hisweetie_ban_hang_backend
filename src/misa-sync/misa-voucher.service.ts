@@ -103,7 +103,10 @@ export class MisaVoucherService {
         };
       }
 
-      if (!force && (invoice.misaSyncStatus === 'SYNCED' || invoice.misaOrgRefId)) {
+      if (
+        !force &&
+        (invoice.misaSyncStatus === 'SYNCED' || invoice.misaOrgRefId)
+      ) {
         return {
           success: false,
           orgRefId: invoice.misaOrgRefId,
