@@ -45,9 +45,7 @@ export class ProductsController {
     }
 
     const branchIdRaw =
-      req.headers?.['x-branch-id'] ||
-      req.body?.branchId ||
-      req.query?.branchId;
+      req.headers?.['x-branch-id'] || req.body?.branchId || req.query?.branchId;
     const branchId = branchIdRaw ? parseInt(String(branchIdRaw)) : undefined;
 
     if (branchId && !isNaN(branchId)) {
@@ -94,11 +92,12 @@ export class ProductsController {
     if (!canViewCost && Array.isArray(product.comboComponents)) {
       product.comboComponents = product.comboComponents.map((c: any) => {
         if (c?.componentProduct?.inventories) {
-          c.componentProduct.inventories =
-            c.componentProduct.inventories.map((inv: any) => ({
+          c.componentProduct.inventories = c.componentProduct.inventories.map(
+            (inv: any) => ({
               ...inv,
               cost: undefined,
-            }));
+            }),
+          );
         }
         return c;
       });

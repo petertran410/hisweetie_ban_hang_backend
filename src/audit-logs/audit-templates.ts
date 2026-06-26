@@ -169,6 +169,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'transfer',
     severity: 'warning',
   },
+  TRANSFER_SHORTAGE_RESOLVE: {
+    template:
+      'Đồng bộ hoàn shortage phiếu {transferCode}: {shortageCount} sản phẩm được trả tồn về kho chuyển',
+    category: 'transfer',
+    severity: 'info',
+  },
 
   PURCHASE_ORDER_CREATE: {
     template: 'Tạo phiếu nhập hàng {purchaseOrderCode} từ NCC {supplierName}',

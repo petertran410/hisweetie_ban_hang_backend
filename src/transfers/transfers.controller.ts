@@ -16,6 +16,7 @@ import {
   UpdateTransferDto,
   TransferQueryDto,
   CancelTransferDto,
+  ConfirmShortageDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -74,5 +75,22 @@ export class TransfersController {
   ) {
     const userId = req.user?.id || 1;
     return this.transfersService.cancelTransfer(+id, dto, userId);
+  }
+
+  /**
+   * Xác nhận xử lý chênh lệch nhận hàng (shortage) sau khi kho nhận
+   * "Đã nhận". Với mỗi sản phẩm có shortage, chọn:
+   * - RETURN_TO_SOURCE: hoàn shortage về kho chuyển (gửi thiếu)
+   * - WRITE_OFF: tạo phiếu xuất hủy (hàng thất thoát)
+   */
+  @Post(':id/confirm-shortage')
+  @RequirePermissions('transfers:update')
+  confirmShortage(
+    @Param('id') id: string,
+    @Body() dto: ConfirmShortageDto,
+    @Req() req: any,
+  ) {
+    const userId = req.user?.id || 1;
+    return this.transfersService.confirmShortage(+id, dto, userId);
   }
 }

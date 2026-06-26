@@ -385,7 +385,9 @@ export class LarkProductSyncService {
       }
 
       if (reallyNew.length > 0) {
-        this.logger.log(`🆕 Batch creating ${reallyNew.length} new products...`);
+        this.logger.log(
+          `🆕 Batch creating ${reallyNew.length} new products...`,
+        );
         try {
           const createRecords = reallyNew.map((p) => ({
             fields: this.mapProductToLarkFields(p),

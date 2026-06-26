@@ -78,6 +78,7 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 
 @Module({
   controllers: [HealthController],
@@ -89,11 +90,15 @@ import { NotificationsModule } from './notifications/notifications.module';
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
-        // Giới hạn mặc định toàn cục: 100 request / 60 giây / IP.
-        // Đủ thoải mái cho người dùng thật, nhưng chặn bot quét hàng loạt.
+        // Giới hạn mặc định toàn cục: 300 request / 60 giây / user.
+        // Đếm theo user-id (UserThrottlerGuard) nên mỗi nhân viên có bucket
+        // riêng, không cạnh tranh nhau khi NAT chung IP. Con số 300 chừa đủ
+        // headroom cho FE bắn nhiều query song song (list + count + filter
+        // + react-query prefetch + đổi branch), vẫn chặn được bot quét.
+        // Auth endpoints override riêng xuống 5/60s (xem auth.controller.ts).
         name: 'default',
         ttl: 60000,
-        limit: 100,
+        limit: 300,
       },
     ]),
     PrismaModule,
@@ -164,6 +169,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SepayModule,
     PromotionsModule,
     NotificationsModule,
+    ExchangeRatesModule,
   ],
   providers: [
     {

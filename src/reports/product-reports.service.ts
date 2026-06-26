@@ -30,8 +30,10 @@ export class ProductReportsService {
       conds.push(Prisma.sql`i."purchaseDate" >= ${new Date(query.fromDate)}`);
     if (query.toDate)
       conds.push(Prisma.sql`i."purchaseDate" <= ${new Date(query.toDate)}`);
-    if (query.branchId) conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
-    if (query.soldById) conds.push(Prisma.sql`i."soldById" = ${query.soldById}`);
+    if (query.branchId)
+      conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
+    if (query.soldById)
+      conds.push(Prisma.sql`i."soldById" = ${query.soldById}`);
     if (query.customerId)
       conds.push(Prisma.sql`i."customerId" = ${query.customerId}`);
     if (query.productId)
@@ -507,7 +509,11 @@ export class ProductReportsService {
         { header: 'STT', key: 'stt', width: 6 },
         { header: subjHeader, key: 'subject', width: 36 },
         { header: 'SL', key: 'qty', width: 12 },
-        { header: viewType === 'DamageItem' ? 'Giá trị' : 'Doanh thu', key: 'value', width: 18 },
+        {
+          header: viewType === 'DamageItem' ? 'Giá trị' : 'Doanh thu',
+          key: 'value',
+          width: 18,
+        },
       ];
       rows.forEach((r, i) =>
         ws.addRow({

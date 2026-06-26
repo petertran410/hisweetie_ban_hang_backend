@@ -87,7 +87,9 @@ export class SaleReportsService {
   }
 
   // ── PurchaseDate: doanh thu theo ngày, stacked theo chi nhánh ──
-  private async chartByDate(query: SaleReportQueryDto): Promise<SaleChartRow[]> {
+  private async chartByDate(
+    query: SaleReportQueryDto,
+  ): Promise<SaleChartRow[]> {
     const where = this.buildInvoiceWhereSql(query);
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -117,7 +119,9 @@ export class SaleReportsService {
   }
 
   // ── Profit: revenue/cost/profit theo ngày ──
-  private async chartProfit(query: SaleReportQueryDto): Promise<SaleChartRow[]> {
+  private async chartProfit(
+    query: SaleReportQueryDto,
+  ): Promise<SaleChartRow[]> {
     const where = this.buildInvoiceWhereSql(query);
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -151,7 +155,9 @@ export class SaleReportsService {
   }
 
   // ── SoldBy: doanh thu theo nhân viên bán ──
-  private async chartSoldBy(query: SaleReportQueryDto): Promise<SaleChartRow[]> {
+  private async chartSoldBy(
+    query: SaleReportQueryDto,
+  ): Promise<SaleChartRow[]> {
     const where = this.buildInvoiceWhereSql(query);
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -176,7 +182,9 @@ export class SaleReportsService {
   }
 
   // ── Branch: doanh thu theo chi nhánh ──
-  private async chartBranch(query: SaleReportQueryDto): Promise<SaleChartRow[]> {
+  private async chartBranch(
+    query: SaleReportQueryDto,
+  ): Promise<SaleChartRow[]> {
     const where = this.buildInvoiceWhereSql(query);
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -201,7 +209,9 @@ export class SaleReportsService {
   }
 
   // ── Refund: giá trị trả hàng theo ngày ──
-  private async chartRefund(query: SaleReportQueryDto): Promise<SaleChartRow[]> {
+  private async chartRefund(
+    query: SaleReportQueryDto,
+  ): Promise<SaleChartRow[]> {
     const conds: Prisma.Sql[] = [
       Prisma.sql`ro.status IN (${RETURN_ORDER_STATUS.STOCK_RECEIVED}, ${RETURN_ORDER_STATUS.COMPLETED})`,
     ];
@@ -619,7 +629,10 @@ export class SaleReportsService {
 
   // ── EXPORT CHI TIẾT: toàn bộ hóa đơn (kèm lợi nhuận) theo bộ lọc ──
   async exportProfitInvoices(query: SaleReportQueryDto, res: Response) {
-    const result = await this.previewProfitInvoices({ ...query, limit: 100000 });
+    const result = await this.previewProfitInvoices({
+      ...query,
+      limit: 100000,
+    });
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Chi tiet ban hang');
     ws.columns = [

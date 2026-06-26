@@ -114,7 +114,10 @@ export class ConsignmentReturnsService {
     return this.prisma.$transaction(async (tx) => {
       const consignment = await tx.consignment.findUnique({
         where: { id: dto.consignmentId },
-        include: { items: true, customer: { select: { id: true, name: true } } },
+        include: {
+          items: true,
+          customer: { select: { id: true, name: true } },
+        },
       });
       if (!consignment) {
         throw new NotFoundException('Không tìm thấy phiếu ký gửi');
@@ -369,7 +372,9 @@ export class ConsignmentReturnsService {
         where: { id },
         data: {
           status: CONSIGNMENT_RETURN_STATUS.CANCELLED,
-          statusValue: getReturnStatusLabel(CONSIGNMENT_RETURN_STATUS.CANCELLED),
+          statusValue: getReturnStatusLabel(
+            CONSIGNMENT_RETURN_STATUS.CANCELLED,
+          ),
         },
         include: { details: true },
       });
@@ -405,7 +410,10 @@ export class ConsignmentReturnsService {
   async findOne(id: number) {
     const ro = await this.prisma.consignmentReturn.findUnique({
       where: { id },
-      include: { details: true, customer: { select: { id: true, name: true } } },
+      include: {
+        details: true,
+        customer: { select: { id: true, name: true } },
+      },
     });
     if (!ro) throw new NotFoundException('Không tìm thấy phiếu hoàn ký gửi');
     return ro;

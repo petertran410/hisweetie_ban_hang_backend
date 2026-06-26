@@ -152,8 +152,7 @@ export class PackingHangsService {
   }
 
   async create(dto: CreatePackingHangDto, userId: number) {
-    const isConsignment =
-      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
 
     const packingHang = await this.prisma.$transaction(async (tx) => {
       if (isConsignment) {
