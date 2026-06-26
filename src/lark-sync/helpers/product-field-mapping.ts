@@ -101,10 +101,7 @@ const LARK_PRICE_BOOK_COLUMNS: string[] = [
  * (Giữ nguyên dấu tiếng Việt — đủ để phân biệt và khớp.)
  */
 export function normalizePriceBookName(name: string): string {
-  return (name || '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
+  return (name || '').replace(/\s+/g, ' ').trim().toUpperCase();
 }
 
 /**

@@ -146,7 +146,10 @@ export async function recalcInventoryOnHand(
 // (re-anchor delta phiếu kiểm), thay vì Σ thô.
 export async function recalcOnHandForPairs(
   tx: any,
-  pairs: Array<{ productId: number | null | undefined; branchId: number | null | undefined }>,
+  pairs: Array<{
+    productId: number | null | undefined;
+    branchId: number | null | undefined;
+  }>,
 ): Promise<void> {
   const seen = new Set<string>();
   for (const p of pairs) {

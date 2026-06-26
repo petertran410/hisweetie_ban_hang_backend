@@ -153,7 +153,8 @@ export class VehicleShipmentsService {
         },
       });
       for (const po of vehiclePOs) {
-        if (po.vehicleShipmentId == null || po.orderSupplierId == null) continue;
+        if (po.vehicleShipmentId == null || po.orderSupplierId == null)
+          continue;
         for (const it of po.items) {
           const vk = `${po.vehicleShipmentId}:${po.orderSupplierId}:${it.productId}`;
           receivedByVehicle.set(
@@ -852,7 +853,9 @@ export class VehicleShipmentsService {
       select: { id: true },
     });
     if (!item) {
-      throw new NotFoundException('Không tìm thấy dòng hàng trên phiếu ghép xe');
+      throw new NotFoundException(
+        'Không tìm thấy dòng hàng trên phiếu ghép xe',
+      );
     }
 
     await this.prisma.vehicleShipmentItem.update({

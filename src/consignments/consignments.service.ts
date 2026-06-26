@@ -56,7 +56,9 @@ export class ConsignmentsService {
             where: { id: item.productId },
           });
           if (!product)
-            throw new BadRequestException(`Product ${item.productId} not found`);
+            throw new BadRequestException(
+              `Product ${item.productId} not found`,
+            );
 
           const discount = item.discount || 0;
           const discountRatio = item.discountRatio || 0;
@@ -516,7 +518,9 @@ export class ConsignmentsService {
       ];
     }
     if (statuses && statuses.length > 0) {
-      where.status = { in: statuses.map((s) => convertStatusStringToNumber(s)) };
+      where.status = {
+        in: statuses.map((s) => convertStatusStringToNumber(s)),
+      };
     } else if (status) {
       where.status = convertStatusStringToNumber(status);
     }
@@ -586,7 +590,10 @@ export class ConsignmentsService {
           customer: true,
           soldBy: { select: { id: true, name: true } },
           items: { include: { product: true } },
-          invoices: { where: { status: { not: 2 } }, include: { details: true } },
+          invoices: {
+            where: { status: { not: 2 } },
+            include: { details: true },
+          },
           returns: {
             where: { status: { not: 5 } },
             select: {
@@ -713,8 +720,7 @@ export class ConsignmentsService {
       for (const inv of c.invoices) {
         for (const d of inv.details) {
           if (d.productId == null) continue;
-          result[d.productId] =
-            (result[d.productId] || 0) - Number(d.quantity);
+          result[d.productId] = (result[d.productId] || 0) - Number(d.quantity);
         }
       }
       // Hàng đã hoàn về kho → không còn "đang ở khách".

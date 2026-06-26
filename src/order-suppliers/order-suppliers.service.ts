@@ -734,6 +734,23 @@ export class OrderSuppliersService {
 
       const paidAmount = Number(dto.paymentAmount || 0);
 
+      // Chuẩn hoá currency/exchangeRate. Mặc định VND + rate=1 nếu client
+      // không gửi. Khi currency = VND ép rate = 1 (không cho tỉ giá khác 1
+      // với đồng nội tệ). Chỉ hỗ trợ 2 mã: VND | CNY (theo use case hiện tại).
+      const currency = (dto.currency || 'VND').toUpperCase();
+      if (!['VND', 'CNY'].includes(currency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const exchangeRate =
+        currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
+      if (currency === 'CNY' && exchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
+
       const orderSupplier = await tx.orderSupplier.create({
         data: {
           code,
@@ -755,6 +772,8 @@ export class OrderSuppliersService {
           supplierDebt: subTotal - paidAmount,
           toComplete: dto.toComplete || false,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
+          currency,
+          exchangeRate,
           createdBy: userId,
           items: {
             create: itemsData,
@@ -919,8 +938,7 @@ export class OrderSuppliersService {
               dto.supplierId ?? existing.supplierId ?? undefined,
             );
 
-            const subTotal =
-              (price - (item.discount || 0)) * item.quantity;
+            const subTotal = (price - (item.discount || 0)) * item.quantity;
 
             const factoryPrice =
               item.factoryPrice != null ? item.factoryPrice : null;
@@ -994,6 +1012,46 @@ export class OrderSuppliersService {
           ? existing.code
           : await this.resolveOrderSupplierCode(tx, dto.code, id);
 
+      // Chuẩn hoá currency/exchangeRate. Cho phép update — nhưng chỉ khi PDN
+      // chưa có phiếu nhập hàng (PurchaseOrder) nào. Nếu đã có PN thì tỉ giá
+      // đã được kế thừa xuống PN rồi, không thể đổi ngược (giữ audit nhất
+      // quán). Nếu client vẫn gửi currency/exchangeRate mà đã có PN → báo lỗi.
+      let nextCurrency = existing.currency || 'VND';
+      let nextExchangeRate: number | null =
+        existing.exchangeRate != null ? Number(existing.exchangeRate) : 1;
+      if (dto.currency !== undefined || dto.exchangeRate !== undefined) {
+        const hasPurchaseOrder = await tx.purchaseOrder.findFirst({
+          where: { orderSupplierId: id },
+          select: { id: true },
+        });
+        if (hasPurchaseOrder) {
+          throw new BadRequestException(
+            'Phiếu đặt hàng nhập này đã có phiếu nhập hàng liên quan. ' +
+              'Không thể thay đổi tiền tệ/tỉ giá vì sẽ làm lệch dữ liệu các phiếu nhập đã phát sinh.',
+          );
+        }
+        if (dto.currency !== undefined) {
+          const c = dto.currency.toUpperCase();
+          if (!['VND', 'CNY'].includes(c)) {
+            throw new BadRequestException(
+              `currency không hợp lệ: ${c}. Chỉ chấp nhận VND hoặc CNY.`,
+            );
+          }
+          nextCurrency = c;
+        }
+        if (nextCurrency === 'VND') {
+          nextExchangeRate = 1;
+        } else if (dto.exchangeRate !== undefined) {
+          const r = Number(dto.exchangeRate);
+          if (!(r > 0)) {
+            throw new BadRequestException(
+              'Khi currency = CNY thì exchangeRate phải > 0',
+            );
+          }
+          nextExchangeRate = r;
+        }
+      }
+
       const updatedOrderSupplier = await tx.orderSupplier.update({
         where: { id },
         data: {
@@ -1016,6 +1074,8 @@ export class OrderSuppliersService {
           orderDate: dto.orderDate
             ? new Date(dto.orderDate)
             : existing.orderDate,
+          currency: nextCurrency,
+          exchangeRate: nextExchangeRate,
         },
         include: {
           supplier: true,
@@ -1045,6 +1105,9 @@ export class OrderSuppliersService {
           discountRatio: Number(existing.discountRatio || 0),
           description: existing.description,
           supplierId: existing.supplierId,
+          currency: existing.currency || 'VND',
+          exchangeRate:
+            existing.exchangeRate != null ? Number(existing.exchangeRate) : 1,
         },
         {
           code: updatedOrderSupplier.code,
@@ -1054,6 +1117,11 @@ export class OrderSuppliersService {
           discountRatio: Number(updatedOrderSupplier.discountRatio || 0),
           description: updatedOrderSupplier.description,
           supplierId: updatedOrderSupplier.supplierId,
+          currency: updatedOrderSupplier.currency || 'VND',
+          exchangeRate:
+            updatedOrderSupplier.exchangeRate != null
+              ? Number(updatedOrderSupplier.exchangeRate)
+              : 1,
         },
       );
 

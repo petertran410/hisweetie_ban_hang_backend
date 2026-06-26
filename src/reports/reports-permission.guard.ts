@@ -127,9 +127,7 @@ export class ReportsPermissionGuard implements CanActivate {
     if (!config.group) return null;
 
     const group = config.group;
-    const viewType = String(
-      request.query?.viewType || DEFAULT_VIEWTYPE[group],
-    );
+    const viewType = String(request.query?.viewType || DEFAULT_VIEWTYPE[group]);
     return VIEWTYPE_KEY_MAP[group][viewType] || null;
   }
 

@@ -750,8 +750,12 @@ export class MisaDictionaryService {
         ...(keyword
           ? {
               OR: [
-                { inventoryItemCode: { contains: keyword, mode: 'insensitive' } },
-                { inventoryItemName: { contains: keyword, mode: 'insensitive' } },
+                {
+                  inventoryItemCode: { contains: keyword, mode: 'insensitive' },
+                },
+                {
+                  inventoryItemName: { contains: keyword, mode: 'insensitive' },
+                },
               ],
             }
           : {}),

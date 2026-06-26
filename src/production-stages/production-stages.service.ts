@@ -29,7 +29,8 @@ export class ProductionStagesService {
     userId: number,
   ) {
     const name = (dto.name || '').trim();
-    if (!name) throw new BadRequestException('Tên giai đoạn không được để trống');
+    if (!name)
+      throw new BadRequestException('Tên giai đoạn không được để trống');
     const existing = await this.prisma.purchaseOrderProductionStage.findFirst({
       where: { name },
     });

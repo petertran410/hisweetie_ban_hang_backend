@@ -1,4 +1,8 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
@@ -108,7 +112,9 @@ export class DocumensoClient {
 
   /** Recipient này có phải slot khách hàng (theo email placeholder)? */
   isCustomerRecipient(r: { email?: string }): boolean {
-    return (r.email || '').trim().toLowerCase() === this.customerPlaceholderEmail;
+    return (
+      (r.email || '').trim().toLowerCase() === this.customerPlaceholderEmail
+    );
   }
 
   private ensureConfigured() {
@@ -207,9 +213,8 @@ export class DocumensoClient {
     if (nonCustomer.length > 0) {
       // Nếu có nhiều, ưu tiên role ASSISTANT, rồi recipient đầu tiên.
       return (
-        nonCustomer.find(
-          (r) => (r.role || '').toUpperCase() === 'ASSISTANT',
-        ) || nonCustomer[0]
+        nonCustomer.find((r) => (r.role || '').toUpperCase() === 'ASSISTANT') ||
+        nonCustomer[0]
       );
     }
     // Tất cả recipient đều là placeholder khách (cấu hình lạ) → không có slot công ty.
@@ -562,7 +567,10 @@ export class DocumensoClient {
           `${this.baseUrl}/envelope/field/update-many`,
           { envelopeId, data },
           {
-            headers: { ...this.authHeaders, 'Content-Type': 'application/json' },
+            headers: {
+              ...this.authHeaders,
+              'Content-Type': 'application/json',
+            },
           },
         ),
       );
