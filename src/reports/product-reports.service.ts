@@ -403,9 +403,11 @@ export class ProductReportsService {
         d."productName" AS product_name,
         d.quantity::float8 AS quantity,
         d.price::float8 AS price,
-        d."totalPrice"::float8 AS total_price
+        d."totalPrice"::float8 AS total_price,
+        COALESCE(inv.cost, 0)::float8 AS unit_cost
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
+      ${this.costJoin()}
       LEFT JOIN products p ON p.id = d."productId"
       LEFT JOIN users u ON u.id = i."soldById"
       LEFT JOIN customers c ON c.id = i."customerId"
@@ -442,6 +444,7 @@ export class ProductReportsService {
         quantity: Number(r.quantity) || 0,
         price: Number(r.price) || 0,
         totalPrice: Number(r.total_price) || 0,
+        unitCost: Number(r.unit_cost) || 0,
       })),
       total,
       page,
@@ -541,6 +544,7 @@ export class ProductReportsService {
   // ── EXPORT CHI TIẾT: toàn bộ dòng hóa đơn theo bộ lọc ──
   async exportProductInvoices(query: ProductReportQueryDto, res: Response) {
     const result = await this.getProductInvoices({ ...query, limit: 100000 });
+    const isProfit = (query.viewType || 'ProductBySale') === 'ProductByProfit';
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Chi tiet hang hoa');
     ws.columns = [
@@ -552,9 +556,16 @@ export class ProductReportsService {
       { header: 'SL', key: 'qty', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 16 },
       { header: 'Thành tiền', key: 'total', width: 18 },
+      ...(isProfit
+        ? [
+            { header: 'Giá vốn', key: 'unitCost', width: 16 },
+            { header: 'Tổng giá vốn', key: 'totalCost', width: 16 },
+            { header: 'Lợi nhuận', key: 'profit', width: 16 },
+          ]
+        : []),
     ];
-    result.data.forEach((r, i) =>
-      ws.addRow({
+    result.data.forEach((r, i) => {
+      const row: Record<string, unknown> = {
         stt: i + 1,
         code: r.invoiceCode,
         date: new Date(r.purchaseDate).toLocaleString('vi-VN'),
@@ -563,8 +574,15 @@ export class ProductReportsService {
         qty: r.quantity,
         price: r.price,
         total: r.totalPrice,
-      }),
-    );
+      };
+      if (isProfit) {
+        const totalCost = r.unitCost * r.quantity;
+        row.unitCost = r.unitCost;
+        row.totalCost = totalCost;
+        row.profit = r.totalPrice - totalCost;
+      }
+      ws.addRow(row);
+    });
     ws.getRow(1).font = { bold: true };
     res.setHeader(
       'Content-Type',
