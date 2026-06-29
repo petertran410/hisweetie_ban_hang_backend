@@ -264,6 +264,13 @@ export class ReportsController {
     return this.customerReportsService.getCustomerInvoices(query);
   }
 
+  @Get('customer/products')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Drilldown Lv2: sản phẩm 1 KH đã mua' })
+  getCustomerProducts(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getCustomerProducts(query);
+  }
+
   @Get('customer/debt-customers')
   @ReportPermission({ group: 'customer' })
   @ApiOperation({ summary: 'Drilldown Lv2: danh sách KH trong nhóm rank nợ' })

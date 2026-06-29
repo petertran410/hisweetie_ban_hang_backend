@@ -72,6 +72,12 @@ export class CustomerReportsService {
         Prisma.sql`(c.name ILIKE ${kw} OR c.code ILIKE ${kw} OR c."contactNumber" ILIKE ${kw})`,
       );
     }
+    if (query.productKeyword) {
+      const kw = `%${query.productKeyword}%`;
+      conds.push(
+        Prisma.sql`(d."productName" ILIKE ${kw} OR d."productCode" ILIKE ${kw})`,
+      );
+    }
     return Prisma.join(conds, ' AND ');
   }
 
@@ -485,6 +491,71 @@ export class CustomerReportsService {
     };
 
     return { data, total: data.length, summary };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // PRODUCTS Lv2: sản phẩm 1 KH đã mua (CustomerByProduct drilldown)
+  // ═══════════════════════════════════════════════════════════════════════════
+  async getCustomerProducts(query: CustomerReportQueryDto) {
+    const where = this.buildDetailWhereSql(query);
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const offset = (page - 1) * limit;
+
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        d."productCode" AS product_code,
+        d."productName" AS product_name,
+        SUM(d.quantity)::float8 AS quantity,
+        SUM(d."totalPrice")::float8 AS revenue
+      FROM invoice_details d
+      JOIN invoices i ON i.id = d."invoiceId"
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${where}
+      GROUP BY d."productCode", d."productName"
+      ORDER BY revenue DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const totalRow = await this.prisma.$queryRaw<any[]>`
+      SELECT COUNT(*)::int AS total FROM (
+        SELECT d."productCode"
+        FROM invoice_details d
+        JOIN invoices i ON i.id = d."invoiceId"
+        JOIN customers c ON c.id = i."customerId"
+        WHERE ${where}
+        GROUP BY d."productCode", d."productName"
+      ) g
+    `;
+    const total = Number(totalRow[0]?.total) || 0;
+
+    const summaryRow = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        COALESCE(SUM(d.quantity), 0)::float8 AS qty,
+        COALESCE(SUM(d."totalPrice"), 0)::float8 AS revenue
+      FROM invoice_details d
+      JOIN invoices i ON i.id = d."invoiceId"
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${where}
+    `;
+    const s = summaryRow[0] || {};
+
+    return {
+      data: rows.map((r) => ({
+        productCode: r.product_code,
+        productName: r.product_name,
+        quantity: Number(r.quantity) || 0,
+        revenue: Number(r.revenue) || 0,
+      })),
+      total,
+      page,
+      limit,
+      summary: {
+        totalRows: total,
+        totalQuantity: Number(s.qty) || 0,
+        totalRevenue: Number(s.revenue) || 0,
+      },
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -44,6 +44,10 @@ export class CustomerReportQueryDto {
   customerKeyword?: string;
 
   @IsOptional()
+  @IsString()
+  productKeyword?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   typeOfCustomer?: number;
