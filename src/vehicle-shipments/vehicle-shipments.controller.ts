@@ -48,6 +48,13 @@ export class VehicleShipmentsController {
     );
   }
 
+  @Get('contract-nos')
+  @RequirePermissions('vehicle_shipments:view')
+  @ApiOperation({ summary: 'Danh sách Số HĐ đã dùng trong phiếu ghép xe' })
+  getContractNos(@Req() req: any) {
+    return this.vehicleShipmentsService.getContractNos(getSupplierScope(req));
+  }
+
   @Get(':id')
   @RequirePermissions('vehicle_shipments:view')
   findOne(@Param('id') id: string, @Req() req: any) {

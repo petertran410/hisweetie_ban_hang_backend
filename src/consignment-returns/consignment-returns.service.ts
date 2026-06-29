@@ -12,12 +12,14 @@ import {
 } from './dto';
 import { CONSIGNMENT_STATUS } from '../consignments/dto/consignment-status.constants';
 import { ConsignmentsService } from '../consignments/consignments.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class ConsignmentReturnsService {
   constructor(
     private prisma: PrismaService,
     private consignmentsService: ConsignmentsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   private async generateCode(tx: any): Promise<string> {
@@ -214,7 +216,8 @@ export class ConsignmentReturnsService {
    * 'CONSIGNMENT_RETURN'. Không đụng công nợ.
    */
   async confirmStockReceived(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const ro = await tx.consignmentReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -272,6 +275,7 @@ export class ConsignmentReturnsService {
             nearExpiryQuantity: nearExpiry,
           },
         });
+        touchedProductIds.add(d.productId);
 
         await tx.inventoryLog.create({
           data: {
@@ -314,10 +318,17 @@ export class ConsignmentReturnsService {
 
       return updated;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async cancel(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const ro = await tx.consignmentReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -347,6 +358,7 @@ export class ConsignmentReturnsService {
               }),
             },
           });
+          touchedProductIds.add(d.productId);
           await tx.inventoryLog.create({
             data: {
               productId: d.productId,

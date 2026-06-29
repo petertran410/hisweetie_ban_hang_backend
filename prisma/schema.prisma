@@ -2056,6 +2056,14 @@ model OrderSupplierPayment {
   status          Int      @default(1)
   statusValue     String?
   cashFlowId      Int?
+  // Tỉ giá quy đổi VND/CNY user nhập tại thời điểm thanh toán. Snapshot riêng —
+  // KHÔNG liên quan OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+  // Lý do: tỉ giá thực tế khi chuyển khoản cho NCC Trung Quốc có thể khác tỉ giá
+  // snapshot tại ngày đặt hàng. null = NCC trong nước hoặc phiếu cũ.
+  exchangeRate    Decimal? @map("exchange_rate") @db.Decimal(18, 6)
+  // Thành tiền quy đổi sang tiền tệ NCC (CNY) snapshot tại thời điểm thanh toán.
+  // = amount / exchangeRate. null = NCC trong nước hoặc phiếu cũ.
+  foreignAmount   Decimal? @map("foreign_amount") @db.Decimal(18, 2)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -2323,6 +2331,13 @@ model VehicleShipmentItem {
   productCode       String
   productName       String
   quantity          Decimal // SL ghép lên xe (dự kiến)
+  // Số HĐ (hợp đồng) gắn với dòng hàng này trên xe. Nullable vì:
+  // - Backward-compat với phiếu cũ chưa có.
+  // - Một số dòng có thể chưa được gán HĐ (vd "chờ" trong kế hoạch xếp xe).
+  // Cùng (orderSupplierId, productId) có thể xuất hiện nhiều lần trong 1 phiếu
+  // xe nếu khác contractNo (vd HH00082-26: 1 dòng thuộc HĐ 2026-169, 1 dòng
+  // thuộc HĐ 2026-197). UI tự fill từ VehicleShipment.vehicleInfo cho dòng mới.
+  contractNo        String?
   // Xử lý chênh lệch sau nhập (per sản phẩm): pending | returned | kept
   // - pending : chưa xử lý, phần thiếu vẫn giữ chỗ (chưa trả về "còn để ghép")
   // - returned: chuyển phần thiếu về "còn lại" (cho ghép/đặt lại)
@@ -2335,7 +2350,7 @@ model VehicleShipmentItem {
   orderSupplier   OrderSupplier   @relation(fields: [orderSupplierId], references: [id])
   product         Product         @relation(fields: [productId], references: [id])
 
-  @@unique([vehicleShipmentId, orderSupplierId, productId])
+  @@unique([vehicleShipmentId, orderSupplierId, productId, contractNo])
   @@map("vehicle_shipment_items")
 }
 
@@ -3138,26 +3153,24 @@ model Contract {
   /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
   externalId     String? @unique @map("external_id")
   recipientEmail String? @map("recipient_email")
-  /// Trạng thái: DRAFT | REVIEW_SENT | REVIEW_APPROVED | SENT | SIGNED | REJECTED | EXPIRED | CANCELLED
-  /// - REVIEW_SENT: đã gửi bản xem trước (chưa có ô ký) cho khách qua Lark Mail.
-  /// - REVIEW_APPROVED: khách đồng ý nội dung (nhân viên đánh dấu trong POS).
-  /// - SENT: đã gửi bản ký (Documenso) cho khách.
-  /// - SIGNED: khách đã ký xong (PDF hoàn tất, đã niêm phong số).
+  /// Trạng thái: DRAFT | SENT | PARTIALLY_SIGNED | SIGNED | REJECTED | EXPIRED | CANCELLED
+  /// - SENT: đã gửi bản ký (Documenso) cho khách hoặc NV (tuỳ thứ tự).
+  /// - PARTIALLY_SIGNED: HĐ 2 bên, 1 bên đã ký, đang chờ bên còn lại.
+  /// - SIGNED: tất cả bên đã ký xong (PDF hoàn tất, đã niêm phong số).
   status         String  @default("DRAFT")
   /// Link ký Documenso trả về khi distribute (để mở lại / gửi cho khách).
   signingUrl     String? @map("signing_url")
   /// Đường dẫn PDF đã ký tải về (vd /uploads/contracts/xxx.pdf).
   signedFileUrl  String? @map("signed_file_url")
-  /// Đường dẫn PDF bản review đã nung text (để xem lại / đính kèm Lark Mail).
-  reviewFileUrl  String? @map("review_file_url")
-  /// Prefill khách điền ở bước tạo (JSON [{fieldId,value}]) — dùng lại khi gửi bản ký.
-  prefillData    String? @map("prefill_data")
-  /// Token bí mật để khách đồng ý/từ chối bản dự thảo từ link trong email (Phase 1).
-  reviewToken    String? @unique @map("review_token")
   /// Lý do từ chối nếu khách reject.
   rejectReason   String? @map("reject_reason")
 
-  reviewSentAt DateTime? @map("review_sent_at")
+  /// Loại HĐ: SINGLE (1 bên ký) | DOUBLE (2 bên ký tuần tự). Phát hiện theo
+  /// số recipient SIGNER trong template Documenso.
+  contractType   String  @default("SINGLE") @map("contract_type")
+  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
+  companySignerEmail String? @map("company_signer_email")
+
   sentAt       DateTime? @map("sent_at")
   signedAt     DateTime? @map("signed_at")
 
@@ -3171,6 +3184,27 @@ model Contract {
   @@index([customerId])
   @@index([status])
   @@map("contracts")
+}
+
+/// Cache mapping Documenso user (email) ↔ phòng ban / vai trò ký BÊN A. Mỗi
+/// dòng ứng với 1 user Documenso được phép ký thay công ty. POS không quản lý
+/// chữ ký ở đây — Documenso tự apply personalSignature của user khi ký.
+model ContractSigner {
+  id            Int      @id @default(autoincrement())
+  /// Email của Documenso user (dùng làm recipient email khi tạo envelope).
+  documensoEmail String  @unique @map("documenso_email")
+  name          String?
+  /// Phòng ban / vai trò (vd "Phòng Sale", "Phòng Kế toán", "Ban GĐ").
+  department    String?
+  /// Mã nội bộ (vd "sale", "accounting", "director") — tiện cho filter/seed.
+  code          String?  @unique
+  isActive      Boolean  @default(true) @map("is_active")
+  lastSyncedAt  DateTime? @map("last_synced_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([department])
+  @@map("contract_signers")
 }
 
 /// Cache tỉ giá ngoại tệ. Dùng để cache response từ fxratesapi.com (hoặc

@@ -19,12 +19,14 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class TransfersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: TransferQueryDto) {
@@ -614,6 +616,8 @@ export class TransfersService {
       );
     }
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
         const inventory = await tx.inventory.findUnique({
@@ -661,6 +665,7 @@ export class TransfersService {
             totalWeight: totalWeight,
           },
         });
+        touchedProductIds.add(detail.productId);
 
         await tx.inventoryLog.create({
           data: {
@@ -690,6 +695,10 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
   private async incrementInventoryFromBranch(transferId: number) {
@@ -706,6 +715,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -729,6 +740,7 @@ export class TransfersService {
             onHand: { increment: detail.sendQuantity },
           },
         });
+        touchedProductIds.add(detail.productId);
 
         // Ghi thẻ kho đảo chiều CHUYỂN khi hoàn tác (2→1): cộng lại số chuyển đi.
         // Gộp với dòng TRANSFER_OUT -sendQuantity trước đó sẽ triệt tiêu về 0.
@@ -762,6 +774,10 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
   private async incrementInventoryToBranch(transferId: number) {
@@ -778,6 +794,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -807,6 +825,7 @@ export class TransfersService {
             onHand: { increment: detail.receivedQuantity },
           },
         });
+        touchedProductIds.add(detail.productId);
 
         // Ghi thẻ kho chiều NHẬN: cộng đúng số lượng nhận thực tế của chi
         // nhánh nhận (có thể khác số chuyển đi). Bỏ qua khi nhận = 0.
@@ -840,6 +859,10 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
   /**
@@ -869,6 +892,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -914,6 +939,7 @@ export class TransfersService {
             onHand: { increment: shortage },
           },
         });
+        touchedProductIds.add(detail.productId);
 
         await tx.inventoryLog.create({
           data: {
@@ -944,6 +970,10 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
   private async decrementInventoryToBranch(transferId: number) {
@@ -959,6 +989,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     for (const detail of transfer.details) {
       const inventorySnapshot = await this.prisma.inventory.findUnique({
@@ -981,6 +1013,7 @@ export class TransfersService {
           onHand: { decrement: detail.receivedQuantity },
         },
       });
+      touchedProductIds.add(detail.productId);
 
       // Ghi thẻ kho đảo chiều NHẬN khi hoàn tác (3→2): trừ đúng số đã nhận.
       // Gộp với dòng TRANSFER_IN +receivedQuantity trước đó sẽ triệt tiêu về 0.
@@ -1013,6 +1046,10 @@ export class TransfersService {
         branchId: transfer.toBranchId,
       })),
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
   /**

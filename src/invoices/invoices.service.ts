@@ -38,6 +38,7 @@ import { searchCustomerIds } from '../common/customer-search.util';
 import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class InvoicesService {
@@ -48,6 +49,7 @@ export class InvoicesService {
     private auditLogsService: AuditLogsService,
     private packingSlipsService: PackingSlipsService,
     private promotionsService: PromotionsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   /**
@@ -1087,7 +1089,8 @@ export class InvoicesService {
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
-    return this.prisma.$transaction(
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const code = await this.generateSafeInvoiceCode(tx);
 
@@ -1327,6 +1330,7 @@ export class InvoicesService {
             where: { productId: item.productId, branchId: dto.branchId },
             data: this.buildInventoryDeductData(item.quantity, condition),
           });
+          touchedProductIds.add(item.productId);
 
           await tx.inventoryLog.create({
             data: {
@@ -1423,6 +1427,12 @@ export class InvoicesService {
       },
       { timeout: 30000 },
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async update(id: number, dto: UpdateInvoiceDto, userId?: number) {
@@ -1431,6 +1441,7 @@ export class InvoicesService {
     // Danh sách packing slip (giao-hang) bị ảnh hưởng bởi versioning để gửi lại Zalo
     // sau khi transaction commit (fire-and-forget).
     let affectedPackingSlipIds: number[] = [];
+    const touchedProductIds = new Set<number>();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const currentInvoice = await tx.invoice.findUnique({
@@ -1497,6 +1508,7 @@ export class InvoicesService {
               (oldDetail as any).conditionType || 'normal',
             ),
           });
+          if (oldDetail.productId != null) touchedProductIds.add(oldDetail.productId);
         }
 
         // Auto-cancel CTN gắn HĐ cũ (đồng bộ với D6 block trong CANCEL flow)
@@ -1740,6 +1752,7 @@ export class InvoicesService {
             },
             data: this.buildInventoryDeductData(item.quantity, condition),
           });
+          touchedProductIds.add(item.productId);
 
           await tx.inventoryLog.create({
             data: {
@@ -1877,6 +1890,7 @@ export class InvoicesService {
                 (detail as any).conditionType || 'normal',
               ),
             });
+            if (detail.productId != null) touchedProductIds.add(detail.productId);
           }
 
           // Hoàn khuyến mãi: chỉ áp cho hóa đơn bán thẳng (orderId = null).
@@ -2179,6 +2193,10 @@ export class InvoicesService {
     const uniquePackingSlipIds = [...new Set(affectedPackingSlipIds)];
     for (const slipId of uniquePackingSlipIds) {
       void this.packingSlipsService.resendDeliverySafe(slipId);
+    }
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
     }
 
     return result;
@@ -2549,6 +2567,7 @@ export class InvoicesService {
         select: { id: true, name: true },
       });
 
+      const touchedProductIds = new Set<number>();
       for (const item of itemsToInvoice) {
         const invSnapshot = await tx.inventory.findFirst({
           where: { productId: item.productId, branchId: order.branchId },
@@ -2566,6 +2585,7 @@ export class InvoicesService {
           where: { productId: item.productId, branchId: order.branchId },
           data: this.buildInventoryDeductData(item.quantity, condition),
         });
+        touchedProductIds.add(item.productId);
 
         await tx.inventoryLog.create({
           data: {

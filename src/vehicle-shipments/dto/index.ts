@@ -12,6 +12,9 @@ import { Type, Transform } from 'class-transformer';
 
 /**
  * Một dòng hàng ghép lên xe: SP của một PDN (orderSupplierId) với SL ghép.
+ * `contractNo` (Số HĐ) gắn với dòng — optional, dùng khi 1 PĐN có nhiều HĐ
+ * hoặc 1 xe gồm hàng của nhiều HĐ. Cùng (osId, productId) có thể xuất hiện
+ * nhiều dòng nếu khác contractNo.
  */
 export class VehicleShipmentItemDto {
   @IsInt()
@@ -22,6 +25,10 @@ export class VehicleShipmentItemDto {
 
   @IsNumber()
   quantity: number;
+
+  @IsString()
+  @IsOptional()
+  contractNo?: string;
 }
 
 /** File đính kèm phiếu xe (số hợp đồng, chứng từ...). */
@@ -147,6 +154,10 @@ export class VehicleShipmentQueryDto {
   @IsOptional()
   search?: string;
 
+  @IsString()
+  @IsOptional()
+  contractNo?: string;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -263,13 +274,25 @@ export class CancelVehicleShipmentDto {
   reason?: string;
 }
 
-/** Xử lý chênh lệch sau nhập cho 1 dòng hàng trên xe. */
+/**
+ * Xử lý chênh lệch sau nhập cho 1 dòng hàng trên xe.
+ *
+ * Khuyến nghị dùng `vehicleShipmentItemId` để trỏ đúng dòng — bắt buộc khi 1
+ * phiếu xe có 2 dòng cùng (orderSupplierId, productId) nhưng khác `contractNo`.
+ * Fallback (orderSupplierId+productId) cho phiếu cũ chưa có `id`.
+ */
 export class ResolveVehicleItemDto {
   @IsInt()
-  orderSupplierId: number;
+  @IsOptional()
+  vehicleShipmentItemId?: number;
 
   @IsInt()
-  productId: number;
+  @IsOptional()
+  orderSupplierId?: number;
+
+  @IsInt()
+  @IsOptional()
+  productId?: number;
 
   @IsString()
   action: string; // pending | returned | kept
