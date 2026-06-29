@@ -870,4 +870,11 @@ export class CustomerReportsService {
     sheet.commit();
     await workbook.commit();
   }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXPORT EXCEL — chi tiết công nợ TOÀN BỘ KH (hierarchical, tái dùng legacy)
+  // ═══════════════════════════════════════════════════════════════════════════
+  async exportDebtDetail(query: CustomerReportQueryDto, res: Response) {
+    await this.reportsService.exportCustomerDebt(this.toReportQuery(query), res);
+  }
 }
