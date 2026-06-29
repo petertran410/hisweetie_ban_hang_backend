@@ -400,6 +400,12 @@ export class ConsignmentReturnsService {
 
       return updated;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async findAll(query: ConsignmentReturnQueryDto) {
