@@ -26,3 +26,8 @@ export {
   EOD_VIEW_TYPES,
   EodViewType,
 } from './eod-report-query.dto';
+export {
+  CustomerReportQueryDto,
+  CUSTOMER_VIEW_TYPES,
+  CustomerViewType,
+} from './customer-report-query.dto';
