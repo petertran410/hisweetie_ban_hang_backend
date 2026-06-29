@@ -21,6 +21,9 @@ interface RangeWindow {
 const REVENUE_EXCLUDE = [2, 8];
 // COD cần giao: loại Hoàn thành (1), Đã hủy (2), Giao thành công (7).
 const COD_DONE_OR_CANCELLED = [1, 2, 7];
+// Worklist (Tổng quan) chỉ tính 3 chi nhánh đang vận hành khi không lọc cụ thể:
+// 1 Kho Sài Gòn · 5 Văn phòng Hà Nội · 6 Kho Hà Nội.
+const TASK_BRANCH_IDS = [1, 5, 6];
 
 @Injectable()
 export class DashboardService {
@@ -796,7 +799,9 @@ export class DashboardService {
             ['pending', 'confirmed', 'partially_invoiced'].includes(status)
               ? status
               : { in: ['pending', 'confirmed', 'partially_invoiced'] },
-          ...(branchId ? { branchId } : {}),
+          // Chỉ khách đang hoạt động (loại vãng lai + KH ngừng hoạt động).
+          customer: { is: { isActive: true } },
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
         take: limit,
         orderBy: { orderDate: 'desc' },
@@ -839,7 +844,7 @@ export class DashboardService {
           status: { notIn: [2] },
           customer: { is: { isActive: true } },
           ...ageFilter,
-          ...(branchId ? { branchId } : {}),
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
         take: limit,
         orderBy: { purchaseDate: 'asc' },
@@ -877,7 +882,8 @@ export class DashboardService {
         where: {
           usingCod: true,
           status: statusFilter,
-          ...(branchId ? { branchId } : {}),
+          customer: { is: { isActive: true } },
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
         take: limit,
         orderBy: { purchaseDate: 'desc' },
@@ -924,7 +930,7 @@ export class DashboardService {
       INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
       WHERE p."isActive" = true
         ${stockFilter}
-        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.sql`AND i."branchId" IN (${Prisma.join(TASK_BRANCH_IDS)})`}
       ORDER BY i."onHand" ASC
       LIMIT ${limit}
     `;
@@ -955,7 +961,8 @@ export class DashboardService {
       this.prisma.order.count({
         where: {
           orderStatus: { in: ['pending', 'confirmed', 'partially_invoiced'] },
-          ...(branchId ? { branchId } : {}),
+          customer: { is: { isActive: true } },
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
       }),
       this.prisma.invoice.count({
@@ -963,14 +970,15 @@ export class DashboardService {
           debtAmount: { gt: 0 },
           status: { notIn: [2] },
           customer: { is: { isActive: true } },
-          ...(branchId ? { branchId } : {}),
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
       }),
       this.prisma.invoice.count({
         where: {
           usingCod: true,
           status: { notIn: [1, 2, 7] },
-          ...(branchId ? { branchId } : {}),
+          customer: { is: { isActive: true } },
+          branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
       }),
       this.prisma.$queryRaw<[{ count: bigint }]>`
@@ -980,7 +988,7 @@ export class DashboardService {
         INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
         WHERE p."isActive" = true
           AND i."onHand" <= i."minQuality"
-          ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+          ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.sql`AND i."branchId" IN (${Prisma.join(TASK_BRANCH_IDS)})`}
       `,
     ]);
 
