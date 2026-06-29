@@ -263,9 +263,6 @@ export class VehicleShipmentsService {
       );
     }
 
-    const osIds = [...new Set(items.map((i) => i.orderSupplierId))];
-    const qtyMap = await this.getQuantityMap(osIds, excludeVehicleId);
-
     const result: any[] = [];
     for (const item of items) {
       if (item.quantity <= 0) {
@@ -282,19 +279,12 @@ export class VehicleShipmentsService {
         );
       }
 
-      const entry = qtyMap.get(`${item.orderSupplierId}:${item.productId}`);
-      const remaining = entry
-        ? entry.ordered - entry.received - entry.shipped
-        : 0;
-      if (item.quantity > remaining) {
-        throw new BadRequestException(
-          `Sản phẩm "${product.name}" chỉ còn ${remaining} có thể ghép (đặt ${
-            entry?.ordered ?? 0
-          } − đã nhập ${entry?.received ?? 0} − đã ghép ${
-            entry?.shipped ?? 0
-          }), không thể ghép ${item.quantity}.`,
-        );
-      }
+      // Bỏ chặn cho phép ghép vượt số lượng có thể ghép (over-pick).
+      // Lý do: thực tế vận chuyển có thể giao dư/thiếu so với PĐN, hoặc NV
+      // muốn chủ động điều chỉnh dòng hàng cho khớp thực tế. Check
+      // `quantity > 0` ở trên đã đủ chặn nhập 0/âm. Tồn kho khi sinh phiếu
+      // nhập từ xe (`createPurchaseOrders` → `updateInventory`) sẽ cộng đúng
+      // theo `receivedQuantity` user nhập, không cap về ordered.
 
       result.push({
         orderSupplierId: item.orderSupplierId,
