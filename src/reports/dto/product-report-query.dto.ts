@@ -78,4 +78,10 @@ export class ProductReportQueryDto {
   @IsInt()
   @Min(1)
   limit?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  top?: number;
 }

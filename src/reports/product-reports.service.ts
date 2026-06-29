@@ -63,6 +63,13 @@ export class ProductReportsService {
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"`;
   }
 
+// TOP N cho chart/data table: `limit` (data table) thắng `top` (chart Top 20).
+// Export truyền limit rất lớn (1000000) để lấy toàn bộ.
+private chartTop(query: ProductReportQueryDto): number {
+  const n = query.limit ?? query.top ?? 20;
+  return Math.max(1, Math.min(1000000, n));
+}
+
   // ═══════════════════════════════════════════════════════════════════════════
   // CHART
   // ═══════════════════════════════════════════════════════════════════════════
@@ -107,7 +114,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productCode", d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -137,7 +144,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productCode", d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => {
       const revenue = Number(r.revenue) || 0;
@@ -213,7 +220,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY dim_name, d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -249,7 +256,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productName", sup.name
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -297,7 +304,7 @@ export class ProductReportsService {
       GROUP BY l."productCode", l."productName"
       HAVING SUM(ABS(l.quantity)) > 0
       ORDER BY name ASC
-      LIMIT 500
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => {
       const opening = Number(r.opening) || 0;
@@ -345,7 +352,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY dd."productCode", dd."productName"
       ORDER BY value DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -468,7 +475,8 @@ export class ProductReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async exportExcel(query: ProductReportQueryDto, res: Response) {
     const viewType: ProductViewType = query.viewType || 'ProductBySale';
-    const rows = await this.getChart(query);
+    // Export lấy toàn bộ theo filter, bỏ qua top 20 của chart.
+    const rows = await this.getChart({ ...query, limit: 1000000 });
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Bao cao hang hoa');
     const money = (n?: number) => Number(n) || 0;
