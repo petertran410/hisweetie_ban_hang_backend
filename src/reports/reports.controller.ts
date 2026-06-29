@@ -333,6 +333,22 @@ export class ReportsController {
     await this.customerReportsService.exportDebtDocuments(query, res);
   }
 
+  @Get('customer/debt-documents/export-all')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({ summary: 'Xuất Excel chi tiết công nợ toàn bộ KH' })
+  async exportCustomerDebtDocumentsAll(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-cong-no-toan-bo_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportDebtDetail(query, res);
+  }
+
   // ── Báo cáo 1: Preview (LEGACY — giữ tạm trong giai đoạn chuyển đổi) ──
   @Get('customer-sales')
   @ReportPermission({ key: 'reports:customer_sale' })
