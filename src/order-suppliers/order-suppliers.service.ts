@@ -270,14 +270,16 @@ export class OrderSuppliersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Lấy cửa khẩu / số hợp đồng / ngày về kho qua phiếu ghép xe MỚI NHẤT
-    // (chưa hủy) chứa từng (orderSupplierId, productId).
+    // Gom DISTINCT Số HĐ + thông tin xe (cửa khẩu, ngày về kho) qua tất cả phiếu
+    // ghép xe chưa hủy chứa từng (orderSupplierId, productId). Trước đây chỉ lấy
+    // phiếu xe MỚI NHẤT cho mỗi cặp key, làm "nuốt" các Số HĐ khác khi 1 PĐN
+    // xuất hiện trên nhiều xe (vd HH00082-26 thuộc HĐ 2026-169 + 2026-197).
     const osIds = orderSuppliers.map((o) => o.id);
-    const vehicleByKey = new Map<
+    const contractNosByKey = new Map<string, string[]>();
+    const vehicleInfoByKey = new Map<
       string,
       {
         borderGateName: string | null;
-        contractNo: string | null;
         expectedArrivalDate: Date | null;
         actualArrivalDate: Date | null;
       }
@@ -291,28 +293,32 @@ export class OrderSuppliersService {
         select: {
           orderSupplierId: true,
           productId: true,
+          contractNo: true,
           vehicleShipment: {
             select: {
-              vehicleInfo: true,
               expectedArrivalDate: true,
               actualArrivalDate: true,
-              createdAt: true,
               borderGate: { select: { name: true } },
             },
           },
         },
-        orderBy: { vehicleShipment: { createdAt: 'desc' } },
       });
-      // Vì đã sort xe mới nhất trước, chỉ giữ bản ghi đầu tiên cho mỗi key.
       for (const si of shipItems) {
         const key = `${si.orderSupplierId}:${si.productId}`;
-        if (vehicleByKey.has(key)) continue;
-        vehicleByKey.set(key, {
-          borderGateName: si.vehicleShipment?.borderGate?.name ?? null,
-          contractNo: si.vehicleShipment?.vehicleInfo ?? null,
-          expectedArrivalDate: si.vehicleShipment?.expectedArrivalDate ?? null,
-          actualArrivalDate: si.vehicleShipment?.actualArrivalDate ?? null,
-        });
+        if (si.contractNo) {
+          const arr = contractNosByKey.get(key) ?? [];
+          if (!arr.includes(si.contractNo)) arr.push(si.contractNo);
+          contractNosByKey.set(key, arr);
+        }
+        // borderGate/date dùng lần xuất hiện đầu tiên (không quan trọng thứ tự
+        // vì cùng SP cùng PĐN thường đi cùng cửa khẩu + xe).
+        if (!vehicleInfoByKey.has(key) && si.vehicleShipment) {
+          vehicleInfoByKey.set(key, {
+            borderGateName: si.vehicleShipment.borderGate?.name ?? null,
+            expectedArrivalDate: si.vehicleShipment.expectedArrivalDate,
+            actualArrivalDate: si.vehicleShipment.actualArrivalDate,
+          });
+        }
       }
     }
 
@@ -361,7 +367,7 @@ export class OrderSuppliersService {
         ]
           .filter(Boolean)
           .join(' / ');
-        const veh = vehicleByKey.get(`${os.id}:${item.productId}`);
+        const veh = vehicleInfoByKey.get(`${os.id}:${item.productId}`);
         flat.push({
           orderSupplierId: os.id,
           orderSupplierCode: os.code,
@@ -400,9 +406,13 @@ export class OrderSuppliersService {
           productionStageName: (item as any).productionStage?.name ?? null,
           factoryId: (item as any).factoryId ?? null,
           factoryName: (item as any).factory?.name ?? null,
-          // Từ phiếu ghép xe mới nhất
+          // Từ phiếu ghép xe (gom DISTINCT — 1 dòng item có thể thuộc nhiều Số HĐ)
           borderGateName: veh?.borderGateName ?? null,
-          contractNo: veh?.contractNo ?? null,
+          // Giữ `contractNo` (string|null) cho backward-compat với FE cũ —
+          // trả về phần tử đầu tiên của danh sách DISTINCT (hoặc null nếu
+          // dòng chưa được gán HĐ nào).
+          contractNo: contractNosByKey.get(`${os.id}:${item.productId}`)?.[0] ?? null,
+          contractNos: contractNosByKey.get(`${os.id}:${item.productId}`) ?? [],
           expectedArrivalDate: veh?.expectedArrivalDate ?? null,
           actualArrivalDate: veh?.actualArrivalDate ?? null,
         });
@@ -848,6 +858,11 @@ export class OrderSuppliersService {
               dto.paymentMethod === 'transfer'
                 ? dto.paymentAccountId ?? null
                 : null,
+            // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
+            // Snapshot riêng tại thời điểm thanh toán — không liên quan
+            // OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+            exchangeRate: dto.paymentExchangeRate ?? null,
+            foreignAmount: dto.paymentForeignAmount ?? null,
             description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
@@ -1088,6 +1103,11 @@ export class OrderSuppliersService {
               dto.paymentMethod === 'transfer'
                 ? dto.paymentAccountId ?? null
                 : null,
+            // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
+            // Snapshot riêng tại thời điểm thanh toán — không liên quan
+            // OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+            exchangeRate: dto.paymentExchangeRate ?? null,
+            foreignAmount: dto.paymentForeignAmount ?? null,
             description: `Trả tiền đặt hàng nhập ${existing.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',

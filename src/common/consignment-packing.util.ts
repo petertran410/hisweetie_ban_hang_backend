@@ -34,8 +34,14 @@ const PACKING_TYPE_TO_STATUS: Record<PackingType, number> = {
 /**
  * Trừ kho cho 1 phiếu ký gửi (nếu chưa trừ) và ghi inventoryLog 'CONSIGNMENT_OUT'.
  * Idempotent ở mức nghiệp vụ: chỉ trừ khi consignment đang CONFIRMED.
+ *
+ * Trả về Set<productId> các SP đã thực sự chạm inventory để caller hook Lark sync.
  */
-async function deductConsignmentStock(tx: any, consignment: any) {
+async function deductConsignmentStock(
+  tx: any,
+  consignment: any,
+): Promise<Set<number>> {
+  const touched = new Set<number>();
   const branch = consignment.branchId
     ? await tx.branch.findUnique({
         where: { id: consignment.branchId },
@@ -52,6 +58,7 @@ async function deductConsignmentStock(tx: any, consignment: any) {
       where: { productId: item.productId, branchId: consignment.branchId },
       data: { onHand: { decrement: Number(item.quantity) } },
     });
+    touched.add(item.productId);
 
     await tx.inventoryLog.create({
       data: {
@@ -73,13 +80,20 @@ async function deductConsignmentStock(tx: any, consignment: any) {
       },
     });
   }
+  return touched;
 }
 
 /**
  * Hoàn kho cho 1 phiếu ký gửi: cộng lại onHand theo các dòng log
  * 'CONSIGNMENT_OUT' rồi XÓA chúng (không sinh dòng CANCEL).
+ *
+ * Trả về Set<productId> các SP đã chạm inventory để caller hook Lark sync.
  */
-export async function restoreConsignmentStock(tx: any, consignmentId: number) {
+export async function restoreConsignmentStock(
+  tx: any,
+  consignmentId: number,
+): Promise<Set<number>> {
+  const touched = new Set<number>();
   const logs = await tx.inventoryLog.findMany({
     where: {
       refType: 'consignment',
@@ -93,6 +107,7 @@ export async function restoreConsignmentStock(tx: any, consignmentId: number) {
       where: { productId: log.productId, branchId: log.branchId },
       data: { onHand: { increment: Math.abs(Number(log.quantity)) } },
     });
+    touched.add(log.productId);
   }
 
   if (logs.length > 0) {
@@ -104,6 +119,7 @@ export async function restoreConsignmentStock(tx: any, consignmentId: number) {
       },
     });
   }
+  return touched;
 }
 
 /**
@@ -119,8 +135,9 @@ export async function applyPackingToConsignments(
   tx: any,
   consignmentIds: number[],
   packingType: PackingType,
-): Promise<void> {
-  if (!consignmentIds || consignmentIds.length === 0) return;
+): Promise<Set<number>> {
+  const touched = new Set<number>();
+  if (!consignmentIds || consignmentIds.length === 0) return touched;
 
   const consignments = await tx.consignment.findMany({
     where: { id: { in: consignmentIds } },
@@ -153,7 +170,8 @@ export async function applyPackingToConsignments(
 
     // Lần đầu rời CONFIRMED → trừ kho 1 lần.
     if (c.status === CONSIGNMENT_STATUS.CONFIRMED) {
-      await deductConsignmentStock(tx, c);
+      const deducted = await deductConsignmentStock(tx, c);
+      for (const id of deducted) touched.add(id);
     }
 
     await tx.consignment.update({
@@ -170,6 +188,7 @@ export async function applyPackingToConsignments(
       },
     });
   }
+  return touched;
 }
 
 /**
@@ -201,7 +220,8 @@ async function countActiveConsignmentPackings(
 export async function recalcConsignmentStatusAfterPackingCancel(
   tx: any,
   consignmentIds: number[],
-): Promise<void> {
+): Promise<Set<number>> {
+  const touched = new Set<number>();
   for (const consignmentId of consignmentIds) {
     const c = await tx.consignment.findUnique({
       where: { id: consignmentId },
@@ -226,7 +246,8 @@ export async function recalcConsignmentStatusAfterPackingCancel(
 
     // Rớt về CONFIRMED (không còn phiếu packing nào) → hoàn kho.
     if (newStatus === CONSIGNMENT_STATUS.CONFIRMED) {
-      await restoreConsignmentStock(tx, consignmentId);
+      const restored = await restoreConsignmentStock(tx, consignmentId);
+      for (const id of restored) touched.add(id);
     }
 
     const consignStatusKey =
@@ -247,4 +268,6 @@ export async function recalcConsignmentStatusAfterPackingCancel(
       },
     });
   }
+
+  return touched;
 }

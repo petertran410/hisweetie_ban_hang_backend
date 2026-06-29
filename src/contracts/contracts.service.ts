@@ -9,7 +9,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { DocumensoClient } from './documenso.client';
 import {
   PdfBurnService,
-  BurnImageItem,
   BurnTextItem,
 } from './pdf-burn.service';
 import { LarkMailService } from './lark-mail.service';
@@ -19,7 +18,6 @@ import {
   ContractQueryDto,
   DocumensoWebhookDto,
 } from './dto';
-import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -27,6 +25,7 @@ import * as path from 'path';
 export class ContractsService {
   private readonly logger = new Logger(ContractsService.name);
   private readonly defaultTemplateId?: number;
+  private readonly defaultCompanySignerEmail?: string;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -37,6 +36,9 @@ export class ContractsService {
   ) {
     const tpl = this.configService.get<string>('DOCUMENSO_TEMPLATE_ID');
     this.defaultTemplateId = tpl ? Number(tpl) : undefined;
+    this.defaultCompanySignerEmail = (
+      this.configService.get<string>('CONTRACT_SIGNER_EMAIL') || ''
+    ).trim();
   }
 
   // ---------- Queries ----------
@@ -49,6 +51,43 @@ export class ContractsService {
   /** Field công ty điền (readOnly) — FE render form động. */
   async getTemplateFields(templateId: number) {
     return this.documenso.getAssistantFields(templateId);
+  }
+
+  /**
+   * Liệt kê Documenso user (cached trong DB `ContractSigner`) để NV chọn khi
+   * tạo HĐ 2 bên. Đồng bộ lại từ Documenso nếu cache > 1 giờ.
+   */
+  async listSigners(force = false) {
+    const last = await this.prisma.contractSigner.findFirst({
+      orderBy: { lastSyncedAt: 'desc' },
+    });
+    const stale =
+      !last?.lastSyncedAt ||
+      Date.now() - new Date(last.lastSyncedAt).getTime() > 60 * 60 * 1000;
+
+    if (force || stale) {
+      const users = await this.documenso.listUsers();
+      if (users.length) {
+        for (const u of users) {
+          await this.prisma.contractSigner.upsert({
+            where: { documensoEmail: u.email },
+            create: {
+              documensoEmail: u.email,
+              name: u.name,
+              lastSyncedAt: new Date(),
+            },
+            update: {
+              name: u.name,
+              lastSyncedAt: new Date(),
+            },
+          });
+        }
+      }
+    }
+    return this.prisma.contractSigner.findMany({
+      where: { isActive: true },
+      orderBy: [{ department: 'asc' }, { name: 'asc' }],
+    });
   }
 
   async findAll(query: ContractQueryDto) {
@@ -96,9 +135,21 @@ export class ContractsService {
   }
 
   // ===================================================================
-  // PHASE 1 — Tạo & gửi bản XEM TRƯỚC (chưa có ô ký) qua Lark Mail.
+  // FLOW MỚI — 2 phase gộp:
+  //  (1) NV tạo HĐ từ template → burn text + tạo Documenso envelope → distribute.
+  //      - Loại 1 (1 bên ký): 1 recipient = khách.
+  //      - Loại 2 (2 bên ký tuần tự): 2 recipient (khách order=1, NV order=2).
+  //      Mail #1 gửi cho khách (link Documenso ký).
+  //  (2) Webhook Documenso:
+  //      - Loại 1: recipientSigned khách → tải PDF → mail hoàn tất cả bên → SIGNED.
+  //      - Loại 2: recipientSigned khách (order=1) → mail "đến lượt NV" → PARTIALLY_SIGNED.
+  //                recipientSigned NV (order=2) → tải PDF → mail hoàn tất → SIGNED.
   // ===================================================================
 
+  /**
+   * Tạo HĐ từ template + gửi mail #1 cho khách ngay.
+   * Phát hiện Loại 1 vs Loại 2 theo số recipient SIGNER trong template.
+   */
   async createFromTemplate(dto: CreateFromTemplateDto, userId?: number) {
     const customer = await this.prisma.customer.findUnique({
       where: { id: dto.customerId },
@@ -133,31 +184,119 @@ export class ContractsService {
       }
     }
 
-    // Nung text công ty vào PDF gốc (KHÔNG có chữ ký/dấu — đây chỉ là bản xem).
-    const { burnedPdf } = await this.buildReviewPdf(template, prefillMap);
+    // Phát hiện Loại: đếm recipient SIGNER còn lại sau khi loại trừ recipient công ty.
+    const totalSigners = (template.recipients || []).filter(
+      (r) => (r.role || '').toUpperCase() !== 'ASSISTANT',
+    ).length;
+    const isTwoParty = totalSigners >= 2;
+    const contractType: 'SINGLE' | 'DOUBLE' = isTwoParty ? 'DOUBLE' : 'SINGLE';
 
-    // Lưu PDF review về local để xem lại / đính kèm.
-    const reviewFileUrl = this.storePdf(externalId, 'review', burnedPdf);
+    // Email NV ký BÊN A — ưu tiên:
+    //   1) FIELD `companySignerEmail` do FE truyền (NV chọn dropdown)
+    //   2) `ContractSigner` đầu tiên trong DB (cache đồng bộ Documenso)
+    //   3) ENV `CONTRACT_SIGNER_EMAIL`
+    const companySignerEmail =
+      (dto.companySignerEmail || '').trim() ||
+      (await this.firstActiveSignerEmail()) ||
+      this.defaultCompanySignerEmail ||
+      '';
 
-    // Sinh token bí mật cho khách xác nhận/từ chối bản dự thảo.
-    const reviewToken = crypto.randomBytes(32).toString('base64url');
-    const publicUrl =
-      this.configService.get<string>('CONTRACT_PUBLIC_URL') ||
-      this.configService.get<string>('API_URL') ||
-      'http://localhost:3060';
-    const reviewUrl = `${publicUrl}/api/contracts/review/${reviewToken}`;
+    if (isTwoParty && !companySignerEmail) {
+      throw new BadRequestException(
+        'Hợp đồng 2 bên ký yêu cầu email Documenso user của NV ký BÊN A. Vui lòng cấu hình CONTRACT_SIGNER_EMAIL hoặc đồng bộ danh sách signer.',
+      );
+    }
 
-    // Gửi Lark Mail bản xem trước.
-    await this.larkMail.sendMailWithPdf({
-      to: recipientEmail,
-      subject: `[Diệp Trà] Bản dự thảo hợp đồng — Quý khách vui lòng rà soát và phản hồi`,
-      html: this.larkMail.buildReviewHtml({
-        customerName: customer.name,
-        reviewUrl,
-      }),
-      pdfBuffer: burnedPdf,
-      pdfFileName: `${title}.pdf`,
+    // Burn text công ty vào PDF gốc (giữ nguyên field chữ ký để Documenso xử lý).
+    const { burnedPdf } = await this.buildSignedPdf(template, prefillMap);
+
+    // Lấy danh sách field khách ký (readOnly=false) theo từng recipient.
+    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
+    const allFields = template.fields || [];
+
+    // Phân field theo recipient: customer vs company.
+    const customerRecipient =
+      this.documenso.findCustomerRecipient(template) ||
+      (template.recipients || [])[0];
+    const companyRecipient = (template.recipients || []).find(
+      (r) => r.id !== customerRecipient?.id,
+    );
+
+    const buildFieldsFor = (recipientId?: number) =>
+      allFields
+        .filter((f) => f.fieldMeta?.readOnly !== true)
+        .filter((f) => !recipientId || Number(f.recipientId) === recipientId)
+        .map((f) => ({
+          type: (f.type || 'TEXT').toUpperCase(),
+          page: Number(f.page) || 1,
+          positionX: Number(f.positionX),
+          positionY: Number(f.positionY),
+          width: Number(f.width),
+          height: Number(f.height),
+          fieldMeta: this.sanitizeFieldMeta(f.fieldMeta),
+        }));
+
+    const customerFields = buildFieldsFor(customerRecipient?.id);
+    const companyFields = buildFieldsFor(companyRecipient?.id);
+
+    if (customerFields.length === 0) {
+      throw new BadRequestException(
+        'Template không có ô nào cho khách ký. Vui lòng thêm ô chữ ký khách vào template.',
+      );
+    }
+    if (isTwoParty && companyFields.length === 0) {
+      throw new BadRequestException(
+        'Template 2 bên không có ô ký cho công ty. Vui lòng thêm ô SIGNATURE cho BÊN A.',
+      );
+    }
+
+    // Tạo envelope Documenso.
+    const recipients: {
+      email: string;
+      name: string;
+      role: string;
+      signingOrder: number;
+      fields: any[];
+    }[] = [
+      {
+        email: recipientEmail,
+        name: customer?.name || recipientEmail,
+        role: 'SIGNER',
+        signingOrder: 1, // Khách ký trước.
+        fields: customerFields,
+      },
+    ];
+
+    if (isTwoParty && companyRecipient && companySignerEmail) {
+      recipients.push({
+        email: companySignerEmail,
+        name: companySignerEmail,
+        role: 'SIGNER',
+        signingOrder: 2, // NV ký sau.
+        fields: companyFields,
+      });
+    }
+
+    const envelope = await this.documenso.createEnvelopeWithFields({
+      title,
+      externalId,
+      fileBuffer: burnedPdf,
+      fileName: `${title}.pdf`,
+      recipients,
     });
+
+    if (!envelope.envelopeId) {
+      throw new BadRequestException(
+        'Documenso không trả envelopeId — không thể gửi ký.',
+      );
+    }
+
+    // Distribute (tắt hết email Documenso).
+    const result = await this.documenso.distribute(envelope.envelopeId, true);
+
+    const customerRecipientResult = result.recipients?.find(
+      (r) => r.email === recipientEmail,
+    );
 
     const contract = await this.prisma.contract.create({
       data: {
@@ -166,15 +305,14 @@ export class ContractsService {
         source: 'template',
         templateId,
         templateTitle: template.title || null,
+        documensoId: result.envelopeId || envelope.envelopeId,
         externalId,
         recipientEmail,
-        status: 'REVIEW_SENT',
-        reviewFileUrl,
-        reviewToken,
-        prefillData: dto.prefillFields?.length
-          ? JSON.stringify(dto.prefillFields)
-          : null,
-        reviewSentAt: new Date(),
+        status: 'SENT',
+        signingUrl: customerRecipientResult?.signingUrl || null,
+        contractType,
+        companySignerEmail: isTwoParty ? companySignerEmail : null,
+        sentAt: new Date(),
         createdBy: userId || null,
       },
       include: {
@@ -182,467 +320,31 @@ export class ContractsService {
       },
     });
 
-    return contract;
-  }
-
-  /** Gửi lại bản xem trước (Phase 1) qua Lark Mail. */
-  async resendReview(id: number) {
-    const contract = await this.findOne(id);
-    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      throw new BadRequestException(
-        'Chỉ gửi lại bản xem khi hợp đồng đang ở bước xem trước.',
-      );
-    }
-    if (!contract.recipientEmail) {
-      throw new BadRequestException('Hợp đồng chưa có email người nhận');
-    }
-
-    const buffer = this.readStoredPdf(contract.reviewFileUrl);
-    if (!buffer) {
-      throw new BadRequestException(
-        'Không tìm thấy file bản xem trước. Vui lòng tạo lại hợp đồng.',
-      );
-    }
-
-    await this.larkMail.sendMailWithPdf({
-      to: contract.recipientEmail,
-      subject: `[Diệp Trà] Bản dự thảo hợp đồng (gửi lại) — Quý khách vui lòng rà soát và phản hồi`,
-      html: this.larkMail.buildReviewHtml({
-        customerName: contract.customer?.name || '',
-        reviewUrl: `${this.configService.get<string>('CONTRACT_PUBLIC_URL') || this.configService.get<string>('API_URL') || 'http://localhost:3060'}/api/contracts/review/${contract.reviewToken}`,
-      }),
-      pdfBuffer: buffer,
-      pdfFileName: `${contract.title}.pdf`,
-    });
-
-    return this.prisma.contract.update({
-      where: { id },
-      data: { reviewSentAt: new Date() },
-      include: {
-        customer: { select: { id: true, code: true, name: true, email: true } },
-      },
-    });
-  }
-
-  /** Đánh dấu khách đã đồng ý nội dung (Phase 1 → cho phép gửi bản ký). */
-  async approveReview(id: number) {
-    const contract = await this.findOne(id);
-    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      throw new BadRequestException(
-        'Chỉ duyệt được hợp đồng đang ở bước xem trước.',
-      );
-    }
-    return this.prisma.contract.update({
-      where: { id },
-      data: { status: 'REVIEW_APPROVED' },
-      include: {
-        customer: { select: { id: true, code: true, name: true, email: true } },
-      },
-    });
-  }
-
-  /** Tìm hợp đồng theo reviewToken (cho trang xác nhận public). */
-  async findByReviewToken(token: string) {
-    if (!token) throw new NotFoundException('Liên kết không hợp lệ');
-    const contract = await this.prisma.contract.findUnique({
-      where: { reviewToken: token },
-      include: { customer: { select: { name: true } } },
-    });
-    if (!contract) throw new NotFoundException('Liên kết không hợp lệ');
-    return contract;
-  }
-
-  /**
-   * Khách bấm "Đồng ý" từ email → xác nhận bản dự thảo → tự động gửi bản ký
-   * (Phase 2). Idempotent: nếu đã gửi ký rồi thì không gửi lại.
-   */
-  async approveReviewByToken(
-    token: string,
-  ): Promise<{ status: string; alreadyProcessed: boolean }> {
-    const contract = await this.findByReviewToken(token);
-
-    // Đã chuyển sang bước ký (hoặc xa hơn) → không xử lý lại.
-    if (['SENT', 'SIGNED', 'REJECTED', 'CANCELLED'].includes(contract.status)) {
-      return { status: contract.status, alreadyProcessed: true };
-    }
-    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      throw new BadRequestException('Hợp đồng không ở bước xem trước.');
-    }
-
-    // Đánh dấu duyệt rồi gửi bản ký (Phase 2).
-    await this.prisma.contract.update({
-      where: { id: contract.id },
-      data: { status: 'REVIEW_APPROVED' },
-    });
-    await this.sendForSigning(contract.id);
-    return { status: 'SENT', alreadyProcessed: false };
-  }
-
-  /** Khách bấm "Không đồng ý" từ email → đánh dấu từ chối bản dự thảo. */
-  async rejectReviewByToken(
-    token: string,
-    reason?: string,
-  ): Promise<{ status: string; alreadyProcessed: boolean }> {
-    const contract = await this.findByReviewToken(token);
-    if (['REJECTED', 'CANCELLED'].includes(contract.status)) {
-      return { status: contract.status, alreadyProcessed: true };
-    }
-    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      throw new BadRequestException(
-        'Hợp đồng đã chuyển bước, không thể từ chối tại đây.',
-      );
-    }
-    await this.prisma.contract.update({
-      where: { id: contract.id },
-      data: {
-        status: 'REJECTED',
-        rejectReason: reason?.trim() || 'Khách từ chối bản dự thảo',
-      },
-    });
-    return { status: 'REJECTED', alreadyProcessed: false };
-  }
-
-  // ===================================================================
-  // PHASE 2 — Gửi bản KÝ (Documenso): PDF nung text + dấu/chữ ký công ty,
-  // chỉ field chữ ký khách. Distribute → khách nhận email link ký.
-  // ===================================================================
-
-  async sendForSigning(id: number) {
-    const contract = await this.findOne(id);
-    if (!['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      throw new BadRequestException(
-        'Hợp đồng phải ở bước xem trước (đã duyệt) mới gửi bản ký được.',
-      );
-    }
-    if (!contract.templateId) {
-      throw new BadRequestException('Hợp đồng không gắn template Documenso.');
-    }
-    if (!contract.recipientEmail) {
-      throw new BadRequestException('Hợp đồng chưa có email người nhận.');
-    }
-
-    const customer = contract.customer;
-    const template = await this.documenso.getTemplate(contract.templateId);
-
-    // Khôi phục prefill đã lưu ở Phase 1.
-    const prefillMap = new Map<number, string>();
-    if (contract.prefillData) {
+    // Gửi mail #1 cho khách (không đính kèm file — link Documenso đã có PDF).
+    if (customerRecipientResult?.signingUrl) {
       try {
-        const arr: { fieldId: number; value: string }[] = JSON.parse(
-          contract.prefillData,
-        );
-        for (const p of arr) {
-          if (p.value) prefillMap.set(p.fieldId, String(p.value));
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
-    const allFields = template.fields || [];
-
-    // (1) Text công ty (readOnly, không phải chữ ký) → nung vào PDF.
-    const burnTextItems: BurnTextItem[] = allFields
-      .filter((f) => f.fieldMeta?.readOnly === true)
-      .filter((f) => !SIGNATURE_TYPES.includes((f.type || '').toUpperCase()))
-      .map((f) => {
-        const value =
-          prefillMap.get(f.id) ??
-          (f.fieldMeta?.text ? String(f.fieldMeta.text) : '');
-        return {
-          page: Number(f.page) || 1,
-          xPercent: Number(f.positionX),
-          yPercent: Number(f.positionY),
-          widthPercent: Number(f.width),
-          heightPercent: Number(f.height),
-          value,
-          fontSize: f.fieldMeta?.fontSize
-            ? Number(f.fieldMeta.fontSize)
-            : undefined,
-          align:
-            (f.fieldMeta?.textAlign as 'left' | 'center' | 'right') || 'left',
-        };
-      })
-      .filter((it) => it.value !== '');
-
-    // (2) Chữ ký/dấu công ty: field readOnly + là SIGNATURE → nung ẢNH dấu công ty.
-    const stampBuffer = this.loadCompanyStamp();
-    const burnImageItems: BurnImageItem[] = [];
-    if (stampBuffer) {
-      for (const f of allFields) {
-        const isSig = SIGNATURE_TYPES.includes((f.type || '').toUpperCase());
-        if (isSig && f.fieldMeta?.readOnly === true) {
-          burnImageItems.push({
-            page: Number(f.page) || 1,
-            xPercent: Number(f.positionX),
-            yPercent: Number(f.positionY),
-            widthPercent: Number(f.width),
-            heightPercent: Number(f.height),
-            imageBuffer: stampBuffer,
-          });
-        }
-      }
-    }
-
-    // (3) Field khách = KHÔNG readOnly (chữ ký khách, ngày, ô khách điền).
-    const customerFields = allFields
-      .filter((f) => f.fieldMeta?.readOnly !== true)
-      .map((f) => ({
-        type: (f.type || 'TEXT').toUpperCase(),
-        page: Number(f.page) || 1,
-        positionX: Number(f.positionX),
-        positionY: Number(f.positionY),
-        width: Number(f.width),
-        height: Number(f.height),
-        fieldMeta: this.sanitizeFieldMeta(f.fieldMeta),
-      }));
-
-    if (customerFields.length === 0) {
-      throw new BadRequestException(
-        'Template không có ô nào cho khách ký. Vui lòng thêm ô chữ ký khách vào template.',
-      );
-    }
-
-    // Tải PDF gốc → nung text + dấu công ty.
-    const originalPdf = await this.documenso.downloadTemplateRawPdf(
-      contract.templateId,
-    );
-    const burnedPdf = await this.pdfBurn.burnTextAndImages(
-      originalPdf,
-      burnTextItems,
-      burnImageItems,
-    );
-
-    // Tạo document Documenso từ PDF đã nung, chỉ kèm field khách.
-    const externalId =
-      contract.externalId || `contract-cus${contract.customerId}-${Date.now()}`;
-    const envelope = await this.documenso.createEnvelopeWithFields({
-      title: contract.title,
-      recipientEmail: contract.recipientEmail,
-      recipientName: customer?.name || contract.recipientEmail,
-      externalId,
-      fileBuffer: burnedPdf,
-      fileName: `${contract.title}.pdf`,
-      fields: customerFields,
-    });
-
-    let result = envelope;
-    if (envelope.envelopeId) {
-      try {
-        result = await this.documenso.distribute(envelope.envelopeId, {
-          // Tắt email hoàn tất của Documenso — mình tự gửi Lark Mail Phase 4 kèm PDF.
-          documentCompleted: false,
-          ownerDocumentCompleted: false,
+        await this.larkMail.sendMailWithPdf({
+          to: recipientEmail,
+          subject: this.larkMail.subjectSentToCustomer(contract.title),
+          html: this.larkMail.buildSentToCustomerHtml({
+            customerName: customer.name,
+            contractTitle: contract.title,
+            signingUrl: customerRecipientResult.signingUrl,
+          }),
         });
       } catch (e) {
-        this.logger.warn(`distribute sau createEnvelope lỗi: ${e}`);
+        this.logger.error(
+          `Gửi mail #1 cho khách contract #${contract.id} lỗi: ${e}`,
+        );
       }
     }
-
-    const signingUrl = result.recipients?.find(
-      (r) => r.email === contract.recipientEmail,
-    )?.signingUrl;
-
-    return this.prisma.contract.update({
-      where: { id },
-      data: {
-        documensoId: result.envelopeId || envelope.envelopeId || null,
-        externalId,
-        status: 'SENT',
-        signingUrl: signingUrl || null,
-        sentAt: new Date(),
-      },
-      include: {
-        customer: { select: { id: true, code: true, name: true, email: true } },
-      },
-    });
-  }
-
-  /** Build PDF bản xem (chỉ nung text công ty, không dấu/chữ ký). */
-  private async buildReviewPdf(
-    template: any,
-    prefillMap: Map<number, string>,
-  ): Promise<{ burnedPdf: Buffer }> {
-    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
-    const allFields = template.fields || [];
-
-    const burnItems: BurnTextItem[] = allFields
-      .filter((f: any) => f.fieldMeta?.readOnly === true)
-      .filter(
-        (f: any) => !SIGNATURE_TYPES.includes((f.type || '').toUpperCase()),
-      )
-      .map((f: any) => {
-        const value =
-          prefillMap.get(f.id) ??
-          (f.fieldMeta?.text ? String(f.fieldMeta.text) : '');
-        return {
-          page: Number(f.page) || 1,
-          xPercent: Number(f.positionX),
-          yPercent: Number(f.positionY),
-          widthPercent: Number(f.width),
-          heightPercent: Number(f.height),
-          value,
-          fontSize: f.fieldMeta?.fontSize
-            ? Number(f.fieldMeta.fontSize)
-            : undefined,
-          align:
-            (f.fieldMeta?.textAlign as 'left' | 'center' | 'right') || 'left',
-        };
-      })
-      .filter((it: BurnTextItem) => it.value !== '');
-
-    const originalPdf = await this.documenso.downloadTemplateRawPdf(
-      template.id,
-    );
-    const burnedPdf = await this.pdfBurn.burnText(originalPdf, burnItems);
-    return { burnedPdf };
-  }
-
-  /**
-   * Nạp ảnh dấu/chữ ký công ty (PNG nền trong suốt). Tìm ở nhiều vị trí; có thể
-   * override bằng ENV CONTRACT_COMPANY_STAMP_PATH. Trả null nếu không có (khi đó
-   * Phase 2 vẫn chạy nhưng không nung dấu — log cảnh báo).
-   */
-  private loadCompanyStamp(): Buffer | null {
-    const envPath = this.configService.get<string>(
-      'CONTRACT_COMPANY_STAMP_PATH',
-    );
-    const candidates = [
-      envPath,
-      path.join(__dirname, 'assets', 'signatures', 'company-stamp.png'),
-      path.join(
-        process.cwd(),
-        'src',
-        'contracts',
-        'assets',
-        'signatures',
-        'company-stamp.png',
-      ),
-      path.join(
-        process.cwd(),
-        'dist',
-        'src',
-        'contracts',
-        'assets',
-        'signatures',
-        'company-stamp.png',
-      ),
-    ].filter(Boolean) as string[];
-
-    const found = candidates.find((p) => {
-      try {
-        return fs.existsSync(p);
-      } catch {
-        return false;
-      }
-    });
-    if (!found) {
-      this.logger.warn(
-        `Không tìm thấy dấu công ty (company-stamp.png). Đã thử: ${candidates.join(', ')}`,
-      );
-      return null;
-    }
-    return fs.readFileSync(found);
-  }
-
-  /**
-   * Lọc fieldMeta giữ thuộc tính hợp lệ khi tạo field mới.
-   */
-  private sanitizeFieldMeta(
-    fieldMeta?: Record<string, any>,
-  ): Record<string, any> | undefined {
-    if (!fieldMeta) return undefined;
-    const out: Record<string, any> = {};
-    const keep = [
-      'label',
-      'placeholder',
-      'required',
-      'fontSize',
-      'textAlign',
-      'type',
-    ];
-    for (const k of keep) {
-      if (fieldMeta[k] !== undefined) out[k] = fieldMeta[k];
-    }
-    return Object.keys(out).length ? out : undefined;
-  }
-
-  // ---------- Upload PDF (giữ nguyên, ít dùng) ----------
-
-  async createFromUpload(
-    dto: UploadContractDto,
-    file: Express.Multer.File,
-    userId?: number,
-  ) {
-    if (!file) throw new BadRequestException('Thiếu file PDF');
-    if (file.mimetype !== 'application/pdf') {
-      throw new BadRequestException('Chỉ chấp nhận file PDF');
-    }
-
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: dto.customerId },
-    });
-    if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
-
-    const recipientEmail = dto.recipientEmail || customer.email || '';
-    if (!recipientEmail) {
-      throw new BadRequestException(
-        'Khách hàng chưa có email. Vui lòng cập nhật email trước khi gửi hợp đồng.',
-      );
-    }
-
-    const title = dto.title || `Hợp đồng - ${customer.name}`;
-    const externalId = `contract-cus${customer.id}-${Date.now()}`;
-
-    const envelope = await this.documenso.createEnvelope({
-      title,
-      recipientEmail,
-      recipientName: customer.name,
-      externalId,
-      fileBuffer: file.buffer,
-      fileName: file.originalname || 'contract.pdf',
-    });
-
-    const distributed = await this.documenso.distribute(envelope.envelopeId, {
-      documentCompleted: false,
-      ownerDocumentCompleted: false,
-    });
-    const signingUrl = distributed.recipients?.find(
-      (r) => r.email === recipientEmail,
-    )?.signingUrl;
-
-    const contract = await this.prisma.contract.create({
-      data: {
-        customerId: customer.id,
-        title,
-        source: 'upload',
-        documensoId: envelope.envelopeId || null,
-        externalId,
-        recipientEmail,
-        status: 'SENT',
-        signingUrl: signingUrl || null,
-        sentAt: new Date(),
-        createdBy: userId || null,
-      },
-      include: {
-        customer: { select: { id: true, code: true, name: true, email: true } },
-      },
-    });
 
     return contract;
   }
 
-  // ---------- Resend (Phase 2 — bản ký Documenso) ----------
-
+  /** Gửi lại — chỉ dùng khi SENT/PARTIALLY_SIGNED (Documenso re-distribute). */
   async resend(id: number) {
     const contract = await this.findOne(id);
-
-    // Đang ở bước xem trước → gửi lại bản xem (Lark Mail).
-    if (['REVIEW_SENT', 'REVIEW_APPROVED'].includes(contract.status)) {
-      return this.resendReview(id);
-    }
-
     if (!contract.documensoId) {
       throw new BadRequestException('Hợp đồng chưa liên kết Documenso');
     }
@@ -659,7 +361,6 @@ export class ContractsService {
         'Hợp đồng đã được ký xong — đã cập nhật lại trạng thái. Vui lòng tải PDF.',
       );
     }
-
     if (docStatus === 'REJECTED') {
       await this.prisma.contract.update({
         where: { id },
@@ -669,7 +370,6 @@ export class ContractsService {
         'Khách hàng đã từ chối ký hợp đồng này — không thể gửi lại. Vui lòng tạo hợp đồng mới.',
       );
     }
-
     if (docStatus === 'CANCELLED') {
       await this.prisma.contract.update({
         where: { id },
@@ -680,19 +380,36 @@ export class ContractsService {
       );
     }
 
-    const result = await this.documenso.distribute(contract.documensoId, {
-      documentCompleted: false,
-      ownerDocumentCompleted: false,
-    });
-    const signingUrl = result.recipients?.find(
+    const result = await this.documenso.distribute(contract.documensoId, true);
+    const customerRecipientResult = result.recipients?.find(
       (r) => r.email === contract.recipientEmail,
-    )?.signingUrl;
+    );
+
+    // Mail #1 lại cho khách.
+    if (customerRecipientResult?.signingUrl) {
+      try {
+        await this.larkMail.sendMailWithPdf({
+          to: contract.recipientEmail!,
+          subject: this.larkMail.subjectSentToCustomer(
+            `[Gửi lại] ${contract.title}`,
+          ),
+          html: this.larkMail.buildSentToCustomerHtml({
+            customerName: contract.customer?.name || '',
+            contractTitle: contract.title,
+            signingUrl: customerRecipientResult.signingUrl,
+          }),
+        });
+      } catch (e) {
+        this.logger.error(`Gửi lại mail #1 lỗi: ${e}`);
+      }
+    }
 
     return this.prisma.contract.update({
       where: { id },
       data: {
         status: 'SENT',
-        signingUrl: signingUrl || contract.signingUrl,
+        signingUrl:
+          customerRecipientResult?.signingUrl || contract.signingUrl,
         sentAt: new Date(),
       },
       include: {
@@ -701,7 +418,7 @@ export class ContractsService {
     });
   }
 
-  // ---------- Download signed PDF ----------
+  // ---------- Download / preview ----------
 
   async getSignedPdf(
     id: number,
@@ -745,19 +462,17 @@ export class ContractsService {
           ? String(rawId)
           : undefined;
 
-    let contract: {
-      id: number;
-      documensoId: string | null;
-      signedFileUrl: string | null;
-    } | null = null;
+    let contract: any = null;
     if (externalId) {
       contract = await this.prisma.contract.findUnique({
         where: { externalId },
+        include: { customer: { select: { name: true, email: true } } },
       });
     }
     if (!contract && idStr) {
       contract = await this.prisma.contract.findUnique({
         where: { documensoId: idStr },
+        include: { customer: { select: { name: true, email: true } } },
       });
     }
     if (!contract) {
@@ -772,6 +487,8 @@ export class ContractsService {
 
     if (event === 'DOCUMENT_COMPLETED') {
       await this.finalizeSignedContract(contract.id, contract.documensoId);
+    } else if (event === 'RECIPIENT_SIGNED') {
+      await this.handleRecipientSigned(contract, payload);
     } else if (event === 'DOCUMENT_REJECTED') {
       await this.prisma.contract.update({
         where: { id: contract.id },
@@ -787,12 +504,98 @@ export class ContractsService {
     return { received: true };
   }
 
-  // ===================================================================
-  // PHASE 3 + 4 — Khách ký xong: tải PDF hoàn tất, cập nhật trạng thái,
-  // gửi Lark Mail bản cuối cho khách.
-  // ===================================================================
+  /**
+   * Xử lý event RECIPIENT_SIGNED — kiểm tra xem khách đã ký chưa (Loại 2) → chuyển
+   * PARTIALLY_SIGNED + mail cho NV. Nếu NV ký xong (envelope COMPLETED) → xử lý
+   * ở DOCUMENT_COMPLETED (gọi finalizeSignedContract).
+   */
+  private async handleRecipientSigned(contract: any, payload: any) {
+    if (contract.status === 'SIGNED' || contract.status === 'CANCELLED') {
+      return;
+    }
 
-  /** Hoàn tất hợp đồng đã ký: tải PDF, lưu local, set SIGNED, gửi Lark Mail. */
+    const recipient = payload?.recipient || payload?.recipients?.[0] || {};
+    const recipientEmail: string = (
+      recipient.email ||
+      payload?.email ||
+      ''
+    ).toLowerCase();
+
+    const isCustomer = recipientEmail === (contract.recipientEmail || '').toLowerCase();
+    const isTwoParty = contract.contractType === 'DOUBLE';
+
+    if (isCustomer && isTwoParty && contract.status === 'SENT') {
+      // Khách vừa ký → chuyển PARTIALLY_SIGNED, gửi mail cho NV.
+      // Lấy signingUrl của NV (recipient thứ 2) để gửi cho NV ký tiếp.
+      let staffSigningUrl: string | null = null;
+      try {
+        const env = await this.documenso.getEnvelope(contract.documensoId);
+        staffSigningUrl =
+          env.recipients?.find(
+            (r) =>
+              (r.email || '').toLowerCase() ===
+              (contract.companySignerEmail || '').toLowerCase(),
+          )?.signingUrl || null;
+      } catch (e) {
+        this.logger.warn(
+          `Không lấy được staff signingUrl cho contract #${contract.id}: ${e}`,
+        );
+      }
+
+      await this.prisma.contract.update({
+        where: { id: contract.id },
+        data: {
+          status: 'PARTIALLY_SIGNED',
+          ...(staffSigningUrl ? { signingUrl: staffSigningUrl } : {}),
+        },
+      });
+
+      // Tải PDF có chữ ký khách (Documenso PDF giữa chừng — nếu có API; nếu
+      // không thì gửi mail không kèm file đính kèm).
+      let signedBuffer: Buffer | null = null;
+      try {
+        const env = await this.documenso.getEnvelope(contract.documensoId);
+        if (env.documentNumericId != null) {
+          signedBuffer = await this.documenso.downloadSignedPdf(
+            env.documentNumericId,
+          );
+        }
+      } catch {
+        /* nếu Documenso chưa cho tải giữa chừng → bỏ qua */
+      }
+
+      try {
+        await this.larkMail.sendMailWithPdf({
+          to: this.larkMail.getInternalMail(),
+          subject: this.larkMail.subjectCustomerSigned(
+            contract.customer?.name || '',
+            contract.title,
+          ),
+          html: this.larkMail.buildCustomerSignedToStaffHtml({
+            customerName: contract.customer?.name || '',
+            contractTitle: contract.title,
+            isTwoParty: true,
+            staffSigningUrl: staffSigningUrl || undefined,
+          }),
+          ...(signedBuffer
+            ? {
+                pdfBuffer: signedBuffer,
+                pdfFileName: `${contract.title} - khach ky.pdf`,
+              }
+            : {}),
+        });
+      } catch (e) {
+        this.logger.error(`Gửi mail NV sau khi khách ký lỗi: ${e}`);
+      }
+    }
+    // Nếu NV ký xong (recipient.companySignerEmail) → không xử lý ở đây, chờ
+    // DOCUMENT_COMPLETED để chốt SIGNED + gửi mail hoàn tất.
+  }
+
+  /**
+   * Hoàn tất HĐ đã ký: tải PDF, lưu local, set SIGNED, gửi Lark Mail hoàn tất
+   * cho cả khách + NV.
+   */
   private async finalizeSignedContract(
     contractId: number,
     documensoId: string | null,
@@ -824,16 +627,16 @@ export class ContractsService {
         ...(signedFileUrl ? { signedFileUrl } : {}),
       },
       include: {
-        customer: { select: { id: true, name: true, email: true } },
+        customer: { select: { name: true, email: true } },
       },
     });
 
-    // Phase 4 — Gửi Lark Mail bản cuối (kèm PDF đã ký) cho khách.
+    // Mail hoàn tất: gửi cho khách.
     if (signedBuffer && updated.recipientEmail) {
       try {
         await this.larkMail.sendMailWithPdf({
           to: updated.recipientEmail,
-          subject: `[Diệp Trà] Hợp đồng đã ký hoàn tất: ${updated.title}`,
+          subject: this.larkMail.subjectCompleted(updated.title),
           html: this.larkMail.buildCompletedHtml({
             customerName: updated.customer?.name || '',
             contractTitle: updated.title,
@@ -843,10 +646,103 @@ export class ContractsService {
         });
       } catch (e) {
         this.logger.error(
-          `Gửi Lark Mail bản cuối cho contract #${contractId} lỗi: ${e}`,
+          `Gửi Lark Mail hoàn tất cho contract #${contractId} lỗi: ${e}`,
         );
       }
     }
+
+    // Thông báo nội bộ NV (CC không đủ — gửi riêng cho dễ theo dõi).
+    if (signedBuffer) {
+      try {
+        await this.larkMail.sendMailWithPdf({
+          to: this.larkMail.getInternalMail(),
+          subject: this.larkMail.subjectCompleted(updated.title),
+          html: `<div style="font-family:Arial,sans-serif;font-size:14px;color:#222;line-height:1.6">
+            <p>Thông báo nội bộ,</p>
+            <p>Hợp đồng <strong>${escapeHtml(updated.title)}</strong> đã được
+            <strong>ký kết hoàn tất</strong> bởi cả hai bên. File PDF có chữ ký
+            đính kèm bên dưới.</p>
+          </div>`,
+          pdfBuffer: signedBuffer,
+          pdfFileName: `${updated.title} - da ky.pdf`,
+        });
+      } catch (e) {
+        this.logger.error(
+          `Gửi Lark Mail nội bộ hoàn tất cho contract #${contractId} lỗi: ${e}`,
+        );
+      }
+    }
+  }
+
+  /** Build PDF ký: burn text công ty vào PDF gốc. Field khách/ký được giữ. */
+  private async buildSignedPdf(
+    template: any,
+    prefillMap: Map<number, string>,
+  ): Promise<{ burnedPdf: Buffer }> {
+    const SIGNATURE_TYPES = ['SIGNATURE', 'INITIALS', 'FREE_SIGNATURE'];
+    const allFields = template.fields || [];
+
+    const burnItems: BurnTextItem[] = allFields
+      .filter((f: any) => f.fieldMeta?.readOnly === true)
+      .filter(
+        (f: any) => !SIGNATURE_TYPES.includes((f.type || '').toUpperCase()),
+      )
+      .map((f: any) => {
+        const value =
+          prefillMap.get(f.id) ??
+          (f.fieldMeta?.text ? String(f.fieldMeta.text) : '');
+        return {
+          page: Number(f.page) || 1,
+          xPercent: Number(f.positionX),
+          yPercent: Number(f.positionY),
+          widthPercent: Number(f.width),
+          heightPercent: Number(f.height),
+          value,
+          fontSize: f.fieldMeta?.fontSize
+            ? Number(f.fieldMeta.fontSize)
+            : undefined,
+          align:
+            (f.fieldMeta?.textAlign as 'left' | 'center' | 'right') || 'left',
+        };
+      })
+      .filter((it: BurnTextItem) => it.value !== '');
+
+    const originalPdf = await this.documenso.downloadTemplateRawPdf(
+      template.id,
+    );
+    // Không burn ảnh — Documenso sẽ tự apply chữ ký cá nhân của user khi họ ký.
+    const burnedPdf = await this.pdfBurn.burnText(originalPdf, burnItems);
+    return { burnedPdf };
+  }
+
+  private async firstActiveSignerEmail(): Promise<string | null> {
+    const first = await this.prisma.contractSigner.findFirst({
+      where: { isActive: true },
+      orderBy: { id: 'asc' },
+    });
+    return first?.documensoEmail || null;
+  }
+
+  /**
+   * Lọc fieldMeta giữ thuộc tính hợp lệ khi tạo field mới.
+   */
+  private sanitizeFieldMeta(
+    fieldMeta?: Record<string, any>,
+  ): Record<string, any> | undefined {
+    if (!fieldMeta) return undefined;
+    const out: Record<string, any> = {};
+    const keep = [
+      'label',
+      'placeholder',
+      'required',
+      'fontSize',
+      'textAlign',
+      'type',
+    ];
+    for (const k of keep) {
+      if (fieldMeta[k] !== undefined) out[k] = fieldMeta[k];
+    }
+    return Object.keys(out).length ? out : undefined;
   }
 
   /** envelope_xxx → numeric document id (qua GET /envelope). */
@@ -870,11 +766,114 @@ export class ContractsService {
     return `/uploads/contracts/${filename}`;
   }
 
-  /** Đọc PDF đã lưu local từ relative URL. Trả null nếu không có. */
-  private readStoredPdf(relativeUrl?: string | null): Buffer | null {
-    if (!relativeUrl) return null;
-    const localPath = path.join(process.cwd(), relativeUrl.replace(/^\//, ''));
-    if (!fs.existsSync(localPath)) return null;
-    return fs.readFileSync(localPath);
+  // ---------- Upload PDF (giữ nguyên, ít dùng) ----------
+
+  async createFromUpload(
+    dto: UploadContractDto,
+    file: Express.Multer.File,
+    userId?: number,
+  ) {
+    if (!file) throw new BadRequestException('Thiếu file PDF');
+    if (file.mimetype !== 'application/pdf') {
+      throw new BadRequestException('Chỉ chấp nhận file PDF');
+    }
+
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: dto.customerId },
+    });
+    if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
+
+    const recipientEmail = dto.recipientEmail || customer.email || '';
+    if (!recipientEmail) {
+      throw new BadRequestException(
+        'Khách hàng chưa có email. Vui lòng cập nhật email trước khi gửi hợp đồng.',
+      );
+    }
+
+    const title = dto.title || `Hợp đồng - ${customer.name}`;
+    const externalId = `contract-cus${customer.id}-${Date.now()}`;
+
+    const envelope = await this.documenso.createEnvelopeWithFields({
+      title,
+      externalId,
+      fileBuffer: file.buffer,
+      fileName: file.originalname || 'contract.pdf',
+      recipients: [
+        {
+          email: recipientEmail,
+          name: customer.name,
+          role: 'SIGNER',
+          signingOrder: 1,
+          fields: [
+            {
+              type: 'SIGNATURE',
+              page: 1,
+              positionX: 10,
+              positionY: 85,
+              width: 30,
+              height: 5,
+            },
+            {
+              type: 'DATE',
+              page: 1,
+              positionX: 50,
+              positionY: 85,
+              width: 20,
+              height: 3,
+            },
+          ],
+        },
+      ],
+    });
+
+    const distributed = await this.documenso.distribute(envelope.envelopeId, true);
+    const signingUrl = distributed.recipients?.find(
+      (r) => r.email === recipientEmail,
+    )?.signingUrl;
+
+    const contract = await this.prisma.contract.create({
+      data: {
+        customerId: customer.id,
+        title,
+        source: 'upload',
+        documensoId: envelope.envelopeId || null,
+        externalId,
+        recipientEmail,
+        status: 'SENT',
+        signingUrl: signingUrl || null,
+        contractType: 'SINGLE',
+        sentAt: new Date(),
+        createdBy: userId || null,
+      },
+      include: {
+        customer: { select: { id: true, code: true, name: true, email: true } },
+      },
+    });
+
+    if (signingUrl) {
+      try {
+        await this.larkMail.sendMailWithPdf({
+          to: recipientEmail,
+          subject: this.larkMail.subjectSentToCustomer(contract.title),
+          html: this.larkMail.buildSentToCustomerHtml({
+            customerName: customer.name,
+            contractTitle: contract.title,
+            signingUrl,
+          }),
+        });
+      } catch (e) {
+        this.logger.error(`Gửi mail #1 cho upload contract lỗi: ${e}`);
+      }
+    }
+
+    return contract;
   }
+}
+
+function escapeHtml(s: string): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

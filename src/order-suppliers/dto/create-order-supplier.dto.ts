@@ -176,6 +176,30 @@ export class CreateOrderSupplierDto {
   @IsInt()
   paymentAccountId?: number;
 
+  @ApiProperty({
+    required: false,
+    description:
+      'Tỉ giá quy đổi VND/CNY user nhập tại thời điểm thanh toán (chỉ dùng cho ' +
+      'NCC nước ngoài). Snapshot riêng ở OrderSupplierPayment.exchangeRate — ' +
+      'khác OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  paymentExchangeRate?: number;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Thành tiền quy đổi sang tiền tệ NCC (CNY) snapshot tại thời điểm ' +
+      'thanh toán. = paymentAmount / paymentExchangeRate. Snapshot riêng ở ' +
+      'OrderSupplierPayment.foreignAmount — không quy đổi ngược từ VND.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  paymentForeignAmount?: number;
+
   @ApiProperty({ required: false, description: 'Dự kiến ngày nhập hàng' })
   @IsOptional()
   @IsDateString()

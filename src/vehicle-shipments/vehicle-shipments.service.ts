@@ -254,9 +254,14 @@ export class VehicleShipmentsService {
 
   private async buildItemsData(
     tx: any,
-    items: { orderSupplierId: number; productId: number; quantity: number }[],
-    excludeVehicleId?: number,
-  ) {
+    items: {
+    orderSupplierId: number;
+    productId: number;
+    quantity: number;
+    contractNo?: string;
+  }[],
+  excludeVehicleId?: number,
+) {
     if (!items || items.length === 0) {
       throw new BadRequestException(
         'Phiếu ghép xe phải có ít nhất 1 dòng hàng',
@@ -292,6 +297,11 @@ export class VehicleShipmentsService {
         productCode: product.code,
         productName: product.name,
         quantity: item.quantity,
+        // Số HĐ per-item. Trim + null khi rỗng để DB nhận đúng giá trị
+        // (Prisma coi '' và null khác nhau — tránh conflict với unique
+        // `(vehicleShipmentId, orderSupplierId, productId, contractNo)`
+        // vì PostgreSQL coi NULL không bằng nhau trong unique).
+        contractNo: item.contractNo?.trim() || null,
       });
     }
     return result;
@@ -306,6 +316,7 @@ export class VehicleShipmentsService {
       pageSize = 15,
       currentItem = 0,
       search,
+      contractNo,
       branchId,
       branchIds,
       borderGateId,
@@ -326,6 +337,7 @@ export class VehicleShipmentsService {
               OR: [
                 { productCode: { contains: search, mode: 'insensitive' } },
                 { productName: { contains: search, mode: 'insensitive' } },
+                { contractNo: { contains: search, mode: 'insensitive' } },
                 {
                   orderSupplier: {
                     code: { contains: search, mode: 'insensitive' },
@@ -333,6 +345,16 @@ export class VehicleShipmentsService {
                 },
               ],
             },
+          },
+        },
+      ];
+    }
+    if (contractNo) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          items: {
+            some: { contractNo: { equals: contractNo } },
           },
         },
       ];
@@ -353,9 +375,14 @@ export class VehicleShipmentsService {
 
     // Scope NCC: chỉ trả phiếu ghép xe có chứa hàng của NCC này.
     if (supplierScope != null) {
-      where.items = {
-        some: { orderSupplier: { supplierId: supplierScope } },
-      };
+      where.AND = [
+        ...(where.AND || []),
+        {
+          items: {
+            some: { orderSupplier: { supplierId: supplierScope } },
+          },
+        },
+      ];
     }
 
     const [data, total] = await Promise.all([
@@ -396,6 +423,25 @@ export class VehicleShipmentsService {
     }
 
     return { data, total, pageSize, currentItem };
+  }
+
+  async getContractNos(supplierScope?: number | null) {
+    const rows = await this.prisma.vehicleShipmentItem.findMany({
+      where: {
+        contractNo: { not: null },
+        vehicleShipment: { status: { not: 3 } },
+        ...(supplierScope != null
+          ? { orderSupplier: { supplierId: supplierScope } }
+          : {}),
+      },
+      select: { contractNo: true },
+      distinct: ['contractNo'],
+      orderBy: { contractNo: 'asc' },
+    });
+
+    return rows
+      .map((r) => r.contractNo?.trim())
+      .filter((v): v is string => !!v);
   }
 
   async findOne(id: number, supplierScope?: number | null) {
@@ -813,7 +859,12 @@ export class VehicleShipmentsService {
    */
   async resolveItem(
     id: number,
-    dto: { orderSupplierId: number; productId: number; action: string },
+    dto: {
+      vehicleShipmentItemId?: number;
+      orderSupplierId?: number;
+      productId?: number;
+      action: string;
+    },
     userId: number,
   ) {
     const allowed = ['pending', 'returned', 'kept'];
@@ -834,14 +885,33 @@ export class VehicleShipmentsService {
       );
     }
 
-    const item = await this.prisma.vehicleShipmentItem.findFirst({
-      where: {
-        vehicleShipmentId: id,
-        orderSupplierId: dto.orderSupplierId,
-        productId: dto.productId,
-      },
-      select: { id: true },
-    });
+    // Ưu tiên match bằng vehicleShipmentItemId (id trực tiếp của dòng) — chính
+    // xác khi 1 phiếu xe có 2 dòng cùng (orderSupplierId, productId) nhưng
+    // khác contractNo. Fallback (orderSupplierId, productId) cho phiếu cũ
+    // (giữ backward-compat với FE chưa cập nhật).
+    let item: { id: number } | null = null;
+    if (dto.vehicleShipmentItemId != null) {
+      item = await this.prisma.vehicleShipmentItem.findFirst({
+        where: {
+          id: dto.vehicleShipmentItemId,
+          vehicleShipmentId: id,
+        },
+        select: { id: true },
+      });
+    } else if (dto.orderSupplierId != null && dto.productId != null) {
+      item = await this.prisma.vehicleShipmentItem.findFirst({
+        where: {
+          vehicleShipmentId: id,
+          orderSupplierId: dto.orderSupplierId,
+          productId: dto.productId,
+        },
+        select: { id: true },
+      });
+    } else {
+      throw new BadRequestException(
+        'Thiếu vehicleShipmentItemId (hoặc orderSupplierId + productId)',
+      );
+    }
     if (!item) {
       throw new NotFoundException(
         'Không tìm thấy dòng hàng trên phiếu ghép xe',

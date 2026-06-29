@@ -20,16 +20,19 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class PurchaseOrdersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       // Cho phép user tự điền mã PN. Trim + check duplicate; nếu trống fallback
       // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
       const code = await this.resolvePurchaseOrderCode(tx, dto.code);
@@ -166,7 +169,8 @@ export class PurchaseOrdersService {
       // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
       // sẵn check `!dto.isDraft` ở dưới.
       if (dto.branchId && !dto.isDraft) {
-        await this.updateInventory(purchaseOrder.id, tx);
+        const touched = await this.updateInventory(purchaseOrder.id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
@@ -289,6 +293,12 @@ export class PurchaseOrdersService {
         },
       });
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -310,9 +320,23 @@ export class PurchaseOrdersService {
     dto: CreatePurchaseOrderFromOrderSupplierDto,
     userId: number,
   ) {
-    return this.prisma.$transaction((tx) =>
-      this.createOneFromOrderSupplierTx(tx, orderSupplierId, dto, userId),
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction((tx) =>
+      this.createOneFromOrderSupplierTx(
+        tx,
+        orderSupplierId,
+        dto,
+        userId,
+        undefined,
+        touchedProductIds,
+      ),
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -329,6 +353,7 @@ export class PurchaseOrdersService {
     dto: CreatePurchaseOrderFromOrderSupplierDto,
     userId: number,
     vehicleShipmentId?: number,
+    touchedProductIds?: Set<number>,
   ) {
     const orderSupplier = await tx.orderSupplier.findUnique({
       where: { id: orderSupplierId },
@@ -605,7 +630,10 @@ export class PurchaseOrdersService {
     });
 
     if (!dto.isDraft) {
-      await this.updateInventory(purchaseOrder.id, tx);
+      const touched = await this.updateInventory(purchaseOrder.id, tx);
+      if (touchedProductIds) {
+        for (const productId of touched) touchedProductIds.add(productId);
+      }
     }
 
     // CLONE OrderSupplierPayment → PurchaseOrderPayment + CashFlow `PCTUPN`
@@ -913,7 +941,8 @@ export class PurchaseOrdersService {
   }
 
   async update(id: number, dto: UpdatePurchaseOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.purchaseOrder.findUnique({
         where: { id },
         include: { items: true, payments: true },
@@ -1135,7 +1164,8 @@ export class PurchaseOrdersService {
       // Restore tồn cũ chỉ khi PN trước đó đã cộng (wasDraft=false). Nếu
       // wasDraft=true thì tồn chưa từng cộng → bỏ qua restore.
       if (!wasDraft && existing.branchId) {
-        await this.restoreInventory(id, tx);
+        const touched = await this.restoreInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
         // restoreInventory CHỈ hoàn lại onHand, KHÔNG xóa InventoryLog. Phải xóa
         // các log PURCHASE cũ của phiếu này trước khi updateInventory() ghi log
         // mới — nếu không thẻ kho sẽ cộng dồn log cũ + mới cùng refCode (vd sửa
@@ -1346,7 +1376,8 @@ export class PurchaseOrdersService {
       // PN chuyển sang/giữ Phiếu tạm → tồn không cộng (đã restore SL cũ ở trên
       // nếu wasDraft=false).
       if (branchId && !willBeDraft) {
-        await this.updateInventory(id, tx);
+        const touched = await this.updateInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
@@ -1480,10 +1511,17 @@ export class PurchaseOrdersService {
         },
       });
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async remove(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -1500,7 +1538,8 @@ export class PurchaseOrdersService {
       // PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn — không
       // cần rút khi xoá. Đối xứng `cancelPurchaseOrder` semantic mới.
       if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
-        await this.restoreInventory(id, tx);
+        const touched = await this.restoreInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       // Soft-cancel mọi CashFlow liên quan tới PN này (PCPN######, PCTUPN...).
@@ -1592,6 +1631,12 @@ export class PurchaseOrdersService {
 
       return { message: 'Xóa phiếu nhập hàng thành công' };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async cancelPurchaseOrder(
@@ -1599,7 +1644,8 @@ export class PurchaseOrdersService {
     dto: CancelPurchaseOrderDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -1717,6 +1763,7 @@ export class PurchaseOrdersService {
               where: { id: inv.id },
               data: { onHand: { decrement: qty } },
             });
+            touchedProductIds.add(item.productId);
           }
         }
       }
@@ -1842,6 +1889,12 @@ export class PurchaseOrdersService {
 
       return { message: 'Hủy phiếu nhập hàng thành công' };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   private async updateOrderSupplierStatus(orderSupplierId: number, tx: any) {
@@ -1910,7 +1963,11 @@ export class PurchaseOrdersService {
     });
   }
 
-  private async updateInventory(purchaseOrderId: number, tx: any) {
+  private async updateInventory(
+    purchaseOrderId: number,
+    tx: any,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const purchaseOrder = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
       include: {
@@ -1920,7 +1977,7 @@ export class PurchaseOrdersService {
       },
     });
 
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
+    if (!purchaseOrder || !purchaseOrder.branchId) return touched;
 
     for (const item of purchaseOrder.items) {
       const qty = Number(item.quantity);
@@ -1954,6 +2011,7 @@ export class PurchaseOrdersService {
           }),
         },
       });
+      if (goodQty > 0) touched.add(item.productId);
 
       // THẺ KHO: giữ convention 1 row = 1 log, ghi tổng quantity (cả good +
       // damaged) như cũ. Nếu là dòng loại B, gắn tag note để truy vết khi
@@ -1992,15 +2050,20 @@ export class PurchaseOrdersService {
         branchId: purchaseOrder.branchId,
       })),
     );
+    return touched;
   }
 
-  private async restoreInventory(purchaseOrderId: number, tx: any) {
+  private async restoreInventory(
+    purchaseOrderId: number,
+    tx: any,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const purchaseOrder = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
       include: { items: true },
     });
 
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
+    if (!purchaseOrder || !purchaseOrder.branchId) return touched;
 
     for (const item of purchaseOrder.items) {
       const qty = Number(item.quantity);
@@ -2021,11 +2084,13 @@ export class PurchaseOrdersService {
             : { onHand: { decrement: qty } }),
         },
       });
+      if (!isDamaged) touched.add(item.productId);
     }
     // LƯU Ý: KHÔNG recalc ở đây. restoreInventory được gọi khi log PURCHASE
     // CÒN active (update flow xóa log SAU; cancel set status=2 SAU). Recalc tại
     // đây sẽ cộng lại quantity sai. Recalc được đặt ở từng call site, SAU khi
     // log đã xóa / PN đã status=2.
+    return touched;
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {

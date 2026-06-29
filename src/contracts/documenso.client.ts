@@ -413,25 +413,32 @@ export class DocumensoClient {
   }
 
   /**
-   * Tạo envelope (document) từ PDF upload + danh sách field tuỳ ý cho 1 recipient.
+   * Tạo envelope (document) từ PDF upload + danh sách recipient + field tuỳ ý.
    * Dùng cho flow "burn text": PDF đã được vẽ sẵn text công ty, chỉ còn field
    * khách (chữ ký, ngày, ô khách điền). POST /envelope/create
+   *
+   * Hỗ trợ nhiều recipient (Loại 2 — 2 bên ký tuần tự). Mỗi recipient có list
+   * fields riêng.
    */
   async createEnvelopeWithFields(params: {
     title: string;
-    recipientEmail: string;
-    recipientName?: string;
     externalId?: string;
     fileBuffer: Buffer;
     fileName: string;
-    fields: {
-      type: string;
-      page: number;
-      positionX: number;
-      positionY: number;
-      width: number;
-      height: number;
-      fieldMeta?: Record<string, any>;
+    recipients: {
+      email: string;
+      name?: string;
+      role?: string;
+      signingOrder?: number;
+      fields: {
+        type: string;
+        page: number;
+        positionX: number;
+        positionY: number;
+        width: number;
+        height: number;
+        fieldMeta?: Record<string, any>;
+      }[];
     }[];
   }): Promise<DocumensoEnvelopeResult> {
     this.ensureConfigured();
@@ -439,23 +446,22 @@ export class DocumensoClient {
       type: 'DOCUMENT',
       title: params.title,
       externalId: params.externalId,
-      recipients: [
-        {
-          email: params.recipientEmail,
-          name: params.recipientName || params.recipientEmail,
-          role: 'SIGNER',
-          fields: params.fields.map((f) => ({
-            identifier: 0,
-            type: f.type,
-            page: f.page,
-            positionX: f.positionX,
-            positionY: f.positionY,
-            width: f.width,
-            height: f.height,
-            ...(f.fieldMeta ? { fieldMeta: f.fieldMeta } : {}),
-          })),
-        },
-      ],
+      recipients: params.recipients.map((r) => ({
+        email: r.email,
+        name: r.name || r.email,
+        role: r.role || 'SIGNER',
+        signingOrder: r.signingOrder,
+        fields: r.fields.map((f) => ({
+          identifier: 0,
+          type: f.type,
+          page: f.page,
+          positionX: f.positionX,
+          positionY: f.positionY,
+          width: f.width,
+          height: f.height,
+          ...(f.fieldMeta ? { fieldMeta: f.fieldMeta } : {}),
+        })),
+      })),
     };
 
     const form = new FormData();
@@ -479,17 +485,36 @@ export class DocumensoClient {
 
   /**
    * Gửi document cho recipient. POST /envelope/distribute  body {envelopeId, meta?}.
-   * Trả về recipients kèm signingUrl. emailSettings cho phép tắt bớt email tự động
-   * của Documenso (vd documentCompleted — vì mình tự gửi mail hoàn tất qua Lark Mail).
+   * Trả về recipients kèm signingUrl. emailSettings cho phép tắt hết email tự
+   * động của Documenso — mình tự gửi mail qua Lark Mail để đảm bảo "đúng 2
+   * mail/bên" theo nguyên tắc nghiệp vụ.
+   *
+   * Nếu emailSettings === true (mặc định) → tắt TẤT CẢ email Documenso:
+   *  - recipientSigningRequest, recipientRemoved, recipientSigned
+   *  - documentPending, documentCompleted, documentDeleted
+   *  - ownerDocumentCompleted, ownerRecipientExpired, ownerDocumentCreated
+   * Truyền emailSettings = false để KHÔNG override (giữ mặc định Documenso).
    */
   async distribute(
     envelopeId: string,
-    emailSettings?: Record<string, boolean>,
+    suppressAllEmails = true,
   ): Promise<DocumensoEnvelopeResult> {
     this.ensureConfigured();
     const body: any = { envelopeId };
-    if (emailSettings) {
-      body.meta = { emailSettings };
+    if (suppressAllEmails) {
+      body.meta = {
+        emailSettings: {
+          recipientSigningRequest: false,
+          recipientRemoved: false,
+          recipientSigned: false,
+          documentPending: false,
+          documentCompleted: false,
+          documentDeleted: false,
+          ownerDocumentCompleted: false,
+          ownerRecipientExpired: false,
+          ownerDocumentCreated: false,
+        },
+      };
     }
     try {
       const res = await firstValueFrom(
@@ -595,6 +620,46 @@ export class DocumensoClient {
       return Buffer.from(res.data);
     } catch (err) {
       this.handleError('downloadSignedPdf', err);
+    }
+  }
+
+  /**
+   * Liệt kê Documenso user (cùng workspace). Dùng để đồng bộ chữ ký nhân viên
+   * (mỗi Documenso user có `signature` riêng — Documenso tự apply khi user ký
+   * trong envelope mà recipient email trùng). GET /user?perPage=100
+   *
+   * Lưu ý: endpoint này yêu cầu admin API key. Nếu key hiện tại không đủ
+   * quyền, Documenso trả 403 → caller xử lý (không throw).
+   */
+  async listUsers(): Promise<
+    {
+      id: number;
+      email: string;
+      name: string | null;
+      signature?: string | null;
+    }[]
+  > {
+    this.ensureConfigured();
+    try {
+      const res = await firstValueFrom(
+        this.httpService.get(`${this.baseUrl}/user?perPage=100`, {
+          headers: this.authHeaders,
+        }),
+      );
+      const list = res.data?.data || res.data || [];
+      return (Array.isArray(list) ? list : []).map((u: any) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name || null,
+        signature: u.signature || null,
+      }));
+    } catch (err) {
+      // Không throw — caller sẽ fallback về env CONTRACT_SIGNER_EMAIL.
+      const status = err?.response?.status;
+      this.logger.warn(
+        `Documenso listUsers lỗi: status=${status}. Cần admin API key.`,
+      );
+      return [];
     }
   }
 

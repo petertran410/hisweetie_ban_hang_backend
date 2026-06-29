@@ -23,12 +23,14 @@ import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class ReturnOrdersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   private async generateCode(tx: any): Promise<string> {
@@ -172,7 +174,8 @@ export class ReturnOrdersService {
   }
 
   async create(dto: CreateReturnOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const invoices = await tx.invoice.findMany({
         where: { id: { in: dto.invoiceIds } },
         include: {
@@ -343,6 +346,12 @@ export class ReturnOrdersService {
 
       return { ...returnOrder, _promotionWarnings: promotionWarnings };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -471,7 +480,8 @@ export class ReturnOrdersService {
     dto: ConfirmStockReceivedDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
@@ -619,6 +629,7 @@ export class ReturnOrdersService {
               nearExpiryQuantity: nearExpiryQty,
             },
           });
+          touchedProductIds.add(detail.productId);
 
           await tx.inventoryLog.create({
             data: {
@@ -742,6 +753,12 @@ export class ReturnOrdersService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async confirmRefund(id: number, dto: ConfirmRefundDto, userId: number) {
@@ -943,7 +960,8 @@ export class ReturnOrdersService {
   }
 
   async cancel(id: number, userId: number, roles: string[] = []) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
@@ -1008,6 +1026,7 @@ export class ReturnOrdersService {
               },
               data: rollbackData,
             });
+            touchedProductIds.add(detail.productId);
 
             // Ghi InventoryLog đảo chiều để thẻ kho khớp với việc rollback.
             await tx.inventoryLog.create({
@@ -1125,6 +1144,12 @@ export class ReturnOrdersService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async updateStep1(id: number, dto: UpdateStep1Dto, userId: number) {

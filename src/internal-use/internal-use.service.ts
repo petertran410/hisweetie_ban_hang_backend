@@ -20,12 +20,14 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class InternalUseService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAllPurposes() {
@@ -215,6 +217,8 @@ export class InternalUseService {
       totalValue += Number(detail.quantity) * Number(detail.cost);
     }
 
+    const touchedProductIds = new Set<number>();
+
     const internalUse = await this.prisma.$transaction(async (tx) => {
       const created = await tx.internalUse.create({
         data: {
@@ -246,11 +250,16 @@ export class InternalUseService {
       });
 
       if (!isDraft) {
-        await this.decrementInventory(created.id, tx);
+        const touched = await this.decrementInventory(created.id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     await this.auditLogsService.create({
       actionType: 'POST',
@@ -363,6 +372,8 @@ export class InternalUseService {
       updateData.totalValue = totalValue;
     }
 
+    const touchedProductIds = new Set<number>();
+
     const updated = await this.prisma.$transaction(async (tx) => {
       if (resolvedDetails) {
         await tx.internalUseDetail.deleteMany({
@@ -389,11 +400,16 @@ export class InternalUseService {
       });
 
       if (internalUse.status === 1 && willComplete) {
-        await this.decrementInventory(id, tx);
+        const touched = await this.decrementInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return result;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const actor = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -435,15 +451,22 @@ export class InternalUseService {
 
     this.validateDetails(internalUse.details, false);
 
+    const touchedProductIds = new Set<number>();
+
     const completed = await this.prisma.$transaction(async (tx) => {
       const result = await tx.internalUse.update({
         where: { id },
         data: { status: 2, transDate: internalUse.transDate ?? new Date() },
         include: { details: true },
       });
-      await this.decrementInventory(id, tx);
+      const touched = await this.decrementInventory(id, tx);
+      for (const productId of touched) touchedProductIds.add(productId);
       return result;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const actor = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -487,8 +510,9 @@ export class InternalUseService {
         where: { id },
         data: { status: 3, description },
       });
-    } else {
-      await this.prisma.$transaction(async (tx) => {
+      } else {
+        const touchedProductIds = new Set<number>();
+        await this.prisma.$transaction(async (tx) => {
         await tx.internalUse.update({
           where: { id },
           data: { status: 3, description },
@@ -504,6 +528,7 @@ export class InternalUseService {
             },
             data: { onHand: { increment: detail.quantity } },
           });
+          touchedProductIds.add(detail.productId);
         }
 
         // Xóa các dòng thẻ kho gốc của phiếu (transactionType INTERNAL_USE)
@@ -522,6 +547,9 @@ export class InternalUseService {
           })),
         );
       });
+        for (const productId of touchedProductIds) {
+          this.larkProductSync.enqueueSync(productId);
+        }
     }
 
     const actor = await this.prisma.user.findUnique({
@@ -620,7 +648,11 @@ export class InternalUseService {
     return `${prefix}${sequence.toString().padStart(6, '0')}`;
   }
 
-  private async decrementInventory(internalUseId: number, tx: any) {
+  private async decrementInventory(
+    internalUseId: number,
+    tx: any,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const internalUse = await tx.internalUse.findUnique({
       where: { id: internalUseId },
       include: { details: true },
@@ -661,12 +693,12 @@ export class InternalUseService {
           },
           data: {
             onHand: { decrement: detail.quantity },
-            totalWeight,
+            totalWeight: totalWeight,
           },
         });
-      }
+        touched.add(detail.productId);
 
-      await tx.inventoryLog.create({
+        await tx.inventoryLog.create({
         data: {
           productId: detail.productId,
           productCode: detail.productCode,
@@ -694,6 +726,7 @@ export class InternalUseService {
         branchId: internalUse.branchId,
       })),
     );
+    return touched;
   }
 
   private buildSnapshot(d: any) {

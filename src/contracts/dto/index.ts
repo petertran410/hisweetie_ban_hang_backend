@@ -12,15 +12,17 @@ import { Type } from 'class-transformer';
 
 export const CONTRACT_STATUSES = [
   'DRAFT',
-  'REVIEW_SENT', // Phase 1: đã gửi bản xem cho khách (Lark Mail)
-  'REVIEW_APPROVED', // Khách đồng ý nội dung
-  'SENT', // Phase 2: đã gửi bản ký Documenso cho khách
-  'SIGNED', // Khách đã ký xong
+  'SENT', // Đã gửi bản ký Documenso cho khách/NV (tuỳ thứ tự).
+  'PARTIALLY_SIGNED', // HĐ 2 bên, 1 bên đã ký, đang chờ bên còn lại.
+  'SIGNED', // Tất cả bên đã ký xong.
   'REJECTED',
   'EXPIRED',
   'CANCELLED',
 ] as const;
 export type ContractStatus = (typeof CONTRACT_STATUSES)[number];
+
+export const CONTRACT_TYPES = ['SINGLE', 'DOUBLE'] as const;
+export type ContractType = (typeof CONTRACT_TYPES)[number];
 
 /**
  * Dữ liệu prefill nhận từ FE (đã map sẵn từ Customer, nhân viên sửa tay được).
@@ -94,6 +96,15 @@ export class CreateFromTemplateDto {
   @ValidateNested()
   @Type(() => ContractPrefillDto)
   prefill?: ContractPrefillDto;
+
+  /**
+   * Email Documenso user của NV ký BÊN A (chỉ dùng khi HĐ Loại 2 — 2 bên ký).
+   * FE chọn từ dropdown danh sách Documenso user (xem /contracts/signers).
+   * Nếu rỗng → fallback lấy user active đầu tiên trong DB, cuối cùng là ENV.
+   */
+  @IsOptional()
+  @IsEmail()
+  companySignerEmail?: string;
 }
 
 export class UploadContractDto {

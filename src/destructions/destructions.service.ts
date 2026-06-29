@@ -18,12 +18,14 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class DestructionsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: DestructionQueryDto) {
@@ -123,6 +125,7 @@ export class DestructionsService {
       totalValue += Number(detail.quantity) * Number(detail.price);
     }
 
+    const touchedProductIds = new Set<number>();
     const destruction = await this.prisma.$transaction(async (tx) => {
       const created = await tx.destruction.create({
         data: {
@@ -154,11 +157,16 @@ export class DestructionsService {
       });
 
       if (!isDraft) {
-        await this.decrementInventory(created.id, tx);
+        const touched = await this.decrementInventory(created.id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     await this.auditLogsService.create({
       actionType: 'POST',
@@ -237,6 +245,8 @@ export class DestructionsService {
       updateData.totalValue = totalValue;
     }
 
+    const touchedProductIds = new Set<number>();
+
     const updated = await this.prisma.$transaction(async (tx) => {
       if (dto.destructionDetails) {
         await tx.destructionDetail.deleteMany({ where: { destructionId: id } });
@@ -264,11 +274,16 @@ export class DestructionsService {
       });
 
       if (destruction.status === 1 && dto.status === 2) {
-        await this.decrementInventory(id, tx);
+        const touched = await this.decrementInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return result;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -357,6 +372,8 @@ export class DestructionsService {
       return { message: 'Destruction cancelled successfully' };
     }
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       await tx.destruction.update({
         where: { id },
@@ -370,17 +387,18 @@ export class DestructionsService {
 
       if (destruction.status === 2) {
         for (const detail of destruction.details) {
-          await tx.inventory.update({
-            where: {
-              productId_branchId: {
-                productId: detail.productId,
-                branchId: destruction.branchId,
+            await tx.inventory.update({
+              where: {
+                productId_branchId: {
+                  productId: detail.productId,
+                  branchId: destruction.branchId,
+                },
               },
-            },
-            data: {
-              onHand: { increment: detail.quantity },
-            },
-          });
+              data: {
+                onHand: { increment: detail.quantity },
+              },
+            });
+            touchedProductIds.add(detail.productId);
         }
 
         // NGUỒN CHÂN LÝ: status=3 → log DESTRUCTION rớt khỏi Σ active. Recalc.
@@ -393,6 +411,10 @@ export class DestructionsService {
         );
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -437,7 +459,11 @@ export class DestructionsService {
     return `${prefix}${sequence.toString().padStart(6, '0')}`;
   }
 
-  private async decrementInventory(destructionId: number, tx: any) {
+  private async decrementInventory(
+    destructionId: number,
+    tx: any,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const destruction = await tx.destruction.findUnique({
       where: { id: destructionId },
       include: { details: true },
@@ -475,20 +501,21 @@ export class DestructionsService {
       const weightInGrams = weightUnit === 'kg' ? weight * 1000 : weight;
       const totalWeight = weightInGrams * newOnHand;
 
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: detail.productId,
-            branchId: destruction.branchId,
+await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: destruction.branchId,
+            },
           },
-        },
-        data: {
-          onHand: { decrement: detail.quantity },
-          totalWeight: totalWeight,
-        },
-      });
+          data: {
+            onHand: { decrement: detail.quantity },
+            totalWeight: totalWeight,
+          },
+        });
+        touched.add(detail.productId);
 
-      await tx.inventoryLog.create({
+        await tx.inventoryLog.create({
         data: {
           productId: detail.productId,
           productCode: detail.productCode,
@@ -515,6 +542,7 @@ export class DestructionsService {
         branchId: destruction.branchId,
       })),
     );
+    return touched;
   }
 
   private buildDestructionSnapshot(d: any) {

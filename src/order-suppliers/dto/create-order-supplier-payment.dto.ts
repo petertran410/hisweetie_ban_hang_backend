@@ -1,5 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, IsDateString } from 'class-validator';
+import {
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsDateString,
+  Min,
+} from 'class-validator';
 
 export class CreateOrderSupplierPaymentDto {
   @ApiProperty({ description: 'ID đặt hàng nhập' })
@@ -33,4 +39,27 @@ export class CreateOrderSupplierPaymentDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  @ApiProperty({
+    description:
+      'Tỉ giá quy đổi VND/CNY user nhập tại thời điểm thanh toán. ' +
+      'Chỉ có khi NCC nước ngoài. Snapshot riêng ở OrderSupplierPayment — ' +
+      'khác OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).',
+    required: false,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  exchangeRate?: number;
+
+  @ApiProperty({
+    description:
+      'Thành tiền quy đổi sang tiền tệ NCC (CNY) snapshot tại thời điểm ' +
+      'thanh toán. = amount / exchangeRate. Chỉ có khi NCC nước ngoài.',
+    required: false,
+  })
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  foreignAmount?: number;
 }

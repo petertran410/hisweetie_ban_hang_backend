@@ -18,12 +18,14 @@ import {
 } from './dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class SupplierReturnsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -505,7 +507,8 @@ export class SupplierReturnsService {
   // ─── confirmExport (Bước 2) ──────────────────────────────────────────────────
 
   async confirmExport(id: number, dto: ConfirmExportDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const supplierReturn = await tx.supplierReturn.findUnique({
         where: { id },
         include: {
@@ -619,8 +622,8 @@ export class SupplierReturnsService {
           },
           data: deductData,
         });
+        touchedProductIds.add(detail.productId);
 
-        // Ghi InventoryLog
         await tx.inventoryLog.create({
           data: {
             productId: detail.productId,
@@ -710,6 +713,12 @@ export class SupplierReturnsService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   // ─── confirmRefund (Bước 3) ──────────────────────────────────────────────────
@@ -883,7 +892,8 @@ export class SupplierReturnsService {
   // ─── cancel ──────────────────────────────────────────────────────────────────
 
   async cancel(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const supplierReturn = await tx.supplierReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -928,6 +938,7 @@ export class SupplierReturnsService {
             },
             data: restoreData,
           });
+          touchedProductIds.add(detail.productId);
         }
       }
 
@@ -979,6 +990,12 @@ export class SupplierReturnsService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async importFromExcel(dto: ImportSupplierReturnsDto, userId: number) {
