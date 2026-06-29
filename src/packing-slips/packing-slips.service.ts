@@ -19,6 +19,7 @@ import {
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
@@ -35,6 +36,7 @@ export class PackingSlipsService {
     private auditLogsService: AuditLogsService,
     private n8nNotifyService: N8nNotifyService,
     private larkExpenseSync: LarkExpenseSyncService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
