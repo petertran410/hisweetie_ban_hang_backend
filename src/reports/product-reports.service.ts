@@ -403,6 +403,8 @@ export class ProductReportsService {
         d."productName" AS product_name,
         d.quantity::float8 AS quantity,
         d.price::float8 AS price,
+        d.discount::float8 AS discount,
+        d."discountRatio"::float8 AS discount_ratio,
         d."totalPrice"::float8 AS total_price,
         COALESCE(inv.cost, 0)::float8 AS unit_cost
       FROM invoice_details d
@@ -443,6 +445,10 @@ export class ProductReportsService {
         productName: r.product_name,
         quantity: Number(r.quantity) || 0,
         price: Number(r.price) || 0,
+        discount: Number(r.discount) || 0,
+        discountRatio: Number(r.discount_ratio) || 0,
+        priceAfterDiscount:
+          (Number(r.price) || 0) - (Number(r.discount) || 0),
         totalPrice: Number(r.total_price) || 0,
         unitCost: Number(r.unit_cost) || 0,
       })),
@@ -555,6 +561,8 @@ export class ProductReportsService {
       { header: 'Sản phẩm', key: 'product', width: 36 },
       { header: 'SL', key: 'qty', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 16 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Đơn giá sau giảm giá', key: 'priceAfterDiscount', width: 18 },
       { header: 'Thành tiền', key: 'total', width: 18 },
       ...(isProfit
         ? [
@@ -573,6 +581,8 @@ export class ProductReportsService {
         product: r.productName,
         qty: r.quantity,
         price: r.price,
+        discount: r.discount,
+        priceAfterDiscount: r.priceAfterDiscount,
         total: r.totalPrice,
       };
       if (isProfit) {
