@@ -105,6 +105,7 @@ export class SepayService {
       const accountId = await this.resolveAccountId(
         invoice.soldById,
         payload.accountNumber,
+        payload.subAccount ?? null,
         sepayTxId,
       );
 
@@ -143,6 +144,7 @@ export class SepayService {
     const accountId = await this.resolveAccountId(
       order.soldById,
       payload.accountNumber,
+      payload.subAccount ?? null,
       sepayTxId,
     );
 
@@ -345,6 +347,7 @@ export class SepayService {
   private async resolveAccountId(
     soldById: number | null | undefined,
     accountNumber: string,
+    subAccount: string | null,
     sepayTxId: string,
   ): Promise<number | undefined> {
     if (soldById) {
@@ -356,14 +359,23 @@ export class SepayService {
       }
     }
 
-    // Fallback: match theo số tài khoản thực nhận
-    const bankAccount = await this.prisma.bankAccount.findFirst({
-      where: { accountNumber },
-    });
+    // Fallback: match theo số tài khoản thực nhận.
+    // Ưu tiên subAccount (VA — VD BIDV 96460248888) trước, fallback accountNumber (TK chính).
+    // Vì DB bank_accounts có thể lưu VA thay vì TK chính.
+    const candidates = [subAccount, accountNumber].filter(
+      (v): v is string => !!v,
+    );
+    let bankAccount: { id: number } | null = null;
+    for (const acc of candidates) {
+      bankAccount = await this.prisma.bankAccount.findFirst({
+        where: { accountNumber: acc },
+      });
+      if (bankAccount) break;
+    }
 
     if (!bankAccount) {
       this.logger.warn(
-        `Sepay webhook: no account resolved (sale ${soldById ?? 'none'}, accountNumber "${accountNumber}") (tx ${sepayTxId})`,
+        `Sepay webhook: no account resolved (sale ${soldById ?? 'none'}, accountNumber "${accountNumber}", subAccount "${subAccount ?? ''}") (tx ${sepayTxId})`,
       );
     }
 

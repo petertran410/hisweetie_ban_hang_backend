@@ -527,15 +527,24 @@ export class SepayMatchService {
       }
     }
 
-    // Resolve accountId từ số tài khoản nhận của giao dịch (nếu khớp BankAccount)
-    let accountId: number | undefined;
-    if (tx.accountNumber) {
-      const bank = await this.prisma.bankAccount.findFirst({
-        where: { accountNumber: tx.accountNumber },
-        select: { id: true },
-      });
-      accountId = bank?.id;
-    }
+    // Resolve accountId từ số tài khoản nhận của giao dịch.
+// Ưu tiên subAccount (VA — VD BIDV 96460248888) trước, fallback accountNumber (TK chính).
+// Lý do: DB bank_accounts có thể lưu VA thay vì TK chính (BIDV). Trước đây chỉ check
+// accountNumber nên BIDV VA → accountId = null → phiếu thu không liên kết TK ngân hàng.
+let accountId: number | undefined;
+const candidates = [tx.subAccount, tx.accountNumber].filter(
+  (v): v is string => !!v,
+);
+for (const acc of candidates) {
+  const bank = await this.prisma.bankAccount.findFirst({
+    where: { accountNumber: acc },
+    select: { id: true },
+  });
+  if (bank?.id) {
+    accountId = bank.id;
+    break;
+  }
+}
 
     const transDate = tx.transactionDate
       ? tx.transactionDate.toISOString()

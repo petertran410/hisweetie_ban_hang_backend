@@ -374,4 +374,54 @@ export class SepayController {
       timestamp: new Date().toISOString(),
     };
   }
+
+  /**
+   * Preview backfill accountId cho các phiếu thu liên quan Sepay.
+   * KHÔNG ghi DB. Trả danh sách phiếu thu có accountId = null có thể resolve được.
+   */
+  @Post('backfill-cashflow-account-preview')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Preview backfill CashFlow.accountId (KHÔNG ghi DB)',
+  })
+  async previewCashflowAccount(@Body() dto: SepayBackfillCashflowDto) {
+    this.logger.log(
+      `🔍 Sepay backfill-cashflow-account-preview triggered (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.previewCashflowAccount(
+      dto.limit ?? 1000,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Apply backfill accountId cho các phiếu thu liên quan Sepay.
+   * GHI DB. Idempotent.
+   */
+  @Post('backfill-cashflow-account')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Apply backfill CashFlow.accountId (GHI DB)',
+  })
+  async backfillCashflowAccount(
+    @Body() dto: SepayBackfillCashflowDto,
+    @CurrentUser() user: any,
+  ) {
+    this.logger.log(
+      `📨 Sepay backfill-cashflow-account triggered by user=${user?.id ?? 'system'} (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.backfillCashflowAccount(
+      dto.limit ?? 1000,
+      user?.id,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
