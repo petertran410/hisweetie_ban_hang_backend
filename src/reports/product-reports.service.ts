@@ -63,6 +63,13 @@ export class ProductReportsService {
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"`;
   }
 
+// TOP N cho chart/data table: `limit` (data table) thắng `top` (chart Top 20).
+// Export truyền limit rất lớn (1000000) để lấy toàn bộ.
+private chartTop(query: ProductReportQueryDto): number {
+  const n = query.limit ?? query.top ?? 20;
+  return Math.max(1, Math.min(1000000, n));
+}
+
   // ═══════════════════════════════════════════════════════════════════════════
   // CHART
   // ═══════════════════════════════════════════════════════════════════════════
@@ -107,7 +114,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productCode", d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -137,7 +144,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productCode", d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => {
       const revenue = Number(r.revenue) || 0;
@@ -213,7 +220,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY dim_name, d."productName"
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -249,7 +256,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY d."productName", sup.name
       ORDER BY revenue DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -297,7 +304,7 @@ export class ProductReportsService {
       GROUP BY l."productCode", l."productName"
       HAVING SUM(ABS(l.quantity)) > 0
       ORDER BY name ASC
-      LIMIT 500
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => {
       const opening = Number(r.opening) || 0;
@@ -345,7 +352,7 @@ export class ProductReportsService {
       WHERE ${where}
       GROUP BY dd."productCode", dd."productName"
       ORDER BY value DESC
-      LIMIT 200
+      LIMIT ${this.chartTop(query)}
     `;
     return rows.map((r) => ({
       subject: r.name,
@@ -403,6 +410,8 @@ export class ProductReportsService {
         d."productName" AS product_name,
         d.quantity::float8 AS quantity,
         d.price::float8 AS price,
+        d.discount::float8 AS discount,
+        d."discountRatio"::float8 AS discount_ratio,
         d."totalPrice"::float8 AS total_price,
         COALESCE(inv.cost, 0)::float8 AS unit_cost
       FROM invoice_details d
@@ -443,6 +452,10 @@ export class ProductReportsService {
         productName: r.product_name,
         quantity: Number(r.quantity) || 0,
         price: Number(r.price) || 0,
+        discount: Number(r.discount) || 0,
+        discountRatio: Number(r.discount_ratio) || 0,
+        priceAfterDiscount:
+          (Number(r.price) || 0) - (Number(r.discount) || 0),
         totalPrice: Number(r.total_price) || 0,
         unitCost: Number(r.unit_cost) || 0,
       })),
@@ -462,7 +475,8 @@ export class ProductReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async exportExcel(query: ProductReportQueryDto, res: Response) {
     const viewType: ProductViewType = query.viewType || 'ProductBySale';
-    const rows = await this.getChart(query);
+    // Export lấy toàn bộ theo filter, bỏ qua top 20 của chart.
+    const rows = await this.getChart({ ...query, limit: 1000000 });
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Bao cao hang hoa');
     const money = (n?: number) => Number(n) || 0;
@@ -555,6 +569,8 @@ export class ProductReportsService {
       { header: 'Sản phẩm', key: 'product', width: 36 },
       { header: 'SL', key: 'qty', width: 12 },
       { header: 'Đơn giá', key: 'price', width: 16 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Đơn giá sau giảm giá', key: 'priceAfterDiscount', width: 18 },
       { header: 'Thành tiền', key: 'total', width: 18 },
       ...(isProfit
         ? [
@@ -573,6 +589,8 @@ export class ProductReportsService {
         product: r.productName,
         qty: r.quantity,
         price: r.price,
+        discount: r.discount,
+        priceAfterDiscount: r.priceAfterDiscount,
         total: r.totalPrice,
       };
       if (isProfit) {
