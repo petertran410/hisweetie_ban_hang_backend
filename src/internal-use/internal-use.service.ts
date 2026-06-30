@@ -699,22 +699,23 @@ export class InternalUseService {
         touched.add(detail.productId);
 
         await tx.inventoryLog.create({
-        data: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: internalUse.branchId,
-          branchName: internalUse.branchName,
-          transactionType: 'INTERNAL_USE',
-          refCode: internalUse.code,
-          refType: 'internal_use',
-          refId: internalUse.id,
-          quantity: -Number(detail.quantity),
-          costPrice,
-          transactionPrice: null,
-          partnerName: null,
-        },
-      });
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: internalUse.branchId,
+            branchName: internalUse.branchName,
+            transactionType: 'INTERNAL_USE',
+            refCode: internalUse.code,
+            refType: 'internal_use',
+            refId: internalUse.id,
+            quantity: -Number(detail.quantity),
+            costPrice,
+            transactionPrice: null,
+            partnerName: null,
+          },
+        });
+      }
     }
 
     // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log INTERNAL_USE

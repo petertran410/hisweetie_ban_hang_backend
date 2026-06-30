@@ -8,6 +8,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
 import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
+import { isSepaySpecialAccount } from './utils/sepay-special-account';
 
 /**
  * Trạng thái đối soát của 1 giao dịch Sepay (suy ra on-read, KHÔNG lưu cột status):
@@ -544,8 +545,20 @@ export class SepayMatchService {
 
     // Tạo phiếu thu cho từng khách trong phần phân bổ MỚI (mỗi khách 1 phiếu).
     for (const a of allocations) {
-      const note =
-        a.note || `Sepay đối soát: ${tx.transactionContent || ''}`.trim();
+      // Nội dung phiếu thu:
+      //  - TK đặc biệt (env SEPAY_SPECIAL_ACCOUNT_NUMBERS): dùng transactionContent
+      //    (nội dung gốc Sepay gửi về, ví dụ "Nguyen Van A chuyen khoan").
+      //  - Ngân hàng khác: dùng referenceNumber (mã tham chiếu / mã đơn nếu quét QR).
+      // FE không tự điền note (autoNote = ""), nên luôn vào nhánh fallback theo ngân hàng.
+      const isSpecial = await isSepaySpecialAccount(
+        this.prisma,
+        tx.accountNumber,
+        tx.subAccount,
+      );
+      const defaultNote = isSpecial
+        ? (tx.transactionContent || '').trim()
+        : (tx.referenceNumber || '').trim();
+      const note = (a.note && a.note.trim()) ? a.note : defaultNote;
       // Nếu có phân bổ hóa đơn → tạo InvoicePayment trừ trực tiếp công nợ hóa đơn.
       // Phần dư (amount - Σ invoices) tự ghi nhận thành credit (Formula A xử lý).
       const invoiceAllocs = (a.invoices || []).filter(

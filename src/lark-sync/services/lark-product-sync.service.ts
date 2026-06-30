@@ -235,7 +235,7 @@ export class LarkProductSyncService {
     const products = await this.prisma.product.findMany({
       where: {
         code: { not: '' },
-        larkSyncStatus: { not: 'SYNCING' },
+        larkSyncStatus: { in: ['PENDING', 'FAILED'] },
       },
       include: PRODUCT_INCLUDE,
     });

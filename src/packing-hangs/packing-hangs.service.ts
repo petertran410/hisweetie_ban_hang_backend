@@ -16,6 +16,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
@@ -30,6 +31,7 @@ export class PackingHangsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: PackingHangQueryDto) {
@@ -153,6 +155,7 @@ export class PackingHangsService {
 
   async create(dto: CreatePackingHangDto, userId: number) {
     const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const touchedProductIds = new Set<number>();
 
     const packingHang = await this.prisma.$transaction(async (tx) => {
       if (isConsignment) {
@@ -182,7 +185,12 @@ export class PackingHangsService {
         });
 
         // Đóng hàng → PACKED (+ trừ kho lần đầu rời CONFIRMED)
-        await applyPackingToConsignments(tx, dto.consignmentIds!, 'dong-hang');
+        const touched = await applyPackingToConsignments(
+          tx,
+          dto.consignmentIds!,
+          'dong-hang',
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
 
         return created;
       }
@@ -278,6 +286,10 @@ export class PackingHangsService {
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     // Audit log ngoài transaction
     const user = await this.prisma.user.findUnique({
@@ -397,6 +409,8 @@ export class PackingHangsService {
       .map((i: any) => i.consignmentId)
       .filter((v: any) => v != null);
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       if (invoiceIds.length > 0) {
         await assertCanCancelPacking(tx, invoiceIds, 'dong-hang', id);
@@ -411,9 +425,17 @@ export class PackingHangsService {
         await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
       }
       if (consignmentIds.length > 0) {
-        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+        const touched = await recalcConsignmentStatusAfterPackingCancel(
+          tx,
+          consignmentIds,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     if (userId) {
       const user = await this.prisma.user.findUnique({

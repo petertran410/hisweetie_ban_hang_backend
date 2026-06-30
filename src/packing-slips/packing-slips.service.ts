@@ -170,6 +170,7 @@ export class PackingSlipsService {
 
   async create(dto: CreatePackingSlipDto, userId: number) {
     const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const touchedProductIds = new Set<number>();
 
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
@@ -224,7 +225,12 @@ export class PackingSlipsService {
 
       if (isConsignment) {
         // Giao hàng → DELIVERED (+ trừ kho lần đầu rời CONFIRMED)
-        await applyPackingToConsignments(tx, dto.consignmentIds!, 'giao-hang');
+        const touched = await applyPackingToConsignments(
+          tx,
+          dto.consignmentIds!,
+          'giao-hang',
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       } else {
         await tx.invoice.updateMany({
           where: {
@@ -242,6 +248,10 @@ export class PackingSlipsService {
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     // Audit log ngoài transaction
     const user = await this.prisma.user.findUnique({
@@ -565,6 +575,8 @@ export class PackingSlipsService {
       .map((i: any) => i.consignmentId)
       .filter((v: any) => v != null);
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       // Chặn hủy nếu có hóa đơn đã hủy / sai thứ tự bậc
       if (invoiceIds.length > 0) {
@@ -582,9 +594,17 @@ export class PackingSlipsService {
         await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
       }
       if (consignmentIds.length > 0) {
-        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+        const touched = await recalcConsignmentStatusAfterPackingCancel(
+          tx,
+          consignmentIds,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     if (userId) {
       const user = await this.prisma.user.findUnique({

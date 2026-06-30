@@ -21,6 +21,7 @@ import {
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
 import { LarkLoadingNotificationService } from '../lark-sync/services/lark-loading-notification.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
@@ -32,6 +33,7 @@ export class PackingLoadingsService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private larkLoadingNotification: LarkLoadingNotificationService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: PackingLoadingQueryDto) {
@@ -169,6 +171,7 @@ export class PackingLoadingsService {
 
   async create(dto: CreatePackingLoadingDto, userId: number) {
     const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const touchedProductIds = new Set<number>();
 
     const packingLoading = await this.prisma.$transaction(async (tx) => {
       if (isConsignment) {
@@ -199,7 +202,12 @@ export class PackingLoadingsService {
           },
         });
 
-        await applyPackingToConsignments(tx, dto.consignmentIds!, 'loading');
+        const touched = await applyPackingToConsignments(
+          tx,
+          dto.consignmentIds!,
+          'loading',
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
         return created;
       }
 
@@ -285,6 +293,10 @@ export class PackingLoadingsService {
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     // Audit log ngoài transaction
     const user = await this.prisma.user.findUnique({
@@ -424,6 +436,8 @@ export class PackingLoadingsService {
       .map((i: any) => i.consignmentId)
       .filter((v: any) => v != null);
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       if (invoiceIds.length > 0) {
         await assertCanCancelPacking(tx, invoiceIds, 'loading', id);
@@ -438,9 +452,17 @@ export class PackingLoadingsService {
         await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
       }
       if (consignmentIds.length > 0) {
-        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+        const touched = await recalcConsignmentStatusAfterPackingCancel(
+          tx,
+          consignmentIds,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     if (userId) {
       const user = await this.prisma.user.findUnique({
