@@ -116,7 +116,7 @@ export class SepayService {
           accountId,
           sepayTransactionId: sepayTxId,
           sepayReferenceCode: payload.referenceCode,
-          notes: `Sepay tự động: ${content}`,
+          notes: content,
         },
         userId,
       );
@@ -154,7 +154,7 @@ export class SepayService {
         accountId,
         sepayTransactionId: sepayTxId,
         sepayReferenceCode: payload.referenceCode,
-        description: `Sepay tự động: ${content}`,
+        description: content,
       },
       userId,
     );

@@ -18,6 +18,7 @@ import {
 import { searchCustomerIds } from '../common/customer-search.util';
 import { restoreConsignmentStock } from '../common/consignment-packing.util';
 import { CONSIGNMENT_RETURN_STATUS } from '../consignment-returns/dto';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 /**
  * Phiếu ký gửi.
@@ -29,7 +30,10 @@ import { CONSIGNMENT_RETURN_STATUS } from '../consignment-returns/dto';
  */
 @Injectable()
 export class ConsignmentsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private larkProductSync: LarkProductSyncService,
+  ) {}
 
   async create(dto: CreateConsignmentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
@@ -393,7 +397,8 @@ export class ConsignmentsService {
   }
 
   async cancel(id: number, dto: CancelConsignmentDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const consignment = await tx.consignment.findUnique({
         where: { id },
         include: { items: true },
@@ -434,7 +439,8 @@ export class ConsignmentsService {
 
       // Hoàn kho: xóa các dòng inventoryLog 'CONSIGNMENT_OUT' của phiếu rồi
       // cộng lại onHand (KHÔNG sinh dòng CONSIGNMENT_OUT_CANCEL).
-      await restoreConsignmentStock(tx, id);
+      const touched = await restoreConsignmentStock(tx, id);
+      for (const productId of touched) touchedProductIds.add(productId);
 
       await tx.consignment.update({
         where: { id },
@@ -453,6 +459,12 @@ export class ConsignmentsService {
         include: { items: true },
       });
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   private async calculateTotals(consignmentId: number, tx: any) {

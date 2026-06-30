@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
@@ -47,6 +48,7 @@ export class VehicleShipmentsService {
     private prisma: PrismaService,
     private purchaseOrdersService: PurchaseOrdersService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -959,7 +961,8 @@ export class VehicleShipmentsService {
     dto: CreatePurchaseOrdersFromVehicleDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const shipment = await tx.vehicleShipment.findUnique({
           where: { id },
@@ -1055,6 +1058,7 @@ export class VehicleShipmentsService {
               } as any,
               userId,
               id,
+              touchedProductIds,
             );
           createdPOs.push(po);
         }
@@ -1101,5 +1105,11 @@ export class VehicleShipmentsService {
       },
       { timeout: 60000, maxWait: 10000 },
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 }
