@@ -6,6 +6,7 @@ import { ProductReportsService } from './product-reports.service';
 import { SupplierReportsService } from './supplier-reports.service';
 import { FinancialReportsService } from './financial-reports.service';
 import { EodReportsService } from './eod-reports.service';
+import { CustomerReportsService } from './customer-reports.service';
 import { ReportsPermissionGuard } from './reports-permission.guard';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
@@ -20,6 +21,7 @@ import { AuthModule } from '../auth/auth.module';
     SupplierReportsService,
     FinancialReportsService,
     EodReportsService,
+    CustomerReportsService,
     ReportsPermissionGuard,
   ],
 })
