@@ -1945,7 +1945,14 @@ export class ProductsService {
     };
   }
 
-  private async generateSafeProductCode(tx: any): Promise<string> {
+  /**
+   * Sinh mã sản phẩm duy nhất theo pattern `SP{NNNNNN}`.
+   * Được promote từ `private` sang method công khai để ImportService
+   * có thể dùng khi tạo sản phẩm mới qua file Excel mà người dùng
+   * không nhập mã. Truyền `tx` để đảm bảo thao tác nằm trong cùng
+   * transaction với create, tránh trùng mã do race condition.
+   */
+  async generateSafeProductCode(tx: any): Promise<string> {
     const prefix = 'SP';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;

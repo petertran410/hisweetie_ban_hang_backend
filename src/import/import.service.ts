@@ -1,12 +1,36 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ProductsService } from '../products/products.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import * as ExcelJS from 'exceljs';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
+/**
+ * Thông tin người thao tác để gắn vào audit log và enqueue sync.
+ * Controller truyền xuống từ `req.user` (đã verify bởi JwtAuthGuard).
+ */
+export interface ImportUserContext {
+  userId: number;
+  userName: string;
+  branchId?: number;
+  branchName?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  requestId?: string;
+}
+
 @Injectable()
 export class ImportService {
-  constructor(private prisma: PrismaService) {}
+  private readonly logger = new Logger(ImportService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private productsService: ProductsService,
+    private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
+  ) {}
 
   async importProducts(
     file: Express.Multer.File,
@@ -16,6 +40,7 @@ export class ImportService {
       updateCost?: boolean;
       branchId?: number;
     },
+    userContext: ImportUserContext,
   ) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer as any);
@@ -153,13 +178,16 @@ export class ImportService {
     };
 
     // --- 3. Parse rows ---
+    // Lưu `code` rỗng (chuỗi '') khi user không nhập — để Phase 4 tự sinh mã.
+    // Trước đây dòng này `if (!code || !name) return;` sẽ bỏ qua hoàn toàn → giờ chỉ
+    // bỏ qua khi thiếu `name` (name vẫn bắt buộc).
     const rawRows: any[] = [];
     worksheet.eachRow((row, rowNumber) => {
       if (rowNumber <= 1) return;
 
       const code = getCellStr(row, 'code');
       const name = getCellStr(row, 'name');
-      if (!code || !name) return;
+      if (!name) return;
 
       // Parse branch inventories
       const branchInventories: {
@@ -211,13 +239,17 @@ export class ImportService {
     }
 
     // --- 4. Batch lookup: existing products, trademarks ---
-    const allCodes = rawRows.map((r) => r.code);
-    const existingProducts = await this.prisma.product.findMany({
-      where: { code: { in: allCodes } },
-      select: { id: true, code: true },
-    });
+    const codesWithValue = rawRows
+      .map((r) => r.code)
+      .filter((c: string) => c && c.length > 0);
+    const existingProducts = codesWithValue.length
+      ? await this.prisma.product.findMany({
+          where: { code: { in: codesWithValue } },
+          select: { id: true, code: true, name: true, basePrice: true },
+        })
+      : [];
     const existingProductMap = new Map(
-      existingProducts.map((p) => [p.code, p.id]),
+      existingProducts.map((p) => [p.code, p]),
     );
 
     const tradeMarkCache = new Map<string, number>();
@@ -228,203 +260,456 @@ export class ImportService {
       tradeMarkCache.set(tm.name.toLowerCase(), tm.id),
     );
 
-    // --- 5. Process each row ---
-    const imported: any[] = [];
-    const updated: any[] = [];
-    const errors: any[] = [];
+    // ════════════════════════════════════════════════════════════════════════
+    // PHASE 1 — VALIDATE (NGOÀI transaction)
+    // ════════════════════════════════════════════════════════════════════════
+    // Quy tắc:
+    //   • Dòng có `code` không trống PHẢI tồn tại trong DB → nếu không → lỗi
+    //   • Dòng trống `code` sẽ được BE tự sinh (xử lý trong transaction)
+    // Nếu có bất kỳ dòng nào vi phạm → throw BadRequestException ngay,
+    // không vào transaction, không ghi gì cả.
+    // ════════════════════════════════════════════════════════════════════════
+    const validationErrors: {
+      row: number;
+      code: string;
+      error: string;
+    }[] = [];
 
     for (const row of rawRows) {
-      try {
-        const productType = this.mapProductType(row.typeText);
-        const { parentName, middleName, childName } = this.parseCategoryText(
-          row.categoryText,
-        );
-
-        if (parentName) await this.ensureCategory(parentName, 'parent');
-        if (middleName) await this.ensureCategory(middleName, 'middle');
-        if (childName) await this.ensureCategory(childName, 'child');
-
-        // Resolve tradeMarkId
-        let tradeMarkId: number | null = null;
-        if (row.tradeMarkName) {
-          const cached = tradeMarkCache.get(row.tradeMarkName.toLowerCase());
-          if (cached) {
-            tradeMarkId = cached;
-          } else {
-            const newTm = await this.prisma.tradeMark.create({
-              data: { name: row.tradeMarkName },
-            });
-            tradeMarkCache.set(row.tradeMarkName.toLowerCase(), newTm.id);
-            tradeMarkId = newTm.id;
-          }
-        }
-
-        const fullName = this.buildFullName(row.name, row.attributesText);
-        const existingId = existingProductMap.get(row.code);
-
-        if (existingId) {
-          // --- UPDATE existing product ---
-          const updateData: any = {
-            name: row.name,
-            fullName,
-            type: productType,
-            parentName,
-            middleName,
-            childName,
-            basePrice: row.basePrice,
-            unit: row.unit || undefined,
-            weight: row.weight || undefined,
-            ...(row.shippingWeight !== null && {
-              shippingWeight: row.shippingWeight,
-            }),
-            ...(row.vat !== null && { vat: row.vat }),
-            isDirectSale: row.isDirectSale,
-            attributesText: row.attributesText || undefined,
-          };
-
-          if (tradeMarkId) {
-            updateData.tradeMarkId = tradeMarkId;
-          }
-
-          if (options.updateDescription) {
-            updateData.description = row.description || null;
-          }
-
-          await this.prisma.product.update({
-            where: { id: existingId },
-            data: updateData,
-          });
-
-          // Update inventory cho từng branch
-          for (const inv of row.branchInventories) {
-            const bName = branchMap.get(inv.branchId) || '';
-            await this.upsertInventory(
-              existingId,
-              row.code,
-              row.name,
-              { id: inv.branchId, name: bName },
-              {
-                cost: inv.cost,
-                onHand: inv.onHand,
-                minQuality: row.minQuality,
-                maxQuality: row.maxQuality,
-                weight: row.weight,
-              },
-              options,
-            );
-          }
-
-          // Update images
-          if (row.imageUrls) {
-            await this.syncProductImages(existingId, row.imageUrls);
-          }
-
-          // Update components (combo/manufacturing)
-          if ((productType === 1 || productType === 4) && row.componentsText) {
-            await this.syncProductComponents(existingId, row.componentsText);
-          }
-
-          // masterProductId
-          if (row.relatedCode) {
-            const masterId = existingProductMap.get(row.relatedCode);
-            if (masterId) {
-              await this.prisma.product.update({
-                where: { id: existingId },
-                data: { masterProductId: masterId },
-              });
-            }
-          }
-
-          updated.push({ code: row.code, id: existingId });
-        } else {
-          // --- CREATE new product ---
-          const product = await this.prisma.product.create({
-            data: {
-              code: row.code,
-              name: row.name,
-              fullName,
-              type: productType,
-              parentName,
-              middleName,
-              childName,
-              ...(tradeMarkId && { tradeMarkId }),
-              basePrice: row.basePrice,
-              unit: row.unit || undefined,
-              weight: row.weight || undefined,
-              ...(row.shippingWeight !== null && {
-                shippingWeight: row.shippingWeight,
-              }),
-              ...(row.vat !== null && { vat: row.vat }),
-              isDirectSale: row.isDirectSale,
-              description: row.description || undefined,
-              attributesText: row.attributesText || undefined,
-            },
-          });
-
-          existingProductMap.set(row.code, product.id);
-
-          // Create inventory cho từng branch
-          for (const inv of row.branchInventories) {
-            // Bỏ qua branch không có dữ liệu
-            if (inv.onHand === 0 && inv.cost === 0) continue;
-
-            const bName = branchMap.get(inv.branchId) || '';
-            await this.prisma.inventory.create({
-              data: {
-                productId: product.id,
-                productCode: row.code,
-                productName: row.name,
-                branchId: inv.branchId,
-                branchName: bName,
-                cost: inv.cost,
-                onHand: inv.onHand,
-                reserved: 0,
-                onOrder: 0,
-                minQuality: row.minQuality,
-                maxQuality: row.maxQuality,
-                totalWeight: this.calculateTotalWeight(row.weight, inv.onHand),
-              },
-            });
-          }
-
-          // Create images
-          if (row.imageUrls) {
-            await this.syncProductImages(product.id, row.imageUrls);
-          }
-
-          // Create components
-          if ((productType === 1 || productType === 4) && row.componentsText) {
-            await this.syncProductComponents(product.id, row.componentsText);
-          }
-
-          // Handle related product (masterProductId)
-          if (row.relatedCode) {
-            const masterId = existingProductMap.get(row.relatedCode);
-            if (masterId) {
-              await this.prisma.product.update({
-                where: { id: product.id },
-                data: { masterProductId: masterId },
-              });
-            }
-          }
-
-          imported.push({ code: row.code, id: product.id });
-        }
-      } catch (error) {
-        errors.push({
+      if (!row.code) continue; // sẽ tự sinh — không validate
+      if (!existingProductMap.has(row.code)) {
+        validationErrors.push({
           row: row.rowNumber,
           code: row.code,
-          error: error.message,
+          error: `Mã hàng "${row.code}" không tồn tại trong hệ thống`,
         });
       }
     }
 
+    if (validationErrors.length > 0) {
+      this.logger.warn(
+        `[ImportProducts] ❌ Validation failed — rollback sẽ không cần thiết (chưa vào transaction):\n` +
+          validationErrors
+            .map((e) => `  row=${e.row} code="${e.code}" reason="${e.error}"`)
+            .join('\n'),
+      );
+      const rowList = validationErrors.map((e) => `dòng ${e.row}`).join(', ');
+      throw new BadRequestException(
+        `Có ${validationErrors.length} dòng có mã không tồn tại trong hệ thống (${rowList}). Vui lòng sửa file rồi import lại.`,
+      );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PHASE 2 — TRANSACTIONAL IMPORT (1 transaction duy nhất)
+    // ════════════════════════════════════════════════════════════════════════
+    // Mọi thao tác DB (create/update SP + inventory + images + components +
+    // masterProductId) đều nằm trong cùng 1 transaction. Nếu bất kỳ dòng
+    // nào throw → rollback TOÀN BỘ, không có gì được ghi.
+    // ════════════════════════════════════════════════════════════════════════
+    const importedRows: {
+      rowNumber: number;
+      productId: number;
+      code: string;
+      name: string;
+    }[] = [];
+    const updatedRows: {
+      rowNumber: number;
+      productId: number;
+      code: string;
+      name: string;
+      changedFields: { field: string; from: any; to: any }[];
+    }[] = [];
+
+    type PhaseResult = {
+      importedIds: number[];
+      updatedIds: number[];
+    };
+
+    let transactionSucceeded = false;
+    let phaseResult: PhaseResult = { importedIds: [], updatedIds: [] };
+
+    try {
+      phaseResult = await this.prisma.$transaction(
+        async (tx) => {
+          // Map productId cho việc resolve `masterProductId` (relatedCode)
+          const codeToId = new Map<string, number>(
+            existingProducts.map((p) => [p.code, p.id]),
+          );
+
+          for (const row of rawRows) {
+            const productType = this.mapProductType(row.typeText);
+            const {
+              parentName,
+              middleName,
+              childName,
+            } = this.parseCategoryText(row.categoryText);
+
+            if (parentName) await this.ensureCategory(parentName, 'parent', tx);
+            if (middleName)
+              await this.ensureCategory(middleName, 'middle', tx);
+            if (childName) await this.ensureCategory(childName, 'child', tx);
+
+            // Resolve tradeMarkId
+            let tradeMarkId: number | null = null;
+            if (row.tradeMarkName) {
+              const cached = tradeMarkCache.get(
+                row.tradeMarkName.toLowerCase(),
+              );
+              if (cached) {
+                tradeMarkId = cached;
+              } else {
+                const newTm = await tx.tradeMark.create({
+                  data: { name: row.tradeMarkName },
+                });
+                tradeMarkCache.set(
+                  row.tradeMarkName.toLowerCase(),
+                  newTm.id,
+                );
+                tradeMarkId = newTm.id;
+              }
+            }
+
+            const fullName = this.buildFullName(row.name, row.attributesText);
+            const existing = row.code
+              ? existingProductMap.get(row.code)
+              : null;
+
+            if (existing) {
+              // ─── UPDATE ───────────────────────────────────────────────
+              const existingId = existing.id;
+
+              // Build updateData (giống code cũ)
+              const updateData: any = {
+                name: row.name,
+                fullName,
+                type: productType,
+                parentName,
+                middleName,
+                childName,
+                basePrice: row.basePrice,
+                unit: row.unit || undefined,
+                weight: row.weight || undefined,
+                ...(row.shippingWeight !== null && {
+                  shippingWeight: row.shippingWeight,
+                }),
+                ...(row.vat !== null && { vat: row.vat }),
+                isDirectSale: row.isDirectSale,
+                attributesText: row.attributesText || undefined,
+              };
+
+              if (tradeMarkId) updateData.tradeMarkId = tradeMarkId;
+              if (options.updateDescription) {
+                updateData.description = row.description || null;
+              }
+
+              await tx.product.update({
+                where: { id: existingId },
+                data: updateData,
+              });
+
+              // Update inventory per branch
+              for (const inv of row.branchInventories) {
+                const bName = branchMap.get(inv.branchId) || '';
+                await this.upsertInventory(
+                  existingId,
+                  row.code,
+                  row.name,
+                  { id: inv.branchId, name: bName },
+                  {
+                    cost: inv.cost,
+                    onHand: inv.onHand,
+                    minQuality: row.minQuality,
+                    maxQuality: row.maxQuality,
+                    weight: row.weight,
+                  },
+                  options,
+                  tx,
+                );
+              }
+
+              // Update images
+              if (row.imageUrls) {
+                await this.syncProductImages(
+                  existingId,
+                  row.imageUrls,
+                  tx,
+                );
+              }
+
+              // Update components
+              if (
+                (productType === 1 || productType === 4) &&
+                row.componentsText
+              ) {
+                await this.syncProductComponents(
+                  existingId,
+                  row.componentsText,
+                  tx,
+                );
+              }
+
+              // masterProductId
+              if (row.relatedCode) {
+                const masterId = codeToId.get(row.relatedCode);
+                if (masterId) {
+                  await tx.product.update({
+                    where: { id: existingId },
+                    data: { masterProductId: masterId },
+                  });
+                }
+              }
+
+              // Tính các trường thay đổi để hiển thị trong audit log
+              const changedFields: {
+                field: string;
+                from: any;
+                to: any;
+              }[] = [];
+              const labelOf: Record<string, string> = {
+                name: 'Tên hàng',
+                type: 'Loại',
+                basePrice: 'Giá bán',
+                unit: 'Đơn vị',
+                weight: 'Trọng lượng',
+                shippingWeight: 'Trọng lượng vận chuyển',
+                vat: 'VAT',
+                isDirectSale: 'Bán trực tiếp',
+                attributesText: 'Thuộc tính',
+                description: 'Mô tả',
+                tradeMarkId: 'Thương hiệu',
+                parentName: 'Nhóm cha',
+                middleName: 'Nhóm giữa',
+                childName: 'Nhóm con',
+                fullName: 'Tên đầy đủ',
+              };
+              for (const field of Object.keys(updateData)) {
+                const oldVal = (existing as any)[field];
+                const newVal = updateData[field];
+                if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
+                  changedFields.push({
+                    field: labelOf[field] || field,
+                    from: oldVal,
+                    to: newVal,
+                  });
+                }
+              }
+
+              updatedRows.push({
+                rowNumber: row.rowNumber,
+                productId: existingId,
+                code: row.code,
+                name: row.name,
+                changedFields,
+              });
+            } else {
+              // ─── CREATE ────────────────────────────────────────────────
+              // Mã rỗng → tự sinh trong transaction để chống race condition
+              const generatedCode = row.code
+                ? row.code
+                : await this.productsService.generateSafeProductCode(tx);
+
+              const product = await tx.product.create({
+                data: {
+                  code: generatedCode,
+                  name: row.name,
+                  fullName,
+                  type: productType,
+                  parentName,
+                  middleName,
+                  childName,
+                  ...(tradeMarkId && { tradeMarkId }),
+                  basePrice: row.basePrice,
+                  unit: row.unit || undefined,
+                  weight: row.weight || undefined,
+                  ...(row.shippingWeight !== null && {
+                    shippingWeight: row.shippingWeight,
+                  }),
+                  ...(row.vat !== null && { vat: row.vat }),
+                  isDirectSale: row.isDirectSale,
+                  description: row.description || undefined,
+                  attributesText: row.attributesText || undefined,
+                },
+              });
+
+              codeToId.set(generatedCode, product.id);
+
+              // Tạo inventory per branch
+              for (const inv of row.branchInventories) {
+                if (inv.onHand === 0 && inv.cost === 0) continue;
+                const bName = branchMap.get(inv.branchId) || '';
+                await tx.inventory.create({
+                  data: {
+                    productId: product.id,
+                    productCode: generatedCode,
+                    productName: row.name,
+                    branchId: inv.branchId,
+                    branchName: bName,
+                    cost: inv.cost,
+                    onHand: inv.onHand,
+                    reserved: 0,
+                    onOrder: 0,
+                    minQuality: row.minQuality,
+                    maxQuality: row.maxQuality,
+                    totalWeight: this.calculateTotalWeight(
+                      row.weight,
+                      inv.onHand,
+                    ),
+                  },
+                });
+              }
+
+              // Tạo images
+              if (row.imageUrls) {
+                await this.syncProductImages(
+                  product.id,
+                  row.imageUrls,
+                  tx,
+                );
+              }
+
+              // Tạo components
+              if (
+                (productType === 1 || productType === 4) &&
+                row.componentsText
+              ) {
+                await this.syncProductComponents(
+                  product.id,
+                  row.componentsText,
+                  tx,
+                );
+              }
+
+              // masterProductId
+              if (row.relatedCode) {
+                const masterId = codeToId.get(row.relatedCode);
+                if (masterId) {
+                  await tx.product.update({
+                    where: { id: product.id },
+                    data: { masterProductId: masterId },
+                  });
+                }
+              }
+
+              importedRows.push({
+                rowNumber: row.rowNumber,
+                productId: product.id,
+                code: generatedCode,
+                name: row.name,
+              });
+            }
+          }
+
+          return {
+            importedIds: importedRows.map((r) => r.productId),
+            updatedIds: updatedRows.map((r) => r.productId),
+          };
+        },
+        { timeout: 60_000 },
+      );
+
+      transactionSucceeded = true;
+    } catch (error) {
+      // Runtime error trong transaction → rollback tự động (Prisma xử lý).
+      // Log chi tiết để debug server-side.
+      this.logger.error(
+        `[ImportProducts] ❌ Runtime error — rollback toàn bộ:\n` +
+          `  error=${(error as Error).message}\n` +
+          `  processedRows=${
+            importedRows.length + updatedRows.length
+          }/${rawRows.length}\n` +
+          `  stack=${(error as Error).stack || ''}`,
+      );
+      // Re-throw để Nest exception filter chuyển thành 500 cho FE
+      throw error;
+    }
+
+    if (!transactionSucceeded) {
+      // Không vào được đây — throw ở trên đã return.
+      throw new BadRequestException(
+        'Import sản phẩm thất bại, không có dữ liệu nào được ghi.',
+      );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // PHASE 3 — POST-COMMIT SIDE EFFECTS (NGOÀI transaction)
+    // ════════════════════════════════════════════════════════════════════════
+    // Chỉ chạy khi transaction COMMIT THÀNH CÔNG. Nếu side-effect fail thì
+    // chỉ log warning (đã commit DB rồi, không rollback được nữa).
+    // ════════════════════════════════════════════════════════════════════════
+
+    // 3.1 — Lark sync cho từng SP mới
+    for (const id of phaseResult.importedIds) {
+      try {
+        this.larkProductSync.enqueueSync(id);
+      } catch (err) {
+        this.logger.warn(
+          `[ImportProducts] Lark sync enqueue failed for product #${id}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    // 3.2 — Audit log tổng cho cả file
+    const importedSummaries = importedRows.map((r) => ({
+      row: r.rowNumber,
+      code: r.code,
+      name: r.name,
+      productId: r.productId,
+    }));
+    const updatedSummaries = updatedRows.map((r) => ({
+      row: r.rowNumber,
+      code: r.code,
+      name: r.name,
+      productId: r.productId,
+      changedFields: r.changedFields,
+    }));
+
+    try {
+      const fileName =
+        (file as any).originalname || (file as any).filename || 'unknown.xlsx';
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'PRODUCT_BULK_IMPORT',
+        entityType: 'products',
+        entityCode: fileName,
+        category: 'product',
+        severity: 'info',
+        message: `Import file "${fileName}": ${importedRows.length} tạo mới, ${updatedRows.length} cập nhật`,
+        messageTemplate: 'PRODUCT_BULK_IMPORT',
+        messageParams: {
+          fileName,
+          importedCount: importedRows.length,
+          updatedCount: updatedRows.length,
+        },
+        metadata: {
+          fileName,
+          summary: {
+            total: rawRows.length,
+            imported: importedRows.length,
+            updated: updatedRows.length,
+          },
+          importedProducts: importedSummaries,
+          updatedProducts: updatedSummaries,
+        },
+        userId: userContext.userId,
+        userName: userContext.userName,
+        branchId: userContext.branchId,
+        branchName: userContext.branchName,
+        ipAddress: userContext.ipAddress,
+        userAgent: userContext.userAgent,
+        requestId: userContext.requestId,
+      });
+    } catch (auditErr) {
+      this.logger.warn(
+        `[ImportProducts] Audit log failed (DB đã commit, không rollback được): ${(auditErr as Error).message}`,
+      );
+    }
+
     return {
       total: rawRows.length,
-      imported: imported.length,
-      updated: updated.length,
-      failed: errors.length,
-      errors,
+      imported: importedRows.length,
+      updated: updatedRows.length,
+      failed: 0,
+      errors: [],
     };
   }
 
@@ -483,13 +768,14 @@ export class ImportService {
     };
   }
 
-  private async ensureCategory(name: string, type: string) {
+  private async ensureCategory(name: string, type: string, tx?: any) {
     if (!name) return;
-    const existing = await this.prisma.category.findUnique({
+    const client = tx ?? this.prisma;
+    const existing = await client.category.findUnique({
       where: { type_name: { type, name } },
     });
     if (!existing) {
-      await this.prisma.category.create({
+      await client.category.create({
         data: { name, type } as any,
       });
     }
@@ -508,8 +794,10 @@ export class ImportService {
       weight: number;
     },
     options: { updateStock?: boolean; updateCost?: boolean },
+    tx?: any,
   ) {
-    const existing = await this.prisma.inventory.findUnique({
+    const client = tx ?? this.prisma;
+    const existing = await client.inventory.findUnique({
       where: { productId_branchId: { productId, branchId: branch.id } },
     });
 
@@ -530,12 +818,12 @@ export class ImportService {
       if (options.updateCost) {
         updateData.cost = row.cost;
       }
-      await this.prisma.inventory.update({
+      await client.inventory.update({
         where: { productId_branchId: { productId, branchId: branch.id } },
         data: updateData,
       });
     } else {
-      await this.prisma.inventory.create({
+      await client.inventory.create({
         data: {
           productId,
           productCode,
@@ -554,7 +842,12 @@ export class ImportService {
     }
   }
 
-  private async syncProductImages(productId: number, imageUrlsText: string) {
+  private async syncProductImages(
+    productId: number,
+    imageUrlsText: string,
+    tx?: any,
+  ) {
+    const client = tx ?? this.prisma;
     const urls = imageUrlsText
       .split(',')
       .map((u) => u.trim())
@@ -562,8 +855,8 @@ export class ImportService {
 
     if (urls.length === 0) return;
 
-    await this.prisma.productImage.deleteMany({ where: { productId } });
-    await this.prisma.productImage.createMany({
+    await client.productImage.deleteMany({ where: { productId } });
+    await client.productImage.createMany({
       data: urls.map((url) => ({ productId, image: url })),
     });
   }
@@ -572,7 +865,9 @@ export class ImportService {
   private async syncProductComponents(
     productId: number,
     componentsText: string,
+    tx?: any,
   ) {
+    const client = tx ?? this.prisma;
     // Format: "HH000023:1,HH000016:2" hoặc "HH000023:1:gram,HH000016:2:quantity"
     const parts = componentsText
       .split(',')
@@ -598,13 +893,13 @@ export class ImportService {
     if (components.length === 0) return;
 
     const codes = components.map((c) => c.code);
-    const products = await this.prisma.product.findMany({
+    const products = await client.product.findMany({
       where: { code: { in: codes } },
       select: { id: true, code: true },
     });
     const productMap = new Map(products.map((p) => [p.code, p.id]));
 
-    await this.prisma.productComponent.deleteMany({
+    await client.productComponent.deleteMany({
       where: { comboProductId: productId },
     });
 
@@ -618,7 +913,7 @@ export class ImportService {
       }));
 
     if (createData.length > 0) {
-      await this.prisma.productComponent.createMany({ data: createData });
+      await client.productComponent.createMany({ data: createData });
     }
   }
 
