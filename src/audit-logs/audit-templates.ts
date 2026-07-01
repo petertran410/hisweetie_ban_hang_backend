@@ -91,6 +91,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'product',
     severity: 'warning',
   },
+  PRODUCT_BULK_IMPORT: {
+    template:
+      'Import sản phẩm từ file "{fileName}": {importedCount} tạo mới, {updatedCount} cập nhật',
+    category: 'product',
+    severity: 'info',
+  },
 
   PACKING_SLIP_UPDATE: {
     template: 'Cập nhật phiếu đóng hàng {packingCode}',

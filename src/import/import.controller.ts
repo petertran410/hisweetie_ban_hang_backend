@@ -32,6 +32,7 @@ export class ImportController {
   async importProducts(
     @UploadedFile() file: Express.Multer.File,
     @Query() options: ImportProductsOptionsDto,
+    @Req() req: any,
   ) {
     if (!file) {
       throw new BadRequestException('No file uploaded');
@@ -46,12 +47,28 @@ export class ImportController {
       throw new BadRequestException('Only Excel files are allowed');
     }
 
-    return this.importService.importProducts(file, {
-      updateStock: options.updateStock ?? false,
-      updateDescription: options.updateDescription ?? false,
-      updateCost: options.updateCost ?? false,
-      branchId: options.branchId,
-    });
+    // Trích thông tin user + request context để ghi audit log tổng cho file import.
+    const user = req.user || {};
+    const userContext = {
+      userId: Number(user.id) || 1,
+      userName: user.name || user.email || 'System',
+      branchId: user.branchId ? Number(user.branchId) : undefined,
+      branchName: user.branchName,
+      ipAddress: req.ip,
+      userAgent: req.headers?.['user-agent'],
+      requestId: req.headers?.['x-request-id'],
+    };
+
+    return this.importService.importProducts(
+      file,
+      {
+        updateStock: options.updateStock ?? false,
+        updateDescription: options.updateDescription ?? false,
+        updateCost: options.updateCost ?? false,
+        branchId: options.branchId,
+      },
+      userContext,
+    );
   }
 
   @Post('customers')
