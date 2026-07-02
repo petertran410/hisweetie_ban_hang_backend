@@ -54,6 +54,9 @@ export class CustomerReportsService {
   }
 
   // ── WHERE invoice_details join invoices (cho Profit raw SQL) ──
+  // Khi query có ít nhất 1 filter sản phẩm, các hàm gọi cần LEFT JOIN `products p`
+  // trước khi dùng `where` này — cột được tham chiếu là `p."type"`, `p."parentName"`,
+  // `p."middleName"`, `p."childName"`, `p."tradeMarkId"`.
   private buildDetailWhereSql(query: CustomerReportQueryDto): Prisma.Sql {
     const conds: Prisma.Sql[] = [
       Prisma.sql`i.status NOT IN (${Prisma.join(CUSTOMER_INVOICE_EXCLUDE_STATUS)})`,
@@ -78,7 +81,62 @@ export class CustomerReportsService {
         Prisma.sql`(d."productName" ILIKE ${kw} OR d."productCode" ILIKE ${kw})`,
       );
     }
+
+    // Bộ lọc sản phẩm: types / parentNames / middleNames / childNames / tradeMarkIds (CSV).
+    const parseCsv = (s: string | undefined): string[] => {
+      if (!s) return [];
+      return s
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+    };
+    const parseCsvNumber = (s: string | undefined): number[] =>
+      parseCsv(s)
+        .map((x) => Number(x))
+        .filter((n) => Number.isFinite(n));
+
+    const typesArr = parseCsvNumber(query.types);
+    const parentArr = parseCsv(query.parentNames);
+    const middleArr = parseCsv(query.middleNames);
+    const childArr = parseCsv(query.childNames);
+    const tmArr = parseCsvNumber(query.tradeMarkIds);
+
+    if (typesArr.length > 0) {
+      conds.push(
+        Prisma.sql`p."type" = ANY(${Prisma.sql`ARRAY[${Prisma.join(typesArr)}]::int[]`})`,
+      );
+    }
+    if (parentArr.length > 0) {
+      conds.push(
+        Prisma.sql`p."parentName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(parentArr)}]`})`,
+      );
+    }
+    if (middleArr.length > 0) {
+      conds.push(
+        Prisma.sql`p."middleName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(middleArr)}]`})`,
+      );
+    }
+    if (childArr.length > 0) {
+      conds.push(
+        Prisma.sql`p."childName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(childArr)}]`})`,
+      );
+    }
+    if (tmArr.length > 0) {
+      conds.push(
+        Prisma.sql`p."tradeMarkId" = ANY(${Prisma.sql`ARRAY[${Prisma.join(tmArr)}]::int[]`})`,
+      );
+    }
+
     return Prisma.join(conds, ' AND ');
+  }
+
+  /**
+   * Check xem query có filter sản phẩm không — để quyết định có cần LEFT JOIN products p không.
+   */
+  private hasProductFilter(query: CustomerReportQueryDto): boolean {
+    return Boolean(
+      query.types || query.parentNames || query.middleNames || query.childNames || query.tradeMarkIds,
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -100,26 +158,55 @@ export class CustomerReportsService {
   }
 
   // ── CustomerBySale: doanh thu thuần (grandTotal − trả hàng) theo KH ──
+  // Mặc định aggregate theo grandTotal ở cấp invoice (đúng KiotViet).
+  // Khi có product filter, chuyển sang SUM(d."totalPrice") ở cấp detail (chỉ tính dòng khớp filter).
   private async chartBySale(
     query: CustomerReportQueryDto,
   ): Promise<CustomerChartRow[]> {
     const where = this.buildDetailWhereSql(query);
+    const hasProductFilter = this.hasProductFilter(query);
+
+    if (!hasProductFilter) {
+      // ── Path cũ: aggregate grandTotal theo invoice ──
+      const rows = await this.prisma.$queryRaw<any[]>`
+        SELECT
+          c.code AS code,
+          c.name AS name,
+          SUM(i_rev.revenue)::float8 AS revenue
+        FROM (
+          SELECT
+            i.id,
+            i."customerId",
+            i."grandTotal" AS revenue
+          FROM invoices i
+          LEFT JOIN customers c ON c.id = i."customerId"
+          WHERE ${where}
+        ) i_rev
+        JOIN customers c ON c.id = i_rev."customerId"
+        WHERE c."isActive" = true
+        GROUP BY c.code, c.name
+        ORDER BY revenue DESC
+        LIMIT ${this.chartTop(query)}
+      `;
+      return rows.map((r) => ({
+        subject: r.name || 'Khách lẻ',
+        value: Number(r.revenue) || 0,
+        total: Number(r.revenue) || 0,
+        extra1: r.code || null,
+      }));
+    }
+
+    // ── Có product filter: aggregate SUM(d."totalPrice") ở cấp detail ──
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
         c.code AS code,
         c.name AS name,
-        SUM(i_rev.revenue)::float8 AS revenue
-      FROM (
-        SELECT
-          i.id,
-          i."customerId",
-          i."grandTotal" AS revenue
-        FROM invoices i
-        LEFT JOIN customers c ON c.id = i."customerId"
-        WHERE ${where}
-      ) i_rev
-      JOIN customers c ON c.id = i_rev."customerId"
-      WHERE c."isActive" = true
+        SUM(d."totalPrice")::float8 AS revenue
+      FROM invoice_details d
+      JOIN invoices i ON i.id = d."invoiceId"
+      JOIN customers c ON c.id = i."customerId"
+      LEFT JOIN products p ON p.id = d."productId"
+      WHERE ${where} AND c."isActive" = true
       GROUP BY c.code, c.name
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
@@ -137,6 +224,9 @@ export class CustomerReportsService {
     query: CustomerReportQueryDto,
   ): Promise<CustomerChartRow[]> {
     const where = this.buildDetailWhereSql(query);
+    const productFilterJoin = this.hasProductFilter(query)
+      ? Prisma.sql`LEFT JOIN products p ON p.id = d."productId"`
+      : Prisma.empty;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
         c.code AS code,
@@ -146,6 +236,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       LEFT JOIN inventories inv
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
       WHERE ${where} AND c."isActive" = true
@@ -189,6 +280,9 @@ export class CustomerReportsService {
     query: CustomerReportQueryDto,
   ): Promise<CustomerChartRow[]> {
     const where = this.buildDetailWhereSql(query);
+    const productFilterJoin = this.hasProductFilter(query)
+      ? Prisma.sql`LEFT JOIN products p ON p.id = d."productId"`
+      : Prisma.empty;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
         c.code AS code,
@@ -197,6 +291,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       WHERE ${where} AND c."isActive" = true
       GROUP BY c.code, c.name
       ORDER BY revenue DESC
@@ -501,6 +596,9 @@ export class CustomerReportsService {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const offset = (page - 1) * limit;
+    const productFilterJoin = this.hasProductFilter(query)
+      ? Prisma.sql`LEFT JOIN products p ON p.id = d."productId"`
+      : Prisma.empty;
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -511,6 +609,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       WHERE ${where}
       GROUP BY d."productCode", d."productName"
       ORDER BY revenue DESC
@@ -523,6 +622,7 @@ export class CustomerReportsService {
         FROM invoice_details d
         JOIN invoices i ON i.id = d."invoiceId"
         JOIN customers c ON c.id = i."customerId"
+        ${productFilterJoin}
         WHERE ${where}
         GROUP BY d."productCode", d."productName"
       ) g
@@ -536,6 +636,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       WHERE ${where}
     `;
     const s = summaryRow[0] || {};
@@ -566,6 +667,9 @@ export class CustomerReportsService {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const offset = (page - 1) * limit;
+    const productFilterJoin = this.hasProductFilter(query)
+      ? Prisma.sql`LEFT JOIN products p ON p.id = d."productId"`
+      : Prisma.empty;
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -583,6 +687,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       LEFT JOIN inventories inv
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
       WHERE ${where}
@@ -595,6 +700,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       WHERE ${where}
     `;
     const total = Number(totalRow[0]?.total) || 0;
@@ -608,6 +714,7 @@ export class CustomerReportsService {
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       JOIN customers c ON c.id = i."customerId"
+      ${productFilterJoin}
       LEFT JOIN inventories inv
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
       WHERE ${where}

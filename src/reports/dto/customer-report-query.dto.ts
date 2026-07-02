@@ -47,6 +47,28 @@ export class CustomerReportQueryDto {
   @IsString()
   productKeyword?: string;
 
+  // ── Bộ lọc sản phẩm (CSV, dùng cho CustomerBySale/Profit/Product) ──
+  // Pattern đồng nhất với ProductQueryDto (CSV → array ở service).
+  @IsOptional()
+  @IsString()
+  types?: string;
+
+  @IsOptional()
+  @IsString()
+  parentNames?: string;
+
+  @IsOptional()
+  @IsString()
+  middleNames?: string;
+
+  @IsOptional()
+  @IsString()
+  childNames?: string;
+
+  @IsOptional()
+  @IsString()
+  tradeMarkIds?: string;
+
   @IsOptional()
   @Type(() => Number)
   @IsInt()
