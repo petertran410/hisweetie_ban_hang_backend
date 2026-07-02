@@ -57,6 +57,14 @@ export class PurchaseOrderItemDto {
   @IsIn(['normal', 'damaged'])
   @IsOptional()
   conditionType?: 'normal' | 'damaged';
+
+  @IsNumber()
+  @IsOptional()
+  factoryPrice?: number;
+
+  @IsNumber()
+  @IsOptional()
+  factorySubTotal?: number;
 }
 
 export class PurchaseOrderSurchargeDto {
@@ -131,6 +139,30 @@ export class CreatePurchaseOrderDto {
   @IsOptional()
   purchaseById?: number;
 
+  @IsString()
+  @IsOptional()
+  currency?: string;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
+
+  @IsString()
+  @IsOptional()
+  paymentMethod?: string;
+
+  @IsInt()
+  @IsOptional()
+  paymentAccountId?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paymentExchangeRate?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paymentForeignAmount?: number;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PurchaseOrderItemDto)
@@ -187,6 +219,14 @@ export class UpdatePurchaseOrderDto {
   @IsInt()
   @IsOptional()
   purchaseById?: number;
+
+  @IsString()
+  @IsOptional()
+  currency?: string;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -312,6 +352,14 @@ export class CreatePurchaseOrderFromOrderSupplierItemDto {
   @IsIn(['normal', 'damaged'])
   @IsOptional()
   conditionType?: 'normal' | 'damaged';
+
+  @IsNumber()
+  @IsOptional()
+  factoryPrice?: number;
+
+  @IsNumber()
+  @IsOptional()
+  factorySubTotal?: number;
 }
 
 export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
@@ -324,6 +372,14 @@ export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
   @IsInt()
   @IsOptional()
   accountId?: number;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
+
+  @IsNumber()
+  @IsOptional()
+  foreignAmount?: number;
 }
 
 export class CreatePurchaseOrderFromOrderSupplierDto {

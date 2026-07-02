@@ -71,6 +71,8 @@ export class PurchaseOrdersService {
             lineNumber: item.lineNumber ?? index + 1,
             // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
             conditionType: item.conditionType || 'normal',
+            factoryPrice: item.factoryPrice != null ? Number(item.factoryPrice) : null,
+            factorySubTotal: item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
           };
         }),
       );
@@ -148,8 +150,8 @@ export class PurchaseOrdersService {
           supplierDebt: debtAmount,
           // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
           // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
-          currency: 'VND',
-          exchangeRate: 1,
+          currency: dto.currency || 'VND',
+          exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : 1,
           isDraft: dto.isDraft || false,
           partnerType: dto.partnerType,
           description: dto.description,
@@ -192,7 +194,8 @@ export class PurchaseOrdersService {
             transDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : new Date(),
-            method: 'cash',
+            method: dto.paymentMethod || 'cash',
+            accountId: dto.paymentAccountId ?? null,
             partnerType: 'S',
             partnerId: dto.supplierId,
             partnerName: supplier?.name,
@@ -214,11 +217,14 @@ export class PurchaseOrdersService {
               ? new Date(dto.purchaseDate)
               : new Date(),
             amount: paidAmount,
-            paymentMethod: 'cash',
+            paymentMethod: dto.paymentMethod || 'cash',
+            accountId: dto.paymentAccountId ?? null,
             description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate: dto.paymentExchangeRate != null ? Number(dto.paymentExchangeRate) : null,
+            foreignAmount: dto.paymentForeignAmount != null ? Number(dto.paymentForeignAmount) : null,
           },
         });
       }
@@ -684,6 +690,8 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate: osPayment.exchangeRate ?? null,
+            foreignAmount: osPayment.foreignAmount ?? null,
           },
         });
       }
@@ -744,6 +752,8 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate: payment.exchangeRate != null ? Number(payment.exchangeRate) : null,
+            foreignAmount: payment.foreignAmount != null ? Number(payment.foreignAmount) : null,
           },
         });
       }
@@ -1219,6 +1229,8 @@ export class PurchaseOrdersService {
               lineNumber: item.lineNumber ?? index + 1,
               // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
               conditionType: item.conditionType || 'normal',
+              factoryPrice: item.factoryPrice != null ? Number(item.factoryPrice) : null,
+              factorySubTotal: item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
             };
           }),
         );
@@ -1295,6 +1307,8 @@ export class PurchaseOrdersService {
         partnerType: dto.partnerType,
         description: dto.description,
         purchaseById: dto.purchaseById,
+        currency: dto.currency,
+        exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : undefined,
       };
 
       // Đổi NCC: ghi supplierId mới + cập nhật lại snapshot nợ đầu kỳ

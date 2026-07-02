@@ -1665,6 +1665,8 @@ model PurchaseOrderPayment {
   status          Int      @default(1)
   statusValue     String?
   cashFlowId      Int?
+  exchangeRate    Decimal? @map("exchange_rate") @db.Decimal(18, 6)
+  foreignAmount   Decimal? @map("foreign_amount") @db.Decimal(18, 2)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 

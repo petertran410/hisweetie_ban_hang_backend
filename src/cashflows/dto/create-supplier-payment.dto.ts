@@ -30,6 +30,14 @@ class PurchaseOrderPaymentItem {
 
   @IsNumber()
   amount: number;
+
+  @IsOptional()
+  @IsNumber()
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  foreignAmount?: number;
 }
 
 class SupplierDebtOffsetItem {

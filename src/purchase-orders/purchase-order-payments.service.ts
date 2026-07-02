@@ -15,6 +15,8 @@ export class CreatePurchaseOrderPaymentDto {
   accountId?: number;
   paymentDate?: string;
   notes?: string;
+  exchangeRate?: number;
+  foreignAmount?: number;
 }
 
 @Injectable()
@@ -102,6 +104,8 @@ export class PurchaseOrderPaymentsService {
           status: 1,
           statusValue: 'Đã thanh toán',
           cashFlowId: cashFlow.id,
+          exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : null,
+          foreignAmount: dto.foreignAmount != null ? Number(dto.foreignAmount) : null,
         },
       });
 

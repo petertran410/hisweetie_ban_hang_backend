@@ -2136,6 +2136,8 @@ export class CashFlowsService {
               status: 1,
               statusValue: 'Đã thanh toán',
               cashFlowId: null,
+              exchangeRate: po.exchangeRate != null ? Number(po.exchangeRate) : null,
+              foreignAmount: po.foreignAmount != null ? Number(po.foreignAmount) : null,
             },
           });
 
