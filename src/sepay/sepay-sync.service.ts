@@ -40,6 +40,8 @@ export interface SepaySyncResult {
   created: number;
   updated: number;
   pages: number;
+  /** Số giao dịch bị bỏ qua vì tài khoản không nằm trong whitelist bank_accounts. */
+  skipped: number;
 }
 
 @Injectable()
@@ -86,7 +88,31 @@ export class SepaySyncService {
       created: 0,
       updated: 0,
       pages: 0,
+      skipped: 0,
     };
+
+    // Whitelist tài khoản: chỉ đồng bộ giao dịch của các TK đã đăng ký trong
+    // bank_accounts. Sepay trả về account_number (TK chính) và sub_account (VA).
+    //   - TK thường (MB, ACB, Techcombank): số TK nằm ở account_number.
+    //   - BIDV VA: bank_accounts lưu VA (96460248888) — Sepay để ở sub_account,
+    //     còn account_number là TK chính (8601539888).
+    // Vậy giữ giao dịch nếu account_number HOẶC sub_account khớp whitelist.
+    // Guard: nếu whitelist rỗng (bank_accounts trống) → KHÔNG lọc, lấy hết
+    // để tránh mất dữ liệu do lỗi cấu hình.
+    const bankAccounts = await this.prisma.bankAccount.findMany({
+      select: { accountNumber: true },
+    });
+    const accountWhitelist = new Set(
+      bankAccounts
+        .map((b) => b.accountNumber)
+        .filter((v): v is string => !!v),
+    );
+    const applyWhitelist = accountWhitelist.size > 0;
+    if (!applyWhitelist) {
+      this.logger.warn(
+        'Sepay sync: bank_accounts rỗng → KHÔNG lọc theo whitelist, lấy tất cả giao dịch.',
+      );
+    }
 
     // Boundary thời gian cho trang kế (Sepay format "yyyy-mm-dd HH:MM:SS", giờ VN).
     let transactionDateMax: string | undefined = undefined;
@@ -109,12 +135,28 @@ export class SepaySyncService {
       let oldestDate: string | undefined = undefined;
       for (const tx of freshTxs) {
         seenIds.add(String(tx.id));
+        // Cập nhật mốc thời gian TRƯỚC khi lọc, để phân trang không bị kẹt
+        // (giao dịch bị bỏ qua vẫn phải tính vào boundary cuốn chiếu).
         if (
           tx.transaction_date &&
           (oldestDate === undefined || tx.transaction_date < oldestDate)
         ) {
           oldestDate = tx.transaction_date;
         }
+
+        // Lọc theo whitelist tài khoản (nếu có).
+        if (applyWhitelist) {
+          const accNum = tx.account_number ?? undefined;
+          const subAcc = tx.sub_account ?? undefined;
+          const matched =
+            (accNum && accountWhitelist.has(accNum)) ||
+            (subAcc && accountWhitelist.has(subAcc));
+          if (!matched) {
+            result.skipped += 1;
+            continue;
+          }
+        }
+
         const { isCreated } = await this.upsertTransaction(tx);
         if (isCreated) result.created += 1;
         else result.updated += 1;
@@ -122,7 +164,7 @@ export class SepaySyncService {
 
       this.logger.log(
         `Sepay sync: page ${result.pages}, +${freshTxs.length} new tx ` +
-          `(fetched=${result.fetched}, created=${result.created}, updated=${result.updated})`,
+          `(fetched=${result.fetched}, created=${result.created}, updated=${result.updated}, skipped=${result.skipped})`,
       );
 
       // Trang chưa đầy => đã chạm giao dịch cũ nhất => dừng.

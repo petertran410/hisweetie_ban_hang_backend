@@ -26,6 +26,7 @@
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
     "seed:upsert-permissions": "ts-node prisma/seeds/upsert-permissions.ts",
     "seed:suppliers-export": "ts-node prisma/seeds/add-suppliers-export-permission.ts",
+    "seed:transfers-export": "ts-node prisma/seeds/add-transfers-export-permission.ts",
     "seed:orders-export": "ts-node prisma/seeds/add-orders-export-permission.ts",
     "seed:vat-invoices-export": "ts-node prisma/seeds/add-vat-invoices-export-permission.ts",
     "seed:invoices-report-delivered": "ts-node prisma/seeds/add-invoices-report-delivered-permission.ts",

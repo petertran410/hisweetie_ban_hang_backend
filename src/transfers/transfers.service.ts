@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateTransferDto,
@@ -232,6 +234,345 @@ export class TransfersService {
       currentItem,
       data: formattedData,
     };
+  }
+
+  /**
+   * Dựng where filter cho phiếu chuyển hàng — GIỮ NGUYÊN logic của findAll.
+   * Dùng chung cho export tổng quan và export chi tiết.
+   */
+  private buildTransferWhere(query: TransferQueryDto): any {
+    const {
+      search,
+      fromBranchIds,
+      toBranchIds,
+      currentBranchId,
+      status,
+      fromReceivedDate,
+      toReceivedDate,
+      fromTransferDate,
+      toTransferDate,
+    } = query;
+
+    const where: any = {};
+
+    if (search && search.trim()) {
+      where.code = { contains: search.trim(), mode: 'insensitive' };
+    }
+
+    if (currentBranchId) {
+      const baseConditions: any[] = [
+        { fromBranchId: currentBranchId },
+        { toBranchId: currentBranchId, status: { gte: 2 } },
+      ];
+
+      if (fromBranchIds && fromBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+        ];
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+        ];
+      } else {
+        where.OR = baseConditions;
+      }
+    } else {
+      if (
+        fromBranchIds &&
+        fromBranchIds.length > 0 &&
+        toBranchIds &&
+        toBranchIds.length > 0
+      ) {
+        where.AND = [
+          { fromBranchId: { in: fromBranchIds } },
+          { toBranchId: { in: toBranchIds } },
+          { status: { gte: 2 } },
+        ];
+      } else if (fromBranchIds && fromBranchIds.length > 0) {
+        where.fromBranchId = { in: fromBranchIds };
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.toBranchId = { in: toBranchIds };
+        where.status = { gte: 2 };
+      }
+    }
+
+    if (status && status.length > 0) {
+      if (where.OR) {
+        where.OR = where.OR.map((condition: any) => {
+          if (condition.status && condition.status.gte) {
+            return {
+              ...condition,
+              status: { in: status.filter((s) => s >= 2) },
+            };
+          }
+          return { ...condition, status: { in: status } };
+        });
+      } else if (where.AND) {
+        where.AND = where.AND.map((condition: any) => {
+          if (condition.status) {
+            return { status: { in: status } };
+          }
+          return condition;
+        });
+      } else {
+        where.status = { in: status };
+      }
+    }
+
+    if (fromReceivedDate || toReceivedDate) {
+      where.receivedDate = {};
+      if (fromReceivedDate) where.receivedDate.gte = new Date(fromReceivedDate);
+      if (toReceivedDate) where.receivedDate.lte = new Date(toReceivedDate);
+    }
+
+    if (fromTransferDate || toTransferDate) {
+      where.transferredDate = {};
+      if (fromTransferDate)
+        where.transferredDate.gte = new Date(fromTransferDate);
+      if (toTransferDate) where.transferredDate.lte = new Date(toTransferDate);
+    }
+
+    return where;
+  }
+
+  async exportTransfers(query: TransferQueryDto, res: Response): Promise<void> {
+    const where = this.buildTransferWhere(query);
+
+    const STATUS_LABEL: Record<number, string> = {
+      1: 'Phiếu tạm',
+      2: 'Đang chuyển',
+      3: 'Đã nhận',
+      4: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    // ── Stream Excel ──────────────────────────────────────────────────────────
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chuyển hàng');
+
+    sheet.columns = [
+      { header: 'Mã chuyển hàng', key: 'code', width: 18 },
+      { header: 'Ngày chuyển', key: 'transferredDate', width: 20 },
+      { header: 'Ngày nhận', key: 'receivedDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Từ chi nhánh', key: 'fromBranch', width: 22 },
+      { header: 'Tới chi nhánh', key: 'toBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Tổng SL chuyển', key: 'totalSendQuantity', width: 16 },
+      { header: 'Tổng SL nhận', key: 'totalReceivedQuantity', width: 16 },
+      { header: 'Tổng mặt hàng', key: 'totalGoods', width: 14 },
+      { header: 'Giá trị chuyển', key: 'totalTransfer', width: 16 },
+      { header: 'Giá trị nhận', key: 'totalReceive', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.transfer.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          fromBranch: { select: { name: true } },
+          toBranch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: { sendQuantity: true, receivedQuantity: true },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const t of batch) {
+        const totalSendQuantity = t.details.reduce(
+          (s, d) => s + Number(d.sendQuantity),
+          0,
+        );
+        const totalReceivedQuantity = t.details.reduce(
+          (s, d) => s + Number(d.receivedQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: t.code,
+          transferredDate: fmtDateTime(t.transferredDate),
+          receivedDate: fmtDateTime(t.receivedDate),
+          createdAt: fmtDateTime(t.createdAt),
+          fromBranch: t.fromBranch?.name || '',
+          toBranch: t.toBranch?.name || '',
+          createdBy: t.creator?.name || '',
+          totalSendQuantity,
+          totalReceivedQuantity,
+          totalGoods: t.details.length,
+          totalTransfer: Number(t.totalTransfer) || 0,
+          totalReceive: Number(t.totalReceive) || 0,
+          note: t.noteBySource || '',
+          status: STATUS_LABEL[t.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildTransferWhere với export tổng quan.
+   */
+  async exportTransfersDetail(
+    query: TransferQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildTransferWhere(query);
+
+    const STATUS_LABEL: Record<number, string> = {
+      1: 'Phiếu tạm',
+      2: 'Đang chuyển',
+      3: 'Đã nhận',
+      4: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết chuyển hàng');
+
+    sheet.columns = [
+      { header: 'Mã chuyển hàng', key: 'code', width: 18 },
+      { header: 'Ngày chuyển', key: 'transferredDate', width: 20 },
+      { header: 'Ngày nhận', key: 'receivedDate', width: 20 },
+      { header: 'Từ chi nhánh', key: 'fromBranch', width: 22 },
+      { header: 'Tới chi nhánh', key: 'toBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL chuyển', key: 'sendQuantity', width: 12 },
+      { header: 'SL nhận', key: 'receivedQuantity', width: 12 },
+      { header: 'Đơn giá', key: 'sendPrice', width: 14 },
+      { header: 'Thành tiền', key: 'lineTotal', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.transfer.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          fromBranch: { select: { name: true } },
+          toBranch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const t of batch) {
+        const base = {
+          code: t.code,
+          transferredDate: fmtDateTime(t.transferredDate),
+          receivedDate: fmtDateTime(t.receivedDate),
+          fromBranch: t.fromBranch?.name || '',
+          toBranch: t.toBranch?.name || '',
+          createdBy: t.creator?.name || '',
+          status: STATUS_LABEL[t.status] || '',
+        };
+
+        if (!t.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            sendQuantity: 0,
+            receivedQuantity: 0,
+            sendPrice: 0,
+            lineTotal: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of t.details) {
+          const sendQuantity = Number(d.sendQuantity) || 0;
+          const sendPrice = Number(d.sendPrice) || 0;
+          const row = sheet.addRow({
+            ...base,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            sendQuantity,
+            // SL nhận chỉ có ý nghĩa khi phiếu đã nhận (status=3), giống UI.
+            receivedQuantity:
+              t.status === 3 ? Number(d.receivedQuantity) || 0 : 0,
+            sendPrice,
+            lineTotal: sendQuantity * sendPrice,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {
