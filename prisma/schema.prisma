@@ -87,6 +87,8 @@ model User {
   bankAccountMapping             UserBankAccount?
   notifications                  Notification[]
   createdVehicleShipments        VehicleShipment[]      @relation("VehicleShipmentCreator")
+  createdFactories               Factory[]              @relation("FactoryCreator")
+  factoryChangeLogs              FactoryChangeLog[]     @relation("FactoryChangeLogChanger")
 
   @@map("users")
 }
@@ -539,6 +541,7 @@ model Supplier {
   purchaseOrders       PurchaseOrder[]
   supplierGroupDetails SupplierGroupDetail[]
   orderSuppliers       OrderSupplier[]
+  factories            Factory[]
 
   supplierReturns SupplierReturn[]
   staffUsers      User[]                @relation("SupplierStaff")
@@ -767,8 +770,17 @@ model Product {
   promotionProducts     PromotionProduct[]     @relation("PromotionProductRef")
   vehicleShipmentItems  VehicleShipmentItem[]
 
+  // Liên kết nhà máy chính / backup (FK nullable, onDelete SetNull)
+  primaryFactoryId Int?
+  backupFactoryId  Int?
+  primaryFactory   Factory? @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id], onDelete: SetNull)
+  backupFactory    Factory? @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id], onDelete: SetNull)
+  factoryChangeLogs FactoryChangeLog[]
+
   @@index([id, name])
   @@index([larkSyncStatus])
+  @@index([primaryFactoryId])
+  @@index([backupFactoryId])
   @@map("products")
 }
 
@@ -2267,18 +2279,57 @@ model PurchaseOrderProductionStage {
 }
 
 /// Nhà máy — master data cho dòng đặt hàng nhập, cho phép thêm/sửa như cửa khẩu.
+/// Mở rộng: gắn vào Supplier (1 NCC quản lý nhiều NM), có country/currency,
+/// và liên kết 2 chiều với Product (vai trò primary/backup).
 model Factory {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  isActive    Boolean  @default(true)
-  createdBy   Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  code          String?  @unique
+  name          String
+  description   String?
+  country       String?
+  currency      String?  @default("VND")
+  contactNumber String?
+  address       String?
+  supplierId    Int?
+  isActive      Boolean  @default(true)
+  createdBy     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  orderSupplierItems OrderSupplierItem[]
+  supplier              Supplier?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  creator               User?                @relation("FactoryCreator", fields: [createdBy], references: [id])
+  primaryForProducts    Product[]            @relation("ProductPrimaryFactory")
+  backupForProducts     Product[]            @relation("ProductBackupFactory")
+  orderSupplierItems    OrderSupplierItem[]
+  factoryChangeLogs     FactoryChangeLog[]
 
+  @@index([supplierId])
+  @@index([isActive])
   @@map("factories")
+}
+
+/// Bảng audit log ghi nhận thay đổi nhà máy chính/backup của sản phẩm.
+/// Mỗi lần `update` Product làm thay đổi primaryFactoryId hoặc backupFactoryId
+/// sẽ tạo 1 row mới tại đây.
+model FactoryChangeLog {
+  id                Int      @id @default(autoincrement())
+  productId         Int
+  factoryId         Int
+  role              String   // "primary" | "backup"
+  previousFactoryId Int?
+  changedById       Int
+  changedByName     String?
+  reason            String?  // "set_primary" | "set_backup" | "unlink" | "swap"
+  createdAt         DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  factory Factory @relation(fields: [factoryId], references: [id])
+  changer User    @relation("FactoryChangeLogChanger", fields: [changedById], references: [id])
+
+  @@index([productId])
+  @@index([factoryId])
+  @@index([changedById])
+  @@map("factory_change_logs")
 }
 
 /// Phiếu ghép xe (vehicle shipment) — tầng điều phối optional giữa PDN

@@ -63,6 +63,31 @@ export class ProductsController {
   }
 
   /**
+   * Nếu user KHÔNG có quyền `products:assign_factory` mà body có gửi kèm
+   * primaryFactoryId / backupFactoryId → âm thầm loại bỏ 2 field này khỏi dto
+   * (không ghi đè dữ liệu nhà máy thật, không ném lỗi). Super Admin luôn được
+   * phép. Đây là lớp chặn backend bổ trợ cho việc ẩn/disable ở frontend.
+   */
+  private async stripFactoryFieldsIfNoPermission<
+    T extends { primaryFactoryId?: number; backupFactoryId?: number },
+  >(dto: T, req: any): Promise<T> {
+    const hasFactoryField =
+      dto?.primaryFactoryId !== undefined ||
+      dto?.backupFactoryId !== undefined;
+    if (!hasFactoryField) return dto;
+
+    const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
+    const canAssignFactory =
+      isSuperAdmin || permissions.includes('products:assign_factory');
+    if (canAssignFactory) return dto;
+
+    const sanitized = { ...dto };
+    delete sanitized.primaryFactoryId;
+    delete sanitized.backupFactoryId;
+    return sanitized;
+  }
+
+  /**
    * Strip giá vốn (cost) + thông tin công bố khỏi 1 product nếu thiếu quyền.
    * Lưu ý: KHÔNG strip basePrice (giá bán) vì màn hình bán hàng cần — giá bán
    * chỉ ẩn ở UI.
@@ -191,20 +216,22 @@ export class ProductsController {
 
   @Post()
   @RequirePermissions('products:create')
-  create(@Body() dto: CreateProductDto, @Req() req: any) {
+  async create(@Body() dto: CreateProductDto, @Req() req: any) {
     const userId = req.user?.id;
-    return this.productsService.create(dto, userId);
+    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    return this.productsService.create(sanitized, userId);
   }
 
   @Put(':id')
   @RequirePermissions('products:update')
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateProductDto,
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    return this.productsService.update(+id, dto, userId);
+    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    return this.productsService.update(+id, sanitized, userId);
   }
 
   @Delete(':id')

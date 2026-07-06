@@ -358,6 +358,24 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   manualCostOverride?: boolean;
+
+  /**
+   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
+   * Có thể null nếu sản phẩm chưa gắn nhà máy.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  primaryFactoryId?: number;
+
+  /**
+   * ID nhà máy backup (FK Factory). Optional.
+   * Không được trùng với primaryFactoryId.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  backupFactoryId?: number;
 }
 
 export class UpdateProductDto extends PartialType(CreateProductDto) {
@@ -551,6 +569,24 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
     return undefined;
   })
   costBranchIds?: number[];
+
+  /**
+   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
+   * Có thể null nếu sản phẩm chưa gắn nhà máy.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  primaryFactoryId?: number;
+
+  /**
+   * ID nhà máy backup (FK Factory). Optional.
+   * Không được trùng với primaryFactoryId.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  backupFactoryId?: number;
 }
 
 export class ProductQueryDto {
@@ -737,4 +773,32 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   orderDirection?: string;
+
+  /**
+   * Lọc sản phẩm theo NCC quản lý — dựa trên nhà máy (primary hoặc backup)
+   * của sản phẩm thuộc NCC này. Dùng cho filter chặt trong OrderSupplierForm.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  supplierId?: number;
+
+  /**
+   * Lọc sản phẩm theo ID nhà máy cụ thể. Kết hợp với `factoryRelation` để
+   * xác định xem filter theo primary, backup hay cả hai.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  factoryId?: number;
+
+  /**
+   * Quan hệ với factoryId:
+   * - 'primary': chỉ filter sản phẩm có primaryFactoryId = factoryId
+   * - 'backup': chỉ filter sản phẩm có backupFactoryId = factoryId
+   * - 'either' (mặc định): filter sản phẩm có primary HOẶC backup match
+   */
+  @IsOptional()
+  @IsString()
+  factoryRelation?: 'primary' | 'backup' | 'either';
 }

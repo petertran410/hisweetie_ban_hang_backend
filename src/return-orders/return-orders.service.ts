@@ -691,16 +691,25 @@ export class ReturnOrdersService {
             0,
             Number(inv.debtAmount) - refundAmount,
           );
-          const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+
+          // Trả hàng KHÔNG được đổi trạng thái giao vận vốn có của hóa đơn.
+          // Chỉ cập nhật công nợ; và chỉ nâng lên "Hoàn thành" khi công nợ về 0.
+          const invoiceUpdate: {
+            debtAmount: number;
+            status?: number;
+            statusValue?: string;
+          } = {
+            debtAmount: newDebtAmount,
+          };
+          if (newDebtAmount <= 0) {
+            invoiceUpdate.status = INVOICE_STATUS.COMPLETED;
+            invoiceUpdate.statusValue =
+              INVOICE_STATUS_LABELS[INVOICE_STATUS.COMPLETED];
+          }
 
           await tx.invoice.update({
             where: { id: returnOrder.invoiceId },
-            data: {
-              debtAmount: newDebtAmount,
-              status: invoiceStatus,
-              statusValue:
-                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
-            },
+            data: invoiceUpdate,
           });
         }
       }
@@ -1059,15 +1068,25 @@ export class ReturnOrdersService {
             Number(returnOrder.invoice.grandTotal),
             Number(returnOrder.invoice.debtAmount) + refundAmount,
           );
-          const invoiceStatus = restoredDebt <= 0 ? 1 : 3;
+
+          // Hủy trả hàng KHÔNG được đổi trạng thái giao vận vốn có của hóa đơn.
+          // Chỉ khôi phục công nợ; và chỉ nâng lên "Hoàn thành" khi công nợ về 0.
+          const invoiceUpdate: {
+            debtAmount: number;
+            status?: number;
+            statusValue?: string;
+          } = {
+            debtAmount: restoredDebt,
+          };
+          if (restoredDebt <= 0) {
+            invoiceUpdate.status = INVOICE_STATUS.COMPLETED;
+            invoiceUpdate.statusValue =
+              INVOICE_STATUS_LABELS[INVOICE_STATUS.COMPLETED];
+          }
+
           await tx.invoice.update({
             where: { id: returnOrder.invoice.id },
-            data: {
-              debtAmount: restoredDebt,
-              status: invoiceStatus,
-              statusValue:
-                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
-            },
+            data: invoiceUpdate,
           });
         }
       }

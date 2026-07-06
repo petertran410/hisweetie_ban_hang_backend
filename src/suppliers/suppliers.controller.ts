@@ -157,6 +157,24 @@ export class SuppliersController {
     return this.suppliersService.findByCode(code, getSupplierScope(req));
   }
 
+  /**
+   * Trả về danh sách productId của các sản phẩm có gắn nhà máy (primary hoặc
+   * backup) thuộc NCC này. Dùng cho filter chặt trong OrderSupplierForm:
+   * nếu mảng rỗng → NCC chưa có nhà máy nào gắn SP → search bình thường.
+   */
+  @Get(':id/product-ids-with-factory')
+  @RequirePermissions('suppliers:view')
+  @ApiOperation({
+    summary:
+      'Danh sách productId có gắn nhà máy (primary/backup) thuộc NCC này',
+  })
+  getProductIdsWithFactory(@Param('id') id: string, @Req() req: any) {
+    return this.suppliersService.getProductIdsWithFactory(
+      +id,
+      getSupplierScope(req),
+    );
+  }
+
   @Post()
   @RequirePermissions('suppliers:create')
   @ApiOperation({ summary: 'Tạo mới nhà cung cấp' })

@@ -425,6 +425,43 @@ export class SuppliersService {
     return supplier;
   }
 
+  /**
+   * Trả về danh sách productId của các sản phẩm có gắn nhà máy (primary hoặc
+   * backup) thuộc NCC này. Dùng cho filter chặt trong OrderSupplierForm:
+   * nếu response.length > 0 → NCC có nhà máy → chỉ search được các SP này.
+   */
+  async getProductIdsWithFactory(
+    id: number,
+    supplierScope?: number | null,
+  ): Promise<number[]> {
+    if (supplierScope != null && id !== supplierScope) {
+      throw new ForbiddenException(
+        'Không có quyền xem dữ liệu của nhà cung cấp khác',
+      );
+    }
+    const supplier = await this.prisma.supplier.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!supplier) {
+      throw new NotFoundException(`Supplier with id ${id} not found`);
+    }
+
+    const products = await this.prisma.product.findMany({
+      where: {
+        OR: [
+          { primaryFactory: { supplierId: id } },
+          { backupFactory: { supplierId: id } },
+        ],
+      },
+      select: { id: true },
+    });
+    // Dedupe phòng trường hợp SP có cả primary & backup cùng NCC (lý thuyết hiếm)
+    const ids = new Set<number>();
+    for (const p of products) ids.add(p.id);
+    return Array.from(ids).sort((a, b) => a - b);
+  }
+
   async findByCode(code: string, supplierScope?: number | null) {
     const supplier = await this.prisma.supplier.findUnique({
       where: { code },

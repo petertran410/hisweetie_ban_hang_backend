@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
@@ -163,6 +163,9 @@ export class ProductsService {
       onlyInPriceBook,
       orderBy,
       orderDirection,
+      supplierId,
+      factoryId,
+      factoryRelation,
     } = query;
     const skip = limit ? (page - 1) * limit : 0;
     const sortDir: 'asc' | 'desc' = orderDirection === 'asc' ? 'asc' : 'desc';
@@ -221,6 +224,28 @@ export class ProductsService {
       where.inventories = { every: { onHand: { lte: 0 } } };
     }
 
+    // ── Filter theo nhà máy (mới) ────────────────────────────────────────────
+    // supplierId: filter product mà primary HOẶC backup factory thuộc NCC này.
+    // factoryId + factoryRelation: filter product có primary/backup match.
+    if (supplierId) {
+      where.OR = [
+        { primaryFactory: { supplierId } },
+        { backupFactory: { supplierId } },
+      ];
+    } else if (factoryId) {
+      if (factoryRelation === 'primary') {
+        where.primaryFactoryId = factoryId;
+      } else if (factoryRelation === 'backup') {
+        where.backupFactoryId = factoryId;
+      } else {
+        // 'either' hoặc mặc định
+        where.OR = [
+          { primaryFactoryId: factoryId },
+          { backupFactoryId: factoryId },
+        ];
+      }
+    }
+
     let inventoriesInclude: any = { include: { branch: true } };
     if (branchIds && branchIds.length > 0) {
       inventoriesInclude = {
@@ -246,6 +271,12 @@ export class ProductsService {
             include: { images: true, inventories: true },
           },
         },
+      },
+      primaryFactory: {
+        select: { id: true, code: true, name: true, country: true, currency: true },
+      },
+      backupFactory: {
+        select: { id: true, code: true, name: true, country: true, currency: true },
       },
     };
 
@@ -763,6 +794,8 @@ export class ProductsService {
             },
           },
         },
+        primaryFactory: true,
+        backupFactory: true,
       },
     });
 
@@ -809,8 +842,39 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
+      primaryFactoryId,
+      backupFactoryId,
       ...productData
     } = dto;
+
+    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
+    if (
+      primaryFactoryId != null &&
+      backupFactoryId != null &&
+      primaryFactoryId === backupFactoryId
+    ) {
+      throw new BadRequestException(
+        'Nhà máy chính và nhà máy backup không được trùng nhau',
+      );
+    }
+
+    // Validate factory tồn tại
+    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
+      (id) => id != null,
+    ) as number[];
+    if (factoryIdsToCheck.length > 0) {
+      const foundFactories = await this.prisma.factory.findMany({
+        where: { id: { in: factoryIdsToCheck } },
+        select: { id: true },
+      });
+      const foundIds = new Set(foundFactories.map((f) => f.id));
+      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Nhà máy không tồn tại: ${missing.join(', ')}`,
+        );
+      }
+    }
 
     // Phòng vệ NaN (xem update()): loại số không hợp lệ trước khi đưa vào Prisma.
     const sanitizeNumber = (v: any): number | undefined =>
@@ -886,8 +950,56 @@ export class ProductsService {
           ...(masterProductId && {
             masterProduct: { connect: { id: masterProductId } },
           }),
+          ...(primaryFactoryId != null && {
+            primaryFactory: { connect: { id: primaryFactoryId } },
+          }),
+          ...(backupFactoryId != null && {
+            backupFactory: { connect: { id: backupFactoryId } },
+          }),
         },
       });
+
+      // Ghi audit log cho lần gắn nhà máy đầu tiên (nếu có)
+      if (factoryIdsToCheck.length > 0 && userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+        const logs: Array<{
+          productId: number;
+          factoryId: number;
+          role: string;
+          previousFactoryId: number | null;
+          changedById: number;
+          changedByName: string | null;
+          reason: string;
+        }> = [];
+        if (primaryFactoryId != null) {
+          logs.push({
+            productId: product.id,
+            factoryId: primaryFactoryId,
+            role: 'primary',
+            previousFactoryId: null,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: 'set_primary',
+          });
+        }
+        if (backupFactoryId != null) {
+          logs.push({
+            productId: product.id,
+            factoryId: backupFactoryId,
+            role: 'backup',
+            previousFactoryId: null,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: 'set_backup',
+          });
+        }
+        if (logs.length > 0) {
+          await tx.factoryChangeLog.createMany({ data: logs });
+        }
+      }
 
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
@@ -1144,8 +1256,84 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
+      primaryFactoryId,
+      backupFactoryId,
       ...productData
     } = dto;
+
+    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
+    if (
+      primaryFactoryId != null &&
+      backupFactoryId != null &&
+      primaryFactoryId === backupFactoryId
+    ) {
+      throw new BadRequestException(
+        'Nhà máy chính và nhà máy backup không được trùng nhau',
+      );
+    }
+
+    // Validate factory tồn tại nếu được truyền (không null)
+    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
+      (id) => id != null,
+    ) as number[];
+    if (factoryIdsToCheck.length > 0) {
+      const foundFactories = await this.prisma.factory.findMany({
+        where: { id: { in: factoryIdsToCheck } },
+        select: { id: true },
+      });
+      const foundIds = new Set(foundFactories.map((f) => f.id));
+      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Nhà máy không tồn tại: ${missing.join(', ')}`,
+        );
+      }
+    }
+
+    // Detect thay đổi primary/backup factory để ghi audit log sau
+    const factoryChanges: Array<{
+      role: 'primary' | 'backup';
+      factoryId: number;
+      previousFactoryId: number | null;
+      reason: string;
+    }> = [];
+
+    if (primaryFactoryId !== undefined) {
+      const newId = primaryFactoryId ?? null;
+      const oldId = currentProduct.primaryFactoryId ?? null;
+      if (newId !== oldId) {
+        factoryChanges.push({
+          role: 'primary',
+          factoryId: newId ?? 0,
+          previousFactoryId: oldId,
+          reason:
+            newId === null
+              ? 'unlink'
+              : oldId === backupFactoryId && oldId != null
+                ? 'swap'
+                : 'set_primary',
+        });
+        (productData as any).primaryFactoryId = newId;
+      }
+    }
+    if (backupFactoryId !== undefined) {
+      const newId = backupFactoryId ?? null;
+      const oldId = currentProduct.backupFactoryId ?? null;
+      if (newId !== oldId) {
+        factoryChanges.push({
+          role: 'backup',
+          factoryId: newId ?? 0,
+          previousFactoryId: oldId,
+          reason:
+            newId === null
+              ? 'unlink'
+              : oldId === primaryFactoryId && oldId != null
+                ? 'swap'
+                : 'set_backup',
+        });
+        (productData as any).backupFactoryId = newId;
+      }
+    }
 
     // Phòng vệ NaN: client có thể gửi NaN khi giá trị số được derive từ dữ liệu
     // đã bị strip (vd giá vốn bị ẩn theo quyền → Number(undefined) = NaN). Prisma
@@ -1216,6 +1404,25 @@ export class ProductsService {
           }),
         },
       });
+
+      // Ghi audit log nếu có thay đổi primary/backup factory
+      if (factoryChanges.length > 0 && userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+        await tx.factoryChangeLog.createMany({
+          data: factoryChanges.map((change) => ({
+            productId: id,
+            factoryId: change.factoryId,
+            role: change.role,
+            previousFactoryId: change.previousFactoryId,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: change.reason,
+          })),
+        });
+      }
 
       if (dto.code || dto.name) {
         const newCode = dto.code || currentProduct.code;
