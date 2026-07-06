@@ -9,7 +9,9 @@ import {
   Query,
   UseGuards,
   Req,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { PurchaseOrdersService } from './purchase-orders.service';
 import { PurchaseOrderPaymentsService } from './purchase-order-payments.service';
 import {
@@ -38,6 +40,60 @@ export class PurchaseOrdersController {
   @RequirePermissions('purchase_orders:view')
   findAll(@Query() query: PurchaseOrderQueryDto, @Req() req: any) {
     return this.purchaseOrdersService.findAll(query, getSupplierScope(req));
+  }
+
+  @Get('export')
+  @RequirePermissions('purchase_orders:export')
+  async export(
+    @Query() query: PurchaseOrderQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=NhapHang_${ts}.xlsx`,
+    );
+
+    await this.purchaseOrdersService.exportPurchaseOrders(
+      query,
+      res,
+      getSupplierScope(req),
+    );
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('purchase_orders:export')
+  async exportDetail(
+    @Query() query: PurchaseOrderQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=NhapHang_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.purchaseOrdersService.exportPurchaseOrdersDetail(
+      query,
+      res,
+      getSupplierScope(req),
+    );
   }
 
   @Get(':id')

@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePurchaseOrderDto,
@@ -827,10 +829,16 @@ export class PurchaseOrdersService {
     });
   }
 
-  async findAll(query: PurchaseOrderQueryDto, supplierScope?: number | null) {
+  /**
+   * Dựng điều kiện `where` cho phiếu nhập hàng. Tách riêng để dùng chung giữa
+   * findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị.
+   */
+  private buildPurchaseOrderWhere(
+    query: PurchaseOrderQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const {
-      pageSize = 15,
-      currentItem = 0,
       search,
       supplierId,
       supplierIds,
@@ -888,6 +896,14 @@ export class PurchaseOrdersService {
     // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
 
+    return where;
+  }
+
+  async findAll(query: PurchaseOrderQueryDto, supplierScope?: number | null) {
+    const { pageSize = 15, currentItem = 0 } = query;
+
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
     const [data, total] = await Promise.all([
       this.prisma.purchaseOrder.findMany({
         where,
@@ -914,6 +930,242 @@ export class PurchaseOrdersService {
     ]);
 
     return { data, total, pageSize, currentItem };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu nhập hàng = 1 dòng Excel. Bộ lọc dùng chung
+   * buildPurchaseOrderWhere với danh sách.
+   */
+  async exportPurchaseOrders(
+    query: PurchaseOrderQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
+    const STATUS_LABEL: Record<number, string> = {
+      0: 'Phiếu tạm',
+      1: 'Đã nhập hàng',
+      2: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Nhập hàng');
+
+    sheet.columns = [
+      { header: 'Mã nhập hàng', key: 'code', width: 18 },
+      { header: 'Mã đặt hàng nhập', key: 'orderSupplierCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người nhập', key: 'purchaseBy', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Tổng số lượng', key: 'totalQuantity', width: 14 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Chi phí nhập trả NCC', key: 'totalAmount', width: 20 },
+      { header: 'Đã trả NCC', key: 'paidAmount', width: 16 },
+      { header: 'Cần trả NCC', key: 'debtAmount', width: 16 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.purchaseOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          orderSupplier: { select: { code: true } },
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          purchaseBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          items: { select: { quantity: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const po of batch) {
+        const totalQuantity = po.items.reduce(
+          (s, it) => s + Number(it.quantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: po.code,
+          orderSupplierCode: po.orderSupplier?.code || '',
+          purchaseDate: fmtDateTime(po.purchaseDate),
+          createdAt: fmtDateTime(po.createdAt),
+          supplier: po.supplier?.name || '',
+          supplierCode: po.supplier?.code || '',
+          branch: po.branch?.name || '',
+          purchaseBy: po.purchaseBy?.name || '',
+          createdBy: po.creator?.name || '',
+          totalQuantity,
+          totalGoods: po.items.length,
+          discount: Number(po.discount) || 0,
+          totalAmount: Number(po.totalAmount) || 0,
+          paidAmount: Number(po.paidAmount) || 0,
+          debtAmount: Number(po.debtAmount) || 0,
+          status: STATUS_LABEL[po.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildPurchaseOrderWhere với export tổng
+   * quan.
+   */
+  async exportPurchaseOrdersDetail(
+    query: PurchaseOrderQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
+    const STATUS_LABEL: Record<number, string> = {
+      0: 'Phiếu tạm',
+      1: 'Đã nhập hàng',
+      2: 'Đã hủy',
+    };
+
+    const CONDITION_LABEL: Record<string, string> = {
+      normal: 'Hàng thường',
+      damaged: 'Loại B',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết nhập hàng');
+
+    sheet.columns = [
+      { header: 'Mã nhập hàng', key: 'code', width: 18 },
+      { header: 'Mã đặt hàng nhập', key: 'orderSupplierCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'Loại hàng', key: 'conditionType', width: 14 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Đơn giá', key: 'price', width: 14 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Thành tiền', key: 'totalPrice', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.purchaseOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          orderSupplier: { select: { code: true } },
+          supplier: { select: { name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          items: { orderBy: { lineNumber: 'asc' } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const po of batch) {
+        const base = {
+          code: po.code,
+          orderSupplierCode: po.orderSupplier?.code || '',
+          purchaseDate: fmtDateTime(po.purchaseDate),
+          supplier: po.supplier?.name || '',
+          branch: po.branch?.name || '',
+          createdBy: po.creator?.name || '',
+          status: STATUS_LABEL[po.status] || '',
+        };
+
+        if (!po.items.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            conditionType: '',
+            quantity: 0,
+            price: 0,
+            discount: 0,
+            totalPrice: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const it of po.items) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: it.productCode || '',
+            productName: it.productName || '',
+            conditionType: CONDITION_LABEL[it.conditionType] || '',
+            quantity: Number(it.quantity) || 0,
+            price: Number(it.price) || 0,
+            discount: Number(it.discount) || 0,
+            totalPrice: Number(it.totalPrice) || 0,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number, supplierScope?: number | null) {
