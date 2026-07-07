@@ -238,6 +238,7 @@ export class CustomersService {
       { header: 'Số ngày nợ', key: 'debtDays', width: 14 },
       { header: 'Ngày tạo', key: 'createdAt', width: 14 },
       { header: 'Người tạo', key: 'createdByName', width: 20 },
+      { header: 'Nhân viên phụ trách', key: 'misaEmployeeName', width: 22 },
     ];
 
     const headerRow = sheet.getRow(1);
@@ -317,6 +318,7 @@ export class CustomersService {
           debtDays,
           createdAt: new Date(c.createdAt).toLocaleDateString('vi-VN'),
           createdByName: c.creator?.name ?? '',
+          misaEmployeeName: c.misaEmployeeName ?? '',
         });
         row.commit();
       }

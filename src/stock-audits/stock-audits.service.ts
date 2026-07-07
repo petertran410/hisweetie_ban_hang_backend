@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStockAuditDto } from './dto/create-stock-audit.dto';
 import { UpdateStockAuditDto } from './dto/update-stock-audit.dto';
@@ -250,10 +252,12 @@ export class StockAuditsService {
   }
 
   // ─── Find All ───────────────────────────────────────────────────
-  async findAll(query: StockAuditQueryDto) {
-    const page = query.page ? +query.page : 1;
-    const limit = query.limit ? +query.limit : 20;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu kiểm kho. Tách riêng để dùng chung giữa
+   * findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị.
+   */
+  private buildStockAuditWhere(query: StockAuditQueryDto): any {
     const where: any = {};
 
     if (query.search) {
@@ -285,6 +289,15 @@ export class StockAuditsService {
       }
     }
 
+    return where;
+  }
+
+  async findAll(query: StockAuditQueryDto) {
+    const page = query.page ? +query.page : 1;
+    const limit = query.limit ? +query.limit : 20;
+
+    const where = this.buildStockAuditWhere(query);
+
     const [data, total] = await Promise.all([
       this.prisma.stockAudit.findMany({
         where,
@@ -297,6 +310,231 @@ export class StockAuditsService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu kiểm kho = 1 dòng Excel. Bộ lọc dùng chung
+   * buildStockAuditWhere với danh sách.
+   */
+  async exportStockAudits(
+    query: StockAuditQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildStockAuditWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Kiểm kho');
+
+    sheet.columns = [
+      { header: 'Mã phiếu', key: 'code', width: 18 },
+      { header: 'Chi nhánh', key: 'branch', width: 22 },
+      { header: 'Người kiểm', key: 'createdBy', width: 20 },
+      { header: 'Ngày kiểm', key: 'checkDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Số sản phẩm', key: 'totalGoods', width: 12 },
+      { header: 'Tổng tồn ban đầu', key: 'totalSystem', width: 16 },
+      { header: 'Tổng tồn thực tế', key: 'totalActual', width: 16 },
+      { header: 'Tổng SL lệch', key: 'totalDiff', width: 14 },
+      { header: 'Tổng giá trị lệch', key: 'totalDiffValue', width: 18 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.stockAudit.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: {
+              systemQuantity: true,
+              actualQuantity: true,
+              difference: true,
+              differenceValue: true,
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const a of batch) {
+        const totalSystem = a.details.reduce(
+          (s, d) => s + Number(d.systemQuantity),
+          0,
+        );
+        const totalActual = a.details.reduce(
+          (s, d) => s + Number(d.actualQuantity),
+          0,
+        );
+        const totalDiff = a.details.reduce(
+          (s, d) => s + Number(d.difference),
+          0,
+        );
+        const totalDiffValue = a.details.reduce(
+          (s, d) => s + Number(d.differenceValue),
+          0,
+        );
+        const row = sheet.addRow({
+          code: a.code,
+          branch: a.branchName || a.branch?.name || '',
+          createdBy: a.createdByName || a.creator?.name || '',
+          checkDate: fmtDateTime(a.checkDate),
+          createdAt: fmtDateTime(a.createdAt),
+          totalGoods: a.details.length,
+          totalSystem,
+          totalActual,
+          totalDiff,
+          totalDiffValue,
+          note: a.note || '',
+          status: STOCK_AUDIT_STATUS_LABEL[a.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildStockAuditWhere với export tổng
+   * quan.
+   */
+  async exportStockAuditsDetail(
+    query: StockAuditQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildStockAuditWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết kiểm kho');
+
+    sheet.columns = [
+      { header: 'Mã phiếu', key: 'code', width: 18 },
+      { header: 'Chi nhánh', key: 'branch', width: 22 },
+      { header: 'Người kiểm', key: 'createdBy', width: 20 },
+      { header: 'Ngày kiểm', key: 'checkDate', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'ĐVT', key: 'unit', width: 10 },
+      { header: 'Tồn ban đầu', key: 'systemQuantity', width: 14 },
+      { header: 'Tồn thực tế', key: 'actualQuantity', width: 14 },
+      { header: 'SL lệch', key: 'difference', width: 12 },
+      { header: 'Giá vốn', key: 'costAtCheck', width: 14 },
+      { header: 'Giá trị lệch', key: 'differenceValue', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.stockAudit.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const a of batch) {
+        const base = {
+          code: a.code,
+          branch: a.branchName || a.branch?.name || '',
+          createdBy: a.createdByName || a.creator?.name || '',
+          checkDate: fmtDateTime(a.checkDate),
+          status: STOCK_AUDIT_STATUS_LABEL[a.status] || '',
+        };
+
+        if (!a.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            unit: '',
+            systemQuantity: 0,
+            actualQuantity: 0,
+            difference: 0,
+            costAtCheck: 0,
+            differenceValue: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of a.details) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            unit: d.unit || '',
+            systemQuantity: Number(d.systemQuantity) || 0,
+            actualQuantity: Number(d.actualQuantity) || 0,
+            difference: Number(d.difference) || 0,
+            costAtCheck: Number(d.costAtCheck) || 0,
+            differenceValue: Number(d.differenceValue) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   // ─── Find One ───────────────────────────────────────────────────

@@ -7,7 +7,9 @@ import {
   Param,
   Query,
   UseGuards,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { StockAuditsService } from './stock-audits.service';
 import {
   CreateStockAuditDto,
@@ -30,6 +32,44 @@ export class StockAuditsController {
   @RequirePermissions('stock_audits:view')
   findAll(@Query() query: StockAuditQueryDto) {
     return this.service.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('stock_audits:export')
+  async export(@Query() query: StockAuditQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KiemKho_${ts}.xlsx`,
+    );
+
+    await this.service.exportStockAudits(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('stock_audits:export')
+  async exportDetail(@Query() query: StockAuditQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KiemKho_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.service.exportStockAuditsDetail(query, res);
   }
 
   @Get(':id')
