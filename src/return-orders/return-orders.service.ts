@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -42,11 +44,15 @@ export class ReturnOrdersService {
     return `TH${nextId.toString().padStart(6, '0')}`;
   }
 
-  async findAll(query: ReturnOrderQueryDto) {
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu trả hàng. Async vì cần tra cứu khách hàng
+   * theo từ khóa (searchCustomerIds). Tách riêng để dùng chung giữa findAll
+   * (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp hoàn
+   * toàn với bộ lọc đang hiển thị.
+   */
+  private async buildReturnOrderWhere(
+    query: ReturnOrderQueryDto,
+  ): Promise<any> {
     const where: any = {};
 
     if (query.search) {
@@ -95,6 +101,16 @@ export class ReturnOrdersService {
       if (query.toDate) where.createdAt.lte = new Date(query.toDate);
     }
 
+    return where;
+  }
+
+  async findAll(query: ReturnOrderQueryDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = await this.buildReturnOrderWhere(query);
+
     const [data, total] = await Promise.all([
       this.prisma.returnOrder.findMany({
         where,
@@ -134,6 +150,230 @@ export class ReturnOrdersService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu trả hàng = 1 dòng Excel. Bộ lọc dùng chung
+   * buildReturnOrderWhere với danh sách.
+   */
+  async exportReturnOrders(
+    query: ReturnOrderQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildReturnOrderWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng', key: 'code', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Người bán (HĐ)', key: 'invoiceSeller', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Mã KH', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Tổng SL trả', key: 'totalQuantity', width: 14 },
+      { header: 'Tiền cần trả KH', key: 'refundAmount', width: 16 },
+      { header: 'Đã trả cho KH', key: 'refundedAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.returnOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          invoice: {
+            select: {
+              code: true,
+              soldBy: { select: { name: true } },
+            },
+          },
+          customer: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: { requestQuantity: true },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const totalQuantity = r.details.reduce(
+          (s, d) => s + Number(d.requestQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: r.code,
+          invoiceCode: r.invoice?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          invoiceSeller: r.invoice?.soldBy?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          customerCode: r.customer?.code || '',
+          customerName: r.customer?.name || '',
+          branch: r.branch?.name || '',
+          totalGoods: r.details.length,
+          totalQuantity,
+          refundAmount: Number(r.refundAmount || r.totalReturnAmount) || 0,
+          refundedAmount: Number(r.refundedAmount) || 0,
+          note: r.note || '',
+          status: RETURN_ORDER_STATUS_LABELS[r.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildReturnOrderWhere với export tổng quan.
+   */
+  async exportReturnOrdersDetail(
+    query: ReturnOrderQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildReturnOrderWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết trả hàng');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng', key: 'code', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL trên HĐ', key: 'invoiceQuantity', width: 12 },
+      { header: 'SL yêu cầu trả', key: 'requestQuantity', width: 14 },
+      { header: 'SL xác nhận', key: 'confirmedQuantity', width: 12 },
+      { header: 'Đơn giá trả', key: 'returnPrice', width: 14 },
+      { header: 'Thành tiền', key: 'totalAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.returnOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          invoice: { select: { code: true } },
+          customer: { select: { name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const base = {
+          code: r.code,
+          invoiceCode: r.invoice?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          customerName: r.customer?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          status: RETURN_ORDER_STATUS_LABELS[r.status] || '',
+        };
+
+        if (!r.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            invoiceQuantity: 0,
+            requestQuantity: 0,
+            confirmedQuantity: 0,
+            returnPrice: 0,
+            totalAmount: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of r.details) {
+          const row = sheet.addRow({
+            ...base,
+            // Mỗi dòng chi tiết có mã HĐ riêng (phiếu trả nhiều HĐ), ưu tiên
+            // mã HĐ của dòng nếu có.
+            invoiceCode: d.invoiceCode || base.invoiceCode,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            invoiceQuantity: Number(d.invoiceQuantity) || 0,
+            requestQuantity: Number(d.requestQuantity) || 0,
+            confirmedQuantity: Number(d.confirmedQuantity) || 0,
+            returnPrice: Number(d.returnPrice) || 0,
+            totalAmount: Number(d.totalAmount) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {

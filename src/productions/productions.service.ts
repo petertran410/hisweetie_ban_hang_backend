@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductionDto,
@@ -24,16 +26,11 @@ export class ProductionsService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: ProductionQueryDto) {
-    const {
-      branchIds,
-      status,
-      fromManufacturedDate,
-      toManufacturedDate,
-      pageSize = 15,
-      currentItem = 0,
-      search,
-    } = query;
+  // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
+  // khớp đúng danh sách đang hiển thị trên UI.
+  private buildProductionWhere(query: ProductionQueryDto): any {
+    const { branchIds, status, fromManufacturedDate, toManufacturedDate, search } =
+      query;
 
     const where: any = {};
     const and: any[] = [];
@@ -75,6 +72,14 @@ export class ProductionsService {
       where.AND = and;
     }
 
+    return where;
+  }
+
+  async findAll(query: ProductionQueryDto) {
+    const { pageSize = 15, currentItem = 0 } = query;
+
+    const where = this.buildProductionWhere(query);
+
     const [total, data] = await Promise.all([
       this.prisma.production.count({ where }),
       this.prisma.production.findMany({
@@ -90,6 +95,202 @@ export class ProductionsService {
       pageSize,
       data,
     };
+  }
+
+  // Nhãn trạng thái dùng chung cho cả 2 file xuất.
+  private static readonly EXPORT_STATUS_LABEL: Record<number, string> = {
+    1: 'Phiếu tạm',
+    2: 'Hoàn thành',
+    3: 'Đã hủy',
+  };
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu sản xuất = 1 dòng Excel. Bộ lọc dùng chung
+   * buildProductionWhere với findAll để khớp danh sách đang hiển thị.
+   */
+  async exportProductions(
+    query: ProductionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildProductionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Sản xuất');
+
+    sheet.columns = [
+      { header: 'Mã sản xuất', key: 'code', width: 18 },
+      { header: 'Thời gian SX', key: 'manufacturedDate', width: 20 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên sản phẩm', key: 'productName', width: 36 },
+      { header: 'Kho đầu vào', key: 'sourceBranch', width: 22 },
+      { header: 'Kho đầu ra', key: 'destinationBranch', width: 22 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Tổng chi phí', key: 'totalCost', width: 16 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.production.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const row = sheet.addRow({
+          code: p.code,
+          manufacturedDate: fmtDateTime(p.manufacturedDate),
+          productCode: p.productCode || '',
+          productName: p.productName || '',
+          sourceBranch: p.sourceBranchName || '',
+          destinationBranch: p.destinationBranchName || '',
+          quantity: Number(p.quantity) || 0,
+          totalCost: Number(p.totalCost) || 0,
+          createdBy: p.createdByName || '',
+          note: p.note || '',
+          createdAt: fmtDateTime(p.createdAt),
+          status: ProductionsService.EXPORT_STATUS_LABEL[p.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi nguyên liệu (component) trong phiếu = 1 dòng Excel,
+   * kèm thông tin phiếu. Bộ lọc dùng chung buildProductionWhere với export tổng
+   * quan.
+   */
+  async exportProductionsDetail(
+    query: ProductionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildProductionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết sản xuất');
+
+    sheet.columns = [
+      { header: 'Mã sản xuất', key: 'code', width: 18 },
+      { header: 'Thời gian SX', key: 'manufacturedDate', width: 20 },
+      { header: 'Kho đầu vào', key: 'sourceBranch', width: 22 },
+      { header: 'Kho đầu ra', key: 'destinationBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã thành phẩm', key: 'productCode', width: 16 },
+      { header: 'Tên thành phẩm', key: 'productName', width: 30 },
+      { header: 'SL thành phẩm', key: 'quantity', width: 12 },
+      { header: 'Mã nguyên liệu', key: 'componentCode', width: 16 },
+      { header: 'Tên nguyên liệu', key: 'componentName', width: 30 },
+      { header: 'SL nguyên liệu (g)', key: 'actualGrams', width: 16 },
+      { header: 'Định lượng (g)', key: 'formulaGrams', width: 14 },
+      { header: 'SL trừ kho', key: 'unitsDeducted', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.production.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { components: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const base = {
+          code: p.code,
+          manufacturedDate: fmtDateTime(p.manufacturedDate),
+          sourceBranch: p.sourceBranchName || '',
+          destinationBranch: p.destinationBranchName || '',
+          createdBy: p.createdByName || '',
+          status: ProductionsService.EXPORT_STATUS_LABEL[p.status] || '',
+          productCode: p.productCode || '',
+          productName: p.productName || '',
+          quantity: Number(p.quantity) || 0,
+        };
+
+        if (!p.components.length) {
+          const row = sheet.addRow({
+            ...base,
+            componentCode: '',
+            componentName: '',
+            formulaGrams: 0,
+            actualGrams: 0,
+            unitsDeducted: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const c of p.components) {
+          const row = sheet.addRow({
+            ...base,
+            componentCode: c.componentCode || '',
+            componentName: c.componentName || '',
+            formulaGrams: Number(c.formulaGrams) || 0,
+            actualGrams: Number(c.actualGrams) || 0,
+            unitsDeducted: Number(c.unitsDeducted) || 0,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {

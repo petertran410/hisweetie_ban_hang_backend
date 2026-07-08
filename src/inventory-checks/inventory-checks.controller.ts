@@ -8,7 +8,9 @@ import {
   Query,
   UseGuards,
   Put,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { InventoryChecksService } from './inventory-checks.service';
 import { CreateInventoryCheckDto, InventoryCheckQueryDto } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -27,6 +29,47 @@ export class InventoryChecksController {
   @RequirePermissions('inventory_checks:view')
   findAll(@Query() query: InventoryCheckQueryDto) {
     return this.service.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('inventory_checks:export')
+  async export(@Query() query: InventoryCheckQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KiemHangLoaiB_${ts}.xlsx`,
+    );
+
+    await this.service.exportInventoryChecks(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('inventory_checks:export')
+  async exportDetail(
+    @Query() query: InventoryCheckQueryDto,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KiemHangLoaiB_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.service.exportInventoryChecksDetail(query, res);
   }
 
   @Get(':id')

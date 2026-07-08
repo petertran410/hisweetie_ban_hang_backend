@@ -4,6 +4,8 @@ import {
   IsString,
   IsDateString,
   IsNumber,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -21,6 +23,23 @@ export class UpdateCashFlowDto {
   @IsOptional()
   @IsNumber()
   amount?: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['VND', 'CNY'])
+  currency?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  foreignAmount?: number;
 
   @IsOptional()
   @IsDateString()

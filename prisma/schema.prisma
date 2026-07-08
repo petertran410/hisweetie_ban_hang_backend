@@ -1867,6 +1867,9 @@ model CashFlow {
   collectionBranchId        Int?
   isReceipt                 Boolean
   amount                    Decimal
+  currency                  String?   @default("VND") @map("currency")
+  exchangeRate              Decimal?  @default(1) @map("exchange_rate")
+  foreignAmount             Decimal?  @map("foreign_amount") @db.Decimal(18, 2)
   transDate                 DateTime  @default(now())
   method                    String?
   accountId                 Int?

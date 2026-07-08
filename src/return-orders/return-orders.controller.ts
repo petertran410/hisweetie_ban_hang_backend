@@ -8,7 +8,9 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ReturnOrdersService } from './return-orders.service';
 import {
   CreateReturnOrderDto,
@@ -33,6 +35,47 @@ export class ReturnOrdersController {
   @RequirePermissions('return_orders:view')
   findAll(@Query() query: ReturnOrderQueryDto) {
     return this.returnOrdersService.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('return_orders:export')
+  async export(@Query() query: ReturnOrderQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=TraHang_${ts}.xlsx`,
+    );
+
+    await this.returnOrdersService.exportReturnOrders(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('return_orders:export')
+  async exportDetail(
+    @Query() query: ReturnOrderQueryDto,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=TraHang_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.returnOrdersService.exportReturnOrdersDetail(query, res);
   }
 
   @Get(':id')

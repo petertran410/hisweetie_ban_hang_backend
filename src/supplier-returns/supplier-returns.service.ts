@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -70,11 +72,15 @@ export class SupplierReturnsService {
 
   // ─── findAll ─────────────────────────────────────────────────────────────────
 
-  async findAll(query: SupplierReturnQueryDto, supplierScope?: number | null) {
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu trả hàng nhập. Tách riêng để dùng chung
+   * giữa findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file
+   * khớp hoàn toàn với bộ lọc đang hiển thị (bao gồm cả scope NCC).
+   */
+  private buildSupplierReturnWhere(
+    query: SupplierReturnQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const where: any = {};
 
     if (query.search) {
@@ -123,6 +129,16 @@ export class SupplierReturnsService {
     // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
 
+    return where;
+  }
+
+  async findAll(query: SupplierReturnQueryDto, supplierScope?: number | null) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
     const [data, total] = await Promise.all([
       this.prisma.supplierReturn.findMany({
         where,
@@ -145,6 +161,227 @@ export class SupplierReturnsService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  // ─── Export ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu trả hàng nhập = 1 dòng Excel. Bộ lọc dùng
+   * chung buildSupplierReturnWhere với danh sách.
+   */
+  async exportSupplierReturns(
+    query: SupplierReturnQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã phiếu nhập', key: 'purchaseOrderCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Tên nhà cung cấp', key: 'supplierName', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Tổng SL trả', key: 'totalQuantity', width: 14 },
+      { header: 'Tổng tiền trả', key: 'totalReturnAmount', width: 16 },
+      { header: 'Tiền cần hoàn', key: 'refundAmount', width: 16 },
+      { header: 'Đã hoàn', key: 'refundedAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 20 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.supplierReturn.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          purchaseOrder: { select: { code: true } },
+          creator: { select: { name: true } },
+          details: { select: { requestQuantity: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const totalQuantity = r.details.reduce(
+          (s, d) => s + Number(d.requestQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: r.code,
+          purchaseOrderCode: r.purchaseOrder?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          supplierCode: r.supplier?.code || '',
+          supplierName: r.supplier?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          totalGoods: r.details.length,
+          totalQuantity,
+          totalReturnAmount: Number(r.totalReturnAmount) || 0,
+          refundAmount: Number(r.refundAmount) || 0,
+          refundedAmount: Number(r.refundedAmount) || 0,
+          note: r.note || '',
+          status: SUPPLIER_RETURN_STATUS_LABELS[r.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildSupplierReturnWhere với export tổng quan.
+   */
+  async exportSupplierReturnsDetail(
+    query: SupplierReturnQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng nhập chi tiết');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã phiếu nhập', key: 'purchaseOrderCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Tên nhà cung cấp', key: 'supplierName', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 20 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL nhập', key: 'purchaseQuantity', width: 12 },
+      { header: 'SL yêu cầu trả', key: 'requestQuantity', width: 14 },
+      { header: 'SL xác nhận', key: 'confirmedQuantity', width: 12 },
+      { header: 'Đơn giá trả', key: 'returnPrice', width: 14 },
+      { header: 'Thành tiền', key: 'totalAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.supplierReturn.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { name: true } },
+          branch: { select: { name: true } },
+          purchaseOrder: { select: { code: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const base = {
+          code: r.code,
+          purchaseOrderCode: r.purchaseOrder?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          supplierName: r.supplier?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          status: SUPPLIER_RETURN_STATUS_LABELS[r.status] || '',
+        };
+
+        if (!r.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            purchaseQuantity: 0,
+            requestQuantity: 0,
+            confirmedQuantity: 0,
+            returnPrice: 0,
+            totalAmount: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of r.details) {
+          const row = sheet.addRow({
+            ...base,
+            // Mỗi dòng chi tiết có thể thuộc phiếu nhập riêng (mode by_product),
+            // ưu tiên mã phiếu nhập của dòng nếu có.
+            purchaseOrderCode: d.purchaseOrderCode || base.purchaseOrderCode,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            purchaseQuantity: Number(d.purchaseQuantity) || 0,
+            requestQuantity: Number(d.requestQuantity) || 0,
+            confirmedQuantity: Number(d.confirmedQuantity) || 0,
+            returnPrice: Number(d.returnPrice) || 0,
+            totalAmount: Number(d.totalAmount) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   // ─── findOne ─────────────────────────────────────────────────────────────────

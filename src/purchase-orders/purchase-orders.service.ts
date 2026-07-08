@@ -923,6 +923,11 @@ export class PurchaseOrdersService {
           purchaseBy: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
           items: true,
+          // Cần payments (chỉ bản ghi active status≠2) để FE quy đổi "Đã trả
+          // NCC (CNY)" theo foreignAmount thật đã snapshot lúc thanh toán,
+          // thay vì chia paidAmount(VND)/exchangeRate gốc của phiếu → lệch khi
+          // tỉ giá thanh toán khác tỉ giá phiếu.
+          payments: { where: { status: { not: 2 } } },
         },
         orderBy: { createdAt: 'desc' },
       }),

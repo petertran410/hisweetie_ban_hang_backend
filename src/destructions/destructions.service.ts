@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateDestructionDto,
@@ -28,12 +30,14 @@ export class DestructionsService {
     private larkProductSync: LarkProductSyncService,
   ) {}
 
-  async findAll(query: DestructionQueryDto) {
+  // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
+  // khớp đúng danh sách đang hiển thị trên UI.
+  private buildDestructionWhere(
+    query: DestructionQueryDto,
+  ): Prisma.DestructionWhereInput {
     const {
       branchIds,
       status,
-      pageSize = 15,
-      currentItem = 0,
       fromDestructionDate,
       toDestructionDate,
       search,
@@ -68,6 +72,14 @@ export class DestructionsService {
       }
     }
 
+    return where;
+  }
+
+  async findAll(query: DestructionQueryDto) {
+    const { pageSize = 15, currentItem = 0 } = query;
+
+    const where = this.buildDestructionWhere(query);
+
     const [data, total] = await Promise.all([
       this.prisma.destruction.findMany({
         where,
@@ -84,6 +96,199 @@ export class DestructionsService {
     ]);
 
     return { data, total, pageSize };
+  }
+
+  // Nhãn trạng thái dùng chung cho cả 2 file xuất.
+  private static readonly EXPORT_STATUS_LABEL: Record<number, string> = {
+    1: 'Phiếu tạm',
+    2: 'Hoàn thành',
+    3: 'Đã hủy',
+  };
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu xuất hủy = 1 dòng Excel. Bộ lọc dùng chung
+   * buildDestructionWhere với findAll để khớp danh sách đang hiển thị.
+   */
+  async exportDestructions(
+    query: DestructionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildDestructionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Xuất hủy');
+
+    sheet.columns = [
+      { header: 'Mã xuất hủy', key: 'code', width: 18 },
+      { header: 'Thời gian hủy', key: 'destructionDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Chi nhánh', key: 'branchName', width: 22 },
+      { header: 'Người xuất hủy', key: 'createdBy', width: 20 },
+      { header: 'Tổng mặt hàng', key: 'totalGoods', width: 14 },
+      { header: 'Tổng SL hủy', key: 'totalQuantity', width: 14 },
+      { header: 'Tổng giá trị hủy', key: 'totalValue', width: 18 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.destruction.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { details: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const d of batch) {
+        const totalQuantity = d.details.reduce(
+          (s, item) => s + Number(item.quantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: d.code,
+          destructionDate: fmtDateTime(d.destructionDate),
+          createdAt: fmtDateTime(d.createdAt),
+          branchName: d.branchName || '',
+          createdBy: d.createdByName || '',
+          totalGoods: d.details.length,
+          totalQuantity,
+          totalValue: Number(d.totalValue) || 0,
+          note: d.note || '',
+          status: DestructionsService.EXPORT_STATUS_LABEL[d.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi sản phẩm hủy trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildDestructionWhere với export tổng quan.
+   */
+  async exportDestructionsDetail(
+    query: DestructionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildDestructionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết xuất hủy');
+
+    sheet.columns = [
+      { header: 'Mã xuất hủy', key: 'code', width: 18 },
+      { header: 'Thời gian hủy', key: 'destructionDate', width: 20 },
+      { header: 'Chi nhánh', key: 'branchName', width: 22 },
+      { header: 'Người xuất hủy', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'Số lượng hủy', key: 'quantity', width: 14 },
+      { header: 'Đơn giá', key: 'price', width: 14 },
+      { header: 'Thành tiền', key: 'lineTotal', width: 16 },
+      { header: 'Ghi chú dòng', key: 'lineNote', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.destruction.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { details: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const d of batch) {
+        const base = {
+          code: d.code,
+          destructionDate: fmtDateTime(d.destructionDate),
+          branchName: d.branchName || '',
+          createdBy: d.createdByName || '',
+          status: DestructionsService.EXPORT_STATUS_LABEL[d.status] || '',
+        };
+
+        if (!d.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            quantity: 0,
+            price: 0,
+            lineTotal: 0,
+            lineNote: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const item of d.details) {
+          const quantity = Number(item.quantity) || 0;
+          const price = Number(item.price) || 0;
+          const row = sheet.addRow({
+            ...base,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            quantity,
+            price,
+            lineTotal: Number(item.totalValue) || quantity * price,
+            lineNote: item.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {

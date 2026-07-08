@@ -7,6 +7,8 @@ import {
   IsDateString,
   IsArray,
   ValidateNested,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -17,6 +19,18 @@ class InvoiceAllocationDto {
 
   @IsNumber()
   amount: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  foreignAmount?: number;
 }
 
 class DebtOffsetDto {
@@ -26,6 +40,18 @@ class DebtOffsetDto {
 
   @IsNumber()
   amount: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  foreignAmount?: number;
 }
 
 export class CreateCashFlowDto {
@@ -52,6 +78,23 @@ export class CreateCashFlowDto {
 
   @IsNumber()
   amount: number;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['VND', 'CNY'])
+  currency?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  foreignAmount?: number;
 
   @IsOptional()
   @IsDateString()

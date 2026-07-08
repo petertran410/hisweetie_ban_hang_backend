@@ -39,6 +39,15 @@ export class CashFlowsService {
 
       const statusValue = dto.isReceipt ? 'Đã thanh toán' : 'Đã chi';
 
+      // Validate currency snapshot
+      const currency = dto.currency || 'VND';
+      if (!['VND', 'CNY'].includes(currency)) {
+        throw new Error('Currency chỉ chấp nhận VND hoặc CNY');
+      }
+      if (currency === 'CNY' && (!dto.exchangeRate || dto.exchangeRate <= 0)) {
+        throw new Error('NCC nước ngoài (CNY) phải có tỉ giá > 0');
+      }
+
       let customerDebtSnapshot: number | null = null;
       const createdCtnIds: number[] = [];
       const createdInvoicePaymentIds: number[] = [];
@@ -313,6 +322,9 @@ export class CashFlowsService {
           collectionBranchId: dto.collectionBranchId,
           isReceipt: dto.isReceipt,
           amount: dto.amount,
+          currency,
+          exchangeRate: dto.exchangeRate ?? 1,
+          foreignAmount: dto.foreignAmount ?? null,
           transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
           method: method,
           accountId: dto.accountId,
@@ -722,6 +734,13 @@ export class CashFlowsService {
           branchId: dto.branchId,
           cashFlowGroupId: dto.cashFlowGroupId,
           amount: dto.amount,
+          ...(dto.currency !== undefined ? { currency: dto.currency } : {}),
+          ...(dto.exchangeRate !== undefined
+            ? { exchangeRate: dto.exchangeRate }
+            : {}),
+          ...(dto.foreignAmount !== undefined
+            ? { foreignAmount: dto.foreignAmount }
+            : {}),
           transDate: dto.transDate ? new Date(dto.transDate) : undefined,
           method: dto.method,
           accountId: dto.accountId,
@@ -2285,6 +2304,21 @@ export class CashFlowsService {
       let cashFlow: any = null;
       if (dto.totalAmount > 0) {
         const code = await this.generateSafeCashFlowCode(false, tx);
+
+        // Snapshot tiền tệ: nếu có PO nào là ngoại tệ (foreignAmount != null)
+        // → CashFlow được đánh dấu CNY với tổng foreignAmount. Rate lấy từ PO
+        // đầu tiên có foreignAmount (giả định đồng nhất 1 phiếu chi).
+        const foreignPOs =
+          dto.purchaseOrders?.filter(
+            (po) => po.foreignAmount != null && po.exchangeRate != null,
+          ) || [];
+        const isAnyForeign = foreignPOs.length > 0;
+        const firstForeign = foreignPOs[0];
+        const totalForeignAmount = foreignPOs.reduce(
+          (s, po) => s + Number(po.foreignAmount || 0),
+          0,
+        );
+
         cashFlow = await tx.cashFlow.create({
           data: {
             code,
@@ -2292,6 +2326,11 @@ export class CashFlowsService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: dto.totalAmount,
+            currency: isAnyForeign ? 'CNY' : 'VND',
+            exchangeRate: firstForeign
+              ? Number(firstForeign.exchangeRate)
+              : 1,
+            foreignAmount: isAnyForeign ? totalForeignAmount : null,
             transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
             method: dto.method || 'cash',
             accountId: dto.accountId,

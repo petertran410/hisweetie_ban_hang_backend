@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CancelOrderSupplierDto,
@@ -54,7 +56,15 @@ export class OrderSuppliersService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: OrderSupplierQueryDto, supplierScope?: number | null) {
+  /**
+   * Dựng điều kiện `where` cho PĐN. Tách riêng để dùng chung giữa findAll,
+   * getDetailItems và export/export-detail — đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị trên UI.
+   */
+  private buildOrderSupplierWhere(
+    query: OrderSupplierQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const {
       branchId,
       branchIds,
@@ -64,8 +74,6 @@ export class OrderSuppliersService {
       userId,
       createdDateFrom,
       createdDateTo,
-      pageSize = 15,
-      currentItem = 0,
       search,
     } = query;
 
@@ -83,13 +91,6 @@ export class OrderSuppliersService {
                 { productCode: { contains: search, mode: 'insensitive' } },
                 { productName: { contains: search, mode: 'insensitive' } },
               ],
-            },
-          },
-        },
-        {
-          purchaseOrders: {
-            some: {
-              code: { contains: search, mode: 'insensitive' },
             },
           },
         },
@@ -117,8 +118,15 @@ export class OrderSuppliersService {
       }
     }
 
-    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
+    // Scope NCC: ép theo NCC của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
+
+    return where;
+  }
+
+  async findAll(query: OrderSupplierQueryDto, supplierScope?: number | null) {
+    const { pageSize = 15, currentItem = 0 } = query;
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
 
     const [data, total] = await Promise.all([
       this.prisma.orderSupplier.findMany({
@@ -187,57 +195,8 @@ export class OrderSuppliersService {
     query: OrderSupplierQueryDto,
     supplierScope?: number | null,
   ) {
-    const {
-      branchId,
-      branchIds,
-      supplierId,
-      status,
-      createdById,
-      userId,
-      createdDateFrom,
-      createdDateTo,
-      pageSize = 15,
-      currentItem = 0,
-      search,
-    } = query;
-
-    const where: any = {};
-    if (search) {
-      where.OR = [
-        { code: { contains: search, mode: 'insensitive' } },
-        { supplier: { name: { contains: search, mode: 'insensitive' } } },
-        { supplier: { code: { contains: search, mode: 'insensitive' } } },
-        {
-          items: {
-            some: {
-              OR: [
-                { productCode: { contains: search, mode: 'insensitive' } },
-                { productName: { contains: search, mode: 'insensitive' } },
-              ],
-            },
-          },
-        },
-      ];
-    }
-    if (branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
-    } else if (branchId) {
-      where.branchId = branchId;
-    }
-    if (supplierId) where.supplierId = supplierId;
-    if (status !== undefined && status.length > 0) {
-      where.status = status.length === 1 ? status[0] : { in: status };
-    }
-    if (createdById) where.createdBy = createdById;
-    if (userId) where.userId = userId;
-    if (createdDateFrom || createdDateTo) {
-      where.createdAt = {};
-      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
-      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
-    }
-
-    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
-    if (supplierScope != null) where.supplierId = supplierScope;
+    const { pageSize = 15, currentItem = 0, search } = query;
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
 
     const orderSuppliers = await this.prisma.orderSupplier.findMany({
       where,
@@ -422,6 +381,397 @@ export class OrderSuppliersService {
     const total = flat.length;
     const data = flat.slice(currentItem, currentItem + pageSize);
     return { data, total, pageSize, currentItem };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu đặt hàng nhập = 1 dòng Excel. Bộ lọc dùng
+   * chung buildOrderSupplierWhere với danh sách/chi tiết.
+   *
+   * Cột tài chính (Tổng tiền hàng / Cần trả NCC / Đã trả NCC) ưu tiên CNY +
+   * VND phụ khi phiếu NCC nước ngoài (currency='CNY') — đối xứng cách hiển
+   * thị ở FE trang danh sách. Các phiếu NCC nội địa xuất 1 cột VND như cũ.
+   */
+  async exportOrderSuppliers(
+    query: OrderSupplierQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Đặt hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã đặt hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã nhập hàng', key: 'purchaseOrderCodes', width: 24 },
+      { header: 'Số HĐ', key: 'contractNos', width: 24 },
+      { header: 'Ngày dự kiến nhập', key: 'orderDate', width: 20 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 20 },
+      { header: 'Ngày cập nhật', key: 'updatedAt', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 18 },
+      { header: 'Người đặt', key: 'orderBy', width: 18 },
+      { header: 'Người tạo', key: 'creator', width: 18 },
+      { header: 'Tổng SL', key: 'totalQty', width: 12 },
+      { header: 'Số mặt hàng', key: 'productQty', width: 12 },
+      { header: 'Loại tiền', key: 'currency', width: 10 },
+      { header: 'Tổng tiền hàng (VND)', key: 'totalVnd', width: 18 },
+      { header: 'Tổng tiền hàng (CNY)', key: 'totalCny', width: 18 },
+      { header: 'Giảm giá (VND)', key: 'discountVnd', width: 16 },
+      { header: 'Cần trả NCC (VND)', key: 'supplierDebtVnd', width: 18 },
+      { header: 'Cần trả NCC (CNY)', key: 'supplierDebtCny', width: 18 },
+      { header: 'Đã trả NCC (VND)', key: 'paidAmountVnd', width: 18 },
+      { header: 'Đã trả NCC (CNY)', key: 'paidAmountCny', width: 18 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Ghi chú', key: 'description', width: 28 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.orderSupplier.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          user: { select: { name: true } },
+          creator: { select: { name: true } },
+          purchaseOrders: { select: { code: true } },
+          items: {
+            select: {
+              quantity: true,
+              factorySubTotal: true,
+            },
+          },
+          vehicleShipmentItems: {
+            where: { vehicleShipment: { status: { not: 3 } } },
+            select: { contractNo: true },
+            distinct: ['contractNo'],
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const os of batch) {
+        const purchaseOrderCodes = (os.purchaseOrders || [])
+          .map((po) => po.code)
+          .filter(Boolean)
+          .join(' | ');
+        const contractNos = Array.from(
+          new Set(
+            (os.vehicleShipmentItems || [])
+              .map((v) => v.contractNo)
+              .filter(Boolean) as string[],
+          ),
+        ).join(', ');
+
+        const rate = Number(os.exchangeRate) || 1;
+        const isCny = os.currency === 'CNY';
+
+        // Tổng tiền hàng: ưu tiên CNY (factorySubTotal) khi NCC nước ngoài.
+        const totalCny = (os.items || []).reduce(
+          (s, it) => s + (Math.abs(Number(it.factorySubTotal)) || 0),
+          0,
+        );
+        const totalVnd = Number(os.total) || 0;
+
+        const paidAmountVnd = Math.abs(Number(os.paidAmount || 0));
+        const paidAmountCny = paidAmountVnd > 0 ? paidAmountVnd / rate : 0;
+
+        let discountCny = 0;
+        if (Number(os.discountRatio) > 0) {
+          discountCny = (totalCny * Number(os.discountRatio)) / 100;
+        } else if (os.discount) {
+          discountCny = Math.abs(Number(os.discount)) / rate;
+        }
+        const supplierDebtCny = Math.max(
+          0,
+          totalCny - discountCny - paidAmountCny,
+        );
+        const supplierDebtVnd = Number(os.supplierDebt) || 0;
+
+        const row = sheet.addRow({
+          code: os.code,
+          purchaseOrderCodes,
+          contractNos,
+          orderDate: fmtDateTime(os.orderDate),
+          createdAt: fmtDateTime(os.createdAt),
+          updatedAt: fmtDateTime(os.updatedAt),
+          supplier: os.supplier?.name || '',
+          supplierCode: os.supplier?.code || '',
+          branch: os.branch?.name || '',
+          orderBy: os.user?.name || '',
+          creator: os.creator?.name || '',
+          totalQty: Number(os.totalQty) || 0,
+          productQty: Number(os.productQty) || 0,
+          currency: isCny ? 'CNY' : 'VND',
+          totalVnd,
+          totalCny: isCny ? totalCny : '',
+          discountVnd: Number(os.discount) || 0,
+          supplierDebtVnd,
+          supplierDebtCny: isCny ? supplierDebtCny : '',
+          paidAmountVnd,
+          paidAmountCny: isCny ? paidAmountCny : '',
+          status: getOrderSupplierStatusLabel(os.status),
+          description: os.description || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm của PĐN = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildOrderSupplierWhere. Reuse toàn bộ
+   * logic gom receivedQty + contractNos + vehicle info của getDetailItems để
+   * kết quả xuất file khớp 1-1 với những gì UI đang hiển thị.
+   */
+  async exportOrderSuppliersDetail(
+    query: OrderSupplierQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
+    const { search } = query;
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const orderSuppliers = await this.prisma.orderSupplier.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        supplier: { select: { id: true, code: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+        user: { select: { id: true, name: true } },
+        items: {
+          include: {
+            product: {
+              select: {
+                kiotVietId: true,
+                weight: true,
+                weightUnit: true,
+                parentName: true,
+                middleName: true,
+                childName: true,
+                tradeMark: { select: { name: true } },
+              },
+            },
+            productionStage: { select: { id: true, name: true } },
+            factory: { select: { id: true, name: true } },
+          },
+        },
+        purchaseOrders: {
+          where: { isDraft: false, status: { not: 2 } },
+          select: { items: { select: { productId: true, quantity: true } } },
+        },
+      },
+    });
+
+    // Gom DISTINCT Số HĐ + thông tin xe giống getDetailItems (xem comment ở
+    // trên để hiểu vì sao cần lặp qua nhiều phiếu xe).
+    const osIds = orderSuppliers.map((o) => o.id);
+    const contractNosByKey = new Map<string, string[]>();
+    const vehicleInfoByKey = new Map<
+      string,
+      {
+        borderGateName: string | null;
+        expectedArrivalDate: Date | null;
+        actualArrivalDate: Date | null;
+      }
+    >();
+    if (osIds.length > 0) {
+      const shipItems = await this.prisma.vehicleShipmentItem.findMany({
+        where: {
+          orderSupplierId: { in: osIds },
+          vehicleShipment: { status: { not: 3 } },
+        },
+        select: {
+          orderSupplierId: true,
+          productId: true,
+          contractNo: true,
+          vehicleShipment: {
+            select: {
+              expectedArrivalDate: true,
+              actualArrivalDate: true,
+              borderGate: { select: { name: true } },
+            },
+          },
+        },
+      });
+      for (const si of shipItems) {
+        const key = `${si.orderSupplierId}:${si.productId}`;
+        if (si.contractNo) {
+          const arr = contractNosByKey.get(key) ?? [];
+          if (!arr.includes(si.contractNo)) arr.push(si.contractNo);
+          contractNosByKey.set(key, arr);
+        }
+        if (!vehicleInfoByKey.has(key) && si.vehicleShipment) {
+          vehicleInfoByKey.set(key, {
+            borderGateName: si.vehicleShipment.borderGate?.name ?? null,
+            expectedArrivalDate: si.vehicleShipment.expectedArrivalDate,
+            actualArrivalDate: si.vehicleShipment.actualArrivalDate,
+          });
+        }
+      }
+    }
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết đặt hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã PĐN', key: 'orderSupplierCode', width: 18 },
+      { header: 'Số HĐ', key: 'contractNos', width: 24 },
+      { header: 'Ngày tạo', key: 'orderDate', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 18 },
+      { header: 'Người tạo', key: 'creator', width: 18 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 32 },
+      { header: 'Thương hiệu', key: 'tradeMark', width: 16 },
+      { header: 'Nhóm hàng', key: 'productGroup', width: 22 },
+      { header: 'SL đặt', key: 'orderedQty', width: 10 },
+      { header: 'Đã nhập', key: 'receivedQty', width: 10 },
+      { header: 'Còn lại', key: 'remainingQty', width: 10 },
+      { header: 'Đơn giá', key: 'price', width: 14 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Thành tiền', key: 'subTotal', width: 16 },
+      { header: 'Đơn giá NM', key: 'factoryPrice', width: 14 },
+      { header: 'Thành tiền NM', key: 'factorySubTotal', width: 16 },
+      { header: 'Giai đoạn', key: 'productionStage', width: 18 },
+      { header: 'Nhà máy', key: 'factory', width: 18 },
+      { header: 'Cửa khẩu', key: 'borderGate', width: 16 },
+      { header: 'Ngày dự kiến về', key: 'expectedArrival', width: 20 },
+      { header: 'Ngày về thực tế', key: 'actualArrival', width: 20 },
+      { header: 'Ghi chú dòng', key: 'itemDescription', width: 24 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    // Áp lọc dòng SP khớp `search` (giống getDetailItems): khi search khớp ở
+    // cấp phiếu thì giữ toàn bộ dòng, ngược lại chỉ giữ dòng có mã/tên SP
+    // khớp. Xuất theo cách này để tệp không phình khi user chỉ tìm 1 SP.
+    const term = (search || '').trim().toLowerCase();
+
+    let rowCount = 0;
+    for (const os of orderSuppliers) {
+      const receivedByProduct: Record<number, number> = {};
+      for (const po of os.purchaseOrders) {
+        for (const it of po.items) {
+          receivedByProduct[it.productId] =
+            (receivedByProduct[it.productId] || 0) + Number(it.quantity);
+        }
+      }
+      const matchHeader =
+        !!term &&
+        ((os.code || '').toLowerCase().includes(term) ||
+          (os.supplier?.name || '').toLowerCase().includes(term) ||
+          (os.supplier?.code || '').toLowerCase().includes(term));
+
+      for (const item of os.items) {
+        const code = (item.productCode || '').toLowerCase();
+        const name = (item.productName || '').toLowerCase();
+        if (term && !matchHeader && !code.includes(term) && !name.includes(term))
+          continue;
+
+        const ordered = Number(item.quantity);
+        const received = receivedByProduct[item.productId] || 0;
+        const product = (item as any).product;
+        const productGroup = [
+          product?.parentName,
+          product?.middleName,
+          product?.childName,
+        ]
+          .filter(Boolean)
+          .join(' / ');
+        const veh = vehicleInfoByKey.get(`${os.id}:${item.productId}`);
+        const contractNos =
+          contractNosByKey.get(`${os.id}:${item.productId}`) ?? [];
+
+        const row = sheet.addRow({
+          orderSupplierCode: os.code,
+          contractNos: contractNos.join(', '),
+          orderDate: fmtDateTime(os.createdAt),
+          supplier: os.supplier?.name || '',
+          supplierCode: os.supplier?.code || '',
+          branch: os.branch?.name || '',
+          creator: os.creator?.name || '',
+          status: getOrderSupplierStatusLabel(os.status),
+          productCode: item.productCode || '',
+          productName: item.productName || '',
+          tradeMark: product?.tradeMark?.name || '',
+          productGroup,
+          orderedQty: ordered,
+          receivedQty: received,
+          remainingQty: Math.max(ordered - received, 0),
+          price: Number(item.price) || 0,
+          discount: Number(item.discount || 0),
+          subTotal: Number(item.subTotal) || 0,
+          factoryPrice:
+            item.factoryPrice != null ? Number(item.factoryPrice) : '',
+          factorySubTotal:
+            item.factorySubTotal != null ? Number(item.factorySubTotal) : '',
+          productionStage: (item as any).productionStage?.name || '',
+          factory: (item as any).factory?.name || '',
+          borderGate: veh?.borderGateName || '',
+          expectedArrival: fmtDateTime(veh?.expectedArrivalDate),
+          actualArrival: fmtDateTime(veh?.actualArrivalDate),
+          itemDescription: item.description || '',
+        });
+        row.commit();
+        rowCount += 1;
+      }
+    }
+
+    // Nếu không có dòng nào, vẫn commit workbook để file tải về có header
+    // (tránh trả về file rỗng gây nhầm lẫn cho user).
+    if (rowCount === 0) {
+      await workbook.commit();
+      return;
+    }
+
+    await workbook.commit();
   }
 
   /**

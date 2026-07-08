@@ -9,7 +9,9 @@ import {
   Query,
   UseGuards,
   Req,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ProductionsService } from './productions.service';
 import {
   CreateProductionDto,
@@ -31,6 +33,44 @@ export class ProductionsController {
   @RequirePermissions('productions:view')
   findAll(@Query() query: ProductionQueryDto) {
     return this.productionsService.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('productions:export')
+  async export(@Query() query: ProductionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=SanXuat_${ts}.xlsx`,
+    );
+
+    await this.productionsService.exportProductions(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('productions:export')
+  async exportDetail(@Query() query: ProductionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=SanXuat_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.productionsService.exportProductionsDetail(query, res);
   }
 
   @Get(':id')

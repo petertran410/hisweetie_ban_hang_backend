@@ -9,7 +9,9 @@ import {
   Query,
   UseGuards,
   Req,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { DestructionsService } from './destructions.service';
 import {
   CreateDestructionDto,
@@ -32,6 +34,44 @@ export class DestructionsController {
   @RequirePermissions('destructions:view')
   findAll(@Query() query: DestructionQueryDto) {
     return this.destructionsService.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('destructions:export')
+  async export(@Query() query: DestructionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=XuatHuy_${ts}.xlsx`,
+    );
+
+    await this.destructionsService.exportDestructions(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('destructions:export')
+  async exportDetail(@Query() query: DestructionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=XuatHuy_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.destructionsService.exportDestructionsDetail(query, res);
   }
 
   @Get(':id')

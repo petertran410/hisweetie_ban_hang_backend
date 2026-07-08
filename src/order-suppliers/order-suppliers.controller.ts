@@ -8,10 +8,12 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
   Req,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { OrderSuppliersService } from './order-suppliers.service';
 import { OrderSupplierPaymentsService } from './order-supplier-payments.service';
 import {
@@ -90,6 +92,68 @@ export class OrderSuppliersController {
   getDetailItems(@Query() query: OrderSupplierQueryDto, @Req() req: any) {
     return this.orderSuppliersService.getDetailItems(
       query,
+      getSupplierScope(req),
+    );
+  }
+
+  @Get('export')
+  @RequirePermissions('order_suppliers:export')
+  @ApiOperation({
+    summary:
+      'Xuất Excel TỔNG QUAN phiếu đặt hàng nhập theo bộ lọc hiện tại (mỗi phiếu 1 dòng).',
+  })
+  async export(
+    @Query() query: OrderSupplierQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DatHangNhap_${ts}.xlsx`,
+    );
+
+    await this.orderSuppliersService.exportOrderSuppliers(
+      query,
+      res,
+      getSupplierScope(req),
+    );
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('order_suppliers:export')
+  @ApiOperation({
+    summary:
+      'Xuất Excel CHI TIẾT phiếu đặt hàng nhập theo bộ lọc hiện tại (mỗi dòng sản phẩm 1 dòng).',
+  })
+  async exportDetail(
+    @Query() query: OrderSupplierQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DatHangNhap_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.orderSuppliersService.exportOrderSuppliersDetail(
+      query,
+      res,
       getSupplierScope(req),
     );
   }
