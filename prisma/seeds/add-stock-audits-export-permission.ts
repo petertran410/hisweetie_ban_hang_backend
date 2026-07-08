@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Xuất file kiểm kho',
-  category: 'Kiểm kho',
+  // Phải trùng category của các quyền stock_audits:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Kho',
 };
 
 async function main() {

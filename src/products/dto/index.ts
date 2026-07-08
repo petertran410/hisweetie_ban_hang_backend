@@ -801,4 +801,20 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   factoryRelation?: 'primary' | 'backup' | 'either';
+
+  /**
+   * Lọc theo thời gian tạo sản phẩm (createdAt) — cận dưới (>=).
+   * Nhận ISO date string, vd "2026-07-01T00:00:00.000Z".
+   */
+  @IsOptional()
+  @IsDateString()
+  fromCreatedDate?: string;
+
+  /**
+   * Lọc theo thời gian tạo sản phẩm (createdAt) — cận trên (<=).
+   * Nhận ISO date string, vd "2026-07-08T23:59:59.999Z".
+   */
+  @IsOptional()
+  @IsDateString()
+  toCreatedDate?: string;
 }

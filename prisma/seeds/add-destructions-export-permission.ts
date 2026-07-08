@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Xuất file xuất hủy',
-  category: 'Xuất hủy',
+  // Phải trùng category của các quyền destructions:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Kho',
 };
 
 async function main() {

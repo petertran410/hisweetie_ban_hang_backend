@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Xuất file trả hàng nhập',
-  category: 'Trả hàng nhập',
+  // Phải trùng category của các quyền supplier_returns:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Nhà cung cấp',
 };
 
 async function main() {

@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Xuất file sản xuất',
-  category: 'Sản xuất',
+  // Phải trùng category của các quyền productions:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Kho',
 };
 
 async function main() {

@@ -166,6 +166,8 @@ export class ProductsService {
       supplierId,
       factoryId,
       factoryRelation,
+      fromCreatedDate,
+      toCreatedDate,
     } = query;
     const skip = limit ? (page - 1) * limit : 0;
     const sortDir: 'asc' | 'desc' = orderDirection === 'asc' ? 'asc' : 'desc';

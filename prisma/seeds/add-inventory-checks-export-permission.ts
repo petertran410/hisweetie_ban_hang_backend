@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Xuất file kiểm hàng loại B',
-  category: 'Kiểm hàng loại B',
+  // Phải trùng category của các quyền inventory_checks:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Kho',
 };
 
 async function main() {

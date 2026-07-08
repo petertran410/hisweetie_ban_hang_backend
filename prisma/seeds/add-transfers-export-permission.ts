@@ -21,7 +21,9 @@ const PERMISSION = {
   action: 'export',
   scope: 'all',
   description: 'Export chuyển hàng',
-  category: 'Chuyển hàng',
+  // Phải trùng category của các quyền transfers:* gốc để nằm CHUNG box
+  // trên màn phân quyền (grouping = category + resource).
+  category: 'Kho',
 };
 
 async function main() {
