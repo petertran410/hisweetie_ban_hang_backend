@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePromotionDto,
@@ -18,6 +20,31 @@ import {
 } from './promotion-engine';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import { ORDER_STATUS } from '../orders/dto/order-status.constants';
+
+const PROMOTION_TYPE_LABELS: Record<string, string> = {
+  INVOICE_DISCOUNT: 'Giảm giá hóa đơn',
+  PRODUCT_DISCOUNT: 'Giảm giá hàng hóa',
+  BUY_X_GET_Y: 'Mua X tặng Y',
+  BUY_N_GET_M_SAME: 'Mua N tặng M cùng loại',
+  BUY_X_BUY_Y_PRICE: 'Mua X mua kèm Y giá KM',
+  GIFT_BY_INVOICE: 'Quà tặng theo hóa đơn',
+  CATEGORY_DISCOUNT: 'Giảm giá theo nhóm hàng',
+};
+
+const PROMOTION_STATUS_LABELS: Record<string, string> = {
+  draft: 'Nháp',
+  running: 'Đang chạy',
+  paused: 'Tạm dừng',
+  stopped: 'Đã ngừng',
+  expired: 'Hết hạn',
+};
+
+const REWARD_TYPE_LABELS: Record<string, string> = {
+  discount_percent: 'Giảm %',
+  discount_amount: 'Giảm tiền',
+  gift: 'Quà tặng',
+  discounted_buy: 'Mua kèm giá KM',
+};
 
 @Injectable()
 export class PromotionsService {
@@ -295,21 +322,7 @@ export class PromotionsService {
     const pageSize = query.pageSize || 20;
     const skip = (page - 1) * pageSize;
 
-    const where: any = {};
-    if (query.type) where.type = query.type;
-    if (query.status) where.status = query.status;
-    if (query.search) {
-      where.OR = [
-        { code: { contains: query.search, mode: 'insensitive' } },
-        { name: { contains: query.search, mode: 'insensitive' } },
-      ];
-    }
-    if (query.branchId) {
-      where.OR = [
-        { forAllBranch: true },
-        { branches: { some: { branchId: query.branchId } } },
-      ];
-    }
+    const where = this.buildPromotionWhere(query);
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.promotion.findMany({
@@ -326,6 +339,282 @@ export class PromotionsService {
       this.prisma.promotion.count({ where }),
     ]);
     return { data, total };
+  }
+
+  /**
+   * Dựng điều kiện `where` cho danh sách/xuất file khuyến mãi. Tách riêng để
+   * dùng chung giữa findAll và export/export-detail — filter xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị trên UI.
+   */
+  private buildPromotionWhere(query: PromotionQueryDto): any {
+    const where: any = {};
+    if (query.type) where.type = query.type;
+    if (query.status) where.status = query.status;
+    if (query.search) {
+      where.OR = [
+        { code: { contains: query.search, mode: 'insensitive' } },
+        { name: { contains: query.search, mode: 'insensitive' } },
+      ];
+    }
+    if (query.branchId) {
+      // branchId filter ghi đè OR search (giữ hành vi cũ của findAll).
+      where.OR = [
+        { forAllBranch: true },
+        { branches: { some: { branchId: query.branchId } } },
+      ];
+    }
+    return where;
+  }
+
+  /**
+   * Xuất Excel TỔNG QUAN chương trình khuyến mãi (mỗi CTKM = 1 dòng). Bộ lọc
+   * dùng chung buildPromotionWhere với danh sách.
+   */
+  async exportPromotions(
+    query: PromotionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildPromotionWhere(query);
+
+    const fmtDate = (d?: Date | null) =>
+      d ? new Date(d).toLocaleDateString('vi-VN') : '';
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Khuyến mãi');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã', key: 'code', width: 16 },
+      { header: 'Tên', key: 'name', width: 28 },
+      { header: 'Loại', key: 'type', width: 22 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Bật', key: 'isActive', width: 10 },
+      { header: 'Ưu tiên', key: 'priority', width: 10 },
+      { header: 'Cộng dồn', key: 'stackable', width: 12 },
+      { header: 'Tự áp dụng', key: 'autoApply', width: 12 },
+      { header: 'Ngày bắt đầu', key: 'startDate', width: 14 },
+      { header: 'Ngày kết thúc', key: 'endDate', width: 14 },
+      { header: 'Giờ áp dụng từ', key: 'applyTimeFrom', width: 14 },
+      { header: 'Giờ áp dụng đến', key: 'applyTimeTo', width: 14 },
+      { header: 'Thứ áp dụng', key: 'applyWeekdays', width: 16 },
+      { header: 'Áp dụng mọi CN', key: 'forAllBranch', width: 14 },
+      { header: 'Áp dụng mọi KH', key: 'forAllCustomer', width: 14 },
+      { header: 'Áp dụng mọi NV', key: 'forAllUser', width: 14 },
+      { header: 'Đơn tối thiểu', key: 'minOrderValue', width: 14 },
+      { header: 'SL tối thiểu', key: 'minQuantity', width: 12 },
+      { header: 'Giảm tối đa', key: 'maxDiscountAmount', width: 14 },
+      { header: 'SL quà tối đa', key: 'maxRewardQuantity', width: 14 },
+      { header: 'Giới hạn lượt', key: 'usageLimit', width: 12 },
+      { header: 'Đã dùng', key: 'usageCount', width: 10 },
+      { header: 'Số reward', key: 'rewardCount', width: 10 },
+      { header: 'Mô tả', key: 'description', width: 28 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.promotion.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          rewards: { select: { id: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        stt++;
+        sheet
+          .addRow({
+            stt,
+            code: p.code,
+            name: p.name,
+            type: PROMOTION_TYPE_LABELS[p.type] || p.type,
+            status: PROMOTION_STATUS_LABELS[p.status] || p.status,
+            isActive: p.isActive ? 'Bật' : 'Tắt',
+            priority: p.priority,
+            stackable: p.stackable ? 'Có' : 'Không',
+            autoApply: p.autoApply ? 'Có' : 'Không',
+            startDate: fmtDate(p.startDate),
+            endDate: fmtDate(p.endDate),
+            applyTimeFrom: p.applyTimeFrom || '',
+            applyTimeTo: p.applyTimeTo || '',
+            applyWeekdays: (p.applyWeekdays || []).join(', '),
+            forAllBranch: p.forAllBranch ? 'Có' : 'Không',
+            forAllCustomer: p.forAllCustomer ? 'Có' : 'Không',
+            forAllUser: p.forAllUser ? 'Có' : 'Không',
+            minOrderValue: Number(p.minOrderValue) || 0,
+            minQuantity: Number(p.minQuantity) || 0,
+            maxDiscountAmount:
+              p.maxDiscountAmount != null ? Number(p.maxDiscountAmount) : '',
+            maxRewardQuantity:
+              p.maxRewardQuantity != null ? Number(p.maxRewardQuantity) : '',
+            usageLimit: p.usageLimit ?? '',
+            usageCount: p.usageCount,
+            rewardCount: p.rewards.length,
+            description: p.description || '',
+            createdAt: fmtDateTime(p.createdAt),
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất Excel CHI TIẾT chương trình khuyến mãi (mỗi dòng reward = 1 dòng),
+   * kèm thông tin CTKM. Bộ lọc dùng chung buildPromotionWhere.
+   */
+  async exportPromotionsDetail(
+    query: PromotionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildPromotionWhere(query);
+
+    const fmtDate = (d?: Date | null) =>
+      d ? new Date(d).toLocaleDateString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết khuyến mãi');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã CTKM', key: 'code', width: 16 },
+      { header: 'Tên CTKM', key: 'name', width: 28 },
+      { header: 'Loại', key: 'type', width: 22 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Bật', key: 'isActive', width: 10 },
+      { header: 'Ưu tiên', key: 'priority', width: 10 },
+      { header: 'Ngày bắt đầu', key: 'startDate', width: 14 },
+      { header: 'Ngày kết thúc', key: 'endDate', width: 14 },
+      { header: 'Loại reward', key: 'rewardType', width: 16 },
+      { header: 'Mã SP mua', key: 'buyProductCode', width: 14 },
+      { header: 'Tên SP mua', key: 'buyProductName', width: 24 },
+      { header: 'Nhóm SP mua', key: 'buyCategoryName', width: 18 },
+      { header: 'SL mua', key: 'buyQuantity', width: 10 },
+      { header: 'Mã SP tặng/KM', key: 'rewardProductCode', width: 14 },
+      { header: 'Tên SP tặng/KM', key: 'rewardProductName', width: 24 },
+      { header: 'SL tặng', key: 'rewardQuantity', width: 10 },
+      { header: 'Giá trị KM', key: 'rewardValue', width: 12 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.promotion.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          rewards: {
+            include: {
+              buyProduct: { select: { code: true, name: true } },
+              rewardProduct: { select: { code: true, name: true } },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const base = {
+          code: p.code,
+          name: p.name,
+          type: PROMOTION_TYPE_LABELS[p.type] || p.type,
+          status: PROMOTION_STATUS_LABELS[p.status] || p.status,
+          isActive: p.isActive ? 'Bật' : 'Tắt',
+          priority: p.priority,
+          startDate: fmtDate(p.startDate),
+          endDate: fmtDate(p.endDate),
+        };
+
+        if (!p.rewards.length) {
+          stt++;
+          sheet
+            .addRow({
+              ...base,
+              stt,
+              rewardType: '',
+              buyProductCode: '',
+              buyProductName: '',
+              buyCategoryName: '',
+              buyQuantity: '',
+              rewardProductCode: '',
+              rewardProductName: '',
+              rewardQuantity: '',
+              rewardValue: '',
+            })
+            .commit();
+          continue;
+        }
+
+        for (const r of p.rewards) {
+          stt++;
+          sheet
+            .addRow({
+              ...base,
+              stt,
+              rewardType: REWARD_TYPE_LABELS[r.rewardType] || r.rewardType,
+              buyProductCode: r.buyProduct?.code || '',
+              buyProductName: r.buyProduct?.name || '',
+              buyCategoryName: r.buyCategoryName || '',
+              buyQuantity: Number(r.buyQuantity) || 0,
+              rewardProductCode: r.rewardProduct?.code || '',
+              rewardProductName: r.rewardProduct?.name || '',
+              rewardQuantity: Number(r.rewardQuantity) || 0,
+              rewardValue: Number(r.rewardValue) || 0,
+            })
+            .commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {

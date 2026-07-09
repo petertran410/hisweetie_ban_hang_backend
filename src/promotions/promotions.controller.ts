@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -9,8 +8,10 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PromotionsService } from './promotions.service';
 import {
@@ -34,6 +35,52 @@ export class PromotionsController {
   @RequirePermissions('promotions:view')
   findAll(@Query() query: PromotionQueryDto) {
     return this.promotionsService.findAll(query);
+  }
+
+  @Get('export')
+  @RequirePermissions('promotions:export')
+  @ApiOperation({
+    summary:
+      'Xuất Excel TỔNG QUAN chương trình khuyến mãi theo bộ lọc hiện tại (mỗi CTKM 1 dòng).',
+  })
+  async export(@Query() query: PromotionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KhuyenMai_${ts}.xlsx`,
+    );
+
+    await this.promotionsService.exportPromotions(query, res);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('promotions:export')
+  @ApiOperation({
+    summary:
+      'Xuất Excel CHI TIẾT chương trình khuyến mãi theo bộ lọc hiện tại (mỗi dòng reward 1 dòng).',
+  })
+  async exportDetail(@Query() query: PromotionQueryDto, @Res() res: Response) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=KhuyenMai_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.promotionsService.exportPromotionsDetail(query, res);
   }
 
   @Post('evaluate')

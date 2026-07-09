@@ -117,13 +117,33 @@ export class N8nNotifyService {
   }
 
   /**
+   * Mã khách hàng Bibi cấu hình qua N8N_BIBI_CUSTOMER_CODE (mặc định KH242699).
+   */
+  private getBibiCustomerCode(): string {
+    return (
+      this.config.get<string>('N8N_BIBI_CUSTOMER_CODE') || 'KH242699'
+    ).trim();
+  }
+
+  /**
+   * Phiếu có được coi là "đơn Bibi" hay không: TRUE nếu có ít nhất một hóa đơn
+   * thuộc khách hàng có mã trùng N8N_BIBI_CUSTOMER_CODE.
+   * Dùng để routing loại trừ: đơn Bibi CHỈ gửi webhook Bibi, KHÔNG gửi mặc định.
+   */
+  isBibiPackingSlip(packingSlip: PackingSlipForNotify): boolean {
+    const targetCode = this.getBibiCustomerCode();
+    return (packingSlip.invoices || []).some(
+      (inv) => inv.invoice?.customer?.code === targetCode,
+    );
+  }
+
+  /**
    * Luồng riêng: gửi báo đơn sang n8n workflow "Gửi tin nhắn giao hàng"
    * (node "Webhook Báo Đơn Thủy Bibi") KHI phiếu có hóa đơn của khách hàng
    * có mã cấu hình qua N8N_BIBI_CUSTOMER_CODE (mặc định KH242699).
    *
-   * Chạy song song, độc lập với notifyDelivery (Zalo). Fire-and-log:
-   * KHÔNG throw để không ảnh hưởng nghiệp vụ tạo/cập nhật packing slip.
-   * Bỏ qua im lặng nếu phiếu không chứa khách hàng mục tiêu.
+   * Fire-and-log: KHÔNG throw để không ảnh hưởng nghiệp vụ tạo/cập nhật
+   * packing slip. Bỏ qua im lặng nếu phiếu không chứa khách hàng mục tiêu.
    */
   async notifyBibiDelivery(
     packingSlip: PackingSlipForNotify,
@@ -137,15 +157,7 @@ export class N8nNotifyService {
       return { ok: false, skipped: true };
     }
 
-    const targetCode = (
-      this.config.get<string>('N8N_BIBI_CUSTOMER_CODE') || 'KH242699'
-    ).trim();
-
-    const hasTargetCustomer = (packingSlip.invoices || []).some(
-      (inv) => inv.invoice?.customer?.code === targetCode,
-    );
-
-    if (!hasTargetCustomer) {
+    if (!this.isBibiPackingSlip(packingSlip)) {
       // Không phải đơn của khách Bibi → không gửi.
       return { ok: false, skipped: true };
     }

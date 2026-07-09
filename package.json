@@ -42,6 +42,7 @@
     "seed:vat-invoices": "ts-node prisma/seeds/add-vat-invoices-permissions.ts",
     "seed:sepay": "ts-node prisma/seeds/add-sepay-permissions.ts",
     "seed:promotions": "ts-node prisma/seeds/add-promotions-permissions.ts",
+    "seed:promotions-export": "ts-node prisma/seeds/add-promotions-export-permission.ts",
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
     "seed:internal-use-purposes": "ts-node prisma/seeds/seed-internal-use-purposes.ts",
     "seed:internal-use": "ts-node prisma/seeds/add-internal-use-permissions.ts",

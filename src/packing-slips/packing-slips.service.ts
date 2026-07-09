@@ -284,23 +284,23 @@ export class PackingSlipsService {
     if (!isConsignment) {
       try {
         const fullPackingSlip = await this.findOne(packingSlip.id);
+        // Routing loại trừ lẫn nhau: phiếu có hóa đơn của khách Bibi (mã cấu
+        // hình qua env) → CHỈ gửi luồng Bibi; ngược lại → CHỈ gửi luồng mặc định.
         // Không await để response API tạo packing slip không bị chờ webhook.
-        // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
-        void this.n8nNotifyService
-          .notifyDelivery(fullPackingSlip as any)
-          .catch((err) => {
-            // Phòng ngừa, dù service đã tự log
-
-            console.error('notifyDelivery unexpected error:', err);
-          });
-
-        // Luồng riêng: nếu phiếu có khách hàng Bibi (mã cấu hình qua env),
-        // gửi thêm sang n8n workflow "Gửi tin nhắn giao hàng". Fire-and-forget.
-        void this.n8nNotifyService
-          .notifyBibiDelivery(fullPackingSlip as any)
-          .catch((err) => {
-            console.error('notifyBibiDelivery unexpected error:', err);
-          });
+        // Service đã tự nuốt lỗi, nhưng vẫn bọc thêm để chắc.
+        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+          void this.n8nNotifyService
+            .notifyBibiDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyBibiDelivery unexpected error:', err);
+            });
+        } else {
+          void this.n8nNotifyService
+            .notifyDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyDelivery unexpected error:', err);
+            });
+        }
 
         // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
         // Best-effort: lỗi ở đây không ảnh hưởng response.
@@ -419,19 +419,21 @@ export class PackingSlipsService {
     if (this.hasNotifiableChange(packingSlip, dto)) {
       try {
         const fullPackingSlip = await this.findOne(id);
-        // Fire-and-forget: không chặn response cập nhật.
-        void this.n8nNotifyService
-          .notifyDelivery(fullPackingSlip as any)
-          .catch((err) => {
-            console.error('notifyDelivery (update) unexpected error:', err);
-          });
-
-        // Luồng riêng khách Bibi (chạy song song, gate theo mã KH trong env).
-        void this.n8nNotifyService
-          .notifyBibiDelivery(fullPackingSlip as any)
-          .catch((err) => {
-            console.error('notifyBibiDelivery (update) unexpected error:', err);
-          });
+        // Routing loại trừ: phiếu có khách Bibi (mã cấu hình qua env) → CHỈ gửi
+        // Bibi; ngược lại → CHỈ gửi luồng mặc định. Fire-and-forget.
+        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+          void this.n8nNotifyService
+            .notifyBibiDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyBibiDelivery (update) unexpected error:', err);
+            });
+        } else {
+          void this.n8nNotifyService
+            .notifyDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyDelivery (update) unexpected error:', err);
+            });
+        }
       } catch (err) {
         console.error(
           'Failed to load packing slip for n8n notify (update):',
@@ -449,23 +451,36 @@ export class PackingSlipsService {
    */
   async resendDeliveryNotification(id: number) {
     const fullPackingSlip = await this.findOne(id);
-    const result = await this.n8nNotifyService.notifyDelivery(
+
+    // Định tuyến loại trừ: phiếu có khách Bibi → chỉ gửi luồng Bibi,
+    // ngược lại → gửi luồng mặc định. (Đồng nhất với create/update.)
+    const isBibi = this.n8nNotifyService.isBibiPackingSlip(
       fullPackingSlip as any,
     );
 
+    const result = isBibi
+      ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+      : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
+
     if (result.skipped) {
       throw new ServiceUnavailableException(
-        'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
+        isBibi
+          ? 'Webhook Bibi chưa được cấu hình (N8N_BIBI_WEBHOOK_URL)'
+          : 'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
       );
     }
 
     if (!result.ok) {
       throw new BadGatewayException(
-        `Gửi tin nhắn Zalo thất bại${result.error ? `: ${result.error}` : ''}`,
+        `Gửi tin nhắn thất bại${result.error ? `: ${result.error}` : ''}`,
       );
     }
 
-    return { message: 'Đã gửi lại thông báo giao hàng vào Zalo' };
+    return {
+      message: isBibi
+        ? 'Đã gửi lại thông báo giao hàng (Bibi)'
+        : 'Đã gửi lại thông báo giao hàng vào Zalo',
+    };
   }
 
   /**
@@ -495,12 +510,16 @@ export class PackingSlipsService {
   async resendDeliverySafe(id: number): Promise<void> {
     try {
       const fullPackingSlip = await this.findOne(id);
-      const result = await this.n8nNotifyService.notifyDelivery(
+      // Định tuyến loại trừ: Bibi → chỉ Bibi, ngược lại → mặc định.
+      const isBibi = this.n8nNotifyService.isBibiPackingSlip(
         fullPackingSlip as any,
       );
+      const result = isBibi
+        ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+        : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
       if (!result.ok && !result.skipped) {
         console.error(
-          `resendDeliverySafe: gửi Zalo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
+          `resendDeliverySafe: gửi thông báo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
         );
       }
     } catch (err) {
