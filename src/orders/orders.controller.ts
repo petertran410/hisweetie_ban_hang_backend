@@ -7,8 +7,10 @@ import {
   Body,
   Param,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { OrdersService } from './orders.service';
 import {
   CreateOrderDto,
@@ -66,6 +68,52 @@ export class OrdersController {
   @RequirePermissions('orders:view')
   getTotals(@Query() query: OrderQueryDto, @CurrentUser() user: any) {
     return this.ordersService.getTotals(query, user);
+  }
+
+  @Get('export')
+  @RequirePermissions('orders:export')
+  async export(
+    @Query() query: OrderQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DatHang_${ts}.xlsx`,
+    );
+
+    await this.ordersService.exportOrders(query, res, user);
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('orders:export')
+  async exportDetail(
+    @Query() query: OrderQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=DatHang_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.ordersService.exportOrdersDetail(query, res, user);
   }
 
   @Get('pending-by-product')

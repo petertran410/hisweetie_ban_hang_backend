@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import { OrderItemDto, AppliedPromotionDto } from './dto';
@@ -1011,6 +1013,305 @@ export class OrdersService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Xuất Excel TỔNG QUAN đơn đặt hàng (mỗi đơn = 1 dòng). Bộ lọc dùng chung
+   * buildOrderListWhere với danh sách/tổng, đảm bảo file xuất khớp UI. Tôn
+   * trọng scope "chỉ xem đơn của mình" (currentUser.canViewOtherStaffData).
+   */
+  async exportOrders(
+    query: OrderQueryDto,
+    res: Response,
+    currentUser?: any,
+  ): Promise<void> {
+    const where = await this.buildOrderListWhere(query, currentUser);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Đặt hàng');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã đặt hàng', key: 'code', width: 16 },
+      { header: 'Thời gian', key: 'orderDate', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 18 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Điện thoại', key: 'customerPhone', width: 14 },
+      { header: 'Bảng giá', key: 'priceBookName', width: 16 },
+      { header: 'Người bán', key: 'soldByName', width: 18 },
+      { header: 'Người tạo', key: 'creatorName', width: 18 },
+      { header: 'Người nhận', key: 'deliveryReceiver', width: 18 },
+      { header: 'ĐT người nhận', key: 'deliveryPhone', width: 14 },
+      { header: 'Địa chỉ giao', key: 'deliveryAddress', width: 28 },
+      { header: 'Ghi chú giao hàng', key: 'deliveryNote', width: 22 },
+      { header: 'Ghi chú', key: 'description', width: 22 },
+      { header: 'Tổng số lượng', key: 'totalQuantity', width: 14 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Tổng tiền hàng', key: 'totalAmount', width: 16 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Khách cần trả', key: 'grandTotal', width: 16 },
+      { header: 'Khách đã trả', key: 'paidAmount', width: 16 },
+      { header: 'Còn nợ', key: 'debtAmount', width: 14 },
+      { header: 'Trạng thái', key: 'statusValue', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.order.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { orderDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          orderDate: true,
+          createdAt: true,
+          totalAmount: true,
+          discount: true,
+          grandTotal: true,
+          paidAmount: true,
+          debtAmount: true,
+          status: true,
+          statusValue: true,
+          description: true,
+          priceBookName: true,
+          branch: { select: { name: true } },
+          customer: {
+            select: { code: true, name: true, contactNumber: true, phone: true },
+          },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          delivery: {
+            select: {
+              receiver: true,
+              contactNumber: true,
+              address: true,
+              noteForDriver: true,
+            },
+          },
+          items: { select: { quantity: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const o of batch) {
+        stt++;
+        const totalQuantity = o.items.reduce(
+          (s, it) => s + Number(it.quantity),
+          0,
+        );
+        sheet
+          .addRow({
+            stt,
+            code: o.code,
+            orderDate: fmtDateTime(o.orderDate),
+            createdAt: fmtDateTime(o.createdAt),
+            branchName: o.branch?.name ?? '',
+            customerCode: o.customer?.code ?? 'Khách vãng lai',
+            customerName: o.customer?.name ?? 'Khách vãng lai',
+            customerPhone:
+              o.customer?.contactNumber ?? (o.customer as any)?.phone ?? '',
+            priceBookName: o.priceBookName ?? '',
+            soldByName: o.soldBy?.name ?? '',
+            creatorName: o.creator?.name ?? '',
+            deliveryReceiver: o.delivery?.receiver ?? '',
+            deliveryPhone: o.delivery?.contactNumber ?? '',
+            deliveryAddress: o.delivery?.address ?? '',
+            deliveryNote: o.delivery?.noteForDriver ?? '',
+            description: o.description ?? '',
+            totalQuantity,
+            totalGoods: o.items.length,
+            totalAmount: Number(o.totalAmount) || 0,
+            discount: Number(o.discount) || 0,
+            grandTotal: Number(o.grandTotal) || 0,
+            paidAmount: Number(o.paidAmount) || 0,
+            debtAmount: Number(o.debtAmount) || 0,
+            statusValue: o.statusValue || getStatusLabel(o.status),
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất Excel CHI TIẾT đơn đặt hàng (mỗi dòng sản phẩm = 1 dòng), kèm thông
+   * tin đơn. Bộ lọc dùng chung buildOrderListWhere với export tổng quan.
+   */
+  async exportOrdersDetail(
+    query: OrderQueryDto,
+    res: Response,
+    currentUser?: any,
+  ): Promise<void> {
+    const where = await this.buildOrderListWhere(query, currentUser);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết đặt hàng');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã đặt hàng', key: 'code', width: 16 },
+      { header: 'Thời gian', key: 'orderDate', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 18 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Điện thoại', key: 'customerPhone', width: 14 },
+      { header: 'Người bán', key: 'soldByName', width: 18 },
+      { header: 'Người tạo', key: 'creatorName', width: 18 },
+      { header: 'Trạng thái', key: 'statusValue', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 14 },
+      { header: 'Tên hàng', key: 'productName', width: 28 },
+      { header: 'Ghi chú hàng hóa', key: 'productNote', width: 22 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Đơn giá', key: 'unitPrice', width: 14 },
+      { header: 'Giảm giá %', key: 'detailDiscountRatio', width: 12 },
+      { header: 'Giảm giá', key: 'detailDiscount', width: 14 },
+      { header: 'Thành tiền', key: 'totalPrice', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.order.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { orderDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          orderDate: true,
+          createdAt: true,
+          status: true,
+          statusValue: true,
+          branch: { select: { name: true } },
+          customer: {
+            select: { code: true, name: true, contactNumber: true, phone: true },
+          },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          items: {
+            orderBy: { lineNumber: 'asc' },
+            select: {
+              productCode: true,
+              productName: true,
+              note: true,
+              quantity: true,
+              price: true,
+              discount: true,
+              discountRatio: true,
+              totalPrice: true,
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const o of batch) {
+        const base = {
+          code: o.code,
+          orderDate: fmtDateTime(o.orderDate),
+          createdAt: fmtDateTime(o.createdAt),
+          branchName: o.branch?.name ?? '',
+          customerCode: o.customer?.code ?? 'Khách vãng lai',
+          customerName: o.customer?.name ?? 'Khách vãng lai',
+          customerPhone:
+            o.customer?.contactNumber ?? (o.customer as any)?.phone ?? '',
+          soldByName: o.soldBy?.name ?? '',
+          creatorName: o.creator?.name ?? '',
+          statusValue: o.statusValue || getStatusLabel(o.status),
+        };
+
+        if (!o.items.length) {
+          stt++;
+          sheet
+            .addRow({
+              ...base,
+              stt,
+              productCode: '',
+              productName: '',
+              productNote: '',
+              quantity: 0,
+              unitPrice: 0,
+              detailDiscountRatio: 0,
+              detailDiscount: 0,
+              totalPrice: 0,
+            })
+            .commit();
+          continue;
+        }
+
+        for (const it of o.items) {
+          stt++;
+          sheet
+            .addRow({
+              ...base,
+              stt,
+              productCode: it.productCode || '',
+              productName: it.productName || '',
+              productNote: it.note || '',
+              quantity: Number(it.quantity) || 0,
+              unitPrice: Number(it.price) || 0,
+              detailDiscountRatio: Number(it.discountRatio) || 0,
+              detailDiscount: Number(it.discount) || 0,
+              totalPrice: Number(it.totalPrice) || 0,
+            })
+            .commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {

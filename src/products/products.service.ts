@@ -220,6 +220,12 @@ export class ProductsService {
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
+
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };
     } else if (stockStatus === 'outstock') {
@@ -460,6 +466,8 @@ export class ProductsService {
       priceBookId,
       onlyInPriceBook,
       columns,
+      fromCreatedDate,
+      toCreatedDate,
     } = query;
 
     // ── Build where (mirror findAll) ─────────────────────────────────────────
@@ -505,6 +513,12 @@ export class ProductsService {
       where.tradeMarkId = { in: tradeMarkIds };
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
+
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
 
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };
