@@ -142,6 +142,7 @@ export class PackingSlipsService {
                 customer: {
                   select: {
                     id: true,
+                    code: true,
                     name: true,
                     contactNumber: true,
                   },
@@ -293,6 +294,14 @@ export class PackingSlipsService {
             console.error('notifyDelivery unexpected error:', err);
           });
 
+        // Luồng riêng: nếu phiếu có khách hàng Bibi (mã cấu hình qua env),
+        // gửi thêm sang n8n workflow "Gửi tin nhắn giao hàng". Fire-and-forget.
+        void this.n8nNotifyService
+          .notifyBibiDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('notifyBibiDelivery unexpected error:', err);
+          });
+
         // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
         // Best-effort: lỗi ở đây không ảnh hưởng response.
         void this.larkExpenseSync
@@ -415,6 +424,13 @@ export class PackingSlipsService {
           .notifyDelivery(fullPackingSlip as any)
           .catch((err) => {
             console.error('notifyDelivery (update) unexpected error:', err);
+          });
+
+        // Luồng riêng khách Bibi (chạy song song, gate theo mã KH trong env).
+        void this.n8nNotifyService
+          .notifyBibiDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('notifyBibiDelivery (update) unexpected error:', err);
           });
       } catch (err) {
         console.error(
