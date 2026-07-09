@@ -1134,7 +1134,7 @@ export class OrdersService {
             customerName: o.customer?.name ?? 'Khách vãng lai',
             customerPhone:
               o.customer?.contactNumber ?? (o.customer as any)?.phone ?? '',
-            priceBookName: o.priceBookName ?? '',
+            priceBookName: o.priceBookName || 'Bảng giá chung',
             soldByName: o.soldBy?.name ?? '',
             creatorName: o.creator?.name ?? '',
             deliveryReceiver: o.delivery?.receiver ?? '',
