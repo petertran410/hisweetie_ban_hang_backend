@@ -487,8 +487,12 @@ export class PromotionsService {
   }
 
   /**
-   * Xuất Excel CHI TIẾT chương trình khuyến mãi (mỗi dòng reward = 1 dòng),
-   * kèm thông tin CTKM. Bộ lọc dùng chung buildPromotionWhere.
+   * Xuất Excel CHI TIẾT chương trình khuyến mãi.
+   *
+   * Mỗi dòng Excel = 1 cặp (reward, SP mua) — vì SP mua được lưu ở
+   * `promotion_products` (role='buy') dạng mảng (buyItems), không còn chỉ
+   * dựa vào field legacy `reward.buyProductId`. Nếu reward không có SP mua
+   * (vd GIFT_BY_INVOICE) thì vẫn xuất 1 dòng với cột SP mua trống.
    */
   async exportPromotionsDetail(
     query: PromotionQueryDto,
@@ -522,6 +526,7 @@ export class PromotionsService {
       { header: 'SL mua', key: 'buyQuantity', width: 10 },
       { header: 'Mã SP tặng/KM', key: 'rewardProductCode', width: 14 },
       { header: 'Tên SP tặng/KM', key: 'rewardProductName', width: 24 },
+      { header: 'Nhóm SP tặng/KM', key: 'rewardCategoryName', width: 18 },
       { header: 'SL tặng', key: 'rewardQuantity', width: 10 },
       { header: 'Giá trị KM', key: 'rewardValue', width: 12 },
     ];
@@ -553,6 +558,12 @@ export class PromotionsService {
               rewardProduct: { select: { code: true, name: true } },
             },
           },
+          // SP mua / tặng hiện đại lưu ở đây (buyItems / rewardItems).
+          products: {
+            include: {
+              product: { select: { code: true, name: true } },
+            },
+          },
         },
       });
 
@@ -570,43 +581,108 @@ export class PromotionsService {
           endDate: fmtDate(p.endDate),
         };
 
+        // Gom SP mua / tặng từ promotion_products (nguồn chân lý hiện tại).
+        const buyProducts = p.products
+          .filter((pp) => pp.role === 'buy')
+          .map((pp) => ({
+            code: pp.product?.code || '',
+            name: pp.product?.name || '',
+            categoryName: pp.categoryName || '',
+          }));
+        const rewardProducts = p.products
+          .filter((pp) => pp.role === 'reward')
+          .map((pp) => ({
+            code: pp.product?.code || '',
+            name: pp.product?.name || '',
+            categoryName: pp.categoryName || '',
+          }));
+
         if (!p.rewards.length) {
-          stt++;
-          sheet
-            .addRow({
-              ...base,
-              stt,
-              rewardType: '',
-              buyProductCode: '',
-              buyProductName: '',
-              buyCategoryName: '',
-              buyQuantity: '',
-              rewardProductCode: '',
-              rewardProductName: '',
-              rewardQuantity: '',
-              rewardValue: '',
-            })
-            .commit();
+          // Không có reward: vẫn xuất theo danh sách SP mua (nếu có).
+          const rows =
+            buyProducts.length > 0
+              ? buyProducts
+              : [{ code: '', name: '', categoryName: '' }];
+          for (const buy of rows) {
+            stt++;
+            sheet
+              .addRow({
+                ...base,
+                stt,
+                rewardType: '',
+                buyProductCode: buy.code,
+                buyProductName: buy.name,
+                buyCategoryName: buy.categoryName,
+                buyQuantity: '',
+                rewardProductCode: '',
+                rewardProductName: '',
+                rewardCategoryName: '',
+                rewardQuantity: '',
+                rewardValue: '',
+              })
+              .commit();
+          }
           continue;
         }
 
         for (const r of p.rewards) {
-          stt++;
-          sheet
-            .addRow({
-              ...base,
-              stt,
-              rewardType: REWARD_TYPE_LABELS[r.rewardType] || r.rewardType,
-              buyProductCode: r.buyProduct?.code || '',
-              buyProductName: r.buyProduct?.name || '',
-              buyCategoryName: r.buyCategoryName || '',
-              buyQuantity: Number(r.buyQuantity) || 0,
-              rewardProductCode: r.rewardProduct?.code || '',
-              rewardProductName: r.rewardProduct?.name || '',
-              rewardQuantity: Number(r.rewardQuantity) || 0,
-              rewardValue: Number(r.rewardValue) || 0,
-            })
-            .commit();
+          // Fallback legacy: nếu không có products role=buy thì dùng
+          // reward.buyProduct / buyCategoryName.
+          const buyList =
+            buyProducts.length > 0
+              ? buyProducts
+              : [
+                  {
+                    code: r.buyProduct?.code || '',
+                    name: r.buyProduct?.name || '',
+                    categoryName: r.buyCategoryName || '',
+                  },
+                ];
+
+          // SP tặng/KM: ưu tiên products role=reward; fallback rewardProduct.
+          const giftList =
+            rewardProducts.length > 0
+              ? rewardProducts
+              : [
+                  {
+                    code: r.rewardProduct?.code || '',
+                    name: r.rewardProduct?.name || '',
+                    categoryName: '',
+                  },
+                ];
+
+          // Cartesian tối thiểu: mỗi SP mua × mỗi SP tặng (thường 1×1 hoặc N×1).
+          // Khi cả 2 list rỗng → 1 dòng trống.
+          const buys =
+            buyList.length > 0
+              ? buyList
+              : [{ code: '', name: '', categoryName: '' }];
+          const gifts =
+            giftList.length > 0
+              ? giftList
+              : [{ code: '', name: '', categoryName: '' }];
+
+          for (const buy of buys) {
+            for (const gift of gifts) {
+              stt++;
+              sheet
+                .addRow({
+                  ...base,
+                  stt,
+                  rewardType: REWARD_TYPE_LABELS[r.rewardType] || r.rewardType,
+                  buyProductCode: buy.code,
+                  buyProductName: buy.name,
+                  buyCategoryName: buy.categoryName,
+                  buyQuantity: Number(r.buyQuantity) || 0,
+                  rewardProductCode: gift.code,
+                  rewardProductName: gift.name,
+                  rewardCategoryName: gift.categoryName,
+                  rewardQuantity: Number(r.rewardQuantity) || 0,
+                  rewardValue: Number(r.rewardValue) || 0,
+                })
+                .commit();
+            }
+          }
         }
       }
 
