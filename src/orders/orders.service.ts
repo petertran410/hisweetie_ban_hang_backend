@@ -281,6 +281,35 @@ export class OrdersService {
       });
     }
 
+    // Chèn gift / discounted_buy ngay sau SP trigger (cùng promotionId),
+    // mirror FE giỏ hàng. Không có reward → thứ tự giữ nguyên.
+    const isRewardLine = (it: OrderItemDto) => {
+      const lt = it.lineType || 'normal';
+      return lt === 'gift' || lt === 'discounted_buy' || !!it.isGift;
+    };
+    const normals = baseItems.filter((it) => !isRewardLine(it));
+    const rewards = baseItems.filter((it) => isRewardLine(it));
+    if (rewards.length > 0) {
+      const used = new Set<OrderItemDto>();
+      const reordered: OrderItemDto[] = [];
+      for (const n of normals) {
+        reordered.push(n);
+        if (n.promotionId != null) {
+          for (const r of rewards) {
+            if (!used.has(r) && r.promotionId === n.promotionId) {
+              reordered.push(r);
+              used.add(r);
+            }
+          }
+        }
+      }
+      for (const r of rewards) {
+        if (!used.has(r)) reordered.push(r);
+      }
+      baseItems.length = 0;
+      baseItems.push(...reordered);
+    }
+
     return { effectiveItems: baseItems, extraDiscount, logs };
   }
 
