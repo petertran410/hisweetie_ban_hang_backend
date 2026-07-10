@@ -2,20 +2,20 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { SchedulerRegistry } from '@nestjs/schedule';
 import { CronJob } from 'cron';
 import { PrismaService } from '../prisma/prisma.service';
-import { LarkProductSyncService } from './services/lark-product-sync.service';
+import { MisaDictionaryService } from './misa-dictionary.service';
 
-const CRON_NAME = 'larkProductRetry';
-const CRON_EXPR = '*/5 * * * *';
+const CRON_NAME = 'misaDictionaryCron';
+const CRON_EXPR = '0 */6 * * *';
 
 @Injectable()
-export class LarkSyncCron implements OnModuleInit {
-  private readonly logger = new Logger(LarkSyncCron.name);
-  private isProductRunning = false;
+export class MisaSyncCron implements OnModuleInit {
+  private readonly logger = new Logger(MisaSyncCron.name);
+  private isRunning = false;
 
   constructor(
     private readonly schedulerRegistry: SchedulerRegistry,
     private readonly prisma: PrismaService,
-    private readonly productSync: LarkProductSyncService,
+    private readonly dictionaryService: MisaDictionaryService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -31,15 +31,13 @@ export class LarkSyncCron implements OnModuleInit {
 
   private async isEnabled(): Promise<boolean> {
     const settings = await this.prisma.settings.findFirst({
-      select: { larkProductRetryCronEnabled: true },
+      select: { misaDictionaryCronEnabled: true },
     });
-    return settings?.larkProductRetryCronEnabled ?? true;
+    return settings?.misaDictionaryCronEnabled ?? false;
   }
 
   /**
-   * Bật/tắt dynamic cron.
-   * - Bật: nếu job đã tồn tại thì start lại, nếu chưa thì add.
-   * - Tắt: nếu job đang tồn tại thì stop + delete khỏi registry.
+   * Bật/tắt dynamic cron Misa dictionary sync.
    */
   setEnabled(enabled: boolean): { enabled: boolean } {
     if (enabled) {
@@ -47,7 +45,9 @@ export class LarkSyncCron implements OnModuleInit {
     } else {
       this.stopCron();
     }
-    this.logger.log(`🔄 Lark product retry cron ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    this.logger.log(
+      `🔄 Misa dictionary cron ${enabled ? 'ENABLED' : 'DISABLED'}`,
+    );
     return { enabled };
   }
 
@@ -63,12 +63,12 @@ export class LarkSyncCron implements OnModuleInit {
       return;
     }
     const job = new CronJob(CRON_EXPR, () => {
-      void this.handleProductRetrySync();
+      void this.handleDictionarySync();
     });
     this.schedulerRegistry.addCronJob(CRON_NAME, job);
     job.start();
     this.logger.log(
-      `⏰ Cron "${CRON_NAME}" (${CRON_EXPR}) started — product retry sync mỗi 5 phút`,
+      `⏰ Cron "${CRON_NAME}" (${CRON_EXPR}) started — Misa dictionary sync mỗi 6 giờ`,
     );
   }
 
@@ -80,24 +80,26 @@ export class LarkSyncCron implements OnModuleInit {
     this.logger.log(`⏹️ Cron "${CRON_NAME}" stopped & removed`);
   }
 
-  async handleProductRetrySync() {
-    if (this.isProductRunning) {
-      this.logger.warn('⏭️ Product retry sync: previous run still running, skip');
+  async handleDictionarySync() {
+    if (this.isRunning) {
+      this.logger.warn(
+        '⏭️ Misa dictionary sync: previous run still running, skip',
+      );
       return;
     }
 
-    this.isProductRunning = true;
-    this.logger.log('⏰ Product retry sync started');
+    this.isRunning = true;
+    this.logger.log('⏰ Misa dictionary sync started');
 
     try {
-      const result = await this.productSync.syncPendingAndFailed();
+      const result = await this.dictionaryService.syncAllDictionaries();
       this.logger.log(
-        `⏰ Product retry sync done — ${result.success} success, ${result.failed} failed`,
+        `⏰ Misa dictionary sync done — ${JSON.stringify(result)}`,
       );
     } catch (error: any) {
-      this.logger.error(`⏰ Product retry sync error — ${error.message}`);
+      this.logger.error(`⏰ Misa dictionary sync error — ${error.message}`);
     } finally {
-      this.isProductRunning = false;
+      this.isRunning = false;
     }
   }
 }

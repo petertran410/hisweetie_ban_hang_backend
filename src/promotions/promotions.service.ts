@@ -953,7 +953,8 @@ export class PromotionsService {
     // KM được áp: KM mà FE đã chọn (appliedPromotionIds).
     // KM loại sinh quà / mua kèm (BUY_X_GET_Y, BUY_N_GET_M_SAME,
     // BUY_X_BUY_Y_PRICE, GIFT_BY_INVOICE) chỉ áp khi opt-in — KHÔNG auto.
-    // KM giảm giá (INVOICE/PRODUCT/CATEGORY_DISCOUNT) giữ auto như cũ.
+    // KM giảm giá (INVOICE/PRODUCT/CATEGORY_DISCOUNT) chỉ auto khi autoApply=true.
+    // Nếu FE chọn (applyIds có id) thì vẫn áp, kể cả autoApply=false (user opt-in).
     const giftTypes = new Set([
       'BUY_X_GET_Y',
       'BUY_N_GET_M_SAME',
@@ -964,7 +965,7 @@ export class PromotionsService {
     const applied = evalResult.eligiblePromotions.filter((r) => {
       if (applyIds.has(r.promotionId)) return true;
       if (giftTypes.has(r.type)) return false;
-      return r.selected && applyIds.size === 0;
+      return r.selected && r.autoApply && applyIds.size === 0;
     });
     return { ...evalResult, applied };
   }

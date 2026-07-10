@@ -1773,6 +1773,8 @@ model Settings {
   allowSellWhenOutStock      Boolean  @default(true)
   syncKiotEnabled            Boolean  @default(true)
   sepayFilterByAccount       Boolean  @default(false) @map("sepay_filter_by_account")
+  larkProductRetryCronEnabled Boolean @default(true) @map("lark_product_retry_cron_enabled")
+  misaDictionaryCronEnabled   Boolean @default(false) @map("misa_dictionary_cron_enabled")
   createdAt                  DateTime @default(now())
   updatedAt                  DateTime @updatedAt
 

@@ -1,10 +1,17 @@
-import { Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
 import { LarkCustomerSyncService } from './services/lark-customer-sync.service';
 import { LarkProductSyncService } from './services/lark-product-sync.service';
+import { LarkSyncCron } from './lark-sync.cron';
 import { Public } from 'src/auth/decorators/public.decorator';
+import { IsBoolean } from 'class-validator';
+
+class ToggleCronDto {
+  @IsBoolean()
+  enabled!: boolean;
+}
 
 @ApiTags('Lark Sync')
 @ApiBearerAuth()
@@ -15,6 +22,7 @@ export class LarkSyncController {
     private readonly orderSync: LarkOrderSyncService,
     private readonly customerSync: LarkCustomerSyncService,
     private readonly productSync: LarkProductSyncService,
+    private readonly cron: LarkSyncCron,
   ) {}
 
   @Post('orders/full')
@@ -91,5 +99,22 @@ export class LarkSyncController {
   async syncProductsNow() {
     const result = await this.productSync.syncPendingAndFailed();
     return { ok: true, ...result, timestamp: new Date().toISOString() };
+  }
+
+  @Get('cron/product-retry/status')
+  @ApiOperation({
+    summary: 'Trạng thái cron retry sản phẩm Lark (mỗi 5 phút)',
+  })
+  async getProductRetryCronStatus() {
+    return this.cron.getStatus();
+  }
+
+  @Post('cron/product-retry/toggle')
+  @ApiOperation({
+    summary:
+      'Bật/tắt cron retry sản phẩm Lark — bật sẽ chạy mỗi 5 phút, tắt sẽ dừng',
+  })
+  async toggleProductRetryCron(@Body() body: ToggleCronDto) {
+    return this.cron.setEnabled(body.enabled);
   }
 }

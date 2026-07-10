@@ -177,8 +177,12 @@ export class OrdersService {
 
     for (const r of applied) {
       // 1) Giảm giá đơn hàng (INVOICE_DISCOUNT)
+      // Defense-in-depth: nếu KM không autoApply và user chưa chọn → bỏ qua,
+      // dù filter ở promotions.service có lọt thì đây vẫn chặn.
       if (r.type === 'INVOICE_DISCOUNT') {
-        extraDiscount += Number(r.discountAmount);
+        if (r.autoApply !== false || appliedIds.includes(r.promotionId)) {
+          extraDiscount += Number(r.discountAmount);
+        }
       }
 
       // 2) Giảm giá dòng (PRODUCT/CATEGORY_DISCOUNT)

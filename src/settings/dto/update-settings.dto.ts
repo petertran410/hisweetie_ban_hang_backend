@@ -24,4 +24,12 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   sepayFilterByAccount?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  larkProductRetryCronEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  misaDictionaryCronEnabled?: boolean;
 }
