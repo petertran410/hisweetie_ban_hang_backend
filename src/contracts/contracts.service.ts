@@ -446,6 +446,26 @@ export class ContractsService {
       );
     }
 
+    // HĐ 2 bên, khách đã ký → gửi lại mail + link ký cho NV BÊN A (không gửi lại khách).
+    if (
+      contract.status === 'PARTIALLY_SIGNED' &&
+      contract.contractType === 'DOUBLE'
+    ) {
+      const staffSigningUrl = await this.resolveStaffSigningUrl(contract);
+      await this.notifyStaffToSign(contract, staffSigningUrl);
+      return this.prisma.contract.update({
+        where: { id },
+        data: {
+          ...(staffSigningUrl ? { signingUrl: staffSigningUrl } : {}),
+        },
+        include: {
+          customer: {
+            select: { id: true, code: true, name: true, email: true },
+          },
+        },
+      });
+    }
+
     const result = await this.documenso.distribute(contract.documensoId, true);
     const customerRecipientResult = result.recipients?.find(
       (r) => r.email === contract.recipientEmail,
@@ -467,6 +487,9 @@ export class ContractsService {
         });
       } catch (e) {
         this.logger.error(`Gửi lại mail #1 lỗi: ${e}`);
+        throw new BadRequestException(
+          `Gửi lại email cho khách thất bại: ${e instanceof Error ? e.message : String(e)}`,
+        );
       }
     }
 
@@ -587,26 +610,13 @@ export class ContractsService {
       ''
     ).toLowerCase();
 
-    const isCustomer = recipientEmail === (contract.recipientEmail || '').toLowerCase();
+    const isCustomer =
+      recipientEmail === (contract.recipientEmail || '').toLowerCase();
     const isTwoParty = contract.contractType === 'DOUBLE';
 
     if (isCustomer && isTwoParty && contract.status === 'SENT') {
       // Khách vừa ký → chuyển PARTIALLY_SIGNED, gửi mail cho NV.
-      // Lấy signingUrl của NV (recipient thứ 2) để gửi cho NV ký tiếp.
-      let staffSigningUrl: string | null = null;
-      try {
-        const env = await this.documenso.getEnvelope(contract.documensoId);
-        staffSigningUrl =
-          env.recipients?.find(
-            (r) =>
-              (r.email || '').toLowerCase() ===
-              (contract.companySignerEmail || '').toLowerCase(),
-          )?.signingUrl || null;
-      } catch (e) {
-        this.logger.warn(
-          `Không lấy được staff signingUrl cho contract #${contract.id}: ${e}`,
-        );
-      }
+      const staffSigningUrl = await this.resolveStaffSigningUrl(contract);
 
       await this.prisma.contract.update({
         where: { id: contract.id },
@@ -616,57 +626,98 @@ export class ContractsService {
         },
       });
 
-      // Tải PDF có chữ ký khách (Documenso PDF giữa chừng — nếu có API; nếu
-      // không thì gửi mail không kèm file đính kèm).
-      let signedBuffer: Buffer | null = null;
       try {
+        await this.notifyStaffToSign(contract, staffSigningUrl);
+      } catch (e) {
+        // Không nuốt lỗi im lặng — log rõ để debug SMTP / thiếu email.
+        this.logger.error(
+          `Gửi mail NV sau khi khách ký lỗi (contract #${contract.id}): ${e instanceof Error ? e.stack || e.message : e}`,
+        );
+      }
+    }
+    // Nếu NV ký xong (recipient.companySignerEmail) → không xử lý ở đây, chờ
+    // DOCUMENT_COMPLETED để chốt SIGNED + gửi mail hoàn tất.
+  }
+
+  /** Lấy signingUrl của recipient BÊN A từ envelope Documenso. */
+  private async resolveStaffSigningUrl(
+    contract: any,
+  ): Promise<string | null> {
+    if (!contract.documensoId) return contract.signingUrl || null;
+    try {
+      const env = await this.documenso.getEnvelope(contract.documensoId);
+      const staffEmail = (contract.companySignerEmail || '').toLowerCase();
+      const fromEnv =
+        env.recipients?.find(
+          (r) => (r.email || '').toLowerCase() === staffEmail,
+        )?.signingUrl || null;
+      return fromEnv || contract.signingUrl || null;
+    } catch (e) {
+      this.logger.warn(
+        `Không lấy được staff signingUrl cho contract #${contract.id}: ${e}`,
+      );
+      return contract.signingUrl || null;
+    }
+  }
+
+  /**
+   * Gửi mail Lark cho NV BÊN A: khách đã ký + link ký phần công ty.
+   * Throw nếu SMTP fail để caller (webhook/resend) log / báo lỗi.
+   */
+  private async notifyStaffToSign(
+    contract: any,
+    staffSigningUrl: string | null,
+  ): Promise<void> {
+    const staffEmail =
+      (contract.companySignerEmail || '').trim() ||
+      this.larkMail.getInternalMail();
+
+    if (!staffEmail) {
+      this.logger.warn(
+        `Contract #${contract.id}: không có email NV để gửi link ký BÊN A (companySignerEmail + CONTRACT_INTERNAL_MAIL/LARK_SMTP_USER đều trống)`,
+      );
+      return;
+    }
+
+    // PDF giữa chừng (khách đã ký) — optional; Documenso có thể chưa cho tải.
+    let signedBuffer: Buffer | null = null;
+    try {
+      if (contract.documensoId) {
         const env = await this.documenso.getEnvelope(contract.documensoId);
         if (env.documentNumericId != null) {
           signedBuffer = await this.documenso.downloadSignedPdf(
             env.documentNumericId,
           );
         }
-      } catch {
-        /* nếu Documenso chưa cho tải giữa chừng → bỏ qua */
       }
-
-      try {
-        // Gửi link ký cho đúng email NV BÊN A đã chọn lúc tạo HĐ
-        // (companySignerEmail), không phải mailbox nội bộ chung.
-        const staffEmail =
-          (contract.companySignerEmail || '').trim() ||
-          this.larkMail.getInternalMail();
-        if (!staffEmail) {
-          this.logger.warn(
-            `Contract #${contract.id}: không có email NV để gửi link ký BÊN A`,
-          );
-        } else {
-          await this.larkMail.sendMailWithPdf({
-            to: staffEmail,
-            subject: this.larkMail.subjectCustomerSigned(
-              contract.customer?.name || '',
-              contract.title,
-            ),
-            html: this.larkMail.buildCustomerSignedToStaffHtml({
-              customerName: contract.customer?.name || '',
-              contractTitle: contract.title,
-              isTwoParty: true,
-              staffSigningUrl: staffSigningUrl || undefined,
-            }),
-            ...(signedBuffer
-              ? {
-                  pdfBuffer: signedBuffer,
-                  pdfFileName: `${contract.title} - khach ky.pdf`,
-                }
-              : {}),
-          });
-        }
-      } catch (e) {
-        this.logger.error(`Gửi mail NV sau khi khách ký lỗi: ${e}`);
-      }
+    } catch {
+      /* bỏ qua */
     }
-    // Nếu NV ký xong (recipient.companySignerEmail) → không xử lý ở đây, chờ
-    // DOCUMENT_COMPLETED để chốt SIGNED + gửi mail hoàn tất.
+
+    this.logger.log(
+      `Gửi mail NV BÊN A contract #${contract.id} → ${staffEmail}` +
+        (staffSigningUrl ? ` (có signingUrl)` : ' (THIẾU signingUrl)'),
+    );
+
+    await this.larkMail.sendMailWithPdf({
+      to: staffEmail,
+      subject: this.larkMail.subjectCustomerSigned(
+        contract.customer?.name || '',
+        contract.title,
+      ),
+      html: this.larkMail.buildCustomerSignedToStaffHtml({
+        customerName: contract.customer?.name || '',
+        contractTitle: contract.title,
+        isTwoParty: true,
+        staffSigningUrl: staffSigningUrl || undefined,
+      }),
+      ...(signedBuffer
+        ? {
+            pdfBuffer: signedBuffer,
+            pdfFileName: `${contract.title} - khach ky.pdf`,
+          }
+        : {}),
+    });
   }
 
   /**
