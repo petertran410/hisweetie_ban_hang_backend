@@ -5,6 +5,8 @@ import {
   Body,
   Param,
   Query,
+  Patch,
+  Delete,
   Headers,
   Req,
   Res,
@@ -29,6 +31,8 @@ import {
   UploadContractDto,
   ContractQueryDto,
   DocumensoWebhookDto,
+  CreateContractSignerDto,
+  UpdateContractSignerDto,
 } from './dto';
 
 @ApiTags('Contracts')
@@ -69,10 +73,34 @@ export class ContractsController {
   @RequirePermissions('contracts:create')
   @ApiOperation({
     summary:
-      'Danh sách Documenso user được phép ký BÊN A (đồng bộ từ Documenso).',
+      'Danh sách người ký BÊN A đang hoạt động (dropdown khi tạo HĐ 2 bên).',
   })
   async listSigners(@Query('refresh') refresh?: string) {
     return this.contractsService.listSigners(refresh === 'true');
+  }
+
+  @Post('signers')
+  @RequirePermissions('contracts:manage_signers')
+  @ApiOperation({ summary: 'Tạo mới người ký hợp đồng (BÊN A) — admin' })
+  async createSigner(@Body() dto: CreateContractSignerDto) {
+    return this.contractsService.createSigner(dto);
+  }
+
+  @Patch('signers/:id')
+  @RequirePermissions('contracts:manage_signers')
+  @ApiOperation({ summary: 'Cập nhật người ký hợp đồng — admin' })
+  async updateSigner(
+    @Param('id') id: string,
+    @Body() dto: UpdateContractSignerDto,
+  ) {
+    return this.contractsService.updateSigner(Number(id), dto);
+  }
+
+  @Delete('signers/:id')
+  @RequirePermissions('contracts:manage_signers')
+  @ApiOperation({ summary: 'Ẩn (soft-delete) người ký hợp đồng — admin' })
+  async deleteSigner(@Param('id') id: string) {
+    return this.contractsService.deleteSigner(Number(id));
   }
 
   @Get(':id')

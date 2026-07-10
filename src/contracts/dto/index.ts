@@ -4,6 +4,7 @@ import {
   IsString,
   IsEmail,
   IsIn,
+  IsBoolean,
   ValidateNested,
   IsObject,
   IsArray,
@@ -119,6 +120,55 @@ export class UploadContractDto {
   @IsOptional()
   @IsEmail()
   recipientEmail?: string;
+}
+
+/**
+ * DTO tạo mới 1 người ký (Documenso user BÊN A) trong bảng ContractSigner.
+ */
+export class CreateContractSignerDto {
+  @IsEmail()
+  documensoEmail: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  department?: string;
+
+  @IsOptional()
+  @IsString()
+  code?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+}
+
+/**
+ * DTO cập nhật người ký. Tất cả field optional — chỉ update field nào gửi lên.
+ */
+export class UpdateContractSignerDto {
+  @IsOptional()
+  @IsEmail()
+  documensoEmail?: string;
+
+  @IsOptional()
+  @IsString()
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  department?: string;
+
+  @IsOptional()
+  @IsString()
+  code?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
 }
 
 export class ContractQueryDto {

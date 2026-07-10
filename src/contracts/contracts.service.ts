@@ -17,7 +17,10 @@ import {
   UploadContractDto,
   ContractQueryDto,
   DocumensoWebhookDto,
+  CreateContractSignerDto,
+  UpdateContractSignerDto,
 } from './dto';
+import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -54,39 +57,102 @@ export class ContractsService {
   }
 
   /**
-   * Liệt kê Documenso user (cached trong DB `ContractSigner`) để NV chọn khi
-   * tạo HĐ 2 bên. Đồng bộ lại từ Documenso nếu cache > 1 giờ.
+   * Liệt kê người ký BÊN A (lưu trong bảng `ContractSigner`) để NV chọn khi
+   * tạo HĐ 2 bên.
+   *
+   * KHÔNG đồng bộ từ Documenso nữa: API `GET /api/v2/user` đã bị gỡ ở v2.14.0
+   * (chỉ admin key mới list được). Thay vào đó, admin dùng trang
+   * `/cai-dat/nguoi-ky-hop-dong` để nhập / sửa / ẩn tay.
+   *
+   * Param `force` được giữ để tương thích ngược với FE — hiện không còn ý nghĩa.
    */
-  async listSigners(force = false) {
-    const last = await this.prisma.contractSigner.findFirst({
-      orderBy: { lastSyncedAt: 'desc' },
-    });
-    const stale =
-      !last?.lastSyncedAt ||
-      Date.now() - new Date(last.lastSyncedAt).getTime() > 60 * 60 * 1000;
-
-    if (force || stale) {
-      const users = await this.documenso.listUsers();
-      if (users.length) {
-        for (const u of users) {
-          await this.prisma.contractSigner.upsert({
-            where: { documensoEmail: u.email },
-            create: {
-              documensoEmail: u.email,
-              name: u.name,
-              lastSyncedAt: new Date(),
-            },
-            update: {
-              name: u.name,
-              lastSyncedAt: new Date(),
-            },
-          });
-        }
-      }
-    }
+  async listSigners(_force = false) {
     return this.prisma.contractSigner.findMany({
       where: { isActive: true },
       orderBy: [{ department: 'asc' }, { name: 'asc' }],
+    });
+  }
+
+  // ---------- CRUD người ký (admin) ----------
+
+  async createSigner(dto: CreateContractSignerDto) {
+    try {
+      return await this.prisma.contractSigner.create({
+        data: {
+          documensoEmail: dto.documensoEmail.toLowerCase().trim(),
+          name: dto.name?.trim() || null,
+          department: dto.department?.trim() || null,
+          code: dto.code?.trim() || null,
+          isActive: dto.isActive ?? true,
+        },
+      });
+    } catch (e: any) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        const target = (e.meta?.target as string[]) || [];
+        throw new BadRequestException(
+          target.includes('documensoEmail')
+            ? `Email Documenso "${dto.documensoEmail}" đã tồn tại.`
+            : `Mã "${dto.code}" đã tồn tại.`,
+        );
+      }
+      throw e;
+    }
+  }
+
+  async updateSigner(id: number, dto: UpdateContractSignerDto) {
+    const existing = await this.prisma.contractSigner.findUnique({
+      where: { id },
+    });
+    if (!existing) throw new NotFoundException('Không tìm thấy người ký');
+
+    const data: Prisma.ContractSignerUpdateInput = {};
+    if (dto.documensoEmail !== undefined) {
+      data.documensoEmail = dto.documensoEmail.toLowerCase().trim();
+    }
+    if (dto.name !== undefined) data.name = dto.name.trim() || null;
+    if (dto.department !== undefined) {
+      data.department = dto.department.trim() || null;
+    }
+    if (dto.code !== undefined) data.code = dto.code.trim() || null;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+
+    try {
+      return await this.prisma.contractSigner.update({
+        where: { id },
+        data,
+      });
+    } catch (e: any) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        const target = (e.meta?.target as string[]) || [];
+        throw new BadRequestException(
+          target.includes('documensoEmail')
+            ? `Email Documenso "${dto.documensoEmail}" đã tồn tại.`
+            : `Mã "${dto.code}" đã tồn tại.`,
+        );
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Soft-delete: set `isActive = false`. KHÔNG xóa row để giữ liên kết lịch sử
+   * với hợp đồng đã tạo (tránh FK / audit gap).
+   */
+  async deleteSigner(id: number) {
+    const existing = await this.prisma.contractSigner.findUnique({
+      where: { id },
+    });
+    if (!existing) throw new NotFoundException('Không tìm thấy người ký');
+
+    return this.prisma.contractSigner.update({
+      where: { id },
+      data: { isActive: false },
     });
   }
 
@@ -765,8 +831,6 @@ export class ContractsService {
     fs.writeFileSync(path.join(dir, filename), buffer);
     return `/uploads/contracts/${filename}`;
   }
-
-  // ---------- Upload PDF (giữ nguyên, ít dùng) ----------
 
   async createFromUpload(
     dto: UploadContractDto,
