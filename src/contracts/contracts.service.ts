@@ -543,6 +543,9 @@ export class ContractsService {
   async handleWebhook(dto: DocumensoWebhookDto) {
     const payload: any = dto.payload || {};
     const externalId: string | undefined = payload.externalId || undefined;
+    // Documenso v2 payload: envelopeId (string) + id (numeric document id)
+    const envelopeId: string | undefined =
+      typeof payload.envelopeId === 'string' ? payload.envelopeId : undefined;
     const rawId = payload.id;
     const idStr =
       typeof rawId === 'string'
@@ -558,6 +561,13 @@ export class ContractsService {
         include: { customer: { select: { name: true, email: true } } },
       });
     }
+    // HĐ lưu documensoId = envelope_xxx
+    if (!contract && envelopeId) {
+      contract = await this.prisma.contract.findUnique({
+        where: { documensoId: envelopeId },
+        include: { customer: { select: { name: true, email: true } } },
+      });
+    }
     if (!contract && idStr) {
       contract = await this.prisma.contract.findUnique({
         where: { documensoId: idStr },
@@ -566,17 +576,27 @@ export class ContractsService {
     }
     if (!contract) {
       this.logger.warn(
-        `Webhook: không map được contract (externalId=${externalId}, id=${idStr})`,
+        `Webhook: không map được contract (externalId=${externalId}, envelopeId=${envelopeId}, id=${idStr})`,
       );
       return { received: true };
     }
 
-    const event = dto.event?.toUpperCase();
-    this.logger.log(`Webhook ${event} cho contract #${contract.id}`);
+    const event = (dto.event || '').toUpperCase();
+    this.logger.log(
+      `Webhook ${event} cho contract #${contract.id} (status=${contract.status})`,
+    );
 
+    // Documenso v2.14 enum (KHÔNG có RECIPIENT_SIGNED):
+    //   DOCUMENT_RECIPIENT_COMPLETED — 1 recipient vừa ký xong
+    //   DOCUMENT_SIGNED              — cũng fire sau mỗi lần 1 recipient ký
+    //   DOCUMENT_COMPLETED           — toàn bộ đã seal
     if (event === 'DOCUMENT_COMPLETED') {
       await this.finalizeSignedContract(contract.id, contract.documensoId);
-    } else if (event === 'RECIPIENT_SIGNED') {
+    } else if (
+      event === 'DOCUMENT_RECIPIENT_COMPLETED' ||
+      event === 'DOCUMENT_SIGNED' ||
+      event === 'RECIPIENT_SIGNED' // legacy / docs cũ
+    ) {
       await this.handleRecipientSigned(contract, payload);
     } else if (event === 'DOCUMENT_REJECTED') {
       await this.prisma.contract.update({
@@ -588,34 +608,129 @@ export class ContractsService {
         where: { id: contract.id },
         data: { status: 'CANCELLED' },
       });
+    } else {
+      this.logger.log(`Webhook event bỏ qua: ${event}`);
     }
 
     return { received: true };
   }
 
   /**
-   * Xử lý event RECIPIENT_SIGNED — kiểm tra xem khách đã ký chưa (Loại 2) → chuyển
-   * PARTIALLY_SIGNED + mail cho NV. Nếu NV ký xong (envelope COMPLETED) → xử lý
-   * ở DOCUMENT_COMPLETED (gọi finalizeSignedContract).
+   * Đồng bộ trạng thái HĐ từ Documenso (khi webhook miss / status kẹt SENT).
+   * Dùng nút "Làm mới" / đồng bộ trên POS.
+   */
+  async syncFromDocumenso(id: number) {
+    const contract = await this.findOne(id);
+    if (!contract.documensoId) {
+      throw new BadRequestException('Hợp đồng chưa liên kết Documenso');
+    }
+    if (contract.status === 'SIGNED' || contract.status === 'CANCELLED') {
+      return contract;
+    }
+
+    const env = await this.documenso.getEnvelope(contract.documensoId);
+    const docStatus = (env.status || '').toUpperCase();
+    this.logger.log(
+      `syncFromDocumenso #${id}: Documenso status=${docStatus}, recipients=${JSON.stringify(
+        env.recipients?.map((r) => ({
+          email: r.email,
+          signingStatus: r.signingStatus,
+        })),
+      )}`,
+    );
+
+    if (docStatus === 'COMPLETED') {
+      await this.finalizeSignedContract(contract.id, contract.documensoId);
+      return this.findOne(id);
+    }
+    if (docStatus === 'REJECTED') {
+      return this.prisma.contract.update({
+        where: { id },
+        data: { status: 'REJECTED' },
+        include: {
+          customer: {
+            select: { id: true, code: true, name: true, email: true },
+          },
+        },
+      });
+    }
+
+    // Build fake payload từ envelope để tái dùng handleRecipientSigned
+    await this.handleRecipientSigned(contract, {
+      recipients: env.recipients || [],
+      Recipient: env.recipients || [],
+      status: env.status,
+      externalId: env.externalId,
+      envelopeId: env.envelopeId,
+    });
+
+    return this.findOne(id);
+  }
+
+  /**
+   * Xử lý khi 1 recipient vừa ký (Documenso: DOCUMENT_RECIPIENT_COMPLETED /
+   * DOCUMENT_SIGNED). Payload là document/envelope kèm mảng recipients.
    */
   private async handleRecipientSigned(contract: any, payload: any) {
     if (contract.status === 'SIGNED' || contract.status === 'CANCELLED') {
       return;
     }
 
-    const recipient = payload?.recipient || payload?.recipients?.[0] || {};
-    const recipientEmail: string = (
-      recipient.email ||
+    const recipients: any[] =
+      payload?.recipients || payload?.Recipient || [];
+    const customerEmail = (contract.recipientEmail || '').toLowerCase();
+    const staffEmail = (contract.companySignerEmail || '').toLowerCase();
+
+    const isSigned = (r: any) =>
+      (r.signingStatus || '').toUpperCase() === 'SIGNED';
+
+    const customerRec = recipients.find(
+      (r) => (r.email || '').toLowerCase() === customerEmail,
+    );
+    const staffRec = recipients.find(
+      (r) => (r.email || '').toLowerCase() === staffEmail,
+    );
+
+    // Fallback: payload.recipient (nếu có) hoặc so khớp email lẻ
+    const singleEmail = (
+      payload?.recipient?.email ||
       payload?.email ||
       ''
     ).toLowerCase();
+    const customerSigned =
+      (customerRec && isSigned(customerRec)) ||
+      singleEmail === customerEmail;
+    const staffSigned = staffRec && isSigned(staffRec);
+    const allSigned =
+      recipients.length > 0 && recipients.every(isSigned);
 
-    const isCustomer =
-      recipientEmail === (contract.recipientEmail || '').toLowerCase();
     const isTwoParty = contract.contractType === 'DOUBLE';
 
-    if (isCustomer && isTwoParty && contract.status === 'SENT') {
-      // Khách vừa ký → chuyển PARTIALLY_SIGNED, gửi mail cho NV.
+    this.logger.log(
+      `handleRecipientSigned #${contract.id}: customerSigned=${customerSigned} staffSigned=${!!staffSigned} allSigned=${allSigned} isTwoParty=${isTwoParty} status=${contract.status}`,
+    );
+
+    // Tất cả đã ký → hoàn tất
+    if (allSigned || (staffSigned && isTwoParty)) {
+      // Staff signed on double, or everyone signed — check COMPLETED via finalize
+      // (PDF download may fail until seal finishes; finalize handles that)
+      if (allSigned) {
+        await this.finalizeSignedContract(contract.id, contract.documensoId);
+        return;
+      }
+    }
+
+    // Khách đã ký, HĐ 2 bên, còn chờ NV
+    if (
+      customerSigned &&
+      isTwoParty &&
+      (contract.status === 'SENT' || contract.status === 'PARTIALLY_SIGNED')
+    ) {
+      if (contract.status === 'PARTIALLY_SIGNED') {
+        // Đã xử lý rồi — không gửi mail lặp khi sync
+        return;
+      }
+
       const staffSigningUrl = await this.resolveStaffSigningUrl(contract);
 
       await this.prisma.contract.update({
@@ -627,16 +742,16 @@ export class ContractsService {
       });
 
       try {
-        await this.notifyStaffToSign(contract, staffSigningUrl);
+        await this.notifyStaffToSign(
+          { ...contract, status: 'PARTIALLY_SIGNED' },
+          staffSigningUrl,
+        );
       } catch (e) {
-        // Không nuốt lỗi im lặng — log rõ để debug SMTP / thiếu email.
         this.logger.error(
           `Gửi mail NV sau khi khách ký lỗi (contract #${contract.id}): ${e instanceof Error ? e.stack || e.message : e}`,
         );
       }
     }
-    // Nếu NV ký xong (recipient.companySignerEmail) → không xử lý ở đây, chờ
-    // DOCUMENT_COMPLETED để chốt SIGNED + gửi mail hoàn tất.
   }
 
   /** Lấy signingUrl của recipient BÊN A từ envelope Documenso. */

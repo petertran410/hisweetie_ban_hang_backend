@@ -198,8 +198,10 @@ export class ContractQueryDto {
 }
 
 /**
- * Payload webhook Documenso. event + payload (envelope).
- * vd event: DOCUMENT_COMPLETED | DOCUMENT_REJECTED | DOCUMENT_CANCELLED
+ * Payload webhook Documenso. event + payload (envelope/document).
+ * Documenso v2.14: DOCUMENT_RECIPIENT_COMPLETED | DOCUMENT_SIGNED |
+ * DOCUMENT_COMPLETED | DOCUMENT_REJECTED | DOCUMENT_CANCELLED
+ * (không còn RECIPIENT_SIGNED).
  */
 export class DocumensoWebhookDto {
   @IsString()
@@ -208,13 +210,22 @@ export class DocumensoWebhookDto {
   @IsObject()
   payload: {
     id: number | string;
+    envelopeId?: string;
     title?: string;
     status?: string;
     completedAt?: string;
+    externalId?: string;
     recipients?: Array<{
       id: number;
       email: string;
       signingStatus?: string;
+      token?: string;
+    }>;
+    Recipient?: Array<{
+      id: number;
+      email: string;
+      signingStatus?: string;
+      token?: string;
     }>;
     [k: string]: any;
   };

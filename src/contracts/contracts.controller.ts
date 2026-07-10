@@ -139,6 +139,16 @@ export class ContractsController {
     return this.contractsService.resend(Number(id));
   }
 
+  @Post(':id/sync')
+  @RequirePermissions('contracts:view')
+  @ApiOperation({
+    summary:
+      'Đồng bộ trạng thái HĐ từ Documenso (khi webhook miss / kẹt SENT sau khi khách ký)',
+  })
+  async sync(@Param('id') id: string) {
+    return this.contractsService.syncFromDocumenso(Number(id));
+  }
+
   @Get(':id/download')
   @RequirePermissions('contracts:download')
   @ApiOperation({ summary: 'Tải PDF đã ký' })
