@@ -631,25 +631,36 @@ export class ContractsService {
       }
 
       try {
-        await this.larkMail.sendMailWithPdf({
-          to: this.larkMail.getInternalMail(),
-          subject: this.larkMail.subjectCustomerSigned(
-            contract.customer?.name || '',
-            contract.title,
-          ),
-          html: this.larkMail.buildCustomerSignedToStaffHtml({
-            customerName: contract.customer?.name || '',
-            contractTitle: contract.title,
-            isTwoParty: true,
-            staffSigningUrl: staffSigningUrl || undefined,
-          }),
-          ...(signedBuffer
-            ? {
-                pdfBuffer: signedBuffer,
-                pdfFileName: `${contract.title} - khach ky.pdf`,
-              }
-            : {}),
-        });
+        // Gửi link ký cho đúng email NV BÊN A đã chọn lúc tạo HĐ
+        // (companySignerEmail), không phải mailbox nội bộ chung.
+        const staffEmail =
+          (contract.companySignerEmail || '').trim() ||
+          this.larkMail.getInternalMail();
+        if (!staffEmail) {
+          this.logger.warn(
+            `Contract #${contract.id}: không có email NV để gửi link ký BÊN A`,
+          );
+        } else {
+          await this.larkMail.sendMailWithPdf({
+            to: staffEmail,
+            subject: this.larkMail.subjectCustomerSigned(
+              contract.customer?.name || '',
+              contract.title,
+            ),
+            html: this.larkMail.buildCustomerSignedToStaffHtml({
+              customerName: contract.customer?.name || '',
+              contractTitle: contract.title,
+              isTwoParty: true,
+              staffSigningUrl: staffSigningUrl || undefined,
+            }),
+            ...(signedBuffer
+              ? {
+                  pdfBuffer: signedBuffer,
+                  pdfFileName: `${contract.title} - khach ky.pdf`,
+                }
+              : {}),
+          });
+        }
       } catch (e) {
         this.logger.error(`Gửi mail NV sau khi khách ký lỗi: ${e}`);
       }
