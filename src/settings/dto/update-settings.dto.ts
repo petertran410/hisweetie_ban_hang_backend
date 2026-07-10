@@ -32,4 +32,8 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   misaDictionaryCronEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  contractDocumensoSyncCronEnabled?: boolean;
 }

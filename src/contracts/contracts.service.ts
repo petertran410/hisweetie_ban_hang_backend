@@ -156,6 +156,29 @@ export class ContractsService {
     });
   }
 
+  /**
+   * Lấy các HĐ đang chờ ký (SENT / PARTIALLY_SIGNED) để cron sync Documenso kiểm
+   * tra lại trạng thái. Lọc theo sentAt trong khoảng 7 ngày gần nhất — quá cũ
+   * thì webhook chắc chắn đã miss hẳn và cần xử lý tay, không nên spam Documenso.
+   */
+  async findStaleForSync() {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    return this.prisma.contract.findMany({
+      where: {
+        status: { in: ['SENT', 'PARTIALLY_SIGNED'] },
+        documensoId: { not: null },
+        sentAt: { gte: sevenDaysAgo },
+      },
+      select: {
+        id: true,
+        status: true,
+        documensoId: true,
+      },
+      orderBy: { sentAt: 'asc' },
+    });
+  }
+
   async findAll(query: ContractQueryDto) {
     const page = query.page && query.page > 0 ? query.page : 1;
     const pageSize = query.pageSize && query.pageSize > 0 ? query.pageSize : 20;

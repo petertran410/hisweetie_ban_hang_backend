@@ -28,6 +28,7 @@ export class SettingsService {
           syncKiotEnabled: true,
           larkProductRetryCronEnabled: true,
           misaDictionaryCronEnabled: false,
+          contractDocumensoSyncCronEnabled: true,
         },
       });
     }
@@ -47,6 +48,7 @@ export class SettingsService {
       sepayFilterByAccount: settings.sepayFilterByAccount,
       larkProductRetryCronEnabled: settings.larkProductRetryCronEnabled,
       misaDictionaryCronEnabled: settings.misaDictionaryCronEnabled,
+      contractDocumensoSyncCronEnabled: settings.contractDocumensoSyncCronEnabled,
     };
 
     const updated = await this.prisma.settings.update({
@@ -60,6 +62,7 @@ export class SettingsService {
         sepayFilterByAccount: dto.sepayFilterByAccount,
         larkProductRetryCronEnabled: dto.larkProductRetryCronEnabled,
         misaDictionaryCronEnabled: dto.misaDictionaryCronEnabled,
+        contractDocumensoSyncCronEnabled: dto.contractDocumensoSyncCronEnabled,
       },
     });
 
