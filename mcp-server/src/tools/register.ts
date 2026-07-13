@@ -13,9 +13,14 @@ const branchId = z.number().int().positive().optional();
 const looseObject = z.record(z.unknown());
 
 function result(data: unknown) {
+  // MCP SDK requires structuredContent to be a JSON object (record), never an array/primitive.
+  const structuredContent =
+    data !== null && typeof data === 'object' && !Array.isArray(data)
+      ? (data as Record<string, unknown>)
+      : { data };
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(data) }],
-    structuredContent: typeof data === 'object' && data !== null ? data as Record<string, unknown> : { data },
+    structuredContent,
   };
 }
 
