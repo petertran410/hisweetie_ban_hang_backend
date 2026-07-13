@@ -1,0 +1,82 @@
+openapi: 3.1.0
+info:
+  title: Hisweetie POS MCP Gateway
+  version: 0.1.0
+  description: OAuth, MCP transport and webhook management endpoints for CRM integrations.
+servers:
+  - url: https://sandbox-api.hisweetievietnam.com
+    description: Sandbox
+paths:
+  /oauth/token:
+    post:
+      summary: Obtain an OAuth client-credentials token
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type]
+              properties:
+                grant_type: { type: string, const: client_credentials }
+                client_id: { type: string }
+                client_secret: { type: string }
+                scope: { type: string }
+      responses:
+        '200':
+          description: Access token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  token_type: { type: string, const: Bearer }
+                  expires_in: { type: integer, example: 3600 }
+                  scope: { type: string }
+  /mcp:
+    post:
+      summary: MCP Streamable HTTP JSON-RPC endpoint
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: true }
+      responses:
+        '200': { description: MCP JSON-RPC response }
+        '401': { description: Invalid bearer token }
+        '429': { description: More than 200 requests per minute }
+  /webhooks:
+    get:
+      summary: List webhook subscriptions
+      security: [{ bearerAuth: [] }]
+      responses: { '200': { description: Subscription list } }
+    post:
+      summary: Create webhook subscription
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [event, targetUrl, secret]
+              properties:
+                event: { type: string, example: order.created }
+                targetUrl: { type: string, format: uri }
+                secret: { type: string, minLength: 16 }
+      responses: { '201': { description: Subscription created } }
+  /webhooks/{id}:
+    delete:
+      summary: Delete webhook subscription
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses: { '204': { description: Subscription deleted } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
