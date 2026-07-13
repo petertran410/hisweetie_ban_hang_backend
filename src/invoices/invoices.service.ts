@@ -2369,7 +2369,7 @@ export class InvoicesService {
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
-      const itemsToInvoice =
+      const rawItemsToInvoice =
         dto.items && dto.items.length > 0
           ? dto.items
           : remainingItems.map((item) => ({
@@ -2389,6 +2389,76 @@ export class InvoicesService {
               isGift: (item as any).isGift || false,
               promotionId: (item as any).promotionId ?? null,
             }));
+
+      // Stamp promotionId lên dòng thường (X) để mở lại HĐ còn opt-in KM.
+      // createFromOrder không chạy processPromotions — phải copy/suy từ payload.
+      const isPromoGiftLine = (it: any) =>
+        !!(it?.isGift || it?.lineType === 'gift' || it?.lineType === 'discounted_buy');
+
+      const giftPromoIds = Array.from(
+        new Set(
+          rawItemsToInvoice
+            .filter((it: any) => isPromoGiftLine(it) && it.promotionId != null)
+            .map((it: any) => Number(it.promotionId))
+            .filter((id: number) => !Number.isNaN(id)),
+        ),
+      );
+
+      const orderNormalPromoByProduct = new Map<number, number>();
+      for (const oi of order.items) {
+        if (
+          oi.productId != null &&
+          (oi as any).promotionId != null &&
+          !isPromoGiftLine(oi)
+        ) {
+          orderNormalPromoByProduct.set(
+            oi.productId,
+            Number((oi as any).promotionId),
+          );
+        }
+      }
+
+      const itemsToInvoice = rawItemsToInvoice.map((item: any) => {
+        if (isPromoGiftLine(item)) {
+          return {
+            ...item,
+            lineType: item.lineType || (item.isGift ? 'gift' : 'normal'),
+            isGift: !!(item.isGift || item.lineType === 'gift'),
+            promotionId: item.promotionId ?? null,
+          };
+        }
+        let promotionId =
+          item.promotionId != null ? Number(item.promotionId) : null;
+        if (promotionId == null || Number.isNaN(promotionId)) {
+          const enabled = item.enabledPromotionIds;
+          if (Array.isArray(enabled) && enabled.length > 0) {
+            promotionId = Number(enabled[0]);
+          }
+        }
+        if (
+          (promotionId == null || Number.isNaN(promotionId)) &&
+          item.productId != null &&
+          orderNormalPromoByProduct.has(item.productId)
+        ) {
+          promotionId = orderNormalPromoByProduct.get(item.productId)!;
+        }
+        if (
+          (promotionId == null || Number.isNaN(promotionId)) &&
+          giftPromoIds.length > 0
+        ) {
+          // 1 CTKM gift → gán rõ; nhiều CT → lấy id đầu (DB chỉ 1 promotionId/dòng)
+          promotionId = giftPromoIds[0];
+        }
+        return {
+          ...item,
+          lineType: item.lineType || 'normal',
+          isGift: false,
+          promotionId:
+            promotionId != null && !Number.isNaN(promotionId)
+              ? promotionId
+              : null,
+        };
+      });
 
       const totalAmount = itemsToInvoice.reduce(
         (sum, item) => sum + item.totalPrice,
