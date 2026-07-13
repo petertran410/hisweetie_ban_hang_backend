@@ -34,12 +34,29 @@ app.post('/oauth/token', tokenEndpoint);
 
 app.use('/mcp', requireBearer, rateLimit);
 app.post('/mcp', async (req, res) => {
-  if (!isInitializeRequest(req.body) && req.body?.method !== 'tools/list' && req.body?.method !== 'tools/call' && req.body?.method !== 'ping') {
-    return void res.status(400).json({ jsonrpc: '2.0', id: req.body?.id ?? null, error: { code: -32601, message: 'Method not supported' } });
+  // SDK Client.connect() sends initialize + notifications/initialized before tools/*.
+  // Only block clearly unsupported methods; let the MCP transport handle the rest.
+  const method = typeof req.body?.method === 'string' ? req.body.method : '';
+  const allowed =
+    isInitializeRequest(req.body) ||
+    method === 'tools/list' ||
+    method === 'tools/call' ||
+    method === 'ping' ||
+    method.startsWith('notifications/');
+  if (!allowed) {
+    return void res.status(400).json({
+      jsonrpc: '2.0',
+      id: req.body?.id ?? null,
+      error: { code: -32601, message: `Method not supported: ${method || 'unknown'}` },
+    });
   }
+
   const server = createMcpServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on('close', () => { void transport.close(); void server.close(); });
+  res.on('close', () => {
+    void transport.close();
+    void server.close();
+  });
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });

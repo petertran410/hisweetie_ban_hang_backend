@@ -65,6 +65,7 @@
     "import:product-images": "ts-node prisma/seeds/import-product-images.ts"
   },
   "dependencies": {
+    "@dieptra/mcp-client": "^0.1.1",
     "@larksuiteoapi/node-sdk": "^1.63.1",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.0.1",
