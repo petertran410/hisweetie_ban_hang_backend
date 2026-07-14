@@ -103,6 +103,10 @@ export class OrderItemDto {
   promotionId?: number;
 
   @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
+
+  @IsOptional()
   @IsArray()
   @IsNumber({}, { each: true })
   enabledPromotionIds?: number[];
@@ -111,6 +115,11 @@ export class OrderItemDto {
 export class AppliedPromotionDto {
   @IsInt()
   promotionId: number;
+
+  // Mã SP điều kiện mua X đã kích hoạt lần áp dụng này.
+  @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
 
   // Lựa chọn quà (khi nhóm Y có nhiều SP, thu ngân chọn 1)
   @IsOptional()

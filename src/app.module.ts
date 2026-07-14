@@ -64,6 +64,7 @@ import { ReturnOrdersModule } from './return-orders/return-orders.module';
 import { ConsignmentReturnsModule } from './consignment-returns/consignment-returns.module';
 import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
+import { InventoryPromoChecksModule } from './inventory-promo-checks/inventory-promo-checks.module';
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -160,6 +161,7 @@ import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
     ReturnOrdersModule,
     ConsignmentReturnsModule,
     InventoryChecksModule,
+    InventoryPromoChecksModule,
     StockAuditsModule,
     CashFlowCollectionBranchesModule,
     // SyncKiotModule, // disabled: bỏ hoàn toàn sync-kiot

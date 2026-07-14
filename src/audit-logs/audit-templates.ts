@@ -511,6 +511,18 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  INVENTORY_PROMO_CHECK_CREATE: {
+    template:
+      'Tạo phiếu kiểm hàng KM {checkCode} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  INVENTORY_PROMO_CHECK_CANCEL: {
+    template: 'Hủy phiếu kiểm hàng KM {checkCode}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+
   STOCK_AUDIT_CREATE: {
     template:
       'Tạo phiếu kiểm kho {auditCode} tại {branchName}, {productCount} sản phẩm',

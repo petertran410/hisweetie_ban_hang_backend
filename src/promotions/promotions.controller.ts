@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseIntPipe,
   Patch,
@@ -111,8 +112,15 @@ export class PromotionsController {
 
   @Get(':id/stats')
   @RequirePermissions('promotions:view')
-  getStats(@Param('id', ParseIntPipe) id: number) {
-    return this.promotionsService.getStats(id);
+  getStats(
+    @Param('id', ParseIntPipe) id: number,
+    @Headers('x-branch-id') branchIdHeader?: string,
+  ) {
+    const branchId = branchIdHeader ? Number(branchIdHeader) : undefined;
+    return this.promotionsService.getStats(
+      id,
+      Number.isFinite(branchId) ? branchId : undefined,
+    );
   }
 
   @Post()

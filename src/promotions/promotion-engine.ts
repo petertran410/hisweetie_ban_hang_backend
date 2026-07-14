@@ -124,6 +124,8 @@ export interface PromotionResult {
   promoPrice?: number; // dùng cho discounted_buy
   requiresChoice?: boolean; // true khi rewardOptions > 1 → cần thu ngân chọn
   matchedProductIds?: number[]; // các productId trong giỏ khớp điều kiện mua X
+  // Với KM có nhiều mã X: mỗi kết quả thuộc về đúng 1 mã X đạt ngưỡng.
+  triggerProductId?: number;
 }
 
 export interface EngineContext {
@@ -639,8 +641,47 @@ export function evaluatePromotions(
   const results: PromotionResult[] = [];
   for (const p of promotions) {
     if (!isTimeAndThresholdEligible(p, ctx, subtotal, totalQty)) continue;
-    const r = computeReward(p, ctx, subtotal);
-    if (r) results.push(r);
+    const splitByBuyProduct = new Set([
+      'BUY_X_GET_Y',
+      'BUY_N_GET_M_SAME',
+      'BUY_X_BUY_Y_PRICE',
+    ]).has(p.type);
+
+    if (!splitByBuyProduct) {
+      const r = computeReward(p, ctx, subtotal);
+      if (r) results.push(r);
+      continue;
+    }
+
+    const rw = p.rewards[0];
+    const buyItems = getBuyItems(rw);
+    const triggerProductIds = [
+      ...new Set(
+        ctx.items
+          .filter(
+            (it) =>
+              itemEnabledForPromo(it, p.id) &&
+              buyItems.some((ref) => itemMatchesRef(it, ref)),
+          )
+          .map((it) => it.productId),
+      ),
+    ];
+
+    for (const triggerProductId of triggerProductIds) {
+      // Mỗi mã X tự đạt ngưỡng buyQuantity; không cộng chéo SL giữa các mã.
+      const scopedCtx: EngineContext = {
+        ...ctx,
+        items: ctx.items.filter((it) => it.productId === triggerProductId),
+      };
+      const r = computeReward(p, scopedCtx, subtotal);
+      if (!r) continue;
+      results.push({
+        ...r,
+        scope: `${r.scope}:trigger:${triggerProductId}`,
+        matchedProductIds: [triggerProductId],
+        triggerProductId,
+      });
+    }
   }
 
   const { eligible, conflicts } = resolveConflicts(results);

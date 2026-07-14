@@ -2,6 +2,7 @@ import {
   EngineContext,
   EnginePromotion,
   computeReward,
+  evaluatePromotions,
 } from './promotion-engine';
 
 /**
@@ -187,5 +188,93 @@ describe('promotion-engine — trần quà 2 tầng lifetime', () => {
     const ctx = makeContext(30, { byProduct: {}, total: 0 });
     const r = computeReward(p, ctx, 300000)!;
     (r.rewardOptions || []).forEach((o) => expect(o.remaining).toBeNull());
+  });
+
+  it('nhiều mã X: không cộng chéo SL giữa các mã', () => {
+    const SECOND_X = 4;
+    const p = makePromotion({
+      rewards: [
+        {
+          buyProductId: null,
+          buyCategoryName: null,
+          buyQuantity: 15,
+          rewardType: 'gift',
+          rewardProductId: null,
+          rewardQuantity: 1,
+          rewardValue: 0,
+          buyItems: [{ productId: ABC }, { productId: SECOND_X }],
+          rewardItems: [{ productId: BCF, rewardLimit: 30 }],
+        },
+      ],
+    });
+    const ctx: EngineContext = {
+      ...makeContext(15, { byProduct: {}, total: 0 }),
+      items: [
+        { productId: ABC, quantity: 15, price: 10000 },
+        { productId: SECOND_X, quantity: 1, price: 10000 },
+      ],
+      stockMap: { [ABC]: 999, [BCF]: 999, [SECOND_X]: 999 },
+      productNameMap: {
+        [ABC]: 'ABC',
+        [BCF]: 'BCF',
+        [SECOND_X]: 'SECOND_X',
+      },
+      productCodeMap: {
+        [ABC]: 'ABC',
+        [BCF]: 'BCF',
+        [SECOND_X]: 'SECOND_X',
+      },
+    };
+
+    const result = evaluatePromotions([p], ctx);
+    expect(result.eligiblePromotions).toHaveLength(1);
+    expect(result.eligiblePromotions[0].triggerProductId).toBe(ABC);
+    expect(result.eligiblePromotions[0].rewardQuantity).toBe(1);
+  });
+
+  it('nhiều mã X: mỗi mã đủ ngưỡng sinh một kết quả riêng', () => {
+    const SECOND_X = 4;
+    const p = makePromotion({
+      rewards: [
+        {
+          buyProductId: null,
+          buyCategoryName: null,
+          buyQuantity: 15,
+          rewardType: 'gift',
+          rewardProductId: null,
+          rewardQuantity: 1,
+          rewardValue: 0,
+          buyItems: [{ productId: ABC }, { productId: SECOND_X }],
+          rewardItems: [{ productId: BCF, rewardLimit: 30 }],
+        },
+      ],
+    });
+    const ctx: EngineContext = {
+      ...makeContext(15, { byProduct: {}, total: 0 }),
+      items: [
+        { productId: ABC, quantity: 15, price: 10000 },
+        { productId: SECOND_X, quantity: 15, price: 10000 },
+      ],
+      stockMap: { [ABC]: 999, [BCF]: 999, [SECOND_X]: 999 },
+      productNameMap: {
+        [ABC]: 'ABC',
+        [BCF]: 'BCF',
+        [SECOND_X]: 'SECOND_X',
+      },
+      productCodeMap: {
+        [ABC]: 'ABC',
+        [BCF]: 'BCF',
+        [SECOND_X]: 'SECOND_X',
+      },
+    };
+
+    const result = evaluatePromotions([p], ctx);
+    expect(result.eligiblePromotions).toHaveLength(2);
+    expect(
+      result.eligiblePromotions.map((r) => r.triggerProductId).sort(),
+    ).toEqual([ABC, SECOND_X]);
+    expect(result.eligiblePromotions.every((r) => r.rewardQuantity === 1)).toBe(
+      true,
+    );
   });
 });

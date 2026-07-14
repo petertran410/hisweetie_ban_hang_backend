@@ -84,6 +84,7 @@ export class OrdersService {
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: it.promotionId ?? null,
+          triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         } as OrderItemDto;
       });
@@ -92,9 +93,11 @@ export class OrdersService {
       return { effectiveItems: baseItems, extraDiscount: 0, logs: [] };
     }
 
-    const choiceMap: Record<number, any> = {};
+    const choiceKey = (promotionId: number, triggerProductId?: number | null) =>
+      `${promotionId}:${triggerProductId ?? ''}`;
+    const choiceMap: Record<string, any> = {};
     (dto.appliedPromotions ?? []).forEach((c) => {
-      choiceMap[c.promotionId] = c;
+      choiceMap[choiceKey(c.promotionId, c.triggerProductId)] = c;
     });
     const appliedIds =
       dto.appliedPromotions && dto.appliedPromotions.length > 0
@@ -126,14 +129,16 @@ export class OrdersService {
     const logs: any[] = [];
 
     // Resolve giftLines hiệu dụng cho từng KM
-    const resolvedGifts: Record<number, any[]> = {};
+    const resolvedGifts: Record<string, any[]> = {};
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       let giftLines = r.giftLines as any[];
       if (
         (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
         r.requiresChoice
       ) {
-        const choice = choiceMap[r.promotionId];
+        const choice =
+          choiceMap[resultKey] || choiceMap[choiceKey(r.promotionId)];
         if (choice?.giftProductId) {
           const opt = (r.rewardOptions || []).find(
             (o: any) => o.productId === choice.giftProductId,
@@ -162,6 +167,7 @@ export class OrdersService {
                 quantity: qty,
                 price: 0,
                 promotionId: r.promotionId,
+                triggerProductId: r.triggerProductId,
               },
             ];
           }
@@ -169,7 +175,10 @@ export class OrdersService {
           giftLines = [];
         }
       }
-      resolvedGifts[r.promotionId] = giftLines;
+      resolvedGifts[resultKey] = giftLines.map((g: any) => ({
+        ...g,
+        triggerProductId: r.triggerProductId,
+      }));
     }
 
     const giftProductIds = Object.values(resolvedGifts)
@@ -185,6 +194,7 @@ export class OrdersService {
     giftCosts.forEach((c) => (costMap[c.productId] = Number(c.cost)));
 
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       // 1) Giảm giá đơn hàng (INVOICE_DISCOUNT)
       // Defense-in-depth: nếu KM không autoApply và user chưa chọn → bỏ qua,
       // dù filter ở promotions.service có lọt thì đây vẫn chặn.
@@ -211,7 +221,9 @@ export class OrdersService {
 
       // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
       // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
-      const matchedIds: number[] = r.matchedProductIds || [];
+      const matchedIds: number[] = r.triggerProductId
+        ? [r.triggerProductId]
+        : r.matchedProductIds || [];
       if (matchedIds.length) {
         for (const it of baseItems) {
           if (
@@ -225,7 +237,7 @@ export class OrdersService {
       }
 
       // 3) Hàng tặng (BE tự sinh dòng giá 0)
-      const giftLines = resolvedGifts[r.promotionId] || [];
+      const giftLines = resolvedGifts[resultKey] || [];
       for (const g of giftLines) {
         baseItems.push({
           productId: g.productId,
@@ -239,6 +251,7 @@ export class OrdersService {
           lineType: 'gift',
           isGift: true,
           promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
         } as OrderItemDto);
       }
 
@@ -254,7 +267,9 @@ export class OrdersService {
       for (const feLine of baseItems.filter(
         (it) =>
           (it.lineType || 'normal') === 'discounted_buy' &&
-          it.promotionId === r.promotionId,
+          it.promotionId === r.promotionId &&
+          (it.triggerProductId == null ||
+            it.triggerProductId === r.triggerProductId),
       )) {
         if (!allowedBuyIds.includes(feLine.productId)) {
           throw new BadRequestException(
@@ -298,7 +313,7 @@ export class OrdersService {
       });
     }
 
-    // Chèn gift / discounted_buy ngay sau SP trigger (cùng promotionId),
+    // Chèn gift / discounted_buy ngay sau đúng SP X kích hoạt.
     // mirror FE giỏ hàng. Không có reward → thứ tự giữ nguyên.
     const isRewardLine = (it: OrderItemDto) => {
       const lt = it.lineType || 'normal';
@@ -313,7 +328,12 @@ export class OrdersService {
         reordered.push(n);
         if (n.promotionId != null) {
           for (const r of rewards) {
-            if (!used.has(r) && r.promotionId === n.promotionId) {
+            if (
+              !used.has(r) &&
+              r.promotionId === n.promotionId &&
+              ((r as any).triggerProductId == null ||
+                (r as any).triggerProductId === n.productId)
+            ) {
               reordered.push(r);
               used.add(r);
             }

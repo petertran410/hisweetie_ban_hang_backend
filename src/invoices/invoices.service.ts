@@ -855,7 +855,7 @@ export class InvoicesService {
   }> {
     // Bỏ dòng gift do KM engine sinh (có promotionId) — BE tự sinh lại.
     // GIỮ dòng gift thủ công (thu ngân đánh dấu 🎁, không gắn promotionId).
-    const baseItems = dto.items
+    const baseItems: any[] = dto.items
       .filter(
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
@@ -876,6 +876,7 @@ export class InvoicesService {
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: it.promotionId ?? null,
+          triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         };
       });
@@ -884,10 +885,13 @@ export class InvoicesService {
       return { effectiveItems: baseItems, extraInvoiceDiscount: 0, logs: [] };
     }
 
-    // Map lựa chọn quà / mua kèm của thu ngân theo promotionId
-    const choiceMap: Record<number, any> = {};
+    // Một CTKM có thể áp độc lập cho nhiều mã X. Key phải gồm cả mã X kích hoạt,
+    // nếu chỉ dùng promotionId thì lựa chọn của dòng sau sẽ ghi đè dòng trước.
+    const choiceKey = (promotionId: number, triggerProductId?: number | null) =>
+      `${promotionId}:${triggerProductId ?? ''}`;
+    const choiceMap: Record<string, any> = {};
     (dto.appliedPromotions ?? []).forEach((c) => {
-      choiceMap[c.promotionId] = c;
+      choiceMap[choiceKey(c.promotionId, c.triggerProductId)] = c;
     });
     const appliedIds =
       dto.appliedPromotions && dto.appliedPromotions.length > 0
@@ -919,15 +923,17 @@ export class InvoicesService {
     const logs: any[] = [];
 
     // Resolve giftLines hiệu dụng cho từng KM (engine tự sinh hoặc theo lựa chọn thu ngân)
-    const resolvedGifts: Record<number, any[]> = {};
+    const resolvedGifts: Record<string, any[]> = {};
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       let giftLines = r.giftLines as any[];
       // KM cần thu ngân chọn quà (nhóm Y nhiều SP)
       if (
         (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
         r.requiresChoice
       ) {
-        const choice = choiceMap[r.promotionId];
+        const choice =
+          choiceMap[resultKey] || choiceMap[choiceKey(r.promotionId)];
         if (choice?.giftProductId) {
           const opt = (r.rewardOptions || []).find(
             (o: any) => o.productId === choice.giftProductId,
@@ -957,6 +963,7 @@ export class InvoicesService {
                 quantity: qty,
                 price: 0,
                 promotionId: r.promotionId,
+                triggerProductId: r.triggerProductId,
               },
             ];
           }
@@ -965,7 +972,10 @@ export class InvoicesService {
           giftLines = [];
         }
       }
-      resolvedGifts[r.promotionId] = giftLines;
+      resolvedGifts[resultKey] = giftLines.map((g: any) => ({
+        ...g,
+        triggerProductId: r.triggerProductId,
+      }));
     }
 
     // Lấy code/name + cost cho sản phẩm tặng
@@ -991,6 +1001,7 @@ export class InvoicesService {
     giftCosts.forEach((c) => (costMap[c.productId] = Number(c.cost)));
 
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       // 1) Giảm giá hóa đơn
       // Defense-in-depth: nếu KM không autoApply và user chưa chọn → bỏ qua,
       // dù filter ở promotions.service có lọt thì đây vẫn chặn.
@@ -1016,7 +1027,9 @@ export class InvoicesService {
 
       // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
       // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
-      const matchedIds: number[] = r.matchedProductIds || [];
+      const matchedIds: number[] = r.triggerProductId
+        ? [r.triggerProductId]
+        : r.matchedProductIds || [];
       if (matchedIds.length) {
         for (const it of baseItems) {
           if (
@@ -1030,7 +1043,7 @@ export class InvoicesService {
       }
 
       // 3) Hàng tặng (BE tự sinh dòng giá 0). Cho phép tồn âm (chỉ cảnh báo ở FE).
-      const giftLines = resolvedGifts[r.promotionId] || [];
+      const giftLines = resolvedGifts[resultKey] || [];
       for (const g of giftLines) {
         const p = giftProductMap[g.productId];
         baseItems.push({
@@ -1047,6 +1060,7 @@ export class InvoicesService {
           lineType: 'gift',
           isGift: true,
           promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
           enabledPromotionIds: undefined,
         });
       }
@@ -1063,7 +1077,10 @@ export class InvoicesService {
           : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
       for (const feLine of baseItems.filter(
         (it) =>
-          it.lineType === 'discounted_buy' && it.promotionId === r.promotionId,
+          it.lineType === 'discounted_buy' &&
+          it.promotionId === r.promotionId &&
+          (it.triggerProductId == null ||
+            it.triggerProductId === r.triggerProductId),
       )) {
         if (!allowedBuyIds.includes(feLine.productId)) {
           throw new BadRequestException(
@@ -1107,7 +1124,7 @@ export class InvoicesService {
       });
     }
 
-    // Chèn gift / discounted_buy ngay sau SP trigger (cùng promotionId),
+    // Chèn gift / discounted_buy ngay sau đúng SP X kích hoạt.
     // mirror FE giỏ hàng. Không có reward → thứ tự giữ nguyên.
     const isRewardLine = (it: any) => {
       const lt = it.lineType || 'normal';
@@ -1122,7 +1139,12 @@ export class InvoicesService {
         reordered.push(n);
         if (n.promotionId != null) {
           for (const r of rewards) {
-            if (!used.has(r) && r.promotionId === n.promotionId) {
+            if (
+              !used.has(r) &&
+              r.promotionId === n.promotionId &&
+              (r.triggerProductId == null ||
+                r.triggerProductId === n.productId)
+            ) {
               reordered.push(r);
               used.add(r);
             }
@@ -1379,7 +1401,9 @@ export class InvoicesService {
 
           await tx.inventory.updateMany({
             where: { productId: item.productId, branchId: dto.branchId },
-            data: this.buildInventoryDeductData(item.quantity, condition),
+            data: this.buildInventoryDeductData(item.quantity, condition, {
+              isGift: !!(item.isGift || item.lineType === 'gift'),
+            }),
           });
           touchedProductIds.add(item.productId);
 
@@ -1557,6 +1581,12 @@ export class InvoicesService {
             data: this.buildInventoryRestoreData(
               Number(oldDetail.quantity),
               (oldDetail as any).conditionType || 'normal',
+              {
+                isGift: !!(
+                  (oldDetail as any).isGift ||
+                  (oldDetail as any).lineType === 'gift'
+                ),
+              },
             ),
           });
           if (oldDetail.productId != null) touchedProductIds.add(oldDetail.productId);
@@ -1801,7 +1831,9 @@ export class InvoicesService {
               productId: item.productId,
               branchId: newInvoice.branchId || 1,
             },
-            data: this.buildInventoryDeductData(item.quantity, condition),
+            data: this.buildInventoryDeductData(item.quantity, condition, {
+              isGift: !!(item.isGift || item.lineType === 'gift'),
+            }),
           });
           touchedProductIds.add(item.productId);
 
@@ -1939,6 +1971,12 @@ export class InvoicesService {
               data: this.buildInventoryRestoreData(
                 Number(detail.quantity),
                 (detail as any).conditionType || 'normal',
+                {
+                  isGift: !!(
+                    (detail as any).isGift ||
+                    (detail as any).lineType === 'gift'
+                  ),
+                },
               ),
             });
             if (detail.productId != null) touchedProductIds.add(detail.productId);
@@ -2704,7 +2742,9 @@ export class InvoicesService {
         );
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
-          data: this.buildInventoryDeductData(item.quantity, condition),
+          data: this.buildInventoryDeductData(item.quantity, condition, {
+            isGift: !!(item.isGift || item.lineType === 'gift'),
+          }),
         });
         touchedProductIds.add(item.productId);
 
@@ -3941,9 +3981,15 @@ export class InvoicesService {
    * Xây dựng data object để trừ kho dựa trên conditionType.
    * Gộp onHand + damaged/nearExpiry vào 1 lần updateMany duy nhất.
    */
+  /**
+   * Trừ kho khi xuất HĐ.
+   * - conditionType damaged/near_expiry: trừ bucket tương ứng
+   * - isGift: trừ promoQuantity (cho phép âm khi xuất vượt phân bổ KM)
+   */
   private buildInventoryDeductData(
     quantity: number,
     conditionType?: string,
+    opts?: { isGift?: boolean },
   ): Record<string, any> {
     const data: Record<string, any> = {
       onHand: { decrement: quantity },
@@ -3953,15 +3999,20 @@ export class InvoicesService {
     } else if (conditionType === 'near_expiry') {
       data.nearExpiryQuantity = { decrement: quantity };
     }
+    if (opts?.isGift) {
+      data.promoQuantity = { decrement: quantity };
+    }
     return data;
   }
 
   /**
    * Xây dựng data object để hoàn kho (khi hủy hóa đơn).
+   * Gift line: cộng lại promoQuantity (có thể từ số âm về 0/dương).
    */
   private buildInventoryRestoreData(
     quantity: number,
     conditionType?: string,
+    opts?: { isGift?: boolean },
   ): Record<string, any> {
     const data: Record<string, any> = {
       onHand: { increment: quantity },
@@ -3970,6 +4021,9 @@ export class InvoicesService {
       data.damagedQuantity = { increment: quantity };
     } else if (conditionType === 'near_expiry') {
       data.nearExpiryQuantity = { increment: quantity };
+    }
+    if (opts?.isGift) {
+      data.promoQuantity = { increment: quantity };
     }
     return data;
   }

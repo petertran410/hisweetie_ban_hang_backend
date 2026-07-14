@@ -817,7 +817,7 @@ export class PromotionsService {
     return { byProduct, total };
   }
 
-  async getStats(id: number) {
+  async getStats(id: number, branchId?: number) {
     const promo = await this.prisma.promotion.findUnique({
       where: { id },
       select: {
@@ -826,8 +826,13 @@ export class PromotionsService {
         usageCount: true,
         maxRewardQuantity: true,
         products: {
-          where: { role: 'reward' },
-          select: { productId: true, categoryName: true, rewardLimit: true },
+          select: {
+            role: true,
+            productId: true,
+            categoryName: true,
+            rewardLimit: true,
+            product: { select: { id: true, code: true, name: true } },
+          },
         },
       },
     });
@@ -883,6 +888,25 @@ export class PromotionsService {
     };
     invoiceLines.forEach(addLine);
 
+    // Seed sẵn SP cấu hình (buy + reward) để stats hiện đủ dù chưa phát sinh HĐ.
+    const configuredRewardProducts = promo.products.filter(
+      (p) => p.role === 'reward' && p.productId != null,
+    );
+    const configuredBuyProducts = promo.products.filter(
+      (p) => p.role === 'buy' && p.productId != null,
+    );
+    for (const rp of [...configuredRewardProducts, ...configuredBuyProducts]) {
+      const pid = rp.productId!;
+      if (map.has(pid)) continue;
+      map.set(pid, {
+        productId: pid,
+        code: rp.product?.code || `SP#${pid}`,
+        name: rp.product?.name || `SP#${pid}`,
+        soldQty: 0,
+        promoQty: 0,
+      });
+    }
+
     const items = [...map.values()].sort((a, b) => b.soldQty - a.soldQty);
     const totals = items.reduce(
       (acc, it) => ({
@@ -897,29 +921,99 @@ export class PromotionsService {
     const maxRewardQuantity =
       promo.maxRewardQuantity != null ? Number(promo.maxRewardQuantity) : null;
 
-    // Trần riêng từng SP quà (rewardLimit) + số đã tặng theo từng SP.
-    const rewardLimitByProduct: Record<number, number> = {};
-    for (const rp of promo.products) {
-      if (rp.productId != null && rp.rewardLimit != null) {
-        rewardLimitByProduct[rp.productId] = Number(rp.rewardLimit);
-      }
+    // Trần riêng từng SP quà (rewardLimit) — lấy từ cấu hình role=reward.
+    // Nạp bucket tồn kho theo chi nhánh đang chọn (header X-Branch-Id).
+    const rewardLimitByProduct: Record<number, number | null> = {};
+    const productIdsForStock = new Set<number>();
+    for (const rp of configuredRewardProducts) {
+      const pid = rp.productId!;
+      productIdsForStock.add(pid);
+      rewardLimitByProduct[pid] =
+        rp.rewardLimit != null ? Number(rp.rewardLimit) : null;
     }
-    const perProduct = items
-      .filter((it) => rewardLimitByProduct[it.productId] != null)
+    items.forEach((it) => productIdsForStock.add(it.productId));
+
+    const inventories =
+      productIdsForStock.size > 0
+        ? await this.prisma.inventory.findMany({
+            where: {
+              productId: { in: [...productIdsForStock] },
+              ...(branchId != null ? { branchId } : {}),
+            },
+            select: {
+              productId: true,
+              branchId: true,
+              onHand: true,
+              damagedQuantity: true,
+              nearExpiryQuantity: true,
+              promoQuantity: true,
+            },
+          })
+        : [];
+
+    const stockByProduct = new Map<
+      number,
+      {
+        onHand: number;
+        damagedQuantity: number;
+        nearExpiryQuantity: number;
+        promoQuantity: number;
+      }
+    >();
+    for (const inv of inventories) {
+      const prev = stockByProduct.get(inv.productId) || {
+        onHand: 0,
+        damagedQuantity: 0,
+        nearExpiryQuantity: 0,
+        promoQuantity: 0,
+      };
+      prev.onHand += Number(inv.onHand || 0);
+      prev.damagedQuantity += Number(inv.damagedQuantity || 0);
+      prev.nearExpiryQuantity += Number(inv.nearExpiryQuantity || 0);
+      prev.promoQuantity += Number(inv.promoQuantity || 0);
+      stockByProduct.set(inv.productId, prev);
+    }
+
+    // perProduct: luôn list ĐỦ SP quà đã cấu hình (role=reward), kể cả chưa tặng.
+    const perProduct = configuredRewardProducts.map((rp) => {
+      const pid = rp.productId!;
+      const issued = map.get(pid)?.promoQty ?? 0;
+      const limit = rewardLimitByProduct[pid];
+      const stock = stockByProduct.get(pid);
+      return {
+        productId: pid,
+        code: rp.product?.code || map.get(pid)?.code || `SP#${pid}`,
+        name: rp.product?.name || map.get(pid)?.name || `SP#${pid}`,
+        rewardLimit: limit,
+        rewardIssued: issued,
+        rewardRemaining: limit != null ? limit - issued : null,
+        onHand: stock?.onHand ?? 0,
+        damagedQuantity: stock?.damagedQuantity ?? 0,
+        nearExpiryQuantity: stock?.nearExpiryQuantity ?? 0,
+        promoQuantity: stock?.promoQuantity ?? 0,
+      };
+    });
+
+    // Bảng "items" (bảng 2) chỉ hiển thị SP điều kiện MUA (role=buy).
+    // SP quà đã có bảng "Trần SL tặng" riêng, không lặp lại ở đây.
+    const buyProductIds = new Set<number>(
+      configuredBuyProducts.map((rp) => rp.productId!),
+    );
+    const itemsWithStock = items
+      .filter((it) => buyProductIds.has(it.productId))
       .map((it) => {
-        const limit = rewardLimitByProduct[it.productId];
+        const stock = stockByProduct.get(it.productId);
         return {
-          productId: it.productId,
-          code: it.code,
-          name: it.name,
-          rewardLimit: limit,
-          rewardIssued: it.promoQty,
-          rewardRemaining: limit - it.promoQty,
+          ...it,
+          onHand: stock?.onHand ?? 0,
+          damagedQuantity: stock?.damagedQuantity ?? 0,
+          nearExpiryQuantity: stock?.nearExpiryQuantity ?? 0,
+          promoQuantity: stock?.promoQuantity ?? 0,
         };
       });
 
     return {
-      items,
+      items: itemsWithStock,
       totals,
       limits: {
         usageLimit,

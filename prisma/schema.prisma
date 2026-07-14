@@ -78,6 +78,7 @@ model User {
   confirmedReturnOrders          ReturnOrder[]          @relation("ReturnOrderConfirmer")
   refundConfirmedReturnOrders    ReturnOrder[]          @relation("ReturnOrderRefundConfirmer")
   createdInventoryChecks         InventoryCheck[]       @relation("InventoryCheckCreator")
+  createdInventoryPromoChecks    InventoryPromoCheck[]  @relation("InventoryPromoCheckCreator")
   stockAuditsCreated             StockAudit[]           @relation("StockAuditCreator")
   stockAuditsCompleted           StockAudit[]           @relation("StockAuditCompleter")
   userBranchRoles                UserBranchRole[]
@@ -304,6 +305,7 @@ model Branch {
   consignmentReturns     ConsignmentReturn[]
   inventoryLogs          InventoryLog[]
   inventoryChecks        InventoryCheck[]
+  inventoryPromoChecks   InventoryPromoCheck[]
   stockAudits            StockAudit[]
   roleBranchPermissions  RoleBranchPermission[]
   userBranchRoles        UserBranchRole[]
@@ -771,6 +773,7 @@ model Product {
   inventoryLogs         InventoryLog[]
   productionComponents  ProductionComponent[]
   inventoryCheckDetails InventoryCheckDetail[]
+  inventoryPromoCheckDetails InventoryPromoCheckDetail[]
   stockAuditDetails     StockAuditDetail[]
   supplierReturnDetails SupplierReturnDetail[]
   promotionBuyRewards   PromotionReward[]      @relation("PromotionBuyProduct")
@@ -966,6 +969,7 @@ model Inventory {
   totalWeight        Decimal? @default(0)
   damagedQuantity    Decimal  @default(0)
   nearExpiryQuantity Decimal  @default(0)
+  promoQuantity      Decimal  @default(0) // Hàng phân bổ cho khuyến mãi (gift). Cho phép âm khi xuất vượt.
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -1017,6 +1021,51 @@ model InventoryCheckDetail {
   product        Product        @relation(fields: [productId], references: [id])
 
   @@map("inventory_check_details")
+}
+
+// Phiếu kiểm hàng khuyến mãi — phân bổ số lượng tồn cho KM (gift).
+// Pattern giống InventoryCheck (loại B/cận date), nhưng chỉ quản lý promoQuantity.
+model InventoryPromoCheck {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  branchId      Int
+  branchName    String
+  checkDate     DateTime @default(now())
+  note          String?
+  createdById   Int
+  createdByName String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  status        Int      @default(1) // 1=Hoàn thành, 2=Đã hủy
+
+  branch  Branch                      @relation(fields: [branchId], references: [id])
+  creator User                        @relation("InventoryPromoCheckCreator", fields: [createdById], references: [id])
+  details InventoryPromoCheckDetail[]
+
+  @@index([branchId])
+  @@index([checkDate])
+  @@map("inventory_promo_checks")
+}
+
+model InventoryPromoCheckDetail {
+  id                      Int      @id @default(autoincrement())
+  inventoryPromoCheckId   Int
+  productId               Int
+  productCode             String
+  productName             String
+  currentOnHand           Decimal  @default(0)
+  currentDamaged          Decimal  @default(0)
+  currentNearExpiry       Decimal  @default(0)
+  previousPromoQuantity   Decimal  @default(0)
+  promoQuantity           Decimal  @default(0)
+  note                    String?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  inventoryPromoCheck InventoryPromoCheck @relation(fields: [inventoryPromoCheckId], references: [id], onDelete: Cascade)
+  product             Product             @relation(fields: [productId], references: [id])
+
+  @@map("inventory_promo_check_details")
 }
 
 model InventoryLog {
