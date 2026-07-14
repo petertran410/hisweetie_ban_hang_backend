@@ -143,19 +143,28 @@ export class OrdersService {
               `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
             );
           }
-          const qty = Math.min(
+          // Cap theo: SL thu ngân chọn, tổng suất lần bán (rewardQuantity),
+          // và suất còn lại (lifetime) của đúng SP quà được chọn (opt.remaining).
+          let qty = Math.min(
             Number(choice.giftQuantity || r.rewardQuantity),
             Number(r.rewardQuantity),
           );
-          giftLines = [
-            {
-              productId: opt.productId,
-              productName: opt.productName,
-              quantity: qty,
-              price: 0,
-              promotionId: r.promotionId,
-            },
-          ];
+          if (opt.remaining != null) {
+            qty = Math.min(qty, Number(opt.remaining));
+          }
+          if (qty <= 0) {
+            giftLines = [];
+          } else {
+            giftLines = [
+              {
+                productId: opt.productId,
+                productName: opt.productName,
+                quantity: qty,
+                price: 0,
+                promotionId: r.promotionId,
+              },
+            ];
+          }
         } else {
           giftLines = [];
         }
@@ -238,7 +247,7 @@ export class OrdersService {
         r.requiresChoice && r.type === 'BUY_X_BUY_Y_PRICE'
           ? (r.rewardOptions || []).map((o: any) => o.productId)
           : (r.discountedBuyLines || []).map((d: any) => d.productId);
-      const maxBuyQty =
+      const baseBuyQty =
         r.rewardQuantity != null
           ? Number(r.rewardQuantity)
           : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
@@ -251,6 +260,14 @@ export class OrdersService {
           throw new BadRequestException(
             `PROMOTION_CHANGED: sản phẩm mua kèm không thuộc chương trình "${r.name}"`,
           );
+        }
+        // Cap theo suất còn lại (lifetime) của đúng SP mua kèm được chọn.
+        const opt = (r.rewardOptions || []).find(
+          (o: any) => o.productId === feLine.productId,
+        );
+        let maxBuyQty = baseBuyQty;
+        if (opt?.remaining != null) {
+          maxBuyQty = Math.min(maxBuyQty, Number(opt.remaining));
         }
         if (maxBuyQty && Number(feLine.quantity) > maxBuyQty) {
           throw new BadRequestException(

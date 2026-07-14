@@ -22,6 +22,9 @@ export interface EngineItem {
 export interface EngineProductRef {
   productId?: number | null;
   categoryName?: string | null;
+  // Chỉ dùng cho rewardItems (Y): trần lifetime riêng cho dòng quà này.
+  // Với category: trần dùng chung cho cả nhóm (tổng SL tặng mọi SP trong nhóm).
+  rewardLimit?: number | null;
 }
 
 export interface EngineReward {
@@ -96,6 +99,9 @@ export interface RewardOption {
   productName?: string;
   productCode?: string;
   availableStock: number;
+  // Số quà còn được tặng (lifetime) cho SP này = min(trần riêng SP, trần tổng CT) - đã tặng.
+  // null = không giới hạn (không có trần riêng lẫn trần tổng).
+  remaining?: number | null;
 }
 
 export interface PromotionResult {
@@ -134,6 +140,13 @@ export interface EngineContext {
   productCodeMap: Record<number, string>;
   // resolve danh sách SP thuộc 1 category (parent/middle/child name) -> [productId]
   categoryProductMap: Record<string, number[]>;
+  // Số quà ĐÃ TẶNG (lifetime) theo từng promotion:
+  //   { [promotionId]: { byProduct: { [productId]: qty }, total } }
+  // Dùng để tính "còn lại" per-SP và trần tổng chương trình. Thiếu => coi như 0.
+  rewardIssuedMap?: Record<
+    number,
+    { byProduct: Record<number, number>; total: number }
+  >;
 }
 
 export interface EvaluateOutput {
@@ -242,26 +255,71 @@ function matchedProductIds(
   ];
 }
 
-/** Resolve danh sách SP cụ thể từ rewardItems (expand category) kèm tồn kho. */
+/** Số quà còn được tặng ở cấp TỔNG chương trình (lifetime). null = không giới hạn. */
+function overallRemainingOf(p: EnginePromotion, ctx: EngineContext): number | null {
+  if (p.maxRewardQuantity == null) return null;
+  const issuedTotal = ctx.rewardIssuedMap?.[p.id]?.total ?? 0;
+  return Math.max(0, Number(p.maxRewardQuantity) - issuedTotal);
+}
+
+/** Gộp trần riêng-SP và trần tổng CT thành số còn lại hiệu dụng. */
+function combineRemaining(
+  groupRemaining: number | null,
+  overallRemaining: number | null,
+): number | null {
+  const parts: number[] = [];
+  if (groupRemaining != null) parts.push(groupRemaining);
+  if (overallRemaining != null) parts.push(overallRemaining);
+  return parts.length ? Math.min(...parts) : null;
+}
+
+/** Cap số muốn tặng theo suất còn lại (null = không giới hạn). */
+function capByRemaining(want: number, remaining?: number | null): number {
+  if (remaining == null) return want;
+  return Math.max(0, Math.min(want, remaining));
+}
+
+/**
+ * Resolve danh sách SP cụ thể từ rewardItems (expand category) kèm tồn kho + số còn lại.
+ * remaining mỗi option = min(trần riêng dòng quà − đã tặng, trần tổng CT − đã tặng tổng).
+ * Với category: trần riêng dùng chung cả nhóm (issued = tổng SL tặng mọi SP trong nhóm).
+ */
 function resolveRewardOptions(
   ctx: EngineContext,
   rewardItems: EngineProductRef[],
+  p: EnginePromotion,
 ): RewardOption[] {
-  const ids = new Set<number>();
+  const issued = ctx.rewardIssuedMap?.[p.id]?.byProduct ?? {};
+  const overallRemaining = overallRemainingOf(p, ctx);
+
+  const options: RewardOption[] = [];
+  const seen = new Set<number>();
   for (const ref of rewardItems) {
-    if (ref.productId) ids.add(ref.productId);
-    else if (ref.categoryName) {
-      (ctx.categoryProductMap[ref.categoryName] || []).forEach((id) =>
-        ids.add(id),
-      );
+    let pids: number[] = [];
+    if (ref.productId) pids = [ref.productId];
+    else if (ref.categoryName)
+      pids = ctx.categoryProductMap[ref.categoryName] || [];
+    if (pids.length === 0) continue;
+
+    let groupRemaining: number | null = null;
+    if (ref.rewardLimit != null) {
+      const groupIssued = pids.reduce((s, id) => s + (issued[id] ?? 0), 0);
+      groupRemaining = Math.max(0, Number(ref.rewardLimit) - groupIssued);
+    }
+
+    for (const productId of pids) {
+      if (seen.has(productId)) continue;
+      seen.add(productId);
+      options.push({
+        productId,
+        productName: ctx.productNameMap[productId] ?? '',
+        productCode: ctx.productCodeMap[productId] ?? '',
+        availableStock: ctx.stockMap[productId] ?? 0,
+        remaining: combineRemaining(groupRemaining, overallRemaining),
+      });
     }
   }
-  return [...ids].map((productId) => ({
-    productId,
-    productName: ctx.productNameMap[productId] ?? '',
-    productCode: ctx.productCodeMap[productId] ?? '',
-    availableStock: ctx.stockMap[productId] ?? 0,
-  }));
+  return options;
 }
 
 /** Lọc điều kiện áp dụng theo thời điểm + ngưỡng (B2). DB đã lọc B1. */
@@ -407,46 +465,54 @@ export function computeReward(
       const boughtQty = sumBoughtQty(ctx, buyItems, p.id);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
-      let giftQty = times * Number(rw.rewardQuantity);
-      if (p.maxRewardQuantity != null)
-        giftQty = Math.min(giftQty, Number(p.maxRewardQuantity));
-      if (giftQty <= 0) return null;
+      // Số quà "muốn tặng" theo số lần đạt điều kiện (chưa cap theo trần).
+      const wantQty = times * Number(rw.rewardQuantity);
+      if (wantQty <= 0) return null;
 
       // BUY_N_GET_M_SAME: tặng chính SP đã mua (các SP trong giỏ khớp X).
-      // BUY_X_GET_Y: tặng SP thuộc nhóm Y (rewardItems).
+      //   → không có trần riêng dòng quà, chỉ chịu trần tổng chương trình.
+      // BUY_X_GET_Y: tặng SP thuộc nhóm Y (rewardItems) → có thể có trần riêng.
       let options: RewardOption[];
       if (p.type === 'BUY_N_GET_M_SAME') {
+        const overallRemaining = overallRemainingOf(p, ctx);
         const boughtIds = matchedProductIds(ctx, buyItems, p.id);
         options = boughtIds.map((productId) => ({
           productId,
           productName: nameOf(productId),
           productCode: codeOf(productId),
           availableStock: stockOf(productId),
+          remaining: overallRemaining,
         }));
       } else {
-        options = resolveRewardOptions(ctx, getRewardItems(rw));
+        options = resolveRewardOptions(ctx, getRewardItems(rw), p);
       }
+      // Loại option đã hết suất tặng (còn lại = 0).
+      options = options.filter((o) => o.remaining == null || o.remaining > 0);
       if (options.length === 0) return null;
 
       const scope = `buy:${p.id}`;
       const requiresChoice = options.length > 1;
-      // Nếu chỉ 1 option → tự sinh giftLine luôn. Nếu nhiều → chờ thu ngân chọn.
-      const giftLines: GiftLine[] = requiresChoice
-        ? []
-        : [
-            {
-              productId: options[0].productId,
-              productName: options[0].productName,
-              productCode: options[0].productCode,
-              quantity: giftQty,
-              price: 0,
-              lineType: 'gift',
-              isGift: true,
-              promotionId: p.id,
-              availableStock: options[0].availableStock,
-              stockEnough: options[0].availableStock >= giftQty,
-            },
-          ];
+      // Nếu chỉ 1 option → tự sinh giftLine, cap theo suất còn lại của SP đó.
+      // Nếu nhiều → chờ thu ngân chọn; qty sẽ được cap theo option ở BE/FE.
+      const only = options[0];
+      const giftQty = capByRemaining(wantQty, only.remaining);
+      const giftLines: GiftLine[] =
+        requiresChoice || giftQty <= 0
+          ? []
+          : [
+              {
+                productId: only.productId,
+                productName: only.productName,
+                productCode: only.productCode,
+                quantity: giftQty,
+                price: 0,
+                lineType: 'gift',
+                isGift: true,
+                promotionId: p.id,
+                availableStock: only.availableStock,
+                stockEnough: only.availableStock >= giftQty,
+              },
+            ];
       return {
         ...base,
         scope,
@@ -454,7 +520,7 @@ export function computeReward(
         giftLines,
         discountedBuyLines: [],
         discountLines: [],
-        rewardQuantity: giftQty,
+        rewardQuantity: requiresChoice ? wantQty : giftQty,
         rewardOptions: options,
         requiresChoice,
         matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
@@ -473,30 +539,32 @@ export function computeReward(
       const boughtQty = sumBoughtQty(ctx, buyItems, p.id);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
-      let buyableQty = times * Number(rw.rewardQuantity);
-      if (p.maxRewardQuantity != null)
-        buyableQty = Math.min(buyableQty, Number(p.maxRewardQuantity));
-      if (buyableQty <= 0) return null;
+      const wantQty = times * Number(rw.rewardQuantity);
+      if (wantQty <= 0) return null;
       const promoPrice = round(Number(rw.rewardValue));
-      const options = resolveRewardOptions(ctx, rewardItems);
+      let options = resolveRewardOptions(ctx, rewardItems, p);
+      options = options.filter((o) => o.remaining == null || o.remaining > 0);
       if (options.length === 0) return null;
 
       const scope = `buy:${p.id}`;
       const requiresChoice = options.length > 1;
-      const discountedBuyLines: DiscountedBuyLine[] = requiresChoice
-        ? []
-        : [
-            {
-              productId: options[0].productId,
-              productName: options[0].productName,
-              productCode: options[0].productCode,
-              maxQuantity: buyableQty,
-              promoPrice,
-              lineType: 'discounted_buy',
-              promotionId: p.id,
-              availableStock: options[0].availableStock,
-            },
-          ];
+      const only = options[0];
+      const buyableQty = capByRemaining(wantQty, only.remaining);
+      const discountedBuyLines: DiscountedBuyLine[] =
+        requiresChoice || buyableQty <= 0
+          ? []
+          : [
+              {
+                productId: only.productId,
+                productName: only.productName,
+                productCode: only.productCode,
+                maxQuantity: buyableQty,
+                promoPrice,
+                lineType: 'discounted_buy',
+                promotionId: p.id,
+                availableStock: only.availableStock,
+              },
+            ];
       return {
         ...base,
         scope,
@@ -504,7 +572,7 @@ export function computeReward(
         giftLines: [],
         discountedBuyLines,
         discountLines: [],
-        rewardQuantity: buyableQty,
+        rewardQuantity: requiresChoice ? wantQty : buyableQty,
         rewardOptions: options,
         promoPrice,
         requiresChoice,

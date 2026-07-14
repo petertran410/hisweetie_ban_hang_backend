@@ -36,6 +36,12 @@ export class PromotionProductRefDto {
   @IsOptional()
   @IsString()
   categoryName?: string;
+
+  // Chỉ áp dụng cho rewardItems (Y): trần lifetime riêng cho dòng quà này.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  rewardLimit?: number;
 }
 
 export class CreatePromotionRewardDto {

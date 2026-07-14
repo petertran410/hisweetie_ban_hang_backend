@@ -584,10 +584,15 @@ model SupplierReturn {
   branchId              Int
   status                Int       @default(1)
   statusValue           String?
+  currency              String    @default("VND")
+  exchangeRate          Decimal   @default(1)
   totalReturnAmount     Decimal   @default(0)
+  totalForeignReturnAmount Decimal?
   refundAmount          Decimal   @default(0)
+  refundForeignAmount   Decimal?
   refundType            String? // 'cash_refund' | 'debt_offset'
   refundedAmount        Decimal   @default(0)
+  refundedForeignAmount Decimal?
   note                  String?
   exportedById          Int?
   exportedByName        String?
@@ -630,8 +635,11 @@ model SupplierReturnDetail {
   purchasePrice     Decimal  @default(0)
   requestQuantity   Decimal
   confirmedQuantity Decimal  @default(0)
+  inputMode         String   @default("unit_price")
   returnPrice       Decimal
   totalAmount       Decimal
+  foreignReturnPrice  Decimal?
+  foreignReturnAmount Decimal?
   conditionType     String   @default("normal")
   note              String?
   createdAt         DateTime @default(now())
@@ -3085,6 +3093,7 @@ model PromotionProduct {
   role         String // 'buy' (X) | 'reward' (Y)
   productId    Int?
   categoryName String?
+  rewardLimit  Decimal? // Chỉ dùng cho role='reward': trần lifetime riêng cho dòng quà này (SP cụ thể hoặc cả category). null = không giới hạn riêng.
   createdAt    DateTime @default(now())
 
   promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)

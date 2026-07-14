@@ -266,6 +266,7 @@ export class PromotionsService {
       role: string;
       productId: number | null;
       categoryName: string | null;
+      rewardLimit: number | null;
     }[] = [];
     for (const r of rewards) {
       for (const b of r.buyItems ?? []) {
@@ -273,6 +274,7 @@ export class PromotionsService {
           role: 'buy',
           productId: b.productId ?? null,
           categoryName: b.categoryName ?? null,
+          rewardLimit: null,
         });
       }
       for (const y of r.rewardItems ?? []) {
@@ -280,6 +282,10 @@ export class PromotionsService {
           role: 'reward',
           productId: y.productId ?? null,
           categoryName: y.categoryName ?? null,
+          rewardLimit:
+            y.rewardLimit != null && y.rewardLimit !== ''
+              ? Number(y.rewardLimit)
+              : null,
         });
       }
     }
@@ -784,6 +790,33 @@ export class PromotionsService {
    * - Hàng KM: dòng lineType gift | discounted_buy.
    * CHỈ tính trên hóa đơn (invoice), KHÔNG tính đơn đặt hàng. Loại trừ HĐ Đã hủy.
    */
+  /**
+   * Đếm số quà ĐÃ TẶNG (lifetime) của 1 chương trình từ các dòng hóa đơn
+   * lineType gift | discounted_buy, loại HĐ Đã hủy.
+   * Trả về map theo từng SP + tổng gộp — dùng để tính "còn lại" khi đánh giá KM.
+   */
+  async getIssuedRewards(
+    promotionId: number,
+  ): Promise<{ byProduct: Record<number, number>; total: number }> {
+    const lines = await this.prisma.invoiceDetail.findMany({
+      where: {
+        promotionId,
+        lineType: { in: ['gift', 'discounted_buy'] },
+        invoice: { status: { not: INVOICE_STATUS.CANCELLED } },
+      },
+      select: { productId: true, quantity: true },
+    });
+    const byProduct: Record<number, number> = {};
+    let total = 0;
+    for (const l of lines) {
+      if (l.productId == null) continue;
+      const qty = Number(l.quantity);
+      byProduct[l.productId] = (byProduct[l.productId] ?? 0) + qty;
+      total += qty;
+    }
+    return { byProduct, total };
+  }
+
   async getStats(id: number) {
     const promo = await this.prisma.promotion.findUnique({
       where: { id },
@@ -792,6 +825,10 @@ export class PromotionsService {
         usageLimit: true,
         usageCount: true,
         maxRewardQuantity: true,
+        products: {
+          where: { role: 'reward' },
+          select: { productId: true, categoryName: true, rewardLimit: true },
+        },
       },
     });
     if (!promo)
@@ -860,6 +897,27 @@ export class PromotionsService {
     const maxRewardQuantity =
       promo.maxRewardQuantity != null ? Number(promo.maxRewardQuantity) : null;
 
+    // Trần riêng từng SP quà (rewardLimit) + số đã tặng theo từng SP.
+    const rewardLimitByProduct: Record<number, number> = {};
+    for (const rp of promo.products) {
+      if (rp.productId != null && rp.rewardLimit != null) {
+        rewardLimitByProduct[rp.productId] = Number(rp.rewardLimit);
+      }
+    }
+    const perProduct = items
+      .filter((it) => rewardLimitByProduct[it.productId] != null)
+      .map((it) => {
+        const limit = rewardLimitByProduct[it.productId];
+        return {
+          productId: it.productId,
+          code: it.code,
+          name: it.name,
+          rewardLimit: limit,
+          rewardIssued: it.promoQty,
+          rewardRemaining: limit - it.promoQty,
+        };
+      });
+
     return {
       items,
       totals,
@@ -873,6 +931,7 @@ export class PromotionsService {
           maxRewardQuantity != null
             ? maxRewardQuantity - totals.promoQty
             : null,
+        perProduct,
       },
     };
   }
@@ -1028,6 +1087,7 @@ export class PromotionsService {
         .map((pp) => ({
           productId: pp.productId,
           categoryName: pp.categoryName,
+          rewardLimit: pp.rewardLimit != null ? Number(pp.rewardLimit) : null,
         }));
       return {
         id: p.id,
@@ -1166,6 +1226,28 @@ export class PromotionsService {
       childName: catMap[it.productId]?.childName ?? null,
     }));
 
+    // Nạp số quà ĐÃ TẶNG (lifetime) cho các KM có ràng buộc trần
+    // (trần tổng maxRewardQuantity hoặc trần riêng dòng quà rewardLimit).
+    const rewardIssuedMap: Record<
+      number,
+      { byProduct: Record<number, number>; total: number }
+    > = {};
+    const promoNeedIssued = promotions.filter(
+      (p) =>
+        p.maxRewardQuantity != null ||
+        (p.rewards ?? []).some((r) =>
+          (r.rewardItems ?? []).some((y) => y.rewardLimit != null),
+        ),
+    );
+    if (promoNeedIssued.length > 0) {
+      const issuedList = await Promise.all(
+        promoNeedIssued.map((p) => this.getIssuedRewards(p.id)),
+      );
+      promoNeedIssued.forEach((p, idx) => {
+        rewardIssuedMap[p.id] = issuedList[idx];
+      });
+    }
+
     return {
       branchId,
       customerId,
@@ -1176,6 +1258,7 @@ export class PromotionsService {
       productNameMap,
       productCodeMap,
       categoryProductMap,
+      rewardIssuedMap,
     };
   }
 
