@@ -32,6 +32,7 @@
     "seed:order-suppliers-export": "ts-node prisma/seeds/add-order-suppliers-export-permission.ts",
     "seed:stock-audits-export": "ts-node prisma/seeds/add-stock-audits-export-permission.ts",
     "seed:inventory-checks-export": "ts-node prisma/seeds/add-inventory-checks-export-permission.ts",
+    "seed:inventory-promo-checks": "ts-node prisma/seeds/add-inventory-promo-checks-permissions.ts",
     "seed:return-orders-export": "ts-node prisma/seeds/add-return-orders-export-permission.ts",
     "seed:supplier-returns-export": "ts-node prisma/seeds/add-supplier-returns-export-permission.ts",
     "seed:destructions-export": "ts-node prisma/seeds/add-destructions-export-permission.ts",
