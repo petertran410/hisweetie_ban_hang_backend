@@ -70,8 +70,13 @@ export class OrdersService {
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
-        const manualGift =
-          (it.lineType || 'normal') === 'gift' && it.promotionId == null;
+        const lineType = (it.lineType || 'normal') as string;
+        const manualGift = lineType === 'gift' && it.promotionId == null;
+        // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
+        // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
+        // (dòng thường không phải hàng X bị dính promotionId của quà cùng mã SP).
+        // Giữ nguyên cho discounted_buy (cần để validate) và gift thủ công.
+        const derivedNormalStamp = lineType === 'normal';
         return {
           productId: it.productId,
           quantity: Number(it.quantity),
@@ -83,7 +88,7 @@ export class OrdersService {
           conditionType: it.conditionType || 'normal',
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
-          promotionId: it.promotionId ?? null,
+          promotionId: derivedNormalStamp ? null : it.promotionId ?? null,
           triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         } as OrderItemDto;

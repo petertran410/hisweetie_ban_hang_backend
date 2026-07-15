@@ -860,8 +860,13 @@ export class InvoicesService {
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
-        const manualGift =
-          (it.lineType || 'normal') === 'gift' && it.promotionId == null;
+        const lineType = (it.lineType || 'normal') as string;
+        const manualGift = lineType === 'gift' && it.promotionId == null;
+        // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
+        // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
+        // (dòng thường không phải hàng X bị dính promotionId của quà cùng mã SP).
+        // Giữ nguyên cho discounted_buy (cần để validate) và gift thủ công.
+        const derivedNormalStamp = lineType === 'normal';
         return {
           productId: it.productId,
           productCode: it.productCode,
@@ -875,7 +880,7 @@ export class InvoicesService {
           conditionType: it.conditionType || 'normal',
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
-          promotionId: it.promotionId ?? null,
+          promotionId: derivedNormalStamp ? null : it.promotionId ?? null,
           triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         };
@@ -2451,15 +2456,10 @@ export class InvoicesService {
       const isPromoGiftLine = (it: any) =>
         !!(it?.isGift || it?.lineType === 'gift' || it?.lineType === 'discounted_buy');
 
-      const giftPromoIds = Array.from(
-        new Set(
-          rawItemsToInvoice
-            .filter((it: any) => isPromoGiftLine(it) && it.promotionId != null)
-            .map((it: any) => Number(it.promotionId))
-            .filter((id: number) => !Number.isNaN(id)),
-        ),
-      );
-
+      // Chỉ kế thừa promotionId từ đúng dòng X (hàng mua điều kiện) của đơn gốc.
+      // KHÔNG suy đoán từ dòng quà: khi SP quà trùng mã một SP bán thường
+      // (vd tặng "testcombo1" trong khi cũng bán "testcombo1"), việc gán id của
+      // quà cho dòng thường sẽ dán nhầm badge KM lên hàng bán giá thường.
       const orderNormalPromoByProduct = new Map<number, number>();
       for (const oi of order.items) {
         if (
@@ -2497,13 +2497,6 @@ export class InvoicesService {
           orderNormalPromoByProduct.has(item.productId)
         ) {
           promotionId = orderNormalPromoByProduct.get(item.productId)!;
-        }
-        if (
-          (promotionId == null || Number.isNaN(promotionId)) &&
-          giftPromoIds.length > 0
-        ) {
-          // 1 CTKM gift → gán rõ; nhiều CT → lấy id đầu (DB chỉ 1 promotionId/dòng)
-          promotionId = giftPromoIds[0];
         }
         return {
           ...item,
