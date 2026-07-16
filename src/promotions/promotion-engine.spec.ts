@@ -278,3 +278,142 @@ describe('promotion-engine — trần quà 2 tầng lifetime', () => {
     );
   });
 });
+
+describe('promotion-engine — cộng dồn (stackable)', () => {
+  const A = 1;
+  const B = 2;
+  const GIFT = 9;
+  const OUTSIDE = 99;
+
+  function makeStackablePromotion(
+    overrides: Partial<EnginePromotion> = {},
+  ): EnginePromotion {
+    return {
+      id: 200,
+      code: 'KM180',
+      name: 'Mua 180 tặng 15 (cộng dồn)',
+      type: 'BUY_X_GET_Y',
+      priority: 0,
+      stackable: true,
+      autoApply: false,
+      applyWeekdays: [],
+      minOrderValue: 0,
+      minQuantity: 0,
+      maxDiscountAmount: null,
+      maxRewardQuantity: null,
+      usageLimit: null,
+      usageCount: 0,
+      rewards: [
+        {
+          buyProductId: null,
+          buyCategoryName: null,
+          buyQuantity: 180,
+          rewardType: 'gift',
+          rewardProductId: null,
+          rewardQuantity: 15,
+          rewardValue: 0,
+          buyItems: [{ productId: A }, { productId: B }],
+          rewardItems: [{ productId: GIFT, rewardLimit: null }],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  function ctxWith(
+    items: { productId: number; quantity: number }[],
+  ): EngineContext {
+    return {
+      branchId: 1,
+      now: new Date(),
+      items: items.map((it) => ({ ...it, price: 10000 })),
+      stockMap: { [A]: 999, [B]: 999, [GIFT]: 999, [OUTSIDE]: 999 },
+      productNameMap: { [A]: 'A', [B]: 'B', [GIFT]: 'GIFT', [OUTSIDE]: 'OUT' },
+      productCodeMap: { [A]: 'A', [B]: 'B', [GIFT]: 'GIFT', [OUTSIDE]: 'OUT' },
+      categoryProductMap: {},
+    };
+  }
+
+  it('A90 + B90 = 180 → đạt 1 suất, tặng 15', () => {
+    const p = makeStackablePromotion();
+    const result = evaluatePromotions(p ? [p] : [], ctxWith([
+      { productId: A, quantity: 90 },
+      { productId: B, quantity: 90 },
+    ]));
+    expect(result.eligiblePromotions).toHaveLength(1);
+    const r = result.eligiblePromotions[0];
+    expect(r.cumulative).toBe(true);
+    expect(r.triggerProductId).toBeUndefined();
+    expect(r.rewardTimes).toBe(1);
+    expect(r.rewardQuantity).toBe(15);
+    expect((r.matchedProductIds || []).sort()).toEqual([A, B]);
+  });
+
+  it('A180 + B180 = 360 → đạt 2 suất, tặng 30', () => {
+    const p = makeStackablePromotion();
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: A, quantity: 180 },
+      { productId: B, quantity: 180 },
+    ]));
+    expect(result.eligiblePromotions).toHaveLength(1);
+    const r = result.eligiblePromotions[0];
+    expect(r.rewardTimes).toBe(2);
+    expect(r.rewardQuantity).toBe(30);
+  });
+
+  it('SP ngoài chương trình không được cộng', () => {
+    const p = makeStackablePromotion();
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: A, quantity: 90 },
+      { productId: B, quantity: 80 },
+      { productId: OUTSIDE, quantity: 1000 },
+    ]));
+    // 170 < 180 → chưa đạt suất nào
+    expect(result.eligiblePromotions).toHaveLength(0);
+    const pr = result.progress.find((x) => x.promotionId === p.id)!;
+    expect(pr.currentQuantity).toBe(170);
+    expect(pr.matchedProductIds.sort()).toEqual([A, B]);
+    expect(pr.remainingToNextReward).toBe(10);
+  });
+
+  it('progress hiển thị khi chưa đạt ngưỡng', () => {
+    const p = makeStackablePromotion();
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: A, quantity: 90 },
+    ]));
+    expect(result.eligiblePromotions).toHaveLength(0);
+    const pr = result.progress.find((x) => x.promotionId === p.id)!;
+    expect(pr.currentQuantity).toBe(90);
+    expect(pr.requiredQuantity).toBe(180);
+    expect(pr.completedTimes).toBe(0);
+    expect(pr.remainingToNextReward).toBe(90);
+    expect(pr.earnedRewardQuantity).toBe(0);
+  });
+
+  it('không track khi giỏ không có SP X của CT', () => {
+    const p = makeStackablePromotion();
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: OUTSIDE, quantity: 500 },
+    ]));
+    expect(result.progress).toHaveLength(0);
+  });
+
+  it('stackable=false: A90 + B90 KHÔNG đạt', () => {
+    const p = makeStackablePromotion({ stackable: false });
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: A, quantity: 90 },
+      { productId: B, quantity: 90 },
+    ]));
+    expect(result.eligiblePromotions).toHaveLength(0);
+  });
+
+  it('stackable=false: A180 đạt, B90 không đạt', () => {
+    const p = makeStackablePromotion({ stackable: false });
+    const result = evaluatePromotions([p], ctxWith([
+      { productId: A, quantity: 180 },
+      { productId: B, quantity: 90 },
+    ]));
+    expect(result.eligiblePromotions).toHaveLength(1);
+    expect(result.eligiblePromotions[0].triggerProductId).toBe(A);
+  });
+});

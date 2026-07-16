@@ -1093,12 +1093,32 @@ export class PromotionsService {
       customerGroupIds,
       params.userId ?? null,
     );
+
+    // KM cộng dồn (stackable) đã được FE chọn áp → tự inject promotionId vào
+    // enabledPromotionIds của MỌI dòng, để engine gộp tổng SL đủ mọi mã X kể cả
+    // khi FE gửi thiếu opt-in trên vài dòng (do debounce đóng dấu). Không bỏ opt-in
+    // sẵn có; chỉ thêm. KM thường vẫn cần opt-in đúng dòng như cũ.
+    const appliedIdSet = new Set(params.appliedPromotionIds ?? []);
+    const stackableAppliedIds = promotions
+      .filter((p) => p.stackable && appliedIdSet.has(p.id))
+      .map((p) => p.id);
+    const items: EngineItem[] =
+      stackableAppliedIds.length > 0
+        ? params.items.map((it) => {
+            const cur = new Set(it.enabledPromotionIds ?? []);
+            // enabledPromotionIds === undefined nghĩa "không lọc" → giữ nguyên.
+            if (it.enabledPromotionIds === undefined) return it;
+            stackableAppliedIds.forEach((id) => cur.add(id));
+            return { ...it, enabledPromotionIds: [...cur] };
+          })
+        : params.items;
+
     const ctx = await this.buildContext(
       params.branchId,
       params.customerId ?? null,
       params.userId ?? null,
       now,
-      params.items,
+      items,
       promotions,
     );
     const evalResult = evaluatePromotions(promotions, ctx);

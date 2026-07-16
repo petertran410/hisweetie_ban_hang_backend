@@ -839,6 +839,84 @@ export class InvoicesService {
   }
 
   /**
+   * Dựng danh sách dòng quà từ lựa chọn của thu ngân cho KM requiresChoice.
+   * - Cộng dồn (choice.rewardSelections): phân bổ theo suất, mỗi SP quà nhận
+   *   rewardTimes × perTime; validate tổng suất ≤ số suất đạt được (r.rewardTimes).
+   * - Single choice (choice.giftProductId): giữ hành vi cũ (1 SP nhận toàn bộ).
+   * Mọi SP quà đều phải thuộc rewardOptions và được cap theo opt.remaining.
+   */
+  private resolveChoiceGiftLines(r: any, choice: any, perTime: number): any[] {
+    if (!choice) return [];
+    const optOf = (productId: number) =>
+      (r.rewardOptions || []).find((o: any) => o.productId === productId);
+
+    // ── KM cộng dồn: phân bổ nhiều SP quà theo suất ──
+    if (Array.isArray(choice.rewardSelections) && choice.rewardSelections.length) {
+      const totalTimes = Number(r.rewardTimes || 0);
+      const requestedTimes = choice.rewardSelections.reduce(
+        (s: number, sel: any) => s + Number(sel.rewardTimes || 0),
+        0,
+      );
+      if (requestedTimes > totalTimes) {
+        throw new BadRequestException(
+          `PROMOTION_CHANGED: số suất quà đã chọn (${requestedTimes}) vượt số suất đạt được (${totalTimes}) của chương trình "${r.name}"`,
+        );
+      }
+      const lines: any[] = [];
+      for (const sel of choice.rewardSelections) {
+        const times = Number(sel.rewardTimes || 0);
+        if (times <= 0) continue;
+        const opt = optOf(sel.productId);
+        if (!opt) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+          );
+        }
+        let qty = times * perTime;
+        if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
+        if (qty <= 0) continue;
+        lines.push({
+          productId: opt.productId,
+          productName: opt.productName,
+          quantity: qty,
+          price: 0,
+          promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
+        });
+      }
+      return lines;
+    }
+
+    // ── Single choice (legacy): 1 SP nhận toàn bộ rewardQuantity ──
+    if (choice.giftProductId) {
+      const opt = optOf(choice.giftProductId);
+      if (!opt) {
+        throw new BadRequestException(
+          `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+        );
+      }
+      let qty = Math.min(
+        Number(choice.giftQuantity || r.rewardQuantity),
+        Number(r.rewardQuantity),
+      );
+      if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
+      if (qty <= 0) return [];
+      return [
+        {
+          productId: opt.productId,
+          productName: opt.productName,
+          quantity: qty,
+          price: 0,
+          promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
+        },
+      ];
+    }
+
+    return [];
+  }
+
+  /**
    * Re-validate + dựng danh sách dòng hàng hiệu dụng theo khuyến mãi.
    * - Dòng gift do FE gửi bị bỏ, BE tự sinh lại từ engine (authoritative).
    * - Dòng discounted_buy của FE được validate với engine (sai → PROMOTION_CHANGED).
@@ -939,43 +1017,12 @@ export class InvoicesService {
       ) {
         const choice =
           choiceMap[resultKey] || choiceMap[choiceKey(r.promotionId)];
-        if (choice?.giftProductId) {
-          const opt = (r.rewardOptions || []).find(
-            (o: any) => o.productId === choice.giftProductId,
-          );
-          if (!opt) {
-            throw new BadRequestException(
-              `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
-            );
-          }
-          // Cap theo: SL thu ngân chọn, tổng suất của lần bán (rewardQuantity),
-          // và suất còn lại (lifetime) của đúng SP quà được chọn (opt.remaining).
-          let qty = Math.min(
-            Number(choice.giftQuantity || r.rewardQuantity),
-            Number(r.rewardQuantity),
-          );
-          if (opt.remaining != null) {
-            qty = Math.min(qty, Number(opt.remaining));
-          }
-          if (qty <= 0) {
-            // Hết suất tặng (lifetime) cho SP này → bỏ phần tặng.
-            giftLines = [];
-          } else {
-            giftLines = [
-              {
-                productId: opt.productId,
-                productName: opt.productName,
-                quantity: qty,
-                price: 0,
-                promotionId: r.promotionId,
-                triggerProductId: r.triggerProductId,
-              },
-            ];
-          }
-        } else {
-          // Thu ngân chưa chọn quà → bỏ qua phần tặng của KM này
-          giftLines = [];
-        }
+        // Số quà mỗi suất = tổng SL / số suất (fallback = tổng SL nếu thiếu times).
+        const perTime =
+          r.rewardTimes && r.rewardTimes > 0
+            ? Number(r.rewardQuantity) / Number(r.rewardTimes)
+            : Number(r.rewardQuantity);
+        giftLines = this.resolveChoiceGiftLines(r, choice, perTime);
       }
       resolvedGifts[resultKey] = giftLines.map((g: any) => ({
         ...g,

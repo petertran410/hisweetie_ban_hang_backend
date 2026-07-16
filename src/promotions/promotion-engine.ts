@@ -126,6 +126,30 @@ export interface PromotionResult {
   matchedProductIds?: number[]; // các productId trong giỏ khớp điều kiện mua X
   // Với KM có nhiều mã X: mỗi kết quả thuộc về đúng 1 mã X đạt ngưỡng.
   triggerProductId?: number;
+  // Cộng dồn (stackable=true): kết quả gộp tổng SL mọi mã X, không neo 1 triggerProductId.
+  cumulative?: boolean;
+  // Số suất (số lần đạt ngưỡng buyQuantity) — dùng để FE phân bổ quà theo suất.
+  rewardTimes?: number;
+}
+
+/**
+ * Tiến độ tích lũy của 1 KM sinh quà — dùng để FE hiển thị thanh tiến độ
+ * ngay cả khi chưa đạt ngưỡng (chưa đủ điều kiện tặng). Chỉ phát sinh khi
+ * giỏ có ít nhất 1 SP thuộc nhóm X của CT (và đã opt-in nếu có lọc).
+ */
+export interface PromotionProgress {
+  promotionId: number;
+  code: string;
+  name: string;
+  type: string;
+  stackable: boolean;
+  matchedProductIds: number[]; // SP X trong giỏ đang được tính
+  currentQuantity: number; // tổng SL X hợp lệ hiện tại
+  requiredQuantity: number; // ngưỡng buyQuantity cho 1 suất
+  completedTimes: number; // số suất đã đạt
+  remainingToNextReward: number; // còn thiếu bao nhiêu để đạt suất kế tiếp
+  rewardQuantityPerTime: number; // SL quà mỗi suất
+  earnedRewardQuantity: number; // tổng SL quà được nhận hiện tại
 }
 
 export interface EngineContext {
@@ -158,6 +182,8 @@ export interface EvaluateOutput {
   conflicts: { promotionIds: number[]; reason: string }[];
   estimatedDiscount: number;
   estimatedTotalAfter: number;
+  // Tiến độ tích lũy cho KM sinh quà (kể cả chưa đạt ngưỡng) — FE hiển thị thanh tiến độ.
+  progress: PromotionProgress[];
 }
 
 const round = (n: number) => Math.round(n);
@@ -525,6 +551,7 @@ export function computeReward(
         rewardQuantity: requiresChoice ? wantQty : giftQty,
         rewardOptions: options,
         requiresChoice,
+        rewardTimes: times,
         matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
       };
     }
@@ -578,6 +605,7 @@ export function computeReward(
         rewardOptions: options,
         promoPrice,
         requiresChoice,
+        rewardTimes: times,
         matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
       };
     }
@@ -630,6 +658,53 @@ export function resolveConflicts(results: PromotionResult[]): {
   return { eligible: winners, conflicts };
 }
 
+const GIFT_LIKE_TYPES = new Set([
+  'BUY_X_GET_Y',
+  'BUY_N_GET_M_SAME',
+  'BUY_X_BUY_Y_PRICE',
+]);
+
+/**
+ * Tính tiến độ tích lũy cho 1 KM sinh quà (chỉ dựa trên nhóm X của CHÍNH CT).
+ * Trả null nếu giỏ không có SP X nào (đã lọc opt-in) → không hiển thị.
+ */
+function buildProgress(
+  p: EnginePromotion,
+  ctx: EngineContext,
+): PromotionProgress | null {
+  const rw = p.rewards[0];
+  if (!rw) return null;
+  const buyItems = getBuyItems(rw);
+  if (buyItems.length === 0 || rw.buyQuantity <= 0) return null;
+
+  const matched = matchedProductIds(ctx, buyItems, p.id);
+  if (matched.length === 0) return null;
+
+  const currentQuantity = sumBoughtQty(ctx, buyItems, p.id);
+  const requiredQuantity = Number(rw.buyQuantity);
+  const completedTimes = Math.floor(currentQuantity / requiredQuantity);
+  const remainingToNextReward =
+    completedTimes >= 0
+      ? (completedTimes + 1) * requiredQuantity - currentQuantity
+      : requiredQuantity - currentQuantity;
+  const rewardQuantityPerTime = Number(rw.rewardQuantity);
+
+  return {
+    promotionId: p.id,
+    code: p.code,
+    name: p.name,
+    type: p.type,
+    stackable: p.stackable,
+    matchedProductIds: matched,
+    currentQuantity,
+    requiredQuantity,
+    completedTimes,
+    remainingToNextReward,
+    rewardQuantityPerTime,
+    earnedRewardQuantity: completedTimes * rewardQuantityPerTime,
+  };
+}
+
 /** Entry point chính. */
 export function evaluatePromotions(
   promotions: EnginePromotion[],
@@ -639,20 +714,44 @@ export function evaluatePromotions(
   const totalQty = ctx.items.reduce((s, it) => s + it.quantity, 0);
 
   const results: PromotionResult[] = [];
+  const progress: PromotionProgress[] = [];
   for (const p of promotions) {
-    if (!isTimeAndThresholdEligible(p, ctx, subtotal, totalQty)) continue;
-    const splitByBuyProduct = new Set([
-      'BUY_X_GET_Y',
-      'BUY_N_GET_M_SAME',
-      'BUY_X_BUY_Y_PRICE',
-    ]).has(p.type);
+    const isGiftLike = GIFT_LIKE_TYPES.has(p.type);
 
-    if (!splitByBuyProduct) {
+    // Tiến độ tích lũy: tính cả khi chưa đạt ngưỡng (miễn giỏ có SP X).
+    // Không phụ thuộc isTimeAndThresholdEligible để FE luôn thấy thanh tiến độ.
+    if (isGiftLike) {
+      const pr = buildProgress(p, ctx);
+      if (pr) progress.push(pr);
+    }
+
+    if (!isTimeAndThresholdEligible(p, ctx, subtotal, totalQty)) continue;
+
+    if (!isGiftLike) {
       const r = computeReward(p, ctx, subtotal);
       if (r) results.push(r);
       continue;
     }
 
+    // KM cộng dồn (stackable=true): gộp tổng SL mọi mã X trong CT → 1 kết quả.
+    // sumBoughtQty đã chỉ cộng SP khớp buyItems của chính CT (không cộng chéo CT).
+    if (p.stackable) {
+      const rw = p.rewards[0];
+      const buyItems = getBuyItems(rw);
+      const matched = matchedProductIds(ctx, buyItems, p.id);
+      const r = computeReward(p, ctx, subtotal);
+      if (!r) continue;
+      results.push({
+        ...r,
+        scope: `buy:${p.id}:cumulative`,
+        matchedProductIds: matched,
+        triggerProductId: undefined,
+        cumulative: true,
+      });
+      continue;
+    }
+
+    // KM không cộng dồn: mỗi mã X tự đạt ngưỡng, không cộng chéo SL giữa các mã.
     const rw = p.rewards[0];
     const buyItems = getBuyItems(rw);
     const triggerProductIds = [
@@ -668,7 +767,6 @@ export function evaluatePromotions(
     ];
 
     for (const triggerProductId of triggerProductIds) {
-      // Mỗi mã X tự đạt ngưỡng buyQuantity; không cộng chéo SL giữa các mã.
       const scopedCtx: EngineContext = {
         ...ctx,
         items: ctx.items.filter((it) => it.productId === triggerProductId),
@@ -680,6 +778,7 @@ export function evaluatePromotions(
         scope: `${r.scope}:trigger:${triggerProductId}`,
         matchedProductIds: [triggerProductId],
         triggerProductId,
+        cumulative: false,
       });
     }
   }
@@ -703,5 +802,6 @@ export function evaluatePromotions(
     conflicts,
     estimatedDiscount,
     estimatedTotalAfter: subtotal - estimatedDiscount,
+    progress,
   };
 }

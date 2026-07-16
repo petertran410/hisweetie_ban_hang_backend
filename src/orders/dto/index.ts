@@ -112,6 +112,15 @@ export class OrderItemDto {
   enabledPromotionIds?: number[];
 }
 
+export class RewardSelectionDto {
+  @IsInt()
+  productId: number;
+
+  // Số suất phân bổ cho SP quà này (mỗi suất = rewardQuantity của CT).
+  @IsInt()
+  rewardTimes: number;
+}
+
 export class AppliedPromotionDto {
   @IsInt()
   promotionId: number;
@@ -138,6 +147,13 @@ export class AppliedPromotionDto {
   @IsOptional()
   @IsNumber()
   discountedBuyQuantity?: number;
+
+  // KM cộng dồn: phân bổ quà theo nhiều SP (mỗi SP nhận n suất × rewardQuantity).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RewardSelectionDto)
+  rewardSelections?: RewardSelectionDto[];
 }
 
 export class CreateOrderDto {
