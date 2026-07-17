@@ -32,4 +32,8 @@ export class InventoryCheckQueryDto {
   @IsOptional()
   @IsString()
   creatorId?: string;
+
+  @IsOptional()
+  @IsString()
+  productId?: string;
 }

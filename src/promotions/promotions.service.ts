@@ -1322,14 +1322,15 @@ export class PromotionsService {
       catMap[p.id] = p;
     });
 
-    // Tồn kho (onHand) tại branch cho các productId
+    // Tồn được phép khuyến mãi (promoQuantity) tại branch cho các productId.
+    // Quà KM chỉ được lấy từ bucket này, không phải tổng tồn onHand.
     const inventories = await this.prisma.inventory.findMany({
       where: { branchId, productId: { in: ids } },
-      select: { productId: true, onHand: true },
+      select: { productId: true, promoQuantity: true },
     });
     const stockMap: Record<number, number> = {};
     inventories.forEach((inv) => {
-      stockMap[inv.productId] = Number(inv.onHand);
+      stockMap[inv.productId] = Number(inv.promoQuantity || 0);
     });
 
     // Bổ sung category cho item trong giỏ (để engine match CATEGORY_DISCOUNT)

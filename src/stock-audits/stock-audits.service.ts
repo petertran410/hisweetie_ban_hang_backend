@@ -278,6 +278,9 @@ export class StockAuditsService {
     }
     if (query.status) where.status = +query.status;
     if (query.creatorId) where.createdById = +query.creatorId;
+    if (query.productId) {
+      where.details = { some: { productId: +query.productId } };
+    }
 
     if (query.fromDate || query.toDate) {
       where.checkDate = {};

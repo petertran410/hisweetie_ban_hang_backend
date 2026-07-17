@@ -158,7 +158,7 @@ export interface EngineContext {
   userId?: number | null;
   now: Date;
   items: EngineItem[];
-  // map productId -> onHand tại branch (để check tồn hàng tặng)
+  // map productId -> tồn được phép khuyến mãi (promoQuantity) tại branch
   stockMap: Record<number, number>;
   // tên SP để hiển thị
   productNameMap: Record<number, string>;

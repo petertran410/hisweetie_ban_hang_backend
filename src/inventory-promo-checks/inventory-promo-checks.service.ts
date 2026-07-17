@@ -64,6 +64,9 @@ export class InventoryPromoChecksService {
     if (query.creatorId) {
       where.createdById = +query.creatorId;
     }
+    if (query.productId) {
+      where.details = { some: { productId: +query.productId } };
+    }
 
     if (query.fromDate || query.toDate) {
       where.checkDate = {};
