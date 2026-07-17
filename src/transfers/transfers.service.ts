@@ -832,8 +832,13 @@ export class TransfersService {
     if (oldStatus === 1 && newStatus === 2) {
       await this.decrementInventoryFromBranch(id);
     } else if (oldStatus === 1 && newStatus === 3) {
+      // Draft → Đã nhận (bỏ qua "Đang chuyển"): trừ kho chuyển theo send,
+      // cộng kho nhận theo received, rồi reconcile chênh lệch (shortage/
+      // surplus) để net kho chuyển = -received.
       await this.decrementInventoryFromBranch(id);
       await this.incrementInventoryToBranch(id);
+      await this.returnShortageToFromBranch(id);
+      await this.deductSurplusFromFromBranch(id);
     } else if (oldStatus === 2 && newStatus === 1) {
       await this.incrementInventoryFromBranch(id);
     } else if (oldStatus === 2 && newStatus === 3) {
@@ -842,6 +847,9 @@ export class TransfersService {
       // vẫn giữ lại phần chênh lệch. Pattern y hệt KiotViet — dùng
       // receivedQuantity làm con số vừa trừ kho chuyển vừa cộng kho nhận.
       await this.returnShortageToFromBranch(id);
+      // Nhận dư (received > send): trừ thêm surplus khỏi kho chuyển —
+      // thực tế hàng đã rời kho chuyển nhiều hơn số ghi lúc "Đang chuyển".
+      await this.deductSurplusFromFromBranch(id);
     } else if (oldStatus === 3 && newStatus === 2) {
       await this.decrementInventoryToBranch(id);
     }
@@ -1197,6 +1205,112 @@ export class TransfersService {
         transfer.details.map((d) => ({
           productId: d.productId,
           branchId: transfer.toBranchId,
+        })),
+      );
+    });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+  }
+
+  /**
+   * Trừ surplus khỏi kho chuyển — chạy ngay sau khi kho nhận xác nhận
+   * "Đã nhận" (status 2→3) khi received > send.
+   *
+   * Ví dụ: send=1.5 → kho chuyển đã -1.5 lúc "Đang chuyển". Nhận 2.5
+   * → kho nhận +2.5. Phần dư 1.0 thực tế cũng đã rời kho chuyển
+   * (nhân viên để dư lúc chuyển) → trừ thêm 1.0 khỏi kho chuyển.
+   *
+   * Net log kho chuyển sau nhận dư: TRANSFER_OUT -send + TRANSFER_OUT
+   * -surplus = -received. Khớp thực tế.
+   *
+   * Idempotent: skip nếu đã có log note chứa "Trừ surplus".
+   */
+  private async deductSurplusFromFromBranch(transferId: number) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { details: true, fromBranch: true },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    const touchedProductIds = new Set<number>();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const surplus =
+          Number(detail.receivedQuantity) - Number(detail.sendQuantity);
+        if (surplus <= 0) continue;
+
+        // Idempotent: đã ghi log trừ surplus → skip.
+        const existing = await tx.inventoryLog.findFirst({
+          where: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+            transactionType: 'TRANSFER_OUT',
+            refType: 'transfer',
+            refId: transfer.id,
+            note: { contains: 'Trừ surplus' },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+        });
+
+        // Cho phép âm (đồng bộ với policy tồn âm khi chuyển vượt).
+        if (inventory) {
+          await tx.inventory.update({
+            where: {
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
+            },
+            data: {
+              onHand: { decrement: surplus },
+            },
+          });
+        }
+        touchedProductIds.add(detail.productId);
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.fromBranchId,
+            branchName: transfer.fromBranch?.name || '',
+            transactionType: 'TRANSFER_OUT',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: -Number(surplus),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+            note: `Trừ surplus (nhận dư) - phiếu ${transfer.code}`,
+          },
+        });
+      }
+
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
         })),
       );
     });
@@ -1638,6 +1752,46 @@ export class TransfersService {
                   transactionPrice: null,
                   partnerName: null,
                   note: `Đảo chiều Hoàn shortage do hủy phiếu ${transfer.code}`,
+                },
+              });
+            }
+          }
+
+          // Nhận dư (received > send): lúc nhận đã trừ thêm surplus khỏi
+          // kho chuyển. Hủy phiếu phải đảo chiều log "Trừ surplus" để net
+          // về 0 (cùng với TRANSFER_CANCEL +sendQuantity ở trên).
+          const surplus =
+            Number(detail.receivedQuantity) - Number(detail.sendQuantity);
+          if (surplus > 0) {
+            const surplusLog = await tx.inventoryLog.findFirst({
+              where: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+                transactionType: 'TRANSFER_OUT',
+                refType: 'transfer',
+                refId: transfer.id,
+                note: { contains: 'Trừ surplus' },
+              },
+              orderBy: { id: 'desc' },
+            });
+            if (surplusLog) {
+              // surplusLog.quantity là âm (-surplus) → đảo chiều = +surplus
+              await tx.inventoryLog.create({
+                data: {
+                  productId: detail.productId,
+                  productCode: detail.productCode,
+                  productName: detail.productName,
+                  branchId: transfer.fromBranchId,
+                  branchName: transfer.fromBranch?.name || '',
+                  transactionType: 'TRANSFER_CANCEL',
+                  refCode: transfer.code,
+                  refType: 'transfer',
+                  refId: transfer.id,
+                  quantity: -Number(surplusLog.quantity),
+                  costPrice: fromInv ? Number(fromInv.cost) : 0,
+                  transactionPrice: null,
+                  partnerName: null,
+                  note: `Đảo chiều Trừ surplus do hủy phiếu ${transfer.code}`,
                 },
               });
             }
