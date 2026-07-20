@@ -288,4 +288,21 @@ export class CreateInvoiceFromOrderDto {
     triggerProductId?: number;
     enabledPromotionIds?: number[];
   }[];
+
+  // KM: cho phép FE gửi lựa chọn KM để BE re-validate + sinh lại dòng quà
+  // (đặc biệt khi đơn gốc tạo trước tính năng KM, user áp KM lúc xuất HĐ).
+  @IsOptional()
+  @IsBoolean()
+  skipPromotions?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  appliedPromotionIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AppliedPromotionDto)
+  appliedPromotions?: AppliedPromotionDto[];
 }

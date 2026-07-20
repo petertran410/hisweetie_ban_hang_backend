@@ -1475,6 +1475,11 @@ export class InvoicesService {
               transactionPrice: Number(item.price),
               partnerId: dto.customerId || null,
               partnerName: customer?.name,
+              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+              // KHÔNG theo "Thời gian tạo" (createdAt). Đồng nhất với nhánh
+              // sửa hóa đơn (.xx) và khớp ý thiết kế schema (transactionDate
+              // là ngày phát sinh giao dịch, hỗ trợ lùi ngày khi backdate).
+              transactionDate: invoice.purchaseDate,
             },
           });
         }
@@ -1671,14 +1676,48 @@ export class InvoicesService {
           },
         });
 
-        const totalAmount = dto.items.reduce(
+        // Revert log KM của HĐ cũ (tránh lệch usageCount khi tạo HĐ mới .xx).
+        // Bao gồm cả log orderId=null (HĐ bán thẳng) và log orderId!=null (HĐ từ
+        // đơn đã "tiếp quản" tracking). Log reverted giữ lại để audit.
+        const oldPromoLogs = await tx.invoicePromotionLog.findMany({
+          where: { invoiceId: id, status: 'applied' },
+          select: { id: true, promotionId: true },
+        });
+        if (oldPromoLogs.length > 0) {
+          for (const lg of oldPromoLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: oldPromoLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+
+        // Chạy engine KM để re-validate + sinh lại dòng quà authoritatively
+        // (kể cả KM cộng dồn rewardSelections). skipPromotions === true → giữ
+        // dto.items nguyên, không chạy engine.
+        let effectiveItems: any[] = dto.items as any[];
+        let extraInvoiceDiscount = 0;
+        let promoLogs: any[] = [];
+        if (dto.skipPromotions !== true) {
+          const promo = await this.processPromotions(tx, dto as any);
+          effectiveItems = promo.effectiveItems;
+          extraInvoiceDiscount = promo.extraInvoiceDiscount;
+          promoLogs = promo.logs;
+        }
+
+        const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
         );
         const discountAmount =
           dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount
-            : (totalAmount * (dto.discountRatio || 0)) / 100;
+            ? dto.discountAmount + extraInvoiceDiscount
+            : (totalAmount * (dto.discountRatio || 0)) / 100 +
+              extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
@@ -1765,7 +1804,7 @@ export class InvoicesService {
             description: dto.description ?? currentInvoice.description,
             createdBy: currentInvoice.createdBy,
             details: {
-              create: dto.items.map((item) => ({
+              create: effectiveItems.map((item) => ({
                 productId: item.productId,
                 productCode: item.productCode,
                 productName: item.productName,
@@ -1775,6 +1814,10 @@ export class InvoicesService {
                 discountRatio: item.discountRatio || 0,
                 totalPrice: item.totalPrice,
                 note: item.note,
+                conditionType: item.conditionType || 'normal',
+                lineType: item.lineType || 'normal',
+                isGift: item.isGift || false,
+                promotionId: item.promotionId ?? null,
               })),
             },
             ...(dto.delivery
@@ -1862,7 +1905,7 @@ export class InvoicesService {
           });
         }
 
-        for (const item of dto.items) {
+        for (const item of effectiveItems) {
           const invSnapshot = await tx.inventory.findFirst({
             where: {
               productId: item.productId,
@@ -1905,7 +1948,24 @@ export class InvoicesService {
               transactionPrice: Number(item.price),
               partnerId: newInvoice.customerId || null,
               partnerName: newInvoice.customer?.name || null,
+              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+              // KHÔNG theo "Thời gian tạo" (createdAt). Hóa đơn .xx kế thừa
+              // purchaseDate của hóa đơn gốc (dòng 1788) → transactionDate cũng
+              // phải kế thừa tương ứng, nếu không thẻ kho sẽ nhảy về thời điểm
+              // sửa (= createdAt) thay vì ngày bán gốc.
+              transactionDate: newInvoice.purchaseDate,
             },
+          });
+        }
+
+        // Ghi log KM mới + tăng usageCount cho HĐ .xx.
+        if (promoLogs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: promoLogs.map((l) => ({ ...l, invoiceId: newInvoice.id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: promoLogs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
           });
         }
 
@@ -1917,7 +1977,7 @@ export class InvoicesService {
             productId: d.productId,
             branchId: currentInvoice.branchId || 1,
           })),
-          ...dto.items.map((item) => ({
+          ...effectiveItems.map((item) => ({
             productId: item.productId,
             branchId: newInvoice.branchId || 1,
           })),
@@ -2144,14 +2204,46 @@ export class InvoicesService {
       ) {
         await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
 
-        const totalAmount = dto.items.reduce(
+        // Revert log KM cũ trước khi re-validate (tránh lệch usageCount).
+        const inPlaceOldLogs = await tx.invoicePromotionLog.findMany({
+          where: { invoiceId: id, status: 'applied' },
+          select: { id: true, promotionId: true },
+        });
+        if (inPlaceOldLogs.length > 0) {
+          for (const lg of inPlaceOldLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: inPlaceOldLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+
+        // Chạy engine KM để re-validate + sinh lại dòng quà (kể cả khi user
+        // sửa giá dòng X → thay đổi điều kiện KM). skipPromotions === true →
+        // giữ dto.items nguyên.
+        let inPlaceItems: any[] = dto.items as any[];
+        let inPlaceExtraDiscount = 0;
+        let inPlacePromoLogs: any[] = [];
+        if (dto.skipPromotions !== true) {
+          const promo = await this.processPromotions(tx, dto as any);
+          inPlaceItems = promo.effectiveItems;
+          inPlaceExtraDiscount = promo.extraInvoiceDiscount;
+          inPlacePromoLogs = promo.logs;
+        }
+
+        const totalAmount = inPlaceItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
         );
         const discountAmount =
           dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount
-            : (totalAmount * (dto.discountRatio || 0)) / 100;
+            ? dto.discountAmount + inPlaceExtraDiscount
+            : (totalAmount * (dto.discountRatio || 0)) / 100 +
+              inPlaceExtraDiscount;
         const grandTotal = totalAmount - discountAmount;
 
         // Tổng invoicePayment còn active (loại đã hủy)
@@ -2204,7 +2296,7 @@ export class InvoicesService {
         updateData.statusValue = getStatusLabel(status);
 
         updateData.details = {
-          create: dto.items.map((item) => ({
+          create: inPlaceItems.map((item) => ({
             productId: item.productId,
             productCode: item.productCode,
             productName: item.productName,
@@ -2214,8 +2306,23 @@ export class InvoicesService {
             discountRatio: item.discountRatio || 0,
             totalPrice: item.totalPrice,
             note: item.note,
+            conditionType: item.conditionType || 'normal',
+            lineType: item.lineType || 'normal',
+            isGift: item.isGift || false,
+            promotionId: item.promotionId ?? null,
           })),
         };
+
+        // Ghi log KM mới + tăng usageCount cho HĐ đang sửa.
+        if (inPlacePromoLogs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: inPlacePromoLogs.map((l) => ({ ...l, invoiceId: id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: inPlacePromoLogs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
+          });
+        }
       }
 
       if (dto.delivery) {
@@ -2499,7 +2606,8 @@ export class InvoicesService {
             }));
 
       // Stamp promotionId lên dòng thường (X) để mở lại HĐ còn opt-in KM.
-      // createFromOrder không chạy processPromotions — phải copy/suy từ payload.
+      // Nếu FE gửi appliedPromotions → chạy engine để BE re-validate + sinh lại
+      // dòng quà authoritatively (xử lý cả KM cộng dồn rewardSelections).
       const isPromoGiftLine = (it: any) =>
         !!(it?.isGift || it?.lineType === 'gift' || it?.lineType === 'discounted_buy');
 
@@ -2556,12 +2664,40 @@ export class InvoicesService {
         };
       });
 
-      const totalAmount = itemsToInvoice.reduce(
+      // Chạy engine KM nếu FE gửi appliedPromotions (user bật KM ở POS).
+      // - Re-validate trần/điều kiện, sinh lại dòng quà authoritatively (kể cả
+      //   KM cộng dồn rewardSelections), ghi InvoicePromotionLog + tăng usageCount.
+      // - Tránh double-count với order log: nếu order đã ghi log cùng KM (đơn mới
+      //   có KM), revert order log trước khi ghi HĐ log. HĐ "tiếp quản" tracking.
+      // - skipPromotions === true hoặc không gửi appliedPromotions → giữ nguyên
+      //   itemsToInvoice (kế thừa dòng quà từ payload/đơn gốc), không chạy engine.
+      let effectiveItems = itemsToInvoice;
+      let extraInvoiceDiscount = 0;
+      let promoLogs: any[] = [];
+      const hasAppliedPromos =
+        (dto.appliedPromotions && dto.appliedPromotions.length > 0) ||
+        (dto.appliedPromotionIds && dto.appliedPromotionIds.length > 0);
+      if (!dto.skipPromotions && hasAppliedPromos) {
+        const promo = await this.processPromotions(tx, {
+          items: itemsToInvoice as any,
+          branchId: order.branchId,
+          customerId: order.customerId ?? undefined,
+          soldById: dto.soldById ?? order.soldById ?? undefined,
+          purchaseDate: new Date().toISOString(),
+          appliedPromotions: dto.appliedPromotions,
+          appliedPromotionIds: dto.appliedPromotionIds,
+        } as any);
+        effectiveItems = promo.effectiveItems;
+        extraInvoiceDiscount = promo.extraInvoiceDiscount;
+        promoLogs = promo.logs;
+      }
+
+      const totalAmount = effectiveItems.reduce(
         (sum, item) => sum + item.totalPrice,
         0,
       );
 
-      const grandTotal = totalAmount - discountForThisInvoice;
+      const grandTotal = totalAmount - discountForThisInvoice - extraInvoiceDiscount;
       const debtAmount = grandTotal - totalPaid;
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
@@ -2589,7 +2725,7 @@ export class InvoicesService {
           priceBookName: order.priceBookName,
           purchaseDate: new Date(),
           totalAmount,
-          discount: discountForThisInvoice,
+          discount: discountForThisInvoice + extraInvoiceDiscount,
           discountRatio: 0,
           grandTotal,
           paidAmount: totalPaid,
@@ -2601,7 +2737,7 @@ export class InvoicesService {
           createdBy: userId,
           customerDebtSnapshot: null,
           details: {
-            create: itemsToInvoice.map((item) => ({
+            create: effectiveItems.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
               productName: item.productName,
@@ -2767,7 +2903,7 @@ export class InvoicesService {
       });
 
       const touchedProductIds = new Set<number>();
-      for (const item of itemsToInvoice) {
+      for (const item of effectiveItems) {
         const invSnapshot = await tx.inventory.findFirst({
           where: { productId: item.productId, branchId: order.branchId },
         });
@@ -2808,9 +2944,38 @@ export class InvoicesService {
         });
       }
 
+      // Ghi log KM + tăng usageCount (HĐ "tiếp quản" tracking từ order).
+      // Trước tiên revert order log cùng KM (tránh double-count khi đơn đã có KM).
+      if (promoLogs.length > 0) {
+        const promoIds = promoLogs.map((l) => l.promotionId);
+        const orderLogs = await tx.invoicePromotionLog.findMany({
+          where: { orderId: order.id, status: 'applied', promotionId: { in: promoIds } },
+          select: { id: true, promotionId: true },
+        });
+        if (orderLogs.length > 0) {
+          for (const lg of orderLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: orderLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+        await tx.invoicePromotionLog.createMany({
+          data: promoLogs.map((l) => ({ ...l, invoiceId: invoice.id })),
+        });
+        await tx.promotion.updateMany({
+          where: { id: { in: promoIds } },
+          data: { usageCount: { increment: 1 } },
+        });
+      }
+
       await recalcOnHandForPairs(
         tx,
-        itemsToInvoice.map((i) => ({
+        effectiveItems.map((i) => ({
           productId: i.productId,
           branchId: order.branchId,
         })),
