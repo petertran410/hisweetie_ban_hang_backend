@@ -47,6 +47,14 @@ class SupplierDebtOffsetItem {
 
   @IsNumber()
   amount: number;
+
+  @IsOptional()
+  @IsNumber()
+  exchangeRate?: number;
+
+  @IsOptional()
+  @IsNumber()
+  foreignAmount?: number;
 }
 
 export class CreateSupplierPaymentDto {
@@ -73,6 +81,11 @@ export class CreateSupplierPaymentDto {
   @IsInt()
   @Type(() => Number)
   accountId?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  collectorUserId?: number;
 
   @IsOptional()
   @IsString()

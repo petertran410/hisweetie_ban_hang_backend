@@ -84,6 +84,53 @@ export class PurchaseOrdersService {
         0,
       );
 
+      const currency = (dto.currency || 'VND').toUpperCase();
+      if (!['VND', 'CNY'].includes(currency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const exchangeRate =
+        currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
+      if (currency === 'CNY' && exchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
+
+      const paidAmount = Number(dto.paidAmount || 0);
+      if (paidAmount > 0 && currency === 'CNY') {
+        if (
+          dto.paymentExchangeRate == null ||
+          Number(dto.paymentExchangeRate) <= 0 ||
+          dto.paymentForeignAmount == null ||
+          Number(dto.paymentForeignAmount) <= 0
+        ) {
+          throw new BadRequestException(
+            'Thanh toán phiếu CNY phải có tỉ giá và số tiền CNY',
+          );
+        }
+        if (
+          Math.round(
+            Number(dto.paymentForeignAmount) *
+              Number(dto.paymentExchangeRate),
+          ) !== paidAmount
+        ) {
+          throw new BadRequestException(
+            'Số tiền thanh toán CNY quy đổi không khớp số tiền VND',
+          );
+        }
+      }
+      if (
+        paidAmount > 0 &&
+        currency === 'VND' &&
+        (dto.paymentExchangeRate != null || dto.paymentForeignAmount != null)
+      ) {
+        throw new BadRequestException(
+          'Thanh toán phiếu VND không được gửi số tiền CNY',
+        );
+      }
+
       const discountAmount = dto.discountRatio
         ? (total * dto.discountRatio) / 100
         : Number(dto.discount || 0);
@@ -112,7 +159,6 @@ export class PurchaseOrdersService {
       }
 
       const subTotal = total - discountAmount;
-      const paidAmount = Number(dto.paidAmount || 0);
       const debtAmount = subTotal - paidAmount;
 
       // Đối xứng `invoices.service.ts:583`: nếu có thanh toán mà chưa chọn
@@ -152,8 +198,8 @@ export class PurchaseOrdersService {
           supplierDebt: debtAmount,
           // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
           // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
-          currency: dto.currency || 'VND',
-          exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : 1,
+          currency,
+          exchangeRate,
           isDraft: dto.isDraft || false,
           partnerType: dto.partnerType,
           description: dto.description,
@@ -193,6 +239,15 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: paidAmount,
+            currency: currency === 'CNY' ? 'CNY' : 'VND',
+            exchangeRate:
+              currency === 'CNY' && dto.paymentExchangeRate != null
+                ? Number(dto.paymentExchangeRate)
+                : 1,
+            foreignAmount:
+              currency === 'CNY' && dto.paymentForeignAmount != null
+                ? Number(dto.paymentForeignAmount)
+                : null,
             transDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : new Date(),
@@ -662,6 +717,15 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: osPayment.amount,
+            currency: osPayment.foreignAmount != null ? 'CNY' : 'VND',
+            exchangeRate:
+              osPayment.exchangeRate != null
+                ? Number(osPayment.exchangeRate)
+                : 1,
+            foreignAmount:
+              osPayment.foreignAmount != null
+                ? Number(osPayment.foreignAmount)
+                : null,
             transDate: osPayment.paymentDate,
             method: osPayment.paymentMethod || 'cash',
             accountId: osPayment.accountId ?? null,
@@ -720,6 +784,15 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount,
+            currency: payment.foreignAmount != null ? 'CNY' : 'VND',
+            exchangeRate:
+              payment.exchangeRate != null
+                ? Number(payment.exchangeRate)
+                : 1,
+            foreignAmount:
+              payment.foreignAmount != null
+                ? Number(payment.foreignAmount)
+                : null,
             transDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : new Date(),
@@ -928,6 +1001,20 @@ export class PurchaseOrdersService {
           // thay vì chia paidAmount(VND)/exchangeRate gốc của phiếu → lệch khi
           // tỉ giá thanh toán khác tỉ giá phiếu.
           payments: { where: { status: { not: 2 } } },
+          // Cấn trừ thủ công làm tăng paidAmount nhưng không tạo Payment. Trả
+          // snapshot ngoại tệ để FE tính đúng phần đã tất toán/còn nợ CNY.
+          supplierReturns: {
+            where: { status: 3, refundType: 'manual_offset' },
+            select: {
+              id: true,
+              refundedAmount: true,
+              refundedForeignAmount: true,
+              currency: true,
+              exchangeRate: true,
+              refundType: true,
+              status: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -1512,12 +1599,16 @@ export class PurchaseOrdersService {
         ? (total * dto.discountRatio) / 100
         : Number(dto.discount || 0);
 
+      let linkedOrderSupplierCurrency: string | null = null;
+      let linkedOrderSupplierRate: number | null = null;
       if (existing.orderSupplierId) {
         const linkedOrderSupplier = await tx.orderSupplier.findUnique({
           where: { id: existing.orderSupplierId },
-          select: { discount: true },
+          select: { discount: true, currency: true, exchangeRate: true },
         });
         if (linkedOrderSupplier) {
+          linkedOrderSupplierCurrency = linkedOrderSupplier.currency || 'VND';
+          linkedOrderSupplierRate = Number(linkedOrderSupplier.exchangeRate) || 1;
           const existingPOs = await tx.purchaseOrder.findMany({
             where: {
               orderSupplierId: existing.orderSupplierId,
@@ -1547,11 +1638,48 @@ export class PurchaseOrdersService {
         where: { purchaseOrderId: id, status: { not: 2 } },
         select: { amount: true },
       });
-      const paidAmount = activePayments.reduce(
+      const paymentAmount = activePayments.reduce(
         (sum: number, p: any) => sum + Number(p.amount),
         0,
       );
+      const manualOffsets = await tx.supplierReturn.findMany({
+        where: {
+          purchaseOrderId: id,
+          status: 3,
+          refundType: 'manual_offset',
+        },
+        select: { refundedAmount: true },
+      });
+      const offsetAmount = manualOffsets.reduce(
+        (sum: number, offset: any) =>
+          sum + Number(offset.refundedAmount),
+        0,
+      );
+      const paidAmount = paymentAmount + offsetAmount;
       const debtAmount = subTotal - paidAmount;
+
+      const nextCurrency = (
+        linkedOrderSupplierCurrency ||
+        dto.currency ||
+        existing.currency ||
+        'VND'
+      ).toUpperCase();
+      if (!['VND', 'CNY'].includes(nextCurrency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${nextCurrency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const nextExchangeRate =
+        nextCurrency === 'VND'
+          ? 1
+          : linkedOrderSupplierRate ||
+            Number(dto.exchangeRate ?? existing.exchangeRate ?? 0) ||
+            0;
+      if (nextCurrency === 'CNY' && nextExchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
 
       const updateData: any = {
         purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
@@ -1566,8 +1694,8 @@ export class PurchaseOrdersService {
         partnerType: dto.partnerType,
         description: dto.description,
         purchaseById: dto.purchaseById,
-        currency: dto.currency,
-        exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : undefined,
+        currency: nextCurrency,
+        exchangeRate: nextExchangeRate,
       };
 
       // Đổi NCC: ghi supplierId mới + cập nhật lại snapshot nợ đầu kỳ

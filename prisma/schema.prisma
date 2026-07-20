@@ -2326,8 +2326,6 @@ model ConsignmentReturnDetail {
   @@map("consignment_return_details")
 }
 
-/// Giai đoạn hiện tại của dòng đặt hàng nhập — master data, cho phép thêm/sửa
-/// như cửa khẩu (BorderGate). Gán cho từng dòng order_supplier_items.
 model PurchaseOrderProductionStage {
   id          Int      @id @default(autoincrement())
   name        String
@@ -2342,9 +2340,6 @@ model PurchaseOrderProductionStage {
   @@map("purchase_order_production_stage")
 }
 
-/// Nhà máy — master data cho dòng đặt hàng nhập, cho phép thêm/sửa như cửa khẩu.
-/// Mở rộng: gắn vào Supplier (1 NCC quản lý nhiều NM), có country/currency,
-/// và liên kết 2 chiều với Product (vai trò primary/backup).
 model Factory {
   id            Int      @id @default(autoincrement())
   code          String?  @unique
@@ -2372,18 +2367,15 @@ model Factory {
   @@map("factories")
 }
 
-/// Bảng audit log ghi nhận thay đổi nhà máy chính/backup của sản phẩm.
-/// Mỗi lần `update` Product làm thay đổi primaryFactoryId hoặc backupFactoryId
-/// sẽ tạo 1 row mới tại đây.
 model FactoryChangeLog {
   id                Int      @id @default(autoincrement())
   productId         Int
   factoryId         Int
-  role              String   // "primary" | "backup"
+  role              String
   previousFactoryId Int?
   changedById       Int
   changedByName     String?
-  reason            String?  // "set_primary" | "set_backup" | "unlink" | "swap"
+  reason            String?
   createdAt         DateTime @default(now())
 
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -2396,21 +2388,17 @@ model FactoryChangeLog {
   @@map("factory_change_logs")
 }
 
-/// Phiếu ghép xe (vehicle shipment) — tầng điều phối optional giữa PDN
-/// (OrderSupplier) và PN (PurchaseOrder). Gom hàng từ nhiều PDN (có thể nhiều
-/// NCC) lên 1 chuyến xe. KHÔNG tác động kho/tiền/công nợ — chỉ theo dõi SL ghép.
-/// Tồn kho + thẻ kho vẫn chỉ phát sinh ở PN khi bấm "Tạo phiếu nhập".
 model VehicleShipment {
   id                  Int       @id @default(autoincrement())
   code                String    @unique
-  status              Int       @default(0) // 0 Phiếu tạm, 1 Đã xác nhận giao, 2 Đã nhập, 3 Đã hủy
+  status              Int       @default(0)
   statusValue         String?
-  branchId            Int? // chi nhánh nhận hàng (đích)
-  borderGateId        Int? // cửa khẩu (master data, có thể thêm/sửa)
-  vehicleInfo         String? // số hợp đồng (label FE: "Số hợp đồng")
-  files               Json? // danh sách file đính kèm: [{ filename, url, size, mimetype, originalname }]
-  expectedArrivalDate DateTime? // ngày dự kiến xe về kho
-  actualArrivalDate   DateTime? // ngày xe về kho thực tế (set khi createPurchaseOrders)
+  branchId            Int?
+  borderGateId        Int?
+  vehicleInfo         String?
+  files               Json?
+  expectedArrivalDate DateTime?
+  actualArrivalDate   DateTime?
   description         String?
   createdBy           Int
   createdAt           DateTime  @default(now())
@@ -2425,7 +2413,6 @@ model VehicleShipment {
   @@map("vehicle_shipments")
 }
 
-/// Cửa khẩu — master data cho phiếu ghép xe, cho phép thêm/sửa như nhóm KH.
 model BorderGate {
   id          Int      @id @default(autoincrement())
   name        String
@@ -2447,18 +2434,8 @@ model VehicleShipmentItem {
   productId         Int
   productCode       String
   productName       String
-  quantity          Decimal // SL ghép lên xe (dự kiến)
-  // Số HĐ (hợp đồng) gắn với dòng hàng này trên xe. Nullable vì:
-  // - Backward-compat với phiếu cũ chưa có.
-  // - Một số dòng có thể chưa được gán HĐ (vd "chờ" trong kế hoạch xếp xe).
-  // Cùng (orderSupplierId, productId) có thể xuất hiện nhiều lần trong 1 phiếu
-  // xe nếu khác contractNo (vd HH00082-26: 1 dòng thuộc HĐ 2026-169, 1 dòng
-  // thuộc HĐ 2026-197). UI tự fill từ VehicleShipment.vehicleInfo cho dòng mới.
+  quantity          Decimal
   contractNo        String?
-  // Xử lý chênh lệch sau nhập (per sản phẩm): pending | returned | kept
-  // - pending : chưa xử lý, phần thiếu vẫn giữ chỗ (chưa trả về "còn để ghép")
-  // - returned: chuyển phần thiếu về "còn lại" (cho ghép/đặt lại)
-  // - kept    : chấp nhận thiếu, không trả về
   postImportStatus  String   @default("pending")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -2859,10 +2836,6 @@ model SyncControl {
   @@map("sync_controls")
 }
 
-// =====================================================
-// Misa AMIS Kế toán — dictionary cache + sync log
-// =====================================================
-
 model MisaInventoryItem {
   id                Int      @id @default(autoincrement())
   inventoryItemId   String   @unique @db.VarChar(36)
@@ -2968,15 +2941,12 @@ enum MisaSyncStatus {
   SKIP
 }
 
-// Phiên upload ảnh từ điện thoại qua QR (mô hình qrcp).
-// Máy tính tạo phiên + hiển thị QR; điện thoại quét rồi upload ảnh vào phiên.
-// Postgres không có TTL → expiresAt là cột thường, kiểm tra hết hạn bằng code.
 model UploadSession {
   id          String   @id @default(uuid())
   token       String
   subfolder   String   @db.VarChar(100)
-  status      String   @default("active") @db.VarChar(20) // active | closed
-  images      Json     @default("[]") // mảng URL string[]
+  status      String   @default("active") @db.VarChar(20)
+  images      Json     @default("[]")
   maxFiles    Int      @default(30)
   createdById Int?     @map("created_by_id")
   expiresAt   DateTime @map("expires_at")
@@ -2988,11 +2958,6 @@ model UploadSession {
   @@map("upload_sessions")
 }
 
-// Lịch sử giao dịch thô đồng bộ từ Sepay API (GET /userapi/transactions/list).
-// Bảng ĐỘC LẬP — không có quan hệ tới Order/Invoice/CashFlow.
-// Chỉ lưu lịch sử để tra cứu/đối soát; KHÔNG tạo phiếu thu (việc đó do webhook lo).
-// sepayId = field "id" của giao dịch Sepay (cùng định danh với webhook payload.id),
-// dùng làm khóa chống trùng khi đồng bộ lặp lại.
 model SepayTransaction {
   id                 Int       @id @default(autoincrement())
   sepayId            String    @unique @map("sepay_id")
@@ -3010,13 +2975,6 @@ model SepayTransaction {
   rawPayload         Json?     @map("raw_payload")
   syncedAt           DateTime  @default(now()) @map("synced_at")
 
-  // ── Luồng đối soát thủ công (gán khách + tạo phiếu thu) ──
-  // KHÔNG dùng FK relation để giữ bảng độc lập, không đụng model Customer/CashFlow/User.
-  // Trạng thái được suy ra on-read (xem SepayMatchService), không lưu cột status:
-  //   - chưa gán khách        → "processing" (đang xử lý)
-  //   - đã gán khách          → "assigned"   (đã xác nhận khách)
-  //   - đã tạo phiếu thu       → "completed"  (hoàn thành)
-  //   - trùng sepayId webhook  → "completed"  (suy ra on-read, không lưu)
   assignedCustomerId   Int?      @map("assigned_customer_id")
   assignedCustomerName String?   @map("assigned_customer_name")
   assignedById         Int?      @map("assigned_by_id")
@@ -3025,9 +2983,6 @@ model SepayTransaction {
   confirmedById        Int?      @map("confirmed_by_id")
   confirmedAt          DateTime? @map("confirmed_at")
 
-  // ── Ẩn giao dịch khỏi danh sách (ẩn chung toàn hệ thống) ──
-  // hiddenAt != null  → giao dịch bị ẩn, không hiện trong danh sách mặc định.
-  // Vẫn xem lại được qua filter ?hidden=true và có thể bỏ ẩn.
   hiddenAt   DateTime? @map("hidden_at")
   hiddenById Int?      @map("hidden_by_id")
 
@@ -3043,12 +2998,6 @@ model SepayTransaction {
   @@map("sepay_transactions")
 }
 
-// Phân bổ 1 giao dịch Sepay cho nhiều khách hàng (1 giao dịch → n khách).
-// Bảng độc lập (không FK relation) — giữ triết lý như SepayTransaction.
-// - Bước sale gán khách: tạo các dòng allocation (amount=0, note=null).
-// - Bước kế toán tạo phiếu thu: cập nhật amount + note cho từng dòng, tạo
-//   1 phiếu thu (CashFlow) riêng cho mỗi khách, lưu cashFlowId vào dòng đó.
-// Tổng amount các dòng = amount_in của giao dịch (validate ở service).
 model SepayAllocation {
   id                 Int       @id @default(autoincrement())
   sepayTransactionId Int       @map("sepay_transaction_id")

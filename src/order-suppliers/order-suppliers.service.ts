@@ -171,6 +171,18 @@ export class OrderSuppliersService {
               createdAt: 'asc',
             },
           },
+          // Cần foreignAmount để FE list tính "Đã trả / Cần trả NCC" (CNY)
+          // đúng khi tỉ giá TT ≠ tỉ giá phiếu — mirror PurchaseOrder list.
+          payments: {
+            where: { status: { not: 2 } },
+            select: {
+              id: true,
+              amount: true,
+              foreignAmount: true,
+              exchangeRate: true,
+              status: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),

@@ -2120,7 +2120,12 @@ export class CashFlowsService {
         for (const po of dto.purchaseOrders) {
           const poData = await tx.purchaseOrder.findUnique({
             where: { id: po.purchaseOrderId },
-            include: { payments: { where: { status: { not: 2 } } } },
+            include: {
+              payments: { where: { status: { not: 2 } } },
+              supplierReturns: {
+                where: { status: 3, refundType: 'manual_offset' },
+              },
+            },
           });
 
           if (!poData) {
@@ -2133,6 +2138,64 @@ export class CashFlowsService {
           }
 
           const currentDebt = Number(poData.debtAmount);
+          const isCNY = poData.currency === 'CNY';
+          if (isCNY) {
+            if (
+              po.exchangeRate == null ||
+              Number(po.exchangeRate) <= 0 ||
+              po.foreignAmount == null ||
+              Number(po.foreignAmount) <= 0
+            ) {
+              throw new Error(
+                `Phiếu nhập ${poData.code} dùng CNY, vui lòng gửi đủ tỉ giá và số tiền CNY`,
+              );
+            }
+            const convertedAmount = Math.round(
+              Number(po.foreignAmount) * Number(po.exchangeRate),
+            );
+            if (convertedAmount !== po.amount) {
+              throw new Error(
+                `Số tiền quy đổi của phiếu nhập ${poData.code} không khớp`,
+              );
+            }
+            const originalRate = Number(poData.exchangeRate) || 1;
+            const foreignTotal = Number(poData.subTotal) / originalRate;
+            const foreignPaid = poData.payments.reduce(
+              (sum: number, payment: any) =>
+                sum +
+                (payment.foreignAmount != null
+                  ? Number(payment.foreignAmount)
+                  : Number(payment.amount) / originalRate),
+              0,
+            );
+            const foreignOffset = poData.supplierReturns.reduce(
+              (sum: number, offset: any) =>
+                sum +
+                (offset.refundedForeignAmount != null
+                  ? Number(offset.refundedForeignAmount)
+                  : Number(offset.refundedAmount) / originalRate),
+              0,
+            );
+            const requestOffset = dto.debtOffsets?.find(
+              (offset) => offset.purchaseOrderId === po.purchaseOrderId,
+            );
+            const requestForeignTotal =
+              Number(po.foreignAmount) +
+              Number(requestOffset?.foreignAmount || 0);
+            const foreignDebt = Math.max(
+              0,
+              foreignTotal - foreignPaid - foreignOffset,
+            );
+            if (requestForeignTotal - foreignDebt > 0.001) {
+              throw new Error(
+                `Tổng thanh toán và cấn trừ ${requestForeignTotal} CNY vượt quá công nợ ${foreignDebt} CNY của phiếu nhập ${poData.code}`,
+              );
+            }
+          } else if (po.exchangeRate != null || po.foreignAmount != null) {
+            throw new Error(
+              `Phiếu nhập ${poData.code} dùng VND, không được gửi số tiền CNY`,
+            );
+          }
           if (po.amount > currentDebt) {
             throw new Error(
               `Số tiền thanh toán ${po.amount} vượt quá công nợ ${currentDebt} của phiếu nhập ${poData.code}`,
@@ -2172,11 +2235,25 @@ export class CashFlowsService {
             (s: number, p: any) => s + Number(p.amount),
             0,
           );
-          const newDebt = Number(poData.subTotal) - newPaidAmount;
+          const manualOffsets = await tx.supplierReturn.findMany({
+            where: {
+              purchaseOrderId: po.purchaseOrderId,
+              status: 3,
+              refundType: 'manual_offset',
+            },
+            select: { refundedAmount: true },
+          });
+          const totalManualOffset = manualOffsets.reduce(
+            (sum: number, offset: any) =>
+              sum + Number(offset.refundedAmount),
+            0,
+          );
+          const totalSettled = newPaidAmount + totalManualOffset;
+          const newDebt = Number(poData.subTotal) - totalSettled;
           await tx.purchaseOrder.update({
             where: { id: po.purchaseOrderId },
             data: {
-              paidAmount: newPaidAmount,
+              paidAmount: totalSettled,
               debtAmount: newDebt,
               supplierDebt: newDebt,
             },
@@ -2214,6 +2291,12 @@ export class CashFlowsService {
         for (const debtOffset of dto.debtOffsets) {
           const poData = await tx.purchaseOrder.findUnique({
             where: { id: debtOffset.purchaseOrderId },
+            include: {
+              payments: { where: { status: { not: 2 } } },
+              supplierReturns: {
+                where: { status: 3, refundType: 'manual_offset' },
+              },
+            },
           });
 
           if (!poData) {
@@ -2223,6 +2306,62 @@ export class CashFlowsService {
           }
           if (poData.supplierId !== dto.supplierId) {
             throw new Error(`Phiếu nhập ${poData.code} không thuộc về NCC này`);
+          }
+          const isCNY = poData.currency === 'CNY';
+          if (isCNY) {
+            if (
+              debtOffset.exchangeRate == null ||
+              Number(debtOffset.exchangeRate) <= 0 ||
+              debtOffset.foreignAmount == null ||
+              Number(debtOffset.foreignAmount) <= 0
+            ) {
+              throw new Error(
+                `Phiếu nhập ${poData.code} dùng CNY, vui lòng gửi đủ tỉ giá và số tiền cấn trừ CNY`,
+              );
+            }
+            const convertedAmount = Math.round(
+              Number(debtOffset.foreignAmount) *
+                Number(debtOffset.exchangeRate),
+            );
+            if (convertedAmount !== debtOffset.amount) {
+              throw new Error(
+                `Số tiền cấn trừ quy đổi của phiếu nhập ${poData.code} không khớp`,
+              );
+            }
+            const originalRate = Number(poData.exchangeRate) || 1;
+            const foreignTotal = Number(poData.subTotal) / originalRate;
+            const foreignPaid = poData.payments.reduce(
+              (sum: number, payment: any) =>
+                sum +
+                (payment.foreignAmount != null
+                  ? Number(payment.foreignAmount)
+                  : Number(payment.amount) / originalRate),
+              0,
+            );
+            const foreignOffset = poData.supplierReturns.reduce(
+              (sum: number, offset: any) =>
+                sum +
+                (offset.refundedForeignAmount != null
+                  ? Number(offset.refundedForeignAmount)
+                  : Number(offset.refundedAmount) / originalRate),
+              0,
+            );
+            const foreignDebt = Math.max(
+              0,
+              foreignTotal - foreignPaid - foreignOffset,
+            );
+            if (Number(debtOffset.foreignAmount) - foreignDebt > 0.001) {
+              throw new Error(
+                `Số tiền cấn trừ ${debtOffset.foreignAmount} CNY vượt quá công nợ ${foreignDebt} CNY của phiếu nhập ${poData.code}`,
+              );
+            }
+          } else if (
+            debtOffset.exchangeRate != null ||
+            debtOffset.foreignAmount != null
+          ) {
+            throw new Error(
+              `Phiếu nhập ${poData.code} dùng VND, không được gửi số tiền cấn trừ CNY`,
+            );
           }
           if (debtOffset.amount > Number(poData.debtAmount)) {
             throw new Error(
@@ -2254,10 +2393,21 @@ export class CashFlowsService {
               branchId: dto.branchId,
               status: 3, // COMPLETED
               statusValue: 'Hoàn thành',
+              currency: isCNY ? 'CNY' : 'VND',
+              exchangeRate: isCNY
+                ? Number(debtOffset.exchangeRate)
+                : 1,
               totalReturnAmount: 0,
+              totalForeignReturnAmount: isCNY ? 0 : null,
               refundAmount: debtOffset.amount,
+              refundForeignAmount: isCNY
+                ? Number(debtOffset.foreignAmount)
+                : null,
               refundType: 'manual_offset',
               refundedAmount: debtOffset.amount,
+              refundedForeignAmount: isCNY
+                ? Number(debtOffset.foreignAmount)
+                : null,
               refundConfirmedBy: userId,
               refundConfirmedByName: offsetUser?.name || 'System',
               refundConfirmedAt: dto.transDate
@@ -2313,6 +2463,10 @@ export class CashFlowsService {
             (po) => po.foreignAmount != null && po.exchangeRate != null,
           ) || [];
         const isAnyForeign = foreignPOs.length > 0;
+        const isAllForeign =
+          isAnyForeign &&
+          foreignPOs.length === (dto.purchaseOrders?.length || 0) &&
+          Math.abs(allocatedTotal - dto.totalAmount) <= 0.01;
         const firstForeign = foreignPOs[0];
         const totalForeignAmount = foreignPOs.reduce(
           (s, po) => s + Number(po.foreignAmount || 0),
@@ -2326,11 +2480,11 @@ export class CashFlowsService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: dto.totalAmount,
-            currency: isAnyForeign ? 'CNY' : 'VND',
-            exchangeRate: firstForeign
+            currency: isAllForeign ? 'CNY' : 'VND',
+            exchangeRate: isAllForeign && firstForeign
               ? Number(firstForeign.exchangeRate)
               : 1,
-            foreignAmount: isAnyForeign ? totalForeignAmount : null,
+            foreignAmount: isAllForeign ? totalForeignAmount : null,
             transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
             method: dto.method || 'cash',
             accountId: dto.accountId,
@@ -2343,6 +2497,7 @@ export class CashFlowsService {
             status: 0,
             statusValue: 'Đã thanh toán',
             createdBy: userId,
+            collectorUserId: dto.collectorUserId || userId,
             usedForFinancialReporting: 1,
             supplierDebtSnapshot: null,
           },
