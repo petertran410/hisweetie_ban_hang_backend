@@ -79,14 +79,19 @@ export class SupplierReturnsService {
     if (!['VND', 'CNY'].includes(normalizedCurrency)) {
       throw new BadRequestException('Chỉ hỗ trợ tiền tệ VND hoặc CNY');
     }
-    const normalizedRate = normalizedCurrency === 'VND' ? 1 : Number(exchangeRate);
+    const normalizedRate =
+      normalizedCurrency === 'VND' ? 1 : Number(exchangeRate);
     if (!Number.isFinite(normalizedRate) || normalizedRate <= 0) {
       throw new BadRequestException('Tỷ giá ngoại tệ phải lớn hơn 0');
     }
     return { currency: normalizedCurrency, exchangeRate: normalizedRate };
   }
 
-  private normalizeDetailAmounts(detail: any, currency: string, exchangeRate: number) {
+  private normalizeDetailAmounts(
+    detail: any,
+    currency: string,
+    exchangeRate: number,
+  ) {
     const quantity = Number(detail.requestQuantity);
     const inputMode = detail.inputMode || 'unit_price';
     if (currency === 'VND') {
@@ -104,14 +109,16 @@ export class SupplierReturnsService {
     let foreignReturnPrice: number;
     if (inputMode === 'total_amount') {
       foreignReturnAmount = this.roundMoney(Number(detail.foreignReturnAmount));
-      foreignReturnPrice = quantity > 0
-        ? this.roundMoney(foreignReturnAmount / quantity)
-        : 0;
+      foreignReturnPrice =
+        quantity > 0 ? this.roundMoney(foreignReturnAmount / quantity) : 0;
     } else {
       foreignReturnPrice = this.roundMoney(Number(detail.foreignReturnPrice));
       foreignReturnAmount = this.roundMoney(foreignReturnPrice * quantity);
     }
-    if (!Number.isFinite(foreignReturnAmount) || !Number.isFinite(foreignReturnPrice)) {
+    if (
+      !Number.isFinite(foreignReturnAmount) ||
+      !Number.isFinite(foreignReturnPrice)
+    ) {
       throw new BadRequestException(
         `Sản phẩm ${detail.productName}: Thiếu số tiền ngoại tệ hợp lệ`,
       );
@@ -204,7 +211,14 @@ export class SupplierReturnsService {
         include: {
           supplier: { select: { id: true, code: true, name: true } },
           branch: { select: { id: true, name: true } },
-          purchaseOrder: { select: { id: true, code: true, currency: true, exchangeRate: true } },
+          purchaseOrder: {
+            select: {
+              id: true,
+              code: true,
+              currency: true,
+              exchangeRate: true,
+            },
+          },
           creator: { select: { id: true, name: true } },
           details: {
             include: {
@@ -448,7 +462,9 @@ export class SupplierReturnsService {
       include: {
         supplier: { select: { id: true, code: true, name: true } },
         branch: { select: { id: true, name: true } },
-        purchaseOrder: { select: { id: true, code: true, currency: true, exchangeRate: true } },
+        purchaseOrder: {
+          select: { id: true, code: true, currency: true, exchangeRate: true },
+        },
         creator: { select: { id: true, name: true } },
         exporter: { select: { id: true, name: true } },
         refundConfirmer: { select: { id: true, name: true } },
@@ -582,7 +598,11 @@ export class SupplierReturnsService {
         purchasePrice: d.purchasePrice,
         requestQuantity: d.requestQuantity,
         confirmedQuantity: 0,
-        ...this.normalizeDetailAmounts(d, monetary.currency, monetary.exchangeRate),
+        ...this.normalizeDetailAmounts(
+          d,
+          monetary.currency,
+          monetary.exchangeRate,
+        ),
         note: d.note,
       }));
 
@@ -590,12 +610,15 @@ export class SupplierReturnsService {
         (sum, d) => sum + d.totalAmount,
         0,
       );
-      const totalForeignReturnAmount = monetary.currency === 'VND'
-        ? null
-        : this.roundMoney(detailsData.reduce(
-            (sum, d) => sum + Number(d.foreignReturnAmount || 0),
-            0,
-          ));
+      const totalForeignReturnAmount =
+        monetary.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              detailsData.reduce(
+                (sum, d) => sum + Number(d.foreignReturnAmount || 0),
+                0,
+              ),
+            );
 
       const status = dto.isDraft
         ? SUPPLIER_RETURN_STATUS.DRAFT
@@ -760,7 +783,11 @@ export class SupplierReturnsService {
           purchasePrice: d.purchasePrice,
           requestQuantity: d.requestQuantity,
           confirmedQuantity: 0,
-          ...this.normalizeDetailAmounts(d, monetary.currency, monetary.exchangeRate),
+          ...this.normalizeDetailAmounts(
+            d,
+            monetary.currency,
+            monetary.exchangeRate,
+          ),
           note: d.note,
         }));
 
@@ -772,12 +799,15 @@ export class SupplierReturnsService {
         (sum, d) => sum + d.totalAmount,
         0,
       );
-      const totalForeignReturnAmount = monetary.currency === 'VND'
-        ? null
-        : this.roundMoney(detailsData.reduce(
-            (sum, d) => sum + Number(d.foreignReturnAmount || 0),
-            0,
-          ));
+      const totalForeignReturnAmount =
+        monetary.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              detailsData.reduce(
+                (sum, d) => sum + Number(d.foreignReturnAmount || 0),
+                0,
+              ),
+            );
 
       const newStatus = dto.isDraft
         ? SUPPLIER_RETURN_STATUS.DRAFT
@@ -985,22 +1015,26 @@ export class SupplierReturnsService {
         where: { supplierReturnId: id },
       });
 
-      const refundAmount = this.roundMoney(updatedDetails.reduce(
-        (sum, d) => sum + (
-          Number(d.confirmedQuantity) > 0 ? Number(d.totalAmount) : 0
+      const refundAmount = this.roundMoney(
+        updatedDetails.reduce(
+          (sum, d) =>
+            sum + (Number(d.confirmedQuantity) > 0 ? Number(d.totalAmount) : 0),
+          0,
         ),
-        0,
-      ));
-      const refundForeignAmount = supplierReturn.currency === 'VND'
-        ? null
-        : this.roundMoney(updatedDetails.reduce(
-            (sum, d) => sum + (
-              Number(d.confirmedQuantity) > 0
-                ? Number(d.foreignReturnAmount || 0)
-                : 0
-            ),
-            0,
-          ));
+      );
+      const refundForeignAmount =
+        supplierReturn.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              updatedDetails.reduce(
+                (sum, d) =>
+                  sum +
+                  (Number(d.confirmedQuantity) > 0
+                    ? Number(d.foreignReturnAmount || 0)
+                    : 0),
+                0,
+              ),
+            );
 
       await tx.supplierReturn.update({
         where: { id },
@@ -1142,9 +1176,10 @@ export class SupplierReturnsService {
             amount: refundAmount,
             currency: supplierReturn.currency,
             exchangeRate: Number(supplierReturn.exchangeRate),
-            foreignAmount: supplierReturn.refundForeignAmount == null
-              ? null
-              : Number(supplierReturn.refundForeignAmount),
+            foreignAmount:
+              supplierReturn.refundForeignAmount == null
+                ? null
+                : Number(supplierReturn.refundForeignAmount),
             transDate: new Date(),
             method: dto.method || 'cash',
             accountId: dto.accountId || null,
@@ -1414,7 +1449,7 @@ export class SupplierReturnsService {
                 branchId: branch.id,
                 status,
                 statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
-              totalReturnAmount: item.totalReturnAmount,
+                totalReturnAmount: item.totalReturnAmount,
                 currency: 'VND',
                 exchangeRate: 1,
                 totalForeignReturnAmount: null,

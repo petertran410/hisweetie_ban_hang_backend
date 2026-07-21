@@ -15,11 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { FactoriesService } from './factories.service';
-import {
-  CreateFactoryDto,
-  FactoryQueryDto,
-  UpdateFactoryDto,
-} from './dto';
+import { CreateFactoryDto, FactoryQueryDto, UpdateFactoryDto } from './dto';
 
 @ApiTags('Factories')
 @ApiBearerAuth()
@@ -73,10 +69,7 @@ export class FactoriesController {
 
   @Put(':id')
   @RequirePermissions('factories:update')
-  update(
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateFactoryDto,
-  ) {
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateFactoryDto) {
     return this.factoriesService.update(id, dto);
   }
 

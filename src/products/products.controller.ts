@@ -72,8 +72,7 @@ export class ProductsController {
     T extends { primaryFactoryId?: number; backupFactoryId?: number },
   >(dto: T, req: any): Promise<T> {
     const hasFactoryField =
-      dto?.primaryFactoryId !== undefined ||
-      dto?.backupFactoryId !== undefined;
+      dto?.primaryFactoryId !== undefined || dto?.backupFactoryId !== undefined;
     if (!hasFactoryField) return dto;
 
     const { isSuperAdmin, permissions } = await this.resolvePermissions(req);

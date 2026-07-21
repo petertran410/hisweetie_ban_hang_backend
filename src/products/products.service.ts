@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
@@ -281,10 +285,22 @@ export class ProductsService {
         },
       },
       primaryFactory: {
-        select: { id: true, code: true, name: true, country: true, currency: true },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          country: true,
+          currency: true,
+        },
       },
       backupFactory: {
-        select: { id: true, code: true, name: true, country: true, currency: true },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          country: true,
+          currency: true,
+        },
       },
     };
 
@@ -877,7 +893,7 @@ export class ProductsService {
     // Validate factory tồn tại
     const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
       (id) => id != null,
-    ) as number[];
+    );
     if (factoryIdsToCheck.length > 0) {
       const foundFactories = await this.prisma.factory.findMany({
         where: { id: { in: factoryIdsToCheck } },
@@ -1291,7 +1307,7 @@ export class ProductsService {
     // Validate factory tồn tại nếu được truyền (không null)
     const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
       (id) => id != null,
-    ) as number[];
+    );
     if (factoryIdsToCheck.length > 0) {
       const foundFactories = await this.prisma.factory.findMany({
         where: { id: { in: factoryIdsToCheck } },

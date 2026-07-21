@@ -528,23 +528,23 @@ export class SepayMatchService {
     }
 
     // Resolve accountId từ số tài khoản nhận của giao dịch.
-// Ưu tiên subAccount (VA — VD BIDV 96460248888) trước, fallback accountNumber (TK chính).
-// Lý do: DB bank_accounts có thể lưu VA thay vì TK chính (BIDV). Trước đây chỉ check
-// accountNumber nên BIDV VA → accountId = null → phiếu thu không liên kết TK ngân hàng.
-let accountId: number | undefined;
-const candidates = [tx.subAccount, tx.accountNumber].filter(
-  (v): v is string => !!v,
-);
-for (const acc of candidates) {
-  const bank = await this.prisma.bankAccount.findFirst({
-    where: { accountNumber: acc },
-    select: { id: true },
-  });
-  if (bank?.id) {
-    accountId = bank.id;
-    break;
-  }
-}
+    // Ưu tiên subAccount (VA — VD BIDV 96460248888) trước, fallback accountNumber (TK chính).
+    // Lý do: DB bank_accounts có thể lưu VA thay vì TK chính (BIDV). Trước đây chỉ check
+    // accountNumber nên BIDV VA → accountId = null → phiếu thu không liên kết TK ngân hàng.
+    let accountId: number | undefined;
+    const candidates = [tx.subAccount, tx.accountNumber].filter(
+      (v): v is string => !!v,
+    );
+    for (const acc of candidates) {
+      const bank = await this.prisma.bankAccount.findFirst({
+        where: { accountNumber: acc },
+        select: { id: true },
+      });
+      if (bank?.id) {
+        accountId = bank.id;
+        break;
+      }
+    }
 
     const transDate = tx.transactionDate
       ? tx.transactionDate.toISOString()
@@ -567,7 +567,7 @@ for (const acc of candidates) {
       const defaultNote = isSpecial
         ? (tx.transactionContent || '').trim()
         : (tx.referenceNumber || '').trim();
-      const note = (a.note && a.note.trim()) ? a.note : defaultNote;
+      const note = a.note && a.note.trim() ? a.note : defaultNote;
       // Nếu có phân bổ hóa đơn → tạo InvoicePayment trừ trực tiếp công nợ hóa đơn.
       // Phần dư (amount - Σ invoices) tự ghi nhận thành credit (Formula A xử lý).
       const invoiceAllocs = (a.invoices || []).filter(

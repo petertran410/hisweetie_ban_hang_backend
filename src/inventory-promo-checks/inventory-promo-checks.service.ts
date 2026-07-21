@@ -546,9 +546,7 @@ export class InventoryPromoChecksService {
       orderBy: { id: 'desc' },
       select: { code: true },
     });
-    const nextId = last
-      ? parseInt(last.code.replace('KKM', ''), 10) + 1
-      : 1;
+    const nextId = last ? parseInt(last.code.replace('KKM', ''), 10) + 1 : 1;
     return `KKM${String(nextId).padStart(6, '0')}`;
   }
 }

@@ -336,10 +336,13 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
 
   it('A90 + B90 = 180 → đạt 1 suất, tặng 15', () => {
     const p = makeStackablePromotion();
-    const result = evaluatePromotions(p ? [p] : [], ctxWith([
-      { productId: A, quantity: 90 },
-      { productId: B, quantity: 90 },
-    ]));
+    const result = evaluatePromotions(
+      p ? [p] : [],
+      ctxWith([
+        { productId: A, quantity: 90 },
+        { productId: B, quantity: 90 },
+      ]),
+    );
     expect(result.eligiblePromotions).toHaveLength(1);
     const r = result.eligiblePromotions[0];
     expect(r.cumulative).toBe(true);
@@ -351,10 +354,13 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
 
   it('A180 + B180 = 360 → đạt 2 suất, tặng 30', () => {
     const p = makeStackablePromotion();
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: A, quantity: 180 },
-      { productId: B, quantity: 180 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([
+        { productId: A, quantity: 180 },
+        { productId: B, quantity: 180 },
+      ]),
+    );
     expect(result.eligiblePromotions).toHaveLength(1);
     const r = result.eligiblePromotions[0];
     expect(r.rewardTimes).toBe(2);
@@ -363,11 +369,14 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
 
   it('SP ngoài chương trình không được cộng', () => {
     const p = makeStackablePromotion();
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: A, quantity: 90 },
-      { productId: B, quantity: 80 },
-      { productId: OUTSIDE, quantity: 1000 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([
+        { productId: A, quantity: 90 },
+        { productId: B, quantity: 80 },
+        { productId: OUTSIDE, quantity: 1000 },
+      ]),
+    );
     // 170 < 180 → chưa đạt suất nào
     expect(result.eligiblePromotions).toHaveLength(0);
     const pr = result.progress.find((x) => x.promotionId === p.id)!;
@@ -378,9 +387,10 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
 
   it('progress hiển thị khi chưa đạt ngưỡng', () => {
     const p = makeStackablePromotion();
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: A, quantity: 90 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([{ productId: A, quantity: 90 }]),
+    );
     expect(result.eligiblePromotions).toHaveLength(0);
     const pr = result.progress.find((x) => x.promotionId === p.id)!;
     expect(pr.currentQuantity).toBe(90);
@@ -392,27 +402,34 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
 
   it('không track khi giỏ không có SP X của CT', () => {
     const p = makeStackablePromotion();
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: OUTSIDE, quantity: 500 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([{ productId: OUTSIDE, quantity: 500 }]),
+    );
     expect(result.progress).toHaveLength(0);
   });
 
   it('stackable=false: A90 + B90 KHÔNG đạt', () => {
     const p = makeStackablePromotion({ stackable: false });
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: A, quantity: 90 },
-      { productId: B, quantity: 90 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([
+        { productId: A, quantity: 90 },
+        { productId: B, quantity: 90 },
+      ]),
+    );
     expect(result.eligiblePromotions).toHaveLength(0);
   });
 
   it('stackable=false: A180 đạt, B90 không đạt', () => {
     const p = makeStackablePromotion({ stackable: false });
-    const result = evaluatePromotions([p], ctxWith([
-      { productId: A, quantity: 180 },
-      { productId: B, quantity: 90 },
-    ]));
+    const result = evaluatePromotions(
+      [p],
+      ctxWith([
+        { productId: A, quantity: 180 },
+        { productId: B, quantity: 90 },
+      ]),
+    );
     expect(result.eligiblePromotions).toHaveLength(1);
     expect(result.eligiblePromotions[0].triggerProductId).toBe(A);
   });

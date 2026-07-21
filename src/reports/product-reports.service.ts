@@ -63,12 +63,12 @@ export class ProductReportsService {
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"`;
   }
 
-// TOP N cho chart/data table: `limit` (data table) thắng `top` (chart Top 20).
-// Export truyền limit rất lớn (1000000) để lấy toàn bộ.
-private chartTop(query: ProductReportQueryDto): number {
-  const n = query.limit ?? query.top ?? 20;
-  return Math.max(1, Math.min(1000000, n));
-}
+  // TOP N cho chart/data table: `limit` (data table) thắng `top` (chart Top 20).
+  // Export truyền limit rất lớn (1000000) để lấy toàn bộ.
+  private chartTop(query: ProductReportQueryDto): number {
+    const n = query.limit ?? query.top ?? 20;
+    return Math.max(1, Math.min(1000000, n));
+  }
 
   // ═══════════════════════════════════════════════════════════════════════════
   // CHART
@@ -456,8 +456,7 @@ private chartTop(query: ProductReportQueryDto): number {
         price: Number(r.price) || 0,
         discount: Number(r.discount) || 0,
         discountRatio: Number(r.discount_ratio) || 0,
-        priceAfterDiscount:
-          (Number(r.price) || 0) - (Number(r.discount) || 0),
+        priceAfterDiscount: (Number(r.price) || 0) - (Number(r.discount) || 0),
         totalPrice: Number(r.total_price) || 0,
         unitCost: Number(r.unit_cost) || 0,
         priceBookId: r.price_book_id ?? null,

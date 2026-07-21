@@ -103,9 +103,7 @@ export class SepaySyncService {
       select: { accountNumber: true },
     });
     const accountWhitelist = new Set(
-      bankAccounts
-        .map((b) => b.accountNumber)
-        .filter((v): v is string => !!v),
+      bankAccounts.map((b) => b.accountNumber).filter((v): v is string => !!v),
     );
     const applyWhitelist = accountWhitelist.size > 0;
     if (!applyWhitelist) {
@@ -653,7 +651,12 @@ export class SepaySyncService {
       .map((s) => s.trim())
       .filter(Boolean);
     if (special.length === 0) {
-      return { updated: 0, skipped: 0, scanned: 0, message: 'SEPAY_SPECIAL_ACCOUNT_NUMBERS rỗng' };
+      return {
+        updated: 0,
+        skipped: 0,
+        scanned: 0,
+        message: 'SEPAY_SPECIAL_ACCOUNT_NUMBERS rỗng',
+      };
     }
 
     const targets = await this.prisma.sepayTransaction.findMany({
@@ -785,7 +788,7 @@ export class SepaySyncService {
     _apply: boolean,
   ) {
     // 1. Lấy cashFlowId từ InvoicePayment (webhook tạo hóa đơn qua Sepay).
-  //    Lọc sepayTransactionId != null để BỎ QUA payment thủ công từ trang KH.
+    //    Lọc sepayTransactionId != null để BỎ QUA payment thủ công từ trang KH.
     const invPayments = await this.prisma.invoicePayment.findMany({
       where: {
         cashFlowId: { not: null },
@@ -862,7 +865,7 @@ export class SepaySyncService {
         // Tra map để lấy sepayId (String) — key dùng để tra sepay_transactions.
         const sepayIdStr =
           a.sepayTransactionId != null
-            ? allocPkToSepayId.get(a.sepayTransactionId) ?? null
+            ? (allocPkToSepayId.get(a.sepayTransactionId) ?? null)
             : null;
         cfMap.set(a.cashFlowId, {
           source: 'bien-dong-so-du',
@@ -1012,9 +1015,7 @@ export class SepaySyncService {
     const items: any[] = [];
     for (const cf of cashFlows) {
       const info = cfMap.get(cf.id)!;
-      const sepayTx = info.sepayTxId
-        ? txBySepayId.get(info.sepayTxId)
-        : null;
+      const sepayTx = info.sepayTxId ? txBySepayId.get(info.sepayTxId) : null;
 
       const isSpecial = await isSepaySpecialAccount(
         this.prisma,
@@ -1163,7 +1164,7 @@ export class SepaySyncService {
       if (a.cashFlowId && !cfToSepayTxId.has(a.cashFlowId)) {
         const sepayIdStr =
           a.sepayTransactionId != null
-            ? allocPkToSepayId.get(a.sepayTransactionId) ?? null
+            ? (allocPkToSepayId.get(a.sepayTransactionId) ?? null)
             : null;
         cfToSepayTxId.set(a.cashFlowId, sepayIdStr);
       }
@@ -1179,7 +1180,12 @@ export class SepaySyncService {
               accountId: null,
             },
             orderBy: { id: 'desc' },
-            select: { id: true, code: true, accountId: true, sepayReferenceCode: true },
+            select: {
+              id: true,
+              code: true,
+              accountId: true,
+              sepayReferenceCode: true,
+            },
           })
         : [];
 
@@ -1195,7 +1201,12 @@ export class SepaySyncService {
       },
       orderBy: { id: 'desc' },
       take: limit,
-      select: { id: true, code: true, accountId: true, sepayReferenceCode: true },
+      select: {
+        id: true,
+        code: true,
+        accountId: true,
+        sepayReferenceCode: true,
+      },
     });
     if (extraCfs.length > 0) {
       cashFlows = [...cashFlows, ...extraCfs];
@@ -1277,8 +1288,12 @@ export class SepaySyncService {
       const candidates = [tx.subAccount, tx.accountNumber].filter(
         (v): v is string => !!v,
       );
-      let bankAccount: { id: number; accountNumber: string; bankCode: string; bankName: string } | null =
-        null;
+      let bankAccount: {
+        id: number;
+        accountNumber: string;
+        bankCode: string;
+        bankName: string;
+      } | null = null;
       for (const acc of candidates) {
         bankAccount = await this.prisma.bankAccount.findFirst({
           where: { accountNumber: acc },

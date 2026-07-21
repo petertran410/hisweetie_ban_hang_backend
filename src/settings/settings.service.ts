@@ -48,7 +48,8 @@ export class SettingsService {
       sepayFilterByAccount: settings.sepayFilterByAccount,
       larkProductRetryCronEnabled: settings.larkProductRetryCronEnabled,
       misaDictionaryCronEnabled: settings.misaDictionaryCronEnabled,
-      contractDocumensoSyncCronEnabled: settings.contractDocumensoSyncCronEnabled,
+      contractDocumensoSyncCronEnabled:
+        settings.contractDocumensoSyncCronEnabled,
     };
 
     const updated = await this.prisma.settings.update({

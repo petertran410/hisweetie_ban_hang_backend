@@ -37,8 +37,8 @@ export class FactoriesService {
       query.orderBy === 'code'
         ? { code: query.orderDirection ?? 'asc' }
         : query.orderBy === 'createdAt'
-        ? { createdAt: query.orderDirection ?? 'desc' }
-        : { name: query.orderDirection ?? 'asc' };
+          ? { createdAt: query.orderDirection ?? 'desc' }
+          : { name: query.orderDirection ?? 'asc' };
 
     const [data, total] = await Promise.all([
       this.prisma.factory.findMany({
@@ -279,8 +279,7 @@ export class FactoriesService {
         this.prisma.product.count({ where: { backupFactoryId: id } }),
         this.prisma.orderSupplierItem.count({ where: { factoryId: id } }),
       ]);
-    const totalUsage =
-      usedInProductPrimary + usedInProductBackup + usedInItem;
+    const totalUsage = usedInProductPrimary + usedInProductBackup + usedInItem;
     if (totalUsage > 0) {
       // Đang được sử dụng → soft-delete
       return this.prisma.factory.update({

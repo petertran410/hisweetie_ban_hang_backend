@@ -257,13 +257,13 @@ export class VehicleShipmentsService {
   private async buildItemsData(
     tx: any,
     items: {
-    orderSupplierId: number;
-    productId: number;
-    quantity: number;
-    contractNo?: string;
-  }[],
-  excludeVehicleId?: number,
-) {
+      orderSupplierId: number;
+      productId: number;
+      quantity: number;
+      contractNo?: string;
+    }[],
+    excludeVehicleId?: number,
+  ) {
     if (!items || items.length === 0) {
       throw new BadRequestException(
         'Phiếu ghép xe phải có ít nhất 1 dòng hàng',

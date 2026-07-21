@@ -284,7 +284,10 @@ function matchedProductIds(
 }
 
 /** Số quà còn được tặng ở cấp TỔNG chương trình (lifetime). null = không giới hạn. */
-function overallRemainingOf(p: EnginePromotion, ctx: EngineContext): number | null {
+function overallRemainingOf(
+  p: EnginePromotion,
+  ctx: EngineContext,
+): number | null {
   if (p.maxRewardQuantity == null) return null;
   const issuedTotal = ctx.rewardIssuedMap?.[p.id]?.total ?? 0;
   return Math.max(0, Number(p.maxRewardQuantity) - issuedTotal);

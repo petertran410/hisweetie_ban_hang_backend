@@ -73,8 +73,12 @@ export class PurchaseOrdersService {
             lineNumber: item.lineNumber ?? index + 1,
             // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
             conditionType: item.conditionType || 'normal',
-            factoryPrice: item.factoryPrice != null ? Number(item.factoryPrice) : null,
-            factorySubTotal: item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
+            factoryPrice:
+              item.factoryPrice != null ? Number(item.factoryPrice) : null,
+            factorySubTotal:
+              item.factorySubTotal != null
+                ? Number(item.factorySubTotal)
+                : null,
           };
         }),
       );
@@ -112,8 +116,7 @@ export class PurchaseOrdersService {
         }
         if (
           Math.round(
-            Number(dto.paymentForeignAmount) *
-              Number(dto.paymentExchangeRate),
+            Number(dto.paymentForeignAmount) * Number(dto.paymentExchangeRate),
           ) !== paidAmount
         ) {
           throw new BadRequestException(
@@ -280,8 +283,14 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
-            exchangeRate: dto.paymentExchangeRate != null ? Number(dto.paymentExchangeRate) : null,
-            foreignAmount: dto.paymentForeignAmount != null ? Number(dto.paymentForeignAmount) : null,
+            exchangeRate:
+              dto.paymentExchangeRate != null
+                ? Number(dto.paymentExchangeRate)
+                : null,
+            foreignAmount:
+              dto.paymentForeignAmount != null
+                ? Number(dto.paymentForeignAmount)
+                : null,
           },
         });
       }
@@ -786,9 +795,7 @@ export class PurchaseOrdersService {
             amount,
             currency: payment.foreignAmount != null ? 'CNY' : 'VND',
             exchangeRate:
-              payment.exchangeRate != null
-                ? Number(payment.exchangeRate)
-                : 1,
+              payment.exchangeRate != null ? Number(payment.exchangeRate) : 1,
             foreignAmount:
               payment.foreignAmount != null
                 ? Number(payment.foreignAmount)
@@ -827,8 +834,14 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
-            exchangeRate: payment.exchangeRate != null ? Number(payment.exchangeRate) : null,
-            foreignAmount: payment.foreignAmount != null ? Number(payment.foreignAmount) : null,
+            exchangeRate:
+              payment.exchangeRate != null
+                ? Number(payment.exchangeRate)
+                : null,
+            foreignAmount:
+              payment.foreignAmount != null
+                ? Number(payment.foreignAmount)
+                : null,
           },
         });
       }
@@ -1575,8 +1588,12 @@ export class PurchaseOrdersService {
               lineNumber: item.lineNumber ?? index + 1,
               // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
               conditionType: item.conditionType || 'normal',
-              factoryPrice: item.factoryPrice != null ? Number(item.factoryPrice) : null,
-              factorySubTotal: item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
+              factoryPrice:
+                item.factoryPrice != null ? Number(item.factoryPrice) : null,
+              factorySubTotal:
+                item.factorySubTotal != null
+                  ? Number(item.factorySubTotal)
+                  : null,
             };
           }),
         );
@@ -1608,7 +1625,8 @@ export class PurchaseOrdersService {
         });
         if (linkedOrderSupplier) {
           linkedOrderSupplierCurrency = linkedOrderSupplier.currency || 'VND';
-          linkedOrderSupplierRate = Number(linkedOrderSupplier.exchangeRate) || 1;
+          linkedOrderSupplierRate =
+            Number(linkedOrderSupplier.exchangeRate) || 1;
           const existingPOs = await tx.purchaseOrder.findMany({
             where: {
               orderSupplierId: existing.orderSupplierId,
@@ -1651,8 +1669,7 @@ export class PurchaseOrdersService {
         select: { refundedAmount: true },
       });
       const offsetAmount = manualOffsets.reduce(
-        (sum: number, offset: any) =>
-          sum + Number(offset.refundedAmount),
+        (sum: number, offset: any) => sum + Number(offset.refundedAmount),
         0,
       );
       const paidAmount = paymentAmount + offsetAmount;
@@ -2312,8 +2329,18 @@ export class PurchaseOrdersService {
       return;
     }
 
+    // Tính số đã nhận theo từng product qua các PN active (không phải DRAFT,
+    // không phải CANCELLED) — đối xứng `activePOs` ở `createOneFromOrderSupplierTx`
+    // (dòng 463-465) và enrichment `receivedQty` ở `order-suppliers.service.ts`
+    // (dòng 978-980). Trước đây chỉ lọc `isDraft: false` mà thiếu
+    // `status: { not: 2 }` → PN đã hủy vẫn được cộng vào receivedQuantities →
+    // PDN bị đẩy lên "Hoàn thành" nhầm sau khi hủy PN cuối cùng.
     const allPurchaseOrders = await tx.purchaseOrder.findMany({
-      where: { orderSupplierId: orderSupplierId, isDraft: false },
+      where: {
+        orderSupplierId: orderSupplierId,
+        isDraft: false,
+        status: { not: 2 },
+      },
       include: { items: true },
     });
 

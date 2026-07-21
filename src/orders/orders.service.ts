@@ -148,7 +148,7 @@ export class OrdersService {
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
-        const lineType = (it.lineType || 'normal') as string;
+        const lineType = it.lineType || 'normal';
         const manualGift = lineType === 'gift' && it.promotionId == null;
         // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
         // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
@@ -166,7 +166,7 @@ export class OrdersService {
           conditionType: it.conditionType || 'normal',
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
-          promotionId: derivedNormalStamp ? null : it.promotionId ?? null,
+          promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
           triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         } as OrderItemDto;
@@ -1222,7 +1222,12 @@ export class OrdersService {
           priceBookName: true,
           branch: { select: { name: true } },
           customer: {
-            select: { code: true, name: true, contactNumber: true, phone: true },
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+            },
           },
           soldBy: { select: { name: true } },
           creator: { select: { name: true } },
@@ -1355,7 +1360,12 @@ export class OrdersService {
           statusValue: true,
           branch: { select: { name: true } },
           customer: {
-            select: { code: true, name: true, contactNumber: true, phone: true },
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+            },
           },
           soldBy: { select: { name: true } },
           creator: { select: { name: true } },

@@ -29,8 +29,13 @@ export class ProductionsService {
   // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
   // khớp đúng danh sách đang hiển thị trên UI.
   private buildProductionWhere(query: ProductionQueryDto): any {
-    const { branchIds, status, fromManufacturedDate, toManufacturedDate, search } =
-      query;
+    const {
+      branchIds,
+      status,
+      fromManufacturedDate,
+      toManufacturedDate,
+      search,
+    } = query;
 
     const where: any = {};
     const and: any[] = [];

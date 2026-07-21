@@ -592,18 +592,18 @@ export class DestructionsService {
 
       if (destruction.status === 2) {
         for (const detail of destruction.details) {
-            await tx.inventory.update({
-              where: {
-                productId_branchId: {
-                  productId: detail.productId,
-                  branchId: destruction.branchId,
-                },
+          await tx.inventory.update({
+            where: {
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: destruction.branchId,
               },
-              data: {
-                onHand: { increment: detail.quantity },
-              },
-            });
-            touchedProductIds.add(detail.productId);
+            },
+            data: {
+              onHand: { increment: detail.quantity },
+            },
+          });
+          touchedProductIds.add(detail.productId);
         }
 
         // NGUỒN CHÂN LÝ: status=3 → log DESTRUCTION rớt khỏi Σ active. Recalc.
@@ -706,21 +706,21 @@ export class DestructionsService {
       const weightInGrams = weightUnit === 'kg' ? weight * 1000 : weight;
       const totalWeight = weightInGrams * newOnHand;
 
-await tx.inventory.update({
-          where: {
-            productId_branchId: {
-              productId: detail.productId,
-              branchId: destruction.branchId,
-            },
+      await tx.inventory.update({
+        where: {
+          productId_branchId: {
+            productId: detail.productId,
+            branchId: destruction.branchId,
           },
-          data: {
-            onHand: { decrement: detail.quantity },
-            totalWeight: totalWeight,
-          },
-        });
-        touched.add(detail.productId);
+        },
+        data: {
+          onHand: { decrement: detail.quantity },
+          totalWeight: totalWeight,
+        },
+      });
+      touched.add(detail.productId);
 
-        await tx.inventoryLog.create({
+      await tx.inventoryLog.create({
         data: {
           productId: detail.productId,
           productCode: detail.productCode,

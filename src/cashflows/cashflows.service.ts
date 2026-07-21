@@ -2218,8 +2218,10 @@ export class CashFlowsService {
               status: 1,
               statusValue: 'Đã thanh toán',
               cashFlowId: null,
-              exchangeRate: po.exchangeRate != null ? Number(po.exchangeRate) : null,
-              foreignAmount: po.foreignAmount != null ? Number(po.foreignAmount) : null,
+              exchangeRate:
+                po.exchangeRate != null ? Number(po.exchangeRate) : null,
+              foreignAmount:
+                po.foreignAmount != null ? Number(po.foreignAmount) : null,
             },
           });
 
@@ -2244,8 +2246,7 @@ export class CashFlowsService {
             select: { refundedAmount: true },
           });
           const totalManualOffset = manualOffsets.reduce(
-            (sum: number, offset: any) =>
-              sum + Number(offset.refundedAmount),
+            (sum: number, offset: any) => sum + Number(offset.refundedAmount),
             0,
           );
           const totalSettled = newPaidAmount + totalManualOffset;
@@ -2394,9 +2395,7 @@ export class CashFlowsService {
               status: 3, // COMPLETED
               statusValue: 'Hoàn thành',
               currency: isCNY ? 'CNY' : 'VND',
-              exchangeRate: isCNY
-                ? Number(debtOffset.exchangeRate)
-                : 1,
+              exchangeRate: isCNY ? Number(debtOffset.exchangeRate) : 1,
               totalReturnAmount: 0,
               totalForeignReturnAmount: isCNY ? 0 : null,
               refundAmount: debtOffset.amount,
@@ -2481,9 +2480,10 @@ export class CashFlowsService {
             isReceipt: false,
             amount: dto.totalAmount,
             currency: isAllForeign ? 'CNY' : 'VND',
-            exchangeRate: isAllForeign && firstForeign
-              ? Number(firstForeign.exchangeRate)
-              : 1,
+            exchangeRate:
+              isAllForeign && firstForeign
+                ? Number(firstForeign.exchangeRate)
+                : 1,
             foreignAmount: isAllForeign ? totalForeignAmount : null,
             transDate: dto.transDate ? new Date(dto.transDate) : new Date(),
             method: dto.method || 'cash',

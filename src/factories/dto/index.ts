@@ -10,7 +10,9 @@ import {
 import { Transform } from 'class-transformer';
 
 const toInt = ({ value }: { value: unknown }) =>
-  value === undefined || value === null || value === '' ? undefined : Number(value);
+  value === undefined || value === null || value === ''
+    ? undefined
+    : Number(value);
 
 const toBool = ({ value }: { value: unknown }) => {
   if (value === undefined || value === null || value === '') return undefined;
@@ -39,8 +41,10 @@ export class FactoryQueryDto {
   @IsOptional() @IsBoolean() @Transform(toBool) includeInactive?: boolean;
   @IsOptional() @IsInt() @Min(1) @Transform(toInt) page?: number;
   @IsOptional() @IsInt() @Min(1) @Transform(toInt) limit?: number;
-  @IsOptional() @IsIn(['name', 'code', 'createdAt'])
+  @IsOptional()
+  @IsIn(['name', 'code', 'createdAt'])
   orderBy?: 'name' | 'code' | 'createdAt';
-  @IsOptional() @IsIn(['asc', 'desc'])
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
   orderDirection?: 'asc' | 'desc';
 }

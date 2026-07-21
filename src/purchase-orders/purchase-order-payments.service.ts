@@ -129,8 +129,10 @@ export class PurchaseOrderPaymentsService {
           status: 1,
           statusValue: 'Đã thanh toán',
           cashFlowId: cashFlow.id,
-          exchangeRate: dto.exchangeRate != null ? Number(dto.exchangeRate) : null,
-          foreignAmount: dto.foreignAmount != null ? Number(dto.foreignAmount) : null,
+          exchangeRate:
+            dto.exchangeRate != null ? Number(dto.exchangeRate) : null,
+          foreignAmount:
+            dto.foreignAmount != null ? Number(dto.foreignAmount) : null,
         },
       });
 
@@ -338,8 +340,7 @@ export class PurchaseOrderPaymentsService {
       select: { refundedAmount: true },
     });
     const offsetAmount = manualOffsets.reduce(
-      (sum: number, offset: any) =>
-        sum + Number(offset.refundedAmount),
+      (sum: number, offset: any) => sum + Number(offset.refundedAmount),
       0,
     );
     const paidAmount = paymentAmount + offsetAmount;

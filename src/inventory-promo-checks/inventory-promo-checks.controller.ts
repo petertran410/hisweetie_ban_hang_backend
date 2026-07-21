@@ -85,10 +85,7 @@ export class InventoryPromoChecksController {
 
   @Post()
   @RequirePermissions('inventory_promo_checks:create')
-  create(
-    @Body() dto: CreateInventoryPromoCheckDto,
-    @CurrentUser() user: any,
-  ) {
+  create(@Body() dto: CreateInventoryPromoCheckDto, @CurrentUser() user: any) {
     return this.service.create(dto, user.id);
   }
 

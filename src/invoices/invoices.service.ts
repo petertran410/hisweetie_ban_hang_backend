@@ -851,7 +851,10 @@ export class InvoicesService {
       (r.rewardOptions || []).find((o: any) => o.productId === productId);
 
     // ── KM cộng dồn: phân bổ nhiều SP quà theo suất ──
-    if (Array.isArray(choice.rewardSelections) && choice.rewardSelections.length) {
+    if (
+      Array.isArray(choice.rewardSelections) &&
+      choice.rewardSelections.length
+    ) {
       const totalTimes = Number(r.rewardTimes || 0);
       const requestedTimes = choice.rewardSelections.reduce(
         (s: number, sel: any) => s + Number(sel.rewardTimes || 0),
@@ -938,7 +941,7 @@ export class InvoicesService {
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
-        const lineType = (it.lineType || 'normal') as string;
+        const lineType = it.lineType || 'normal';
         const manualGift = lineType === 'gift' && it.promotionId == null;
         // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
         // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
@@ -958,7 +961,7 @@ export class InvoicesService {
           conditionType: it.conditionType || 'normal',
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
-          promotionId: derivedNormalStamp ? null : it.promotionId ?? null,
+          promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
           triggerProductId: it.triggerProductId,
           enabledPromotionIds: it.enabledPromotionIds,
         };
@@ -1194,8 +1197,7 @@ export class InvoicesService {
             if (
               !used.has(r) &&
               r.promotionId === n.promotionId &&
-              (r.triggerProductId == null ||
-                r.triggerProductId === n.productId)
+              (r.triggerProductId == null || r.triggerProductId === n.productId)
             ) {
               reordered.push(r);
               used.add(r);
@@ -1646,7 +1648,8 @@ export class InvoicesService {
               },
             ),
           });
-          if (oldDetail.productId != null) touchedProductIds.add(oldDetail.productId);
+          if (oldDetail.productId != null)
+            touchedProductIds.add(oldDetail.productId);
         }
 
         // Auto-cancel CTN gắn HĐ cũ (đồng bộ với D6 block trong CANCEL flow)
@@ -2091,7 +2094,8 @@ export class InvoicesService {
                 },
               ),
             });
-            if (detail.productId != null) touchedProductIds.add(detail.productId);
+            if (detail.productId != null)
+              touchedProductIds.add(detail.productId);
           }
 
           // Hoàn khuyến mãi: chỉ áp cho hóa đơn bán thẳng (orderId = null).
@@ -2609,7 +2613,11 @@ export class InvoicesService {
       // Nếu FE gửi appliedPromotions → chạy engine để BE re-validate + sinh lại
       // dòng quà authoritatively (xử lý cả KM cộng dồn rewardSelections).
       const isPromoGiftLine = (it: any) =>
-        !!(it?.isGift || it?.lineType === 'gift' || it?.lineType === 'discounted_buy');
+        !!(
+          it?.isGift ||
+          it?.lineType === 'gift' ||
+          it?.lineType === 'discounted_buy'
+        );
 
       // Chỉ kế thừa promotionId từ đúng dòng X (hàng mua điều kiện) của đơn gốc.
       // KHÔNG suy đoán từ dòng quà: khi SP quà trùng mã một SP bán thường
@@ -2697,7 +2705,8 @@ export class InvoicesService {
         0,
       );
 
-      const grandTotal = totalAmount - discountForThisInvoice - extraInvoiceDiscount;
+      const grandTotal =
+        totalAmount - discountForThisInvoice - extraInvoiceDiscount;
       const debtAmount = grandTotal - totalPaid;
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
@@ -2949,7 +2958,11 @@ export class InvoicesService {
       if (promoLogs.length > 0) {
         const promoIds = promoLogs.map((l) => l.promotionId);
         const orderLogs = await tx.invoicePromotionLog.findMany({
-          where: { orderId: order.id, status: 'applied', promotionId: { in: promoIds } },
+          where: {
+            orderId: order.id,
+            status: 'applied',
+            promotionId: { in: promoIds },
+          },
           select: { id: true, promotionId: true },
         });
         if (orderLogs.length > 0) {

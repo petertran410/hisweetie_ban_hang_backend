@@ -382,7 +382,8 @@ export class OrderSuppliersService {
           // Giữ `contractNo` (string|null) cho backward-compat với FE cũ —
           // trả về phần tử đầu tiên của danh sách DISTINCT (hoặc null nếu
           // dòng chưa được gán HĐ nào).
-          contractNo: contractNosByKey.get(`${os.id}:${item.productId}`)?.[0] ?? null,
+          contractNo:
+            contractNosByKey.get(`${os.id}:${item.productId}`)?.[0] ?? null,
           contractNos: contractNosByKey.get(`${os.id}:${item.productId}`) ?? [],
           expectedArrivalDate: veh?.expectedArrivalDate ?? null,
           actualArrivalDate: veh?.actualArrivalDate ?? null,
@@ -724,7 +725,12 @@ export class OrderSuppliersService {
       for (const item of os.items) {
         const code = (item.productCode || '').toLowerCase();
         const name = (item.productName || '').toLowerCase();
-        if (term && !matchHeader && !code.includes(term) && !name.includes(term))
+        if (
+          term &&
+          !matchHeader &&
+          !code.includes(term) &&
+          !name.includes(term)
+        )
           continue;
 
         const ordered = Number(item.quantity);
@@ -1193,7 +1199,7 @@ export class OrderSuppliersService {
             // sao kê + lọc sổ quỹ theo tài khoản.
             accountId:
               dto.paymentMethod === 'transfer'
-                ? dto.paymentAccountId ?? null
+                ? (dto.paymentAccountId ?? null)
                 : null,
             partnerType: 'S',
             partnerId: orderSupplier.supplierId,
@@ -1218,7 +1224,7 @@ export class OrderSuppliersService {
             paymentMethod: dto.paymentMethod || 'cash',
             accountId:
               dto.paymentMethod === 'transfer'
-                ? dto.paymentAccountId ?? null
+                ? (dto.paymentAccountId ?? null)
                 : null,
             // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
             // Snapshot riêng tại thời điểm thanh toán — không liên quan
@@ -1301,10 +1307,10 @@ export class OrderSuppliersService {
       // 1. Chỉ block xóa sản phẩm khỏi phiếu đặt khi sản phẩm đó đã được nhập kho
       // qua các phiếu nhập hàng liên kết (chưa hủy).
       if (dto.items) {
-        const incomingProductIds = dto.items.map(item => item.productId);
+        const incomingProductIds = dto.items.map((item) => item.productId);
         const deletedProductIds = existing.items
-          .map(item => item.productId)
-          .filter(prodId => !incomingProductIds.includes(prodId));
+          .map((item) => item.productId)
+          .filter((prodId) => !incomingProductIds.includes(prodId));
 
         if (deletedProductIds.length > 0) {
           const hasReceived = await tx.purchaseOrderItem.findFirst({
@@ -1312,13 +1318,13 @@ export class OrderSuppliersService {
               productId: { in: deletedProductIds },
               purchaseOrder: {
                 orderSupplierId: id,
-                status: { not: 4 } // Trừ các phiếu nhập đã bị hủy
-              }
+                status: { not: 4 }, // Trừ các phiếu nhập đã bị hủy
+              },
             },
             select: {
               productId: true,
               productName: true,
-            }
+            },
           });
 
           if (hasReceived) {
@@ -1438,7 +1444,7 @@ export class OrderSuppliersService {
             // sao kê + lọc sổ quỹ theo tài khoản.
             accountId:
               dto.paymentMethod === 'transfer'
-                ? dto.paymentAccountId ?? null
+                ? (dto.paymentAccountId ?? null)
                 : null,
             partnerType: 'S',
             partnerId: paySupplierId,
@@ -1463,7 +1469,7 @@ export class OrderSuppliersService {
             paymentMethod: dto.paymentMethod || 'cash',
             accountId:
               dto.paymentMethod === 'transfer'
-                ? dto.paymentAccountId ?? null
+                ? (dto.paymentAccountId ?? null)
                 : null,
             // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
             // Snapshot riêng tại thời điểm thanh toán — không liên quan
@@ -1518,11 +1524,16 @@ export class OrderSuppliersService {
       let nextExchangeRate: number | null =
         existing.exchangeRate != null ? Number(existing.exchangeRate) : 1;
 
-      const incomingCurrency = dto.currency !== undefined ? dto.currency.toUpperCase() : undefined;
-      const incomingExchangeRate = dto.exchangeRate !== undefined ? Number(dto.exchangeRate) : undefined;
+      const incomingCurrency =
+        dto.currency !== undefined ? dto.currency.toUpperCase() : undefined;
+      const incomingExchangeRate =
+        dto.exchangeRate !== undefined ? Number(dto.exchangeRate) : undefined;
 
-      const isCurrencyChanged = incomingCurrency !== undefined && incomingCurrency !== nextCurrency;
-      const isExchangeRateChanged = incomingExchangeRate !== undefined && incomingExchangeRate !== nextExchangeRate;
+      const isCurrencyChanged =
+        incomingCurrency !== undefined && incomingCurrency !== nextCurrency;
+      const isExchangeRateChanged =
+        incomingExchangeRate !== undefined &&
+        incomingExchangeRate !== nextExchangeRate;
 
       if (isCurrencyChanged || isExchangeRateChanged) {
         const hasPurchaseOrder = await tx.purchaseOrder.findFirst({

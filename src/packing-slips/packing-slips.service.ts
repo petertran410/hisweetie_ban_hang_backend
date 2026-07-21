@@ -425,7 +425,10 @@ export class PackingSlipsService {
           void this.n8nNotifyService
             .notifyBibiDelivery(fullPackingSlip as any)
             .catch((err) => {
-              console.error('notifyBibiDelivery (update) unexpected error:', err);
+              console.error(
+                'notifyBibiDelivery (update) unexpected error:',
+                err,
+              );
             });
         } else {
           void this.n8nNotifyService

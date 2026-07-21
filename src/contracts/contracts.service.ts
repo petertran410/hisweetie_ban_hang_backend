@@ -7,10 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { DocumensoClient } from './documenso.client';
-import {
-  PdfBurnService,
-  BurnTextItem,
-} from './pdf-burn.service';
+import { PdfBurnService, BurnTextItem } from './pdf-burn.service';
 import { LarkMailService } from './lark-mail.service';
 import {
   CreateFromTemplateDto,
@@ -520,8 +517,7 @@ export class ContractsService {
       where: { id },
       data: {
         status: 'SENT',
-        signingUrl:
-          customerRecipientResult?.signingUrl || contract.signingUrl,
+        signingUrl: customerRecipientResult?.signingUrl || contract.signingUrl,
         sentAt: new Date(),
       },
       include: {
@@ -699,8 +695,7 @@ export class ContractsService {
       return;
     }
 
-    const recipients: any[] =
-      payload?.recipients || payload?.Recipient || [];
+    const recipients: any[] = payload?.recipients || payload?.Recipient || [];
     const customerEmail = (contract.recipientEmail || '').toLowerCase();
     const staffEmail = (contract.companySignerEmail || '').toLowerCase();
 
@@ -721,11 +716,9 @@ export class ContractsService {
       ''
     ).toLowerCase();
     const customerSigned =
-      (customerRec && isSigned(customerRec)) ||
-      singleEmail === customerEmail;
+      (customerRec && isSigned(customerRec)) || singleEmail === customerEmail;
     const staffSigned = staffRec && isSigned(staffRec);
-    const allSigned =
-      recipients.length > 0 && recipients.every(isSigned);
+    const allSigned = recipients.length > 0 && recipients.every(isSigned);
 
     const isTwoParty = contract.contractType === 'DOUBLE';
 
@@ -778,9 +771,7 @@ export class ContractsService {
   }
 
   /** Lấy signingUrl của recipient BÊN A từ envelope Documenso. */
-  private async resolveStaffSigningUrl(
-    contract: any,
-  ): Promise<string | null> {
+  private async resolveStaffSigningUrl(contract: any): Promise<string | null> {
     if (!contract.documensoId) return contract.signingUrl || null;
     try {
       const env = await this.documenso.getEnvelope(contract.documensoId);
@@ -1090,7 +1081,10 @@ export class ContractsService {
       ],
     });
 
-    const distributed = await this.documenso.distribute(envelope.envelopeId, true);
+    const distributed = await this.documenso.distribute(
+      envelope.envelopeId,
+      true,
+    );
     const signingUrl = distributed.recipients?.find(
       (r) => r.email === recipientEmail,
     )?.signingUrl;

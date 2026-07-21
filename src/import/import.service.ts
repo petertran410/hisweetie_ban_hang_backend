@@ -338,15 +338,11 @@ export class ImportService {
 
           for (const row of rawRows) {
             const productType = this.mapProductType(row.typeText);
-            const {
-              parentName,
-              middleName,
-              childName,
-            } = this.parseCategoryText(row.categoryText);
+            const { parentName, middleName, childName } =
+              this.parseCategoryText(row.categoryText);
 
             if (parentName) await this.ensureCategory(parentName, 'parent', tx);
-            if (middleName)
-              await this.ensureCategory(middleName, 'middle', tx);
+            if (middleName) await this.ensureCategory(middleName, 'middle', tx);
             if (childName) await this.ensureCategory(childName, 'child', tx);
 
             // Resolve tradeMarkId
@@ -361,18 +357,13 @@ export class ImportService {
                 const newTm = await tx.tradeMark.create({
                   data: { name: row.tradeMarkName },
                 });
-                tradeMarkCache.set(
-                  row.tradeMarkName.toLowerCase(),
-                  newTm.id,
-                );
+                tradeMarkCache.set(row.tradeMarkName.toLowerCase(), newTm.id);
                 tradeMarkId = newTm.id;
               }
             }
 
             const fullName = this.buildFullName(row.name, row.attributesText);
-            const existing = row.code
-              ? existingProductMap.get(row.code)
-              : null;
+            const existing = row.code ? existingProductMap.get(row.code) : null;
 
             if (existing) {
               // ─── UPDATE ───────────────────────────────────────────────
@@ -429,11 +420,7 @@ export class ImportService {
 
               // Update images
               if (row.imageUrls) {
-                await this.syncProductImages(
-                  existingId,
-                  row.imageUrls,
-                  tx,
-                );
+                await this.syncProductImages(existingId, row.imageUrls, tx);
               }
 
               // Update components
@@ -560,11 +547,7 @@ export class ImportService {
 
               // Tạo images
               if (row.imageUrls) {
-                await this.syncProductImages(
-                  product.id,
-                  row.imageUrls,
-                  tx,
-                );
+                await this.syncProductImages(product.id, row.imageUrls, tx);
               }
 
               // Tạo components

@@ -47,7 +47,9 @@ export class LarkSyncCron implements OnModuleInit {
     } else {
       this.stopCron();
     }
-    this.logger.log(`🔄 Lark product retry cron ${enabled ? 'ENABLED' : 'DISABLED'}`);
+    this.logger.log(
+      `🔄 Lark product retry cron ${enabled ? 'ENABLED' : 'DISABLED'}`,
+    );
     return { enabled };
   }
 
@@ -82,7 +84,9 @@ export class LarkSyncCron implements OnModuleInit {
 
   async handleProductRetrySync() {
     if (this.isProductRunning) {
-      this.logger.warn('⏭️ Product retry sync: previous run still running, skip');
+      this.logger.warn(
+        '⏭️ Product retry sync: previous run still running, skip',
+      );
       return;
     }
 

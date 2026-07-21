@@ -510,9 +510,9 @@ export class InternalUseService {
         where: { id },
         data: { status: 3, description },
       });
-      } else {
-        const touchedProductIds = new Set<number>();
-        await this.prisma.$transaction(async (tx) => {
+    } else {
+      const touchedProductIds = new Set<number>();
+      await this.prisma.$transaction(async (tx) => {
         await tx.internalUse.update({
           where: { id },
           data: { status: 3, description },
@@ -547,9 +547,9 @@ export class InternalUseService {
           })),
         );
       });
-        for (const productId of touchedProductIds) {
-          this.larkProductSync.enqueueSync(productId);
-        }
+      for (const productId of touchedProductIds) {
+        this.larkProductSync.enqueueSync(productId);
+      }
     }
 
     const actor = await this.prisma.user.findUnique({

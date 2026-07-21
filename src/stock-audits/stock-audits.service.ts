@@ -182,8 +182,8 @@ export class StockAuditsService {
       if (!existing) {
         mergedMap.set(key, { ...log });
       } else {
-        existing.quantity =
-          (Number(existing.quantity) + Number(log.quantity)) as any;
+        existing.quantity = (Number(existing.quantity) +
+          Number(log.quantity)) as any;
       }
     }
 
@@ -210,7 +210,11 @@ export class StockAuditsService {
     if (unique.length === 0) return {};
 
     const logs = await this.prisma.inventoryLog.findMany({
-      where: { productId: { in: unique }, branchId, transactionDate: { lt: date } },
+      where: {
+        productId: { in: unique },
+        branchId,
+        transactionDate: { lt: date },
+      },
       select: {
         productId: true,
         id: true,

@@ -135,7 +135,11 @@ export class CustomerReportsService {
    */
   private hasProductFilter(query: CustomerReportQueryDto): boolean {
     return Boolean(
-      query.types || query.parentNames || query.middleNames || query.childNames || query.tradeMarkIds,
+      query.types ||
+      query.parentNames ||
+      query.middleNames ||
+      query.childNames ||
+      query.tradeMarkIds,
     );
   }
 
@@ -458,8 +462,7 @@ export class CustomerReportsService {
       page: 1,
       limit: 1,
     });
-    const opening =
-      (legacy.data[0] as any)?.openingDebt ?? 0;
+    const opening = (legacy.data[0] as any)?.openingDebt ?? 0;
 
     const [invoices, cashFlowsRaw, returnOrders] = await Promise.all([
       this.prisma.invoice.findMany({
@@ -856,7 +859,8 @@ export class CustomerReportsService {
       page: 1,
       limit: 1000000,
     });
-    const isProfit = (query.viewType || 'CustomerBySale') === 'CustomerByProfit';
+    const isProfit =
+      (query.viewType || 'CustomerBySale') === 'CustomerByProfit';
 
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
       stream: res,
@@ -982,6 +986,9 @@ export class CustomerReportsService {
   // EXPORT EXCEL — chi tiết công nợ TOÀN BỘ KH (hierarchical, tái dùng legacy)
   // ═══════════════════════════════════════════════════════════════════════════
   async exportDebtDetail(query: CustomerReportQueryDto, res: Response) {
-    await this.reportsService.exportCustomerDebt(this.toReportQuery(query), res);
+    await this.reportsService.exportCustomerDebt(
+      this.toReportQuery(query),
+      res,
+    );
   }
 }
