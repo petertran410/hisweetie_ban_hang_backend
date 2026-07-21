@@ -434,3 +434,156 @@ describe('promotion-engine — cộng dồn (stackable)', () => {
     expect(result.eligiblePromotions[0].triggerProductId).toBe(A);
   });
 });
+
+// ════════════════════════════════════════════════════════════════════
+// unitMode = "carton" — tính theo thùng, quy đổi qua conversionValue.
+// Kịch bản của người dùng:
+//   SP ABC (id 1, conv 12): 51 gói  → 4.25 thùng
+//   SP 123 (id 2, conv 12): 69 gói  → 5.75 thùng
+//   SP 456 (id 3, conv  8): 40 gói  → 5    thùng
+//   Tổng 15 thùng → mua 15 thùng tặng 1 thùng (cộng dồn).
+// ════════════════════════════════════════════════════════════════════
+const ABC2 = 1;
+const P123 = 2;
+const P456 = 3;
+const GIFT2 = 9;
+
+function makeCartonPromotion(
+  overrides: Partial<EnginePromotion> = {},
+): EnginePromotion {
+  return {
+    id: 200,
+    code: 'KM-THUNG',
+    name: 'Mua 15 thùng tặng 1 thùng',
+    type: 'BUY_X_GET_Y',
+    priority: 0,
+    stackable: true,
+    unitMode: 'carton',
+    autoApply: false,
+    applyWeekdays: [],
+    minOrderValue: 0,
+    minQuantity: 0,
+    maxDiscountAmount: null,
+    maxRewardQuantity: null,
+    usageLimit: null,
+    usageCount: 0,
+    rewards: [
+      {
+        buyProductId: null,
+        buyCategoryName: null,
+        buyQuantity: 15, // 15 thùng
+        rewardType: 'gift',
+        rewardProductId: null,
+        rewardQuantity: 1, // 1 thùng
+        rewardValue: 0,
+        buyItems: [
+          { productId: ABC2 },
+          { productId: P123 },
+          { productId: P456 },
+        ],
+        rewardItems: [{ productId: GIFT2, rewardLimit: null }],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function ctxCartonWith(
+  items: { productId: number; quantity: number }[],
+): EngineContext {
+  return {
+    branchId: 1,
+    now: new Date(),
+    items: items.map((it) => ({ ...it, price: 10000 })),
+    stockMap: { [ABC2]: 999, [P123]: 999, [P456]: 999, [GIFT2]: 999 },
+    productNameMap: {
+      [ABC2]: 'ABC',
+      [P123]: '123',
+      [P456]: '456',
+      [GIFT2]: 'GIFT',
+    },
+    productCodeMap: {
+      [ABC2]: 'ABC',
+      [P123]: '123',
+      [P456]: '456',
+      [GIFT2]: 'GIFT',
+    },
+    categoryProductMap: {},
+    // ABC/123: 12 gói/thùng; 456: 8 gói/thùng; GIFT: 12 gói/thùng.
+    conversionValueMap: {
+      [ABC2]: 12,
+      [P123]: 12,
+      [P456]: 8,
+      [GIFT2]: 12,
+    },
+  };
+}
+
+describe('promotion-engine — unitMode carton (tính theo thùng)', () => {
+  it('51/12 + 69/12 + 40/8 = 15 thùng → đạt 1 suất, tặng 1 thùng = 12 gói', () => {
+    const p = makeCartonPromotion();
+    const result = evaluatePromotions(
+      [p],
+      ctxCartonWith([
+        { productId: ABC2, quantity: 51 },
+        { productId: P123, quantity: 69 },
+        { productId: P456, quantity: 40 },
+      ]),
+    );
+    expect(result.eligiblePromotions).toHaveLength(1);
+    const r = result.eligiblePromotions[0];
+    expect(r.cumulative).toBe(true);
+    expect(r.rewardTimes).toBe(1);
+    // 1 option GIFT → tự sinh giftLine, 1 thùng × 12 = 12 gói.
+    expect(r.rewardQuantity).toBe(12);
+    expect(r.giftLines).toHaveLength(1);
+    expect(r.giftLines[0].quantity).toBe(12);
+    expect(r.unitMode).toBe('carton');
+  });
+
+  it('chưa đủ thùng → không đạt nhưng progress hiển thị theo thùng', () => {
+    const p = makeCartonPromotion();
+    const result = evaluatePromotions(
+      [p],
+      ctxCartonWith([
+        { productId: ABC2, quantity: 51 }, // 4.25
+        { productId: P123, quantity: 69 }, // 5.75 → tổng 10 thùng
+      ]),
+    );
+    expect(result.eligiblePromotions).toHaveLength(0);
+    const pr = result.progress.find((x) => x.promotionId === p.id)!;
+    expect(pr.unitMode).toBe('carton');
+    // 51/12 + 69/12 = 10 thùng
+    expect(pr.currentQuantity).toBeCloseTo(10, 5);
+    expect(pr.requiredQuantity).toBe(15);
+    expect(pr.completedTimes).toBe(0);
+    expect(pr.remainingToNextReward).toBeCloseTo(5, 5);
+  });
+
+  it('đủ 30 thùng → 2 suất, tặng 2 thùng = 24 gói', () => {
+    const p = makeCartonPromotion();
+    const result = evaluatePromotions(
+      [p],
+      ctxCartonWith([
+        { productId: ABC2, quantity: 120 }, // 10 thùng
+        { productId: P456, quantity: 160 }, // 20 thùng → tổng 30
+      ]),
+    );
+    const r = result.eligiblePromotions[0];
+    expect(r.rewardTimes).toBe(2);
+    expect(r.rewardQuantity).toBe(24); // 2 thùng × 12
+  });
+
+  it('stackable=false ở carton: từng SP phải tự đạt 15 thùng', () => {
+    const p = makeCartonPromotion({ stackable: false });
+    const result = evaluatePromotions(
+      [p],
+      ctxCartonWith([
+        { productId: ABC2, quantity: 180 }, // 15 thùng → đạt
+        { productId: P456, quantity: 40 }, // 5 thùng → không đạt
+      ]),
+    );
+    expect(result.eligiblePromotions).toHaveLength(1);
+    expect(result.eligiblePromotions[0].triggerProductId).toBe(ABC2);
+  });
+});

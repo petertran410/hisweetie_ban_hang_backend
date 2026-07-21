@@ -72,6 +72,7 @@ export class PromotionsService {
         status: dto.isActive ? 'running' : 'draft',
         priority: dto.priority ?? 0,
         stackable: dto.stackable ?? false,
+        unitMode: dto.unitMode ?? 'unit',
         startDate: dto.startDate ? new Date(dto.startDate) : null,
         endDate: dto.endDate ? new Date(dto.endDate) : null,
         applyTimeFrom: dto.applyTimeFrom,
@@ -195,6 +196,7 @@ export class PromotionsService {
           description: dto.description,
           priority: dto.priority,
           stackable: dto.stackable,
+          unitMode: dto.unitMode,
           startDate: dto.startDate ? new Date(dto.startDate) : undefined,
           endDate: dto.endDate ? new Date(dto.endDate) : undefined,
           applyTimeFrom: dto.applyTimeFrom,
@@ -1210,6 +1212,7 @@ export class PromotionsService {
         type: p.type,
         priority: p.priority,
         stackable: p.stackable,
+        unitMode: p.unitMode ?? 'unit',
         autoApply: p.autoApply,
         startDate: p.startDate,
         endDate: p.endDate,
@@ -1311,14 +1314,18 @@ export class PromotionsService {
         parentName: true,
         middleName: true,
         childName: true,
+        conversionValue: true,
       },
     });
     const productNameMap: Record<number, string> = {};
     const productCodeMap: Record<number, string> = {};
+    const conversionValueMap: Record<number, number> = {};
     const catMap: Record<number, any> = {};
     products.forEach((p) => {
       productNameMap[p.id] = p.name;
       productCodeMap[p.id] = p.code;
+      // conversionValue = số gói/thùng. Mặc định 1 nếu null/0.
+      conversionValueMap[p.id] = Number(p.conversionValue) || 1;
       catMap[p.id] = p;
     });
 
@@ -1333,12 +1340,14 @@ export class PromotionsService {
       stockMap[inv.productId] = Number(inv.promoQuantity || 0);
     });
 
-    // Bổ sung category cho item trong giỏ (để engine match CATEGORY_DISCOUNT)
+    // Bổ sung category + conversionValue cho item trong giỏ (để engine match
+    // CATEGORY_DISCOUNT và quy đổi gói↔thùng khi unitMode=carton).
     const enrichedItems: EngineItem[] = items.map((it) => ({
       ...it,
       parentName: catMap[it.productId]?.parentName ?? null,
       middleName: catMap[it.productId]?.middleName ?? null,
       childName: catMap[it.productId]?.childName ?? null,
+      conversionValue: conversionValueMap[it.productId] ?? 1,
     }));
 
     // Nạp số quà ĐÃ TẶNG (lifetime) cho các KM có ràng buộc trần
@@ -1372,6 +1381,7 @@ export class PromotionsService {
       stockMap,
       productNameMap,
       productCodeMap,
+      conversionValueMap,
       categoryProductMap,
       rewardIssuedMap,
     };

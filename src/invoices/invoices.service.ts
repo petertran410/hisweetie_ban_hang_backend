@@ -844,11 +844,21 @@ export class InvoicesService {
    *   rewardTimes × perTime; validate tổng suất ≤ số suất đạt được (r.rewardTimes).
    * - Single choice (choice.giftProductId): giữ hành vi cũ (1 SP nhận toàn bộ).
    * Mọi SP quà đều phải thuộc rewardOptions và được cap theo opt.remaining.
+   *
+   * Đơn vị: qty tính theo đơn vị CT (gói với unit, thùng với carton). Trước khi
+   * ghi dòng, quy về GÓI thực tế: carton → qty × opt.conversionValue (số gói/thùng
+   * của SP quà) để lưu/kho đúng số lượng bán lẻ.
    */
   private resolveChoiceGiftLines(r: any, choice: any, perTime: number): any[] {
     if (!choice) return [];
     const optOf = (productId: number) =>
       (r.rewardOptions || []).find((o: any) => o.productId === productId);
+    // carton: số thùng → số gói theo conversionValue của SP quà. unit: giữ gói.
+    const isCarton = r.unitMode === 'carton';
+    const toGoi = (qtyThung: number, opt: any) =>
+      isCarton
+        ? Math.round(qtyThung * Number(opt?.conversionValue || 1))
+        : qtyThung;
 
     // ── KM cộng dồn: phân bổ nhiều SP quà theo suất ──
     if (
@@ -875,13 +885,14 @@ export class InvoicesService {
             `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
           );
         }
-        let qty = times * perTime;
+        let qty = times * perTime; // đơn vị CT (gói/thùng)
         if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
-        if (qty <= 0) continue;
+        const qtyGoi = toGoi(qty, opt);
+        if (qtyGoi <= 0) continue;
         lines.push({
           productId: opt.productId,
           productName: opt.productName,
-          quantity: qty,
+          quantity: qtyGoi,
           price: 0,
           promotionId: r.promotionId,
           triggerProductId: r.triggerProductId,
@@ -903,12 +914,13 @@ export class InvoicesService {
         Number(r.rewardQuantity),
       );
       if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
-      if (qty <= 0) return [];
+      const qtyGoi = toGoi(qty, opt);
+      if (qtyGoi <= 0) return [];
       return [
         {
           productId: opt.productId,
           productName: opt.productName,
-          quantity: qty,
+          quantity: qtyGoi,
           price: 0,
           promotionId: r.promotionId,
           triggerProductId: r.triggerProductId,
@@ -1130,6 +1142,7 @@ export class InvoicesService {
         r.rewardQuantity != null
           ? Number(r.rewardQuantity)
           : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
+      const isCartonBuy = r.unitMode === 'carton';
       for (const feLine of baseItems.filter(
         (it) =>
           it.lineType === 'discounted_buy' &&
@@ -1146,9 +1159,13 @@ export class InvoicesService {
         const opt = (r.rewardOptions || []).find(
           (o: any) => o.productId === feLine.productId,
         );
-        let maxBuyQty = baseBuyQty;
+        let maxBuyQty = baseBuyQty; // đơn vị CT (gói/thùng)
         if (opt?.remaining != null) {
           maxBuyQty = Math.min(maxBuyQty, Number(opt.remaining));
+        }
+        // carton: quy maxBuyQty (thùng) → gói theo conversionValue của SP mua kèm.
+        if (isCartonBuy) {
+          maxBuyQty = Math.round(maxBuyQty * Number(opt?.conversionValue || 1));
         }
         if (maxBuyQty && feLine.quantity > maxBuyQty) {
           throw new BadRequestException(

@@ -3024,17 +3024,18 @@ model Promotion {
   id                Int       @id @default(autoincrement())
   code              String    @unique
   name              String
-  type              String // INVOICE_DISCOUNT | PRODUCT_DISCOUNT | BUY_X_GET_Y | BUY_N_GET_M_SAME | BUY_X_BUY_Y_PRICE | GIFT_BY_INVOICE | CATEGORY_DISCOUNT
+  type              String
   description       String?
   isActive          Boolean   @default(false)
-  status            String    @default("draft") // draft | running | paused | stopped | expired
+  status            String    @default("draft")
   priority          Int       @default(0)
   stackable         Boolean   @default(false)
+  unitMode          String    @default("unit") @map("unit_mode")
   startDate         DateTime?
   endDate           DateTime?
-  applyTimeFrom     String? // "08:00"
-  applyTimeTo       String? // "22:00"
-  applyWeekdays     Int[]     @default([]) // [1..7], rỗng = mọi ngày
+  applyTimeFrom     String?
+  applyTimeTo       String?
+  applyWeekdays     Int[]     @default([])
   forAllBranch      Boolean   @default(true)
   forAllCustomer    Boolean   @default(true)
   forAllUser        Boolean   @default(true)

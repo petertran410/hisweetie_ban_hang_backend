@@ -239,6 +239,8 @@ export class PrintTemplatesService {
         return this.mapReturnOrder(await this.loadReturnOrder(entityId));
       case 'transfer':
         return this.mapTransfer(await this.loadTransfer(entityId));
+      case 'internal_use':
+        return this.mapInternalUse(await this.loadInternalUse(entityId));
       case 'cash_flow_receipt':
       case 'cash_flow_payment':
         return this.mapCashFlow(await this.loadCashFlow(entityId));
@@ -443,6 +445,21 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('Transfer not found');
+    return entity;
+  }
+
+  private async loadInternalUse(id: number) {
+    const entity = await this.prisma.internalUse.findUnique({
+      where: { id },
+      include: {
+        branch: true,
+        creator: true,
+        user: true,
+        purpose: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('InternalUse not found');
     return entity;
   }
 
@@ -780,6 +797,32 @@ export class PrintTemplatesService {
         Ghi_Chu_Hang_Hoa: '',
         Thanh_Tien: this.money(d.totalTransfer),
         Thanh_Tien_Nhan: this.money(d.totalReceive),
+      })),
+    };
+  }
+
+  private mapInternalUse(iu: any) {
+    const totalValue = Number(iu.totalValue || 0);
+    return {
+      ...this.storeVars(iu.branch),
+      ...this.dateVars(iu.transDate || iu.createdAt),
+      Ma_Xuat_Dung_Noi_Bo: iu.code || '',
+      Chi_Nhanh: iu.branchName || iu.branch?.name || '',
+      Muc_Dich_Su_Dung: iu.purpose?.name || '',
+      Nguoi_Su_Dung: iu.userName || iu.user?.name || '',
+      Nhan_Vien_Ban_Hang: iu.creator?.name || '',
+      Nguoi_Lap: iu.createdByName || iu.creator?.name || '',
+      Ghi_Chu: iu.description || '',
+      Tong_Gia_Tri: this.money(totalValue),
+      Tong_Gia_Tri_Bang_Chu: this.numberToWords(totalValue),
+      items: (iu.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || d.product?.code || '',
+        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        Don_Vi_Tinh: d.unit || d.product?.unit || '',
+        So_Luong: Number(d.quantity),
+        Gia_Von: this.money(d.cost),
+        Gia_Tri_Xuat: this.money(d.value),
+        Thanh_Tien: this.money(d.value),
       })),
     };
   }

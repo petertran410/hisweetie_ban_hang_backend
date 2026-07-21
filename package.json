@@ -47,6 +47,8 @@
     "seed:template": "ts-node prisma/seeds/print-template-variables.seed.ts",
     "seed:internal-use-purposes": "ts-node prisma/seeds/seed-internal-use-purposes.ts",
     "seed:internal-use": "ts-node prisma/seeds/add-internal-use-permissions.ts",
+    "seed:internal-use-export": "ts-node prisma/seeds/add-internal-use-export-permission.ts",
+    "seed:internal-use-print": "ts-node prisma/seeds/add-internal-use-print-template.ts",
     "seed:consignments": "ts-node prisma/seeds/add-consignment-permissions.ts",
     "seed:consignment-print": "ts-node prisma/seeds/add-consignment-print-template.ts",
     "seed:consignment-delivery-print": "ts-node prisma/seeds/add-consignment-delivery-template.ts",

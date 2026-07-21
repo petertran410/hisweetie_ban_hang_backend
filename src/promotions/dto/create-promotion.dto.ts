@@ -28,6 +28,10 @@ export const REWARD_TYPES = [
   'discounted_buy',
 ] as const;
 
+// Chế độ tính số lượng cho BUY_X_GET_Y / BUY_N_GET_M_SAME / BUY_X_BUY_Y_PRICE.
+// unit  = gói/đơn lẻ (hành vi cũ). carton = thùng (quy đổi theo conversionValue).
+export const UNIT_MODES = ['unit', 'carton'] as const;
+
 export class PromotionProductRefDto {
   @IsOptional()
   @IsInt()
@@ -116,6 +120,12 @@ export class CreatePromotionDto {
   @IsOptional()
   @IsBoolean()
   stackable?: boolean;
+
+  // Chế độ tính: "unit" (gói) | "carton" (thùng). Mặc định "unit".
+  @IsOptional()
+  @IsString()
+  @IsIn(UNIT_MODES as unknown as string[])
+  unitMode?: string;
 
   @IsOptional()
   @IsString()
