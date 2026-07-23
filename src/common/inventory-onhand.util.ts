@@ -58,6 +58,13 @@ const ACTIVE_FINDERS: Record<
       where: { id: { in: ids }, status: { not: 3 } },
       select: { id: true },
     }),
+  // Phiếu chuyển loại tồn (CLT): CÒN HIỆU LỰC khi đã duyệt (status=2).
+  // Dùng cho StockConditionLog (không phải InventoryLog) — CLT không đụng onHand.
+  clt: (tx, ids) =>
+    tx.stockConditionTransfer.findMany({
+      where: { id: { in: ids }, status: 2 },
+      select: { id: true },
+    }),
 };
 
 export const KNOWN_REF_TYPES = new Set(Object.keys(ACTIVE_FINDERS));

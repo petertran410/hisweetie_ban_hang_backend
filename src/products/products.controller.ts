@@ -201,6 +201,42 @@ export class ProductsController {
     );
   }
 
+  @Get(':id/condition-logs')
+  @RequirePermissions('products:view')
+  findConditionLogs(
+    @Param('id') id: string,
+    @Query('bucket') bucket: string,
+    @Query('branchId') branchId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.productsService.findConditionLogs(
+      +id,
+      bucket,
+      branchId ? +branchId : undefined,
+      page ? +page : 1,
+      limit ? +limit : 15,
+    );
+  }
+
+  @Get(':id/near-expiry-lots')
+  @RequirePermissions('products:view')
+  findNearExpiryLots(
+    @Param('id') id: string,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.productsService.findNearExpiryLots(+id, +branchId);
+  }
+
+  @Get(':id/condition-summary')
+  @RequirePermissions('products:view')
+  getConditionSummary(
+    @Param('id') id: string,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.productsService.getConditionSummary(+id, +branchId);
+  }
+
   @Get(':id')
   @RequirePermissions('products:view')
   async findOne(@Param('id') id: string, @Req() req: any) {
