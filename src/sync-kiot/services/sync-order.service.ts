@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
+import { resolveDeliveryAddress } from '../../common/address-resolver.util';
 
 function mapKiotStatusToHisweetie(kiotStatus: number | null | undefined): {
   status: number;
@@ -365,7 +366,7 @@ export class SyncOrderService extends BaseSyncService {
     }
 
     if (!existing && record.orderDelivery) {
-      await this.syncOrderDelivery(orderId, record.orderDelivery);
+      await this.syncOrderDelivery(orderId, record.orderDelivery, customerId);
     }
 
     if (!existing && record.orderSurcharges?.length) {
@@ -443,7 +444,13 @@ export class SyncOrderService extends BaseSyncService {
     ]);
   }
 
-  private async syncOrderDelivery(orderId: number, delivery: any) {
+  private async syncOrderDelivery(
+    orderId: number,
+    delivery: any,
+    customerId?: number | null,
+  ) {
+    // Snapshot địa chỉ cũ+mới từ customer_addresses (nếu có khách khớp trong hệ thống).
+    const addrSnapshot = await resolveDeliveryAddress(this.prisma, customerId);
     await this.prisma.orderDelivery.create({
       data: {
         orderId,
@@ -456,6 +463,11 @@ export class SyncOrderService extends BaseSyncService {
         address: delivery.address || '',
         locationName: delivery.locationName || null,
         wardName: delivery.wardName || null,
+        oldCityName: addrSnapshot.oldCityName,
+        oldDistrictName: addrSnapshot.oldDistrictName,
+        oldWardName: addrSnapshot.oldWardName,
+        newCityName: addrSnapshot.newCityName,
+        newWardName: addrSnapshot.newWardName,
         weight: delivery.weight || null,
         length: delivery.length || null,
         width: delivery.width || null,

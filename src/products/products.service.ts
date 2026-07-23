@@ -1856,6 +1856,7 @@ export class ProductsService {
               costPrice: currentCost,
               transactionDate: new Date(),
               note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name} (${sumLogs} → ${onHand})`,
+              userId: userId ?? undefined,
               createdByName: auditUserName,
             },
           });

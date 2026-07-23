@@ -25,6 +25,10 @@ import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
 } from '../common/consignment-packing.util';
+import {
+  buildInventoryLogActor,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -185,12 +189,47 @@ export class PackingHangsService {
         });
 
         // Đóng hàng → PACKED (+ trừ kho lần đầu rời CONFIRMED)
+        // Fetch người thực hiện trong tx để ghi userId/createdByName vào
+        // InventoryLog CONSIGNMENT_OUT (truy vết ai xuất kho ký gửi).
+        const consignActorUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const consignActor: InventoryLogActor = buildInventoryLogActor(
+          userId,
+          consignActorUser?.name || consignActorUser?.email,
+        );
         const touched = await applyPackingToConsignments(
           tx,
           dto.consignmentIds!,
           'dong-hang',
+          consignActor,
         );
         for (const productId of touched) touchedProductIds.add(productId);
+
+        // Ghi audit log cho action xuất kho ký gửi (truy vết ai trừ kho ký gửi).
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'CONSIGNMENT_STOCK_OUT',
+          entityType: 'consignments',
+          entityCode: created.code,
+          category: getCategoryFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          severity: getSeverityFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          snapshot: {
+            packingCode: created.code,
+            packingType: 'dong-hang',
+            consignmentIds: dto.consignmentIds,
+            productCount: touched.size,
+          },
+          message: renderAuditMessage('CONSIGNMENT_STOCK_OUT', {
+            consignmentCode: created.code,
+            productCount: touched.size,
+          }),
+          messageTemplate: 'CONSIGNMENT_STOCK_OUT',
+          userId,
+          userName: consignActorUser?.name || consignActorUser?.email || 'System',
+          branchId: created.branchId || undefined,
+        });
 
         return created;
       }

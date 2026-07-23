@@ -13,6 +13,16 @@ import {
 import { CONSIGNMENT_STATUS } from '../consignments/dto/consignment-status.constants';
 import { ConsignmentsService } from '../consignments/consignments.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class ConsignmentReturnsService {
@@ -20,6 +30,7 @@ export class ConsignmentReturnsService {
     private prisma: PrismaService,
     private consignmentsService: ConsignmentsService,
     private larkProductSync: LarkProductSyncService,
+    private auditLogsService: AuditLogsService,
   ) {}
 
   private async generateCode(tx: any): Promise<string> {
@@ -113,7 +124,7 @@ export class ConsignmentReturnsService {
   }
 
   async create(dto: CreateConsignmentReturnDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const consignment = await tx.consignment.findUnique({
         where: { id: dto.consignmentId },
         include: {
@@ -209,6 +220,53 @@ export class ConsignmentReturnsService {
 
       return created;
     });
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai tạo phiếu hoàn ký gửi).
+    if (result) {
+      const [actorUser, customer] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        }),
+        result.customerId
+          ? this.prisma.customer.findUnique({
+              where: { id: result.customerId },
+              select: { name: true },
+            })
+          : null,
+      ]);
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'CONSIGNMENT_RETURN_CREATE',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_CREATE'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_RETURN_CREATE'),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          totalReturnQuantity: result.totalReturnQuantity,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_CREATE', {
+          consignmentReturnCode: result.code,
+          customerName: customer?.name || '',
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_CREATE',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -240,6 +298,17 @@ export class ConsignmentReturnsService {
             select: { id: true, name: true },
           })
         : null;
+
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+      // (truy vết ai nhận hàng hoàn ký gửi vào kho).
+      const crReceiveUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const crReceiveLogActor = buildInventoryLogActor(
+        userId,
+        crReceiveUser?.name || crReceiveUser?.email,
+      );
 
       for (const d of ro.details) {
         const good = Number(d.goodQuantity) || 0;
@@ -294,6 +363,7 @@ export class ConsignmentReturnsService {
             partnerId: ro.customerId || null,
             partnerName: customer?.name || null,
             manufactureDate: d.manufactureDate ?? null,
+            ...buildInventoryLogBase(crReceiveLogActor),
           },
         });
       }
@@ -323,6 +393,47 @@ export class ConsignmentReturnsService {
       this.larkProductSync.enqueueSync(productId);
     }
 
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai nhận hàng hoàn ký gửi vào kho).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_STOCK_RECEIVED'),
+        severity: getSeverityFromActionCode(
+          'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        ),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          totalReturnQuantity: result.totalReturnQuantity,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            goodQuantity: d.goodQuantity,
+            damagedQuantity: d.damagedQuantity,
+            nearExpiryQuantity: d.nearExpiryQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_STOCK_RECEIVED', {
+          consignmentReturnCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
     return result;
   }
 
@@ -344,6 +455,16 @@ export class ConsignmentReturnsService {
           where: { id: ro.branchId },
           select: { id: true, name: true },
         });
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // đảo chiều khi hủy (truy vết ai rollback kho hoàn ký gửi).
+        const crCancelUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const crCancelLogActor = buildInventoryLogActor(
+          userId,
+          crCancelUser?.name || crCancelUser?.email,
+        );
         for (const d of ro.details) {
           const damaged = Number(d.damagedQuantity) || 0;
           const nearExpiry = Number(d.nearExpiryQuantity) || 0;
@@ -375,6 +496,7 @@ export class ConsignmentReturnsService {
               transactionPrice: 0,
               partnerId: ro.customerId || null,
               partnerName: null,
+              ...buildInventoryLogBase(crCancelLogActor),
             },
           });
         }
@@ -403,6 +525,41 @@ export class ConsignmentReturnsService {
 
     for (const productId of touchedProductIds) {
       this.larkProductSync.enqueueSync(productId);
+    }
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai hủy phiếu hoàn ký gửi).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_RETURN_CANCEL',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_CANCEL'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_RETURN_CANCEL'),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_CANCEL', {
+          consignmentReturnCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_CANCEL',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
     }
 
     return result;

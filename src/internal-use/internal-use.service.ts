@@ -23,6 +23,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
@@ -489,7 +494,11 @@ export class InternalUseService {
       });
 
       if (!isDraft) {
-        const touched = await this.decrementInventory(created.id, tx);
+        const touched = await this.decrementInventory(
+          created.id,
+          tx,
+          buildInventoryLogActor(userId, creator?.name),
+        );
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -646,7 +655,17 @@ export class InternalUseService {
       });
 
       if (internalUse.status === 1 && willComplete) {
-        const touched = await this.decrementInventory(id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // (truy vết ai xuất nội bộ khi cập nhật phiếu).
+        const iuUpdateUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const iuUpdateLogActor = buildInventoryLogActor(
+          userId,
+          iuUpdateUser?.name || iuUpdateUser?.email,
+        );
+        const touched = await this.decrementInventory(id, tx, iuUpdateLogActor);
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -705,7 +724,17 @@ export class InternalUseService {
         data: { status: 2, transDate: internalUse.transDate ?? new Date() },
         include: { details: true },
       });
-      const touched = await this.decrementInventory(id, tx);
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+      // (truy vết ai hoàn thành xuất nội bộ).
+      const iuCompleteUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const iuCompleteLogActor = buildInventoryLogActor(
+        userId,
+        iuCompleteUser?.name || iuCompleteUser?.email,
+      );
+      const touched = await this.decrementInventory(id, tx, iuCompleteLogActor);
       for (const productId of touched) touchedProductIds.add(productId);
       return result;
     });
@@ -897,6 +926,7 @@ export class InternalUseService {
   private async decrementInventory(
     internalUseId: number,
     tx: any,
+    actor?: InventoryLogActor,
   ): Promise<Set<number>> {
     const touched = new Set<number>();
     const internalUse = await tx.internalUse.findUnique({
@@ -959,6 +989,7 @@ export class InternalUseService {
             costPrice,
             transactionPrice: null,
             partnerName: null,
+            ...buildInventoryLogBase(actor),
           },
         });
       }

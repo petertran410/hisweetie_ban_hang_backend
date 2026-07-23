@@ -35,6 +35,11 @@ import {
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { resolveDeliveryAddress } from '../common/address-resolver.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
 import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -1311,6 +1316,12 @@ export class InvoicesService {
         }
         // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null
 
+        // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
+        const invoiceAddrSnapshot = await resolveDeliveryAddress(
+          tx,
+          dto.customerId,
+        );
+
         const invoice = await tx.invoice.create({
           data: {
             code,
@@ -1363,6 +1374,11 @@ export class InvoicesService {
                   address: dto.delivery.address,
                   locationName: dto.delivery.locationName,
                   wardName: dto.delivery.wardName,
+                  oldCityName: invoiceAddrSnapshot.oldCityName,
+                  oldDistrictName: invoiceAddrSnapshot.oldDistrictName,
+                  oldWardName: invoiceAddrSnapshot.oldWardName,
+                  newCityName: invoiceAddrSnapshot.newCityName,
+                  newWardName: invoiceAddrSnapshot.newWardName,
                   weight: dto.delivery.weight,
                   weightUnit: dto.delivery.weightUnit || 'g',
                   length: dto.delivery.length,
@@ -1456,6 +1472,18 @@ export class InvoicesService {
           select: { id: true, name: true },
         });
 
+        // Fetch người thực hiện sớm để ghi userId/createdByName vào InventoryLog
+        // (truy vết trách nhiệm trên thẻ kho). Trước đây chỉ fetch sau vòng lặp
+        // xuất kho → InventoryLog không lưu được ai xuất.
+        const actorUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const logActor = buildInventoryLogActor(
+          userId,
+          actorUser?.name || actorUser?.email,
+        );
+
         for (const item of effectiveItems) {
           const condition = item.conditionType || 'normal';
           const invSnapshot = await tx.inventory.findFirst({
@@ -1499,6 +1527,7 @@ export class InvoicesService {
               // sửa hóa đơn (.xx) và khớp ý thiết kế schema (transactionDate
               // là ngày phát sinh giao dịch, hỗ trợ lùi ngày khi backdate).
               transactionDate: invoice.purchaseDate,
+              ...buildInventoryLogBase(logActor),
             },
           });
         }
@@ -1627,6 +1656,13 @@ export class InvoicesService {
           where: { id: userId },
           select: { name: true },
         });
+
+        // Actor cho InventoryLog nhánh versioning (.xx). userId optional →
+        // guard tránh truyền undefined. Truy vết ai xuất kho cho hóa đơn sửa.
+        const versioningLogActor = buildInventoryLogActor(
+          userId,
+          userName?.name,
+        );
 
         await this.auditLogsService.create({
           actionType: 'DELETE',
@@ -1795,6 +1831,12 @@ export class InvoicesService {
           }
         }
 
+        // Snapshot địa chỉ cũ+mới: resolve lại theo customerId mới (nếu đổi khách) hoặc giữ snapshot cũ.
+        const updateCustomerId = dto.customerId ?? currentInvoice.customerId;
+        const updateAddrSnapshot = dto.delivery
+          ? await resolveDeliveryAddress(tx, updateCustomerId)
+          : null;
+
         const newInvoice = await tx.invoice.create({
           data: {
             code: newCode,
@@ -1849,6 +1891,12 @@ export class InvoicesService {
                       address: dto.delivery.address,
                       locationName: dto.delivery.locationName,
                       wardName: dto.delivery.wardName,
+                      oldCityName: updateAddrSnapshot?.oldCityName ?? null,
+                      oldDistrictName:
+                        updateAddrSnapshot?.oldDistrictName ?? null,
+                      oldWardName: updateAddrSnapshot?.oldWardName ?? null,
+                      newCityName: updateAddrSnapshot?.newCityName ?? null,
+                      newWardName: updateAddrSnapshot?.newWardName ?? null,
                       weight: dto.delivery.weight,
                       weightUnit: dto.delivery.weightUnit || 'g',
                       length: dto.delivery.length,
@@ -1869,6 +1917,12 @@ export class InvoicesService {
                         address: currentInvoice.delivery.address,
                         locationName: currentInvoice.delivery.locationName,
                         wardName: currentInvoice.delivery.wardName,
+                        oldCityName: currentInvoice.delivery.oldCityName,
+                        oldDistrictName:
+                          currentInvoice.delivery.oldDistrictName,
+                        oldWardName: currentInvoice.delivery.oldWardName,
+                        newCityName: currentInvoice.delivery.newCityName,
+                        newWardName: currentInvoice.delivery.newWardName,
                         weight: currentInvoice.delivery.weight,
                         weightUnit: currentInvoice.delivery.weightUnit || 'g',
                         length: currentInvoice.delivery.length,
@@ -1974,6 +2028,7 @@ export class InvoicesService {
               // phải kế thừa tương ứng, nếu không thẻ kho sẽ nhảy về thời điểm
               // sửa (= createdAt) thay vì ngày bán gốc.
               transactionDate: newInvoice.purchaseDate,
+              ...buildInventoryLogBase(versioningLogActor),
             },
           });
         }
@@ -2347,6 +2402,12 @@ export class InvoicesService {
       }
 
       if (dto.delivery) {
+        // Snapshot địa chỉ cũ+mới theo customerId (ưu tiên dto, fallback currentInvoice).
+        const inPlaceCustomerId = dto.customerId ?? currentInvoice.customerId;
+        const inPlaceAddrSnapshot = await resolveDeliveryAddress(
+          tx,
+          inPlaceCustomerId,
+        );
         await tx.invoiceDelivery.deleteMany({
           where: { invoiceId: id },
         });
@@ -2357,6 +2418,11 @@ export class InvoicesService {
             address: dto.delivery.address,
             locationName: dto.delivery.locationName,
             wardName: dto.delivery.wardName,
+            oldCityName: inPlaceAddrSnapshot.oldCityName,
+            oldDistrictName: inPlaceAddrSnapshot.oldDistrictName,
+            oldWardName: inPlaceAddrSnapshot.oldWardName,
+            newCityName: inPlaceAddrSnapshot.newCityName,
+            newWardName: inPlaceAddrSnapshot.newWardName,
             weight: dto.delivery.weight,
             length: dto.delivery.length,
             width: dto.delivery.width,
@@ -2450,6 +2516,32 @@ export class InvoicesService {
           messageTemplate: 'INVOICE_UPDATE',
           userId: userId || currentInvoice.createdBy,
           userName: updatingUser?.name || updatingUser?.email || 'System',
+          branchId: currentInvoice.branchId || undefined,
+        });
+      } else {
+        // Nhánh hủy hóa đơn đơn giản (chỉ đổi status, không versioning).
+        // Trước đây bị bỏ qua → không có vết audit khi hủy. Bổ sung INVOICE_CANCEL
+        // để truy vết ai hủy hóa đơn.
+        const cancellingUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'INVOICE_CANCEL',
+          entityType: 'invoices',
+          entityId: id.toString(),
+          entityCode: currentInvoice.code,
+          category: getCategoryFromActionCode('INVOICE_CANCEL'),
+          severity: getSeverityFromActionCode('INVOICE_CANCEL'),
+          snapshot: this.buildInvoiceSnapshot(updatedInvoice),
+          message: renderAuditMessage('INVOICE_CANCEL', {
+            invoiceCode: currentInvoice.code,
+          }),
+          messageTemplate: 'INVOICE_CANCEL',
+          userId: userId || currentInvoice.createdBy,
+          userName: cancellingUser?.name || cancellingUser?.email || 'System',
           branchId: currentInvoice.branchId || undefined,
         });
       }
@@ -2787,6 +2879,11 @@ export class InvoicesService {
                 address: order.delivery.address,
                 locationName: order.delivery.locationName,
                 wardName: order.delivery.wardName,
+                oldCityName: order.delivery.oldCityName,
+                oldDistrictName: order.delivery.oldDistrictName,
+                oldWardName: order.delivery.oldWardName,
+                newCityName: order.delivery.newCityName,
+                newWardName: order.delivery.newWardName,
                 weight: order.delivery.weight,
                 weightUnit: order.delivery.weightUnit || 'g',
                 length: order.delivery.length,
@@ -2822,6 +2919,12 @@ export class InvoicesService {
         where: { id: userId },
         select: { name: true },
       });
+
+      // Actor cho InventoryLog (xuất kho bán từ đơn hàng). Truy vết ai xuất kho.
+      const fromOrderLogActor = buildInventoryLogActor(
+        userId,
+        createdByName?.name,
+      );
 
       const invoiceData = invoice;
 
@@ -2966,6 +3069,7 @@ export class InvoicesService {
             transactionPrice: Number(item.price),
             partnerId: order.customerId || null,
             partnerName: order.customer?.name || null,
+            ...buildInventoryLogBase(fromOrderLogActor),
           },
         });
       }
@@ -3430,6 +3534,9 @@ export class InvoicesService {
         entityCode: invoice.code,
         category: getCategoryFromActionCode('INVOICE_CREATE'),
         severity: getSeverityFromActionCode('INVOICE_CREATE'),
+        // Bổ sung snapshot (trước đây nhánh createFromConsignment không có
+        // snapshot → không truy vết được items đã xuất hóa đơn từ ký gửi).
+        snapshot: this.buildInvoiceSnapshot(invoice),
         message: renderAuditMessage('INVOICE_CREATE', {
           invoiceCode: invoice.code,
           orderCode: consignment.code,
@@ -4200,6 +4307,12 @@ export class InvoicesService {
             contactNumber: invoice.delivery.contactNumber,
             address: invoice.delivery.address,
             wardName: invoice.delivery.wardName,
+            // Địa chỉ cũ (3 cấp) + mới (2 cấp) — để shipper xem cả hai.
+            oldCityName: invoice.delivery.oldCityName,
+            oldDistrictName: invoice.delivery.oldDistrictName,
+            oldWardName: invoice.delivery.oldWardName,
+            newCityName: invoice.delivery.newCityName,
+            newWardName: invoice.delivery.newWardName,
             weight: invoice.delivery.weight,
             length: invoice.delivery.length,
             width: invoice.delivery.width,

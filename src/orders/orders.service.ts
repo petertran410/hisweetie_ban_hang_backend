@@ -23,6 +23,7 @@ import {
 import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
 import { INVOICE_STATUS } from 'src/invoices/dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
+import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
@@ -529,6 +530,9 @@ export class OrdersService {
 
       const orderCode = await this.generateCode();
 
+      // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
+      const addrSnapshot = await resolveDeliveryAddress(tx, dto.customerId);
+
       const order = await tx.order.create({
         data: {
           code: orderCode,
@@ -560,6 +564,11 @@ export class OrdersService {
                   address: dto.delivery.address || '',
                   locationName: dto.delivery.locationName,
                   wardName: dto.delivery.wardName,
+                  oldCityName: addrSnapshot.oldCityName,
+                  oldDistrictName: addrSnapshot.oldDistrictName,
+                  oldWardName: addrSnapshot.oldWardName,
+                  newCityName: addrSnapshot.newCityName,
+                  newWardName: addrSnapshot.newWardName,
                   weight: dto.delivery.weight,
                   weightUnit: dto.delivery.weightUnit || 'g',
                   length: dto.delivery.length || 10,

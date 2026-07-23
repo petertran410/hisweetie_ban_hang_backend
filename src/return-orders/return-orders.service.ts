@@ -25,6 +25,10 @@ import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -754,6 +758,12 @@ export class ReturnOrdersService {
         select: { id: true, name: true, email: true },
       });
 
+      // Actor cho InventoryLog (truy vết ai nhập hàng trả lại vào kho).
+      const returnLogActor = buildInventoryLogActor(
+        userId,
+        user?.name || user?.email,
+      );
+
       const branch = await tx.branch.findUnique({
         where: { id: returnOrder.branchId },
         select: { id: true, name: true },
@@ -889,6 +899,7 @@ export class ReturnOrdersService {
               transactionPrice: Number(detail.returnPrice),
               partnerId: returnOrder.customerId || null,
               partnerName: returnOrder.customer?.name || null,
+              ...buildInventoryLogBase(returnLogActor),
             },
           });
         }
@@ -994,6 +1005,17 @@ export class ReturnOrdersService {
           code: returnOrder.code,
           refundAmount,
           totalReturnAmount: newTotalReturnAmount,
+          // Bổ sung danh sách sản phẩm + số lượng nhập trả để truy vết trực tiếp
+          // trên audit log (trước đây chỉ có refundAmount → không biết SP nào).
+          items: returnOrder.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+            goodQuantity: d.goodQuantity,
+            damagedQuantity: d.damagedQuantity,
+            nearExpiryQuantity: d.nearExpiryQuantity,
+          })),
         },
         message: `Xác nhận nhập hàng trả ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_STOCK_RECEIVED',
@@ -1229,6 +1251,17 @@ export class ReturnOrdersService {
         throw new NotFoundException('Không tìm thấy phiếu trả hàng');
       }
 
+      // Fetch người thực hiện sớm để ghi userId/createdByName vào InventoryLog
+      // đảo chiều khi hủy (truy vết ai rollback kho).
+      const cancelUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const returnCancelLogActor = buildInventoryLogActor(
+        userId,
+        cancelUser?.name || cancelUser?.email,
+      );
+
       // Chỉ Admin/Super Admin mới được hủy phiếu đã hoàn thành (status 4).
       // Các role khác vẫn bị chặn như cũ.
       const isAdmin = roles.some((r) => r === 'Super Admin' || r === 'Admin');
@@ -1297,6 +1330,7 @@ export class ReturnOrdersService {
                 partnerId: returnOrder.customerId || null,
                 partnerName: returnOrder.customer?.name || null,
                 note: 'Hủy phiếu trả hàng',
+                ...buildInventoryLogBase(returnCancelLogActor),
               },
             });
           }

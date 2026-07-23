@@ -868,6 +868,7 @@ export class StockAuditsService {
             costPrice: cost,
             transactionDate: checkDate,
             note: `Kiểm kho: ${detail.productName} (HT: ${systemQty} → TT: ${detail.actualQuantity})`,
+            userId: user?.id ?? userId,
             createdByName: user?.name || audit.createdByName,
           },
         });
@@ -960,6 +961,7 @@ export class StockAuditsService {
                 costPrice: Number(detail.costAtCheck),
                 transactionDate: audit.checkDate ?? new Date(),
                 note: `Hủy kiểm kho: ${detail.productName}`,
+                userId: userId ?? undefined,
                 createdByName: audit.createdByName,
               },
             });

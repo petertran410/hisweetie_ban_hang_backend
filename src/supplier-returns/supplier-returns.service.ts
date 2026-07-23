@@ -20,6 +20,10 @@ import {
 } from './dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -882,6 +886,9 @@ export class SupplierReturnsService {
         select: { id: true, name: true },
       });
 
+      // Actor cho InventoryLog (truy vết ai xuất kho trả NCC).
+      const supplierReturnLogActor = buildInventoryLogActor(userId, user?.name);
+
       if (dto.isDraft) {
         await tx.supplierReturn.update({
           where: { id },
@@ -986,6 +993,7 @@ export class SupplierReturnsService {
             transactionPrice: Number(detail.returnPrice),
             partnerId: supplierReturn.supplierId,
             partnerName: supplierReturn.supplier?.name || null,
+            ...buildInventoryLogBase(supplierReturnLogActor),
           },
         });
 
@@ -1066,7 +1074,18 @@ export class SupplierReturnsService {
         entityCode: supplierReturn.code,
         category: 'supplier_return',
         severity: 'info',
-        snapshot: { code: supplierReturn.code, refundAmount },
+        snapshot: {
+          code: supplierReturn.code,
+          refundAmount,
+          // Bổ sung danh sách sản phẩm + số lượng xuất trả NCC để truy vết
+          // trực tiếp trên audit log (trước đây chỉ có code + refundAmount).
+          items: supplierReturn.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+          })),
+        },
         message: `Xác nhận xuất kho phiếu trả hàng nhập ${supplierReturn.code}`,
         messageTemplate: 'SUPPLIER_RETURN_STOCK_EXPORTED',
         userId,
@@ -1352,7 +1371,16 @@ export class SupplierReturnsService {
         entityCode: supplierReturn.code,
         category: 'supplier_return',
         severity: 'warning',
-        snapshot: { code: supplierReturn.code },
+        snapshot: {
+          code: supplierReturn.code,
+          // Bổ sung danh sách sản phẩm để truy vết hủy phiếu trả NCC.
+          items: supplierReturn.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+          })),
+        },
         message: `Hủy phiếu trả hàng nhập ${supplierReturn.code}`,
         messageTemplate: 'SUPPLIER_RETURN_CANCEL',
         userId,

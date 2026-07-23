@@ -514,6 +514,14 @@ export class PrintTemplatesService {
         defaultAddr?.newCityName ||
         defaultAddr?.cityName ||
         '',
+      // Địa chỉ cũ (3 cấp) — để shipper đối chiếu với địa chỉ cũ khi cần.
+      // Lấy từ snapshot delivery (ưu tiên), fallback default address của khách.
+      Phuong_Xa_Cu_Khach_Hang:
+        delivery?.oldWardName || defaultAddr?.wardName || '',
+      Quan_Huyen_Cu_Khach_Hang:
+        delivery?.oldDistrictName || defaultAddr?.districtName || '',
+      Tinh_Thanh_Cu_Khach_Hang:
+        delivery?.oldCityName || defaultAddr?.cityName || '',
     };
   }
 
@@ -541,6 +549,13 @@ export class PrintTemplatesService {
         defaultAddr?.newCityName ||
         defaultAddr?.cityName ||
         '',
+      // Địa chỉ cũ (3 cấp) — để shipper đối chiếu với địa chỉ cũ khi cần.
+      Phuong_Xa_Cu_Giao_Hang:
+        delivery?.oldWardName || defaultAddr?.wardName || '',
+      Quan_Huyen_Cu_Giao_Hang:
+        delivery?.oldDistrictName || defaultAddr?.districtName || '',
+      Tinh_Thanh_Cu_Giao_Hang:
+        delivery?.oldCityName || defaultAddr?.cityName || '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
       Khoi_Luong: formatted,

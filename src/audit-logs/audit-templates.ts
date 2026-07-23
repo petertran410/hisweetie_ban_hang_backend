@@ -583,6 +583,44 @@ export const AUDIT_TEMPLATES: Record<
     category: 'return_order',
     severity: 'warning',
   },
+
+  CONSIGNMENT_CREATE: {
+    template: 'Tạo phiếu ký gửi {consignmentCode}, khách hàng: {customerName}',
+    category: 'consignment',
+    severity: 'info',
+  },
+  CONSIGNMENT_UPDATE: {
+    template: 'Cập nhật phiếu ký gửi {consignmentCode}',
+    category: 'consignment',
+    severity: 'info',
+  },
+  CONSIGNMENT_CANCEL: {
+    template: 'Hủy phiếu ký gửi {consignmentCode}',
+    category: 'consignment',
+    severity: 'warning',
+  },
+  CONSIGNMENT_STOCK_OUT: {
+    template:
+      'Xuất kho ký gửi {consignmentCode} ({productCount} sản phẩm) khi chuyển trạng thái đóng/giao hàng',
+    category: 'consignment',
+    severity: 'info',
+  },
+
+  CONSIGNMENT_RETURN_CREATE: {
+    template: 'Tạo phiếu hoàn ký gửi {consignmentReturnCode}, khách hàng: {customerName}',
+    category: 'consignment_return',
+    severity: 'info',
+  },
+  CONSIGNMENT_RETURN_STOCK_RECEIVED: {
+    template: 'Xác nhận nhận hàng hoàn ký gửi {consignmentReturnCode} vào kho',
+    category: 'consignment_return',
+    severity: 'info',
+  },
+  CONSIGNMENT_RETURN_CANCEL: {
+    template: 'Hủy phiếu hoàn ký gửi {consignmentReturnCode}',
+    category: 'consignment_return',
+    severity: 'warning',
+  },
 };
 
 export function renderAuditMessage(

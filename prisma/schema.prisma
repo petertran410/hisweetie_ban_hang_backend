@@ -90,6 +90,9 @@ model User {
   createdVehicleShipments        VehicleShipment[]      @relation("VehicleShipmentCreator")
   createdFactories               Factory[]              @relation("FactoryCreator")
   factoryChangeLogs              FactoryChangeLog[]     @relation("FactoryChangeLogChanger")
+  inventoryLogs                  InventoryLog[]         @relation("InventoryLogUser")
+  createdStockConditionTransfers  StockConditionTransfer[] @relation("StockConditionTransferCreator")
+  approvedStockConditionTransfers StockConditionTransfer[] @relation("StockConditionTransferApprover")
 
   @@map("users")
 }
@@ -309,6 +312,8 @@ model Branch {
   stockAudits            StockAudit[]
   roleBranchPermissions  RoleBranchPermission[]
   userBranchRoles        UserBranchRole[]
+  stockConditionLogs      StockConditionLog[]
+  stockConditionTransfers StockConditionTransfer[]
 
   supplierReturns   SupplierReturn[]
   promotionBranches PromotionBranch[]
@@ -787,6 +792,8 @@ model Product {
   primaryFactory   Factory? @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id], onDelete: SetNull)
   backupFactory    Factory? @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id], onDelete: SetNull)
   factoryChangeLogs FactoryChangeLog[]
+  stockConditionLogs            StockConditionLog[]
+  stockConditionTransferDetails StockConditionTransferDetail[]
 
   @@index([id, name])
   @@index([larkSyncStatus])
@@ -1090,10 +1097,14 @@ model InventoryLog {
   // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
   transactionDate  DateTime @default(now())
   createdAt        DateTime @default(now())
+  // Người thực hiện giao dịch tồn kho (truy vết trách nhiệm trên thẻ kho).
+  // Nullable để tương thích dữ liệu cũ + các log do hệ thống sinh ra.
+  userId           Int?
   createdByName    String?
 
   product Product @relation(fields: [productId], references: [id])
   branch  Branch  @relation(fields: [branchId], references: [id])
+  user    User?   @relation("InventoryLogUser", fields: [userId], references: [id])
 
   @@index([productId])
   @@index([branchId])
@@ -1101,7 +1112,93 @@ model InventoryLog {
   @@index([createdAt])
   @@index([transactionDate])
   @@index([productId, branchId, transactionDate])
+  @@index([userId])
   @@map("inventory_logs")
+}
+
+// ==================== STOCK CONDITION (Theo dõi tình trạng tồn) ====================
+// 3 model này được giữ lại để tránh db push drop 3 bảng stock_condition_* đang có dữ liệu
+// (do nhánh build_mcp tạo). Khi nhánh build_mcp merge, 3 model này sẽ khớp ngay.
+// Nguồn: copy chính xác từ nhánh build_mcp (commit 89afad9).
+
+model StockConditionLog {
+  id              Int       @id @default(autoincrement())
+  productId       Int
+  productCode     String
+  productName     String
+  branchId        Int
+  branchName      String
+  bucket          String // DAMAGED | NEAR_EXPIRY | PROMO
+  transactionType String // OPENING | CLT_IN | CLT_CANCEL | SALE_OUT | SALE_CANCEL
+  refCode         String
+  refType         String // clt | invoice | opening
+  refId           Int
+  quantity        Decimal // có dấu: + vào bucket, - bán/xuất khỏi bucket
+  expiryDate      DateTime? // CHỈ dùng cho bucket = NEAR_EXPIRY (lô/hạn dùng)
+  costPrice       Decimal   @default(0)
+  note            String?
+  transactionDate DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  createdByName   String?
+
+  product Product @relation(fields: [productId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+
+  @@index([productId, branchId, bucket, transactionDate])
+  @@index([productId, branchId, bucket, expiryDate])
+  @@index([refType, refId])
+  @@map("stock_condition_logs")
+}
+
+// Phiếu chuyển loại tồn (gộp bục rách / cận date / khuyến mãi vào 1 form).
+// Workflow: 1=Chờ duyệt -> 2=Đã duyệt (mới ghi sổ cái + đổi bucket) -> 3=Đã hủy.
+model StockConditionTransfer {
+  id             Int       @id @default(autoincrement())
+  code           String    @unique
+  branchId       Int
+  branchName     String
+  status         Int       @default(1) // 1=Chờ duyệt, 2=Đã duyệt, 3=Đã hủy
+  transferDate   DateTime  @default(now())
+  note           String?
+  createdById    Int
+  createdByName  String
+  approvedById   Int?
+  approvedByName String?
+  approvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  branch   Branch                         @relation(fields: [branchId], references: [id])
+  creator  User                           @relation("StockConditionTransferCreator", fields: [createdById], references: [id])
+  approver User?                          @relation("StockConditionTransferApprover", fields: [approvedById], references: [id])
+  details  StockConditionTransferDetail[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([transferDate])
+  @@map("stock_condition_transfers")
+}
+
+model StockConditionTransferDetail {
+  id             Int       @id @default(autoincrement())
+  transferId     Int
+  productId      Int
+  productCode    String
+  productName    String
+  unit           String?
+  toBucket       String // DAMAGED | NEAR_EXPIRY | PROMO (loại đích chuyển đến)
+  quantity       Decimal   @default(0)
+  expiryDate     DateTime? // bắt buộc khi toBucket = NEAR_EXPIRY
+  currentOnHand  Decimal   @default(0) // snapshot onHand lúc tạo phiếu
+  costAtTransfer Decimal   @default(0)
+  note           String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  transfer StockConditionTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product                @relation(fields: [productId], references: [id])
+
+  @@map("stock_condition_transfer_details")
 }
 
 model PriceBook {
@@ -1439,6 +1536,13 @@ model OrderDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo đơn. Nullable để không phá đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -1611,6 +1715,13 @@ model InvoiceDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo hóa đơn. Nullable để không phá hóa đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -2260,6 +2371,12 @@ model ConsignmentDelivery {
   address       String
   locationName  String?
   wardName      String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  oldCityName     String?
+  oldDistrictName String?
+  oldWardName     String?
+  newCityName     String?
+  newWardName     String?
   weight        Decimal?
   weightUnit    String?   @default("g")
   length        Decimal?

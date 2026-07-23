@@ -22,6 +22,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -222,7 +227,21 @@ export class PurchaseOrdersService {
       // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
       // sẵn check `!dto.isDraft` ở dưới.
       if (dto.branchId && !dto.isDraft) {
-        const touched = await this.updateInventory(purchaseOrder.id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // (truy vết ai nhập kho).
+        const poUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const poLogActor = buildInventoryLogActor(
+          userId,
+          poUser?.name || poUser?.email,
+        );
+        const touched = await this.updateInventory(
+          purchaseOrder.id,
+          tx,
+          poLogActor,
+        );
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -702,7 +721,20 @@ export class PurchaseOrdersService {
     });
 
     if (!dto.isDraft) {
-      const touched = await this.updateInventory(purchaseOrder.id, tx);
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog.
+      const poFromOsUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const poFromOsLogActor = buildInventoryLogActor(
+        userId,
+        poFromOsUser?.name || poFromOsUser?.email,
+      );
+      const touched = await this.updateInventory(
+        purchaseOrder.id,
+        tx,
+        poFromOsLogActor,
+      );
       if (touchedProductIds) {
         for (const productId of touched) touchedProductIds.add(productId);
       }
@@ -1794,7 +1826,16 @@ export class PurchaseOrdersService {
       // PN chuyển sang/giữ Phiếu tạm → tồn không cộng (đã restore SL cũ ở trên
       // nếu wasDraft=false).
       if (branchId && !willBeDraft) {
-        const touched = await this.updateInventory(id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog.
+        const poUpdateUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const poUpdateLogActor = buildInventoryLogActor(
+          userId,
+          poUpdateUser?.name || poUpdateUser?.email,
+        );
+        const touched = await this.updateInventory(id, tx, poUpdateLogActor);
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -2394,6 +2435,7 @@ export class PurchaseOrdersService {
   private async updateInventory(
     purchaseOrderId: number,
     tx: any,
+    actor?: InventoryLogActor,
   ): Promise<Set<number>> {
     const touched = new Set<number>();
     const purchaseOrder = await tx.purchaseOrder.findUnique({
@@ -2466,6 +2508,7 @@ export class PurchaseOrdersService {
           // ngày bị nhảy lên ngày sửa).
           transactionDate: purchaseOrder.purchaseDate,
           note: isDamaged ? 'Hàng loại B' : null,
+          ...buildInventoryLogBase(actor),
         },
       });
     }

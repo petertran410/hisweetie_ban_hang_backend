@@ -62,7 +62,24 @@ export class AuditLogsService {
         },
       });
     } catch (error) {
-      console.error('Failed to create audit log:', error);
+      // KHÔNG throw — audit log không được làm sập nghiệp vụ và không đưa
+      // lỗi ra UI. Chỉ ghi log server-side với đủ context để dev debug khi
+      // truy vết thấy thiếu log. Lỗi có thể do: DB timeout, constraint,
+      // JSON serialize (BigInt/circular)...
+      const errMsg =
+        error instanceof Error ? error.message : String(error ?? '');
+      console.error(
+        '[AuditLog] Failed to create audit log:',
+        {
+          actionCode: data.actionCode,
+          entityType: data.entityType,
+          entityId: data.entityId,
+          entityCode: data.entityCode,
+          userId: data.userId,
+          branchId: data.branchId,
+        },
+        errMsg,
+      );
       return null;
     }
   }

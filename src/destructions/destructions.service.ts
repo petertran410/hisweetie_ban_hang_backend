@@ -20,6 +20,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -362,7 +367,11 @@ export class DestructionsService {
       });
 
       if (!isDraft) {
-        const touched = await this.decrementInventory(created.id, tx);
+        const touched = await this.decrementInventory(
+          created.id,
+          tx,
+          buildInventoryLogActor(userId, user?.name),
+        );
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -479,7 +488,21 @@ export class DestructionsService {
       });
 
       if (destruction.status === 1 && dto.status === 2) {
-        const touched = await this.decrementInventory(id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // (truy vết ai xuất hủy kho khi cập nhật phiếu hủy).
+        const destUpdateUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const destUpdateLogActor = buildInventoryLogActor(
+          userId,
+          destUpdateUser?.name || destUpdateUser?.email,
+        );
+        const touched = await this.decrementInventory(
+          id,
+          tx,
+          destUpdateLogActor,
+        );
         for (const productId of touched) touchedProductIds.add(productId);
       }
 
@@ -667,6 +690,7 @@ export class DestructionsService {
   private async decrementInventory(
     destructionId: number,
     tx: any,
+    actor?: InventoryLogActor,
   ): Promise<Set<number>> {
     const touched = new Set<number>();
     const destruction = await tx.destruction.findUnique({
@@ -735,6 +759,7 @@ export class DestructionsService {
           costPrice: inventory ? Number(inventory.cost) : 0,
           transactionPrice: null,
           partnerName: null,
+          ...buildInventoryLogBase(actor),
         },
       });
     }

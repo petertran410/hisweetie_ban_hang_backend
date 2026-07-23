@@ -18,6 +18,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 
 @Injectable()
 export class ProductionsService {
@@ -401,11 +406,15 @@ export class ProductionsService {
             code: production.code,
             manufacturedDate: production.manufacturedDate,
           },
+          buildInventoryLogActor(userId, user?.name),
         );
       }
 
+      // Khai báo ngoài if để snapshot audit log có thể truy cập danh sách
+      // nguyên liệu đã xuất (comboComponents) cho truy vết.
+      let componentDetails: any[] = [];
       if (dto.components && dto.components.length > 0) {
-        const componentDetails = await Promise.all(
+        componentDetails = await Promise.all(
           dto.components.map(async (c) => {
             const comp = product.comboComponents.find(
               (pc) => pc.componentProductId === c.componentProductId,
@@ -443,7 +452,7 @@ export class ProductionsService {
         entityCode: production.code,
         category: getCategoryFromActionCode('PRODUCTION_CREATE'),
         severity: getSeverityFromActionCode('PRODUCTION_CREATE'),
-        snapshot: this.buildProductionSnapshot(production),
+        snapshot: this.buildProductionSnapshot(production, componentDetails),
         message: renderAuditMessage('PRODUCTION_CREATE', {
           productionCode: production.code,
         }),
@@ -534,6 +543,18 @@ export class ProductionsService {
         });
 
         if (product && updateData.autoDeductComponents !== false) {
+          // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+          // (truy vết ai xuất nguyên liệu/nhập thành phẩm khi cập nhật sản xuất).
+          const prodUpdateUser = userId
+            ? await tx.user.findUnique({
+                where: { id: userId },
+                select: { name: true, email: true },
+              })
+            : null;
+          const prodUpdateLogActor = buildInventoryLogActor(
+            userId,
+            prodUpdateUser?.name || prodUpdateUser?.email,
+          );
           await this.processInventoryChanges(
             tx,
             product,
@@ -548,6 +569,7 @@ export class ProductionsService {
                 ? new Date(dto.manufacturedDate)
                 : production.manufacturedDate,
             },
+            prodUpdateLogActor,
           );
         }
 
@@ -625,6 +647,7 @@ export class ProductionsService {
 
         const updatedProduction = await tx.production.findUnique({
           where: { id },
+          include: { components: true },
         });
 
         await this.auditLogsService.create({
@@ -780,6 +803,7 @@ export class ProductionsService {
     quantity: number,
     actualComponents?: { componentProductId: number; actualGrams: number }[],
     production?: { id: number; code: string; manufacturedDate?: Date | null },
+    actor?: InventoryLogActor,
   ) {
     // refCode/refId neo log về chính phiếu sản xuất → active-finder
     // (status != 3) loại log khi phiếu bị hủy/xóa. transactionDate neo theo
@@ -859,6 +883,7 @@ export class ProductionsService {
           costPrice: Number(sourceInventory.cost),
           transactionPrice: null,
           transactionDate,
+          ...buildInventoryLogBase(actor),
         },
       });
 
@@ -917,6 +942,7 @@ export class ProductionsService {
         costPrice: destInventory ? Number(destInventory.cost) : 0,
         transactionPrice: null,
         transactionDate,
+        ...buildInventoryLogBase(actor),
       },
     });
 
@@ -952,7 +978,7 @@ export class ProductionsService {
     await recalcOnHandForPairs(tx, affectedPairs);
   }
 
-  private buildProductionSnapshot(production: any) {
+  private buildProductionSnapshot(production: any, components?: any[]) {
     return {
       code: production.code,
       status: production.status,
@@ -967,6 +993,16 @@ export class ProductionsService {
       autoDeductComponents: production.autoDeductComponents,
       manufacturedDate: production.manufacturedDate,
       createdByName: production.createdByName,
+      // Bổ sung danh sách nguyên liệu đã xuất (comboComponents) để truy vết
+      // trực tiếp trên audit log (trước đây chỉ có thành phẩm → không biết xuất
+      // bao nhiêu nguyên liệu A, B, C). Lấy từ production.components (include)
+      // hoặc từ componentDetails truyền vào khi tạo.
+      components: (components || production.components || []).map((c: any) => ({
+        componentCode: c.componentCode,
+        componentName: c.componentName,
+        actualGrams: c.actualGrams,
+        unitsDeducted: c.unitsDeducted,
+      })),
     };
   }
 }

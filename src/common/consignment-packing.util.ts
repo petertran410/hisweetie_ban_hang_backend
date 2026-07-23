@@ -24,6 +24,10 @@ import {
   getStatusLabel,
 } from '../consignments/dto/consignment-status.constants';
 import type { PackingType } from './packing-status.util';
+import {
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from './inventory-log.util';
 
 const PACKING_TYPE_TO_STATUS: Record<PackingType, number> = {
   'dong-hang': CONSIGNMENT_STATUS.PACKED,
@@ -40,6 +44,7 @@ const PACKING_TYPE_TO_STATUS: Record<PackingType, number> = {
 async function deductConsignmentStock(
   tx: any,
   consignment: any,
+  actor?: InventoryLogActor,
 ): Promise<Set<number>> {
   const touched = new Set<number>();
   const branch = consignment.branchId
@@ -77,6 +82,7 @@ async function deductConsignmentStock(
         partnerId: consignment.customerId || null,
         partnerName: consignment.customer?.name || null,
         manufactureDate: item.manufactureDate ?? null,
+        ...buildInventoryLogBase(actor),
       },
     });
   }
@@ -135,6 +141,7 @@ export async function applyPackingToConsignments(
   tx: any,
   consignmentIds: number[],
   packingType: PackingType,
+  actor?: InventoryLogActor,
 ): Promise<Set<number>> {
   const touched = new Set<number>();
   if (!consignmentIds || consignmentIds.length === 0) return touched;
@@ -170,7 +177,7 @@ export async function applyPackingToConsignments(
 
     // Lần đầu rời CONFIRMED → trừ kho 1 lần.
     if (c.status === CONSIGNMENT_STATUS.CONFIRMED) {
-      const deducted = await deductConsignmentStock(tx, c);
+      const deducted = await deductConsignmentStock(tx, c, actor);
       for (const id of deducted) touched.add(id);
     }
 

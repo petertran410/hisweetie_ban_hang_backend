@@ -17,8 +17,15 @@ import {
 } from './dto/consignment-status.constants';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { restoreConsignmentStock } from '../common/consignment-packing.util';
+import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { CONSIGNMENT_RETURN_STATUS } from '../consignment-returns/dto';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
 
 /**
  * Phiếu ký gửi.
@@ -33,10 +40,11 @@ export class ConsignmentsService {
   constructor(
     private prisma: PrismaService,
     private larkProductSync: LarkProductSyncService,
+    private auditLogsService: AuditLogsService,
   ) {}
 
   async create(dto: CreateConsignmentDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const consignStatusString = dto.consignStatus || 'pending';
       const statusNumber = convertStatusStringToNumber(consignStatusString);
       // B1 chỉ cho phép tạo ở PENDING hoặc CONFIRMED.
@@ -97,6 +105,12 @@ export class ConsignmentsService {
 
       const code = await this.generateCode();
 
+      // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
+      const consignAddrSnapshot = await resolveDeliveryAddress(
+        tx,
+        dto.customerId,
+      );
+
       const consignment = await tx.consignment.create({
         data: {
           code,
@@ -123,6 +137,11 @@ export class ConsignmentsService {
                   address: dto.delivery.address || '',
                   locationName: dto.delivery.locationName,
                   wardName: dto.delivery.wardName,
+                  oldCityName: consignAddrSnapshot.oldCityName,
+                  oldDistrictName: consignAddrSnapshot.oldDistrictName,
+                  oldWardName: consignAddrSnapshot.oldWardName,
+                  newCityName: consignAddrSnapshot.newCityName,
+                  newWardName: consignAddrSnapshot.newWardName,
                   weight: dto.delivery.weight,
                   weightUnit: dto.delivery.weightUnit || 'g',
                   length: dto.delivery.length,
@@ -143,10 +162,56 @@ export class ConsignmentsService {
         include: { items: true },
       });
     });
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai tạo phiếu ký gửi).
+    if (result) {
+      const [actorUser, customer] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        }),
+        result.customerId
+          ? this.prisma.customer.findUnique({
+              where: { id: result.customerId },
+              select: { name: true },
+            })
+          : null,
+      ]);
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'CONSIGNMENT_CREATE',
+        entityType: 'consignments',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_CREATE'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_CREATE'),
+        snapshot: {
+          code: result.code,
+          status: result.status,
+          statusValue: result.statusValue,
+          items: result.items?.map((i: any) => ({
+            productCode: i.productCode,
+            productName: i.productName,
+            quantity: i.quantity,
+            price: i.price,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_CREATE', {
+          consignmentCode: result.code,
+          customerName: customer?.name || '',
+        }),
+        messageTemplate: 'CONSIGNMENT_CREATE',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   async update(id: number, dto: UpdateConsignmentDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.consignment.findUnique({ where: { id } });
       if (!existing) throw new NotFoundException('Không tìm thấy phiếu ký gửi');
       if (existing.status === CONSIGNMENT_STATUS.CANCELLED) {
@@ -234,12 +299,21 @@ export class ConsignmentsService {
       await tx.consignment.update({ where: { id }, data: updateData });
 
       if (dto.delivery) {
+        // Snapshot địa chỉ cũ+mới theo customerId (ưu tiên dto, fallback existing).
+        const updCustomerId =
+          dto.customerId !== undefined ? dto.customerId : existing.customerId;
+        const updAddrSnapshot = await resolveDeliveryAddress(tx, updCustomerId);
         const deliveryData = {
           receiver: dto.delivery.receiver || '',
           contactNumber: dto.delivery.contactNumber || '',
           address: dto.delivery.address || '',
           locationName: dto.delivery.locationName,
           wardName: dto.delivery.wardName,
+          oldCityName: updAddrSnapshot.oldCityName,
+          oldDistrictName: updAddrSnapshot.oldDistrictName,
+          oldWardName: updAddrSnapshot.oldWardName,
+          newCityName: updAddrSnapshot.newCityName,
+          newWardName: updAddrSnapshot.newWardName,
           weight: dto.delivery.weight,
           weightUnit: dto.delivery.weightUnit || 'g',
           length: dto.delivery.length,
@@ -261,6 +335,43 @@ export class ConsignmentsService {
         include: { items: true },
       });
     });
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai cập nhật phiếu ký gửi).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_UPDATE',
+        entityType: 'consignments',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_UPDATE'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_UPDATE'),
+        snapshot: {
+          code: result.code,
+          status: result.status,
+          statusValue: result.statusValue,
+          items: result.items?.map((i: any) => ({
+            productCode: i.productCode,
+            productName: i.productName,
+            quantity: i.quantity,
+            price: i.price,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_UPDATE', {
+          consignmentCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_UPDATE',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -462,6 +573,41 @@ export class ConsignmentsService {
 
     for (const productId of touchedProductIds) {
       this.larkProductSync.enqueueSync(productId);
+    }
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai hủy phiếu ký gửi).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_CANCEL',
+        entityType: 'consignments',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_CANCEL'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_CANCEL'),
+        snapshot: {
+          code: result.code,
+          status: result.status,
+          statusValue: result.statusValue,
+          reason: dto.reason || null,
+          items: result.items?.map((i: any) => ({
+            productCode: i.productCode,
+            productName: i.productName,
+            quantity: i.quantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_CANCEL', {
+          consignmentCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_CANCEL',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
     }
 
     return result;

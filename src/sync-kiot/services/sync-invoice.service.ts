@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
+import { resolveDeliveryAddress } from '../../common/address-resolver.util';
 
 interface InvoiceLookupContext {
   customerByCode: Map<string, number>;
@@ -337,7 +338,11 @@ export class SyncInvoiceService extends BaseSyncService {
           where: { invoiceId: existing.id },
         });
         if (!existingDelivery) {
-          await this.syncInvoiceDelivery(existing.id, record.invoiceDelivery);
+          await this.syncInvoiceDelivery(
+            existing.id,
+            record.invoiceDelivery,
+            customerId,
+          );
         }
       }
 
@@ -387,7 +392,11 @@ export class SyncInvoiceService extends BaseSyncService {
     }
 
     if (record.invoiceDelivery) {
-      await this.syncInvoiceDelivery(invoiceId, record.invoiceDelivery);
+      await this.syncInvoiceDelivery(
+        invoiceId,
+        record.invoiceDelivery,
+        customerId,
+      );
     }
 
     if (record.invoiceSurcharges?.length) {
@@ -448,12 +457,18 @@ export class SyncInvoiceService extends BaseSyncService {
     await this.prisma.invoiceDetail.createMany({ data });
   }
 
-  private async syncInvoiceDelivery(invoiceId: number, delivery: any) {
+  private async syncInvoiceDelivery(
+    invoiceId: number,
+    delivery: any,
+    customerId?: number | null,
+  ) {
     const existing = await this.prisma.invoiceDelivery.findUnique({
       where: { invoiceId },
     });
     if (existing) return;
 
+    // Snapshot địa chỉ cũ+mới từ customer_addresses (nếu có khách khớp trong hệ thống).
+    const addrSnapshot = await resolveDeliveryAddress(this.prisma, customerId);
     await this.prisma.invoiceDelivery.create({
       data: {
         invoiceId,
@@ -466,6 +481,11 @@ export class SyncInvoiceService extends BaseSyncService {
         address: delivery.address || '',
         locationName: delivery.locationName || null,
         wardName: delivery.wardName || null,
+        oldCityName: addrSnapshot.oldCityName,
+        oldDistrictName: addrSnapshot.oldDistrictName,
+        oldWardName: addrSnapshot.oldWardName,
+        newCityName: addrSnapshot.newCityName,
+        newWardName: addrSnapshot.newWardName,
         weight: delivery.weight || null,
         length: delivery.length || null,
         width: delivery.width || null,
