@@ -761,6 +761,17 @@ export class ProductQueryDto {
   columns?: string;
 
   /**
+   * Thời điểm tính tồn kho khi xuất file (ISO date string, vd "2026-07-20").
+   * Chỉ áp dụng cho cột `stock` và chỉ khi có `branchId` (chi nhánh đang đứng).
+   * Khi bỏ trống → tồn kho lấy theo inventory.onHand hiện tại.
+   * Các cột khác (giá vốn, khách đặt, đặt NCC...) vẫn dùng giá trị hiện tại
+   * vì hệ thống không lưu lịch sử các giá trị này theo ngày.
+   */
+  @IsOptional()
+  @IsString()
+  asOfDate?: string;
+
+  /**
    * Cột cần sắp xếp. Hỗ trợ:
    * - Cột trực tiếp trên Product: basePrice
    * - Cột trên Inventory (theo chi nhánh đang chọn): cost, onHand, minQuality, maxQuality

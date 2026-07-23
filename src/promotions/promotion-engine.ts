@@ -231,7 +231,7 @@ function getIssuedForMode(
   let total = 0;
   for (const [pidStr, goi] of Object.entries(raw.byProduct)) {
     const pid = Number(pidStr);
-    const thung = (goi as number) / convOf(ctx, pid);
+    const thung = goi / convOf(ctx, pid);
     byProduct[pid] = thung;
     total += thung;
   }

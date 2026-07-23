@@ -24,6 +24,7 @@ import {
 } from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { StockAuditsService } from '../stock-audits/stock-audits.service';
 
 @Injectable()
 export class ProductsService {
@@ -33,6 +34,7 @@ export class ProductsService {
     private ordersService: OrdersService,
     private orderSuppliersService: OrderSuppliersService,
     private larkProductSync: LarkProductSyncService,
+    private stockAuditsService: StockAuditsService,
   ) {}
 
   private parseAttributes(
@@ -484,6 +486,7 @@ export class ProductsService {
       columns,
       fromCreatedDate,
       toCreatedDate,
+      asOfDate,
     } = query;
 
     // ── Build where (mirror findAll) ─────────────────────────────────────────
@@ -589,6 +592,15 @@ export class ProductsService {
         header: 'Tồn kho',
         width: 12,
         value: (p, ctx) => {
+          // Tồn kho tại thời điểm (asOfDate) — chỉ dùng khi ctx cung cấp map
+          // (yêu cầu branchId). Khi có, ưu tiên tuyệt đối để file phản ánh tồn
+          // tại ngày đã chọn thay vì onHand hiện tại.
+          const stockAtDateMap = ctx?.stockAtDateMap as
+            | Record<number, number>
+            | undefined;
+          if (stockAtDateMap) {
+            return stockAtDateMap[p.id] ?? 0;
+          }
           if (ctx.branchId) {
             const inv = p.inventories?.find(
               (i: any) => i.branchId === ctx.branchId,
@@ -731,6 +743,12 @@ export class ProductsService {
     const needPending = selectedKeys.includes('customerOrder');
     const needSupplier = selectedKeys.includes('supplierOrder');
 
+    // Tồn kho tại thời điểm (asOfDate): chỉ kích hoạt khi có cả asOfDate và
+    // branchId (previewStockAtDate yêu cầu branchId). Khi không đủ điều kiện,
+    // bỏ qua → cột stock dùng onHand hiện tại như cũ.
+    const needStockAtDate =
+      selectedKeys.includes('stock') && !!asOfDate && !!branchId;
+
     // ── Stream Excel ─────────────────────────────────────────────────────────
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
       stream: res,
@@ -786,8 +804,19 @@ export class ProductsService {
       const supplierMap = needSupplier
         ? await this.orderSuppliersService.getConfirmedSummary(ids, branchId)
         : {};
+      // Map tồn kho tại thời điểm asOfDate (theo branchId). Dùng đúng nguồn
+      // chân lý previewStockAtDate (getActiveLogKeys + isLogActive), khớp thẻ
+      // kho. Bỏ qua khi needStockAtDate = false → ctx không có stockAtDateMap
+      // → cột stock dùng onHand hiện tại.
+      const stockAtDateMap = needStockAtDate
+        ? await this.stockAuditsService.previewStockAtDate(
+            branchId,
+            ids,
+            asOfDate,
+          )
+        : undefined;
 
-      const ctx = { branchId, pendingMap, supplierMap };
+      const ctx = { branchId, pendingMap, supplierMap, stockAtDateMap };
 
       for (const p of batch) {
         const rowData: Record<string, any> = {};
