@@ -34,7 +34,7 @@ const EMPTY_SNAPSHOT: DeliveryAddressSnapshot = {
  * @param tx PrismaClient hoặc transaction client (tx từ $transaction)
  * @param customerId id khách hàng (nullable)
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+
 export async function resolveDeliveryAddress(
   tx: any,
   customerId?: number | null,

@@ -607,7 +607,8 @@ export const AUDIT_TEMPLATES: Record<
   },
 
   CONSIGNMENT_RETURN_CREATE: {
-    template: 'Tạo phiếu hoàn ký gửi {consignmentReturnCode}, khách hàng: {customerName}',
+    template:
+      'Tạo phiếu hoàn ký gửi {consignmentReturnCode}, khách hàng: {customerName}',
     category: 'consignment_return',
     severity: 'info',
   },

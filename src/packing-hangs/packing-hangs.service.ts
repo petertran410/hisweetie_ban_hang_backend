@@ -227,7 +227,8 @@ export class PackingHangsService {
           }),
           messageTemplate: 'CONSIGNMENT_STOCK_OUT',
           userId,
-          userName: consignActorUser?.name || consignActorUser?.email || 'System',
+          userName:
+            consignActorUser?.name || consignActorUser?.email || 'System',
           branchId: created.branchId || undefined,
         });
 

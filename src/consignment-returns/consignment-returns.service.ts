@@ -405,7 +405,9 @@ export class ConsignmentReturnsService {
         entityType: 'consignment_returns',
         entityId: result.id.toString(),
         entityCode: result.code,
-        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_STOCK_RECEIVED'),
+        category: getCategoryFromActionCode(
+          'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        ),
         severity: getSeverityFromActionCode(
           'CONSIGNMENT_RETURN_STOCK_RECEIVED',
         ),

@@ -23,6 +23,7 @@ const LARK_CUSTOMER_FIELDS = {
   THOI_GIAN_TAO: 'Thời Gian Tạo',
   THOI_GIAN_CAP_NHAT: 'Thời Gian Cập Nhật',
   NHOM_KHACH_HANG: 'Nhóm Khách Hàng',
+  KE_TOAN_PIC: 'Kế Toán PIC',
 } as const;
 
 // Include dùng chung — lấy địa chỉ mặc định để map Địa chỉ / Khu vực / Phường xã
@@ -505,6 +506,7 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
         ? new Date(customer.updatedAt).getTime()
         : null,
       [LARK_CUSTOMER_FIELDS.NHOM_KHACH_HANG]: customer.groups || '',
+      [LARK_CUSTOMER_FIELDS.KE_TOAN_PIC]: customer.misaEmployeeName || '',
     };
   }
 }

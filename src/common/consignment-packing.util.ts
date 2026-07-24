@@ -24,10 +24,7 @@ import {
   getStatusLabel,
 } from '../consignments/dto/consignment-status.constants';
 import type { PackingType } from './packing-status.util';
-import {
-  buildInventoryLogBase,
-  InventoryLogActor,
-} from './inventory-log.util';
+import { buildInventoryLogBase, InventoryLogActor } from './inventory-log.util';
 
 const PACKING_TYPE_TO_STATUS: Record<PackingType, number> = {
   'dong-hang': CONSIGNMENT_STATUS.PACKED,

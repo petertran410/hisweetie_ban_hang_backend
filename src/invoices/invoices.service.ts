@@ -946,11 +946,31 @@ export class InvoicesService {
   private async processPromotions(
     tx: any,
     dto: CreateInvoiceDto,
+    opts?: { reconstructCumulativeChoices?: boolean },
   ): Promise<{
     effectiveItems: any[];
     extraInvoiceDiscount: number;
     logs: any[];
   }> {
+    // Gom SL quà (theo GÓI) mà FE gửi lên theo promotionId, TRƯỚC khi lọc bỏ dòng
+    // gift engine. Dùng để tái dựng rewardSelections cho KM cộng dồn cần chọn quà
+    // khi FE gửi thiếu choice (race: tab HĐ-từ-đơn chưa hydrate opt-in cấp tab).
+    // Chỉ dùng khi opts.reconstructCumulativeChoices=true (luồng createFromOrder).
+    const feGiftQtyByPromoProduct = new Map<number, Map<number, number>>();
+    if (opts?.reconstructCumulativeChoices) {
+      for (const it of dto.items) {
+        const isGift = !!(it.isGift || (it.lineType || 'normal') === 'gift');
+        if (!isGift || it.promotionId == null) continue;
+        const pid = Number(it.promotionId);
+        const inner = feGiftQtyByPromoProduct.get(pid) || new Map<number, number>();
+        inner.set(
+          Number(it.productId),
+          (inner.get(Number(it.productId)) || 0) + Number(it.quantity || 0),
+        );
+        feGiftQtyByPromoProduct.set(pid, inner);
+      }
+    }
+
     // Bỏ dòng gift do KM engine sinh (có promotionId) — BE tự sinh lại.
     // GIỮ dòng gift thủ công (thu ngân đánh dấu 🎁, không gắn promotionId).
     const baseItems: any[] = dto.items
@@ -1035,13 +1055,50 @@ export class InvoicesService {
         (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
         r.requiresChoice
       ) {
-        const choice =
+        let choice =
           choiceMap[resultKey] || choiceMap[choiceKey(r.promotionId)];
         // Số quà mỗi suất = tổng SL / số suất (fallback = tổng SL nếu thiếu times).
         const perTime =
           r.rewardTimes && r.rewardTimes > 0
             ? Number(r.rewardQuantity) / Number(r.rewardTimes)
             : Number(r.rewardQuantity);
+
+        // Tái dựng rewardSelections từ dòng quà FE gửi khi choice thiếu/rỗng.
+        // Chỉ áp cho KM cộng dồn (triggerProductId==null) ở luồng createFromOrder.
+        // Suy ngược số suất từ SL quà (gói) — mirror logic FE effect:
+        //   carton: times = round(qtyGoi / perTime / conversionValue)
+        //   unit:   times = round(qtyGoi / perTime)
+        // resolveChoiceGiftLines vẫn re-validate tổng suất ≤ r.rewardTimes + cap remaining.
+        const choiceHasSelections =
+          choice &&
+          Array.isArray(choice.rewardSelections) &&
+          choice.rewardSelections.some((s: any) => Number(s.rewardTimes) > 0);
+        if (
+          opts?.reconstructCumulativeChoices &&
+          r.triggerProductId == null &&
+          !choiceHasSelections &&
+          perTime > 0
+        ) {
+          const feGifts = feGiftQtyByPromoProduct.get(Number(r.promotionId));
+          if (feGifts && feGifts.size > 0) {
+            const isCarton = r.unitMode === 'carton';
+            const rewardSelections: any[] = [];
+            for (const [productId, qtyGoi] of feGifts) {
+              const opt = (r.rewardOptions || []).find(
+                (o: any) => o.productId === productId,
+              );
+              if (!opt) continue;
+              const conv = Number(opt.conversionValue || 1) || 1;
+              const times = isCarton
+                ? Math.round(qtyGoi / perTime / conv)
+                : Math.round(qtyGoi / perTime);
+              if (times > 0)
+                rewardSelections.push({ productId, rewardTimes: times });
+            }
+            if (rewardSelections.length > 0) choice = { rewardSelections };
+          }
+        }
+
         giftLines = this.resolveChoiceGiftLines(r, choice, perTime);
       }
       resolvedGifts[resultKey] = giftLines.map((g: any) => ({
@@ -2803,7 +2860,9 @@ export class InvoicesService {
           purchaseDate: new Date().toISOString(),
           appliedPromotions: dto.appliedPromotions,
           appliedPromotionIds: dto.appliedPromotionIds,
-        } as any);
+        } as any,
+        { reconstructCumulativeChoices: true },
+        );
         effectiveItems = promo.effectiveItems;
         extraInvoiceDiscount = promo.extraInvoiceDiscount;
         promoLogs = promo.logs;
