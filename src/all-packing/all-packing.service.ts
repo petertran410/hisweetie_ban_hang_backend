@@ -15,6 +15,7 @@ export class AllPackingService {
       search,
       invoiceSearch,
       customerSearch,
+      paymentMethod,
       limit,
       pageSize,
       currentItem = 0,
@@ -43,7 +44,20 @@ export class AllPackingService {
     let allData: any[] = [];
     let total = 0;
 
-    if (!type || type === 'all') {
+    // Khi lọc theo paymentMethod → chỉ PackingSlip (giao hàng) có trường này.
+    // PackingHang (đóng hàng) & PackingLoading (loading) không có paymentMethod
+    // nên bị loại bỏ hoàn toàn, bất kể `type` được chọn là gì.
+    if (paymentMethod) {
+      const packingSlips = await this.getPackingSlips(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerMatchedIds,
+        ownerFilterId,
+        paymentMethod,
+      );
+      allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
+    } else if (!type || type === 'all') {
       const [packingSlips, packingHangs, packingLoadings] = await Promise.all([
         this.getPackingSlips(
           effectiveBranchIds,
@@ -122,6 +136,7 @@ export class AllPackingService {
     invoiceSearch?: string,
     customerMatchedIds?: number[],
     ownerFilterId?: number,
+    paymentMethod?: string,
   ) {
     const where: any = {};
 
@@ -132,6 +147,12 @@ export class AllPackingService {
     if (ownerFilterId) {
       where.createdBy = ownerFilterId;
     }
+
+    // Chỉ PackingSlip có paymentMethod (cash | transfer).
+    if (paymentMethod) {
+      where.paymentMethod = paymentMethod;
+    }
+
     if (search) {
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },

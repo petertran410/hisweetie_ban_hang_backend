@@ -39,6 +39,10 @@ export class AllPackingQueryDto {
   customerSearch?: string;
 
   @IsOptional()
+  @IsString()
+  paymentMethod?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   limit?: number;
