@@ -16,9 +16,14 @@ class StockConditionTransferItemDto {
   @IsInt()
   productId: number;
 
-  // Loại đích chuyển đến: DAMAGED | NEAR_EXPIRY | PROMO
+  // Loại tồn liên quan: DAMAGED | NEAR_EXPIRY | PROMO
   @IsIn(ALL_BUCKETS as unknown as string[])
   toBucket: string;
+
+  // Chiều: IN = hàng tốt -> loại tồn (mặc định); OUT = loại tồn -> hàng tốt (điều chỉnh giảm)
+  @IsOptional()
+  @IsIn(['IN', 'OUT'])
+  direction?: 'IN' | 'OUT';
 
   @IsNumber()
   @Min(0)

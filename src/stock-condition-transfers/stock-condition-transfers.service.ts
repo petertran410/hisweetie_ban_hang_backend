@@ -17,7 +17,9 @@ import {
 import {
   recalcConditionBuckets,
   computeBucketTotals,
+  computeNearExpiryLots,
   BUCKET_NEAR_EXPIRY,
+  BUCKET_DAMAGED,
 } from '../common/stock-condition-onhand.util';
 
 // Trạng thái phiếu: 1=Chờ duyệt, 2=Đã duyệt, 3=Đã hủy
@@ -166,13 +168,16 @@ export class StockConditionTransfersService {
 
     // Validate từng dòng: NEAR_EXPIRY bắt buộc có expiryDate.
     for (const item of dto.items) {
+      const direction = item.direction === 'OUT' ? 'OUT' : 'IN';
       if (item.toBucket === BUCKET_NEAR_EXPIRY && !item.expiryDate) {
         throw new BadRequestException(
-          'Hàng cận date phải khai báo hạn dùng (expiryDate)',
+          direction === 'OUT'
+            ? 'Điều chỉnh giảm hàng cận date phải chọn đúng lô (ngày sản xuất)'
+            : 'Hàng cận date phải khai báo ngày sản xuất',
         );
       }
       if (item.quantity <= 0) {
-        throw new BadRequestException('Số lượng chuyển phải lớn hơn 0');
+        throw new BadRequestException('Số lượng phải lớn hơn 0');
       }
     }
 
@@ -191,16 +196,17 @@ export class StockConditionTransfersService {
     });
     const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
-    // Validate: tổng SL chuyển vào bucket cho mỗi sản phẩm không vượt "hàng tốt"
-    // hiện có = onHand − (damaged + nearExpiry + promo). Chỉ chuyển từ hàng tốt.
-    const totalToBucketByProduct = new Map<number, number>();
+    // Validate chiều IN: tổng SL chuyển vào các bucket cho mỗi sản phẩm không
+    // vượt "hàng tốt" hiện có = onHand − (damaged + nearExpiry + promo).
+    const inByProduct = new Map<number, number>();
     for (const item of dto.items) {
-      totalToBucketByProduct.set(
+      if ((item.direction === 'OUT' ? 'OUT' : 'IN') !== 'IN') continue;
+      inByProduct.set(
         item.productId,
-        (totalToBucketByProduct.get(item.productId) ?? 0) + item.quantity,
+        (inByProduct.get(item.productId) ?? 0) + item.quantity,
       );
     }
-    for (const [productId, totalMove] of totalToBucketByProduct.entries()) {
+    for (const [productId, totalIn] of inByProduct.entries()) {
       const inv = invMap.get(productId);
       const onHand = inv ? Number(inv.onHand) : 0;
       const usedBuckets = inv
@@ -209,11 +215,47 @@ export class StockConditionTransfersService {
           Number(inv.promoQuantity)
         : 0;
       const available = onHand - usedBuckets;
-      if (totalMove > available) {
+      if (totalIn > available) {
         const p = productMap.get(productId);
         throw new BadRequestException(
-          `${p?.name}: Số lượng chuyển (${totalMove}) vượt quá hàng tốt khả dụng (${available}). Tồn tổng ${onHand}, đã phân loại ${usedBuckets}.`,
+          `${p?.name}: Số lượng chuyển vào loại tồn (${totalIn}) vượt quá hàng tốt khả dụng (${available}). Tồn tổng ${onHand}, đã phân loại ${usedBuckets}.`,
         );
+      }
+    }
+
+    // Validate chiều OUT: SL điều chỉnh giảm không vượt tồn hiện có của bucket
+    // (với cận date là tồn của đúng lô expiryDate).
+    for (const item of dto.items) {
+      if ((item.direction === 'OUT' ? 'OUT' : 'IN') !== 'OUT') continue;
+      const inv = invMap.get(item.productId);
+      const p = productMap.get(item.productId);
+      if (item.toBucket === BUCKET_NEAR_EXPIRY) {
+        const lots = await computeNearExpiryLots(
+          this.prisma,
+          item.productId,
+          dto.branchId,
+        );
+        const key = item.expiryDate
+          ? new Date(item.expiryDate).toISOString().slice(0, 10)
+          : null;
+        const lot = lots.find((l) => l.expiryDate === key);
+        const lotQty = lot ? lot.quantity : 0;
+        if (item.quantity > lotQty) {
+          throw new BadRequestException(
+            `${p?.name}: Điều chỉnh giảm cận date lô ${key || 'chưa xác định'} (${item.quantity}) vượt quá tồn lô hiện có (${lotQty}).`,
+          );
+        }
+      } else {
+        const current =
+          item.toBucket === BUCKET_DAMAGED
+            ? Number(inv?.damagedQuantity ?? 0)
+            : Number(inv?.promoQuantity ?? 0);
+        if (item.quantity > current) {
+          const label = item.toBucket === BUCKET_DAMAGED ? 'bục rách' : 'khuyến mãi';
+          throw new BadRequestException(
+            `${p?.name}: Điều chỉnh giảm ${label} (${item.quantity}) vượt quá tồn hiện có (${current}).`,
+          );
+        }
       }
     }
 
@@ -244,6 +286,7 @@ export class StockConditionTransfersService {
                   productName: p.name,
                   unit: p.unit || null,
                   toBucket: item.toBucket,
+                  direction: item.direction === 'OUT' ? 'OUT' : 'IN',
                   quantity: item.quantity,
                   expiryDate: item.expiryDate
                     ? new Date(item.expiryDate)
@@ -308,15 +351,17 @@ export class StockConditionTransfersService {
       select: { id: true, name: true },
     });
 
-    // Re-validate tại thời điểm duyệt: tổng bucket sau khi cộng thêm không vượt onHand.
+    // Re-validate tại thời điểm duyệt.
     const productIds = [...new Set(transfer.details.map((d) => d.productId))];
     const inventories = await this.prisma.inventory.findMany({
       where: { productId: { in: productIds }, branchId: transfer.branchId },
     });
     const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
+    // Chiều IN: tổng cộng thêm vào các bucket không vượt hàng tốt còn lại.
     const addByProduct = new Map<number, number>();
     for (const d of transfer.details) {
+      if ((d as any).direction === 'OUT') continue;
       addByProduct.set(
         d.productId,
         (addByProduct.get(d.productId) ?? 0) + Number(d.quantity),
@@ -342,6 +387,10 @@ export class StockConditionTransfersService {
       const transactionDate = transfer.transferDate ?? new Date();
 
       for (const detail of transfer.details) {
+        const isOut = (detail as any).direction === 'OUT';
+        const signedQty = isOut
+          ? -Number(detail.quantity) // OUT: loại tồn -> hàng tốt (trừ bucket)
+          : Number(detail.quantity); // IN: hàng tốt -> loại tồn (cộng bucket)
         await tx.stockConditionLog.create({
           data: {
             productId: detail.productId,
@@ -350,18 +399,38 @@ export class StockConditionTransfersService {
             branchId: transfer.branchId,
             branchName: transfer.branchName,
             bucket: detail.toBucket,
-            transactionType: 'CLT_IN',
+            transactionType: isOut ? 'CLT_OUT' : 'CLT_IN',
             refCode: transfer.code,
             refType: 'clt',
             refId: transfer.id,
-            quantity: Number(detail.quantity), // + vào bucket
+            quantity: signedQty,
             expiryDate: detail.expiryDate,
             costPrice: Number(detail.costAtTransfer),
             transactionDate,
-            note: `Chuyển sang ${BUCKET_LABEL[detail.toBucket] || detail.toBucket}`,
+            note: isOut
+              ? `Điều chỉnh giảm ${BUCKET_LABEL[detail.toBucket] || detail.toBucket}`
+              : `Chuyển sang ${BUCKET_LABEL[detail.toBucket] || detail.toBucket}`,
             createdByName: user?.name || transfer.createdByName,
           },
         });
+
+        // Chống âm cho chiều OUT (đề phòng bán/xuất chen giữa lúc tạo và duyệt).
+        if (isOut) {
+          const totals = await computeBucketTotals(
+            tx,
+            detail.productId,
+            transfer.branchId,
+          );
+          if (
+            totals.damaged < 0 ||
+            totals.nearExpiry < 0 ||
+            totals.promo < 0
+          ) {
+            throw new BadRequestException(
+              `${detail.productName}: Điều chỉnh giảm làm tồn loại tồn âm. Vui lòng kiểm tra lại tồn thực tế.`,
+            );
+          }
+        }
 
         await recalcConditionBuckets(tx, detail.productId, transfer.branchId);
       }
@@ -429,6 +498,12 @@ export class StockConditionTransfersService {
         // đã bị loại), sau đó recalc cache. Validate không âm.
         const transactionDate = new Date();
         for (const detail of transfer.details) {
+          const isOut = (detail as any).direction === 'OUT';
+          // Dòng đảo: ngược dấu với dòng gốc (IN gốc +qty → đảo -qty; OUT gốc
+          // -qty → đảo +qty). Chỉ để lưu vết; recalc bỏ qua toàn bộ log phiếu này.
+          const reverseQty = isOut
+            ? Number(detail.quantity)
+            : -Number(detail.quantity);
           await tx.stockConditionLog.create({
             data: {
               productId: detail.productId,
@@ -441,11 +516,11 @@ export class StockConditionTransfersService {
               refCode: transfer.code,
               refType: 'clt',
               refId: transfer.id,
-              quantity: -Number(detail.quantity),
+              quantity: reverseQty,
               expiryDate: detail.expiryDate,
               costPrice: Number(detail.costAtTransfer),
               transactionDate,
-              note: `Hủy chuyển ${BUCKET_LABEL[detail.toBucket] || detail.toBucket}`,
+              note: `Hủy ${isOut ? 'điều chỉnh giảm' : 'chuyển'} ${BUCKET_LABEL[detail.toBucket] || detail.toBucket}`,
               createdByName: transfer.createdByName,
             },
           });

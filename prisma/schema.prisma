@@ -81,6 +81,7 @@ model User {
   createdInventoryPromoChecks     InventoryPromoCheck[]    @relation("InventoryPromoCheckCreator")
   createdStockConditionTransfers  StockConditionTransfer[] @relation("StockConditionTransferCreator")
   approvedStockConditionTransfers StockConditionTransfer[] @relation("StockConditionTransferApprover")
+  inventoryLogs                   InventoryLog[]           @relation("InventoryLogUser")
   stockAuditsCreated              StockAudit[]             @relation("StockAuditCreator")
   stockAuditsCompleted            StockAudit[]             @relation("StockAuditCompleter")
   userBranchRoles                 UserBranchRole[]
@@ -1096,10 +1097,14 @@ model InventoryLog {
   // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
   transactionDate  DateTime  @default(now())
   createdAt        DateTime  @default(now())
+  // Người thực hiện giao dịch tồn kho (truy vết trách nhiệm trên thẻ kho).
+  // Nullable để tương thích dữ liệu cũ + các log do hệ thống sinh ra.
+  userId           Int?
   createdByName    String?
 
   product Product @relation(fields: [productId], references: [id])
   branch  Branch  @relation(fields: [branchId], references: [id])
+  user    User?   @relation("InventoryLogUser", fields: [userId], references: [id])
 
   @@index([productId])
   @@index([branchId])
@@ -1107,6 +1112,7 @@ model InventoryLog {
   @@index([createdAt])
   @@index([transactionDate])
   @@index([productId, branchId, transactionDate])
+  @@index([userId])
   @@map("inventory_logs")
 }
 
@@ -1184,7 +1190,8 @@ model StockConditionTransferDetail {
   productCode    String
   productName    String
   unit           String?
-  toBucket       String // DAMAGED | NEAR_EXPIRY | PROMO (loại đích chuyển đến)
+  toBucket       String // DAMAGED | NEAR_EXPIRY | PROMO (loại tồn liên quan)
+  direction      String    @default("IN") // IN = hàng tốt -> loại; OUT = loại -> hàng tốt (điều chỉnh giảm)
   quantity       Decimal   @default(0)
   expiryDate     DateTime? // bắt buộc khi toBucket = NEAR_EXPIRY
   currentOnHand  Decimal   @default(0) // snapshot onHand lúc tạo phiếu
@@ -1534,6 +1541,13 @@ model OrderDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo đơn. Nullable để không phá đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -1706,6 +1720,13 @@ model InvoiceDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo hóa đơn. Nullable để không phá hóa đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -2348,21 +2369,27 @@ model ConsignmentItem {
 }
 
 model ConsignmentDelivery {
-  id            Int      @id @default(autoincrement())
-  consignmentId Int      @unique
-  receiver      String
-  contactNumber String
-  address       String
-  locationName  String?
-  wardName      String?
-  weight        Decimal?
-  weightUnit    String?  @default("g")
-  length        Decimal?
-  width         Decimal?
-  height        Decimal?
-  noteForDriver String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id              Int      @id @default(autoincrement())
+  consignmentId   Int      @unique
+  receiver        String
+  contactNumber   String
+  address         String
+  locationName    String?
+  wardName        String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  oldCityName     String?
+  oldDistrictName String?
+  oldWardName     String?
+  newCityName     String?
+  newWardName     String?
+  weight          Decimal?
+  weightUnit      String?  @default("g")
+  length          Decimal?
+  width           Decimal?
+  height          Decimal?
+  noteForDriver   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   consignment Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
 
