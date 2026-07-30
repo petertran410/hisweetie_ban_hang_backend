@@ -20,6 +20,12 @@ import {
 } from './dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  recalcConditionBucketsForPairs,
+  writeConditionLogs,
+  computeBucketTotals,
+  computeNearExpiryLots,
+} from '../common/stock-condition-onhand.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -930,35 +936,28 @@ export class SupplierReturnsService {
         }
 
         // Validate damaged/nearExpiry buckets nếu user chỉ định loại hàng.
-        // Đối xứng `invoices.service.ts:validateConditionQuantity`: chỉ
-        // check khi conditionType !== 'normal'.
+        // Tồn bucket đọc TỪ SỔ CÁI (nguồn chân lý), không đọc cache trên
+        // Inventory vì cache có thể trôi khỏi sổ cái.
         const condition = confirmDetail.conditionType || 'normal';
-        if (condition === 'damaged') {
-          if (Number(inv.damagedQuantity || 0) < confirmedQty) {
+        if (condition === 'damaged' || condition === 'near_expiry') {
+          const totals = await computeBucketTotals(
+            tx,
+            detail.productId,
+            supplierReturn.branchId,
+          );
+          const available =
+            condition === 'damaged' ? totals.damaged : totals.nearExpiry;
+          if (available < confirmedQty) {
+            const label =
+              condition === 'damaged' ? 'bục rách' : 'cận date';
             throw new BadRequestException(
-              `Sản phẩm ${detail.productName}: Tồn kho hàng damaged không đủ (cần ${confirmedQty}, còn ${Number(inv.damagedQuantity || 0)})`,
-            );
-          }
-        } else if (condition === 'near_expiry') {
-          if (Number(inv.nearExpiryQuantity || 0) < confirmedQty) {
-            throw new BadRequestException(
-              `Sản phẩm ${detail.productName}: Tồn kho hàng cận date không đủ (cần ${confirmedQty}, còn ${Number(inv.nearExpiryQuantity || 0)})`,
+              `Sản phẩm ${detail.productName}: Tồn kho hàng ${label} không đủ (cần ${confirmedQty}, còn ${available})`,
             );
           }
         }
 
-        // Giảm tồn kho theo conditionType. Đối xứng
-        // `invoices.service.ts:buildInventoryDeductData`: trừ `onHand` luôn,
-        // trừ thêm bucket damaged/nearExpiry nếu chỉ định.
-        const deductData: Record<string, any> = {
-          onHand: { decrement: confirmedQty },
-        };
-        if (condition === 'damaged') {
-          deductData.damagedQuantity = { decrement: confirmedQty };
-        } else if (condition === 'near_expiry') {
-          deductData.nearExpiryQuantity = { decrement: confirmedQty };
-        }
-
+        // Trừ onHand. Tồn bucket KHÔNG sửa trực tiếp ở đây nữa — ghi sổ cái
+        // bên dưới rồi recalc, để bucket luôn = Σ log active.
         await tx.inventory.update({
           where: {
             productId_branchId: {
@@ -966,9 +965,29 @@ export class SupplierReturnsService {
               branchId: supplierReturn.branchId,
             },
           },
-          data: deductData,
+          data: { onHand: { decrement: confirmedQty } },
         });
         touchedProductIds.add(detail.productId);
+
+  // Ghi sổ cái loại tồn: xuất trả NCC từ bucket nào thì trừ bucket đó.
+  if (condition === 'damaged' || condition === 'near_expiry') {
+    await writeConditionLogs(tx, {
+      productId: detail.productId,
+      productCode: detail.productCode,
+      productName: detail.productName,
+      branchId: supplierReturn.branchId,
+      branchName: supplierReturn.branch?.name || '',
+      refCode: supplierReturn.code,
+      refType: 'supplier_return',
+      refId: supplierReturn.id,
+      transactionType: 'SUPPLIER_RETURN_OUT',
+      costPrice: Number(inv.cost || 0),
+      note: 'Xuất trả nhà cung cấp',
+      damaged: condition === 'damaged' ? -confirmedQty : 0,
+      nearExpiry: condition === 'near_expiry' ? -confirmedQty : 0,
+      nearExpiryDate: detail.manufactureDate ?? null,
+    });
+  }
 
         await tx.inventoryLog.create({
           data: {
@@ -1000,9 +1019,18 @@ export class SupplierReturnsService {
       }
 
       // NGUỒN CHÂN LÝ: onHand = Σ log active. Recalc sau khi ghi log
-      // SUPPLIER_RETURN cho mọi item (đè decrement rời rạc). damaged/nearExpiry
-      // giữ nguyên theo deductData bên trên.
+      // SUPPLIER_RETURN cho mọi item (đè decrement rời rạc).
       await recalcOnHandForPairs(
+        tx,
+        supplierReturn.details.map((d) => ({
+          productId: d.productId,
+          branchId: supplierReturn.branchId,
+        })),
+      );
+
+      // NGUỒN CHÂN LÝ bucket: tồn bucket = Σ log active. Recalc cache sau khi
+      // đã ghi sổ cái SUPPLIER_RETURN_OUT.
+      await recalcConditionBucketsForPairs(
         tx,
         supplierReturn.details.map((d) => ({
           productId: d.productId,
@@ -1284,22 +1312,15 @@ export class SupplierReturnsService {
         throw new BadRequestException('Phiếu trả hàng nhập đã bị hủy');
       }
 
-      // Rollback tồn kho nếu đã xuất kho — restore cả damaged/nearExpiry
-      // buckets theo conditionType (đối xứng `return-orders.cancel:817-826`).
+      // Rollback tồn kho nếu đã xuất kho.
+      // KHÔNG restore bucket thủ công: phiếu chuyển sang CANCELLED bên dưới →
+      // active-finder 'supplier_return' loại toàn bộ StockConditionLog của phiếu
+      // này → recalc bucket tự đưa tồn loại về đúng. Chỉ hoàn onHand ở đây
+      // (onHand cũng được recalc lại sau đó từ thẻ kho).
       if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
         for (const detail of supplierReturn.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty <= 0) continue;
-
-          const restoreData: Record<string, any> = {
-            onHand: { increment: confirmedQty },
-          };
-          const condition = (detail as any).conditionType || 'normal';
-          if (condition === 'damaged') {
-            restoreData.damagedQuantity = { increment: confirmedQty };
-          } else if (condition === 'near_expiry') {
-            restoreData.nearExpiryQuantity = { increment: confirmedQty };
-          }
 
           await tx.inventory.update({
             where: {
@@ -1308,7 +1329,7 @@ export class SupplierReturnsService {
                 branchId: supplierReturn.branchId,
               },
             },
-            data: restoreData,
+            data: { onHand: { increment: confirmedQty } },
           });
           touchedProductIds.add(detail.productId);
         }
@@ -1328,16 +1349,16 @@ export class SupplierReturnsService {
         },
       });
 
-      // NGUỒN CHÂN LÝ: status=5 → log SUPPLIER_RETURN inactive → recalc cộng
-      // lại onHand (damaged/nearExpiry đã restore thủ công ở trên).
+      // NGUỒN CHÂN LÝ: status=CANCELLED → mọi log (InventoryLog +
+      // StockConditionLog) trỏ phiếu này thành inactive → recalc đưa onHand và
+      // tồn bucket về Σ log active. Không cần cộng/trừ cache thủ công.
       if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
-        await recalcOnHandForPairs(
-          tx,
-          supplierReturn.details.map((d) => ({
-            productId: d.productId,
-            branchId: supplierReturn.branchId,
-          })),
-        );
+        const pairs = supplierReturn.details.map((d) => ({
+          productId: d.productId,
+          branchId: supplierReturn.branchId,
+        }));
+        await recalcOnHandForPairs(tx, pairs);
+        await recalcConditionBucketsForPairs(tx, pairs);
       }
 
       // Phiếu bị hủy → loại khỏi offsets của Formula B → recalc để hoàn nợ NCC

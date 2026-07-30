@@ -237,6 +237,28 @@ export class ProductsController {
     return this.productsService.getConditionSummary(+id, +branchId);
   }
 
+  /**
+   * Tồn 3 bucket của NHIỀU sản phẩm trong 1 chi nhánh, đọc TỪ SỔ CÁI.
+   * Dùng cho dropdown bán hàng: trước đây FE đọc cache Inventory
+   * (damagedQuantity/nearExpiryQuantity/promoQuantity) nên bị lệch khi cache
+   * trôi khỏi sổ cái. Endpoint này trả về đúng nguồn chân lý.
+   *
+   * LƯU Ý: route tĩnh này PHẢI khai báo trước @Get(':id') để không bị Nest
+   * match thành param id.
+   */
+  @Get('condition-summary-batch')
+  @RequirePermissions('products:view')
+  getConditionSummaryBatch(
+    @Query('productIds') productIds: string,
+    @Query('branchId') branchId: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.productsService.getConditionSummaryBatch(ids, +branchId);
+  }
+
   @Get(':id')
   @RequirePermissions('products:view')
   async findOne(@Param('id') id: string, @Req() req: any) {

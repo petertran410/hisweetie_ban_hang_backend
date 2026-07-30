@@ -14,6 +14,7 @@ import { StockConditionTransfersService } from './stock-condition-transfers.serv
 import {
   CreateStockConditionTransferDto,
   StockConditionTransferQueryDto,
+  UpdateStockConditionTransferDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -68,6 +69,25 @@ export class StockConditionTransfersController {
     @CurrentUser() user: any,
   ) {
     return this.service.create(dto, user.id);
+  }
+
+  // Xem trước ảnh hưởng khi sửa: hóa đơn nào đã bán từ lô cận date hiện tại.
+  // Đặt TRƯỚC route ':id' động khác cùng method? Không cần: path khác nhau rõ ràng.
+  @Get(':id/edit-impact')
+  @RequirePermissions('stock_condition_transfers:view')
+  getEditImpact(@Param('id') id: string) {
+    return this.service.getEditImpact(+id);
+  }
+
+  // Sửa phiếu (kể cả đã duyệt): NSX, số lượng, ghi chú.
+  @Put(':id')
+  @RequirePermissions('stock_condition_transfers:update')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateStockConditionTransferDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.update(+id, dto, user?.id);
   }
 
   @Put(':id/approve')

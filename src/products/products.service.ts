@@ -18,6 +18,7 @@ import {
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import {
   computeBucketTotals,
+  computeBucketTotalsBatch,
   computeNearExpiryLots,
 } from '../common/stock-condition-onhand.util';
 import {
@@ -2142,6 +2143,40 @@ export class ProductsService {
       nearExpiry: totals.nearExpiry,
       promo: totals.promo,
     };
+  }
+
+  // Tồn bucket cho NHIỀU sản phẩm trong 1 chi nhánh — đọc TỪ SỔ CÁI.
+  // Dùng cho dropdown bán hàng: trước đây FE đọc cache Inventory
+  // (damagedQuantity/nearExpiryQuantity/promoQuantity) nên bị lệch khi cache
+  // trôi khỏi sổ cái. Nay dropdown đọc endpoint này → một nguồn chân lý duy nhất.
+  async getConditionSummaryBatch(productIds: number[], branchId: number) {
+    const ids = [...new Set((productIds || []).filter((id) => !!id))];
+    if (ids.length === 0 || !branchId) {
+      return {} as Record<
+        number,
+        { damaged: number; nearExpiry: number; promo: number }
+      >;
+    }
+
+    const totalsMap = await computeBucketTotalsBatch(
+      this.prisma,
+      ids,
+      branchId,
+    );
+
+    const result: Record<
+      number,
+      { damaged: number; nearExpiry: number; promo: number }
+    > = {};
+    for (const id of ids) {
+      const t = totalsMap[id] || { damaged: 0, nearExpiry: 0, promo: 0 };
+      result[id] = {
+        damaged: t.damaged,
+        nearExpiry: t.nearExpiry,
+        promo: t.promo,
+      };
+    }
+    return result;
   }
 
   async checkLowStock() {

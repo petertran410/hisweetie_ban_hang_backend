@@ -39,6 +39,10 @@ export class ReturnOrderDetailDto {
   @IsOptional()
   returnPrice?: number;
 
+  @IsOptional()
+  @IsString()
+  manufactureDate?: string;
+
   @IsString()
   @IsOptional()
   note?: string;

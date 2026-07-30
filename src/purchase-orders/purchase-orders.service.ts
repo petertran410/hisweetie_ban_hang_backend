@@ -22,6 +22,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+  computeBucketTotalsBatch,
+} from '../common/stock-condition-onhand.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
@@ -1496,6 +1501,14 @@ export class PurchaseOrdersService {
         const invMap = new Map<number, any>();
         inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
 
+        // Tồn loại B lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cột cache
+        // Inventory.damagedQuantity vì cache là giá trị dẫn xuất.
+        const bucketMap = await computeBucketTotalsBatch(
+          tx,
+          productsToCheck.map((p) => p.productId),
+          existing.branchId,
+        );
+
         const branch = await tx.branch.findUnique({
           where: { id: existing.branchId },
           select: { name: true },
@@ -1508,7 +1521,7 @@ export class PurchaseOrdersService {
         } of productsToCheck) {
           const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          const damagedQuantity = inv ? Number(inv.damagedQuantity || 0) : 0;
+          const damagedQuantity = bucketMap[productId]?.damaged ?? 0;
           const productLabel = inv?.product
             ? `${inv.product.code} - ${inv.product.name}`
             : `productId=${productId}`;
@@ -1543,6 +1556,20 @@ export class PurchaseOrdersService {
           where: {
             refType: 'purchase_order',
             transactionType: 'PURCHASE',
+            refId: id,
+          },
+        });
+        // Cùng lý do: xóa log SỔ CÁI loại tồn của phiếu cũ trước khi
+        // updateInventory() ghi lại. Nếu không, tồn bucket (= Σ log active) sẽ
+        // cộng dồn cả dòng cũ + mới → hàng loại B bị nhân đôi khi sửa phiếu.
+        //
+        // LỌC THEO refType + refId, KHÔNG lọc theo transactionType: log sổ cái
+        // của PN được ghi với transactionType 'PURCHASE_IN' (khác 'PURCHASE'
+        // của InventoryLog). Nếu lọc theo 'PURCHASE' thì không xóa được dòng
+        // nào → nhân đôi hàng loại B mỗi lần sửa phiếu.
+        await tx.stockConditionLog.deleteMany({
+          where: {
+            refType: 'purchase_order',
             refId: id,
           },
         });
@@ -1856,6 +1883,12 @@ export class PurchaseOrdersService {
           }
         }
         await recalcOnHandForPairs(tx, pairs);
+
+        // Tồn bucket cũng phải phủ ĐÚNG tập cặp đó: sản phẩm bị GỠ khỏi phiếu
+        // (log sổ cái đã xóa ở trên) và chi nhánh CŨ khi đổi chi nhánh đều cần
+        // recalc. updateInventory() chỉ recalc theo item MỚI nên nếu thiếu bước
+        // này, cache hàng loại B của SP bị gỡ / branch cũ sẽ kẹt lại số cũ.
+        await recalcConditionBucketsForPairs(tx, pairs);
       }
 
       const orderSupplierId = existing.orderSupplierId;
@@ -2007,6 +2040,18 @@ export class PurchaseOrdersService {
             branchId: purchaseOrder.branchId,
           })),
         );
+
+        // Tồn bucket: PN đã bị XÓA CỨNG nên active-finder 'purchase_order'
+        // không tìm thấy id → log PURCHASE_IN của phiếu thành inactive. Recalc
+        // để cache hàng loại B khớp lại sổ cái (nếu thiếu bước này, cache giữ
+        // nguyên phần loại B của phiếu vừa xóa).
+        await recalcConditionBucketsForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
       }
 
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
@@ -2120,6 +2165,14 @@ export class PurchaseOrdersService {
         const invMap = new Map<number, any>();
         inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
 
+        // Tồn bucket lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cache trên
+        // Inventory vì cache là giá trị dẫn xuất.
+        const bucketMap = await computeBucketTotalsBatch(
+          tx,
+          productIds,
+          purchaseOrder.branchId,
+        );
+
         // Pre-check: tổng giảm tồn (cả 2 bucket) cho mỗi product phải đủ.
         // Cộng dồn vì 1 product có thể xuất hiện nhiều dòng (khác
         // conditionType) trong cùng phiếu.
@@ -2143,7 +2196,8 @@ export class PurchaseOrdersService {
         for (const [productId, decrease] of totalDecrease.entries()) {
           const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          const damagedQuantity = inv ? Number(inv.damagedQuantity || 0) : 0;
+          // Tồn loại B lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cột cache.
+          const damagedQuantity = bucketMap[productId]?.damaged ?? 0;
           if (onHand < decrease.onHand) {
             const productLabel = inv?.product
               ? `${inv.product.code} - ${inv.product.name}`
@@ -2162,21 +2216,16 @@ export class PurchaseOrdersService {
           }
         }
 
-        // Apply: rollback đúng bucket theo từng dòng. Vì 1 product có thể có
-        // nhiều dòng (cùng productId khác conditionType), dùng update nhiều
-        // lần theo từng dòng cho khớp với logic cũ. Alternative: gộp
-        // thành 1 updateMany với decrement theo tổng decrease — giữ vòng
-        // lặp để dễ đọc và đối xứng với logic updateInventory.
+        // Apply: chỉ rollback onHand cho dòng hàng thường. Dòng hàng loại B
+        // KHÔNG trừ cache damagedQuantity ở đây nữa: tồn bucket là giá trị dẫn
+        // xuất từ sổ cái, và log PURCHASE_IN của PN này sẽ tự rớt khỏi Σ active
+        // ngay khi PN chuyển status=2 (active-finder 'purchase_order'). Cache
+        // được đồng bộ lại bằng recalcConditionBucketsForPairs bên dưới.
         for (const item of purchaseOrder.items) {
           const inv = invMap.get(item.productId);
           if (!inv) continue;
           const qty = Number(item.quantity);
-          if (item.conditionType === 'damaged') {
-            await tx.inventory.update({
-              where: { id: inv.id },
-              data: { damagedQuantity: { decrement: qty } },
-            });
-          } else {
+          if (item.conditionType !== 'damaged') {
             await tx.inventory.update({
               where: { id: inv.id },
               data: { onHand: { decrement: qty } },
@@ -2241,6 +2290,16 @@ export class PurchaseOrdersService {
       // onHand cho mọi sản phẩm của phiếu (chỉ khi PN từng cộng tồn).
       if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
         await recalcOnHandForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
+
+        // Tương tự cho tồn bucket: log PURCHASE_IN của PN vừa hủy cũng rớt
+        // khỏi Σ active → recalc đưa cache về đúng sổ cái.
+        await recalcConditionBucketsForPairs(
           tx,
           purchaseOrder.items.map((item: any) => ({
             productId: item.productId,
@@ -2424,9 +2483,9 @@ export class PurchaseOrdersService {
         where: { productId: item.productId, branchId: purchaseOrder.branchId },
       });
 
-      // TỒN KHO: cộng goodQty vào onHand, cộng damagedQty vào damagedQuantity.
-      // Nếu damagedQty = 0, conditional spread bỏ qua field damagedQuantity
-      // (giữ nguyên giá trị cũ). Tương tự cho onHand.
+      // TỒN KHO: cộng goodQty vào onHand. onHand sẽ được recalc lại từ thẻ kho
+      // ở cuối hàm (Σ log active, bao gồm cả phần loại B) nên increment ở đây
+      // chỉ mang tính tạm.
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
@@ -2434,12 +2493,31 @@ export class PurchaseOrdersService {
         },
         data: {
           ...(goodQty > 0 && { onHand: { increment: goodQty } }),
-          ...(damagedQty > 0 && {
-            damagedQuantity: { increment: damagedQty },
-          }),
         },
       });
       if (goodQty > 0) touched.add(item.productId);
+
+      // SỔ CÁI LOẠI TỒN: hàng nhập loại B ghi vào bucket DAMAGED qua sổ cái
+      // (KHÔNG ghi trực tiếp cột cache Inventory.damagedQuantity). Tồn bucket
+      // là giá trị dẫn xuất: tồn bucket = Σ log active. Log của PN bị hủy tự
+      // bị loại nhờ active-finder 'purchase_order' (status != 2).
+      if (damagedQty > 0) {
+        await writeConditionLogs(tx, {
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          branchId: purchaseOrder.branchId,
+          branchName: purchaseOrder.branch?.name || '',
+          refCode: purchaseOrder.code,
+          refType: 'purchase_order',
+          refId: purchaseOrder.id,
+          transactionType: 'PURCHASE_IN',
+          transactionDate: purchaseOrder.purchaseDate,
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          note: 'Nhập hàng loại B',
+          damaged: damagedQty,
+        });
+      }
 
       // THẺ KHO: giữ convention 1 row = 1 log, ghi tổng quantity (cả good +
       // damaged) như cũ. Nếu là dòng loại B, gắn tag note để truy vết khi
@@ -2478,6 +2556,16 @@ export class PurchaseOrdersService {
         branchId: purchaseOrder.branchId,
       })),
     );
+
+    // NGUỒN CHÂN LÝ: tồn bucket = Σ log sổ cái active. Đồng bộ lại cache sau
+    // khi đã ghi log PURCHASE_IN cho các dòng hàng loại B.
+    await recalcConditionBucketsForPairs(
+      tx,
+      purchaseOrder.items.map((item: any) => ({
+        productId: item.productId,
+        branchId: purchaseOrder.branchId,
+      })),
+    );
     return touched;
   }
 
@@ -2495,24 +2583,21 @@ export class PurchaseOrdersService {
 
     for (const item of purchaseOrder.items) {
       const qty = Number(item.quantity);
-      // Rollback đúng bucket theo conditionType:
-      //   - "damaged" (loại B) → giảm damagedQuantity
-      //   - "normal" → giảm onHand
-      // Tương ứng với logic updateInventory() phía trên để revert chính xác.
+      // Rollback onHand cho dòng hàng thường. Dòng loại B KHÔNG trừ cột cache
+      // damagedQuantity ở đây nữa: tồn bucket là giá trị dẫn xuất từ sổ cái
+      // (tồn bucket = Σ log active), nên chỉ cần xóa log PURCHASE_IN (luồng
+      // sửa) hoặc set PN status=2 (luồng hủy) rồi recalc là bucket tự về đúng.
       const isDamaged = item.conditionType === 'damaged';
+      if (isDamaged) continue;
 
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
           branchId: purchaseOrder.branchId,
         },
-        data: {
-          ...(isDamaged
-            ? { damagedQuantity: { decrement: qty } }
-            : { onHand: { decrement: qty } }),
-        },
+        data: { onHand: { decrement: qty } },
       });
-      if (!isDamaged) touched.add(item.productId);
+      touched.add(item.productId);
     }
     // LƯU Ý: KHÔNG recalc ở đây. restoreInventory được gọi khi log PURCHASE
     // CÒN active (update flow xóa log SAU; cancel set status=2 SAU). Recalc tại

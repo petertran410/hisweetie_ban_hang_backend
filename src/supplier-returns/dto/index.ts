@@ -152,6 +152,12 @@ export class ConfirmExportDetailDto {
   @IsString()
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: 'normal' | 'damaged' | 'near_expiry';
+
+  // NSX (ngày sản xuất) của lô cận date khi trả NCC hàng near_expiry.
+  // Cần để log SUPPLIER_RETURN_OUT trừ đúng lô, không trừ vào lô null.
+  @IsOptional()
+  @IsString()
+  manufactureDate?: string;
 }
 
 export class ConfirmExportDto {

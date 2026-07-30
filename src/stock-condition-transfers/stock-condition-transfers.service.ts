@@ -7,6 +7,7 @@ import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStockConditionTransferDto } from './dto/create-stock-condition-transfer.dto';
+import { UpdateStockConditionTransferDto } from './dto/update-stock-condition-transfer.dto';
 import { StockConditionTransferQueryDto } from './dto/stock-condition-transfer-query.dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -17,10 +18,15 @@ import {
 import {
   recalcConditionBuckets,
   computeBucketTotals,
+  computeBucketTotalsBatch,
   computeNearExpiryLots,
   BUCKET_NEAR_EXPIRY,
   BUCKET_DAMAGED,
 } from '../common/stock-condition-onhand.util';
+import {
+  getActiveLogKeys,
+  isLogActive,
+} from '../common/inventory-onhand.util';
 
 // Trạng thái phiếu: 1=Chờ duyệt, 2=Đã duyệt, 3=Đã hủy
 export const CLT_STATUS = {
@@ -166,14 +172,23 @@ export class StockConditionTransfersService {
     });
     if (!user) throw new BadRequestException('Người dùng không tồn tại');
 
-    // Validate từng dòng: NEAR_EXPIRY bắt buộc có expiryDate.
+    // Validate từng dòng.
+    //
+    // NSX (expiryDate) chỉ BẮT BUỘC với chiều OUT: điều chỉnh giảm phải trừ vào
+    // đúng lô đang có tồn, không có lô thì không biết trừ ở đâu.
+    //
+    // Chiều IN cho phép để trống NSX → dòng vào "lô chưa xác định NSX"
+    // (expiryDate = null). Cần thiết cho trường hợp khai báo tồn cũ chưa biết
+    // NSX; sau đó dùng chức năng sửa phiếu (update) để điền NSX đúng.
     for (const item of dto.items) {
       const direction = item.direction === 'OUT' ? 'OUT' : 'IN';
-      if (item.toBucket === BUCKET_NEAR_EXPIRY && !item.expiryDate) {
+      if (
+        item.toBucket === BUCKET_NEAR_EXPIRY &&
+        direction === 'OUT' &&
+        !item.expiryDate
+      ) {
         throw new BadRequestException(
-          direction === 'OUT'
-            ? 'Điều chỉnh giảm hàng cận date phải chọn đúng lô (ngày sản xuất)'
-            : 'Hàng cận date phải khai báo ngày sản xuất',
+          'Điều chỉnh giảm hàng cận date phải chọn đúng lô (ngày sản xuất)',
         );
       }
       if (item.quantity <= 0) {
@@ -196,6 +211,15 @@ export class StockConditionTransfersService {
     });
     const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
+    // Tồn 3 bucket lấy TỪ SỔ CÁI (nguồn chân lý), không dùng cache trên
+    // Inventory vì cache có thể trôi khỏi sổ cái (các module cũ còn ghi trực
+    // tiếp vào cột cache mà không ghi sổ).
+    const bucketMap = await computeBucketTotalsBatch(
+      this.prisma,
+      uniqueIds,
+      dto.branchId,
+    );
+
     // Validate chiều IN: tổng SL chuyển vào các bucket cho mỗi sản phẩm không
     // vượt "hàng tốt" hiện có = onHand − (damaged + nearExpiry + promo).
     const inByProduct = new Map<number, number>();
@@ -209,10 +233,9 @@ export class StockConditionTransfersService {
     for (const [productId, totalIn] of inByProduct.entries()) {
       const inv = invMap.get(productId);
       const onHand = inv ? Number(inv.onHand) : 0;
-      const usedBuckets = inv
-        ? Number(inv.damagedQuantity) +
-          Number(inv.nearExpiryQuantity) +
-          Number(inv.promoQuantity)
+      const totals = bucketMap[productId];
+      const usedBuckets = totals
+        ? totals.damaged + totals.nearExpiry + totals.promo
         : 0;
       const available = onHand - usedBuckets;
       if (totalIn > available) {
@@ -227,7 +250,6 @@ export class StockConditionTransfersService {
     // (với cận date là tồn của đúng lô expiryDate).
     for (const item of dto.items) {
       if ((item.direction === 'OUT' ? 'OUT' : 'IN') !== 'OUT') continue;
-      const inv = invMap.get(item.productId);
       const p = productMap.get(item.productId);
       if (item.toBucket === BUCKET_NEAR_EXPIRY) {
         const lots = await computeNearExpiryLots(
@@ -246,10 +268,11 @@ export class StockConditionTransfersService {
           );
         }
       } else {
+        const totals = bucketMap[item.productId];
         const current =
           item.toBucket === BUCKET_DAMAGED
-            ? Number(inv?.damagedQuantity ?? 0)
-            : Number(inv?.promoQuantity ?? 0);
+            ? (totals?.damaged ?? 0)
+            : (totals?.promo ?? 0);
         if (item.quantity > current) {
           const label = item.toBucket === BUCKET_DAMAGED ? 'bục rách' : 'khuyến mãi';
           throw new BadRequestException(
@@ -358,6 +381,13 @@ export class StockConditionTransfersService {
     });
     const invMap = new Map(inventories.map((inv) => [inv.productId, inv]));
 
+    // Tồn 3 bucket lấy TỪ SỔ CÁI (nguồn chân lý), không dùng cache Inventory.
+    const bucketMap = await computeBucketTotalsBatch(
+      this.prisma,
+      productIds,
+      transfer.branchId,
+    );
+
     // Chiều IN: tổng cộng thêm vào các bucket không vượt hàng tốt còn lại.
     const addByProduct = new Map<number, number>();
     for (const d of transfer.details) {
@@ -370,10 +400,9 @@ export class StockConditionTransfersService {
     for (const [productId, add] of addByProduct.entries()) {
       const inv = invMap.get(productId);
       const onHand = inv ? Number(inv.onHand) : 0;
-      const usedBuckets = inv
-        ? Number(inv.damagedQuantity) +
-          Number(inv.nearExpiryQuantity) +
-          Number(inv.promoQuantity)
+      const totals = bucketMap[productId];
+      const usedBuckets = totals
+        ? totals.damaged + totals.nearExpiry + totals.promo
         : 0;
       if (usedBuckets + add > onHand) {
         const d = transfer.details.find((x) => x.productId === productId);
@@ -386,6 +415,7 @@ export class StockConditionTransfersService {
     const approved = await this.prisma.$transaction(async (tx) => {
       const transactionDate = transfer.transferDate ?? new Date();
 
+      // Ghi sổ cái cho mọi dòng trước.
       for (const detail of transfer.details) {
         const isOut = (detail as any).direction === 'OUT';
         const signedQty = isOut
@@ -413,8 +443,26 @@ export class StockConditionTransfersService {
             createdByName: user?.name || transfer.createdByName,
           },
         });
+      }
 
-        // Chống âm cho chiều OUT (đề phòng bán/xuất chen giữa lúc tạo và duyệt).
+      // Set status = APPROVED TRƯỚC khi recalc/validate: active-finder 'clt' chỉ
+      // tính log của phiếu status=2. Nếu recalc khi phiếu còn status=1 (Chờ duyệt),
+      // toàn bộ log CLT_IN/CLT_OUT của chính phiếu này bị loại → cache bucket sai
+      // (thiếu phần vừa duyệt). Phải active hóa phiếu trước.
+      await tx.stockConditionTransfer.update({
+        where: { id },
+        data: {
+          status: CLT_STATUS.APPROVED,
+          approvedById: userId,
+          approvedByName: user?.name || null,
+          approvedAt: new Date(),
+        },
+      });
+
+      // Sau khi phiếu đã active: validate chống âm (OUT) + recalc cache bucket.
+      const seenPairs = new Set<number>();
+      for (const detail of transfer.details) {
+        const isOut = (detail as any).direction === 'OUT';
         if (isOut) {
           const totals = await computeBucketTotals(
             tx,
@@ -431,19 +479,11 @@ export class StockConditionTransfersService {
             );
           }
         }
-
-        await recalcConditionBuckets(tx, detail.productId, transfer.branchId);
+        if (!seenPairs.has(detail.productId)) {
+          seenPairs.add(detail.productId);
+          await recalcConditionBuckets(tx, detail.productId, transfer.branchId);
+        }
       }
-
-      await tx.stockConditionTransfer.update({
-        where: { id },
-        data: {
-          status: CLT_STATUS.APPROVED,
-          approvedById: userId,
-          approvedByName: user?.name || null,
-          approvedAt: new Date(),
-        },
-      });
 
       return tx.stockConditionTransfer.findUnique({
         where: { id },
@@ -470,6 +510,459 @@ export class StockConditionTransfersService {
     });
 
     return approved;
+  }
+
+  /**
+   * Chuẩn hóa NSX về mốc THÁNG: luôn lấy ngày 01 của tháng đó.
+   * NSX chỉ có ý nghĩa tới tháng/năm, nên mọi lô mới đều neo vào ngày 01 để hai
+   * lần nhập cùng tháng không tạo ra 2 lô khác nhau.
+   */
+  private normalizeExpiry(v?: string | Date | null): Date | null {
+    if (!v) return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Date(
+      Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0),
+    );
+  }
+
+  private lotKey(v?: string | Date | null): string | null {
+    const d = this.normalizeExpiry(v);
+    return d ? d.toISOString().slice(0, 10) : null;
+  }
+
+  /**
+   * Các dòng hóa đơn ĐÃ BÁN từ một lô cận date cụ thể (product + branch + lô).
+   *
+   * Dựa vào sổ cái: log SALE_OUT của bucket NEAR_EXPIRY mang refType='invoice',
+   * refId = id hóa đơn và expiryDate = lô đã bán. Từ đó truy ngược ra đúng dòng
+   * hóa đơn để biết việc đổi NSX sẽ ảnh hưởng tới hóa đơn nào.
+   *
+   * Chỉ tính hóa đơn CÒN HIỆU LỰC (status != 2) — hóa đơn đã hủy không còn trừ
+   * vào lô nên đổi NSX không ảnh hưởng gì.
+   */
+  private async findInvoiceLinesForLot(
+    tx: any,
+    productId: number,
+    branchId: number,
+    lot: string | null,
+  ): Promise<
+    Array<{
+      invoiceId: number;
+      invoiceCode: string;
+      purchaseDate: Date | null;
+      quantity: number;
+      detailIds: number[];
+    }>
+  > {
+    const logs = await tx.stockConditionLog.findMany({
+      where: {
+        productId,
+        branchId,
+        bucket: BUCKET_NEAR_EXPIRY,
+        transactionType: 'SALE_OUT',
+        refType: 'invoice',
+      },
+      select: { refId: true, refCode: true, quantity: true, expiryDate: true },
+    });
+
+    const matched = logs.filter((l: any) => this.lotKey(l.expiryDate) === lot);
+    if (matched.length === 0) return [];
+
+    const invoiceIds = [...new Set(matched.map((l: any) => l.refId))] as number[];
+    const invoices = await tx.invoice.findMany({
+      where: { id: { in: invoiceIds }, status: { not: 2 } },
+      select: { id: true, code: true, purchaseDate: true },
+    });
+    const aliveIds = new Set(invoices.map((i: any) => i.id));
+    const invMap = new Map(invoices.map((i: any) => [i.id, i]));
+
+    // Đúng những dòng hóa đơn của lô này (khớp cả productId và soldExpiryDate).
+    const details = await tx.invoiceDetail.findMany({
+      where: { invoiceId: { in: [...aliveIds] }, productId },
+      select: { id: true, invoiceId: true, quantity: true, soldExpiryDate: true },
+    });
+
+    const out = new Map<
+      number,
+      {
+        invoiceId: number;
+        invoiceCode: string;
+        purchaseDate: Date | null;
+        quantity: number;
+        detailIds: number[];
+      }
+    >();
+    for (const d of details) {
+      if (this.lotKey(d.soldExpiryDate) !== lot) continue;
+      const inv: any = invMap.get(d.invoiceId);
+      if (!inv) continue;
+      const cur = out.get(d.invoiceId) || {
+        invoiceId: d.invoiceId,
+        invoiceCode: inv.code,
+        purchaseDate: inv.purchaseDate,
+        quantity: 0,
+        detailIds: [] as number[],
+      };
+      cur.quantity += Number(d.quantity);
+      cur.detailIds.push(d.id);
+      out.set(d.invoiceId, cur);
+    }
+    return [...out.values()];
+  }
+
+  /**
+   * XEM TRƯỚC ảnh hưởng khi sửa phiếu: với mỗi dòng cận date của phiếu, liệt kê
+   * các hóa đơn đã bán từ lô hiện tại của dòng đó. FE dùng để cảnh báo trước khi
+   * người dùng bấm lưu.
+   */
+  async getEditImpact(id: number) {
+    const transfer = await this.prisma.stockConditionTransfer.findUnique({
+      where: { id },
+      include: { details: true },
+    });
+    if (!transfer) throw new NotFoundException('Phiếu không tồn tại');
+
+    const rows: any[] = [];
+    for (const d of transfer.details) {
+      if (d.toBucket !== BUCKET_NEAR_EXPIRY) continue;
+      const lot = this.lotKey(d.expiryDate);
+      const invoices = await this.findInvoiceLinesForLot(
+        this.prisma,
+        d.productId,
+        transfer.branchId,
+        lot,
+      );
+      rows.push({
+        detailId: d.id,
+        productCode: d.productCode,
+        productName: d.productName,
+        currentExpiryDate: d.expiryDate,
+        soldQuantity: invoices.reduce((s, i) => s + i.quantity, 0),
+        invoices: invoices.map((i) => ({
+          invoiceId: i.invoiceId,
+          invoiceCode: i.invoiceCode,
+          purchaseDate: i.purchaseDate,
+          quantity: i.quantity,
+        })),
+      });
+    }
+    return { transferId: id, code: transfer.code, details: rows };
+  }
+
+  /**
+   * SỬA PHIẾU — cho phép cả khi phiếu ĐÃ DUYỆT.
+   *
+   * Phạm vi: NSX (expiryDate), số lượng (quantity), ghi chú (note) của từng dòng
+   * và ghi chú cấp phiếu. KHÔNG đổi sản phẩm / loại tồn / chiều.
+   *
+   * Cách ghi sổ: XÓA toàn bộ log của phiếu rồi ghi lại theo dữ liệu mới (cùng
+   * cách purchase-orders đang làm), sau đó recalc cache. Nhờ vậy không phải tính
+   * log bù trừ và tổng luôn bằng Σ log active.
+   *
+   * Đổi NSX của dòng cận date mà lô cũ ĐÃ BÁN: mặc định CHẶN và trả về danh sách
+   * hóa đơn ảnh hưởng. Nếu cascadeInvoices=true thì cập nhật soldExpiryDate của
+   * đúng các dòng hóa đơn đó (kèm log SALE_OUT) sang lô mới.
+   */
+  async update(
+    id: number,
+    dto: UpdateStockConditionTransferDto,
+    userId?: number,
+  ) {
+    const transfer = await this.prisma.stockConditionTransfer.findUnique({
+      where: { id },
+      include: { details: true },
+    });
+    if (!transfer) throw new NotFoundException('Phiếu không tồn tại');
+    if (transfer.status === CLT_STATUS.CANCELLED) {
+      throw new BadRequestException('Phiếu đã hủy, không thể sửa');
+    }
+
+    const items = dto.items ?? [];
+    const detailMap = new Map(transfer.details.map((d) => [d.id, d]));
+    for (const it of items) {
+      if (!detailMap.has(it.detailId)) {
+        throw new BadRequestException(
+          `Dòng #${it.detailId} không thuộc phiếu ${transfer.code}`,
+        );
+      }
+  // Khi SỬA phiếu, quantity = 0 có nghĩa là toàn bộ số của dòng đã nhập dư
+  // và cần loại hết tác động khỏi sổ cái. Dòng chi tiết vẫn được giữ với số
+  // 0 để bảo toàn lịch sử phiếu; chỉ không tạo log CLT cho dòng đó.
+  if (it.quantity != null && it.quantity < 0) {
+    throw new BadRequestException('Số lượng không được âm');
+  }
+  if (it.quantity != null) {
+    const original = detailMap.get(it.detailId);
+    if (original && it.quantity > Number(original.quantity)) {
+      throw new BadRequestException(
+        `${original.productName}: Số lượng sửa (${it.quantity}) vượt quá số đã ghi ban đầu (${Number(original.quantity)}). Chỉ được sửa giảm.`
+      );
+    }
+  }
+}
+
+    const isApproved = transfer.status === CLT_STATUS.APPROVED;
+
+    // Gom các dòng cận date bị ĐỔI LÔ để xử lý lan sang hóa đơn.
+    const lotChanges: Array<{
+      detail: any;
+      oldLot: string | null;
+      newLot: string | null;
+      newDate: Date | null;
+    }> = [];
+    for (const it of items) {
+      const d = detailMap.get(it.detailId)!;
+      if (d.toBucket !== BUCKET_NEAR_EXPIRY) continue;
+      if (!('expiryDate' in it)) continue;
+      const oldLot = this.lotKey(d.expiryDate);
+      const newDate = this.normalizeExpiry(it.expiryDate ?? null);
+      const newLot = newDate ? newDate.toISOString().slice(0, 10) : null;
+      if (oldLot === newLot) continue;
+      lotChanges.push({ detail: d, oldLot, newLot, newDate });
+    }
+
+    // Phiếu đã duyệt + đổi lô: kiểm tra hóa đơn đã bán từ lô cũ.
+    const impacted: Array<{
+      productCode: string;
+      oldLot: string | null;
+      newLot: string | null;
+      invoices: Array<{ invoiceCode: string; quantity: number }>;
+      detailIds: number[];
+    }> = [];
+    if (isApproved && lotChanges.length > 0) {
+      for (const ch of lotChanges) {
+        const lines = await this.findInvoiceLinesForLot(
+          this.prisma,
+          ch.detail.productId,
+          transfer.branchId,
+          ch.oldLot,
+        );
+        if (lines.length === 0) continue;
+        impacted.push({
+          productCode: ch.detail.productCode,
+          oldLot: ch.oldLot,
+          newLot: ch.newLot,
+          invoices: lines.map((l) => ({
+            invoiceCode: l.invoiceCode,
+            quantity: l.quantity,
+          })),
+          detailIds: lines.flatMap((l) => l.detailIds),
+        });
+      }
+
+      if (impacted.length > 0 && !dto.cascadeInvoices) {
+        const desc = impacted
+          .map(
+            (i) =>
+              `${i.productCode} (lô ${i.oldLot || 'chưa xác định'}): ${i.invoices
+                .map((v) => `${v.invoiceCode} ${v.quantity}`)
+                .join(', ')}`,
+          )
+          .join('; ');
+        throw new BadRequestException(
+          `Lô đang sửa đã phát sinh bán nên không thể đổi NSX trực tiếp. Hóa đơn ảnh hưởng: ${desc}. Xác nhận cập nhật cả hóa đơn để tiếp tục.`,
+        );
+      }
+    }
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      // 1. Cập nhật từng dòng chi tiết.
+      for (const it of items) {
+        const data: any = {};
+        if (it.quantity != null) data.quantity = it.quantity;
+        if ('note' in it) data.note = it.note || null;
+        if ('expiryDate' in it) {
+          const d = detailMap.get(it.detailId)!;
+          data.expiryDate =
+            d.toBucket === BUCKET_NEAR_EXPIRY
+              ? this.normalizeExpiry(it.expiryDate ?? null)
+              : null;
+        }
+        if (Object.keys(data).length === 0) continue;
+        await tx.stockConditionTransferDetail.update({
+          where: { id: it.detailId },
+          data,
+        });
+      }
+
+      if (dto.note !== undefined) {
+        await tx.stockConditionTransfer.update({
+          where: { id },
+          data: { note: dto.note || null },
+        });
+      }
+
+      // 2. Lan sang hóa đơn (chỉ khi người dùng đã xác nhận).
+      if (isApproved && dto.cascadeInvoices && impacted.length > 0) {
+        for (const imp of impacted) {
+          const newDate = imp.newLot
+            ? new Date(`${imp.newLot}T00:00:00.000Z`)
+            : null;
+          await tx.invoiceDetail.updateMany({
+            where: { id: { in: imp.detailIds } },
+            data: { soldExpiryDate: newDate },
+          });
+          // Log SALE_OUT của lô cũ phải trỏ sang lô mới, nếu không lô cũ âm.
+          const codes = imp.invoices.map((v) => v.invoiceCode);
+          const logsToMove = await tx.stockConditionLog.findMany({
+            where: {
+              branchId: transfer.branchId,
+              bucket: BUCKET_NEAR_EXPIRY,
+              transactionType: 'SALE_OUT',
+              refType: 'invoice',
+              refCode: { in: codes },
+            },
+            select: { id: true, expiryDate: true },
+          });
+          const ids = logsToMove
+            .filter((l: any) => this.lotKey(l.expiryDate) === imp.oldLot)
+            .map((l: any) => l.id);
+          if (ids.length > 0) {
+            await tx.stockConditionLog.updateMany({
+              where: { id: { in: ids } },
+              data: { expiryDate: newDate },
+            });
+          }
+        }
+      }
+
+      // 3. Ghi lại sổ cái của phiếu (chỉ phiếu đã duyệt mới có log).
+      if (isApproved) {
+        await tx.stockConditionLog.deleteMany({
+          where: { refType: 'clt', refId: id },
+        });
+
+        const fresh = await tx.stockConditionTransferDetail.findMany({
+          where: { transferId: id },
+        });
+        const transactionDate = transfer.transferDate ?? new Date();
+        for (const d of fresh) {
+          // Dòng được sửa về 0 vẫn nằm trên phiếu để lưu vết, nhưng không còn
+          // tác động tới tồn nên không ghi StockConditionLog.
+          if (Number(d.quantity) === 0) continue;
+          const isOut = (d as any).direction === 'OUT';
+          await tx.stockConditionLog.create({
+            data: {
+              productId: d.productId,
+              productCode: d.productCode,
+              productName: d.productName,
+              branchId: transfer.branchId,
+              branchName: transfer.branchName,
+              bucket: d.toBucket,
+              transactionType: isOut ? 'CLT_OUT' : 'CLT_IN',
+              refCode: transfer.code,
+              refType: 'clt',
+              refId: id,
+              quantity: isOut ? -Number(d.quantity) : Number(d.quantity),
+              expiryDate: d.expiryDate,
+              costPrice: Number(d.costAtTransfer),
+              transactionDate,
+              note: isOut
+                ? `Điều chỉnh giảm ${BUCKET_LABEL[d.toBucket] || d.toBucket}`
+                : `Chuyển sang ${BUCKET_LABEL[d.toBucket] || d.toBucket}`,
+              createdByName: transfer.createdByName,
+            },
+          });
+        }
+
+        // 4. Validate sau khi ghi: bucket không âm, lô không âm, không vượt hàng tốt.
+        const productIds = [...new Set(fresh.map((d) => d.productId))];
+        for (const productId of productIds) {
+          const totals = await computeBucketTotals(
+            tx,
+            productId,
+            transfer.branchId,
+          );
+          if (totals.damaged < 0 || totals.nearExpiry < 0 || totals.promo < 0) {
+            const d = fresh.find((x) => x.productId === productId);
+            throw new BadRequestException(
+              `${d?.productName}: Sửa phiếu làm tồn loại tồn âm. Kiểm tra lại số lượng.`,
+            );
+          }
+
+          const inv = await tx.inventory.findUnique({
+            where: {
+              productId_branchId: { productId, branchId: transfer.branchId },
+            },
+            select: { onHand: true },
+          });
+          const onHand = inv ? Number(inv.onHand) : 0;
+          const used = totals.damaged + totals.nearExpiry + totals.promo;
+          if (used > onHand) {
+            const d = fresh.find((x) => x.productId === productId);
+            throw new BadRequestException(
+              `${d?.productName}: Tổng đã phân loại (${used}) vượt tồn tổng (${onHand}). Giảm số lượng lại.`,
+            );
+          }
+
+          // Kiểm tra âm PHẢI tự gom theo lô: computeNearExpiryLots đã lọc bỏ
+          // lô <= 0 nên không dùng được để phát hiện lô âm.
+          const rawLots = await tx.stockConditionLog.findMany({
+            where: {
+              productId,
+              branchId: transfer.branchId,
+              bucket: BUCKET_NEAR_EXPIRY,
+            },
+            select: {
+              quantity: true,
+              expiryDate: true,
+              refType: true,
+              refId: true,
+            },
+          });
+          const byLot = new Map<string, number>();
+          const activeKeys = await getActiveLogKeys(tx, rawLots);
+          for (const l of rawLots) {
+            if (!isLogActive(l, activeKeys)) continue;
+            const k = this.lotKey(l.expiryDate) || '';
+            byLot.set(k, (byLot.get(k) ?? 0) + Number(l.quantity));
+          }
+          for (const [k, qty] of byLot.entries()) {
+            if (qty < 0) {
+              const d = fresh.find((x) => x.productId === productId);
+              throw new BadRequestException(
+                `${d?.productName}: Lô cận date ${k || 'chưa xác định NSX'} bị âm (${qty}) sau khi sửa. Cần xác nhận cập nhật cả hóa đơn hoặc chọn lại NSX.`,
+              );
+            }
+          }
+
+          await recalcConditionBuckets(tx, productId, transfer.branchId);
+        }
+      }
+
+      return tx.stockConditionTransfer.findUnique({
+        where: { id },
+        include: INCLUDE_FULL,
+      });
+    });
+
+    const actor = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { id: true, name: true, email: true },
+        })
+      : null;
+
+    await this.auditLogsService.create({
+      actionType: 'PUT',
+      actionCode: 'STOCK_CONDITION_TRANSFER_UPDATE',
+      entityType: 'stock_condition_transfers',
+      entityId: id.toString(),
+      entityCode: transfer.code,
+      category: getCategoryFromActionCode('STOCK_CONDITION_TRANSFER_UPDATE'),
+      severity: getSeverityFromActionCode('STOCK_CONDITION_TRANSFER_UPDATE'),
+      snapshot: this.buildSnapshot(updated),
+      message: renderAuditMessage('STOCK_CONDITION_TRANSFER_UPDATE', {
+        code: transfer.code,
+      }),
+      messageTemplate: 'STOCK_CONDITION_TRANSFER_UPDATE',
+      userId: userId || transfer.createdById || 1,
+      userName: actor?.name || actor?.email || transfer.createdByName || 'System',
+      branchId: transfer.branchId,
+    });
+
+    return updated;
   }
 
   // Hủy phiếu. Nếu đã duyệt: đổi status=3 (sổ cái tự loại các log của phiếu này

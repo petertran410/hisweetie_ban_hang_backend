@@ -21,6 +21,10 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:condition-stock:unit": "jest --runInBand stock-condition-onhand.util.spec.ts invoice-condition-stock.spec.ts",
+    "test:condition-stock:audit": "ts-node prisma/tests/condition-stock-audit.ts",
+    "test:condition-stock:clt": "ts-node prisma/tests/clt-transaction-tests.ts",
+    "test:condition-stock": "yarn test:condition-stock:unit && yarn test:condition-stock:audit && yarn test:condition-stock:clt",
     "backfill:promo-buy-lines": "ts-node prisma/seeds/backfill-promotion-buy-lines.ts",
     "seed:print-promotion-vars": "ts-node prisma/seeds/add-print-promotion-vars.ts",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
@@ -151,6 +155,9 @@
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
+    },
+    "moduleNameMapper": {
+      "^src/(.*)$": "<rootDir>/$1"
     },
     "collectCoverageFrom": [
       "**/*.(t|j)s"

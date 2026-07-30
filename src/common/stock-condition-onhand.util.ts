@@ -56,6 +56,47 @@ export async function computeBucketTotals(
   return totals;
 }
 
+// Tính tổng 3 bucket cho NHIỀU sản phẩm trong 1 chi nhánh (CHỈ ĐỌC).
+// Dùng cho màn bán hàng: dropdown hiển thị nhiều sản phẩm cùng lúc, cần đọc
+// tồn bucket TỪ SỔ CÁI (không đọc cache Inventory vốn có thể trôi khỏi sổ cái
+// do các module cũ còn ghi trực tiếp vào cột cache).
+// Gom 1 query log cho toàn bộ productIds → tránh N+1.
+export async function computeBucketTotalsBatch(
+  tx: any,
+  productIds: number[],
+  branchId: number,
+): Promise<Record<number, BucketTotals>> {
+  const result: Record<number, BucketTotals> = {};
+  const ids = [...new Set(productIds.filter((id) => !!id))];
+  for (const id of ids) {
+    result[id] = { damaged: 0, nearExpiry: 0, promo: 0 };
+  }
+  if (ids.length === 0) return result;
+
+  const logs = await tx.stockConditionLog.findMany({
+    where: { productId: { in: ids }, branchId },
+    select: {
+      productId: true,
+      quantity: true,
+      bucket: true,
+      refType: true,
+      refId: true,
+    },
+  });
+  const activeKeys = await getActiveLogKeys(tx, logs);
+
+  for (const l of logs) {
+    if (!isLogActive(l, activeKeys)) continue;
+    const totals = result[l.productId];
+    if (!totals) continue;
+    const q = Number(l.quantity);
+    if (l.bucket === BUCKET_DAMAGED) totals.damaged += q;
+    else if (l.bucket === BUCKET_NEAR_EXPIRY) totals.nearExpiry += q;
+    else if (l.bucket === BUCKET_PROMO) totals.promo += q;
+  }
+  return result;
+}
+
 // NGUỒN CHÂN LÝ — tính lại 3 bucket từ sổ cái và GHI cache vào Inventory.
 // Trả về tổng bucket mới. KHÔNG đụng onHand.
 export async function recalcConditionBuckets(
@@ -97,6 +138,80 @@ export async function recalcConditionBucketsForPairs(
     if (seen.has(key)) continue;
     seen.add(key);
     await recalcConditionBuckets(tx, p.productId, p.branchId);
+  }
+}
+
+// ====================================================================
+// GHI SỔ CÁI cho các chứng từ làm THAY ĐỔI tồn bucket ngoài phiếu CLT và hóa
+// đơn (trả hàng khách, trả hàng NCC, hoàn hàng ký gửi...).
+//
+// Trước đây các module này ghi TRỰC TIẾP vào cột cache
+// (Inventory.damagedQuantity/...) mà không ghi sổ → cache trôi khỏi sổ cái và
+// không có cách nào kéo về. Dùng helper này để mọi thay đổi bucket đều đi qua
+// sổ cái, giữ đúng bất biến: tồn bucket = Σ log active.
+//
+// quantity mang DẤU: + là cộng vào bucket, − là trừ khỏi bucket.
+// refType BẮT BUỘC phải có finder trong ACTIVE_FINDERS, nếu không log của
+// chứng từ đã hủy sẽ không bị loại khỏi tổng.
+// ====================================================================
+export async function writeConditionLogs(
+  tx: any,
+  params: {
+    productId: number;
+    productCode: string;
+    productName: string;
+    branchId: number;
+    branchName: string;
+    refCode: string;
+    refType: string;
+    refId: number;
+    transactionType: string;
+    transactionDate?: Date;
+    costPrice?: number;
+    createdByName?: string | null;
+    note?: string | null;
+    // Số lượng theo từng bucket (mang dấu). Bỏ qua giá trị 0.
+    damaged?: number;
+    nearExpiry?: number;
+    promo?: number;
+    // Lô (NSX) cho bucket cận date. Không có → null = lô chưa xác định.
+    nearExpiryDate?: Date | null;
+  },
+): Promise<void> {
+  const base = {
+    productId: params.productId,
+    productCode: params.productCode || '',
+    productName: params.productName || '',
+    branchId: params.branchId,
+    branchName: params.branchName || '',
+    transactionType: params.transactionType,
+    refCode: params.refCode,
+    refType: params.refType,
+    refId: params.refId,
+    costPrice: params.costPrice ?? 0,
+    transactionDate: params.transactionDate ?? new Date(),
+    createdByName: params.createdByName ?? null,
+    note: params.note ?? null,
+  };
+
+  const rows: any[] = [];
+  if (params.damaged && params.damaged !== 0) {
+    rows.push({ ...base, bucket: BUCKET_DAMAGED, quantity: params.damaged });
+  }
+  if (params.nearExpiry && params.nearExpiry !== 0) {
+    rows.push({
+      ...base,
+      bucket: BUCKET_NEAR_EXPIRY,
+      quantity: params.nearExpiry,
+      expiryDate: params.nearExpiryDate ?? null,
+    });
+  }
+  if (params.promo && params.promo !== 0) {
+    rows.push({ ...base, bucket: BUCKET_PROMO, quantity: params.promo });
+  }
+
+  for (const row of rows) {
+    await tx.stockConditionLog.create({ data: row });
   }
 }
 
