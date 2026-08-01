@@ -141,7 +141,8 @@ export class PrintTemplatesService {
     for (const [key, value] of Object.entries(data)) {
       if (key !== 'items' && !Array.isArray(value)) {
         const regex = new RegExp(`{${key}}`, 'g');
-        result = result.replace(regex, value?.toString() || '');
+        const replacement = this.formatVariableValue(key, value);
+        result = result.replace(regex, () => replacement);
       }
     }
 
@@ -175,9 +176,10 @@ export class PrintTemplatesService {
           let itemRow = row;
           for (const key of itemKeys) {
             const value = item[key] ?? '';
+            const replacement = this.formatVariableValue(key, value);
             itemRow = itemRow.replace(
               new RegExp(`{${key}}`, 'g'),
-              value.toString(),
+              () => replacement,
             );
           }
           return itemRow;
@@ -188,6 +190,22 @@ export class PrintTemplatesService {
     }
 
     return content;
+  }
+
+  private formatVariableValue(key: string, value: any): string {
+    const text = value?.toString() || '';
+    if (!key.startsWith('Ghi_Chu')) return text;
+
+    return this.escapeHtml(text).replace(/\r\n|\r|\n/g, '<br />');
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ==================== DISPATCHER ====================
