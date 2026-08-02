@@ -53,6 +53,7 @@
     "seed:consignment-print": "ts-node prisma/seeds/add-consignment-print-template.ts",
     "seed:consignment-delivery-print": "ts-node prisma/seeds/add-consignment-delivery-template.ts",
     "seed:consignment-return-print": "ts-node prisma/seeds/add-consignment-return-template.ts",
+    "seed:supplier-return-print": "ts-node prisma/seeds/add-supplier-return-print-template.ts",
     "seed:print-purchase-order-vars": "ts-node prisma/seeds/sync-purchase-order-variables.ts",
     "seed:contracts": "ts-node prisma/seeds/add-contract-permissions.ts",
     "seed:contract-signer": "ts-node prisma/seeds/add-contract-signer-permission.ts",

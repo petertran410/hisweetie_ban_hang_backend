@@ -255,6 +255,10 @@ export class PrintTemplatesService {
         return this.mapPurchaseOrder(await this.loadPurchaseOrder(entityId));
       case 'return_order':
         return this.mapReturnOrder(await this.loadReturnOrder(entityId));
+      case 'supplier_return':
+        return this.mapSupplierReturn(
+          await this.loadSupplierReturn(entityId),
+        );
       case 'transfer':
         return this.mapTransfer(await this.loadTransfer(entityId));
       case 'internal_use':
@@ -449,6 +453,21 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('ReturnOrder not found');
+    return entity;
+  }
+
+  private async loadSupplierReturn(id: number) {
+    const entity = await this.prisma.supplierReturn.findUnique({
+      where: { id },
+      include: {
+        supplier: true,
+        branch: true,
+        creator: true,
+        purchaseOrder: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('SupplierReturn not found');
     return entity;
   }
 
@@ -791,6 +810,37 @@ export class PrintTemplatesService {
         So_Luong: Number(d.requestQuantity),
         Don_Gia: this.money(d.returnPrice),
         Don_Gia_Sau_Chiet_Khau: this.money(d.returnPrice),
+        Ghi_Chu_Hang_Hoa: d.note || '',
+        Thanh_Tien: this.money(d.totalAmount),
+      })),
+    };
+  }
+
+  // Mapper phiếu trả hàng nhập (supplier_return): trả hàng cho nhà cung cấp.
+  // - Dùng supplierVars (NCC) thay cho customerVars.
+  // - Ma_Nhap_Hang_Goc = mã phiếu nhập gốc (nếu trả theo phiếu nhập).
+  // - So_Luong = requestQuantity; Don_Gia = returnPrice; Thanh_Tien = totalAmount.
+  private mapSupplierReturn(sr: any) {
+    const totalReturn = Number(sr.totalReturnAmount || 0);
+    return {
+      ...this.storeVars(sr.branch),
+      ...this.dateVars(sr.createdAt),
+      ...this.supplierVars(sr.supplier),
+      Ma_Tra_Hang_Nhap: sr.code || '',
+      Ma_Nhap_Hang_Goc: sr.purchaseOrder?.code || '',
+      Nhan_Vien_Ban_Hang: sr.creator?.name || sr.createdByName || '',
+      Nguoi_Lap: sr.creator?.name || sr.createdByName || '',
+      Ghi_Chu: sr.note || '',
+      Tong_Tien_Tra: this.money(totalReturn),
+      Tien_Hoan: this.money(sr.refundAmount),
+      Da_Hoan_Tra: this.money(sr.refundedAmount),
+      Tong_Tien_Tra_Bang_Chu: this.numberToWords(totalReturn),
+      items: (sr.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || d.product?.code || '',
+        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        Don_Vi_Tinh: d.product?.unit || '',
+        So_Luong: Number(d.requestQuantity || 0),
+        Don_Gia: this.money(d.returnPrice),
         Ghi_Chu_Hang_Hoa: d.note || '',
         Thanh_Tien: this.money(d.totalAmount),
       })),
