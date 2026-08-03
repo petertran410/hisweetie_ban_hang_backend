@@ -3160,6 +3160,7 @@ model Promotion {
   priority          Int       @default(0)
   stackable         Boolean   @default(false)
   unitMode          String    @default("unit") @map("unit_mode")
+  deductPromoStock  Boolean   @default(true) @map("deduct_promo_stock")
   startDate         DateTime?
   endDate           DateTime?
   applyTimeFrom     String?

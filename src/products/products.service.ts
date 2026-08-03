@@ -2131,9 +2131,40 @@ export class ProductsService {
     const activeKeys = await getActiveLogKeys(this.prisma, rawLogs);
     const activeLogs = rawLogs.filter((log) => isLogActive(log, activeKeys));
 
+    // Gộp các dòng cùng CHỨNG TỪ trong cùng bucket thành 1 dòng (cộng dồn
+    // quantity). Một hóa đơn có thể sinh nhiều dòng log cùng bucket cho cùng SP
+    // (vd: hàng điều kiện X + hàng tặng Y đều trừ PROMO) — hiển thị tách sẽ gây
+    // hiểu nhầm "trừ 2 lần". Khóa gộp gồm cả expiryDate để KHÔNG gộp nhầm các
+    // lô cận date (NEAR_EXPIRY) khác NSX.
+    const mergedMap = new Map<string, (typeof activeLogs)[number]>();
+    const mergedOrder: string[] = [];
+    for (const log of activeLogs) {
+      const expiryKey = log.expiryDate
+        ? new Date(log.expiryDate).toISOString()
+        : '';
+      const key = [
+        log.refType ?? '',
+        log.refId ?? '',
+        log.refCode ?? '',
+        log.transactionType ?? '',
+        expiryKey,
+      ].join('|');
+      const existing = mergedMap.get(key);
+      if (existing) {
+        // activeLogs đã sort desc; giữ log đầu tiên (mới nhất) làm đại diện,
+        // chỉ cộng thêm quantity của dòng cùng chứng từ.
+        (existing as any).quantity =
+          Number(existing.quantity) + Number(log.quantity);
+      } else {
+        mergedMap.set(key, { ...log });
+        mergedOrder.push(key);
+      }
+    }
+    const mergedLogs = mergedOrder.map((key) => mergedMap.get(key)!);
+
     // Cộng dồn xuôi (cũ → mới) để ra tồn cuối từng dòng.
-    const withBalance = activeLogs.map(
-      (log) => ({ ...log }) as (typeof activeLogs)[number] & { tonCuoi: number },
+    const withBalance = mergedLogs.map(
+      (log) => ({ ...log }) as (typeof mergedLogs)[number] & { tonCuoi: number },
     );
     let running = 0;
     for (let i = withBalance.length - 1; i >= 0; i--) {

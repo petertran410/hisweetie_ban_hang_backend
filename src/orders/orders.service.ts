@@ -155,8 +155,6 @@ export class OrdersService {
     extraDiscount: number;
     logs: any[];
   }> {
-    // Bỏ dòng gift do engine sinh (có promotionId) — BE tự sinh lại.
-    // GIỮ dòng gift thủ công (đánh dấu gift, không gắn promotionId).
     const baseItems: OrderItemDto[] = dto.items
       .filter(
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
@@ -164,10 +162,6 @@ export class OrdersService {
       .map((it) => {
         const lineType = it.lineType || 'normal';
         const manualGift = lineType === 'gift' && it.promotionId == null;
-        // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
-        // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
-        // (dòng thường không phải hàng X bị dính promotionId của quà cùng mã SP).
-        // Giữ nguyên cho discounted_buy (cần để validate) và gift thủ công.
         const derivedNormalStamp = lineType === 'normal';
         return {
           productId: it.productId,
@@ -202,9 +196,15 @@ export class OrdersService {
         ? dto.appliedPromotions.map((c) => c.promotionId)
         : (dto.appliedPromotionIds ?? []);
 
-    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
+    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng).
+    // Chỉ hàng loại tồn 'normal' mới được hưởng/tính vào ngưỡng KM — hàng bục rách
+    // (damaged) và cận date (near_expiry) LOẠI khỏi engine (không tính ngưỡng, không sinh quà).
     const engineItems = baseItems
-      .filter((it) => (it.lineType || 'normal') === 'normal')
+      .filter(
+        (it) =>
+          (it.lineType || 'normal') === 'normal' &&
+          (it.conditionType || 'normal') === 'normal',
+      )
       .map((it) => ({
         productId: it.productId,
         quantity: Number(it.quantity),
@@ -277,7 +277,8 @@ export class OrdersService {
         const target = baseItems.find(
           (it) =>
             it.productId === dl.productId &&
-            (it.lineType || 'normal') === 'normal',
+            (it.lineType || 'normal') === 'normal' &&
+            (it.conditionType || 'normal') === 'normal',
         );
         if (target) {
           target.discount =
@@ -296,6 +297,7 @@ export class OrdersService {
         for (const it of baseItems) {
           if (
             (it.lineType || 'normal') === 'normal' &&
+            (it.conditionType || 'normal') === 'normal' &&
             it.promotionId == null &&
             matchedIds.includes(it.productId)
           ) {

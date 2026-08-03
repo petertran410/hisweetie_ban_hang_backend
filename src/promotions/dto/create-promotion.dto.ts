@@ -127,6 +127,12 @@ export class CreatePromotionDto {
   @IsIn(UNIT_MODES as unknown as string[])
   unitMode?: string;
 
+  // Chỉ áp dụng cho BUY_X_GET_Y / BUY_N_GET_M_SAME: trừ cả hàng X và hàng
+  // tặng Y vào tồn kho khuyến mãi (promoQuantity). Mặc định bật.
+  @IsOptional()
+  @IsBoolean()
+  deductPromoStock?: boolean;
+
   @IsOptional()
   @IsString()
   startDate?: string;

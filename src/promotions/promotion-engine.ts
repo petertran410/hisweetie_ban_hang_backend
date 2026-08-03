@@ -50,6 +50,10 @@ export interface EnginePromotion {
   type: string;
   priority: number;
   stackable: boolean;
+  // Chỉ có ý nghĩa với BUY_X_GET_Y / BUY_N_GET_M_SAME. Khi true: cả hàng điều
+  // kiện (X) lẫn hàng tặng (Y) đều trừ vào tồn kho khuyến mãi (PROMO bucket)
+  // thay vì trừ hàng tốt. Mặc định true.
+  deductPromoStock?: boolean;
   // "unit" (gói) | "carton" (thùng). carton: buyQuantity/rewardQuantity tính
   // theo thùng; engine quy đổi số gói trong giỏ → thùng theo conversionValue.
   unitMode?: string;
@@ -124,6 +128,8 @@ export interface PromotionResult {
   scope: string; // INVOICE | product:<id> | category:<name>
   priority: number;
   stackable: boolean;
+  // Xem EnginePromotion.deductPromoStock. FE dùng để cảnh báo tồn PROMO.
+  deductPromoStock?: boolean;
   discountAmount: number;
   giftLines: GiftLine[];
   discountedBuyLines: DiscountedBuyLine[];
@@ -459,6 +465,7 @@ export function computeReward(
     selected: p.autoApply,
     priority: p.priority,
     stackable: p.stackable,
+    deductPromoStock: p.deductPromoStock,
   };
 
   const stockOf = (pid: number) => ctx.stockMap[pid] ?? 0;

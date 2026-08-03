@@ -1030,9 +1030,15 @@ export class InvoicesService {
         ? dto.appliedPromotions.map((c) => c.promotionId)
         : (dto.appliedPromotionIds ?? []);
 
-    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
+    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng).
+    // Chỉ hàng loại tồn 'normal' mới được hưởng/tính vào ngưỡng KM — hàng bục rách
+    // (damaged) và cận date (near_expiry) LOẠI khỏi engine (không tính ngưỡng, không sinh quà).
     const engineItems = baseItems
-      .filter((it) => it.lineType === 'normal')
+      .filter(
+        (it) =>
+          it.lineType === 'normal' &&
+          (it.conditionType || 'normal') === 'normal',
+      )
       .map((it) => ({
         productId: it.productId,
         quantity: it.quantity,
@@ -1152,7 +1158,10 @@ export class InvoicesService {
       // 2) Giảm giá dòng (PRODUCT/CATEGORY_DISCOUNT)
       for (const dl of r.discountLines) {
         const target = baseItems.find(
-          (it) => it.productId === dl.productId && it.lineType === 'normal',
+          (it) =>
+            it.productId === dl.productId &&
+            it.lineType === 'normal' &&
+            (it.conditionType || 'normal') === 'normal',
         );
         if (target) {
           target.discount += Number(dl.perUnitDiscount);
@@ -1172,6 +1181,7 @@ export class InvoicesService {
         for (const it of baseItems) {
           if (
             it.lineType === 'normal' &&
+            (it.conditionType || 'normal') === 'normal' &&
             it.promotionId == null &&
             matchedIds.includes(it.productId)
           ) {
@@ -1310,7 +1320,10 @@ export class InvoicesService {
         const code = await this.generateSafeInvoiceCode(tx);
 
         const promo = await this.processPromotions(tx, dto);
-        const effectiveItems = promo.effectiveItems;
+        const effectiveItems = await this.markPromoStockDeductionItems(
+          tx,
+          promo.effectiveItems,
+        );
 
         const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
@@ -1572,6 +1585,7 @@ export class InvoicesService {
             where: { productId: item.productId, branchId: dto.branchId },
             data: this.buildInventoryDeductData(item.quantity, condition, {
               isGift: !!(item.isGift || item.lineType === 'gift'),
+              deductPromoStock: !!item.deductPromoStock,
             }),
           });
           touchedProductIds.add(item.productId);
@@ -1854,6 +1868,10 @@ export class InvoicesService {
           extraInvoiceDiscount = promo.extraInvoiceDiscount;
           promoLogs = promo.logs;
         }
+        effectiveItems = await this.markPromoStockDeductionItems(
+          tx,
+          effectiveItems,
+        );
 
         const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
@@ -2096,6 +2114,7 @@ export class InvoicesService {
             },
             data: this.buildInventoryDeductData(item.quantity, condition, {
               isGift: !!(item.isGift || item.lineType === 'gift'),
+              deductPromoStock: !!item.deductPromoStock,
             }),
           });
           touchedProductIds.add(item.productId);
@@ -2862,12 +2881,15 @@ export class InvoicesService {
       // KHÔNG suy đoán từ dòng quà: khi SP quà trùng mã một SP bán thường
       // (vd tặng "testcombo1" trong khi cũng bán "testcombo1"), việc gán id của
       // quà cho dòng thường sẽ dán nhầm badge KM lên hàng bán giá thường.
+      // Chỉ kế thừa cho dòng conditionType='normal' — hàng bục rách (damaged) /
+      // cận date (near_expiry) KHÔNG hưởng KM nên không cần mang promotionId.
       const orderNormalPromoByProduct = new Map<number, number>();
       for (const oi of order.items) {
         if (
           oi.productId != null &&
           (oi as any).promotionId != null &&
-          !isPromoGiftLine(oi)
+          !isPromoGiftLine(oi) &&
+          ((oi as any).conditionType || 'normal') === 'normal'
         ) {
           orderNormalPromoByProduct.set(
             oi.productId,
@@ -2883,6 +2905,15 @@ export class InvoicesService {
             lineType: item.lineType || (item.isGift ? 'gift' : 'normal'),
             isGift: !!(item.isGift || item.lineType === 'gift'),
             promotionId: item.promotionId ?? null,
+          };
+        }
+        // Hàng bục rách / cận date không được hưởng KM → luôn promotionId=null.
+        if ((item.conditionType || 'normal') !== 'normal') {
+          return {
+            ...item,
+            lineType: item.lineType || 'normal',
+            isGift: false,
+            promotionId: null,
           };
         }
         let promotionId =
@@ -2940,6 +2971,10 @@ export class InvoicesService {
         extraInvoiceDiscount = promo.extraInvoiceDiscount;
         promoLogs = promo.logs;
       }
+      effectiveItems = await this.markPromoStockDeductionItems(
+        tx,
+        effectiveItems,
+      );
 
       const totalAmount = effectiveItems.reduce(
         (sum, item) => sum + item.totalPrice,
@@ -3185,6 +3220,7 @@ export class InvoicesService {
           where: { productId: item.productId, branchId: order.branchId },
           data: this.buildInventoryDeductData(item.quantity, condition, {
             isGift: !!(item.isGift || item.lineType === 'gift'),
+            deductPromoStock: !!item.deductPromoStock,
           }),
         });
         touchedProductIds.add(item.productId);
@@ -4485,18 +4521,55 @@ export class InvoicesService {
   }
 
   /**
-   * Xây dựng data object để trừ kho dựa trên conditionType.
-   * Gộp onHand + damaged/nearExpiry vào 1 lần updateMany duy nhất.
+   * Đánh dấu dòng X phải trừ vào bucket PROMO theo cấu hình CTKM.
+   * Dòng quà Y vốn đã trừ PROMO qua isGift; damaged/near_expiry không bị đổi.
    */
+  private async markPromoStockDeductionItems(
+    tx: any,
+    items: any[],
+  ): Promise<any[]> {
+    const promotionIds = Array.from(
+      new Set(
+        items
+          .filter(
+            (item) =>
+              item.promotionId != null &&
+              (item.conditionType || 'normal') === 'normal',
+          )
+          .map((item) => Number(item.promotionId)),
+      ),
+    ).filter((id) => Number.isInteger(id)) as number[];
+
+    if (promotionIds.length === 0) return items;
+
+    const promotions = await tx.promotion.findMany({
+      where: {
+        id: { in: promotionIds },
+        type: { in: ['BUY_X_GET_Y', 'BUY_N_GET_M_SAME'] },
+        deductPromoStock: true,
+      },
+      select: { id: true },
+    });
+    const enabledIds = new Set(promotions.map((promotion: any) => promotion.id));
+
+    return items.map((item) => ({
+      ...item,
+      deductPromoStock:
+        (item.conditionType || 'normal') === 'normal' &&
+        item.promotionId != null &&
+        enabledIds.has(Number(item.promotionId)),
+    }));
+  }
+
   /**
    * Trừ kho khi xuất HĐ.
    * - conditionType damaged/near_expiry: trừ bucket tương ứng
-   * - isGift: trừ promoQuantity (cho phép âm khi xuất vượt phân bổ KM)
+   * - isGift/deductPromoStock: trừ promoQuantity (cho phép âm)
    */
   private buildInventoryDeductData(
     quantity: number,
     conditionType?: string,
-    opts?: { isGift?: boolean },
+    opts?: { isGift?: boolean; deductPromoStock?: boolean },
   ): Record<string, any> {
     const data: Record<string, any> = {
       onHand: { decrement: quantity },
@@ -4506,7 +4579,7 @@ export class InvoicesService {
     } else if (conditionType === 'near_expiry') {
       data.nearExpiryQuantity = { decrement: quantity };
     }
-    if (opts?.isGift) {
+    if (opts?.isGift || opts?.deductPromoStock) {
       data.promoQuantity = { decrement: quantity };
     }
     return data;
@@ -4613,7 +4686,7 @@ export class InvoicesService {
     let bucket: string | null = null;
     if (item.conditionType === 'damaged') bucket = BUCKET_DAMAGED;
     else if (item.conditionType === 'near_expiry') bucket = BUCKET_NEAR_EXPIRY;
-    else if (isGift) bucket = BUCKET_PROMO;
+    else if (isGift || item.deductPromoStock) bucket = BUCKET_PROMO;
     if (!bucket) return;
 
     await tx.stockConditionLog.create({
