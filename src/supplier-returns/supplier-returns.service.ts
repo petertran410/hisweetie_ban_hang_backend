@@ -21,18 +21,16 @@ import {
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 import {
-<<<<<<< HEAD
-  buildInventoryLogActor,
-  buildInventoryLogBase,
-} from '../common/inventory-log.util';
-=======
   recalcConditionBucketsForPairs,
   writeConditionLogs,
   computeBucketTotals,
   computeNearExpiryLots,
 } from '../common/stock-condition-onhand.util';
->>>>>>> build_mcp
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from 'src/common/inventory-log.util';
 
 @Injectable()
 export class SupplierReturnsService {
@@ -957,8 +955,7 @@ export class SupplierReturnsService {
           const available =
             condition === 'damaged' ? totals.damaged : totals.nearExpiry;
           if (available < confirmedQty) {
-            const label =
-              condition === 'damaged' ? 'bục rách' : 'cận date';
+            const label = condition === 'damaged' ? 'bục rách' : 'cận date';
             throw new BadRequestException(
               `Sản phẩm ${detail.productName}: Tồn kho hàng ${label} không đủ (cần ${confirmedQty}, còn ${available})`,
             );
@@ -978,25 +975,25 @@ export class SupplierReturnsService {
         });
         touchedProductIds.add(detail.productId);
 
-  // Ghi sổ cái loại tồn: xuất trả NCC từ bucket nào thì trừ bucket đó.
-  if (condition === 'damaged' || condition === 'near_expiry') {
-    await writeConditionLogs(tx, {
-      productId: detail.productId,
-      productCode: detail.productCode,
-      productName: detail.productName,
-      branchId: supplierReturn.branchId,
-      branchName: supplierReturn.branch?.name || '',
-      refCode: supplierReturn.code,
-      refType: 'supplier_return',
-      refId: supplierReturn.id,
-      transactionType: 'SUPPLIER_RETURN_OUT',
-      costPrice: Number(inv.cost || 0),
-      note: 'Xuất trả nhà cung cấp',
-      damaged: condition === 'damaged' ? -confirmedQty : 0,
-      nearExpiry: condition === 'near_expiry' ? -confirmedQty : 0,
-      nearExpiryDate: detail.manufactureDate ?? null,
-    });
-  }
+        // Ghi sổ cái loại tồn: xuất trả NCC từ bucket nào thì trừ bucket đó.
+        if (condition === 'damaged' || condition === 'near_expiry') {
+          await writeConditionLogs(tx, {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: supplierReturn.branchId,
+            branchName: supplierReturn.branch?.name || '',
+            refCode: supplierReturn.code,
+            refType: 'supplier_return',
+            refId: supplierReturn.id,
+            transactionType: 'SUPPLIER_RETURN_OUT',
+            costPrice: Number(inv.cost || 0),
+            note: 'Xuất trả nhà cung cấp',
+            damaged: condition === 'damaged' ? -confirmedQty : 0,
+            nearExpiry: condition === 'near_expiry' ? -confirmedQty : 0,
+            nearExpiryDate: detail.manufactureDate ?? null,
+          });
+        }
 
         await tx.inventoryLog.create({
           data: {
