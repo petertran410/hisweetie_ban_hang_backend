@@ -34,6 +34,14 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
+import {
+  BUCKET_DAMAGED,
+  BUCKET_NEAR_EXPIRY,
+  BUCKET_PROMO,
+  computeBucketTotals,
+  computeNearExpiryLots,
+  recalcConditionBucketsForPairs,
+} from 'src/common/stock-condition-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import {
@@ -996,6 +1004,7 @@ export class InvoicesService {
           totalPrice: manualGift ? 0 : Number(it.totalPrice),
           note: it.note,
           conditionType: it.conditionType || 'normal',
+          soldExpiryDate: it.soldExpiryDate ? new Date(it.soldExpiryDate) : null,
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
@@ -1417,6 +1426,9 @@ export class InvoicesService {
                   totalPrice: item.totalPrice,
                   note: item.note,
                   conditionType: item.conditionType || 'normal',
+                  soldExpiryDate: item.soldExpiryDate
+                    ? new Date(item.soldExpiryDate)
+                    : null,
                   lineType: item.lineType || 'normal',
                   isGift: item.isGift || false,
                   promotionId: item.promotionId ?? null,
@@ -1553,6 +1565,7 @@ export class InvoicesService {
             dto.branchId!,
             item.quantity,
             condition,
+            item.soldExpiryDate,
           );
 
           await tx.inventory.updateMany({
@@ -1587,7 +1600,27 @@ export class InvoicesService {
               ...buildInventoryLogBase(logActor),
             },
           });
+
+          // Sổ cái loại tồn: trừ bucket (damaged/near_expiry/PROMO) khi bán.
+          await this.writeSaleConditionLog(tx, {
+            item,
+            branchId: dto.branchId!,
+            branchName: branch?.name || '',
+            invoiceCode: invoice.code,
+            invoiceId: invoice.id,
+            transactionDate: invoice.purchaseDate,
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          });
         }
+
+        // Recalc cache bucket từ sổ cái cho mọi sản phẩm vừa bán.
+        await recalcConditionBucketsForPairs(
+          tx,
+          effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: dto.branchId!,
+          })),
+        );
 
         // Ghi log khuyến mãi đã áp + tăng usageCount
         if (promo.logs.length > 0) {
@@ -1934,6 +1967,9 @@ export class InvoicesService {
                 totalPrice: item.totalPrice,
                 note: item.note,
                 conditionType: item.conditionType || 'normal',
+                soldExpiryDate: item.soldExpiryDate
+                  ? new Date(item.soldExpiryDate)
+                  : null,
                 lineType: item.lineType || 'normal',
                 isGift: item.isGift || false,
                 promotionId: item.promotionId ?? null,
@@ -2051,6 +2087,7 @@ export class InvoicesService {
             newInvoice.branchId || 1,
             item.quantity,
             condition,
+            item.soldExpiryDate,
           );
           await tx.inventory.updateMany({
             where: {
@@ -2088,6 +2125,17 @@ export class InvoicesService {
               ...buildInventoryLogBase(versioningLogActor),
             },
           });
+
+          // Sổ cái loại tồn cho HĐ .xx.
+          await this.writeSaleConditionLog(tx, {
+            item,
+            branchId: newInvoice.branchId || 1,
+            branchName: newInvoice.branch?.name || '',
+            invoiceCode: newInvoice.code,
+            invoiceId: newInvoice.id,
+            transactionDate: newInvoice.purchaseDate,
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          });
         }
 
         // Ghi log KM mới + tăng usageCount cho HĐ .xx.
@@ -2105,6 +2153,18 @@ export class InvoicesService {
         // HĐ cũ đã hủy + trừ kho HĐ mới). Σ log active tự loại log HĐ cũ
         // (status=2) và cộng log HĐ mới.
         await recalcOnHandForPairs(tx, [
+          ...currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+          ...effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: newInvoice.branchId || 1,
+          })),
+        ]);
+
+        // Recalc cache bucket từ sổ cái (HĐ cũ hủy + HĐ .xx mới).
+        await recalcConditionBucketsForPairs(tx, [
           ...currentInvoice.details.map((d) => ({
             productId: d.productId,
             branchId: currentInvoice.branchId || 1,
@@ -2440,6 +2500,9 @@ export class InvoicesService {
             totalPrice: item.totalPrice,
             note: item.note,
             conditionType: item.conditionType || 'normal',
+            soldExpiryDate: item.soldExpiryDate
+              ? new Date(item.soldExpiryDate)
+              : null,
             lineType: item.lineType || 'normal',
             isGift: item.isGift || false,
             promotionId: item.promotionId ?? null,
@@ -2528,6 +2591,15 @@ export class InvoicesService {
       // thành inactive → recalc onHand = Σ log active cho các sản phẩm của HĐ.
       if (dto.status === INVOICE_STATUS.CANCELLED && currentInvoice.branchId) {
         await recalcOnHandForPairs(
+          tx,
+          currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId!,
+          })),
+        );
+        // Log SALE_OUT của HĐ (status=2) trở thành inactive → recalc bucket
+        // để hoàn lại tồn loại tồn (damaged/near_expiry/PROMO).
+        await recalcConditionBucketsForPairs(
           tx,
           currentInvoice.details.map((d) => ({
             productId: d.productId,
@@ -2770,6 +2842,7 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: (item as any).conditionType || 'normal',
+              soldExpiryDate: (item as any).soldExpiryDate ?? null,
               lineType: (item as any).lineType || 'normal',
               isGift: (item as any).isGift || false,
               promotionId: (item as any).promotionId ?? null,
@@ -2925,6 +2998,9 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
+              soldExpiryDate: item.soldExpiryDate
+                ? new Date(item.soldExpiryDate)
+                : null,
               lineType: item.lineType || 'normal',
               isGift: item.isGift || false,
               promotionId: item.promotionId ?? null,
@@ -3103,6 +3179,7 @@ export class InvoicesService {
           order.branchId,
           item.quantity,
           condition,
+          item.soldExpiryDate,
         );
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
@@ -3130,6 +3207,17 @@ export class InvoicesService {
             partnerName: order.customer?.name || null,
             ...buildInventoryLogBase(fromOrderLogActor),
           },
+        });
+
+        // Sổ cái loại tồn khi xuất HĐ từ đơn hàng.
+        await this.writeSaleConditionLog(tx, {
+          item,
+          branchId: order.branchId,
+          branchName: branch?.name || '',
+          invoiceCode: invoice.code,
+          invoiceId: invoice.id,
+          transactionDate: invoice.purchaseDate,
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
         });
       }
 
@@ -3167,6 +3255,15 @@ export class InvoicesService {
       }
 
       await recalcOnHandForPairs(
+        tx,
+        effectiveItems.map((i) => ({
+          productId: i.productId,
+          branchId: order.branchId,
+        })),
+      );
+
+      // Recalc cache bucket từ sổ cái cho mọi sản phẩm vừa xuất HĐ từ đơn.
+      await recalcConditionBucketsForPairs(
         tx,
         effectiveItems.map((i) => ({
           productId: i.productId,
@@ -3474,6 +3571,9 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
+              soldExpiryDate: (item as any).soldExpiryDate
+                ? new Date((item as any).soldExpiryDate)
+                : null,
               manufactureDate:
                 item.manufactureDate ??
                 mfgDateByProduct[item.productId] ??
@@ -4436,8 +4536,9 @@ export class InvoicesService {
   }
 
   /**
-   * Validate số lượng damaged/nearExpiry trước khi trừ kho.
-   * Chỉ validate nếu conditionType !== 'normal'.
+   * Validate số lượng damaged/near_expiry trước khi trừ kho — ĐỌC TỪ SỔ CÁI
+   * StockConditionLog (nguồn chân lý), KHÔNG đọc cột cache Inventory (có thể
+   * stale trước recalc). Với near_expiry còn kiểm tồn theo từng lô (expiryDate).
    */
   private async validateConditionQuantity(
     tx: any,
@@ -4445,30 +4546,98 @@ export class InvoicesService {
     branchId: number,
     quantity: number,
     conditionType?: string,
+    soldExpiryDate?: string | Date | null,
   ): Promise<void> {
     if (!conditionType || conditionType === 'normal') return;
 
-    const inventory = await tx.inventory.findUnique({
-      where: { productId_branchId: { productId, branchId } },
-    });
-
-    if (!inventory) return;
+    const totals = await computeBucketTotals(tx, productId, branchId);
 
     if (conditionType === 'damaged') {
-      const available = Number(inventory.damagedQuantity || 0);
-      if (quantity > available) {
+      if (quantity > totals.damaged) {
         throw new BadRequestException(
-          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng bục rách, không đủ ${quantity}`,
+          `Sản phẩm (ID: ${productId}) chỉ có ${totals.damaged} hàng bục rách, không đủ ${quantity}`,
         );
       }
     } else if (conditionType === 'near_expiry') {
-      const available = Number(inventory.nearExpiryQuantity || 0);
-      if (quantity > available) {
+      if (quantity > totals.nearExpiry) {
         throw new BadRequestException(
-          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng cận date, không đủ ${quantity}`,
+          `Sản phẩm (ID: ${productId}) chỉ có ${totals.nearExpiry} hàng cận date, không đủ ${quantity}`,
+        );
+      }
+      // LUÔN validate theo LÔ, kể cả khi không chọn lô cụ thể.
+      //
+      // Không chọn lô → dòng bán được ghi sổ với expiryDate = null, tức trừ vào
+      // "lô chưa xác định NSX". Nếu chỉ validate theo TỔNG, người bán có thể
+      // bán số lượng lớn hơn tồn của lô null (vì tổng gồm cả các lô khác) →
+      // lô null bị âm dù tổng bucket vẫn dương.
+      const wanted = soldExpiryDate
+        ? new Date(soldExpiryDate).toISOString().slice(0, 10)
+        : null;
+      const lots = await computeNearExpiryLots(tx, productId, branchId);
+      const lot = lots.find((l) => l.expiryDate === wanted);
+      const lotQty = lot ? lot.quantity : 0;
+      if (quantity > lotQty) {
+        const lotLabel = wanted
+          ? `lô cận date ${wanted}`
+          : 'lô cận date chưa xác định NSX';
+        throw new BadRequestException(
+          `Sản phẩm (ID: ${productId}) ${lotLabel} chỉ còn ${lotQty}, không đủ ${quantity}. Vui lòng chọn lô (NSX) phù hợp.`,
         );
       }
     }
+  }
+
+  /**
+   * Ghi sổ cái StockConditionLog cho 1 dòng hóa đơn khi XUẤT BÁN (SALE_OUT).
+   * Chỉ ghi nếu dòng thuộc 1 bucket (damaged/near_expiry hoặc quà = PROMO).
+   * quantity ghi ÂM (rời khỏi bucket). Không ghi log đảo khi hủy — active-finder
+   * refType='invoice' (status != 2) tự loại log của hóa đơn đã hủy khi recalc.
+   */
+  private async writeSaleConditionLog(
+    tx: any,
+    params: {
+      item: any;
+      branchId: number;
+      branchName: string;
+      invoiceCode: string;
+      invoiceId: number;
+      transactionDate: Date;
+      costPrice?: number;
+      createdByName?: string | null;
+    },
+  ): Promise<void> {
+    const { item } = params;
+    if (item.productId == null) return;
+
+    const isGift = !!(item.isGift || item.lineType === 'gift');
+    let bucket: string | null = null;
+    if (item.conditionType === 'damaged') bucket = BUCKET_DAMAGED;
+    else if (item.conditionType === 'near_expiry') bucket = BUCKET_NEAR_EXPIRY;
+    else if (isGift) bucket = BUCKET_PROMO;
+    if (!bucket) return;
+
+    await tx.stockConditionLog.create({
+      data: {
+        productId: item.productId,
+        productCode: item.productCode || '',
+        productName: item.productName || '',
+        branchId: params.branchId,
+        branchName: params.branchName || '',
+        bucket,
+        transactionType: 'SALE_OUT',
+        refCode: params.invoiceCode,
+        refType: 'invoice',
+        refId: params.invoiceId,
+        quantity: -Number(item.quantity),
+        expiryDate:
+          bucket === BUCKET_NEAR_EXPIRY && item.soldExpiryDate
+            ? new Date(item.soldExpiryDate)
+            : null,
+        costPrice: params.costPrice ?? 0,
+        transactionDate: params.transactionDate,
+        createdByName: params.createdByName ?? null,
+      },
+    });
   }
 
   private async buildInvoiceExportWhere(query: InvoiceQueryDto): Promise<any> {

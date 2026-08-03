@@ -24,6 +24,10 @@ import {
 import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+} from 'src/common/stock-condition-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import {
   buildInventoryLogActor,
@@ -863,12 +867,6 @@ export class ReturnOrdersService {
             },
             update: {
               onHand: { increment: totalConfirmed },
-              ...(damagedQty > 0 && {
-                damagedQuantity: { increment: damagedQty },
-              }),
-              ...(nearExpiryQty > 0 && {
-                nearExpiryQuantity: { increment: nearExpiryQty },
-              }),
             },
             create: {
               productId: detail.productId,
@@ -877,11 +875,28 @@ export class ReturnOrdersService {
               branchId: returnOrder.branchId,
               branchName: branch?.name || '',
               onHand: totalConfirmed,
-              damagedQuantity: damagedQty,
-              nearExpiryQuantity: nearExpiryQty,
             },
           });
           touchedProductIds.add(detail.productId);
+
+  // Bucket đi qua SỔ CÁI (không ghi trực tiếp cột cache nữa) để tồn
+  // loại tồn luôn = Σ log active. Cache được recalc ở cuối luồng.
+  await writeConditionLogs(tx, {
+    productId: detail.productId,
+    productCode: detail.productCode,
+    productName: detail.productName,
+    branchId: returnOrder.branchId,
+    branchName: branch?.name || '',
+    refCode: returnOrder.code,
+    refType: 'return_order',
+    refId: returnOrder.id,
+    transactionType: 'RETURN_IN',
+    createdByName: user?.name || null,
+    note: 'Nhập hàng trả từ khách',
+    damaged: damagedQty,
+    nearExpiry: nearExpiryQty,
+    nearExpiryDate: (detail as any).manufactureDate ?? null,
+  });
 
           await tx.inventoryLog.create({
             data: {
@@ -906,18 +921,19 @@ export class ReturnOrdersService {
       }
 
       // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log RETURN cho mọi
-      // item, recalc lại onHand (đè increment rời rạc). KHÔNG đụng
-      // damaged/nearExpiry — các field đó vẫn do upsert ở trên quản lý.
-      await recalcOnHandForPairs(
-        tx,
-        dto.details.map((d) => {
-          const detail = returnOrder.details.find((rd) => rd.id === d.detailId);
-          return {
-            productId: detail?.productId,
-            branchId: returnOrder.branchId,
-          };
-        }),
-      );
+      // item, recalc lại onHand (đè increment rời rạc).
+      const touchedPairs = dto.details.map((d) => {
+        const detail = returnOrder.details.find((rd) => rd.id === d.detailId);
+        return {
+          productId: detail?.productId,
+          branchId: returnOrder.branchId,
+        };
+      });
+      await recalcOnHandForPairs(tx, touchedPairs);
+
+      // Tồn bucket cũng là giá trị DẪN XUẤT từ sổ cái StockConditionLog (đã ghi
+      // ở trên). Recalc cache để khớp sổ cái, thay cho việc increment rời rạc.
+      await recalcConditionBucketsForPairs(tx, touchedPairs);
 
       const updatedDetails = await tx.returnOrderDetail.findMany({
         where: { returnOrderId: id },
@@ -1287,19 +1303,13 @@ export class ReturnOrdersService {
         for (const detail of returnOrder.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty > 0) {
+            // KHÔNG trừ tay cột bucket ở đây. Phiếu chuyển sang CANCELLED nên
+            // active-finder 'return_order' (status != 5) tự loại mọi
+            // StockConditionLog của phiếu → recalcConditionBucketsForPairs bên
+            // dưới đưa bucket về đúng Σ log active. Trừ tay sẽ trừ hai lần.
             const rollbackData: any = {
               onHand: { decrement: confirmedQty },
             };
-
-            const damagedQty = Number(detail.damagedQuantity || 0);
-            const nearExpiryQty = Number(detail.nearExpiryQuantity || 0);
-
-            if (damagedQty > 0) {
-              rollbackData.damagedQuantity = { decrement: damagedQty };
-            }
-            if (nearExpiryQty > 0) {
-              rollbackData.nearExpiryQuantity = { decrement: nearExpiryQty };
-            }
 
             await tx.inventory.update({
               where: {
@@ -1399,6 +1409,15 @@ export class ReturnOrdersService {
       // trỏ refId này thành inactive → recalc đưa onHand về Σ log active.
       if (stockWasIncreased && returnOrder.branchId) {
         await recalcOnHandForPairs(
+          tx,
+          returnOrder.details.map((d) => ({
+            productId: d.productId,
+            branchId: returnOrder.branchId,
+          })),
+        );
+        // Tương tự cho 3 bucket: log điều kiện của phiếu đã inactive →
+        // recalc kéo cache về đúng sổ cái.
+        await recalcConditionBucketsForPairs(
           tx,
           returnOrder.details.map((d) => ({
             productId: d.productId,

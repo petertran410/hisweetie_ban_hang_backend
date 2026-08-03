@@ -10,6 +10,10 @@ import {
   CreateConsignmentReturnDto,
   getReturnStatusLabel,
 } from './dto';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+} from '../common/stock-condition-onhand.util';
 import { CONSIGNMENT_STATUS } from '../consignments/dto/consignment-status.constants';
 import { ConsignmentsService } from '../consignments/consignments.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
@@ -319,6 +323,9 @@ export class ConsignmentReturnsService {
           where: { productId: d.productId, branchId: ro.branchId },
         });
 
+        // Cột bucket trên Inventory là CACHE dẫn xuất từ sổ cái → KHÔNG ghi
+        // trực tiếp ở đây. Chỉ tạo dòng cho sản phẩm chưa có Inventory, phần
+        // bucket ghi qua sổ cái bên dưới rồi recalc.
         await tx.inventory.upsert({
           where: {
             productId_branchId: {
@@ -328,10 +335,6 @@ export class ConsignmentReturnsService {
           },
           update: {
             onHand: { increment: total },
-            ...(damaged > 0 && { damagedQuantity: { increment: damaged } }),
-            ...(nearExpiry > 0 && {
-              nearExpiryQuantity: { increment: nearExpiry },
-            }),
           },
           create: {
             productId: d.productId,
@@ -340,11 +343,28 @@ export class ConsignmentReturnsService {
             branchId: ro.branchId,
             branchName: branch?.name || '',
             onHand: total,
-            damagedQuantity: damaged,
-            nearExpiryQuantity: nearExpiry,
           },
         });
         touchedProductIds.add(d.productId);
+
+        // Ghi sổ cái phần hàng hoàn về thuộc loại bục rách / cận date.
+        // Lô cận date dùng NSX khai trên dòng phiếu hoàn.
+        await writeConditionLogs(tx, {
+          productId: d.productId,
+          productCode: d.productCode,
+          productName: d.productName,
+          branchId: ro.branchId,
+          branchName: branch?.name || '',
+          refCode: ro.code,
+          refType: 'consignment_return',
+          refId: ro.id,
+          transactionType: 'CONSIGNMENT_RETURN_IN',
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          note: 'Hoàn hàng ký gửi về kho',
+          damaged,
+          nearExpiry,
+          nearExpiryDate: d.manufactureDate ?? null,
+        });
 
         await tx.inventoryLog.create({
           data: {
@@ -367,6 +387,15 @@ export class ConsignmentReturnsService {
           },
         });
       }
+
+      // NGUỒN CHÂN LÝ: bucket = Σ log active → recalc cache sau khi ghi sổ.
+      await recalcConditionBucketsForPairs(
+        tx,
+        ro.details.map((d) => ({
+          productId: d.productId,
+          branchId: ro.branchId,
+        })),
+      );
 
       const updated = await tx.consignmentReturn.update({
         where: { id },
@@ -468,17 +497,14 @@ export class ConsignmentReturnsService {
           crCancelUser?.name || crCancelUser?.email,
         );
         for (const d of ro.details) {
-          const damaged = Number(d.damagedQuantity) || 0;
-          const nearExpiry = Number(d.nearExpiryQuantity) || 0;
           const total = Number(d.returnQuantity);
+          // KHÔNG trừ cache bucket thủ công: phiếu chuyển sang CANCELLED bên
+          // dưới → active-finder 'consignment_return' loại toàn bộ
+          // StockConditionLog của phiếu này → recalc tự đưa bucket về đúng.
           await tx.inventory.updateMany({
             where: { productId: d.productId, branchId: ro.branchId },
             data: {
               onHand: { decrement: total },
-              ...(damaged > 0 && { damagedQuantity: { decrement: damaged } }),
-              ...(nearExpiry > 0 && {
-                nearExpiryQuantity: { decrement: nearExpiry },
-              }),
             },
           });
           touchedProductIds.add(d.productId);
@@ -514,6 +540,18 @@ export class ConsignmentReturnsService {
         },
         include: { details: true },
       });
+
+      // NGUỒN CHÂN LÝ: phiếu đã CANCELLED ở trên → active-finder loại toàn bộ
+      // StockConditionLog của phiếu → recalc đưa bucket về đúng Σ log active.
+      if (ro.branchId) {
+        await recalcConditionBucketsForPairs(
+          tx,
+          ro.details.map((d) => ({
+            productId: d.productId,
+            branchId: ro.branchId,
+          })),
+        );
+      }
 
       // Hủy phiếu đã nhận kho → hàng rời kho lại → phiếu KG có thể rời
       // COMPLETED về PARTIALLY_INVOICED. Recompute để đồng bộ.

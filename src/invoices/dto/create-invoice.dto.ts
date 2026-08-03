@@ -47,6 +47,11 @@ class CreateInvoiceDetailDto {
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: string; // "normal" | "damaged" | "near_expiry"
 
+  // Lô cận date (ISO date) khi conditionType = near_expiry.
+  @IsOptional()
+  @IsString()
+  soldExpiryDate?: string;
+
   @IsOptional()
   @IsString()
   @IsIn(['normal', 'gift', 'promo_discount', 'discounted_buy'])
@@ -282,6 +287,7 @@ export class CreateInvoiceFromOrderDto {
     totalPrice: number;
     note?: string;
     conditionType?: string; // "normal" | "damaged" | "near_expiry"
+    soldExpiryDate?: string; // lô cận date khi conditionType = near_expiry
     lineType?: string; // normal | gift | discounted_buy
     isGift?: boolean;
     promotionId?: number;

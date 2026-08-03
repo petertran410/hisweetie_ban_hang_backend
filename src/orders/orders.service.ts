@@ -178,6 +178,7 @@ export class OrdersService {
           note: it.note,
           serialNumbers: it.serialNumbers,
           conditionType: it.conditionType || 'normal',
+          soldExpiryDate: it.soldExpiryDate ?? null,
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
@@ -481,6 +482,9 @@ export class OrdersService {
             note: item.note || null,
             serialNumbers: item.serialNumbers || null,
             conditionType: item.conditionType || 'normal',
+            soldExpiryDate: item.soldExpiryDate
+              ? new Date(item.soldExpiryDate)
+              : null,
             lineType: item.lineType || 'normal',
             isGift: isGift,
             promotionId: item.promotionId ?? null,
@@ -734,6 +738,9 @@ export class OrdersService {
               note: item.note || null,
               serialNumbers: item.serialNumbers || null,
               conditionType: item.conditionType || 'normal',
+              soldExpiryDate: item.soldExpiryDate
+                ? new Date(item.soldExpiryDate)
+                : null,
               lineType: item.lineType || 'normal',
               isGift: isGift,
               promotionId: item.promotionId ?? null,

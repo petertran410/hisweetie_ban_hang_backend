@@ -17,6 +17,11 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import {
+  computeBucketTotals,
+  computeBucketTotalsBatch,
+  computeNearExpiryLots,
+} from '../common/stock-condition-onhand.util';
+import {
   getActiveLogKeys,
   isLogActive,
   computeOnHandFromLogs,
@@ -2098,6 +2103,110 @@ export class ProductsService {
     const data = mergedWithBalance.slice(skip, skip + limit);
 
     return { data, total };
+  }
+
+  // ─── Thẻ kho LOẠI TỒN (bucket) — song song findInventoryLogs ───────────
+  // Trả về sổ cái StockConditionLog của 1 bucket (DAMAGED/NEAR_EXPIRY/PROMO)
+  // kèm "Tồn cuối" cộng dồn xuôi theo transactionDate. Dùng chung bộ lọc active
+  // để log thuộc phiếu CLT chưa duyệt / đã hủy bị loại.
+  async findConditionLogs(
+    productId: number,
+    bucket: string,
+    branchId?: number,
+    page = 1,
+    limit = 15,
+  ) {
+    const where: any = { productId, bucket };
+    if (branchId) where.branchId = branchId;
+
+    const rawLogs = await this.prisma.stockConditionLog.findMany({
+      where,
+      orderBy: [
+        { transactionDate: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
+    });
+
+    const activeKeys = await getActiveLogKeys(this.prisma, rawLogs);
+    const activeLogs = rawLogs.filter((log) => isLogActive(log, activeKeys));
+
+    // Cộng dồn xuôi (cũ → mới) để ra tồn cuối từng dòng.
+    const withBalance = activeLogs.map(
+      (log) => ({ ...log }) as (typeof activeLogs)[number] & { tonCuoi: number },
+    );
+    let running = 0;
+    for (let i = withBalance.length - 1; i >= 0; i--) {
+      running += Number(withBalance[i].quantity);
+      withBalance[i].tonCuoi = running;
+    }
+
+    const total = withBalance.length;
+    const skip = (page - 1) * limit;
+    const data = withBalance.slice(skip, skip + limit);
+    return { data, total };
+  }
+
+  // Tồn cận date theo từng lô (expiryDate) — dùng cho bán hàng chọn lô.
+  async findNearExpiryLots(productId: number, branchId: number) {
+    const lots = await computeNearExpiryLots(this.prisma, productId, branchId);
+    return { data: lots };
+  }
+
+  // Tồn tổng hợp: Hàng tốt / Bục rách / Cận date / KM. Bất biến:
+  //   good + damaged + nearExpiry + promo = onHand
+  async getConditionSummary(productId: number, branchId: number) {
+    const inv = await this.prisma.inventory.findUnique({
+      where: { productId_branchId: { productId, branchId } },
+      select: { onHand: true },
+    });
+    const onHand = inv ? Number(inv.onHand) : 0;
+    const totals = await computeBucketTotals(this.prisma, productId, branchId);
+    const good =
+      onHand - totals.damaged - totals.nearExpiry - totals.promo;
+    return {
+      productId,
+      branchId,
+      onHand,
+      good,
+      damaged: totals.damaged,
+      nearExpiry: totals.nearExpiry,
+      promo: totals.promo,
+    };
+  }
+
+  // Tồn bucket cho NHIỀU sản phẩm trong 1 chi nhánh — đọc TỪ SỔ CÁI.
+  // Dùng cho dropdown bán hàng: trước đây FE đọc cache Inventory
+  // (damagedQuantity/nearExpiryQuantity/promoQuantity) nên bị lệch khi cache
+  // trôi khỏi sổ cái. Nay dropdown đọc endpoint này → một nguồn chân lý duy nhất.
+  async getConditionSummaryBatch(productIds: number[], branchId: number) {
+    const ids = [...new Set((productIds || []).filter((id) => !!id))];
+    if (ids.length === 0 || !branchId) {
+      return {} as Record<
+        number,
+        { damaged: number; nearExpiry: number; promo: number }
+      >;
+    }
+
+    const totalsMap = await computeBucketTotalsBatch(
+      this.prisma,
+      ids,
+      branchId,
+    );
+
+    const result: Record<
+      number,
+      { damaged: number; nearExpiry: number; promo: number }
+    > = {};
+    for (const id of ids) {
+      const t = totalsMap[id] || { damaged: 0, nearExpiry: 0, promo: 0 };
+      result[id] = {
+        damaged: t.damaged,
+        nearExpiry: t.nearExpiry,
+        promo: t.promo,
+      };
+    }
+    return result;
   }
 
   async checkLowStock() {

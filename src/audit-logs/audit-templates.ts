@@ -551,6 +551,29 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'info',
   },
 
+  STOCK_CONDITION_TRANSFER_CREATE: {
+    template:
+      'Tạo phiếu chuyển loại tồn {code} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  STOCK_CONDITION_TRANSFER_APPROVE: {
+    template: 'Duyệt phiếu chuyển loại tồn {code}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+  STOCK_CONDITION_TRANSFER_UPDATE: {
+    template:
+      'Sửa phiếu chuyển loại tồn {code}: {changeSummary}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+  STOCK_CONDITION_TRANSFER_CANCEL: {
+    template: 'Hủy phiếu chuyển loại tồn {code}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+
   RETURN_ORDER_CREATE: {
     template: 'Tạo phiếu trả hàng {returnOrderCode} từ hóa đơn {invoiceCodes}',
     category: 'return_order',
