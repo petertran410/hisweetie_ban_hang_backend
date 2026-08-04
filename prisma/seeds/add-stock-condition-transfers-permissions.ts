@@ -8,8 +8,9 @@
 //   1. stock_condition_transfers:view    — Xem danh sách và chi tiết phiếu
 //   2. stock_condition_transfers:create  — Tạo phiếu chuyển loại tồn
 //   3. stock_condition_transfers:approve — Duyệt phiếu (ăn vào tồn loại)
-//   4. stock_condition_transfers:update  — Hủy / cập nhật phiếu
-//   5. stock_condition_transfers:export  — Xuất file chuyển loại tồn
+//   4. stock_condition_transfers:update  — Cập nhật phiếu chuyển loại tồn
+//   5. stock_condition_transfers:cancel  — Hủy phiếu chuyển loại tồn
+//   6. stock_condition_transfers:export  — Xuất file chuyển loại tồn
 //
 // Lưu ý: role "Super Admin" đã bypass toàn bộ quyền trong PermissionsGuard,
 // nên file này cố ý KHÔNG tự gán cho bất kỳ role nào. Sau khi chạy xong,
@@ -58,7 +59,15 @@ const PERMISSIONS: Array<{
     resource: 'stock_condition_transfers',
     action: 'update',
     scope: 'all',
-    description: 'Hủy / cập nhật phiếu chuyển loại tồn',
+    description: 'Cập nhật phiếu chuyển loại tồn',
+    category: 'Kho',
+  },
+  {
+    name: 'stock_condition_transfers:cancel',
+    resource: 'stock_condition_transfers',
+    action: 'cancel',
+    scope: 'all',
+    description: 'Hủy phiếu chuyển loại tồn',
     category: 'Kho',
   },
   {

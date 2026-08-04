@@ -97,7 +97,7 @@ export class StockConditionTransfersController {
   }
 
   @Put(':id/cancel')
-  @RequirePermissions('stock_condition_transfers:update')
+  @RequirePermissions('stock_condition_transfers:cancel')
   cancel(@Param('id') id: string, @CurrentUser() user: any) {
     return this.service.cancel(+id, user?.id);
   }
