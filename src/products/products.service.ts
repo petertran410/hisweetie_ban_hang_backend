@@ -869,7 +869,26 @@ export class ProductsService {
       throw new NotFoundException(`Product with id ${id} not found`);
     }
 
-    return product;
+    // Inventory bucket columns are derived cache. Normalize the detail response
+    // from the StockConditionLog ledger so product detail and transfer form use
+    // the same values for damaged/near-expiry/promo stock.
+    const inventories = await Promise.all(
+      product.inventories.map(async (inventory) => {
+        const totals = await computeBucketTotals(
+          this.prisma,
+          product.id,
+          inventory.branchId,
+        );
+        return {
+          ...inventory,
+          damagedQuantity: totals.damaged,
+          nearExpiryQuantity: totals.nearExpiry,
+          promoQuantity: totals.promo,
+        };
+      }),
+    );
+
+    return { ...product, inventories };
   }
 
   async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
@@ -2164,7 +2183,8 @@ export class ProductsService {
 
     // Cộng dồn xuôi (cũ → mới) để ra tồn cuối từng dòng.
     const withBalance = mergedLogs.map(
-      (log) => ({ ...log }) as (typeof mergedLogs)[number] & { tonCuoi: number },
+      (log) =>
+        ({ ...log }) as (typeof mergedLogs)[number] & { tonCuoi: number },
     );
     let running = 0;
     for (let i = withBalance.length - 1; i >= 0; i--) {
@@ -2193,8 +2213,7 @@ export class ProductsService {
     });
     const onHand = inv ? Number(inv.onHand) : 0;
     const totals = await computeBucketTotals(this.prisma, productId, branchId);
-    const good =
-      onHand - totals.damaged - totals.nearExpiry - totals.promo;
+    const good = onHand - totals.damaged - totals.nearExpiry - totals.promo;
     return {
       productId,
       branchId,
