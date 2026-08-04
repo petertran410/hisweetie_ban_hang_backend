@@ -1504,6 +1504,7 @@ export class OrdersService {
           },
         },
         payments: true,
+        paymentNotes: { orderBy: { createdAt: 'desc' } },
         delivery: true,
         invoices: {
           where: { status: { not: 5 } },

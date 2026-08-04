@@ -816,6 +816,7 @@ export class InvoicesService {
           },
         },
         payments: true,
+        paymentNotes: { orderBy: { createdAt: 'desc' } },
         delivery: true,
         _count: { select: { returnOrders: true } },
         returnOrders: {

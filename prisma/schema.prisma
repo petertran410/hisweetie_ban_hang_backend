@@ -39,6 +39,8 @@ model User {
   createdInvoices                 Invoice[]                @relation("InvoiceCreator")
   soldInvoices                    Invoice[]                @relation("InvoiceSeller")
   createdPayments                 OrderPayment[]           @relation("PaymentCreator")
+  createdOrderPaymentNotes        OrderPaymentNote[]       @relation("OrderPaymentNoteCreator")
+  createdInvoicePaymentNotes      InvoicePaymentNote[]     @relation("InvoicePaymentNoteCreator")
   createdConsignments             Consignment[]            @relation("ConsignmentCreator")
   soldConsignments                Consignment[]            @relation("ConsignmentSeller")
   createdOrderSuppliers           OrderSupplier[]          @relation("OrderSupplierCreator")
@@ -1448,6 +1450,7 @@ model Order {
   surcharges    OrderSurcharge[]
   delivery      OrderDelivery?
   promotionLogs InvoicePromotionLog[]
+  paymentNotes  OrderPaymentNote[]
 
   @@index([larkSyncStatus])
   @@map("orders")
@@ -1485,6 +1488,38 @@ model OrderItem {
   @@unique([orderId, lineNumber])
   @@index([promotionId])
   @@map("order_items")
+}
+
+model OrderPaymentNote {
+  id          Int      @id @default(autoincrement())
+  orderId     Int
+  paymentType String
+  amount      Decimal? @db.Decimal(18, 2)
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  creator User  @relation("OrderPaymentNoteCreator", fields: [createdBy], references: [id])
+
+  @@index([orderId])
+  @@map("order_payment_notes")
+}
+
+model InvoicePaymentNote {
+  id          Int      @id @default(autoincrement())
+  invoiceId   Int
+  paymentType String
+  amount      Decimal? @db.Decimal(18, 2)
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  creator User    @relation("InvoicePaymentNoteCreator", fields: [createdBy], references: [id])
+
+  @@index([invoiceId])
+  @@map("invoice_payment_notes")
 }
 
 model OrderPayment {
@@ -1628,6 +1663,7 @@ model Invoice {
   returnOrders       ReturnOrder[]
   returnOrderDetails ReturnOrderDetail[]
   promotionLogs      InvoicePromotionLog[]
+  paymentNotes       InvoicePaymentNote[]
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])

@@ -63,7 +63,7 @@ export class InventoriesService {
   }
 
   async getProductInventoryAcrossBranches(productId: number) {
-    return this.prisma.inventory.findMany({
+    const inventories = await this.prisma.inventory.findMany({
       where: { productId },
       include: {
         branch: {
@@ -84,6 +84,41 @@ export class InventoriesService {
         },
       },
       orderBy: [{ branchName: 'asc' }],
+    });
+
+    // Giống getInventoryByBranch: bucket trong Inventory chỉ là cache; trả về
+    // số tính từ sổ cái để màn tồn kho và condition-summary dùng cùng một nguồn.
+    if (inventories.length === 0) return inventories;
+
+    const totalsByBranch = new Map<
+      string,
+      { damaged: number; nearExpiry: number; promo: number }
+    >();
+    for (const inventory of inventories) {
+      const totals = await computeBucketTotalsBatch(
+        this.prisma,
+        [inventory.productId],
+        inventory.branchId,
+      );
+      totalsByBranch.set(
+        `${inventory.productId}:${inventory.branchId}`,
+        totals[inventory.productId] ?? {
+          damaged: 0,
+          nearExpiry: 0,
+          promo: 0,
+        },
+      );
+    }
+
+    return inventories.map((inv) => {
+      const totals = totalsByBranch.get(`${inv.productId}:${inv.branchId}`);
+      if (!totals) return inv;
+      return {
+        ...inv,
+        damagedQuantity: totals.damaged as any,
+        nearExpiryQuantity: totals.nearExpiry as any,
+        promoQuantity: totals.promo as any,
+      };
     });
   }
 

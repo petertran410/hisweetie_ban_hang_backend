@@ -81,6 +81,7 @@ import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
+import { PaymentNotesModule } from './payment-notes/payment-notes.module';
 
 @Module({
   controllers: [HealthController],
@@ -174,6 +175,7 @@ import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
     PromotionsModule,
     NotificationsModule,
     ExchangeRatesModule,
+    PaymentNotesModule,
   ],
   providers: [
     {
