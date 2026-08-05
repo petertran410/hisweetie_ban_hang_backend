@@ -155,6 +155,72 @@ export class StockConditionTransfersService {
     return record;
   }
 
+  async previewBalances(
+    branchId: number,
+    transferDate: string,
+    items: Array<{
+      productId: number;
+      toBucket: string;
+      expiryDate?: string | null;
+    }>,
+  ) {
+    const at = new Date(transferDate);
+    if (!branchId || Number.isNaN(at.getTime())) {
+      throw new BadRequestException('Chi nhánh hoặc thời điểm điều chỉnh không hợp lệ');
+    }
+
+    const uniqueProductIds = [...new Set(items.map((item) => item.productId))];
+    if (uniqueProductIds.length === 0) return {};
+
+    // Chỉ cộng log của chứng từ còn hiệu lực phát sinh TRƯỚC thời điểm chọn.
+    // Đây là "Tồn cuối trước thời điểm"; giao dịch đúng bằng thời điểm phiếu
+    // mới sẽ được ghi sau số dư này.
+    const logs = await this.prisma.stockConditionLog.findMany({
+      where: {
+        branchId,
+        productId: { in: uniqueProductIds },
+        transactionDate: { lt: at },
+      },
+      select: {
+        productId: true,
+        bucket: true,
+        quantity: true,
+        expiryDate: true,
+        refType: true,
+        refId: true,
+      },
+    });
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+
+    const results: Record<string, number> = {};
+    for (const item of items) {
+      const key = `${item.productId}|${item.toBucket}|${
+        item.expiryDate ? this.lotKey(item.expiryDate) : ''
+      }`;
+      results[key] = 0;
+    }
+
+    for (const log of logs) {
+      if (!isLogActive(log, activeKeys)) continue;
+      for (const item of items) {
+        if (log.productId !== item.productId || log.bucket !== item.toBucket) {
+          continue;
+        }
+        if (item.toBucket === BUCKET_NEAR_EXPIRY) {
+          const expectedLot = item.expiryDate ? this.lotKey(item.expiryDate) : null;
+          const logLot = log.expiryDate ? this.lotKey(log.expiryDate) : null;
+          if (expectedLot !== logLot) continue;
+        }
+        const key = `${item.productId}|${item.toBucket}|${
+          item.expiryDate ? this.lotKey(item.expiryDate) : ''
+        }`;
+        results[key] = (results[key] || 0) + Number(log.quantity);
+      }
+    }
+
+    return results;
+  }
+
   async create(dto: CreateStockConditionTransferDto, userId: number) {
     if (!dto.items || dto.items.length === 0) {
       throw new BadRequestException('Phiếu phải có ít nhất 1 sản phẩm');

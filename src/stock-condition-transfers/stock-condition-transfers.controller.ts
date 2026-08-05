@@ -62,6 +62,27 @@ export class StockConditionTransfersController {
     return this.service.findOne(+id);
   }
 
+  @Post('preview-balances')
+  @RequirePermissions('stock_condition_transfers:view')
+  previewBalances(
+    @Body()
+    body: {
+      branchId: number;
+      transferDate: string;
+      items: Array<{
+        productId: number;
+        toBucket: string;
+        expiryDate?: string | null;
+      }>;
+    },
+  ) {
+    return this.service.previewBalances(
+      body.branchId,
+      body.transferDate,
+      body.items || [],
+    );
+  }
+
   @Post()
   @RequirePermissions('stock_condition_transfers:create')
   create(
