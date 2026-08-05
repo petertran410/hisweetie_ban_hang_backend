@@ -10,7 +10,9 @@ import {
   UseGuards,
   Header,
   Req,
+  Res,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { PriceBooksService } from './price-books.service';
 import {
   CreatePriceBookDto,
@@ -50,6 +52,31 @@ export class PriceBooksController {
   @ApiOperation({ summary: 'Get price for a product from price books' })
   getPriceForProduct(@Query() params: ProductPriceDto) {
     return this.priceBooksService.getPriceForProduct(params);
+  }
+
+  @Get('export')
+  @RequirePermissions('price_books:export')
+  @ApiOperation({
+    summary: 'Export products and selected price books to Excel',
+  })
+  async exportProductsWithPrices(
+    @Query() query: ProductsWithPricesQueryDto,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=BangGia_${timestamp}.xlsx`,
+    );
+
+    await this.priceBooksService.exportProductsWithMultiplePrices(query, res);
   }
 
   @Get('products-with-prices')
