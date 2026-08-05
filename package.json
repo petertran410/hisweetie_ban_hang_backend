@@ -64,6 +64,7 @@
     "seed:print-purchase-order-vars": "ts-node prisma/seeds/sync-purchase-order-variables.ts",
     "seed:contracts": "ts-node prisma/seeds/add-contract-permissions.ts",
     "seed:contract-signer": "ts-node prisma/seeds/add-contract-signer-permission.ts",
+    "seed:note-templates": "ts-node prisma/seeds/add-note-templates-permission.ts",
     "seed:factories-product-factory": "ts-node prisma/seeds/add-factories-and-product-factory-permissions.ts",
     "seed:fix-export-categories": "ts-node prisma/seeds/fix-export-permission-categories.ts",
     "cashflow:update": "ts-node prisma/seeds/recalc-all-customers-debt.ts",
