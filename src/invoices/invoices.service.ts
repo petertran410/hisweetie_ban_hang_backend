@@ -3555,13 +3555,7 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: 'normal',
-              manufactureDate: item.manufactureDate ?? null,
             }));
-
-      const mfgDateByProduct: Record<number, Date | null> = {};
-      for (const ci of consignment.items) {
-        mfgDateByProduct[ci.productId] = ci.manufactureDate ?? null;
-      }
 
       const totalAmount = itemsToInvoice.reduce(
         (sum, item) => sum + item.totalPrice,
@@ -3611,10 +3605,6 @@ export class InvoicesService {
               soldExpiryDate: (item as any).soldExpiryDate
                 ? new Date((item as any).soldExpiryDate)
                 : null,
-              manufactureDate:
-                item.manufactureDate ??
-                mfgDateByProduct[item.productId] ??
-                null,
             })),
           },
         },

@@ -717,7 +717,7 @@ export class PrintTemplatesService {
       Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
         Number(c.grandTotal || 0),
       ),
-      items: (c.items || []).map((i: any) => this.mapItem(i)),
+      items: (c.items || []).map((i: any) => this.mapItem(i, false)),
     };
   }
 
@@ -737,9 +737,6 @@ export class PrintTemplatesService {
       items: (r.details || []).map((d: any) => ({
         Ma_Hang: d.productCode || d.product?.code || '',
         Ten_Hang_Hoa: d.productName || d.product?.name || '',
-        NSX: d.manufactureDate
-          ? new Date(d.manufactureDate).toLocaleDateString('vi-VN')
-          : '',
         SL_Hoan: Number(d.returnQuantity || 0),
         Hang_Tot: Number(d.goodQuantity || 0),
         Loai_B: Number(d.damagedQuantity || 0),
@@ -930,7 +927,7 @@ export class PrintTemplatesService {
     };
   }
 
-  private mapItem(item: any) {
+  private mapItem(item: any, includeManufactureDate = true) {
     const price = Number(item.price || 0);
     const discount = Number(item.discount || 0);
     const discountRatio = Number(item.discountRatio || 0);
@@ -957,19 +954,48 @@ export class PrintTemplatesService {
     else if (isPromoBuy) loaiDongKM = 'Hàng KM';
 
     const baseName = item.productName || item.product?.name || '';
+    const conditionType = item.conditionType || 'normal';
+    let conditionSuffix = '';
+    if (conditionType === 'damaged') {
+      conditionSuffix =
+        ' <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span>';
+    } else if (conditionType === 'near_expiry') {
+      let expiryMonth = '';
+      if (item.soldExpiryDate) {
+        const isoMatch = String(item.soldExpiryDate).match(/^(\d{4})-(\d{2})/);
+        if (isoMatch) {
+          expiryMonth = `${isoMatch[2]}/${isoMatch[1]}`;
+        } else {
+          const expiryDate = new Date(item.soldExpiryDate);
+          if (!Number.isNaN(expiryDate.getTime())) {
+            expiryMonth = `${String(expiryDate.getUTCMonth() + 1).padStart(
+              2,
+              '0',
+            )}/${expiryDate.getUTCFullYear()}`;
+          }
+        }
+      }
+      const nearExpiryLabel = expiryMonth
+        ? `(Cận date ${expiryMonth})`
+        : '(Cận date)';
+      conditionSuffix = ` <span style="font-size:7pt;font-weight:bold;font-style:italic">${nearExpiryLabel}</span>`;
+    }
     // Nhãn chèn mặc định vào tên hàng (hiện ngay trên template cũ, chỉ chữ).
-    const nameSuffix =
+    const promotionLabel =
       lineType === 'gift' || item.isGift
-        ? ' (Quà KM)'
+        ? '(Quà KM)'
         : lineType === 'discounted_buy'
-          ? ' (Mua kèm KM)'
+          ? '(Mua kèm KM)'
           : isPromoBuy
-            ? ' (KM)'
+            ? '(KM)'
             : '';
+    const nameSuffix = promotionLabel
+      ? ` <span style="font-size:7pt;font-weight:bold;font-style:italic">${promotionLabel}</span>`
+      : '';
 
     return {
       Ma_Hang: item.productCode || item.product?.code || '',
-      Ten_Hang_Hoa: baseName + nameSuffix,
+      Ten_Hang_Hoa: baseName + conditionSuffix + nameSuffix,
       Don_Vi_Tinh: item.product?.unit || '',
       So_Luong: Number(item.quantity),
       Don_Gia: this.money(item.price),
@@ -979,9 +1005,13 @@ export class PrintTemplatesService {
       Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
       Ghi_Chu_Hang_Hoa: item.note || item.description || '',
       Thanh_Tien: this.money(item.totalPrice || item.subTotal),
-      NSX: item.manufactureDate
-        ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
-        : '',
+      ...(includeManufactureDate
+        ? {
+            NSX: item.manufactureDate
+              ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
+              : '',
+          }
+        : {}),
       // Biến KM (item-variable) — người dùng có thể chèn vào template để tạo cột riêng.
       Loai_Dong_KM: loaiDongKM,
       La_Hang_KM: isReward || isPromoBuy ? '1' : '',

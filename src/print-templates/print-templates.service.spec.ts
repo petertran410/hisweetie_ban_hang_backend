@@ -66,4 +66,64 @@ describe('PrintTemplatesService', () => {
       );
     });
   });
+
+  describe('mapItem', () => {
+    const mapItem = (item: Record<string, any>) =>
+      (createService() as any).mapItem({
+        productName: 'Trà đào',
+        quantity: 1,
+        ...item,
+      });
+
+    it('appends the damaged condition to the product name', () => {
+      expect(mapItem({ conditionType: 'damaged' }).Ten_Hang_Hoa).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span>',
+      );
+    });
+
+    it('appends the near-expiry month in MM/YYYY format', () => {
+      expect(
+        mapItem({
+          conditionType: 'near_expiry',
+          soldExpiryDate: '2026-08-01T00:00:00.000Z',
+        }).Ten_Hang_Hoa,
+      ).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Cận date 08/2026)</span>',
+      );
+    });
+
+    it('keeps the near-expiry label when the expiry date is missing', () => {
+      expect(mapItem({ conditionType: 'near_expiry' }).Ten_Hang_Hoa).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Cận date)</span>',
+      );
+    });
+
+    it('does not append a condition to normal products', () => {
+      expect(mapItem({ conditionType: 'normal' }).Ten_Hang_Hoa).toBe('Trà đào');
+    });
+
+    it('preserves both condition and promotion labels', () => {
+      expect(
+        mapItem({
+          conditionType: 'near_expiry',
+          soldExpiryDate: '2027-01-15',
+          promotionId: 1,
+          lineType: 'normal',
+        }).Ten_Hang_Hoa,
+      ).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Cận date 01/2027)</span> <span style="font-size:7pt;font-weight:bold;font-style:italic">(KM)</span>',
+      );
+    });
+
+    it('styles gift and discounted-buy promotion labels', () => {
+      expect(
+        mapItem({ lineType: 'gift', isGift: true }).Ten_Hang_Hoa,
+      ).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Quà KM)</span>',
+      );
+      expect(mapItem({ lineType: 'discounted_buy' }).Ten_Hang_Hoa).toBe(
+        'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Mua kèm KM)</span>',
+      );
+    });
+  });
 });

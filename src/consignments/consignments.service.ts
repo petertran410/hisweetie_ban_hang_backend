@@ -89,9 +89,6 @@ export class ConsignmentsService {
             discountRatio,
             totalPrice,
             note: item.note || null,
-            manufactureDate: item.manufactureDate
-              ? new Date(item.manufactureDate)
-              : null,
           };
         }),
       );
@@ -287,9 +284,6 @@ export class ConsignmentsService {
               discountRatio,
               totalPrice,
               note: item.note || null,
-              manufactureDate: item.manufactureDate
-                ? new Date(item.manufactureDate)
-                : null,
             };
           }),
         );

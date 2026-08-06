@@ -78,7 +78,6 @@ async function deductConsignmentStock(
         transactionPrice: Number(item.price),
         partnerId: consignment.customerId || null,
         partnerName: consignment.customer?.name || null,
-        manufactureDate: item.manufactureDate ?? null,
         ...buildInventoryLogBase(actor),
       },
     });

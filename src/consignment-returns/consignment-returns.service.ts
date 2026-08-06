@@ -196,9 +196,6 @@ export class ConsignmentReturnsService {
           goodQuantity: good,
           damagedQuantity: damaged,
           nearExpiryQuantity: nearExpiry,
-          manufactureDate: d.manufactureDate
-            ? new Date(d.manufactureDate)
-            : (item.manufactureDate ?? null),
           note: d.note || null,
         });
       }
@@ -348,7 +345,6 @@ export class ConsignmentReturnsService {
         touchedProductIds.add(d.productId);
 
         // Ghi sổ cái phần hàng hoàn về thuộc loại bục rách / cận date.
-        // Lô cận date dùng NSX khai trên dòng phiếu hoàn.
         await writeConditionLogs(tx, {
           productId: d.productId,
           productCode: d.productCode,
@@ -363,7 +359,7 @@ export class ConsignmentReturnsService {
           note: 'Hoàn hàng ký gửi về kho',
           damaged,
           nearExpiry,
-          nearExpiryDate: d.manufactureDate ?? null,
+          nearExpiryDate: null,
         });
 
         await tx.inventoryLog.create({
@@ -382,7 +378,6 @@ export class ConsignmentReturnsService {
             transactionPrice: 0,
             partnerId: ro.customerId || null,
             partnerName: customer?.name || null,
-            manufactureDate: d.manufactureDate ?? null,
             ...buildInventoryLogBase(crReceiveLogActor),
           },
         });

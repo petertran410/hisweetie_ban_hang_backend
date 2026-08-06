@@ -219,6 +219,14 @@ export class ProductsController {
     );
   }
 
+  @Get('pos-near-expiry-lots/:id')
+  findPosNearExpiryLots(
+    @Param('id') id: string,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.productsService.findNearExpiryLots(+id, +branchId);
+  }
+
   @Get(':id/near-expiry-lots')
   @RequirePermissions('products:view')
   findNearExpiryLots(
@@ -249,6 +257,23 @@ export class ProductsController {
   @Get('condition-summary-batch')
   @RequirePermissions('products:view')
   getConditionSummaryBatch(
+    @Query('productIds') productIds: string,
+    @Query('branchId') branchId: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.productsService.getConditionSummaryBatch(ids, +branchId);
+  }
+
+  /**
+   * POS-only condition stock lookup. The POS cart needs these quantities to
+   * decide whether to show the Damaged/Near-expiry actions; it must not require
+   * the general product-view permission. Authentication still applies globally.
+   */
+  @Get('pos-condition-summary-batch')
+  getPosConditionSummaryBatch(
     @Query('productIds') productIds: string,
     @Query('branchId') branchId: string,
   ) {

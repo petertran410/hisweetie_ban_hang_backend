@@ -60,10 +60,6 @@ export class ConsignmentReturnDetailDto {
 
   @IsString()
   @IsOptional()
-  manufactureDate?: string;
-
-  @IsString()
-  @IsOptional()
   note?: string;
 }
 
