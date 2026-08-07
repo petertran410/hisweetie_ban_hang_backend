@@ -4838,6 +4838,92 @@ export class InvoicesService {
       };
     }
 
+    // ── Các filter dưới đây phải khớp với buildInvoiceListWhere, nếu không file
+    // xuất ra sẽ chứa nhiều dữ liệu hơn danh sách đang hiển thị trên màn hình.
+    if (query.fromUpdatedDate || query.toUpdatedDate) {
+      where.updatedAt = {};
+      if (query.fromUpdatedDate)
+        where.updatedAt.gte = new Date(query.fromUpdatedDate);
+      if (query.toUpdatedDate)
+        where.updatedAt.lte = new Date(query.toUpdatedDate);
+    }
+
+    if (query.createdByIds?.length) {
+      where.createdBy = { in: query.createdByIds };
+    }
+
+    if (query.soldByIds?.length) {
+      where.soldById = { in: query.soldByIds };
+    }
+
+    if (query.saleChannelId) {
+      where.saleChannelId = query.saleChannelId;
+    }
+
+    if (query.misaSyncStatus?.length) {
+      where.misaSyncStatus = { in: query.misaSyncStatus };
+    }
+
+    if (query.misaEmployeeCodes?.length) {
+      where.customer = {
+        ...(where.customer || {}),
+        misaEmployeeCode: { in: query.misaEmployeeCodes },
+      };
+    }
+
+    // Trạng thái mã số thuế: lấy taxCode, fallback identificationNumber.
+    // Gộp vào customer.AND để không ghi đè filter customer khác.
+    if (query.taxCodeStatus === 'empty' || query.taxCodeStatus === 'filled') {
+      const taxCondition =
+        query.taxCodeStatus === 'empty'
+          ? {
+              AND: [
+                { OR: [{ taxCode: null }, { taxCode: '' }] },
+                {
+                  OR: [
+                    { identificationNumber: null },
+                    { identificationNumber: '' },
+                  ],
+                },
+              ],
+            }
+          : {
+              OR: [
+                {
+                  AND: [{ taxCode: { not: null } }, { taxCode: { not: '' } }],
+                },
+                {
+                  AND: [
+                    { identificationNumber: { not: null } },
+                    { identificationNumber: { not: '' } },
+                  ],
+                },
+              ],
+            };
+      where.customer = {
+        ...(where.customer || {}),
+        AND: [...(where.customer?.AND || []), taxCondition],
+      };
+    }
+
+    // Cảnh báo lệch giá bảng giá 2/3 — cùng truy vấn với buildInvoiceListWhere.
+    if (query.priceWarning) {
+      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
+        SELECT i.id FROM invoices i
+        WHERE i.status <> 2 AND i."priceBookId" IN (2, 3)
+          AND EXISTS (
+            SELECT 1 FROM invoice_details d
+            JOIN price_book_details pbd
+              ON pbd."productId" = d."productId"
+             AND pbd."priceBookId" = i."priceBookId"
+             AND pbd."isActive" = true
+            WHERE d."invoiceId" = i.id
+              AND (d.price - d.discount) < pbd.price
+          )`;
+      const ids = rows.map((r) => Number(r.id));
+      where.id = { in: ids.length ? ids : [-1] };
+    }
+
     return where;
   }
 
