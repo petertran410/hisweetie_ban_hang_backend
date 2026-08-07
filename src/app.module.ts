@@ -53,6 +53,7 @@ import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.mo
 import { BorderGatesModule } from './border-gates/border-gates.module';
 import { ProductionStagesModule } from './production-stages/production-stages.module';
 import { FactoriesModule } from './factories/factories.module';
+import { FactoryProductsModule } from './factory-products/factory-products.module';
 import { PackingSlipsModule } from './packing-slips/packing-slips.module';
 import { PackingHangsModule } from './packing-hangs/packing-hangs.module';
 import { PackingLoadingsModule } from './packing-loadings/packing-loadings.module';
@@ -154,6 +155,7 @@ import { PaymentNotesModule } from './payment-notes/payment-notes.module';
     BorderGatesModule,
     ProductionStagesModule,
     FactoriesModule,
+    FactoryProductsModule,
     PackingSlipsModule,
     PackingHangsModule,
     PackingLoadingsModule,

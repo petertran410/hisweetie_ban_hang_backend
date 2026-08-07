@@ -4,7 +4,35 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import type { FactoryQueryDto } from './dto';
+import type {
+  CreateFactoryDto,
+  FactoryQueryDto,
+  UpdateFactoryDto,
+} from './dto';
+
+/**
+ * Các field "phẳng" (không cần validate chéo) của Factory. Dùng chung cho
+ * create/update để tránh lặp 20 dòng if giống nhau.
+ */
+const SCALAR_FIELDS = [
+  'description',
+  'country',
+  'contactNumber',
+  'address',
+  'strategicLevel',
+  'wechat',
+  'email',
+  'moq',
+  'leadtimeDays',
+  'paymentTerm',
+  'port',
+  'incoterm',
+  'productionLeadtime',
+  'shippingLeadtime',
+  'customsRisk',
+  'cargoType',
+  'notes',
+] as const;
 
 @Injectable()
 export class FactoriesService {
@@ -23,6 +51,7 @@ export class FactoriesService {
     if (!query.includeInactive) where.isActive = true;
     if (query.supplierId) where.supplierId = query.supplierId;
     if (query.country) where.country = query.country;
+    if (query.strategicLevel) where.strategicLevel = query.strategicLevel;
     if (query.search) {
       where.OR = [
         { code: { contains: query.search, mode: 'insensitive' } },
@@ -52,6 +81,7 @@ export class FactoriesService {
             select: {
               primaryForProducts: true,
               backupForProducts: true,
+              factoryProducts: true,
             },
           },
         },
@@ -59,7 +89,32 @@ export class FactoriesService {
       this.prisma.factory.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    // Đếm sản phẩm theo vai trò từ bảng mapping mới (FactoryProduct).
+    // Prisma 4 chưa hỗ trợ filter trong `_count`, nên gom bằng groupBy rồi
+    // ghép vào từng nhà máy. Hai số này là nguồn cho cột "SP chính"/"SP backup".
+    const factoryIds = data.map((factory) => factory.id);
+    const roleCounts = factoryIds.length
+      ? await this.prisma.factoryProduct.groupBy({
+          by: ['factoryId', 'role'],
+          where: { factoryId: { in: factoryIds }, isActive: true },
+          _count: { _all: true },
+        })
+      : [];
+
+    const countMap = new Map<number, { primary: number; backup: number }>();
+    for (const row of roleCounts) {
+      const entry = countMap.get(row.factoryId) ?? { primary: 0, backup: 0 };
+      if (row.role === 'backup') entry.backup += row._count._all;
+      else entry.primary += row._count._all;
+      countMap.set(row.factoryId, entry);
+    }
+
+    const enriched = data.map((factory) => ({
+      ...factory,
+      mappingCounts: countMap.get(factory.id) ?? { primary: 0, backup: 0 },
+    }));
+
+    return { data: enriched, total, page, limit };
   }
 
   /**
@@ -132,6 +187,7 @@ export class FactoriesService {
             primaryForProducts: true,
             backupForProducts: true,
             orderSupplierItems: true,
+            factoryProducts: true,
           },
         },
       },
@@ -140,20 +196,7 @@ export class FactoriesService {
     return factory;
   }
 
-  async create(
-    dto: {
-      code?: string;
-      name: string;
-      description?: string;
-      country?: string;
-      currency?: string;
-      contactNumber?: string;
-      address?: string;
-      supplierId?: number;
-      isActive?: boolean;
-    },
-    userId: number,
-  ) {
+  async create(dto: CreateFactoryDto, userId: number) {
     const name = (dto.name || '').trim();
     if (!name) throw new BadRequestException('Tên nhà máy không được để trống');
 
@@ -188,36 +231,23 @@ export class FactoriesService {
       }
     }
 
-    return this.prisma.factory.create({
-      data: {
-        code: dto.code?.trim() || null,
-        name,
-        description: dto.description,
-        country: dto.country,
-        currency: dto.currency || 'VND',
-        contactNumber: dto.contactNumber,
-        address: dto.address,
-        supplierId: dto.supplierId ?? null,
-        isActive: dto.isActive ?? true,
-        createdBy: userId,
-      },
-    });
+    const data: any = {
+      code: dto.code?.trim() || null,
+      name,
+      currency: dto.currency || 'VND',
+      supplierId: dto.supplierId ?? null,
+      isActive: dto.isActive ?? true,
+      createdBy: userId,
+    };
+    // Gán các field phẳng (thương mại + logistics) nếu client có truyền.
+    for (const field of SCALAR_FIELDS) {
+      if (dto[field] !== undefined) data[field] = dto[field];
+    }
+
+    return this.prisma.factory.create({ data });
   }
 
-  async update(
-    id: number,
-    dto: {
-      code?: string;
-      name?: string;
-      description?: string;
-      country?: string;
-      currency?: string;
-      contactNumber?: string;
-      address?: string;
-      supplierId?: number;
-      isActive?: boolean;
-    },
-  ) {
+  async update(id: number, dto: UpdateFactoryDto) {
     await this.findOne(id);
     const data: any = {};
 
@@ -245,11 +275,11 @@ export class FactoriesService {
       if (dup) throw new BadRequestException(`Nhà máy "${name}" đã tồn tại`);
       data.name = name;
     }
-    if (dto.description !== undefined) data.description = dto.description;
-    if (dto.country !== undefined) data.country = dto.country;
+    // Gán các field phẳng: chỉ ghi khi client thực sự truyền (undefined = bỏ qua).
+    for (const field of SCALAR_FIELDS) {
+      if (dto[field] !== undefined) data[field] = dto[field];
+    }
     if (dto.currency !== undefined) data.currency = dto.currency;
-    if (dto.contactNumber !== undefined) data.contactNumber = dto.contactNumber;
-    if (dto.address !== undefined) data.address = dto.address;
     if (dto.supplierId !== undefined) {
       if (dto.supplierId !== null) {
         const supplier = await this.prisma.supplier.findUnique({
