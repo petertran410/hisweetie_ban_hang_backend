@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { join } from 'path';
-import { existsSync, unlinkSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, unlinkSync, mkdirSync } from 'fs';
+import { writeFile } from 'fs/promises';
 import convert from 'heic-convert';
 
 const HEIC_MIMES = new Set([
@@ -58,21 +59,43 @@ export class UploadService {
     let workingBuffer: Buffer = buffer;
     const isHeic = HEIC_MIMES.has(mimetype.toLowerCase());
 
-    // Bước 1: nếu HEIC/HEIF → decode sang JPEG buffer
+    // Bước 1: nếu HEIC/HEIF → decode sang JPEG buffer.
+    // Ưu tiên sharp (native libheif, nhanh); chỉ fallback heic-convert (JS thuần,
+    // chậm 3–10s/ảnh) khi sharp không đọc được HEIC trên môi trường này.
     if (isHeic) {
-      try {
-        const outputBuffer = await convert({
-          buffer: buffer,
-          format: 'JPEG',
-          quality: 1,
-        });
-        workingBuffer = Buffer.from(outputBuffer);
-      } catch (err) {
-        this.logger.error(
-          `HEIC convert thất bại cho ${originalname}: ${(err as Error).message}`,
-          (err as Error).stack,
-        );
-        throw new Error(`HEIC decode failed: ${(err as Error).message}`);
+      let decoded = false;
+      const sharpForHeic = getSharp();
+
+      if (sharpForHeic) {
+        try {
+          workingBuffer = await sharpForHeic(buffer, { failOn: 'none' })
+            .jpeg({ quality: 92 })
+            .toBuffer();
+          decoded = true;
+        } catch (err) {
+          this.logger.warn(
+            `sharp không decode được HEIC ${originalname} (${(err as Error).message}). Fallback heic-convert.`,
+          );
+        }
+      }
+
+      if (!decoded) {
+        try {
+          const outputBuffer = await convert({
+            buffer: buffer,
+            format: 'JPEG',
+            // 0.92 thay vì 1: sharp sẽ nén lại JPEG_QUALITY ở bước 2 nên giữ
+            // quality tối đa ở đây chỉ tốn thời gian, không thêm chất lượng.
+            quality: 0.92,
+          });
+          workingBuffer = Buffer.from(outputBuffer);
+        } catch (err) {
+          this.logger.error(
+            `HEIC convert thất bại cho ${originalname}: ${(err as Error).message}`,
+            (err as Error).stack,
+          );
+          throw new Error(`HEIC decode failed: ${(err as Error).message}`);
+        }
       }
     }
 
@@ -134,7 +157,7 @@ export class UploadService {
 
     const filePath = join(uploadDir, filename);
     try {
-      writeFileSync(filePath, finalBuffer);
+      await writeFile(filePath, finalBuffer);
     } catch (err) {
       this.logger.error(
         `Ghi file thất bại ${filePath}: ${(err as Error).message}`,
@@ -190,7 +213,7 @@ export class UploadService {
 
     const filePath = join(uploadDir, filename);
     try {
-      writeFileSync(filePath, buffer);
+      await writeFile(filePath, buffer);
     } catch (err) {
       this.logger.error(
         `Ghi file thất bại ${filePath}: ${(err as Error).message}`,

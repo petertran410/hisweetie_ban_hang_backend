@@ -6,6 +6,7 @@ export const ALLOWED_SUBFOLDERS = [
   'dong-hang',
   'loading',
   'bao-don/chi-phi',
+  'ky-gui',
 ] as const;
 export type AllowedSubfolder = (typeof ALLOWED_SUBFOLDERS)[number];
 

@@ -105,34 +105,48 @@ export class UploadController {
     const items: { filename: string; url: string; size: number }[] = [];
     const errors: { originalname: string; reason: string }[] = [];
 
-    for (const file of files) {
-      if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
-        errors.push({
-          originalname: file.originalname,
-          reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
-        });
-        continue;
-      }
+    // Xử lý SONG SONG: mỗi ảnh phải qua HEIC-decode + sharp resize (tốn CPU và
+    // có await I/O). Chạy tuần tự thì upload 3 ảnh mất ~3× thời gian 1 ảnh.
+    // Dùng settled[] theo index để thứ tự items khớp thứ tự file gửi lên.
+    type ImageSettled = {
+      item?: { filename: string; url: string; size: number };
+      error?: { originalname: string; reason: string };
+    };
+    const settled = await Promise.all(
+      files.map(async (file): Promise<ImageSettled> => {
+        if (!ALLOWED_MIMES.has(file.mimetype.toLowerCase())) {
+          return {
+            error: {
+              originalname: file.originalname,
+              reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
+            },
+          };
+        }
 
-      try {
-        const result = await this.uploadService.saveImage(
-          file.buffer,
-          file.originalname,
-          file.mimetype,
-          subfolder,
-        );
-        items.push(result);
-      } catch (err) {
-        const message = (err as Error).message || 'Unknown error';
-        this.logger.error(
-          `Upload images batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
-          (err as Error).stack,
-        );
-        errors.push({
-          originalname: file.originalname,
-          reason: message,
-        });
-      }
+        try {
+          const result = await this.uploadService.saveImage(
+            file.buffer,
+            file.originalname,
+            file.mimetype,
+            subfolder,
+          );
+          return { item: result };
+        } catch (err) {
+          const message = (err as Error).message || 'Unknown error';
+          this.logger.error(
+            `Upload images batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
+            (err as Error).stack,
+          );
+          return {
+            error: { originalname: file.originalname, reason: message },
+          };
+        }
+      }),
+    );
+
+    for (const r of settled) {
+      if (r.item) items.push(r.item);
+      else if (r.error) errors.push(r.error);
     }
 
     return { items, errors };
@@ -195,34 +209,52 @@ export class UploadController {
     }[] = [];
     const errors: { originalname: string; reason: string }[] = [];
 
-    for (const file of files) {
-      if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
-        errors.push({
-          originalname: file.originalname,
-          reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
-        });
-        continue;
-      }
+    // Xử lý song song (xem ghi chú ở uploadImages).
+    type FileSettled = {
+      item?: {
+        filename: string;
+        url: string;
+        size: number;
+        mimetype: string;
+        originalname: string;
+      };
+      error?: { originalname: string; reason: string };
+    };
+    const settled = await Promise.all(
+      files.map(async (file): Promise<FileSettled> => {
+        if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
+          return {
+            error: {
+              originalname: file.originalname,
+              reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
+            },
+          };
+        }
 
-      try {
-        const result = await this.uploadService.saveFile(
-          file.buffer,
-          file.originalname,
-          file.mimetype,
-          subfolder,
-        );
-        items.push(result);
-      } catch (err) {
-        const message = (err as Error).message || 'Unknown error';
-        this.logger.error(
-          `Upload files batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
-          (err as Error).stack,
-        );
-        errors.push({
-          originalname: file.originalname,
-          reason: message,
-        });
-      }
+        try {
+          const result = await this.uploadService.saveFile(
+            file.buffer,
+            file.originalname,
+            file.mimetype,
+            subfolder,
+          );
+          return { item: result };
+        } catch (err) {
+          const message = (err as Error).message || 'Unknown error';
+          this.logger.error(
+            `Upload files batch — file lỗi: name=${file.originalname} mime=${file.mimetype} size=${file.size} subfolder=${subfolder} → ${message}`,
+            (err as Error).stack,
+          );
+          return {
+            error: { originalname: file.originalname, reason: message },
+          };
+        }
+      }),
+    );
+
+    for (const r of settled) {
+      if (r.item) items.push(r.item);
+      else if (r.error) errors.push(r.error);
     }
 
     return { items, errors };

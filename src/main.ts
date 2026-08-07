@@ -119,8 +119,12 @@ async function bootstrap() {
     mkdirSync(uploadsPath, { recursive: true });
   }
 
+  // Tên file upload là `${timestamp}-${random}${ext}` → không bao giờ bị ghi đè,
+  // nên cache vĩnh viễn an toàn. Tránh việc mở lại phiếu cũ phải tải lại ảnh.
   app.useStaticAssets(uploadsPath, {
     prefix: '/uploads/',
+    maxAge: '1y',
+    immutable: true,
   });
 
   app.setGlobalPrefix('api');
