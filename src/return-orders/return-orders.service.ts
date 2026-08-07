@@ -79,7 +79,20 @@ export class ReturnOrdersService {
     }
     if (query.status) where.status = query.status;
     if (query.customerId) where.customerId = query.customerId;
-    if (query.createdBy) where.createdBy = query.createdBy;
+    if (query.createdByIds && query.createdByIds.length > 0) {
+      where.createdBy = { in: query.createdByIds };
+    } else if (query.createdBy) {
+      where.createdBy = query.createdBy;
+    }
+    // Người bán nằm trên hóa đơn gốc (Invoice.soldById), không nằm trên phiếu
+    // trả hàng → lọc qua quan hệ invoice. Bọc trong AND để không ghi đè
+    // where.OR của search.
+    if (query.soldByIds && query.soldByIds.length > 0) {
+      where.AND = [
+        ...(where.AND || []),
+        { invoice: { soldById: { in: query.soldByIds } } },
+      ];
+    }
     if (query.invoiceId) where.invoiceId = query.invoiceId;
     if (query.refundType) {
       if (query.refundType === 'debt_offsets') {
@@ -187,6 +200,7 @@ export class ReturnOrdersService {
       { header: 'Người tạo', key: 'createdBy', width: 20 },
       { header: 'Mã KH', key: 'customerCode', width: 14 },
       { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Nhóm khách hàng', key: 'customerGroupName', width: 20 },
       { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
       { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
       { header: 'Tổng SL trả', key: 'totalQuantity', width: 14 },
@@ -222,7 +236,15 @@ export class ReturnOrdersService {
               soldBy: { select: { name: true } },
             },
           },
-          customer: { select: { code: true, name: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
+            },
+          },
           branch: { select: { name: true } },
           creator: { select: { name: true } },
           details: {
@@ -246,6 +268,10 @@ export class ReturnOrdersService {
           createdBy: r.creator?.name || r.createdByName || '',
           customerCode: r.customer?.code || '',
           customerName: r.customer?.name || '',
+          customerGroupName: ((r.customer as any)?.customerGroupDetails ?? [])
+            .map((d: any) => d.customerGroup?.name)
+            .filter(Boolean)
+            .join(', '),
           branch: r.branch?.name || '',
           totalGoods: r.details.length,
           totalQuantity,
@@ -289,6 +315,7 @@ export class ReturnOrdersService {
       { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
       { header: 'Mã KH', key: 'customerCode', width: 14 },
       { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Nhóm khách hàng', key: 'customerGroupName', width: 20 },
       { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
       { header: 'Người tạo', key: 'createdBy', width: 20 },
       { header: 'Trạng thái', key: 'status', width: 18 },
@@ -323,7 +350,15 @@ export class ReturnOrdersService {
         orderBy: { createdAt: 'desc' },
         include: {
           invoice: { select: { code: true } },
-          customer: { select: { code: true, name: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
+            },
+          },
           branch: { select: { name: true } },
           creator: { select: { name: true } },
           details: true,
@@ -339,6 +374,10 @@ export class ReturnOrdersService {
           createdAt: fmtDateTime(r.createdAt),
           customerCode: r.customer?.code || '',
           customerName: r.customer?.name || '',
+          customerGroupName: ((r.customer as any)?.customerGroupDetails ?? [])
+            .map((d: any) => d.customerGroup?.name)
+            .filter(Boolean)
+            .join(', '),
           branch: r.branch?.name || '',
           createdBy: r.creator?.name || r.createdByName || '',
           status: RETURN_ORDER_STATUS_LABELS[r.status] || '',

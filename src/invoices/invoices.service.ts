@@ -4851,6 +4851,7 @@ export class InvoicesService {
       { key: 'orderCode', header: 'Mã đặt hàng', width: 16 },
       { key: 'customerCode', header: 'Mã khách hàng', width: 14 },
       { key: 'customerName', header: 'Tên khách hàng', width: 22 },
+      { key: 'customerGroupName', header: 'Nhóm khách hàng', width: 20 },
       { key: 'customerPhone', header: 'Điện thoại', width: 14 },
       { key: 'customerAddress', header: 'Địa chỉ KH', width: 28 },
       { key: 'customerLocationName', header: 'Khu vực KH', width: 18 },
@@ -4911,6 +4912,7 @@ export class InvoicesService {
       { header: 'Mã đặt hàng', key: 'orderCode', width: 16 },
       { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
       { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Nhóm khách hàng', key: 'customerGroupName', width: 20 },
       { header: 'Điện thoại', key: 'customerPhone', width: 14 },
       { header: 'Địa chỉ KH', key: 'customerAddress', width: 28 },
       { header: 'Bảng giá', key: 'priceBookName', width: 16 },
@@ -4971,6 +4973,9 @@ export class InvoicesService {
                 take: 1,
                 select: { address: true },
               },
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
             },
           },
           order: { select: { code: true } },
@@ -4999,6 +5004,11 @@ export class InvoicesService {
             customerPhone:
               inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
             customerAddress: defaultAddr,
+            customerGroupName: ((inv.customer as any)?.customerGroupDetails ??
+              [])
+              .map((d: any) => d.customerGroup?.name)
+              .filter(Boolean)
+              .join(', '),
             priceBookName: inv.priceBookName ?? '',
             soldByName: inv.soldBy?.name ?? '',
             creatorName: inv.creator?.name ?? '',
@@ -5099,6 +5109,9 @@ export class InvoicesService {
                 take: 1,
                 select: { address: true, locationName: true, wardName: true },
               },
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
             },
           },
           soldBy: { select: { name: true } },
@@ -5164,6 +5177,10 @@ export class InvoicesService {
           orderCode: inv.order?.code ?? '',
           customerCode: inv.customer?.code ?? 'Khách vãng lai',
           customerName: inv.customer?.name ?? 'Khách vãng lai',
+          customerGroupName: ((inv.customer as any)?.customerGroupDetails ?? [])
+            .map((d: any) => d.customerGroup?.name)
+            .filter(Boolean)
+            .join(', '),
           customerPhone:
             inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
           customerAddress: addr?.address ?? '',

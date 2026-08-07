@@ -203,6 +203,28 @@ export class ReturnOrderQueryDto {
   createdBy?: number;
 
   @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [Number(value)];
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  createdByIds?: number[];
+
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === undefined || value === null) return undefined;
+    if (Array.isArray(value)) return value.map(Number);
+    if (typeof value === 'string') return value.split(',').map(Number);
+    return [Number(value)];
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  soldByIds?: number[];
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   invoiceId?: number;

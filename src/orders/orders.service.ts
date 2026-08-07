@@ -1203,6 +1203,7 @@ export class OrdersService {
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
       { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Nhóm khách hàng', key: 'customerGroupName', width: 20 },
       { header: 'Điện thoại', key: 'customerPhone', width: 14 },
       { header: 'Bảng giá', key: 'priceBookName', width: 16 },
       { header: 'Người bán', key: 'soldByName', width: 18 },
@@ -1263,6 +1264,9 @@ export class OrdersService {
               name: true,
               contactNumber: true,
               phone: true,
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
             },
           },
           soldBy: { select: { name: true } },
@@ -1296,6 +1300,10 @@ export class OrdersService {
             branchName: o.branch?.name ?? '',
             customerCode: o.customer?.code ?? 'Khách vãng lai',
             customerName: o.customer?.name ?? 'Khách vãng lai',
+            customerGroupName: ((o.customer as any)?.customerGroupDetails ?? [])
+              .map((d: any) => d.customerGroup?.name)
+              .filter(Boolean)
+              .join(', '),
             customerPhone:
               o.customer?.contactNumber ?? (o.customer as any)?.phone ?? '',
             priceBookName: o.priceBookName || 'Bảng giá chung',
@@ -1353,6 +1361,7 @@ export class OrdersService {
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
       { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Nhóm khách hàng', key: 'customerGroupName', width: 20 },
       { header: 'Điện thoại', key: 'customerPhone', width: 14 },
       { header: 'Người bán', key: 'soldByName', width: 18 },
       { header: 'Người tạo', key: 'creatorName', width: 18 },
@@ -1401,6 +1410,9 @@ export class OrdersService {
               name: true,
               contactNumber: true,
               phone: true,
+              customerGroupDetails: {
+                select: { customerGroup: { select: { name: true } } },
+              },
             },
           },
           soldBy: { select: { name: true } },
@@ -1431,6 +1443,10 @@ export class OrdersService {
           branchName: o.branch?.name ?? '',
           customerCode: o.customer?.code ?? 'Khách vãng lai',
           customerName: o.customer?.name ?? 'Khách vãng lai',
+          customerGroupName: ((o.customer as any)?.customerGroupDetails ?? [])
+            .map((d: any) => d.customerGroup?.name)
+            .filter(Boolean)
+            .join(', '),
           customerPhone:
             o.customer?.contactNumber ?? (o.customer as any)?.phone ?? '',
           soldByName: o.soldBy?.name ?? '',
