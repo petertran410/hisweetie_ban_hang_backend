@@ -159,6 +159,29 @@ export class PackingSlipsService {
                 },
               },
             },
+            consignment: {
+              select: {
+                id: true,
+                code: true,
+                customerId: true,
+                consignDate: true,
+                grandTotal: true,
+                customer: {
+                  select: {
+                    id: true,
+                    code: true,
+                    name: true,
+                    contactNumber: true,
+                  },
+                },
+                soldBy: {
+                  select: {
+                    id: true,
+                    name: true,
+                  },
+                },
+              },
+            },
           },
         },
         images: true,
@@ -319,15 +342,23 @@ export class PackingSlipsService {
     });
 
     // Notify n8n webhook để gửi tin nhắn Zalo "Báo đơn giao hàng thành công".
-    // Lấy lại bản đầy đủ relation (đặc biệt là invoice.customer) để build payload.
-    // Bỏ qua với phiếu ký gửi (không có hóa đơn để thông báo).
-    if (!isConsignment) {
-      try {
-        const fullPackingSlip = await this.findOne(packingSlip.id);
-        // Routing loại trừ lẫn nhau: phiếu có hóa đơn của khách Bibi (mã cấu
-        // hình qua env) → CHỈ gửi luồng Bibi; ngược lại → CHỈ gửi luồng mặc định.
-        // Không await để response API tạo packing slip không bị chờ webhook.
-        // Service đã tự nuốt lỗi, nhưng vẫn bọc thêm để chắc.
+    // Lấy lại bản đầy đủ relation (đặc biệt là invoice.customer/consignment.customer)
+    // để build payload.
+    try {
+      const fullPackingSlip = await this.findOne(packingSlip.id);
+      const hasConsignments = (fullPackingSlip.invoices || []).some(
+        (item: any) => item.consignmentId != null,
+      );
+
+      if (hasConsignments) {
+        // Ký gửi luôn đi vào workflow/group Zalo ký gửi riêng, kể cả khách Bibi.
+        void this.n8nNotifyService
+          .notifyConsignmentDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('notifyConsignmentDelivery unexpected error:', err);
+          });
+      } else {
+        // Routing loại trừ: phiếu có hóa đơn của khách Bibi → chỉ gửi luồng Bibi.
         if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
           void this.n8nNotifyService
             .notifyBibiDelivery(fullPackingSlip as any)
@@ -343,18 +374,17 @@ export class PackingSlipsService {
         }
 
         // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
-        // Best-effort: lỗi ở đây không ảnh hưởng response.
         void this.larkExpenseSync
           .syncPackingSlipExpenses(fullPackingSlip as any)
           .catch((err) => {
             console.error('larkExpenseSync unexpected error:', err);
           });
-      } catch (err) {
-        console.error(
-          'Failed to load packing slip for n8n notify:',
-          (err as Error).message,
-        );
       }
+    } catch (err) {
+      console.error(
+        'Failed to load packing slip for n8n notify:',
+        (err as Error).message,
+      );
     }
 
     return packingSlip;
@@ -384,12 +414,14 @@ export class PackingSlipsService {
         updateData.expensePayerId = dto.expensePayerId ?? null;
       }
 
-      if (dto.invoiceIds) {
+      if (dto.invoiceIds || dto.consignmentIds) {
         await tx.packingSlipInvoice.deleteMany({
           where: { packingSlipId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
+          create: dto.consignmentIds
+            ? dto.consignmentIds.map((consignmentId) => ({ consignmentId }))
+            : (dto.invoiceIds || []).map((invoiceId) => ({ invoiceId })),
         };
       }
 
@@ -459,9 +491,20 @@ export class PackingSlipsService {
     if (this.hasNotifiableChange(packingSlip, dto)) {
       try {
         const fullPackingSlip = await this.findOne(id);
-        // Routing loại trừ: phiếu có khách Bibi (mã cấu hình qua env) → CHỈ gửi
-        // Bibi; ngược lại → CHỈ gửi luồng mặc định. Fire-and-forget.
-        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+        const hasConsignments = (fullPackingSlip.invoices || []).some(
+          (item: any) => item.consignmentId != null,
+        );
+
+        if (hasConsignments) {
+          void this.n8nNotifyService
+            .notifyConsignmentDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error(
+                'notifyConsignmentDelivery (update) unexpected error:',
+                err,
+              );
+            });
+        } else if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
           void this.n8nNotifyService
             .notifyBibiDelivery(fullPackingSlip as any)
             .catch((err) => {
@@ -495,21 +538,28 @@ export class PackingSlipsService {
   async resendDeliveryNotification(id: number) {
     const fullPackingSlip = await this.findOne(id);
 
-    // Định tuyến loại trừ: phiếu có khách Bibi → chỉ gửi luồng Bibi,
-    // ngược lại → gửi luồng mặc định. (Đồng nhất với create/update.)
-    const isBibi = this.n8nNotifyService.isBibiPackingSlip(
+    const hasConsignments = (fullPackingSlip.invoices || []).some(
+      (item: any) => item.consignmentId != null,
+    );
+    const isBibi = !hasConsignments && this.n8nNotifyService.isBibiPackingSlip(
       fullPackingSlip as any,
     );
 
-    const result = isBibi
-      ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
-      : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
+    const result = hasConsignments
+      ? await this.n8nNotifyService.notifyConsignmentDelivery(
+          fullPackingSlip as any,
+        )
+      : isBibi
+        ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+        : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
 
     if (result.skipped) {
       throw new ServiceUnavailableException(
-        isBibi
-          ? 'Webhook Bibi chưa được cấu hình (N8N_BIBI_WEBHOOK_URL)'
-          : 'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
+        hasConsignments
+          ? 'Webhook ký gửi chưa được cấu hình (N8N_DEPOSIT_WEBHOOK_URL)'
+          : isBibi
+            ? 'Webhook Bibi chưa được cấu hình (N8N_BIBI_WEBHOOK_URL)'
+            : 'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
       );
     }
 
@@ -520,9 +570,11 @@ export class PackingSlipsService {
     }
 
     return {
-      message: isBibi
-        ? 'Đã gửi lại thông báo giao hàng (Bibi)'
-        : 'Đã gửi lại thông báo giao hàng vào Zalo',
+      message: hasConsignments
+        ? 'Đã gửi lại thông báo ký gửi vào Zalo'
+        : isBibi
+          ? 'Đã gửi lại thông báo giao hàng (Bibi)'
+          : 'Đã gửi lại thông báo giao hàng vào Zalo',
     };
   }
 
@@ -553,13 +605,19 @@ export class PackingSlipsService {
   async resendDeliverySafe(id: number): Promise<void> {
     try {
       const fullPackingSlip = await this.findOne(id);
-      // Định tuyến loại trừ: Bibi → chỉ Bibi, ngược lại → mặc định.
-      const isBibi = this.n8nNotifyService.isBibiPackingSlip(
-        fullPackingSlip as any,
+      const hasConsignments = (fullPackingSlip.invoices || []).some(
+        (item: any) => item.consignmentId != null,
       );
-      const result = isBibi
-        ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
-        : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
+      const isBibi =
+        !hasConsignments &&
+        this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any);
+      const result = hasConsignments
+        ? await this.n8nNotifyService.notifyConsignmentDelivery(
+            fullPackingSlip as any,
+          )
+        : isBibi
+          ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+          : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
       if (!result.ok && !result.skipped) {
         console.error(
           `resendDeliverySafe: gửi thông báo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
@@ -624,6 +682,16 @@ export class PackingSlipsService {
       this.hasArrayChanged(
         dto.invoiceIds,
         (oldSlip.invoices || []).map((inv: any) => inv.invoiceId),
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      dto.consignmentIds !== undefined &&
+      this.hasArrayChanged(
+        dto.consignmentIds,
+        (oldSlip.invoices || []).map((inv: any) => inv.consignmentId),
       )
     ) {
       return true;

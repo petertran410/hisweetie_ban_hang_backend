@@ -11,12 +11,22 @@ interface PackingSlipInvoiceCustomer {
 
 interface PackingSlipInvoice {
   invoiceId?: number;
+  consignmentId?: number;
   invoice?: {
     id?: number;
     code?: string;
     purchaseDate?: Date | string | null;
     grandTotal?: any;
     customer?: PackingSlipInvoiceCustomer | null;
+    soldBy?: { name?: string | null } | null;
+  };
+  consignment?: {
+    id?: number;
+    code?: string;
+    consignDate?: Date | string | null;
+    grandTotal?: any;
+    customer?: PackingSlipInvoiceCustomer | null;
+    soldBy?: { name?: string | null } | null;
   };
 }
 
@@ -197,6 +207,56 @@ export class N8nNotifyService {
     }
   }
 
+  /**
+   * Gửi thông báo "Báo đơn ký gửi giao hàng thành công" sang n8n.
+   * Ký gửi luôn đi vào group Zalo riêng, không áp dụng routing Bibi.
+   */
+  async notifyConsignmentDelivery(
+    packingSlip: PackingSlipForNotify,
+  ): Promise<NotifyDeliveryResult> {
+    const webhookUrl = this.config.get<string>('N8N_DEPOSIT_WEBHOOK_URL');
+
+    if (!webhookUrl) {
+      this.logger.warn(
+        'N8N_DEPOSIT_WEBHOOK_URL is not set — skipping consignment delivery notification',
+      );
+      return { ok: false, skipped: true };
+    }
+
+    const secret = this.config.get<string>('N8N_WEBHOOK_SECRET');
+    const publicUrl =
+      this.config.get<string>('APP_PUBLIC_URL') ||
+      this.config.get<string>('API_URL') ||
+      '';
+    const payload = this.buildPayload(packingSlip, publicUrl);
+
+    try {
+      const res = await axios.post(webhookUrl, payload, {
+        timeout: 10_000,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(secret ? { 'X-Webhook-Secret': secret } : {}),
+        },
+      });
+      this.logger.log(
+        `Notified n8n consignment delivery for packing slip ${packingSlip.code} (id=${packingSlip.id})`,
+      );
+      return { ok: true, skipped: false, status: res.status };
+    } catch (err) {
+      const ax = err as AxiosError;
+      const status = ax.response?.status;
+      const body =
+        typeof ax.response?.data === 'string'
+          ? ax.response?.data
+          : JSON.stringify(ax.response?.data ?? {});
+      this.logger.error(
+        `Failed to notify n8n consignment delivery for packing slip ${packingSlip.code} (id=${packingSlip.id}): ` +
+          `status=${status} message=${ax.message} body=${body}`,
+      );
+      return { ok: false, skipped: false, status, error: ax.message };
+    }
+  }
+
   private buildPayload(ps: PackingSlipForNotify, publicUrl: string) {
     const base = publicUrl.replace(/\/+$/, '');
 
@@ -204,21 +264,28 @@ export class N8nNotifyService {
       .map((img) => this.toAbsoluteUrl(img.imageUrl, base))
       .filter((u): u is string => !!u);
 
-    const invoices = (ps.invoices || []).map((inv) => ({
-      id: inv.invoice?.id ?? inv.invoiceId,
-      code: inv.invoice?.code ?? null,
-      purchaseDate: inv.invoice?.purchaseDate ?? null,
-      grandTotal: this.toNumber(inv.invoice?.grandTotal),
-      customer: inv.invoice?.customer
-        ? {
-            id: inv.invoice.customer.id,
-            code: inv.invoice.customer.code ?? null,
-            name: inv.invoice.customer.name ?? null,
-            contactNumber: inv.invoice.customer.contactNumber ?? null,
-          }
-        : null,
-      soldByName: (inv.invoice as any)?.soldBy?.name ?? null,
-    }));
+    const invoices = (ps.invoices || []).map((inv) => {
+      const document = inv.invoice ?? inv.consignment;
+      const customer = document?.customer;
+      const soldByName = document?.soldBy?.name ?? null;
+
+      return {
+        id: document?.id ?? inv.invoiceId ?? inv.consignmentId,
+        code: document?.code ?? null,
+        purchaseDate:
+          inv.invoice?.purchaseDate ?? inv.consignment?.consignDate ?? null,
+        grandTotal: this.toNumber(document?.grandTotal),
+        customer: customer
+          ? {
+              id: customer.id,
+              code: customer.code ?? null,
+              name: customer.name ?? null,
+              contactNumber: customer.contactNumber ?? null,
+            }
+          : null,
+        soldByName,
+      };
+    });
 
     // Collect unique seller names across all invoices
     const soldByNames = invoices
