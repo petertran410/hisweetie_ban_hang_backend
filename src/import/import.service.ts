@@ -260,6 +260,12 @@ export class ImportService {
       tradeMarkCache.set(tm.name.toLowerCase(), tm.id),
     );
 
+    // Cache danh mục thuộc tính để tránh upsert lặp qua các dòng import.
+    const attributeCaches = {
+      definitionCache: new Map<string, number>(),
+      valueCache: new Map<string, number>(),
+    };
+
     // ════════════════════════════════════════════════════════════════════════
     // PHASE 1 — VALIDATE (NGOÀI transaction)
     // ════════════════════════════════════════════════════════════════════════
@@ -385,7 +391,6 @@ export class ImportService {
                 }),
                 ...(row.vat !== null && { vat: row.vat }),
                 isDirectSale: row.isDirectSale,
-                attributesText: row.attributesText || undefined,
               };
 
               if (tradeMarkId) updateData.tradeMarkId = tradeMarkId;
@@ -397,6 +402,15 @@ export class ImportService {
                 where: { id: existingId },
                 data: updateData,
               });
+
+              // Đồng bộ thuộc tính (title→value danh mục) cho SP đang update.
+              await this.syncImportAttributes(
+                tx,
+                existingId,
+                row.attributesText,
+                attributeCaches,
+                'replace',
+              );
 
               // Update inventory per branch
               for (const inv of row.branchInventories) {
@@ -514,11 +528,19 @@ export class ImportService {
                   ...(row.vat !== null && { vat: row.vat }),
                   isDirectSale: row.isDirectSale,
                   description: row.description || undefined,
-                  attributesText: row.attributesText || undefined,
                 },
               });
 
               codeToId.set(generatedCode, product.id);
+
+              // Gán thuộc tính (title→value danh mục) cho SP mới tạo.
+              await this.syncImportAttributes(
+                tx,
+                product.id,
+                row.attributesText,
+                attributeCaches,
+                'create',
+              );
 
               // Tạo inventory per branch
               for (const inv of row.branchInventories) {
@@ -726,6 +748,96 @@ export class ImportService {
       .filter(Boolean);
     if (attrs.length === 0) return name;
     return `${name} - ${attrs.join(' - ')}`;
+  }
+
+  /**
+   * Parse chuỗi "Vị:Ngọt|Màu sắc:Đen" → [{name, value}], bỏ cặp rỗng/trùng.
+   */
+  private parseAttributesText(
+    attributesText: string | null | undefined,
+  ): { name: string; value: string }[] {
+    if (!attributesText) return [];
+    const seen = new Set<string>();
+    const result: { name: string; value: string }[] = [];
+    for (const part of attributesText.split('|')) {
+      const [name, value] = part.split(':');
+      const n = (name || '').trim();
+      const v = (value || '').trim();
+      if (!n || !v) continue;
+      const key = `${n.toLowerCase()}::${v.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({ name: n, value: v });
+    }
+    return result;
+  }
+
+  /**
+   * Đồng bộ thuộc tính cho 1 product trong transaction import.
+   * Dùng cache definition/value để tránh upsert lặp giữa các dòng.
+   * mode="replace" → xóa hết thuộc tính cũ trước (cho luồng UPDATE).
+   */
+  private async syncImportAttributes(
+    tx: any,
+    productId: number,
+    attributesText: string | null | undefined,
+    caches: {
+      definitionCache: Map<string, number>;
+      valueCache: Map<string, number>;
+    },
+    mode: 'create' | 'replace',
+  ): Promise<void> {
+    const attrs = this.parseAttributesText(attributesText);
+
+    if (mode === 'replace') {
+      await tx.productAttribute.deleteMany({ where: { productId } });
+    }
+    if (attrs.length === 0) return;
+
+    const { definitionCache, valueCache } = caches;
+    const valueIds: number[] = [];
+
+    for (const attr of attrs) {
+      const nameKey = attr.name.toLowerCase();
+      let definitionId = definitionCache.get(nameKey);
+      if (definitionId === undefined) {
+        const definition = await tx.attributeDefinition.upsert({
+          where: { name: attr.name },
+          update: {},
+          create: { name: attr.name },
+        });
+        definitionId = definition.id as number;
+        definitionCache.set(nameKey, definitionId);
+      }
+
+      const valueKey = `${definitionId}::${attr.value.toLowerCase()}`;
+      let valueId = valueCache.get(valueKey);
+      if (valueId === undefined) {
+        const attributeValue = await tx.attributeValue.upsert({
+          where: {
+            attributeDefinitionId_value: {
+              attributeDefinitionId: definitionId,
+              value: attr.value,
+            },
+          },
+          update: {},
+          create: { attributeDefinitionId: definitionId, value: attr.value },
+        });
+        valueId = attributeValue.id as number;
+        valueCache.set(valueKey, valueId);
+      }
+      valueIds.push(valueId);
+    }
+
+    if (valueIds.length > 0) {
+      await tx.productAttribute.createMany({
+        data: valueIds.map((attributeValueId) => ({
+          productId,
+          attributeValueId,
+        })),
+        skipDuplicates: true,
+      });
+    }
   }
 
   // --- FIX LỖI 9: Tính totalWeight giống products.service.ts ---

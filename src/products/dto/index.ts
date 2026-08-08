@@ -142,6 +142,15 @@ export class PublicationLocationDto {
   newWardName?: string;
 }
 
+// Một cặp thuộc tính (title + value) do người dùng nhập ở form/import.
+export class ProductAttributeInputDto {
+  @IsString()
+  name: string;
+
+  @IsString()
+  value: string;
+}
+
 export class CreateProductDto {
   @IsString()
   code: string;
@@ -271,8 +280,10 @@ export class CreateProductDto {
   shippingWeightUnit?: string;
 
   @IsOptional()
-  @IsString()
-  attributesText?: string;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductAttributeInputDto)
+  attributes?: ProductAttributeInputDto[];
 
   @IsOptional()
   @IsBoolean()
@@ -501,10 +512,6 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
   @IsNumber()
   @Type(() => Number)
   masterUnitId?: number;
-
-  @IsOptional()
-  @IsString()
-  attributesText?: string;
 
   @IsOptional()
   @IsBoolean()

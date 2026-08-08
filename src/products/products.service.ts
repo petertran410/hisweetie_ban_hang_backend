@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
@@ -42,24 +43,85 @@ export class ProductsService {
     private stockAuditsService: StockAuditsService,
   ) {}
 
-  private parseAttributes(
-    attributesText: string | null,
-  ): { name: string; value: string }[] {
-    if (!attributesText) return [];
-    return attributesText.split('|').map((attr) => {
-      const [name, value] = attr.split(':');
-      return { name: name?.trim() || '', value: value?.trim() || '' };
-    });
+  private buildFullName(
+    name: string,
+    attributes: { value: string }[] | null | undefined,
+  ): string {
+    if (!attributes || attributes.length === 0) return name;
+
+    const attrValues = attributes
+      .map((attr) => attr.value)
+      .filter((v) => v && v.trim())
+      .join(' - ');
+    if (!attrValues) return name;
+    return `${name} - ${attrValues}`;
   }
 
-  private buildFullName(name: string, attributesText: string | null): string {
-    if (!attributesText) return name;
+  /**
+   * Chuẩn hóa mảng {name, value} người dùng gửi → mảng attributeValueId.
+   * - Upsert title vào attribute_definitions (name unique) → chống trùng title.
+   * - Upsert value vào attribute_values ([definitionId, value] unique) → chống trùng value trong title.
+   * - Khử trùng cặp (name, value) trong cùng payload.
+   * Trả về danh sách attributeValueId đã khử trùng, giữ thứ tự xuất hiện đầu tiên.
+   */
+  private async resolveAttributeValueIds(
+    tx: Prisma.TransactionClient,
+    attributes: { name: string; value: string }[] | null | undefined,
+  ): Promise<number[]> {
+    if (!attributes || attributes.length === 0) return [];
 
-    const attrs = this.parseAttributes(attributesText);
-    if (attrs.length === 0) return name;
+    const seen = new Set<string>();
+    const valueIds: number[] = [];
 
-    const attrValues = attrs.map((attr) => attr.value).join(' - ');
-    return `${name} - ${attrValues}`;
+    for (const attr of attributes) {
+      const name = (attr.name || '').trim();
+      const value = (attr.value || '').trim();
+      if (!name || !value) continue;
+
+      const dedupeKey = `${name.toLowerCase()}::${value.toLowerCase()}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+
+      const definition = await tx.attributeDefinition.upsert({
+        where: { name },
+        update: {},
+        create: { name },
+      });
+
+      const attributeValue = await tx.attributeValue.upsert({
+        where: {
+          attributeDefinitionId_value: {
+            attributeDefinitionId: definition.id,
+            value,
+          },
+        },
+        update: {},
+        create: { attributeDefinitionId: definition.id, value },
+      });
+
+      valueIds.push(attributeValue.id);
+    }
+
+    return valueIds;
+  }
+
+  /**
+   * Đọc thuộc tính đã gán của product và flatten về dạng {name, value} để build
+   * fullName hoặc trả về cho FE.
+   */
+  private flattenProductAttributes(
+    productAttributes:
+      | {
+          value: { value: string; definition: { name: string } };
+        }[]
+      | null
+      | undefined,
+  ): { name: string; value: string }[] {
+    if (!productAttributes) return [];
+    return productAttributes.map((pa) => ({
+      name: pa.value?.definition?.name || '',
+      value: pa.value?.value || '',
+    }));
   }
 
   private calculateTotalWeight(
@@ -284,6 +346,10 @@ export class ProductsService {
       images: true,
       documents: true,
       inventories: inventoriesInclude,
+      attributes: {
+        include: { value: { include: { definition: true } } },
+        orderBy: { id: 'asc' as const },
+      },
       comboComponents: {
         include: {
           componentProduct: {
@@ -370,7 +436,10 @@ export class ProductsService {
 
       // Giữ đúng thứ tự đã sắp xếp (findMany không đảm bảo thứ tự theo in[]).
       const byId = new Map(pageProducts.map((p) => [p.id, p]));
-      const data = pageIds.map((id) => byId.get(id)).filter(Boolean);
+      const data = pageIds
+        .map((id) => byId.get(id))
+        .filter((p): p is (typeof pageProducts)[number] => Boolean(p))
+        .map((p) => this.normalizeProductAttributes(p));
 
       return { data, total, page, limit };
     }
@@ -391,7 +460,30 @@ export class ProductsService {
       this.prisma.product.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    return {
+      data: data.map((p) => this.normalizeProductAttributes(p)),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Chuyển product.attributes (quan hệ) → mảng phẳng {id, name, value} cho FE.
+   * Giữ nguyên các field còn lại của product.
+   */
+  private normalizeProductAttributes<T extends { attributes?: any }>(
+    product: T | null | undefined,
+  ): (T & { attributes: { id: number; name: string; value: string }[] }) | T {
+    if (!product) return product as unknown as T;
+    const attributes = Array.isArray(product?.attributes)
+      ? product.attributes.map((pa: any) => ({
+          id: pa.id,
+          name: pa.value?.definition?.name || '',
+          value: pa.value?.value || '',
+        }))
+      : [];
+    return { ...(product as any), attributes };
   }
 
   /**
@@ -860,6 +952,10 @@ export class ProductsService {
             },
           },
         },
+        attributes: {
+          include: { value: { include: { definition: true } } },
+          orderBy: { id: 'asc' },
+        },
         primaryFactory: true,
         backupFactory: true,
       },
@@ -888,7 +984,7 @@ export class ProductsService {
       }),
     );
 
-    return { ...product, inventories };
+    return this.normalizeProductAttributes({ ...product, inventories });
   }
 
   async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
@@ -929,6 +1025,7 @@ export class ProductsService {
       manualCostOverride,
       primaryFactoryId,
       backupFactoryId,
+      attributes,
       ...productData
     } = dto;
 
@@ -984,8 +1081,8 @@ export class ProductsService {
     }
 
     const name = dto.name;
-    const attributesText = dto.attributesText || null;
-    const fullName = dto.fullName || this.buildFullName(name, attributesText);
+    const attributesInput = attributes || [];
+    const fullName = dto.fullName || this.buildFullName(name, attributesInput);
 
     return this.prisma.$transaction(async (tx) => {
       const productCode =
@@ -1012,7 +1109,6 @@ export class ProductsService {
           vat: productData.vat ?? 8,
           shippingWeight: productData.shippingWeight,
           shippingWeightUnit: productData.shippingWeightUnit ?? 'g',
-          attributesText,
           isRewardPoint: productData.isRewardPoint,
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
@@ -1043,6 +1139,23 @@ export class ProductsService {
           }),
         },
       });
+
+      // Gán thuộc tính (title→value danh mục) vào sản phẩm.
+      if (attributesInput.length > 0) {
+        const valueIds = await this.resolveAttributeValueIds(
+          tx,
+          attributesInput,
+        );
+        if (valueIds.length > 0) {
+          await tx.productAttribute.createMany({
+            data: valueIds.map((attributeValueId) => ({
+              productId: product.id,
+              attributeValueId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
 
       // Ghi audit log cho lần gắn nhà máy đầu tiên (nếu có)
       if (factoryIdsToCheck.length > 0 && userId) {
@@ -1271,7 +1384,7 @@ export class ProductsService {
 
       this.larkProductSync.enqueueSync(product.id);
 
-      return tx.product.findUnique({
+      const created = await tx.product.findUnique({
         where: { id: product.id },
         include: {
           variant: true,
@@ -1288,8 +1401,13 @@ export class ProductsService {
               },
             },
           },
+          attributes: {
+            include: { value: { include: { definition: true } } },
+            orderBy: { id: 'asc' },
+          },
         },
       });
+      return this.normalizeProductAttributes(created);
     });
   }
 
@@ -1303,6 +1421,10 @@ export class ProductsService {
         inventories: true,
         variant: true,
         tradeMark: true,
+        attributes: {
+          include: { value: { include: { definition: true } } },
+          orderBy: { id: 'asc' },
+        },
       },
     });
 
@@ -1311,11 +1433,14 @@ export class ProductsService {
     }
 
     const name = dto.name || currentProduct.name;
-    const attributesText =
-      dto.attributesText !== undefined
-        ? dto.attributesText
-        : currentProduct.attributesText;
-    const fullName = dto.fullName || this.buildFullName(name, attributesText);
+    // Thuộc tính: nếu client gửi mảng → dùng mảng đó; nếu không gửi → giữ nguyên
+    // thuộc tính hiện có (dùng để tính lại fullName).
+    const attributesForFullName =
+      dto.attributes !== undefined
+        ? dto.attributes
+        : this.flattenProductAttributes(currentProduct.attributes);
+    const fullName =
+      dto.fullName || this.buildFullName(name, attributesForFullName);
 
     const {
       imageUrls,
@@ -1343,6 +1468,7 @@ export class ProductsService {
       manualCostOverride,
       primaryFactoryId,
       backupFactoryId,
+      attributes,
       ...productData
     } = dto;
 
@@ -1489,6 +1615,22 @@ export class ProductsService {
           }),
         },
       });
+
+      // Đồng bộ thuộc tính: chỉ khi client gửi mảng attributes (undefined = giữ
+      // nguyên). Kiểu delete-all + create-all trong transaction.
+      if (attributes !== undefined) {
+        await tx.productAttribute.deleteMany({ where: { productId: id } });
+        const valueIds = await this.resolveAttributeValueIds(tx, attributes);
+        if (valueIds.length > 0) {
+          await tx.productAttribute.createMany({
+            data: valueIds.map((attributeValueId) => ({
+              productId: id,
+              attributeValueId,
+            })),
+            skipDuplicates: true,
+          });
+        }
+      }
 
       // Ghi audit log nếu có thay đổi primary/backup factory
       if (factoryChanges.length > 0 && userId) {
@@ -1967,7 +2109,7 @@ export class ProductsService {
 
       this.larkProductSync.enqueueSync(id);
 
-      return tx.product.findUnique({
+      const updated = await tx.product.findUnique({
         where: { id },
         include: {
           variant: true,
@@ -1984,8 +2126,13 @@ export class ProductsService {
               },
             },
           },
+          attributes: {
+            include: { value: { include: { definition: true } } },
+            orderBy: { id: 'asc' },
+          },
         },
       });
+      return this.normalizeProductAttributes(updated);
     });
   }
 
