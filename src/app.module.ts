@@ -82,6 +82,8 @@ import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { PaymentNotesModule } from './payment-notes/payment-notes.module';
+import { RecipesModule } from './recipes/recipes.module';
+import { PurchasingPlanningModule } from './purchasing-planning/purchasing-planning.module';
 
 @Module({
   controllers: [HealthController],
@@ -176,6 +178,8 @@ import { PaymentNotesModule } from './payment-notes/payment-notes.module';
     NotificationsModule,
     ExchangeRatesModule,
     PaymentNotesModule,
+    RecipesModule,
+    PurchasingPlanningModule,
   ],
   providers: [
     {
