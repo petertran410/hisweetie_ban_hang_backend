@@ -37,6 +37,11 @@ const ALLOWED_FILE_MIMES = new Set([
   'image/heif',
   'image/heic-sequence',
   'image/heif-sequence',
+  // Videos
+  'video/mp4',
+  'video/webm',
+  'video/quicktime',
+  'video/x-m4v',
   // Documents
   'application/pdf',
   'application/msword',
@@ -170,7 +175,7 @@ export class UploadController {
 
     if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
       throw new BadRequestException(
-        `Mime type không được hỗ trợ: ${file.mimetype}`,
+        `Mime type không được hỗ trợ: ${file.mimetype}. Hỗ trợ: ảnh (jpeg/png/webp/gif/heic), video (mp4/webm/quicktime/x-m4v), tài liệu (pdf/doc/xls/ppt/txt/csv/zip).`,
       );
     }
 
@@ -226,7 +231,7 @@ export class UploadController {
           return {
             error: {
               originalname: file.originalname,
-              reason: `Mime type không được hỗ trợ: ${file.mimetype}`,
+              reason: `Mime type không được hỗ trợ: ${file.mimetype}. Hỗ trợ: ảnh (jpeg/png/webp/gif/heic), video (mp4/webm/quicktime/x-m4v), tài liệu (pdf/doc/xls/ppt/txt/csv/zip).`,
             },
           };
         }

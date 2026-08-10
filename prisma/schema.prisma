@@ -96,6 +96,12 @@ model User {
   branch                                                    Branch?                           @relation(fields: [branchId], references: [id])
   supplier                                                  Supplier?                         @relation("SupplierStaff", fields: [supplierId], references: [id])
   createdVehicleShipments                                   VehicleShipment[]                 @relation("VehicleShipmentCreator")
+  createdRecipes                                            Recipe[]                          @relation("RecipeCreator")
+  updatedRecipes                                            Recipe[]                          @relation("RecipeUpdater")
+  publishedRecipes                                          Recipe[]                          @relation("RecipePublisher")
+  recipeComments                                            RecipeComment[]                   @relation("RecipeCommentAuthor")
+  createdIngredients                                        Ingredient[]                      @relation("IngredientCreator")
+  updatedIngredients                                        Ingredient[]                      @relation("IngredientUpdater")
 
   @@map("users")
 }
@@ -750,6 +756,8 @@ model Product {
   supplierReturnDetails         SupplierReturnDetail[]
   transferDetails               TransferDetail[]
   vehicleShipmentItems          VehicleShipmentItem[]
+  outputRecipes                 Recipe[]                       @relation("RecipeOutputProduct")
+  recipeIngredients             RecipeIngredient[]             @relation("RecipeIngredientProduct")
 
   @@index([id, name])
   @@index([larkSyncStatus])
@@ -3323,4 +3331,395 @@ enum MisaSyncStatus {
   SYNCED
   FAILED
   SKIP
+}
+
+// ─── Recipe / Công thức pha chế ─────────────────────────────────────────────
+// Domain độc lập với ProductComponent. Version bất biến sau publish.
+// Cost hybrid: snapshot STALE/FRESH + recalculate thủ công.
+
+model RecipeCategory {
+  id        Int       @id @default(autoincrement())
+  code      String?   @unique
+  name      String
+  type      String? // SEMI_FINISHED | FINISHED_PRODUCT | null = both
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  recipes Recipe[]
+
+  @@index([isActive])
+  @@map("recipe_categories")
+}
+
+model Recipe {
+  id                Int       @id @default(autoincrement())
+  code              String
+  slug              String?   @unique
+  name              String
+  type              String // SEMI_FINISHED | FINISHED_PRODUCT
+  categoryId        Int?      @map("category_id")
+  outputProductId   Int?      @map("output_product_id")
+  status            String    @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+  publishedAt       DateTime? @map("published_at")
+  publishedBy       Int?      @map("published_by")
+  changeNote        String?   @map("change_note")
+  description       String?
+  quantity          Decimal?  @db.Decimal(18, 6)
+  quantityUnit      String?   @map("quantity_unit")
+  unit              String?
+  storage           String?
+  currencyCode      String    @default("VND") @map("currency_code") @db.Char(3)
+  costStatus        String    @default("FRESH") @map("cost_status") // FRESH | STALE | CALCULATING | ERROR
+  materialCost      Decimal?  @map("material_cost") @db.Decimal(18, 6)
+  semiFinishedCost  Decimal?  @map("semi_finished_cost") @db.Decimal(18, 6)
+  customCost        Decimal?  @map("custom_cost") @db.Decimal(18, 6)
+  totalCost         Decimal?  @map("total_cost") @db.Decimal(18, 6)
+  costPerOutputUnit Decimal?  @map("cost_per_output_unit") @db.Decimal(18, 6)
+  createdBy         Int?      @map("created_by")
+  updatedBy         Int?      @map("updated_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  deletedBy         Int?      @map("deleted_by")
+
+  category                RecipeCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  outputProduct           Product?           @relation("RecipeOutputProduct", fields: [outputProductId], references: [id], onDelete: SetNull)
+  creator                 User?              @relation("RecipeCreator", fields: [createdBy], references: [id])
+  updater                 User?              @relation("RecipeUpdater", fields: [updatedBy], references: [id])
+  publisher               User?              @relation("RecipePublisher", fields: [publishedBy], references: [id])
+  ingredients             RecipeIngredient[]
+  steps                   RecipeStep[]
+  images                  RecipeImage[]
+  // Closure table: recipe này là ancestor (cha) hoặc descendant (con)
+  ancestorDeps            RecipeDependency[] @relation("RecipeAncestor")
+  descendantDeps          RecipeDependency[] @relation("RecipeDescendant")
+  // Semi-finished references from other recipe ingredients
+  referencedByIngredients RecipeIngredient[] @relation("RecipeIngredientSemi")
+  comments                RecipeComment[]
+
+  @@unique([code])
+  @@index([type, status])
+  @@index([categoryId])
+  @@index([outputProductId])
+  @@index([updatedAt])
+  @@index([deletedAt])
+  @@map("recipes")
+}
+
+model RecipeComment {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  authorId  Int      @map("author_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  author User   @relation("RecipeCommentAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([recipeId, createdAt])
+  @@index([authorId])
+  @@map("recipe_comments")
+}
+
+model RecipeIngredient {
+  id                  Int      @id @default(autoincrement())
+  recipeId            Int      @map("recipe_id")
+  sourceType          String   @map("source_type") // PRODUCT | SEMI_FINISHED | CUSTOM
+  productId           Int?     @map("product_id")
+  recipeReferenceId   Int?     @map("recipe_reference_id")
+  ingredientId        Int?     @map("ingredient_id")
+  customName          String?  @map("custom_name")
+  customUnit          String?  @map("custom_unit")
+  customPrice         Decimal? @map("custom_price") @db.Decimal(18, 6)
+  quantity            Decimal  @db.Decimal(18, 6)
+  unit                String? // đơn vị nhập trong recipe
+  includeInCost       Boolean  @default(true) @map("include_in_cost")
+  isInternal          Boolean  @default(false) @map("is_internal")
+  isTemporary         Boolean  @default(false) @map("is_temporary")
+  note                String?
+  sortOrder           Int      @default(0) @map("sort_order")
+  costSnapshot        Decimal? @map("cost_snapshot") @db.Decimal(18, 6)
+  unitCostSnapshot    Decimal? @map("unit_cost_snapshot") @db.Decimal(18, 6)
+  priceSourceSnapshot Json?    @map("price_source_snapshot")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  recipe          Recipe      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  product         Product?    @relation("RecipeIngredientProduct", fields: [productId], references: [id], onDelete: Restrict)
+  recipeReference Recipe?     @relation("RecipeIngredientSemi", fields: [recipeReferenceId], references: [id], onDelete: Restrict)
+  ingredient      Ingredient? @relation(fields: [ingredientId], references: [id], onDelete: SetNull)
+
+  @@index([recipeId, sortOrder])
+  @@index([productId])
+  @@index([recipeReferenceId])
+  @@index([ingredientId])
+  @@map("recipe_ingredients")
+}
+
+model RecipeStep {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  sortOrder Int      @default(0) @map("sort_order")
+  title     String?
+  content   String
+  tools     Json?
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId, sortOrder])
+  @@map("recipe_steps")
+}
+
+model RecipeImage {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  mediaType String   @default("IMAGE") @map("media_type") // IMAGE | VIDEO
+  fileUrl   String   @map("file_url")
+  fileName  String?  @map("file_name")
+  mimeType  String?  @map("mime_type")
+  altText   String?  @map("alt_text")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId, sortOrder])
+  @@map("recipe_images")
+}
+
+/// Thư viện custom ingredient (nguyên liệu ngoài Product)
+model Ingredient {
+  id                   Int       @id @default(autoincrement())
+  code                 String?
+  name                 String
+  baseUnit             String?   @map("base_unit")
+  defaultPrice         Decimal?  @map("default_price") @db.Decimal(18, 6)
+  currencyCode         String    @default("VND") @map("currency_code") @db.Char(3)
+  includeInCostDefault Boolean   @default(true) @map("include_in_cost_default")
+  inventoryManaged     Boolean   @default(false) @map("inventory_managed")
+  isInternal           Boolean   @default(false) @map("is_internal")
+  notes                String?
+  createdBy            Int?      @map("created_by")
+  updatedBy            Int?      @map("updated_by")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  creator     User?              @relation("IngredientCreator", fields: [createdBy], references: [id])
+  updater     User?              @relation("IngredientUpdater", fields: [updatedBy], references: [id])
+  ingredients RecipeIngredient[]
+
+  @@index([name])
+  @@index([deletedAt])
+  @@map("ingredients")
+}
+
+/// Closure table dependency DAG (ancestor → descendant)
+model RecipeDependency {
+  id                 Int      @id @default(autoincrement())
+  ancestorRecipeId   Int      @map("ancestor_recipe_id")
+  descendantRecipeId Int      @map("descendant_recipe_id")
+  depth              Int // 1 = direct edge
+  isDirect           Boolean  @default(false) @map("is_direct")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  ancestor   Recipe @relation("RecipeAncestor", fields: [ancestorRecipeId], references: [id], onDelete: Cascade)
+  descendant Recipe @relation("RecipeDescendant", fields: [descendantRecipeId], references: [id], onDelete: Cascade)
+
+  @@unique([ancestorRecipeId, descendantRecipeId, depth])
+  @@index([descendantRecipeId])
+  @@map("recipe_dependencies")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PURCHASING PLANNING — Dự kiến đặt hàng
+// Tham chiếu: docs/purchasing-planning-technical-design.md §4 (Database Design)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cấu hình tham số tính toán theo EAV (TD §4.2).
+/// Độ ưu tiên khi resolve: SKU > SUPPLIER > CATEGORY > GLOBAL.
+model PlanningConfig {
+  id Int @id @default(autoincrement())
+
+  /// GLOBAL | CATEGORY | SUPPLIER | SKU
+  scopeType  String  @map("scope_type") @db.VarChar(20)
+  /// null khi scopeType = GLOBAL; FK mềm tới category/supplier/product
+  scopeId    Int?    @map("scope_id")
+  /// leadTimeDays, safetyDays, coverageDays, growthFactor, moq, packSize...
+  paramKey   String  @map("param_key") @db.VarChar(50)
+  paramValue Decimal @map("param_value") @db.Decimal(18, 4)
+
+  /// Soft delete — chỉ bản ghi is_active = true mới được resolve
+  isActive Boolean @default(true) @map("is_active")
+  note     String?
+
+  createdBy Int?     @map("created_by")
+  updatedBy Int?     @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([scopeType, scopeId, paramKey])
+  @@index([paramKey])
+  @@map("planning_config")
+}
+
+/// Mỗi lần chạy tính toán. Đồng thời là CƠ CHẾ LOCK chống chạy trùng (TD §4.3).
+model CalculationRun {
+  id Int @id @default(autoincrement())
+
+  /// DAILY | MANUAL | SINGLE_SKU
+  runType      String   @map("run_type") @db.VarChar(20)
+  /// RUNNING | COMPLETED | FAILED | PARTIAL
+  status       String   @db.VarChar(20)
+  /// Ngày dữ liệu (thường = ngày chạy)
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  skuTotal   Int @default(0) @map("sku_total")
+  skuSuccess Int @default(0) @map("sku_success")
+  skuFailed  Int @default(0) @map("sku_failed")
+  skuBlocked Int @default(0) @map("sku_blocked")
+
+  durationMs    Int?  @map("duration_ms")
+  errorSummary  Json? @map("error_summary")
+  triggeredBy   Int?  @map("triggered_by")
+  /// Snapshot toàn bộ config global tại thời điểm chạy
+  configVersion Json? @map("config_version")
+
+  recommendation PurchaseRecommendation?
+
+  @@index([status, startedAt(sort: Desc)])
+  @@index([snapshotDate(sort: Desc)])
+  @@map("calculation_run")
+}
+
+/// Một đợt đề xuất đặt hàng (TD §4.6).
+model PurchaseRecommendation {
+  id Int @id @default(autoincrement())
+
+  runId        Int      @unique @map("run_id")
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+  /// ACTIVE | SUPERSEDED
+  status       String   @default("ACTIVE") @db.VarChar(20)
+
+  totalSku            Int      @default(0) @map("total_sku")
+  needOrderSku        Int      @default(0) @map("need_order_sku")
+  criticalCount       Int      @default(0) @map("critical_count")
+  highCount           Int      @default(0) @map("high_count")
+  totalEstimatedValue Decimal? @map("total_estimated_value") @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run   CalculationRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  items RecommendationItem[]
+
+  @@index([snapshotDate(sort: Desc), status])
+  @@map("purchase_recommendation")
+}
+
+/// Đề xuất cho từng SKU — BẢNG TRUNG TÂM của module (TD §4.7).
+/// Cố ý denormalize product_code/product_name/supplier_name để tránh join khi đọc.
+model RecommendationItem {
+  id BigInt @id @default(autoincrement())
+
+  recommendationId Int @map("recommendation_id")
+  productId        Int @map("product_id")
+
+  productCode String  @map("product_code") @db.VarChar(50)
+  productName String  @map("product_name") @db.VarChar(500)
+  unit        String? @db.VarChar(50)
+
+  /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
+  parentName    String? @map("parent_name") @db.VarChar(255)
+  middleName    String? @map("middle_name") @db.VarChar(255)
+  childName     String? @map("child_name") @db.VarChar(255)
+  tradeMarkId   Int?    @map("trade_mark_id")
+  tradeMarkName String? @map("trade_mark_name") @db.VarChar(255)
+
+  /// null → cờ MISSING_SUPPLIER (Product không có supplierId, suy từ lịch sử đặt)
+  supplierId   Int?    @map("supplier_id")
+  supplierName String? @map("supplier_name") @db.VarChar(255)
+
+  // ── Kết quả tính ──
+  forecastDailyDemand Decimal  @map("forecast_daily_demand") @db.Decimal(18, 4)
+  /// HIGH | MEDIUM | LOW | VERY_LOW | NO_DATA
+  confidence          String   @db.VarChar(15)
+  /// INVENTORY_LOG | INVOICE_DETAIL | MIXED | NONE
+  demandSource        String   @map("demand_source") @db.VarChar(20)
+  ma30                Decimal? @db.Decimal(18, 4)
+  ma60                Decimal? @db.Decimal(18, 4)
+  ma90                Decimal? @db.Decimal(18, 4)
+  trendRatio          Decimal? @map("trend_ratio") @db.Decimal(10, 4)
+
+  leadTimeDays   Int    @map("lead_time_days") @db.SmallInt
+  /// GLOBAL | CATEGORY | SUPPLIER | SKU | DERIVED
+  leadTimeSource String @map("lead_time_source") @db.VarChar(15)
+  safetyDays     Int    @map("safety_days") @db.SmallInt
+  coverageDays   Int    @map("coverage_days") @db.SmallInt
+
+  leadTimeDemand Decimal @map("lead_time_demand") @db.Decimal(18, 4)
+  safetyBuffer   Decimal @map("safety_buffer") @db.Decimal(18, 4)
+  reorderPoint   Decimal @map("reorder_point") @db.Decimal(18, 4)
+
+  // ── Tồn kho ──
+  physicalStock  Decimal @map("physical_stock") @db.Decimal(18, 4)
+  reservedStock  Decimal @map("reserved_stock") @db.Decimal(18, 4)
+  availableStock Decimal @map("available_stock") @db.Decimal(18, 4)
+  incomingTotal  Decimal @map("incoming_total") @db.Decimal(18, 4)
+
+  inventoryPosition Decimal @map("inventory_position") @db.Decimal(18, 4)
+  /// Dương = cần đặt
+  reorderGap        Decimal @map("reorder_gap") @db.Decimal(18, 4)
+  needsOrder        Boolean @map("needs_order")
+
+  // ── SOQ ──
+  soqRaw             Decimal  @map("soq_raw") @db.Decimal(18, 4)
+  suggestedQuantity  Decimal  @map("suggested_quantity") @db.Decimal(18, 4)
+  suggestedPackCount Decimal? @map("suggested_pack_count") @db.Decimal(12, 2)
+  packSize           Decimal  @map("pack_size") @db.Decimal(12, 4)
+  moqApplied         Decimal? @map("moq_applied") @db.Decimal(18, 4)
+  estimatedUnitPrice Decimal? @map("estimated_unit_price") @db.Decimal(18, 2)
+  estimatedValue     Decimal? @map("estimated_value") @db.Decimal(18, 2)
+
+  // ── Phân loại ──
+  /// CRITICAL | HIGH | MEDIUM | LOW | HEALTHY | OVERSTOCK | NO_DATA
+  priority              String    @db.VarChar(15)
+  priorityRank          Int       @map("priority_rank") @db.SmallInt
+  /// HIGH | MEDIUM | LOW | UNRELIABLE
+  reliability           String    @db.VarChar(15)
+  urgencyRatio          Decimal?  @map("urgency_ratio") @db.Decimal(10, 4)
+  daysUntilStockout     Int?      @map("days_until_stockout") @db.SmallInt
+  daysOfSupply          Decimal?  @map("days_of_supply") @db.Decimal(10, 2)
+  projectedStockoutDate DateTime? @map("projected_stockout_date") @db.Date
+
+  // ── Trạng thái ──
+  /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
+  status          String @default("PENDING") @db.VarChar(15)
+  orderSupplierId Int?   @map("order_supplier_id")
+
+  // ── Hiển thị & explainability ──
+  /// Câu kết luận tiếng Việt do backend sinh (PRD §12.4)
+  summaryText      String @map("summary_text")
+  /// Toàn bộ input + từng bước tính + flags
+  calculationTrace Json   @map("calculation_trace")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  recommendation PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@unique([recommendationId, productId])
+  @@index([recommendationId, priorityRank, daysUntilStockout])
+  @@index([productId, id(sort: Desc)])
+  @@index([recommendationId, supplierId])
+  @@index([recommendationId, status])
+  @@map("recommendation_item")
 }
