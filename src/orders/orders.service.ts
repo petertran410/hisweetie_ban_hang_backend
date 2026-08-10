@@ -536,6 +536,16 @@ export class OrdersService {
 
       const orderCode = await this.generateCode();
 
+      const orderSubtotal = itemsData.reduce(
+        (sum, it) => sum + Number(it.totalPrice),
+        0,
+      );
+      const orderDiscountRatio = dto.discountRatio || 0;
+      const orderDiscountAmount =
+        orderDiscountRatio > 0
+          ? (orderSubtotal * orderDiscountRatio) / 100
+          : dto.discountAmount || 0;
+
       // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
       const addrSnapshot = await resolveDeliveryAddress(tx, dto.customerId);
 
@@ -553,8 +563,8 @@ export class OrdersService {
           statusValue: getStatusLabel(orderStatusNumber),
           orderStatus: orderStatusString,
           depositAmount: dto.depositAmount || 0,
-          discount: (dto.discountAmount || 0) + promo.extraDiscount,
-          discountRatio: dto.discountRatio || 0,
+          discount: orderDiscountAmount + promo.extraDiscount,
+          discountRatio: orderDiscountRatio,
           description: dto.description,
           createdBy: userId,
           items: {
@@ -677,6 +687,11 @@ export class OrdersService {
 
       // extraDiscount KM cấp đơn (chỉ tính lại khi items thay đổi)
       let promoExtraDiscount: number | null = null;
+      // Tổng tiền hàng sau cập nhật — dùng quy đổi % → tiền cho giảm giá cấp đơn.
+      let updatedSubtotal = existingOrder.items.reduce(
+        (sum, it) => sum + Number(it.totalPrice),
+        0,
+      );
 
       if (dto.items) {
         await tx.orderItem.deleteMany({ where: { orderId: id } });
@@ -754,6 +769,11 @@ export class OrdersService {
           data: itemsData,
         });
 
+        updatedSubtotal = itemsData.reduce(
+          (sum, it) => sum + Number(it.totalPrice),
+          0,
+        );
+
         // Ghi log KM mới + tăng usageCount
         if (promo.logs.length > 0) {
           await tx.invoicePromotionLog.createMany({
@@ -766,6 +786,14 @@ export class OrdersService {
         }
       }
 
+      const updateDiscountRatio = dto.discountRatio;
+      const updateDiscountAmount =
+        updateDiscountRatio !== undefined && updateDiscountRatio > 0
+          ? (updatedSubtotal * updateDiscountRatio) / 100
+          : dto.discountAmount != null
+            ? dto.discountAmount || 0
+            : undefined;
+
       const updateData: any = {
         customerId: dto.customerId,
         branchId: dto.branchId,
@@ -774,8 +802,8 @@ export class OrdersService {
         orderDate: dto.orderDate ? new Date(dto.orderDate) : undefined,
         paidAmount: dto.paidAmount,
         discount:
-          dto.discountAmount != null
-            ? (dto.discountAmount || 0) + (promoExtraDiscount ?? 0)
+          updateDiscountAmount != null
+            ? updateDiscountAmount + (promoExtraDiscount ?? 0)
             : promoExtraDiscount != null
               ? promoExtraDiscount
               : undefined,
@@ -1546,12 +1574,13 @@ export class OrdersService {
     const order = await tx.order.findUnique({ where: { id: orderId } });
     if (!order) return;
 
-    // Giảm giá hiệu dụng: ưu tiên số tiền đã chốt (discount).
-    // discountRatio chỉ là metadata; nếu chỉ có ratio (data cũ) thì quy đổi sang tiền.
+    // Giảm giá cấp đơn: discountRatio > 0 ⇒ mode %, quy đổi ra tiền theo tổng
+    // tiền hàng (thêm/bớt SP thì tiền đổi, % giữ nguyên) và ghi lại `discount`
+    // để mẫu in/báo cáo đọc field này luôn đúng.
+    // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
+    const ratio = Number(order.discountRatio) || 0;
     const discountAmount =
-      Number(order.discount) > 0
-        ? Number(order.discount)
-        : (totalAmount * (Number(order.discountRatio) || 0)) / 100;
+      ratio > 0 ? (totalAmount * ratio) / 100 : Number(order.discount) || 0;
     const grandTotal = totalAmount - discountAmount;
 
     const paidAmount = payments.reduce(
@@ -1566,7 +1595,14 @@ export class OrdersService {
 
     await tx.order.update({
       where: { id: orderId },
-      data: { totalAmount, grandTotal, paidAmount, debtAmount, paymentStatus },
+      data: {
+        totalAmount,
+        grandTotal,
+        paidAmount,
+        debtAmount,
+        paymentStatus,
+        discount: discountAmount,
+      },
     });
   }
 

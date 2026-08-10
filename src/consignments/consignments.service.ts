@@ -620,15 +620,20 @@ export class ConsignmentsService {
     });
     if (!consignment) return;
 
+    // Giảm giá cấp phiếu: discountRatio > 0 ⇒ mode %, quy đổi ra tiền theo tổng
+    // tiền hàng (thêm/bớt SP thì tiền đổi, % giữ nguyên) và ghi lại `discount`
+    // để mẫu in/báo cáo đọc field này luôn đúng.
+    // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
+    const ratio = Number(consignment.discountRatio) || 0;
     const discountAmount =
-      Number(consignment.discount) > 0
-        ? Number(consignment.discount)
-        : (totalAmount * (Number(consignment.discountRatio) || 0)) / 100;
+      ratio > 0
+        ? (totalAmount * ratio) / 100
+        : Number(consignment.discount) || 0;
     const grandTotal = totalAmount - discountAmount;
 
     await tx.consignment.update({
       where: { id: consignmentId },
-      data: { totalAmount, grandTotal },
+      data: { totalAmount, grandTotal, discount: discountAmount },
     });
   }
 

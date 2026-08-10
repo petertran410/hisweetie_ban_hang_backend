@@ -264,6 +264,16 @@ export class ReportsController {
     return this.customerReportsService.getCustomerInvoices(query);
   }
 
+  @Get('customer/sale-invoices')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({
+    summary:
+      'Drilldown Lv2 (CustomerBySale): hóa đơn kèm doanh số/hàng trả/thuần',
+  })
+  getCustomerSaleInvoices(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getCustomerSaleInvoices(query);
+  }
+
   @Get('customer/products')
   @ReportPermission({ group: 'customer' })
   @ApiOperation({ summary: 'Drilldown Lv2: sản phẩm 1 KH đã mua' })
@@ -315,6 +325,24 @@ export class ReportsController {
     );
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     await this.customerReportsService.exportCustomerInvoices(query, res);
+  }
+
+  @Get('customer/sale-invoices/export')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({
+    summary: 'Xuất Excel chi tiết hóa đơn theo KH (doanh số/hàng trả/thuần)',
+  })
+  async exportCustomerSaleInvoices(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-ban-hang-theo-khach_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportCustomerSaleInvoices(query, res);
   }
 
   @Get('customer/debt-documents/export')

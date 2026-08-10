@@ -15,6 +15,10 @@ export interface CustomerChartRow {
   extra1?: string | null;
   // ID khách hàng (PK) — dùng cho drilldown exact match, tránh ILIKE nhầm KH
   customerId?: number | null;
+  // Sale view — bậc thang doanh thu (xem CHUẨN DOANH THU bên dưới)
+  grossRevenue?: number;
+  returnAmount?: number;
+  netRevenue?: number;
   // Profit view
   revenue?: number;
   totalCost?: number;
@@ -28,6 +32,26 @@ export interface CustomerChartRow {
 
 const CUSTOMER_INVOICE_EXCLUDE_STATUS = [2, 8]; // CANCELLED, ...
 const DEBT_GROUP_SIZE = 200;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CHUẨN DOANH THU — BÁO CÁO KHÁCH HÀNG
+// ═══════════════════════════════════════════════════════════════════════════
+// Doanh số sau chiết khấu = SUM(invoices.grandTotal)
+//   • grandTotal = totalAmount − discount (chiết khấu toàn hóa đơn),
+//     xem invoices.service.ts (grandTotal = totalAmount - discountAmount).
+//   • Đây cũng là số ghi công nợ khách → đảm bảo doanh thu khớp công nợ.
+//   • Phạm vi: hóa đơn status NOT IN (2 Đã hủy, 8 Trả hàng).
+//
+// Hàng trả = SUM(return_orders.totalReturnAmount)
+//   • Chỉ tính phiếu đã thực nhận hàng: status IN (2 STOCK_RECEIVED, 4 COMPLETED).
+//   • Dùng totalReturnAmount (giá trị hàng trả), KHÔNG dùng refundAmount
+//     (số tiền hoàn/đối trừ — mang nghĩa dòng tiền, không phải doanh thu).
+//   • Mốc thời gian: confirmedAt (lúc xác nhận nhận hàng trả), fallback
+//     createdAt cho dữ liệu cũ chưa có confirmedAt.
+//
+// Doanh thu thuần = Doanh số sau chiết khấu − Hàng trả   ← con số báo cáo
+// ═══════════════════════════════════════════════════════════════════════════
+const RETURN_COUNTED_STATUS = [2, 4]; // STOCK_RECEIVED, COMPLETED
 
 @Injectable()
 export class CustomerReportsService {
@@ -154,6 +178,166 @@ export class CustomerReportsService {
     );
   }
 
+  // WHERE ở cấp invoice cho drilldown CustomerBySale.
+  // Không có alias d./p. để có thể dùng khi không lọc sản phẩm.
+  private buildInvoiceOnlyWhereSql(query: CustomerReportQueryDto): Prisma.Sql {
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`i.status NOT IN (${Prisma.join(CUSTOMER_INVOICE_EXCLUDE_STATUS)})`,
+      Prisma.sql`c."isActive" = true`,
+    ];
+    if (query.fromDate)
+      conds.push(Prisma.sql`i."purchaseDate" >= ${new Date(query.fromDate)}`);
+    if (query.toDate)
+      conds.push(Prisma.sql`i."purchaseDate" <= ${new Date(query.toDate)}`);
+    if (query.branchId) conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
+    if (query.customerId)
+      conds.push(Prisma.sql`i."customerId" = ${query.customerId}`);
+    if (query.customerGroupId)
+      conds.push(
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM customer_group_details cgd
+          WHERE cgd."customerId" = i."customerId"
+            AND cgd."customerGroupId" = ${query.customerGroupId}
+        )`,
+      );
+    if (query.customerKeyword) {
+      const kw = `%${query.customerKeyword}%`;
+      conds.push(
+        Prisma.sql`(c.name ILIKE ${kw} OR c.code ILIKE ${kw} OR c."contactNumber" ILIKE ${kw})`,
+      );
+    }
+    return Prisma.join(conds, ' AND ');
+  }
+
+  /**
+   * Điều kiện EXISTS lọc hóa đơn có chứa dòng khớp bộ lọc sản phẩm.
+   * Dùng cho drilldown CustomerBySale (dòng chính là hóa đơn, không phải dòng SP).
+   * Trả Prisma.empty khi không có filter sản phẩm nào.
+   */
+  private buildProductExistsSql(query: CustomerReportQueryDto): Prisma.Sql {
+    const conds: Prisma.Sql[] = [];
+    const parseCsv = (s: string | undefined): string[] =>
+      s?.split(',').map((x) => x.trim()).filter(Boolean) || [];
+    const parseCsvNumber = (s: string | undefined): number[] =>
+      parseCsv(s).map(Number).filter((n) => Number.isFinite(n));
+    const types = parseCsvNumber(query.types);
+    const parentNames = parseCsv(query.parentNames);
+    const middleNames = parseCsv(query.middleNames);
+    const childNames = parseCsv(query.childNames);
+    const tradeMarkIds = parseCsvNumber(query.tradeMarkIds);
+
+    if (types.length)
+      conds.push(
+        Prisma.sql`p."type" = ANY(${Prisma.sql`ARRAY[${Prisma.join(types)}]::int[]`})`,
+      );
+    if (parentNames.length)
+      conds.push(
+        Prisma.sql`p."parentName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(parentNames)}]`})`,
+      );
+    if (middleNames.length)
+      conds.push(
+        Prisma.sql`p."middleName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(middleNames)}]`})`,
+      );
+    if (childNames.length)
+      conds.push(
+        Prisma.sql`p."childName" = ANY(${Prisma.sql`ARRAY[${Prisma.join(childNames)}]`})`,
+      );
+    if (tradeMarkIds.length)
+      conds.push(
+        Prisma.sql`p."tradeMarkId" = ANY(${Prisma.sql`ARRAY[${Prisma.join(tradeMarkIds)}]::int[]`})`,
+      );
+    if (query.productKeyword) {
+      const kw = `%${query.productKeyword}%`;
+      conds.push(
+        Prisma.sql`(d."productName" ILIKE ${kw} OR d."productCode" ILIKE ${kw})`,
+      );
+    }
+
+    return conds.length === 0
+      ? Prisma.empty
+      : Prisma.sql`AND EXISTS (
+      SELECT 1
+      FROM invoice_details d
+      LEFT JOIN products p ON p.id = d."productId"
+      WHERE d."invoiceId" = i.id AND ${Prisma.join(conds, ' AND ')}
+    )`;
+  }
+
+  // ── WHERE cho phiếu trả hàng (return_orders ro) ──
+  // Mốc thời gian: COALESCE(confirmedAt, createdAt) — confirmedAt là lúc xác
+  // nhận thực nhận hàng trả (return-orders.service.ts), fallback createdAt cho
+  // dữ liệu cũ. Chỉ tính phiếu đã thực nhận hàng (STOCK_RECEIVED/COMPLETED).
+  private buildReturnWhereSql(query: CustomerReportQueryDto): Prisma.Sql {
+    const conds: Prisma.Sql[] = [
+      Prisma.sql`ro.status IN (${Prisma.join(RETURN_COUNTED_STATUS)})`,
+    ];
+    if (query.fromDate)
+      conds.push(
+        Prisma.sql`COALESCE(ro."confirmedAt", ro."createdAt") >= ${new Date(query.fromDate)}`,
+      );
+    if (query.toDate)
+      conds.push(
+        Prisma.sql`COALESCE(ro."confirmedAt", ro."createdAt") <= ${new Date(query.toDate)}`,
+      );
+    if (query.branchId) conds.push(Prisma.sql`ro."branchId" = ${query.branchId}`);
+    if (query.customerId)
+      conds.push(Prisma.sql`ro."customerId" = ${query.customerId}`);
+    // Phải bám đúng tập KH của bảng tổng hợp, nếu không sẽ trừ hàng trả của KH
+    // ngoài phạm vi lọc (làm doanh thu thuần bị âm/lệch).
+    if (query.customerGroupId)
+      conds.push(
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM customer_group_details cgd
+          WHERE cgd."customerId" = ro."customerId"
+            AND cgd."customerGroupId" = ${query.customerGroupId}
+        )`,
+      );
+    if (query.customerKeyword) {
+      const kw = `%${query.customerKeyword}%`;
+      conds.push(
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM customers c2
+          WHERE c2.id = ro."customerId"
+            AND (c2.name ILIKE ${kw} OR c2.code ILIKE ${kw} OR c2."contactNumber" ILIKE ${kw})
+        )`,
+      );
+    }
+    // Chỉ tính KH đang hoạt động — đồng bộ điều kiện isActive ở Lv1/Lv2.
+    conds.push(
+      Prisma.sql`EXISTS (
+        SELECT 1 FROM customers c3
+        WHERE c3.id = ro."customerId" AND c3."isActive" = true
+      )`,
+    );
+    return Prisma.join(conds, ' AND ');
+  }
+
+  /**
+   * Tổng giá trị hàng trả theo từng khách trong kỳ.
+   * Trả về Map<customerId, totalReturnAmount>.
+   *
+   * Lưu ý: KHÔNG áp bộ lọc sản phẩm ở đây — phiếu trả tính trên toàn phiếu
+   * (totalReturnAmount), không tách được theo dòng sản phẩm đã lọc.
+   */
+  private async getReturnAmountByCustomer(
+    query: CustomerReportQueryDto,
+  ): Promise<Map<number, number>> {
+    const where = this.buildReturnWhereSql(query);
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        ro."customerId" AS customer_id,
+        SUM(ro."totalReturnAmount")::float8 AS amount
+      FROM return_orders ro
+      WHERE ${where} AND ro."customerId" IS NOT NULL
+      GROUP BY ro."customerId"
+    `;
+    const map = new Map<number, number>();
+    for (const r of rows) {
+      map.set(Number(r.customer_id), Number(r.amount) || 0);
+    }
+    return map;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // CHART (Top N)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -172,9 +356,12 @@ export class CustomerReportsService {
     }
   }
 
-  // ── CustomerBySale: doanh thu thuần (grandTotal − trả hàng) theo KH ──
-  // Mặc định aggregate theo grandTotal ở cấp invoice (đúng KiotViet).
-  // Khi có product filter, chuyển sang SUM(d."totalPrice") ở cấp detail (chỉ tính dòng khớp filter).
+  // ── CustomerBySale: doanh thu thuần (grandTotal − hàng trả) theo KH ──
+  // Mặc định aggregate grandTotal ở cấp invoice rồi TRỪ hàng trả trong kỳ.
+  // Khi có product filter: chuyển sang SUM(d."totalPrice") ở cấp detail (chỉ
+  // tính dòng khớp filter) và KHÔNG trừ hàng trả — vì phiếu trả tính trên toàn
+  // phiếu, không tách được theo sản phẩm đã lọc. Khi đó cột hiển thị mang nghĩa
+  // "tiền hàng theo sản phẩm đã lọc", không phải doanh thu thuần.
   private async chartBySale(
     query: CustomerReportQueryDto,
   ): Promise<CustomerChartRow[]> {
@@ -182,7 +369,7 @@ export class CustomerReportsService {
     const hasProductFilter = this.hasProductFilter(query);
 
     if (!hasProductFilter) {
-      // ── Path cũ: aggregate grandTotal theo invoice ──
+      // ── Path chuẩn: grandTotal theo invoice, trừ hàng trả theo KH ──
       const rows = await this.prisma.$queryRaw<any[]>`
         SELECT
           c.id AS customer_id,
@@ -201,16 +388,30 @@ export class CustomerReportsService {
         JOIN customers c ON c.id = i_rev."customerId"
         WHERE c."isActive" = true
         GROUP BY c.id, c.code, c.name
-        ORDER BY revenue DESC
-        LIMIT ${this.chartTop(query)}
       `;
-      return rows.map((r) => ({
-        subject: r.name || 'Khách lẻ',
-        value: Number(r.revenue) || 0,
-        total: Number(r.revenue) || 0,
-        extra1: r.code || null,
-        customerId: r.customer_id != null ? Number(r.customer_id) : null,
-      }));
+
+      const returnMap = await this.getReturnAmountByCustomer(query);
+
+      return rows
+        .map((r) => {
+          const customerId = r.customer_id != null ? Number(r.customer_id) : null;
+          const grossRevenue = Number(r.revenue) || 0;
+          const returnAmount =
+            customerId != null ? returnMap.get(customerId) || 0 : 0;
+          const netRevenue = grossRevenue - returnAmount;
+          return {
+            subject: r.name || 'Khách lẻ',
+            value: netRevenue,
+            total: netRevenue,
+            grossRevenue,
+            returnAmount,
+            netRevenue,
+            extra1: r.code || null,
+            customerId,
+          };
+        })
+        .sort((a, b) => b.netRevenue - a.netRevenue)
+        .slice(0, this.chartTop(query));
     }
 
     // ── Có product filter: aggregate SUM(d."totalPrice") ở cấp detail ──
@@ -229,13 +430,19 @@ export class CustomerReportsService {
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
     `;
-    return rows.map((r) => ({
-      subject: r.name || 'Khách lẻ',
-      value: Number(r.revenue) || 0,
-      total: Number(r.revenue) || 0,
-      extra1: r.code || null,
-      customerId: r.customer_id != null ? Number(r.customer_id) : null,
-    }));
+    return rows.map((r) => {
+      const grossRevenue = Number(r.revenue) || 0;
+      return {
+        subject: r.name || 'Khách lẻ',
+        value: grossRevenue,
+        total: grossRevenue,
+        grossRevenue,
+        returnAmount: 0,
+        netRevenue: grossRevenue,
+        extra1: r.code || null,
+        customerId: r.customer_id != null ? Number(r.customer_id) : null,
+      };
+    });
   }
 
   // ── CustomerByProfit: doanh thu − giá vốn theo KH ──
@@ -342,13 +549,27 @@ export class CustomerReportsService {
     const summary = rows.reduce(
       (acc, r) => {
         acc.totalValue += r.value || 0;
+        if (viewType === 'CustomerBySale') {
+          // Bậc thang: doanh số sau CK → hàng trả → doanh thu thuần
+          acc.totalGrossRevenue += r.grossRevenue || 0;
+          acc.totalReturnAmount += r.returnAmount || 0;
+          acc.totalNetRevenue += r.netRevenue || 0;
+        }
         if (viewType === 'CustomerByProfit') {
           acc.totalRevenue += r.revenue || 0;
           acc.totalCost += r.totalCost || 0;
         }
         return acc;
       },
-      { totalRows: rows.length, totalValue: 0, totalRevenue: 0, totalCost: 0 },
+      {
+        totalRows: rows.length,
+        totalValue: 0,
+        totalRevenue: 0,
+        totalCost: 0,
+        totalGrossRevenue: 0,
+        totalReturnAmount: 0,
+        totalNetRevenue: 0,
+      },
     );
     return { viewType, data: rows, total: rows.length, summary };
   }
@@ -682,6 +903,114 @@ export class CustomerReportsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // SALE INVOICES Lv2: danh sách HÓA ĐƠN của 1 KH (view CustomerBySale)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Lấy hóa đơn làm dòng chính (không phải dòng sản phẩm) để cột cộng dồn đúng
+  // bằng con số ở Lv1: SUM(grandTotal) − hàng trả = doanh thu thuần.
+  // Chi tiết sản phẩm của từng hóa đơn xem ở view "Hàng bán theo khách".
+  async getCustomerSaleInvoices(query: CustomerReportQueryDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const offset = (page - 1) * limit;
+
+    // WHERE ở cấp invoice (grandTotal là giá trị toàn hóa đơn).
+    const invoiceWhere = this.buildInvoiceOnlyWhereSql(query);
+
+    // Khi có filter sản phẩm: chỉ giữ hóa đơn CÓ CHỨA dòng khớp filter, nhưng
+    // giá trị vẫn lấy grandTotal của cả hóa đơn (để khớp công nợ). Vì vậy tổng
+    // ở đây có thể lớn hơn phần tiền hàng của riêng sản phẩm đã lọc.
+    const productExists = this.buildProductExistsSql(query);
+
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        i.id,
+        i.code AS invoice_code,
+        i."purchaseDate" AS purchase_date,
+        c.name AS customer_name,
+        i."totalAmount"::float8 AS total_amount,
+        i.discount::float8 AS discount,
+        i."grandTotal"::float8 AS grand_total,
+        COALESCE(ret.amount, 0)::float8 AS return_amount
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      LEFT JOIN LATERAL (
+        SELECT SUM(ro."totalReturnAmount") AS amount
+        FROM return_orders ro
+        WHERE ro."invoiceId" = i.id
+          AND ro.status IN (${Prisma.join(RETURN_COUNTED_STATUS)})
+          AND COALESCE(ro."confirmedAt", ro."createdAt") >= ${query.fromDate ? new Date(query.fromDate) : new Date(0)}
+          AND COALESCE(ro."confirmedAt", ro."createdAt") <= ${query.toDate ? new Date(query.toDate) : new Date()}
+      ) ret ON true
+      WHERE ${invoiceWhere} ${productExists}
+      ORDER BY i."purchaseDate" DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const totalRow = await this.prisma.$queryRaw<any[]>`
+      SELECT COUNT(*)::int AS total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${invoiceWhere} ${productExists}
+    `;
+    const total = Number(totalRow[0]?.total) || 0;
+
+    const summaryRow = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        COUNT(*)::int AS rows,
+        COALESCE(SUM(i."totalAmount"), 0)::float8 AS total_amount,
+        COALESCE(SUM(i.discount), 0)::float8 AS discount,
+        COALESCE(SUM(i."grandTotal"), 0)::float8 AS grand_total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${invoiceWhere} ${productExists}
+    `;
+    const s = summaryRow[0] || {};
+
+    // ── Hàng trả ở dòng tổng ──
+    // Lấy theo KỲ (confirmedAt) giống hệt Lv1 → đảm bảo "Doanh thu thuần" ở
+    // drilldown khớp tuyệt đối con số ở bảng tổng hợp.
+    //
+    // Lưu ý: cột "Hàng trả" trên từng dòng gắn với hóa đơn gốc (ro.invoiceId),
+    // chỉ mang tính tham chiếu. Nếu phiếu trả trong kỳ thuộc hóa đơn của kỳ
+    // trước (hoặc phiếu trả không gắn hóa đơn), cột này không cộng đủ bằng dòng
+    // tổng — dòng tổng mới là con số dùng để báo cáo.
+    const returnMap = await this.getReturnAmountByCustomer(query);
+    let totalReturnAmount = 0;
+    for (const amount of returnMap.values()) totalReturnAmount += amount;
+
+    const grossRevenue = Number(s.grand_total) || 0;
+
+    return {
+      data: rows.map((r) => {
+        const grandTotal = Number(r.grand_total) || 0;
+        const returnAmount = Number(r.return_amount) || 0;
+        return {
+          id: r.id,
+          invoiceCode: r.invoice_code,
+          purchaseDate: r.purchase_date,
+          customerName: r.customer_name,
+          totalAmount: Number(r.total_amount) || 0,
+          discount: Number(r.discount) || 0,
+          grandTotal,
+          returnAmount,
+          netRevenue: grandTotal - returnAmount,
+        };
+      }),
+      total,
+      page,
+      limit,
+      summary: {
+        totalInvoices: Number(s.rows) || 0,
+        totalAmount: Number(s.total_amount) || 0,
+        totalDiscount: Number(s.discount) || 0,
+        grossRevenue,
+        returnAmount: totalReturnAmount,
+        netRevenue: grossRevenue - totalReturnAmount,
+      },
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // INVOICES Lv2: dòng hóa đơn của 1 KH (Sale / Profit / Product)
   // ═══════════════════════════════════════════════════════════════════════════
   async getCustomerInvoices(query: CustomerReportQueryDto) {
@@ -811,12 +1140,24 @@ export class CustomerReportsService {
         { header: 'Ghi có', key: 'credit', width: 16 },
         { header: 'Nợ cuối kỳ', key: 'closing', width: 16 },
       ];
-    } else {
+    } else if (viewType === 'CustomerBySale') {
+      // Bậc thang doanh thu: doanh số sau CK → hàng trả → doanh thu thuần.
       sheet.columns = [
         { header: 'STT', key: 'stt', width: 6 },
         { header: 'Mã KH', key: 'code', width: 14 },
         { header: 'Khách hàng', key: 'name', width: 32 },
-        { header: 'Doanh thu', key: 'value', width: 18 },
+        { header: 'Doanh số sau chiết khấu', key: 'gross', width: 22 },
+        { header: 'Hàng trả', key: 'return', width: 16 },
+        { header: 'Doanh thu thuần', key: 'net', width: 18 },
+      ];
+    } else {
+      // CustomerByProduct: tiền hàng theo giá bán từng dòng (SUM totalPrice),
+      // CHƯA trừ chiết khấu toàn hóa đơn → khác "Doanh thu thuần" ở view Sale.
+      sheet.columns = [
+        { header: 'STT', key: 'stt', width: 6 },
+        { header: 'Mã KH', key: 'code', width: 14 },
+        { header: 'Khách hàng', key: 'name', width: 32 },
+        { header: 'Tiền hàng (trước CK hóa đơn)', key: 'value', width: 26 },
       ];
     }
 
@@ -853,6 +1194,17 @@ export class CustomerReportsService {
             closing: r.closing || 0,
           })
           .commit();
+      } else if (viewType === 'CustomerBySale') {
+        sheet
+          .addRow({
+            stt: idx + 1,
+            code: r.extra1 || '',
+            name: r.subject,
+            gross: r.grossRevenue || 0,
+            return: r.returnAmount || 0,
+            net: r.netRevenue ?? r.value ?? 0,
+          })
+          .commit();
       } else {
         sheet
           .addRow({
@@ -864,6 +1216,20 @@ export class CustomerReportsService {
           .commit();
       }
     });
+
+    // Dòng tổng — để kế toán đối chiếu nhanh, không phải tự cộng tay.
+    if (viewType === 'CustomerBySale') {
+      const s = preview.summary as any;
+      sheet.addRow({}).commit();
+      const totalRow = sheet.addRow({
+        name: 'TỔNG CỘNG',
+        gross: s.totalGrossRevenue || 0,
+        return: s.totalReturnAmount || 0,
+        net: s.totalNetRevenue || 0,
+      });
+      totalRow.font = { bold: true };
+      totalRow.commit();
+    }
 
     sheet.commit();
     await workbook.commit();
@@ -936,6 +1302,94 @@ export class CustomerReportsService {
       }
       sheet.addRow(row).commit();
     });
+
+    sheet.commit();
+    await workbook.commit();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXPORT EXCEL — chi tiết HÓA ĐƠN theo KH (view CustomerBySale)
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Dòng chính là hóa đơn → cột "Doanh thu thuần" cộng dồn đúng bằng con số
+  // ở bảng tổng hợp. Kèm dòng tổng bậc thang để đối chiếu.
+  async exportCustomerSaleInvoices(
+    query: CustomerReportQueryDto,
+    res: Response,
+  ) {
+    const result = await this.getCustomerSaleInvoices({
+      ...query,
+      page: 1,
+      limit: 1000000,
+    });
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('ChiTietBanHangTheoKH');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Khách hàng', key: 'customerName', width: 30 },
+      { header: 'Tiền hàng', key: 'totalAmount', width: 16 },
+      { header: 'Chiết khấu HĐ', key: 'discount', width: 16 },
+      { header: 'Doanh số sau chiết khấu', key: 'grandTotal', width: 22 },
+      { header: 'Hàng trả', key: 'returnAmount', width: 16 },
+      { header: 'Doanh thu thuần', key: 'netRevenue', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    (result.data as any[]).forEach((r, idx) => {
+      sheet
+        .addRow({
+          stt: idx + 1,
+          invoiceCode: r.invoiceCode,
+          purchaseDate: new Date(r.purchaseDate),
+          customerName: r.customerName,
+          totalAmount: r.totalAmount,
+          discount: r.discount,
+          grandTotal: r.grandTotal,
+          returnAmount: r.returnAmount,
+          netRevenue: r.netRevenue,
+        })
+        .commit();
+    });
+
+    // ── Dòng tổng bậc thang ──
+    const s = result.summary;
+    sheet.addRow({}).commit();
+
+    const rowGross = sheet.addRow({
+      customerName: 'Doanh số sau chiết khấu',
+      netRevenue: s.grossRevenue,
+    });
+    rowGross.font = { bold: true };
+    rowGross.commit();
+
+    const rowReturn = sheet.addRow({
+      customerName: '(−) Hàng trả trong kỳ',
+      netRevenue: s.returnAmount,
+    });
+    rowReturn.font = { bold: true };
+    rowReturn.commit();
+
+    const rowNet = sheet.addRow({
+      customerName: 'DOANH THU THUẦN',
+      netRevenue: s.netRevenue,
+    });
+    rowNet.font = { bold: true, size: 12 };
+    rowNet.commit();
 
     sheet.commit();
     await workbook.commit();

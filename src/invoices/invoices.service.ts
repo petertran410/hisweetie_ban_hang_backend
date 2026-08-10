@@ -1330,14 +1330,14 @@ export class InvoicesService {
           (sum, item) => sum + item.totalPrice,
           0,
         );
-        // Giảm giá hiệu dụng: ưu tiên số tiền đã chốt (discountAmount).
-        // discountRatio chỉ là metadata (% tương ứng) — nếu chỉ có ratio (data cũ)
-        // thì quy đổi sang tiền. Tránh trừ 2 lần khi lưu cả hai.
+        // Giảm giá cấp hóa đơn: discountRatio > 0 ⇒ mode %, quy đổi ra tiền theo
+        // tổng tiền hàng (thêm/bớt hàng thì tiền đổi, % giữ nguyên).
+        // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
         const discountAmount =
-          dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount + promo.extraInvoiceDiscount
-            : (totalAmount * (dto.discountRatio || 0)) / 100 +
-              promo.extraInvoiceDiscount;
+          dto.discountRatio && dto.discountRatio > 0
+            ? (totalAmount * dto.discountRatio) / 100 +
+              promo.extraInvoiceDiscount
+            : (dto.discountAmount || 0) + promo.extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
         const paidAmount = dto.paidAmount || 0;
         const debtAmount = grandTotal - paidAmount;
@@ -1879,10 +1879,9 @@ export class InvoicesService {
           0,
         );
         const discountAmount =
-          dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount + extraInvoiceDiscount
-            : (totalAmount * (dto.discountRatio || 0)) / 100 +
-              extraInvoiceDiscount;
+          dto.discountRatio && dto.discountRatio > 0
+            ? (totalAmount * dto.discountRatio) / 100 + extraInvoiceDiscount
+            : (dto.discountAmount || 0) + extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
@@ -2453,10 +2452,9 @@ export class InvoicesService {
           0,
         );
         const discountAmount =
-          dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount + inPlaceExtraDiscount
-            : (totalAmount * (dto.discountRatio || 0)) / 100 +
-              inPlaceExtraDiscount;
+          dto.discountRatio && dto.discountRatio > 0
+            ? (totalAmount * dto.discountRatio) / 100 + inPlaceExtraDiscount
+            : (dto.discountAmount || 0) + inPlaceExtraDiscount;
         const grandTotal = totalAmount - discountAmount;
 
         // Tổng invoicePayment còn active (loại đã hủy)
