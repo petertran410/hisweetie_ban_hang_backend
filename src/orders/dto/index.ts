@@ -85,6 +85,11 @@ export class OrderItemDto {
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: string; // "normal" | "damaged" | "near_expiry"
 
+  // Lô cận date (ISO date) khi conditionType = near_expiry.
+  @IsString()
+  @IsOptional()
+  soldExpiryDate?: string;
+
   @IsString()
   @IsOptional()
   serialNumbers?: string;
@@ -101,11 +106,34 @@ export class OrderItemDto {
   @IsOptional()
   @IsInt()
   promotionId?: number;
+
+  @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  enabledPromotionIds?: number[];
+}
+
+export class RewardSelectionDto {
+  @IsInt()
+  productId: number;
+
+  // Số suất phân bổ cho SP quà này (mỗi suất = rewardQuantity của CT).
+  @IsInt()
+  rewardTimes: number;
 }
 
 export class AppliedPromotionDto {
   @IsInt()
   promotionId: number;
+
+  // Mã SP điều kiện mua X đã kích hoạt lần áp dụng này.
+  @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
 
   // Lựa chọn quà (khi nhóm Y có nhiều SP, thu ngân chọn 1)
   @IsOptional()
@@ -124,6 +152,13 @@ export class AppliedPromotionDto {
   @IsOptional()
   @IsNumber()
   discountedBuyQuantity?: number;
+
+  // KM cộng dồn: phân bổ quà theo nhiều SP (mỗi SP nhận n suất × rewardQuantity).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RewardSelectionDto)
+  rewardSelections?: RewardSelectionDto[];
 }
 
 export class CreateOrderDto {

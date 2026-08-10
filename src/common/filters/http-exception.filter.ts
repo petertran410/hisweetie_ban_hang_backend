@@ -63,6 +63,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
         message: 'Dữ liệu không hợp lệ',
         error: 'Bad Request',
       };
+      // Log message gốc của Prisma (nội bộ) để lộ đúng field/giá trị bị từ chối
+      // — response vẫn trả thông điệp gọn cho client.
+      this.logger.warn(
+        `[PrismaValidation] ${request.method} ${request.url} - ${
+          exception instanceof Error ? exception.message : 'unknown'
+        }`,
+      );
     }
 
     // Chỉ log error (kèm stack) cho lỗi server (5xx) hoặc exception không xác định.

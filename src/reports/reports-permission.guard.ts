@@ -49,6 +49,12 @@ const VIEWTYPE_KEY_MAP: Record<ReportGroup, Record<string, string>> = {
     CashFlow: 'reports:eod_cashflow',
     Product: 'reports:eod_product',
   },
+  customer: {
+    CustomerBySale: 'reports:customer_sale',
+    CustomerByProfit: 'reports:customer_profit',
+    CustomerDebt: 'reports:customer_debt',
+    CustomerByProduct: 'reports:customer_product',
+  },
 };
 
 // ViewType mặc định mỗi nhóm khi query không truyền (khớp service).
@@ -57,6 +63,7 @@ const DEFAULT_VIEWTYPE: Record<ReportGroup, string> = {
   product: 'ProductBySale',
   supplier: 'PurchaseBySupplier',
   eod: 'Synthetic',
+  customer: 'CustomerBySale',
 };
 
 /**
@@ -127,9 +134,7 @@ export class ReportsPermissionGuard implements CanActivate {
     if (!config.group) return null;
 
     const group = config.group;
-    const viewType = String(
-      request.query?.viewType || DEFAULT_VIEWTYPE[group],
-    );
+    const viewType = String(request.query?.viewType || DEFAULT_VIEWTYPE[group]);
     return VIEWTYPE_KEY_MAP[group][viewType] || null;
   }
 

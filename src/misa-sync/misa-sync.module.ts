@@ -6,6 +6,7 @@ import { MisaAuthService } from './misa-auth.service';
 import { MisaDictionaryService } from './misa-dictionary.service';
 import { MisaVoucherService } from './misa-voucher.service';
 import { MisaSyncController } from './misa-sync.controller';
+import { MisaSyncCron } from './misa-sync.cron';
 
 @Module({
   imports: [
@@ -17,7 +18,17 @@ import { MisaSyncController } from './misa-sync.controller';
     PrismaModule,
   ],
   controllers: [MisaSyncController],
-  providers: [MisaAuthService, MisaDictionaryService, MisaVoucherService],
-  exports: [MisaAuthService, MisaDictionaryService, MisaVoucherService],
+  providers: [
+    MisaAuthService,
+    MisaDictionaryService,
+    MisaVoucherService,
+    MisaSyncCron,
+  ],
+  exports: [
+    MisaAuthService,
+    MisaDictionaryService,
+    MisaVoucherService,
+    MisaSyncCron,
+  ],
 })
 export class MisaSyncModule {}

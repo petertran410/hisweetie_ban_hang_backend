@@ -173,6 +173,19 @@ export class CreateProductDto {
   @IsString()
   childName?: string;
 
+  // Misa product mapping
+  @IsOptional()
+  @IsString()
+  misa_code?: string;
+
+  @IsOptional()
+  @IsString()
+  misa_name?: string;
+
+  @IsOptional()
+  @IsString()
+  misa_unit?: string;
+
   @IsOptional()
   @IsNumber()
   @Type(() => Number)
@@ -345,6 +358,24 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   manualCostOverride?: boolean;
+
+  /**
+   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
+   * Có thể null nếu sản phẩm chưa gắn nhà máy.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  primaryFactoryId?: number;
+
+  /**
+   * ID nhà máy backup (FK Factory). Optional.
+   * Không được trùng với primaryFactoryId.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  backupFactoryId?: number;
 }
 
 export class UpdateProductDto extends PartialType(CreateProductDto) {
@@ -538,6 +569,24 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
     return undefined;
   })
   costBranchIds?: number[];
+
+  /**
+   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
+   * Có thể null nếu sản phẩm chưa gắn nhà máy.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  primaryFactoryId?: number;
+
+  /**
+   * ID nhà máy backup (FK Factory). Optional.
+   * Không được trùng với primaryFactoryId.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  backupFactoryId?: number;
 }
 
 export class ProductQueryDto {
@@ -712,6 +761,17 @@ export class ProductQueryDto {
   columns?: string;
 
   /**
+   * Thời điểm tính tồn kho khi xuất file (ISO date string, vd "2026-07-20").
+   * Chỉ áp dụng cho cột `stock` và chỉ khi có `branchId` (chi nhánh đang đứng).
+   * Khi bỏ trống → tồn kho lấy theo inventory.onHand hiện tại.
+   * Các cột khác (giá vốn, khách đặt, đặt NCC...) vẫn dùng giá trị hiện tại
+   * vì hệ thống không lưu lịch sử các giá trị này theo ngày.
+   */
+  @IsOptional()
+  @IsString()
+  asOfDate?: string;
+
+  /**
    * Cột cần sắp xếp. Hỗ trợ:
    * - Cột trực tiếp trên Product: basePrice
    * - Cột trên Inventory (theo chi nhánh đang chọn): cost, onHand, minQuality, maxQuality
@@ -724,4 +784,48 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   orderDirection?: string;
+
+  /**
+   * Lọc sản phẩm theo NCC quản lý — dựa trên nhà máy (primary hoặc backup)
+   * của sản phẩm thuộc NCC này. Dùng cho filter chặt trong OrderSupplierForm.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  supplierId?: number;
+
+  /**
+   * Lọc sản phẩm theo ID nhà máy cụ thể. Kết hợp với `factoryRelation` để
+   * xác định xem filter theo primary, backup hay cả hai.
+   */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  factoryId?: number;
+
+  /**
+   * Quan hệ với factoryId:
+   * - 'primary': chỉ filter sản phẩm có primaryFactoryId = factoryId
+   * - 'backup': chỉ filter sản phẩm có backupFactoryId = factoryId
+   * - 'either' (mặc định): filter sản phẩm có primary HOẶC backup match
+   */
+  @IsOptional()
+  @IsString()
+  factoryRelation?: 'primary' | 'backup' | 'either';
+
+  /**
+   * Lọc theo thời gian tạo sản phẩm (createdAt) — cận dưới (>=).
+   * Nhận ISO date string, vd "2026-07-01T00:00:00.000Z".
+   */
+  @IsOptional()
+  @IsDateString()
+  fromCreatedDate?: string;
+
+  /**
+   * Lọc theo thời gian tạo sản phẩm (createdAt) — cận trên (<=).
+   * Nhận ISO date string, vd "2026-07-08T23:59:59.999Z".
+   */
+  @IsOptional()
+  @IsDateString()
+  toCreatedDate?: string;
 }

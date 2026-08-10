@@ -6,6 +6,7 @@ import { ProductReportsService } from './product-reports.service';
 import { SupplierReportsService } from './supplier-reports.service';
 import { FinancialReportsService } from './financial-reports.service';
 import { EodReportsService } from './eod-reports.service';
+import { CustomerReportsService } from './customer-reports.service';
 import {
   ReportQueryDto,
   SaleReportQueryDto,
@@ -13,6 +14,7 @@ import {
   SupplierReportQueryDto,
   FinancialReportQueryDto,
   EodReportQueryDto,
+  CustomerReportQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ReportsPermissionGuard } from './reports-permission.guard';
@@ -31,6 +33,7 @@ export class ReportsController {
     private supplierReportsService: SupplierReportsService,
     private financialReportsService: FinancialReportsService,
     private eodReportsService: EodReportsService,
+    private customerReportsService: CustomerReportsService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -237,7 +240,116 @@ export class ReportsController {
     await this.saleReportsService.exportExcel(query, res);
   }
 
-  // ── Báo cáo 1: Preview ──
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NHÓM KHÁCH HÀNG (Customer) — chuẩn hoá theo pattern Product
+  // ═══════════════════════════════════════════════════════════════════════════
+  @Get('customer/chart')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Dữ liệu biểu đồ báo cáo khách hàng (Top N)' })
+  getCustomerChart(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getChart(query);
+  }
+
+  @Get('customer/preview')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Bảng dữ liệu báo cáo khách hàng theo ViewType' })
+  getCustomerPreview(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getPreview(query);
+  }
+
+  @Get('customer/invoices')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Drilldown: dòng hóa đơn của 1 khách hàng' })
+  getCustomerInvoices(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getCustomerInvoices(query);
+  }
+
+  @Get('customer/products')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Drilldown Lv2: sản phẩm 1 KH đã mua' })
+  getCustomerProducts(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getCustomerProducts(query);
+  }
+
+  @Get('customer/debt-customers')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Drilldown Lv2: danh sách KH trong nhóm rank nợ' })
+  getCustomerDebtCustomers(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getDebtCustomers(query);
+  }
+
+  @Get('customer/debt-documents')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({ summary: 'Drilldown Lv3: chi tiết phát sinh công nợ 1 KH' })
+  getCustomerDebtDocuments(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getDebtDocuments(query);
+  }
+
+  @Get('customer/export')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({ summary: 'Xuất Excel báo cáo khách hàng (tổng hợp)' })
+  async exportCustomer(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `bao-cao-khach-hang_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportExcel(query, res);
+  }
+
+  @Get('customer/invoices/export')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({ summary: 'Xuất Excel chi tiết dòng hóa đơn theo KH' })
+  async exportCustomerInvoices(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-khach-hang_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportCustomerInvoices(query, res);
+  }
+
+  @Get('customer/debt-documents/export')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({ summary: 'Xuất Excel chi tiết công nợ 1 KH' })
+  async exportCustomerDebtDocuments(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-cong-no-kh_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportDebtDocuments(query, res);
+  }
+
+  @Get('customer/debt-documents/export-all')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({ summary: 'Xuất Excel chi tiết công nợ toàn bộ KH' })
+  async exportCustomerDebtDocumentsAll(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-cong-no-toan-bo_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportDebtDetail(query, res);
+  }
+
+  // ── Báo cáo 1: Preview (LEGACY — giữ tạm trong giai đoạn chuyển đổi) ──
   @Get('customer-sales')
   @ReportPermission({ key: 'reports:customer_sale' })
   @ApiOperation({ summary: 'Preview báo cáo bán hàng theo hóa đơn' })

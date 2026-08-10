@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePurchaseOrderDto,
@@ -20,22 +22,35 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+  computeBucketTotalsBatch,
+} from '../common/stock-condition-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  buildInventoryLogActor,
+  InventoryLogActor,
+  buildInventoryLogBase,
+} from 'src/common/inventory-log.util';
 
 @Injectable()
 export class PurchaseOrdersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       // Cho phép user tự điền mã PN. Trim + check duplicate; nếu trống fallback
       // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
       const code = await this.resolvePurchaseOrderCode(tx, dto.code);
 
       const itemsData = await Promise.all(
-        dto.items.map(async (item) => {
+        dto.items.map(async (item, index) => {
           const product = await tx.product.findUnique({
             where: { id: item.productId },
           });
@@ -62,6 +77,18 @@ export class PurchaseOrdersService {
             discountRatio: item.discountRatio || 0,
             totalPrice,
             description: item.description,
+            // Số thứ tự dòng (1, 2, 3...). Ưu tiên FE gửi sẵn (vd khi sửa
+            // PN đã có), fallback generate theo index — đảm bảo unique key
+            // (purchaseOrderId, lineNumber) luôn khác nhau trong cùng phiếu.
+            lineNumber: item.lineNumber ?? index + 1,
+            // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
+            conditionType: item.conditionType || 'normal',
+            factoryPrice:
+              item.factoryPrice != null ? Number(item.factoryPrice) : null,
+            factorySubTotal:
+              item.factorySubTotal != null
+                ? Number(item.factorySubTotal)
+                : null,
           };
         }),
       );
@@ -70,6 +97,52 @@ export class PurchaseOrdersService {
         (sum, item) => sum + Number(item.totalPrice),
         0,
       );
+
+      const currency = (dto.currency || 'VND').toUpperCase();
+      if (!['VND', 'CNY'].includes(currency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const exchangeRate =
+        currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
+      if (currency === 'CNY' && exchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
+
+      const paidAmount = Number(dto.paidAmount || 0);
+      if (paidAmount > 0 && currency === 'CNY') {
+        if (
+          dto.paymentExchangeRate == null ||
+          Number(dto.paymentExchangeRate) <= 0 ||
+          dto.paymentForeignAmount == null ||
+          Number(dto.paymentForeignAmount) <= 0
+        ) {
+          throw new BadRequestException(
+            'Thanh toán phiếu CNY phải có tỉ giá và số tiền CNY',
+          );
+        }
+        if (
+          Math.round(
+            Number(dto.paymentForeignAmount) * Number(dto.paymentExchangeRate),
+          ) !== paidAmount
+        ) {
+          throw new BadRequestException(
+            'Số tiền thanh toán CNY quy đổi không khớp số tiền VND',
+          );
+        }
+      }
+      if (
+        paidAmount > 0 &&
+        currency === 'VND' &&
+        (dto.paymentExchangeRate != null || dto.paymentForeignAmount != null)
+      ) {
+        throw new BadRequestException(
+          'Thanh toán phiếu VND không được gửi số tiền CNY',
+        );
+      }
 
       const discountAmount = dto.discountRatio
         ? (total * dto.discountRatio) / 100
@@ -99,7 +172,6 @@ export class PurchaseOrdersService {
       }
 
       const subTotal = total - discountAmount;
-      const paidAmount = Number(dto.paidAmount || 0);
       const debtAmount = subTotal - paidAmount;
 
       // Đối xứng `invoices.service.ts:583`: nếu có thanh toán mà chưa chọn
@@ -137,6 +209,10 @@ export class PurchaseOrdersService {
           statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
           supplierOldDebt,
           supplierDebt: debtAmount,
+          // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
+          // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
+          currency,
+          exchangeRate,
           isDraft: dto.isDraft || false,
           partnerType: dto.partnerType,
           description: dto.description,
@@ -156,7 +232,22 @@ export class PurchaseOrdersService {
       // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
       // sẵn check `!dto.isDraft` ở dưới.
       if (dto.branchId && !dto.isDraft) {
-        await this.updateInventory(purchaseOrder.id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // (truy vết ai nhập kho).
+        const poUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const poLogActor = buildInventoryLogActor(
+          userId,
+          poUser?.name || poUser?.email,
+        );
+        const touched = await this.updateInventory(
+          purchaseOrder.id,
+          tx,
+          poLogActor,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
@@ -175,10 +266,20 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: paidAmount,
+            currency: currency === 'CNY' ? 'CNY' : 'VND',
+            exchangeRate:
+              currency === 'CNY' && dto.paymentExchangeRate != null
+                ? Number(dto.paymentExchangeRate)
+                : 1,
+            foreignAmount:
+              currency === 'CNY' && dto.paymentForeignAmount != null
+                ? Number(dto.paymentForeignAmount)
+                : null,
             transDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : new Date(),
-            method: 'cash',
+            method: dto.paymentMethod || 'cash',
+            accountId: dto.paymentAccountId ?? null,
             partnerType: 'S',
             partnerId: dto.supplierId,
             partnerName: supplier?.name,
@@ -200,11 +301,20 @@ export class PurchaseOrdersService {
               ? new Date(dto.purchaseDate)
               : new Date(),
             amount: paidAmount,
-            paymentMethod: 'cash',
+            paymentMethod: dto.paymentMethod || 'cash',
+            accountId: dto.paymentAccountId ?? null,
             description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate:
+              dto.paymentExchangeRate != null
+                ? Number(dto.paymentExchangeRate)
+                : null,
+            foreignAmount:
+              dto.paymentForeignAmount != null
+                ? Number(dto.paymentForeignAmount)
+                : null,
           },
         });
       }
@@ -279,6 +389,12 @@ export class PurchaseOrdersService {
         },
       });
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -300,9 +416,23 @@ export class PurchaseOrdersService {
     dto: CreatePurchaseOrderFromOrderSupplierDto,
     userId: number,
   ) {
-    return this.prisma.$transaction((tx) =>
-      this.createOneFromOrderSupplierTx(tx, orderSupplierId, dto, userId),
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction((tx) =>
+      this.createOneFromOrderSupplierTx(
+        tx,
+        orderSupplierId,
+        dto,
+        userId,
+        undefined,
+        touchedProductIds,
+      ),
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -319,6 +449,7 @@ export class PurchaseOrdersService {
     dto: CreatePurchaseOrderFromOrderSupplierDto,
     userId: number,
     vehicleShipmentId?: number,
+    touchedProductIds?: Set<number>,
   ) {
     const orderSupplier = await tx.orderSupplier.findUnique({
       where: { id: orderSupplierId },
@@ -423,6 +554,13 @@ export class PurchaseOrdersService {
       additionalFromField > 0 ? additionalFromField : additionalFromList;
     const totalPaid = totalPaidFromOrderSupplier + additionalPayment;
 
+    // Map productId → OrderSupplierItem để lookup factoryPrice/factorySubTotal
+    // khi tạo PurchaseOrderItem từ PDN (kế thừa tỉ giá).
+    const osItemByProductId = new Map<number, any>();
+    for (const it of orderSupplier.items as any[]) {
+      osItemByProductId.set(it.productId, it);
+    }
+
     // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
     const itemsToReceive = (
       dto.items && dto.items.length > 0
@@ -439,11 +577,20 @@ export class PurchaseOrdersService {
               (Number(item.price) - (Number(item.discount) || 0)) *
               item.remainingQuantity,
             description: item.description,
+            // Kế thừa factoryPrice/factorySubTotal từ OrderSupplierItem
+            // tương ứng (nếu có). Khi dto.items không gửi thì BE vẫn có thể
+            // điền từ remainingItems (đã spread factory* từ orderSupplier.items).
+            factoryPrice:
+              item.factoryPrice != null ? Number(item.factoryPrice) : null,
+            factorySubTotal:
+              item.factorySubTotal != null
+                ? Number(item.factorySubTotal)
+                : null,
           }))
     ) as any[];
 
     const itemsData = await Promise.all(
-      itemsToReceive.map(async (item) => {
+      itemsToReceive.map(async (item, index) => {
         // dto.items có sẵn productCode/productName, fallback nếu không có.
         let productCode = item.productCode;
         let productName = item.productName;
@@ -463,6 +610,23 @@ export class PurchaseOrdersService {
             : (Number(item.price) - (Number(item.discount) || 0)) *
               Number(item.quantity);
 
+        // Kế thừa factoryPrice/factorySubTotal. Ưu tiên giá trị dto gửi
+        // (nếu có), fallback lookup từ orderSupplier.items theo productId.
+        // Nếu cả 2 đều không có → null (PN tạo trực tiếp).
+        const osItem = osItemByProductId.get(item.productId);
+        const factoryPrice =
+          item.factoryPrice != null
+            ? Number(item.factoryPrice)
+            : osItem && osItem.factoryPrice != null
+              ? Number(osItem.factoryPrice)
+              : null;
+        const factorySubTotal =
+          item.factorySubTotal != null
+            ? Number(item.factorySubTotal)
+            : osItem && osItem.factorySubTotal != null
+              ? Number(osItem.factorySubTotal)
+              : null;
+
         return {
           productId: item.productId,
           productCode,
@@ -473,6 +637,17 @@ export class PurchaseOrdersService {
           discountRatio: item.discountRatio || 0,
           totalPrice,
           description: item.description,
+          // Tương tự create(): lineNumber ưu tiên FE gửi, fallback index+1.
+          // Khi tạo PN từ PDN, items thường không gửi lineNumber nên BE tự
+          // generate tuần tự 1, 2, 3...
+          lineNumber: item.lineNumber ?? index + 1,
+          // PDN không có phân loại hàng → mặc định "normal". Nếu FE muốn
+          // đánh dấu hàng nào là loại B khi tạo từ PDN, gửi conditionType
+          // trong dto.items[]. Hiện form FE chưa expose → luôn "normal".
+          conditionType: item.conditionType || 'normal',
+          // Kế thừa tỉ giá từ OrderSupplierItem.
+          factoryPrice,
+          factorySubTotal,
         };
       }),
     );
@@ -529,6 +704,13 @@ export class PurchaseOrdersService {
         statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
         supplierOldDebt,
         supplierDebt: debtAmount,
+        // Kế thừa currency/exchangeRate từ OrderSupplier (snapshot). PDN
+        // có CNY thì PN sẽ giữ nguyên — không re-quy đổi.
+        currency: orderSupplier.currency || 'VND',
+        exchangeRate:
+          orderSupplier.exchangeRate != null
+            ? Number(orderSupplier.exchangeRate)
+            : 1,
         isDraft: dto.isDraft || false,
         partnerType: dto.partnerType,
         description: dto.description,
@@ -544,7 +726,23 @@ export class PurchaseOrdersService {
     });
 
     if (!dto.isDraft) {
-      await this.updateInventory(purchaseOrder.id, tx);
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog.
+      const poFromOsUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const poFromOsLogActor = buildInventoryLogActor(
+        userId,
+        poFromOsUser?.name || poFromOsUser?.email,
+      );
+      const touched = await this.updateInventory(
+        purchaseOrder.id,
+        tx,
+        poFromOsLogActor,
+      );
+      if (touchedProductIds) {
+        for (const productId of touched) touchedProductIds.add(productId);
+      }
     }
 
     // CLONE OrderSupplierPayment → PurchaseOrderPayment + CashFlow `PCTUPN`
@@ -565,6 +763,15 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount: osPayment.amount,
+            currency: osPayment.foreignAmount != null ? 'CNY' : 'VND',
+            exchangeRate:
+              osPayment.exchangeRate != null
+                ? Number(osPayment.exchangeRate)
+                : 1,
+            foreignAmount:
+              osPayment.foreignAmount != null
+                ? Number(osPayment.foreignAmount)
+                : null,
             transDate: osPayment.paymentDate,
             method: osPayment.paymentMethod || 'cash',
             accountId: osPayment.accountId ?? null,
@@ -595,6 +802,8 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate: osPayment.exchangeRate ?? null,
+            foreignAmount: osPayment.foreignAmount ?? null,
           },
         });
       }
@@ -621,6 +830,13 @@ export class PurchaseOrdersService {
             cashFlowGroupId: 9,
             isReceipt: false,
             amount,
+            currency: payment.foreignAmount != null ? 'CNY' : 'VND',
+            exchangeRate:
+              payment.exchangeRate != null ? Number(payment.exchangeRate) : 1,
+            foreignAmount:
+              payment.foreignAmount != null
+                ? Number(payment.foreignAmount)
+                : null,
             transDate: dto.purchaseDate
               ? new Date(dto.purchaseDate)
               : new Date(),
@@ -655,6 +871,14 @@ export class PurchaseOrdersService {
             status: 1,
             statusValue: 'Đã thanh toán',
             cashFlowId: cashFlow.id,
+            exchangeRate:
+              payment.exchangeRate != null
+                ? Number(payment.exchangeRate)
+                : null,
+            foreignAmount:
+              payment.foreignAmount != null
+                ? Number(payment.foreignAmount)
+                : null,
           },
         });
       }
@@ -728,10 +952,16 @@ export class PurchaseOrdersService {
     });
   }
 
-  async findAll(query: PurchaseOrderQueryDto, supplierScope?: number | null) {
+  /**
+   * Dựng điều kiện `where` cho phiếu nhập hàng. Tách riêng để dùng chung giữa
+   * findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị.
+   */
+  private buildPurchaseOrderWhere(
+    query: PurchaseOrderQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const {
-      pageSize = 15,
-      currentItem = 0,
       search,
       supplierId,
       supplierIds,
@@ -789,6 +1019,14 @@ export class PurchaseOrdersService {
     // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
 
+    return where;
+  }
+
+  async findAll(query: PurchaseOrderQueryDto, supplierScope?: number | null) {
+    const { pageSize = 15, currentItem = 0 } = query;
+
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
     const [data, total] = await Promise.all([
       this.prisma.purchaseOrder.findMany({
         where,
@@ -808,6 +1046,25 @@ export class PurchaseOrdersService {
           purchaseBy: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
           items: true,
+          // Cần payments (chỉ bản ghi active status≠2) để FE quy đổi "Đã trả
+          // NCC (CNY)" theo foreignAmount thật đã snapshot lúc thanh toán,
+          // thay vì chia paidAmount(VND)/exchangeRate gốc của phiếu → lệch khi
+          // tỉ giá thanh toán khác tỉ giá phiếu.
+          payments: { where: { status: { not: 2 } } },
+          // Cấn trừ thủ công làm tăng paidAmount nhưng không tạo Payment. Trả
+          // snapshot ngoại tệ để FE tính đúng phần đã tất toán/còn nợ CNY.
+          supplierReturns: {
+            where: { status: 3, refundType: 'manual_offset' },
+            select: {
+              id: true,
+              refundedAmount: true,
+              refundedForeignAmount: true,
+              currency: true,
+              exchangeRate: true,
+              refundType: true,
+              status: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -815,6 +1072,244 @@ export class PurchaseOrdersService {
     ]);
 
     return { data, total, pageSize, currentItem };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu nhập hàng = 1 dòng Excel. Bộ lọc dùng chung
+   * buildPurchaseOrderWhere với danh sách.
+   */
+  async exportPurchaseOrders(
+    query: PurchaseOrderQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
+    const STATUS_LABEL: Record<number, string> = {
+      0: 'Phiếu tạm',
+      1: 'Đã nhập hàng',
+      2: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Nhập hàng');
+
+    sheet.columns = [
+      { header: 'Mã nhập hàng', key: 'code', width: 18 },
+      { header: 'Mã đặt hàng nhập', key: 'orderSupplierCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người nhập', key: 'purchaseBy', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Tổng số lượng', key: 'totalQuantity', width: 14 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Chi phí nhập trả NCC', key: 'totalAmount', width: 20 },
+      { header: 'Đã trả NCC', key: 'paidAmount', width: 16 },
+      { header: 'Cần trả NCC', key: 'debtAmount', width: 16 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.purchaseOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          orderSupplier: { select: { code: true } },
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          purchaseBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          items: { select: { quantity: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const po of batch) {
+        const totalQuantity = po.items.reduce(
+          (s, it) => s + Number(it.quantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: po.code,
+          orderSupplierCode: po.orderSupplier?.code || '',
+          purchaseDate: fmtDateTime(po.purchaseDate),
+          createdAt: fmtDateTime(po.createdAt),
+          supplier: po.supplier?.name || '',
+          supplierCode: po.supplier?.code || '',
+          branch: po.branch?.name || '',
+          purchaseBy: po.purchaseBy?.name || '',
+          createdBy: po.creator?.name || '',
+          totalQuantity,
+          totalGoods: po.items.length,
+          discount: Number(po.discount) || 0,
+          totalAmount: Number(po.totalAmount) || 0,
+          paidAmount: Number(po.paidAmount) || 0,
+          debtAmount: Number(po.debtAmount) || 0,
+          status: STATUS_LABEL[po.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildPurchaseOrderWhere với export tổng
+   * quan.
+   */
+  async exportPurchaseOrdersDetail(
+    query: PurchaseOrderQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildPurchaseOrderWhere(query, supplierScope);
+
+    const STATUS_LABEL: Record<number, string> = {
+      0: 'Phiếu tạm',
+      1: 'Đã nhập hàng',
+      2: 'Đã hủy',
+    };
+
+    const CONDITION_LABEL: Record<string, string> = {
+      normal: 'Hàng thường',
+      damaged: 'Loại B',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết nhập hàng');
+
+    sheet.columns = [
+      { header: 'Mã nhập hàng', key: 'code', width: 18 },
+      { header: 'Mã đặt hàng nhập', key: 'orderSupplierCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'Loại hàng', key: 'conditionType', width: 14 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Đơn giá', key: 'price', width: 14 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Thành tiền', key: 'totalPrice', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.purchaseOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          orderSupplier: { select: { code: true } },
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          items: { orderBy: { lineNumber: 'asc' } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const po of batch) {
+        const base = {
+          code: po.code,
+          orderSupplierCode: po.orderSupplier?.code || '',
+          purchaseDate: fmtDateTime(po.purchaseDate),
+          supplier: po.supplier?.name || '',
+          supplierCode: po.supplier?.code || '',
+          branch: po.branch?.name || '',
+          createdBy: po.creator?.name || '',
+          status: STATUS_LABEL[po.status] || '',
+        };
+
+        if (!po.items.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            conditionType: '',
+            quantity: 0,
+            price: 0,
+            discount: 0,
+            totalPrice: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const it of po.items) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: it.productCode || '',
+            productName: it.productName || '',
+            conditionType: CONDITION_LABEL[it.conditionType] || '',
+            quantity: Number(it.quantity) || 0,
+            price: Number(it.price) || 0,
+            discount: Number(it.discount) || 0,
+            totalPrice: Number(it.totalPrice) || 0,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number, supplierScope?: number | null) {
@@ -852,7 +1347,8 @@ export class PurchaseOrdersService {
   }
 
   async update(id: number, dto: UpdatePurchaseOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const existing = await tx.purchaseOrder.findUnique({
         where: { id },
         include: { items: true, payments: true },
@@ -932,6 +1428,13 @@ export class PurchaseOrdersService {
       // false     true         rút SL cũ khỏi tồn — pre-check đủ tồn
       // false     false        delta = newQty - oldQty — pre-check phần giảm
       //
+      // Với phân loại hàng (loại B = damaged): onHand chỉ chứa phần "normal";
+      // phần "damaged" đi vào damagedQuantity. Khi user sửa:
+      //   - Đổi 1 dòng từ "damaged" SL=5 sang "normal" SL=5:
+      //     onHand phải đủ chỗ cho +5 (trừ đi 5 damagedQuantity cũ trước).
+      //   - Đổi từ "normal" SL=5 sang "damaged" SL=5:
+      //     onHand phải đủ chỗ để giảm -5; damagedQuantity phải đủ chỗ để cộng.
+      //
       // Mọi pre-check đều xảy ra TRƯỚC khi thực thi. Nếu không pass, throw để
       // rollback transaction, tồn kho và DB không bị đụng vào.
       const wasDraft = existing.isDraft;
@@ -939,11 +1442,23 @@ export class PurchaseOrdersService {
       const branchUnchanged =
         dto.branchId === undefined || dto.branchId === existing.branchId;
 
-      // Helper: build map productId → tổng SL từ list items
-      const buildQtyMap = (items: { productId: number; quantity: any }[]) => {
-        const m = new Map<number, number>();
+      // Helper: build map productId → { goodQty, damagedQty } từ list items.
+      // Mỗi SP có thể xuất hiện nhiều dòng (cùng productId khác lineNumber);
+      // cộng dồn từng dòng vào bucket tương ứng theo conditionType.
+      const buildQtyMap = (items: any[]) => {
+        const m = new Map<number, { goodQty: number; damagedQty: number }>();
         for (const it of items) {
-          m.set(it.productId, (m.get(it.productId) || 0) + Number(it.quantity));
+          const existing2 = m.get(it.productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
+          const qty = Number(it.quantity) || 0;
+          if (it.conditionType === 'damaged') {
+            existing2.damagedQty += qty;
+          } else {
+            existing2.goodQty += qty;
+          }
+          m.set(it.productId, existing2);
         }
         return m;
       };
@@ -954,28 +1469,55 @@ export class PurchaseOrdersService {
       // (hoặc giữ nguyên existing nếu dto không gửi items); nếu đổi branch thì
       // tại branch cũ = 0 cho mọi product.
       const newQtyMap = (() => {
-        if (!branchUnchanged) return new Map<number, number>();
+        if (!branchUnchanged)
+          return new Map<number, { goodQty: number; damagedQty: number }>();
         if (dto.items) return buildQtyMap(dto.items);
         return oldQtyMap; // không gửi items, giữ nguyên
       })();
 
-      // Tính danh sách (productId, decrease) cần pre-check tồn:
-      //   - wasDraft=false, willBeDraft=true: rút toàn bộ oldQty (decrease=oldQty).
-      //   - wasDraft=false, willBeDraft=false: chỉ check phần giảm (delta âm).
+      // Tính danh sách (productId, decreaseOnHand, decreaseDamaged) cần pre-check tồn:
+      //   - wasDraft=false, willBeDraft=true: rút toàn bộ oldQty (cả good + damaged).
+      //   - wasDraft=false, willBeDraft=false: chỉ check phần giảm (delta âm)
+      //     cho từng bucket riêng biệt.
       //   - wasDraft=true: tồn chưa cộng từ trước → không cần check.
-      const productsToCheck: { productId: number; decrease: number }[] = [];
+      const productsToCheck: {
+        productId: number;
+        decreaseOnHand: number;
+        decreaseDamaged: number;
+      }[] = [];
       if (!wasDraft && existing.branchId) {
-        if (willBeDraft) {
-          for (const [productId, oldQty] of oldQtyMap.entries()) {
-            if (oldQty > 0)
-              productsToCheck.push({ productId, decrease: oldQty });
+        const productIds = new Set<number>([
+          ...oldQtyMap.keys(),
+          ...newQtyMap.keys(),
+        ]);
+        for (const productId of productIds) {
+          const oldQ = oldQtyMap.get(productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
+          const newQ = newQtyMap.get(productId) || {
+            goodQty: 0,
+            damagedQty: 0,
+          };
+          let decreaseOnHand = 0;
+          let decreaseDamaged = 0;
+          if (willBeDraft) {
+            // Rút toàn bộ tồn cũ (cả 2 bucket).
+            decreaseOnHand = oldQ.goodQty;
+            decreaseDamaged = oldQ.damagedQty;
+          } else {
+            // Chỉ check phần giảm (delta âm) cho từng bucket.
+            const deltaGood = newQ.goodQty - oldQ.goodQty;
+            const deltaDamaged = newQ.damagedQty - oldQ.damagedQty;
+            if (deltaGood < 0) decreaseOnHand = -deltaGood;
+            if (deltaDamaged < 0) decreaseDamaged = -deltaDamaged;
           }
-        } else {
-          for (const [productId, oldQty] of oldQtyMap.entries()) {
-            const newQty = newQtyMap.get(productId) ?? 0;
-            const delta = newQty - oldQty;
-            if (delta < 0)
-              productsToCheck.push({ productId, decrease: -delta });
+          if (decreaseOnHand > 0 || decreaseDamaged > 0) {
+            productsToCheck.push({
+              productId,
+              decreaseOnHand,
+              decreaseDamaged,
+            });
           }
         }
       }
@@ -991,20 +1533,43 @@ export class PurchaseOrdersService {
         const invMap = new Map<number, any>();
         inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
 
+        // Tồn loại B lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cột cache
+        // Inventory.damagedQuantity vì cache là giá trị dẫn xuất.
+        const bucketMap = await computeBucketTotalsBatch(
+          tx,
+          productsToCheck.map((p) => p.productId),
+          existing.branchId,
+        );
+
         const branch = await tx.branch.findUnique({
           where: { id: existing.branchId },
           select: { name: true },
         });
 
-        for (const { productId, decrease } of productsToCheck) {
+        for (const {
+          productId,
+          decreaseOnHand,
+          decreaseDamaged,
+        } of productsToCheck) {
           const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          if (onHand < decrease) {
-            const productLabel = inv?.product
-              ? `${inv.product.code} - ${inv.product.name}`
-              : `productId=${productId}`;
+          const damagedQuantity = bucketMap[productId]?.damaged ?? 0;
+          const productLabel = inv?.product
+            ? `${inv.product.code} - ${inv.product.name}`
+            : `productId=${productId}`;
+
+          // Check bucket onHand riêng (không tính damaged vì bucket này là
+          // phần "hàng thường" theo semantic mới — damaged đi vào bucket
+          // riêng damagedQuantity).
+          if (onHand < decreaseOnHand) {
             throw new BadRequestException(
-              `Không thể giảm số lượng "${productLabel}" trong phiếu nhập: tồn kho hiện tại tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${onHand}, không đủ để giảm ${decrease}. Vui lòng xử lý các phiếu xuất/bán/chuyển kho liên quan trước.`,
+              `Không thể giảm số lượng "${productLabel}" trong phiếu nhập: tồn kho hàng thường tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${onHand}, không đủ để giảm ${decreaseOnHand}. Vui lòng xử lý các phiếu xuất/bán/chuyển kho liên quan trước.`,
+            );
+          }
+          // Check bucket damagedQuantity riêng (nếu có giảm phần loại B).
+          if (decreaseDamaged > 0 && damagedQuantity < decreaseDamaged) {
+            throw new BadRequestException(
+              `Không thể giảm số lượng loại B "${productLabel}" trong phiếu nhập: tồn kho loại B tại chi nhánh "${branch?.name || existing.branchId}" chỉ còn ${damagedQuantity}, không đủ để giảm ${decreaseDamaged}.`,
             );
           }
         }
@@ -1013,7 +1578,8 @@ export class PurchaseOrdersService {
       // Restore tồn cũ chỉ khi PN trước đó đã cộng (wasDraft=false). Nếu
       // wasDraft=true thì tồn chưa từng cộng → bỏ qua restore.
       if (!wasDraft && existing.branchId) {
-        await this.restoreInventory(id, tx);
+        const touched = await this.restoreInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
         // restoreInventory CHỈ hoàn lại onHand, KHÔNG xóa InventoryLog. Phải xóa
         // các log PURCHASE cũ của phiếu này trước khi updateInventory() ghi log
         // mới — nếu không thẻ kho sẽ cộng dồn log cũ + mới cùng refCode (vd sửa
@@ -1025,6 +1591,20 @@ export class PurchaseOrdersService {
             refId: id,
           },
         });
+        // Cùng lý do: xóa log SỔ CÁI loại tồn của phiếu cũ trước khi
+        // updateInventory() ghi lại. Nếu không, tồn bucket (= Σ log active) sẽ
+        // cộng dồn cả dòng cũ + mới → hàng loại B bị nhân đôi khi sửa phiếu.
+        //
+        // LỌC THEO refType + refId, KHÔNG lọc theo transactionType: log sổ cái
+        // của PN được ghi với transactionType 'PURCHASE_IN' (khác 'PURCHASE'
+        // của InventoryLog). Nếu lọc theo 'PURCHASE' thì không xóa được dòng
+        // nào → nhân đôi hàng loại B mỗi lần sửa phiếu.
+        await tx.stockConditionLog.deleteMany({
+          where: {
+            refType: 'purchase_order',
+            refId: id,
+          },
+        });
       }
 
       if (dto.items) {
@@ -1033,7 +1613,7 @@ export class PurchaseOrdersService {
         });
 
         const itemsData = await Promise.all(
-          dto.items.map(async (item) => {
+          dto.items.map(async (item, index) => {
             const product = await tx.product.findUnique({
               where: { id: item.productId },
             });
@@ -1061,6 +1641,18 @@ export class PurchaseOrdersService {
               discountRatio: item.discountRatio || 0,
               totalPrice,
               description: item.description,
+              // Số thứ tự dòng (1, 2, 3...) — ưu tiên FE gửi sẵn, fallback
+              // theo index. Đảm bảo unique key (purchaseOrderId, lineNumber)
+              // không trùng trong cùng phiếu.
+              lineNumber: item.lineNumber ?? index + 1,
+              // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
+              conditionType: item.conditionType || 'normal',
+              factoryPrice:
+                item.factoryPrice != null ? Number(item.factoryPrice) : null,
+              factorySubTotal:
+                item.factorySubTotal != null
+                  ? Number(item.factorySubTotal)
+                  : null,
             };
           }),
         );
@@ -1083,12 +1675,17 @@ export class PurchaseOrdersService {
         ? (total * dto.discountRatio) / 100
         : Number(dto.discount || 0);
 
+      let linkedOrderSupplierCurrency: string | null = null;
+      let linkedOrderSupplierRate: number | null = null;
       if (existing.orderSupplierId) {
         const linkedOrderSupplier = await tx.orderSupplier.findUnique({
           where: { id: existing.orderSupplierId },
-          select: { discount: true },
+          select: { discount: true, currency: true, exchangeRate: true },
         });
         if (linkedOrderSupplier) {
+          linkedOrderSupplierCurrency = linkedOrderSupplier.currency || 'VND';
+          linkedOrderSupplierRate =
+            Number(linkedOrderSupplier.exchangeRate) || 1;
           const existingPOs = await tx.purchaseOrder.findMany({
             where: {
               orderSupplierId: existing.orderSupplierId,
@@ -1118,11 +1715,47 @@ export class PurchaseOrdersService {
         where: { purchaseOrderId: id, status: { not: 2 } },
         select: { amount: true },
       });
-      const paidAmount = activePayments.reduce(
+      const paymentAmount = activePayments.reduce(
         (sum: number, p: any) => sum + Number(p.amount),
         0,
       );
+      const manualOffsets = await tx.supplierReturn.findMany({
+        where: {
+          purchaseOrderId: id,
+          status: 3,
+          refundType: 'manual_offset',
+        },
+        select: { refundedAmount: true },
+      });
+      const offsetAmount = manualOffsets.reduce(
+        (sum: number, offset: any) => sum + Number(offset.refundedAmount),
+        0,
+      );
+      const paidAmount = paymentAmount + offsetAmount;
       const debtAmount = subTotal - paidAmount;
+
+      const nextCurrency = (
+        linkedOrderSupplierCurrency ||
+        dto.currency ||
+        existing.currency ||
+        'VND'
+      ).toUpperCase();
+      if (!['VND', 'CNY'].includes(nextCurrency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${nextCurrency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const nextExchangeRate =
+        nextCurrency === 'VND'
+          ? 1
+          : linkedOrderSupplierRate ||
+            Number(dto.exchangeRate ?? existing.exchangeRate ?? 0) ||
+            0;
+      if (nextCurrency === 'CNY' && nextExchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
 
       const updateData: any = {
         purchaseDate: dto.purchaseDate ? new Date(dto.purchaseDate) : undefined,
@@ -1137,6 +1770,8 @@ export class PurchaseOrdersService {
         partnerType: dto.partnerType,
         description: dto.description,
         purchaseById: dto.purchaseById,
+        currency: nextCurrency,
+        exchangeRate: nextExchangeRate,
       };
 
       // Đổi NCC: ghi supplierId mới + cập nhật lại snapshot nợ đầu kỳ
@@ -1218,7 +1853,17 @@ export class PurchaseOrdersService {
       // PN chuyển sang/giữ Phiếu tạm → tồn không cộng (đã restore SL cũ ở trên
       // nếu wasDraft=false).
       if (branchId && !willBeDraft) {
-        await this.updateInventory(id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog.
+        const poUpdateUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const poUpdateLogActor = buildInventoryLogActor(
+          userId,
+          poUpdateUser?.name || poUpdateUser?.email,
+        );
+        const touched = await this.updateInventory(id, tx, poUpdateLogActor);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       await this.updateSupplierDebt(dto.supplierId || existing.supplierId, tx);
@@ -1279,6 +1924,12 @@ export class PurchaseOrdersService {
           }
         }
         await recalcOnHandForPairs(tx, pairs);
+
+        // Tồn bucket cũng phải phủ ĐÚNG tập cặp đó: sản phẩm bị GỠ khỏi phiếu
+        // (log sổ cái đã xóa ở trên) và chi nhánh CŨ khi đổi chi nhánh đều cần
+        // recalc. updateInventory() chỉ recalc theo item MỚI nên nếu thiếu bước
+        // này, cache hàng loại B của SP bị gỡ / branch cũ sẽ kẹt lại số cũ.
+        await recalcConditionBucketsForPairs(tx, pairs);
       }
 
       const orderSupplierId = existing.orderSupplierId;
@@ -1352,10 +2003,17 @@ export class PurchaseOrdersService {
         },
       });
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async remove(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -1372,7 +2030,8 @@ export class PurchaseOrdersService {
       // PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn — không
       // cần rút khi xoá. Đối xứng `cancelPurchaseOrder` semantic mới.
       if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
-        await this.restoreInventory(id, tx);
+        const touched = await this.restoreInventory(id, tx);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       // Soft-cancel mọi CashFlow liên quan tới PN này (PCPN######, PCTUPN...).
@@ -1422,6 +2081,18 @@ export class PurchaseOrdersService {
             branchId: purchaseOrder.branchId,
           })),
         );
+
+        // Tồn bucket: PN đã bị XÓA CỨNG nên active-finder 'purchase_order'
+        // không tìm thấy id → log PURCHASE_IN của phiếu thành inactive. Recalc
+        // để cache hàng loại B khớp lại sổ cái (nếu thiếu bước này, cache giữ
+        // nguyên phần loại B của phiếu vừa xóa).
+        await recalcConditionBucketsForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
       }
 
       await this.updateSupplierDebt(purchaseOrder.supplierId, tx);
@@ -1464,6 +2135,12 @@ export class PurchaseOrdersService {
 
       return { message: 'Xóa phiếu nhập hàng thành công' };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async cancelPurchaseOrder(
@@ -1471,7 +2148,8 @@ export class PurchaseOrdersService {
     dto: CancelPurchaseOrderDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -1500,10 +2178,15 @@ export class PurchaseOrdersService {
       }
 
       // ─── Hoàn nguyên kho an toàn ────────────────────────────────────────
-      // KHÔNG dùng `decrement` blind: phải kiểm tra `onHand` hiện tại của
-      // chi nhánh để không bao giờ làm tồn kho âm. Nếu hàng đã được bán/
-      // chuyển/hủy đi rồi thì không thể hủy PN này được nữa — yêu cầu
-      // user xử lý các phiếu hậu kỳ trước.
+      // KHÔNG dùng `decrement` blind: phải kiểm tra `onHand` và
+      // `damagedQuantity` hiện tại của chi nhánh để không bao giờ làm tồn
+      // kho âm. Nếu hàng đã được bán/ chuyển/hủy đi rồi thì không thể hủy
+      // PN này được nữa — yêu cầu user xử lý các phiếu hậu kỳ trước.
+      //
+      // Với phân loại hàng (loại B = damaged): rollback đúng bucket theo
+      // conditionType. onHand cho hàng thường, damagedQuantity cho hàng
+      // bục rách. damagedQuantity ≤ onHand luôn được giữ vì khi tăng cả 2
+      // đồng thời lúc tạo, lúc giảm cũng đồng thời theo cùng tỉ lệ.
       //
       // Lưu ý: PN ở trạng thái Phiếu tạm (isDraft=true) chưa từng cộng tồn
       // (semantic mới của create/update) → khi hủy không cần rút tồn ra.
@@ -1523,29 +2206,73 @@ export class PurchaseOrdersService {
         const invMap = new Map<number, any>();
         inventories.forEach((inv: any) => invMap.set(inv.productId, inv));
 
+        // Tồn bucket lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cache trên
+        // Inventory vì cache là giá trị dẫn xuất.
+        const bucketMap = await computeBucketTotalsBatch(
+          tx,
+          productIds,
+          purchaseOrder.branchId,
+        );
+
+        // Pre-check: tổng giảm tồn (cả 2 bucket) cho mỗi product phải đủ.
+        // Cộng dồn vì 1 product có thể xuất hiện nhiều dòng (khác
+        // conditionType) trong cùng phiếu.
+        const totalDecrease = new Map<
+          number,
+          { onHand: number; damaged: number }
+        >();
         for (const item of purchaseOrder.items) {
-          const inv = invMap.get(item.productId);
+          const cur = totalDecrease.get(item.productId) || {
+            onHand: 0,
+            damaged: 0,
+          };
+          if (item.conditionType === 'damaged') {
+            cur.damaged += Number(item.quantity);
+          } else {
+            cur.onHand += Number(item.quantity);
+          }
+          totalDecrease.set(item.productId, cur);
+        }
+
+        for (const [productId, decrease] of totalDecrease.entries()) {
+          const inv = invMap.get(productId);
           const onHand = inv ? Number(inv.onHand) : 0;
-          const qty = Number(item.quantity);
-          if (onHand < qty) {
+          // Tồn loại B lấy TỪ SỔ CÁI (nguồn chân lý), không đọc cột cache.
+          const damagedQuantity = bucketMap[productId]?.damaged ?? 0;
+          if (onHand < decrease.onHand) {
             const productLabel = inv?.product
               ? `${inv.product.code} - ${inv.product.name}`
-              : `productId=${item.productId}`;
+              : `productId=${productId}`;
             throw new BadRequestException(
-              `Không thể hủy phiếu nhập: tồn kho hiện tại của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${onHand}, nhỏ hơn số đã nhập (${qty}). Vui lòng xử lý các phiếu xuất/chuyển kho liên quan trước.`,
+              `Không thể hủy phiếu nhập: tồn kho hàng thường của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${onHand}, nhỏ hơn số đã nhập (${decrease.onHand}). Vui lòng xử lý các phiếu xuất/chuyển kho liên quan trước.`,
+            );
+          }
+          if (decrease.damaged > 0 && damagedQuantity < decrease.damaged) {
+            const productLabel = inv?.product
+              ? `${inv.product.code} - ${inv.product.name}`
+              : `productId=${productId}`;
+            throw new BadRequestException(
+              `Không thể hủy phiếu nhập: tồn kho loại B của "${productLabel}" tại chi nhánh "${purchaseOrder.branch?.name || purchaseOrder.branchId}" chỉ còn ${damagedQuantity}, nhỏ hơn số đã nhập (${decrease.damaged}).`,
             );
           }
         }
 
+        // Apply: chỉ rollback onHand cho dòng hàng thường. Dòng hàng loại B
+        // KHÔNG trừ cache damagedQuantity ở đây nữa: tồn bucket là giá trị dẫn
+        // xuất từ sổ cái, và log PURCHASE_IN của PN này sẽ tự rớt khỏi Σ active
+        // ngay khi PN chuyển status=2 (active-finder 'purchase_order'). Cache
+        // được đồng bộ lại bằng recalcConditionBucketsForPairs bên dưới.
         for (const item of purchaseOrder.items) {
           const inv = invMap.get(item.productId);
           if (!inv) continue;
-          await tx.inventory.update({
-            where: { id: inv.id },
-            data: {
-              onHand: { decrement: Number(item.quantity) },
-            },
-          });
+          const qty = Number(item.quantity);
+          if (item.conditionType !== 'damaged') {
+            await tx.inventory.update({
+              where: { id: inv.id },
+              data: { onHand: { decrement: qty } },
+            });
+            touchedProductIds.add(item.productId);
+          }
         }
       }
 
@@ -1604,6 +2331,16 @@ export class PurchaseOrdersService {
       // onHand cho mọi sản phẩm của phiếu (chỉ khi PN từng cộng tồn).
       if (!purchaseOrder.isDraft && purchaseOrder.branchId) {
         await recalcOnHandForPairs(
+          tx,
+          purchaseOrder.items.map((item: any) => ({
+            productId: item.productId,
+            branchId: purchaseOrder.branchId,
+          })),
+        );
+
+        // Tương tự cho tồn bucket: log PURCHASE_IN của PN vừa hủy cũng rớt
+        // khỏi Σ active → recalc đưa cache về đúng sổ cái.
+        await recalcConditionBucketsForPairs(
           tx,
           purchaseOrder.items.map((item: any) => ({
             productId: item.productId,
@@ -1670,6 +2407,12 @@ export class PurchaseOrdersService {
 
       return { message: 'Hủy phiếu nhập hàng thành công' };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   private async updateOrderSupplierStatus(orderSupplierId: number, tx: any) {
@@ -1686,8 +2429,18 @@ export class PurchaseOrdersService {
       return;
     }
 
+    // Tính số đã nhận theo từng product qua các PN active (không phải DRAFT,
+    // không phải CANCELLED) — đối xứng `activePOs` ở `createOneFromOrderSupplierTx`
+    // (dòng 463-465) và enrichment `receivedQty` ở `order-suppliers.service.ts`
+    // (dòng 978-980). Trước đây chỉ lọc `isDraft: false` mà thiếu
+    // `status: { not: 2 }` → PN đã hủy vẫn được cộng vào receivedQuantities →
+    // PDN bị đẩy lên "Hoàn thành" nhầm sau khi hủy PN cuối cùng.
     const allPurchaseOrders = await tx.purchaseOrder.findMany({
-      where: { orderSupplierId: orderSupplierId, isDraft: false },
+      where: {
+        orderSupplierId: orderSupplierId,
+        isDraft: false,
+        status: { not: 2 },
+      },
       include: { items: true },
     });
 
@@ -1738,7 +2491,12 @@ export class PurchaseOrdersService {
     });
   }
 
-  private async updateInventory(purchaseOrderId: number, tx: any) {
+  private async updateInventory(
+    purchaseOrderId: number,
+    tx: any,
+    actor?: InventoryLogActor,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const purchaseOrder = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
       include: {
@@ -1748,23 +2506,64 @@ export class PurchaseOrdersService {
       },
     });
 
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
+    if (!purchaseOrder || !purchaseOrder.branchId) return touched;
 
     for (const item of purchaseOrder.items) {
+      const qty = Number(item.quantity);
+      // Phân chia quantity theo conditionType:
+      //   - "normal" → goodQty cộng vào Inventory.onHand
+      //   - "damaged" (loại B) → damagedQty cộng vào Inventory.damagedQuantity
+      // Phần damaged vẫn nằm trong tổng tồn (onHand tăng đúng qty), nhưng
+      // damagedQuantity là bucket phụ đánh dấu bao nhiêu trong tổng là
+      // bục rách. Quy ước: damagedQuantity ≤ onHand luôn được validate ở
+      // inventories.service.ts:226-230 và ở pre-check update() phía trên.
+      const isDamaged = item.conditionType === 'damaged';
+      const goodQty = isDamaged ? 0 : qty;
+      const damagedQty = isDamaged ? qty : 0;
+
       const invSnapshot = await tx.inventory.findFirst({
         where: { productId: item.productId, branchId: purchaseOrder.branchId },
       });
 
+      // TỒN KHO: cộng goodQty vào onHand. onHand sẽ được recalc lại từ thẻ kho
+      // ở cuối hàm (Σ log active, bao gồm cả phần loại B) nên increment ở đây
+      // chỉ mang tính tạm.
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
           branchId: purchaseOrder.branchId,
         },
         data: {
-          onHand: { increment: Number(item.quantity) },
+          ...(goodQty > 0 && { onHand: { increment: goodQty } }),
         },
       });
+      if (goodQty > 0) touched.add(item.productId);
 
+      // SỔ CÁI LOẠI TỒN: hàng nhập loại B ghi vào bucket DAMAGED qua sổ cái
+      // (KHÔNG ghi trực tiếp cột cache Inventory.damagedQuantity). Tồn bucket
+      // là giá trị dẫn xuất: tồn bucket = Σ log active. Log của PN bị hủy tự
+      // bị loại nhờ active-finder 'purchase_order' (status != 2).
+      if (damagedQty > 0) {
+        await writeConditionLogs(tx, {
+          productId: item.productId,
+          productCode: item.productCode,
+          productName: item.productName,
+          branchId: purchaseOrder.branchId,
+          branchName: purchaseOrder.branch?.name || '',
+          refCode: purchaseOrder.code,
+          refType: 'purchase_order',
+          refId: purchaseOrder.id,
+          transactionType: 'PURCHASE_IN',
+          transactionDate: purchaseOrder.purchaseDate,
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          note: 'Nhập hàng loại B',
+          damaged: damagedQty,
+        });
+      }
+
+      // THẺ KHO: giữ convention 1 row = 1 log, ghi tổng quantity (cả good +
+      // damaged) như cũ. Nếu là dòng loại B, gắn tag note để truy vết khi
+      // xem thẻ kho.
       await tx.inventoryLog.create({
         data: {
           productId: item.productId,
@@ -1776,7 +2575,7 @@ export class PurchaseOrdersService {
           refCode: purchaseOrder.code,
           refType: 'purchase_order',
           refId: purchaseOrder.id,
-          quantity: Number(item.quantity),
+          quantity: qty,
           costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
           transactionPrice: Number(item.price),
           partnerId: purchaseOrder.supplierId,
@@ -1786,6 +2585,8 @@ export class PurchaseOrdersService {
           // thời điểm hiện tại → thẻ kho hiển thị sai timeline (vd phiếu lùi
           // ngày bị nhảy lên ngày sửa).
           transactionDate: purchaseOrder.purchaseDate,
+          note: isDamaged ? 'Hàng loại B' : null,
+          ...buildInventoryLogBase(actor),
         },
       });
     }
@@ -1798,31 +2599,54 @@ export class PurchaseOrdersService {
         branchId: purchaseOrder.branchId,
       })),
     );
+
+    // NGUỒN CHÂN LÝ: tồn bucket = Σ log sổ cái active. Đồng bộ lại cache sau
+    // khi đã ghi log PURCHASE_IN cho các dòng hàng loại B.
+    await recalcConditionBucketsForPairs(
+      tx,
+      purchaseOrder.items.map((item: any) => ({
+        productId: item.productId,
+        branchId: purchaseOrder.branchId,
+      })),
+    );
+    return touched;
   }
 
-  private async restoreInventory(purchaseOrderId: number, tx: any) {
+  private async restoreInventory(
+    purchaseOrderId: number,
+    tx: any,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const purchaseOrder = await tx.purchaseOrder.findUnique({
       where: { id: purchaseOrderId },
       include: { items: true },
     });
 
-    if (!purchaseOrder || !purchaseOrder.branchId) return;
+    if (!purchaseOrder || !purchaseOrder.branchId) return touched;
 
     for (const item of purchaseOrder.items) {
+      const qty = Number(item.quantity);
+      // Rollback onHand cho dòng hàng thường. Dòng loại B KHÔNG trừ cột cache
+      // damagedQuantity ở đây nữa: tồn bucket là giá trị dẫn xuất từ sổ cái
+      // (tồn bucket = Σ log active), nên chỉ cần xóa log PURCHASE_IN (luồng
+      // sửa) hoặc set PN status=2 (luồng hủy) rồi recalc là bucket tự về đúng.
+      const isDamaged = item.conditionType === 'damaged';
+      if (isDamaged) continue;
+
       await tx.inventory.updateMany({
         where: {
           productId: item.productId,
           branchId: purchaseOrder.branchId,
         },
-        data: {
-          onHand: { decrement: Number(item.quantity) },
-        },
+        data: { onHand: { decrement: qty } },
       });
+      touched.add(item.productId);
     }
     // LƯU Ý: KHÔNG recalc ở đây. restoreInventory được gọi khi log PURCHASE
     // CÒN active (update flow xóa log SAU; cancel set status=2 SAU). Recalc tại
     // đây sẽ cộng lại quantity sai. Recalc được đặt ở từng call site, SAU khi
     // log đã xóa / PN đã status=2.
+    return touched;
   }
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
@@ -1978,6 +2802,11 @@ export class PurchaseOrdersService {
         price: Number(item.price),
         discount: Number(item.discount || 0),
         totalPrice: Number(item.totalPrice),
+        // Thêm 2 field mới để audit log hiển thị rõ dòng nào là loại B
+        // và số thứ tự dòng. Khi mở rộng truy vết kế toán, có thể filter
+        // theo conditionType để thống kê tổng hàng loại B theo thời gian.
+        lineNumber: item.lineNumber ?? null,
+        conditionType: item.conditionType || 'normal',
       })),
     };
   }

@@ -1,4 +1,11 @@
-import { IsOptional, IsInt, IsString, IsIn, IsArray } from 'class-validator';
+import {
+  IsOptional,
+  IsInt,
+  IsString,
+  IsIn,
+  IsArray,
+  IsDateString,
+} from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
 export class AllPackingQueryDto {
@@ -37,6 +44,18 @@ export class AllPackingQueryDto {
   @IsOptional()
   @IsString()
   customerSearch?: string;
+
+  @IsOptional()
+  @IsString()
+  paymentMethod?: string;
+
+  @IsOptional()
+  @IsDateString()
+  fromCreatedDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toCreatedDate?: string;
 
   @IsOptional()
   @Type(() => Number)

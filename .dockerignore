@@ -11,7 +11,9 @@ node_modules
 dist
 
 # Uploads (mount qua volume, không cần trong image)
+uploads
 uploads-sandbox
+**/@eaDir
 
 # Tài liệu, không cần cho runtime
 *.md

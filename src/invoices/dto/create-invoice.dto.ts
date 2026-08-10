@@ -47,6 +47,11 @@ class CreateInvoiceDetailDto {
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: string; // "normal" | "damaged" | "near_expiry"
 
+  // Lô cận date (ISO date) khi conditionType = near_expiry.
+  @IsOptional()
+  @IsString()
+  soldExpiryDate?: string;
+
   @IsOptional()
   @IsString()
   @IsIn(['normal', 'gift', 'promo_discount', 'discounted_buy'])
@@ -59,6 +64,15 @@ class CreateInvoiceDetailDto {
   @IsOptional()
   @IsInt()
   promotionId?: number;
+
+  @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsNumber({}, { each: true })
+  enabledPromotionIds?: number[];
 }
 
 class CreateInvoiceDeliveryDto {
@@ -116,9 +130,23 @@ class CreateInvoicePaymentItemDto {
   accountId?: number;
 }
 
+class RewardSelectionDto {
+  @IsInt()
+  productId: number;
+
+  // Số suất phân bổ cho SP quà này (mỗi suất = rewardQuantity của CT).
+  @IsInt()
+  rewardTimes: number;
+}
+
 class AppliedPromotionDto {
   @IsInt()
   promotionId: number;
+
+  // Mã SP điều kiện mua X đã kích hoạt lần áp dụng này.
+  @IsOptional()
+  @IsInt()
+  triggerProductId?: number;
 
   // Lựa chọn quà (khi nhóm Y có nhiều SP, thu ngân chọn 1)
   @IsOptional()
@@ -137,6 +165,13 @@ class AppliedPromotionDto {
   @IsOptional()
   @IsNumber()
   discountedBuyQuantity?: number;
+
+  // KM cộng dồn: phân bổ quà theo nhiều SP (mỗi SP nhận n suất × rewardQuantity).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => RewardSelectionDto)
+  rewardSelections?: RewardSelectionDto[];
 }
 
 export class CreateInvoiceDto {
@@ -252,8 +287,28 @@ export class CreateInvoiceFromOrderDto {
     totalPrice: number;
     note?: string;
     conditionType?: string; // "normal" | "damaged" | "near_expiry"
+    soldExpiryDate?: string; // lô cận date khi conditionType = near_expiry
     lineType?: string; // normal | gift | discounted_buy
     isGift?: boolean;
     promotionId?: number;
+    triggerProductId?: number;
+    enabledPromotionIds?: number[];
   }[];
+
+  // KM: cho phép FE gửi lựa chọn KM để BE re-validate + sinh lại dòng quà
+  // (đặc biệt khi đơn gốc tạo trước tính năng KM, user áp KM lúc xuất HĐ).
+  @IsOptional()
+  @IsBoolean()
+  skipPromotions?: boolean;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  appliedPromotionIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AppliedPromotionDto)
+  appliedPromotions?: AppliedPromotionDto[];
 }

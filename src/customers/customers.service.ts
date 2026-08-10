@@ -24,12 +24,14 @@ import { searchCustomerIds } from '../common/customer-search.util';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
+import { LarkCustomerSyncService } from '../lark-sync/services/lark-customer-sync.service';
 
 @Injectable()
 export class CustomersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkCustomerSync: LarkCustomerSyncService,
   ) {}
 
   async exportCustomers(
@@ -228,6 +230,9 @@ export class CustomersService {
       { header: 'Khu vực', key: 'locationName', width: 18 },
       { header: 'Phường/Xã', key: 'wardName', width: 18 },
       { header: 'Thành phố', key: 'cityName', width: 18 },
+      { header: 'Phường/Xã (cũ)', key: 'oldWardName', width: 18 },
+      { header: 'Quận/Huyện (cũ)', key: 'oldDistrictName', width: 18 },
+      { header: 'Thành phố (cũ)', key: 'oldCityName', width: 18 },
       { header: 'Chi nhánh', key: 'branchName', width: 18 },
       { header: 'Nợ cần thu', key: 'totalDebt', width: 16 },
       { header: 'Tổng bán', key: 'totalPurchased', width: 16 },
@@ -236,6 +241,7 @@ export class CustomersService {
       { header: 'Số ngày nợ', key: 'debtDays', width: 14 },
       { header: 'Ngày tạo', key: 'createdAt', width: 14 },
       { header: 'Người tạo', key: 'createdByName', width: 20 },
+      { header: 'Nhân viên phụ trách', key: 'misaEmployeeName', width: 22 },
     ];
 
     const headerRow = sheet.getRow(1);
@@ -303,8 +309,13 @@ export class CustomersService {
           comments: c.comments ?? '',
           address: addr?.address ?? '',
           locationName: addr?.locationName ?? '',
-          wardName: addr?.wardName ?? (addr as any)?.newWardName ?? '',
-          cityName: addr?.cityName ?? (addr as any)?.newCityName ?? '',
+          // Ưu tiên địa chỉ mới (2 cấp), fallback cũ — nhất quán với phần còn lại của hệ thống.
+          wardName: addr?.newWardName ?? addr?.wardName ?? '',
+          cityName: addr?.newCityName ?? addr?.cityName ?? '',
+          // Cột địa chỉ cũ (3 cấp) riêng biệt để đối chiếu.
+          oldWardName: addr?.wardName ?? '',
+          oldDistrictName: addr?.districtName ?? '',
+          oldCityName: addr?.cityName ?? '',
           branchName: c.branch?.name ?? '',
           totalDebt: Number(c.totalDebt),
           totalPurchased: Number(c.totalPurchased),
@@ -315,6 +326,7 @@ export class CustomersService {
           debtDays,
           createdAt: new Date(c.createdAt).toLocaleDateString('vi-VN'),
           createdByName: c.creator?.name ?? '',
+          misaEmployeeName: c.misaEmployeeName ?? '',
         });
         row.commit();
       }
@@ -839,6 +851,9 @@ export class CustomersService {
       });
     }
 
+    // Đẩy khách hàng mới lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+    this.larkCustomerSync.syncSingleAsync(customer.id);
+
     return {
       ...customer,
       customerGroupDetails: customerGroupDetails.map((detail) => ({
@@ -1014,6 +1029,9 @@ export class CustomersService {
         },
       },
     );
+
+    // Đẩy thay đổi khách hàng lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+    this.larkCustomerSync.syncSingleAsync(customer.id);
 
     return {
       ...customer,

@@ -82,3 +82,7 @@ prisma/seeds/data/address-normalize-report.json
 prisma/seeds/data/address-geocode-enriched.json
 prisma/seeds/data/geocode-cache.json
 prisma/seeds/data/product-image-map.json
+
+# Database dumps (tránh commit file dump lớn vào repo)
+*.dump
+*.sql.gz

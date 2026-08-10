@@ -61,9 +61,28 @@ export class CreateSupplierReturnDetailDto {
   @Min(0)
   requestQuantity: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  returnPrice: number;
+  returnPrice?: number;
+
+  @IsString()
+  @IsIn(['unit_price', 'total_amount'])
+  inputMode: 'unit_price' | 'total_amount';
+
+  @IsNumber()
+  @Min(0)
+  totalAmount: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  foreignReturnPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  foreignReturnAmount?: number;
 
   @IsOptional()
   @IsString()
@@ -84,6 +103,15 @@ export class CreateSupplierReturnDto {
 
   @IsInt()
   branchId: number;
+
+  @IsOptional()
+  @IsString()
+  currency?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  exchangeRate?: number;
 
   @IsOptional()
   @IsString()
@@ -124,6 +152,12 @@ export class ConfirmExportDetailDto {
   @IsString()
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: 'normal' | 'damaged' | 'near_expiry';
+
+  // NSX (ngày sản xuất) của lô cận date khi trả NCC hàng near_expiry.
+  // Cần để log SUPPLIER_RETURN_OUT trừ đúng lô, không trừ vào lô null.
+  @IsOptional()
+  @IsString()
+  manufactureDate?: string;
 }
 
 export class ConfirmExportDto {
@@ -271,9 +305,28 @@ export class UpdateStep1DetailDto {
   @Min(0)
   requestQuantity: number;
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  returnPrice: number;
+  returnPrice?: number;
+
+  @IsString()
+  @IsIn(['unit_price', 'total_amount'])
+  inputMode: 'unit_price' | 'total_amount';
+
+  @IsNumber()
+  @Min(0)
+  totalAmount: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  foreignReturnPrice?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  foreignReturnAmount?: number;
 
   @IsOptional()
   @IsString()

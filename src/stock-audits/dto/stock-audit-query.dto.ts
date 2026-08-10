@@ -36,4 +36,8 @@ export class StockAuditQueryDto {
   @IsOptional()
   @IsString()
   creatorId?: string;
+
+  @IsOptional()
+  @IsString()
+  productId?: string;
 }

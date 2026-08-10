@@ -34,10 +34,24 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
+import {
+  BUCKET_DAMAGED,
+  BUCKET_NEAR_EXPIRY,
+  BUCKET_PROMO,
+  computeBucketTotals,
+  computeNearExpiryLots,
+  recalcConditionBucketsForPairs,
+} from 'src/common/stock-condition-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
-import { computeInvoiceVat } from '../misa-sync/misa-vat.util';
+import { resolveDeliveryAddress } from '../common/address-resolver.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
+import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class InvoicesService {
@@ -48,6 +62,7 @@ export class InvoicesService {
     private auditLogsService: AuditLogsService,
     private packingSlipsService: PackingSlipsService,
     private promotionsService: PromotionsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   /**
@@ -797,9 +812,11 @@ export class InvoicesService {
         details: {
           include: {
             product: { include: { inventories: true } },
+            promotion: { select: { id: true, code: true, name: true } },
           },
         },
         payments: true,
+        paymentNotes: { orderBy: { createdAt: 'desc' } },
         delivery: true,
         _count: { select: { returnOrders: true } },
         returnOrders: {
@@ -836,6 +853,99 @@ export class InvoicesService {
   }
 
   /**
+   * Dựng danh sách dòng quà từ lựa chọn của thu ngân cho KM requiresChoice.
+   * - Cộng dồn (choice.rewardSelections): phân bổ theo suất, mỗi SP quà nhận
+   *   rewardTimes × perTime; validate tổng suất ≤ số suất đạt được (r.rewardTimes).
+   * - Single choice (choice.giftProductId): giữ hành vi cũ (1 SP nhận toàn bộ).
+   * Mọi SP quà đều phải thuộc rewardOptions và được cap theo opt.remaining.
+   *
+   * Đơn vị: qty tính theo đơn vị CT (gói với unit, thùng với carton). Trước khi
+   * ghi dòng, quy về GÓI thực tế: carton → qty × opt.conversionValue (số gói/thùng
+   * của SP quà) để lưu/kho đúng số lượng bán lẻ.
+   */
+  private resolveChoiceGiftLines(r: any, choice: any, perTime: number): any[] {
+    if (!choice) return [];
+    const optOf = (productId: number) =>
+      (r.rewardOptions || []).find((o: any) => o.productId === productId);
+    // carton: số thùng → số gói theo conversionValue của SP quà. unit: giữ gói.
+    const isCarton = r.unitMode === 'carton';
+    const toGoi = (qtyThung: number, opt: any) =>
+      isCarton
+        ? Math.round(qtyThung * Number(opt?.conversionValue || 1))
+        : qtyThung;
+
+    // ── KM cộng dồn: phân bổ nhiều SP quà theo suất ──
+    if (
+      Array.isArray(choice.rewardSelections) &&
+      choice.rewardSelections.length
+    ) {
+      const totalTimes = Number(r.rewardTimes || 0);
+      const requestedTimes = choice.rewardSelections.reduce(
+        (s: number, sel: any) => s + Number(sel.rewardTimes || 0),
+        0,
+      );
+      if (requestedTimes > totalTimes) {
+        throw new BadRequestException(
+          `PROMOTION_CHANGED: số suất quà đã chọn (${requestedTimes}) vượt số suất đạt được (${totalTimes}) của chương trình "${r.name}"`,
+        );
+      }
+      const lines: any[] = [];
+      for (const sel of choice.rewardSelections) {
+        const times = Number(sel.rewardTimes || 0);
+        if (times <= 0) continue;
+        const opt = optOf(sel.productId);
+        if (!opt) {
+          throw new BadRequestException(
+            `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+          );
+        }
+        let qty = times * perTime; // đơn vị CT (gói/thùng)
+        if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
+        const qtyGoi = toGoi(qty, opt);
+        if (qtyGoi <= 0) continue;
+        lines.push({
+          productId: opt.productId,
+          productName: opt.productName,
+          quantity: qtyGoi,
+          price: 0,
+          promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
+        });
+      }
+      return lines;
+    }
+
+    // ── Single choice (legacy): 1 SP nhận toàn bộ rewardQuantity ──
+    if (choice.giftProductId) {
+      const opt = optOf(choice.giftProductId);
+      if (!opt) {
+        throw new BadRequestException(
+          `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
+        );
+      }
+      let qty = Math.min(
+        Number(choice.giftQuantity || r.rewardQuantity),
+        Number(r.rewardQuantity),
+      );
+      if (opt.remaining != null) qty = Math.min(qty, Number(opt.remaining));
+      const qtyGoi = toGoi(qty, opt);
+      if (qtyGoi <= 0) return [];
+      return [
+        {
+          productId: opt.productId,
+          productName: opt.productName,
+          quantity: qtyGoi,
+          price: 0,
+          promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
+        },
+      ];
+    }
+
+    return [];
+  }
+
+  /**
    * Re-validate + dựng danh sách dòng hàng hiệu dụng theo khuyến mãi.
    * - Dòng gift do FE gửi bị bỏ, BE tự sinh lại từ engine (authoritative).
    * - Dòng discounted_buy của FE được validate với engine (sai → PROMOTION_CHANGED).
@@ -845,20 +955,45 @@ export class InvoicesService {
   private async processPromotions(
     tx: any,
     dto: CreateInvoiceDto,
+    opts?: { reconstructCumulativeChoices?: boolean },
   ): Promise<{
     effectiveItems: any[];
     extraInvoiceDiscount: number;
     logs: any[];
   }> {
+    // Gom SL quà (theo GÓI) mà FE gửi lên theo promotionId, TRƯỚC khi lọc bỏ dòng
+    // gift engine. Dùng để tái dựng rewardSelections cho KM cộng dồn cần chọn quà
+    // khi FE gửi thiếu choice (race: tab HĐ-từ-đơn chưa hydrate opt-in cấp tab).
+    // Chỉ dùng khi opts.reconstructCumulativeChoices=true (luồng createFromOrder).
+    const feGiftQtyByPromoProduct = new Map<number, Map<number, number>>();
+    if (opts?.reconstructCumulativeChoices) {
+      for (const it of dto.items) {
+        const isGift = !!(it.isGift || (it.lineType || 'normal') === 'gift');
+        if (!isGift || it.promotionId == null) continue;
+        const pid = Number(it.promotionId);
+        const inner = feGiftQtyByPromoProduct.get(pid) || new Map<number, number>();
+        inner.set(
+          Number(it.productId),
+          (inner.get(Number(it.productId)) || 0) + Number(it.quantity || 0),
+        );
+        feGiftQtyByPromoProduct.set(pid, inner);
+      }
+    }
+
     // Bỏ dòng gift do KM engine sinh (có promotionId) — BE tự sinh lại.
     // GIỮ dòng gift thủ công (thu ngân đánh dấu 🎁, không gắn promotionId).
-    const baseItems = dto.items
+    const baseItems: any[] = dto.items
       .filter(
         (it) => (it.lineType || 'normal') !== 'gift' || it.promotionId == null,
       )
       .map((it) => {
-        const manualGift =
-          (it.lineType || 'normal') === 'gift' && it.promotionId == null;
+        const lineType = it.lineType || 'normal';
+        const manualGift = lineType === 'gift' && it.promotionId == null;
+        // promotionId trên dòng 'normal' chỉ là "trigger stamp" phái sinh (mục 2b) —
+        // engine sẽ tự gán lại. Reset về null để tránh giữ stamp sai từ dữ liệu cũ
+        // (dòng thường không phải hàng X bị dính promotionId của quà cùng mã SP).
+        // Giữ nguyên cho discounted_buy (cần để validate) và gift thủ công.
+        const derivedNormalStamp = lineType === 'normal';
         return {
           productId: it.productId,
           productCode: it.productCode,
@@ -870,9 +1005,12 @@ export class InvoicesService {
           totalPrice: manualGift ? 0 : Number(it.totalPrice),
           note: it.note,
           conditionType: it.conditionType || 'normal',
+          soldExpiryDate: it.soldExpiryDate ? new Date(it.soldExpiryDate) : null,
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
-          promotionId: it.promotionId ?? null,
+          promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
+          triggerProductId: it.triggerProductId,
+          enabledPromotionIds: it.enabledPromotionIds,
         };
       });
 
@@ -880,24 +1018,34 @@ export class InvoicesService {
       return { effectiveItems: baseItems, extraInvoiceDiscount: 0, logs: [] };
     }
 
-    // Map lựa chọn quà / mua kèm của thu ngân theo promotionId
-    const choiceMap: Record<number, any> = {};
+    // Một CTKM có thể áp độc lập cho nhiều mã X. Key phải gồm cả mã X kích hoạt,
+    // nếu chỉ dùng promotionId thì lựa chọn của dòng sau sẽ ghi đè dòng trước.
+    const choiceKey = (promotionId: number, triggerProductId?: number | null) =>
+      `${promotionId}:${triggerProductId ?? ''}`;
+    const choiceMap: Record<string, any> = {};
     (dto.appliedPromotions ?? []).forEach((c) => {
-      choiceMap[c.promotionId] = c;
+      choiceMap[choiceKey(c.promotionId, c.triggerProductId)] = c;
     });
     const appliedIds =
       dto.appliedPromotions && dto.appliedPromotions.length > 0
         ? dto.appliedPromotions.map((c) => c.promotionId)
         : (dto.appliedPromotionIds ?? []);
 
-    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng)
+    // Engine chạy trên dòng thường (không tính discounted_buy vào điều kiện mua-thưởng).
+    // Chỉ hàng loại tồn 'normal' mới được hưởng/tính vào ngưỡng KM — hàng bục rách
+    // (damaged) và cận date (near_expiry) LOẠI khỏi engine (không tính ngưỡng, không sinh quà).
     const engineItems = baseItems
-      .filter((it) => it.lineType === 'normal')
+      .filter(
+        (it) =>
+          it.lineType === 'normal' &&
+          (it.conditionType || 'normal') === 'normal',
+      )
       .map((it) => ({
         productId: it.productId,
         quantity: it.quantity,
         price: it.price,
         discount: it.discount,
+        enabledPromotionIds: it.enabledPromotionIds,
       }));
 
     const evalResult = await this.promotionsService.evaluateForInvoice({
@@ -914,43 +1062,65 @@ export class InvoicesService {
     const logs: any[] = [];
 
     // Resolve giftLines hiệu dụng cho từng KM (engine tự sinh hoặc theo lựa chọn thu ngân)
-    const resolvedGifts: Record<number, any[]> = {};
+    const resolvedGifts: Record<string, any[]> = {};
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       let giftLines = r.giftLines as any[];
       // KM cần thu ngân chọn quà (nhóm Y nhiều SP)
       if (
         (r.type === 'BUY_X_GET_Y' || r.type === 'BUY_N_GET_M_SAME') &&
         r.requiresChoice
       ) {
-        const choice = choiceMap[r.promotionId];
-        if (choice?.giftProductId) {
-          const opt = (r.rewardOptions || []).find(
-            (o: any) => o.productId === choice.giftProductId,
-          );
-          if (!opt) {
-            throw new BadRequestException(
-              `PROMOTION_CHANGED: sản phẩm tặng đã chọn không thuộc chương trình "${r.name}"`,
-            );
+        let choice =
+          choiceMap[resultKey] || choiceMap[choiceKey(r.promotionId)];
+        // Số quà mỗi suất = tổng SL / số suất (fallback = tổng SL nếu thiếu times).
+        const perTime =
+          r.rewardTimes && r.rewardTimes > 0
+            ? Number(r.rewardQuantity) / Number(r.rewardTimes)
+            : Number(r.rewardQuantity);
+
+        // Tái dựng rewardSelections từ dòng quà FE gửi khi choice thiếu/rỗng.
+        // Chỉ áp cho KM cộng dồn (triggerProductId==null) ở luồng createFromOrder.
+        // Suy ngược số suất từ SL quà (gói) — mirror logic FE effect:
+        //   carton: times = round(qtyGoi / perTime / conversionValue)
+        //   unit:   times = round(qtyGoi / perTime)
+        // resolveChoiceGiftLines vẫn re-validate tổng suất ≤ r.rewardTimes + cap remaining.
+        const choiceHasSelections =
+          choice &&
+          Array.isArray(choice.rewardSelections) &&
+          choice.rewardSelections.some((s: any) => Number(s.rewardTimes) > 0);
+        if (
+          opts?.reconstructCumulativeChoices &&
+          r.triggerProductId == null &&
+          !choiceHasSelections &&
+          perTime > 0
+        ) {
+          const feGifts = feGiftQtyByPromoProduct.get(Number(r.promotionId));
+          if (feGifts && feGifts.size > 0) {
+            const isCarton = r.unitMode === 'carton';
+            const rewardSelections: any[] = [];
+            for (const [productId, qtyGoi] of feGifts) {
+              const opt = (r.rewardOptions || []).find(
+                (o: any) => o.productId === productId,
+              );
+              if (!opt) continue;
+              const conv = Number(opt.conversionValue || 1) || 1;
+              const times = isCarton
+                ? Math.round(qtyGoi / perTime / conv)
+                : Math.round(qtyGoi / perTime);
+              if (times > 0)
+                rewardSelections.push({ productId, rewardTimes: times });
+            }
+            if (rewardSelections.length > 0) choice = { rewardSelections };
           }
-          const qty = Math.min(
-            Number(choice.giftQuantity || r.rewardQuantity),
-            Number(r.rewardQuantity),
-          );
-          giftLines = [
-            {
-              productId: opt.productId,
-              productName: opt.productName,
-              quantity: qty,
-              price: 0,
-              promotionId: r.promotionId,
-            },
-          ];
-        } else {
-          // Thu ngân chưa chọn quà → bỏ qua phần tặng của KM này
-          giftLines = [];
         }
+
+        giftLines = this.resolveChoiceGiftLines(r, choice, perTime);
       }
-      resolvedGifts[r.promotionId] = giftLines;
+      resolvedGifts[resultKey] = giftLines.map((g: any) => ({
+        ...g,
+        triggerProductId: r.triggerProductId,
+      }));
     }
 
     // Lấy code/name + cost cho sản phẩm tặng
@@ -976,15 +1146,23 @@ export class InvoicesService {
     giftCosts.forEach((c) => (costMap[c.productId] = Number(c.cost)));
 
     for (const r of applied) {
+      const resultKey = choiceKey(r.promotionId, r.triggerProductId);
       // 1) Giảm giá hóa đơn
+      // Defense-in-depth: nếu KM không autoApply và user chưa chọn → bỏ qua,
+      // dù filter ở promotions.service có lọt thì đây vẫn chặn.
       if (r.type === 'INVOICE_DISCOUNT') {
-        extraInvoiceDiscount += Number(r.discountAmount);
+        if (r.autoApply !== false || appliedIds.includes(r.promotionId)) {
+          extraInvoiceDiscount += Number(r.discountAmount);
+        }
       }
 
       // 2) Giảm giá dòng (PRODUCT/CATEGORY_DISCOUNT)
       for (const dl of r.discountLines) {
         const target = baseItems.find(
-          (it) => it.productId === dl.productId && it.lineType === 'normal',
+          (it) =>
+            it.productId === dl.productId &&
+            it.lineType === 'normal' &&
+            (it.conditionType || 'normal') === 'normal',
         );
         if (target) {
           target.discount += Number(dl.perUnitDiscount);
@@ -995,8 +1173,26 @@ export class InvoicesService {
         }
       }
 
+      // 2b) Gắn promotionId lên dòng X (hàng mua điều kiện) để thống kê.
+      // GIỮ lineType='normal' — đây là hàng bán giá thường, KHÔNG phải hàng KM.
+      const matchedIds: number[] = r.triggerProductId
+        ? [r.triggerProductId]
+        : r.matchedProductIds || [];
+      if (matchedIds.length) {
+        for (const it of baseItems) {
+          if (
+            it.lineType === 'normal' &&
+            (it.conditionType || 'normal') === 'normal' &&
+            it.promotionId == null &&
+            matchedIds.includes(it.productId)
+          ) {
+            it.promotionId = r.promotionId;
+          }
+        }
+      }
+
       // 3) Hàng tặng (BE tự sinh dòng giá 0). Cho phép tồn âm (chỉ cảnh báo ở FE).
-      const giftLines = resolvedGifts[r.promotionId] || [];
+      const giftLines = resolvedGifts[resultKey] || [];
       for (const g of giftLines) {
         const p = giftProductMap[g.productId];
         baseItems.push({
@@ -1013,6 +1209,8 @@ export class InvoicesService {
           lineType: 'gift',
           isGift: true,
           promotionId: r.promotionId,
+          triggerProductId: r.triggerProductId,
+          enabledPromotionIds: undefined,
         });
       }
 
@@ -1022,18 +1220,34 @@ export class InvoicesService {
         r.requiresChoice && r.type === 'BUY_X_BUY_Y_PRICE'
           ? (r.rewardOptions || []).map((o: any) => o.productId)
           : (r.discountedBuyLines || []).map((d: any) => d.productId);
-      const maxBuyQty =
+      const baseBuyQty =
         r.rewardQuantity != null
           ? Number(r.rewardQuantity)
           : (r.discountedBuyLines?.[0]?.maxQuantity ?? 0);
+      const isCartonBuy = r.unitMode === 'carton';
       for (const feLine of baseItems.filter(
         (it) =>
-          it.lineType === 'discounted_buy' && it.promotionId === r.promotionId,
+          it.lineType === 'discounted_buy' &&
+          it.promotionId === r.promotionId &&
+          (it.triggerProductId == null ||
+            it.triggerProductId === r.triggerProductId),
       )) {
         if (!allowedBuyIds.includes(feLine.productId)) {
           throw new BadRequestException(
             `PROMOTION_CHANGED: sản phẩm mua kèm "${feLine.productName}" không thuộc chương trình "${r.name}"`,
           );
+        }
+        // Cap theo suất còn lại (lifetime) của đúng SP mua kèm được chọn.
+        const opt = (r.rewardOptions || []).find(
+          (o: any) => o.productId === feLine.productId,
+        );
+        let maxBuyQty = baseBuyQty; // đơn vị CT (gói/thùng)
+        if (opt?.remaining != null) {
+          maxBuyQty = Math.min(maxBuyQty, Number(opt.remaining));
+        }
+        // carton: quy maxBuyQty (thùng) → gói theo conversionValue của SP mua kèm.
+        if (isCartonBuy) {
+          maxBuyQty = Math.round(maxBuyQty * Number(opt?.conversionValue || 1));
         }
         if (maxBuyQty && feLine.quantity > maxBuyQty) {
           throw new BadRequestException(
@@ -1064,16 +1278,53 @@ export class InvoicesService {
       });
     }
 
+    // Chèn gift / discounted_buy ngay sau đúng SP X kích hoạt.
+    // mirror FE giỏ hàng. Không có reward → thứ tự giữ nguyên.
+    const isRewardLine = (it: any) => {
+      const lt = it.lineType || 'normal';
+      return lt === 'gift' || lt === 'discounted_buy' || !!it.isGift;
+    };
+    const normals = baseItems.filter((it) => !isRewardLine(it));
+    const rewards = baseItems.filter((it) => isRewardLine(it));
+    if (rewards.length > 0) {
+      const used = new Set<any>();
+      const reordered: any[] = [];
+      for (const n of normals) {
+        reordered.push(n);
+        if (n.promotionId != null) {
+          for (const r of rewards) {
+            if (
+              !used.has(r) &&
+              r.promotionId === n.promotionId &&
+              (r.triggerProductId == null || r.triggerProductId === n.productId)
+            ) {
+              reordered.push(r);
+              used.add(r);
+            }
+          }
+        }
+      }
+      for (const r of rewards) {
+        if (!used.has(r)) reordered.push(r);
+      }
+      baseItems.length = 0;
+      baseItems.push(...reordered);
+    }
+
     return { effectiveItems: baseItems, extraInvoiceDiscount, logs };
   }
 
   async create(dto: CreateInvoiceDto, userId: number) {
-    return this.prisma.$transaction(
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const code = await this.generateSafeInvoiceCode(tx);
 
         const promo = await this.processPromotions(tx, dto);
-        const effectiveItems = promo.effectiveItems;
+        const effectiveItems = await this.markPromoStockDeductionItems(
+          tx,
+          promo.effectiveItems,
+        );
 
         const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
@@ -1145,6 +1396,12 @@ export class InvoicesService {
         }
         // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null
 
+        // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
+        const invoiceAddrSnapshot = await resolveDeliveryAddress(
+          tx,
+          dto.customerId,
+        );
+
         const invoice = await tx.invoice.create({
           data: {
             code,
@@ -1183,6 +1440,9 @@ export class InvoicesService {
                   totalPrice: item.totalPrice,
                   note: item.note,
                   conditionType: item.conditionType || 'normal',
+                  soldExpiryDate: item.soldExpiryDate
+                    ? new Date(item.soldExpiryDate)
+                    : null,
                   lineType: item.lineType || 'normal',
                   isGift: item.isGift || false,
                   promotionId: item.promotionId ?? null,
@@ -1197,6 +1457,11 @@ export class InvoicesService {
                   address: dto.delivery.address,
                   locationName: dto.delivery.locationName,
                   wardName: dto.delivery.wardName,
+                  oldCityName: invoiceAddrSnapshot.oldCityName,
+                  oldDistrictName: invoiceAddrSnapshot.oldDistrictName,
+                  oldWardName: invoiceAddrSnapshot.oldWardName,
+                  newCityName: invoiceAddrSnapshot.newCityName,
+                  newWardName: invoiceAddrSnapshot.newWardName,
                   weight: dto.delivery.weight,
                   weightUnit: dto.delivery.weightUnit || 'g',
                   length: dto.delivery.length,
@@ -1290,6 +1555,18 @@ export class InvoicesService {
           select: { id: true, name: true },
         });
 
+        // Fetch người thực hiện sớm để ghi userId/createdByName vào InventoryLog
+        // (truy vết trách nhiệm trên thẻ kho). Trước đây chỉ fetch sau vòng lặp
+        // xuất kho → InventoryLog không lưu được ai xuất.
+        const actorUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const logActor = buildInventoryLogActor(
+          userId,
+          actorUser?.name || actorUser?.email,
+        );
+
         for (const item of effectiveItems) {
           const condition = item.conditionType || 'normal';
           const invSnapshot = await tx.inventory.findFirst({
@@ -1302,12 +1579,17 @@ export class InvoicesService {
             dto.branchId!,
             item.quantity,
             condition,
+            item.soldExpiryDate,
           );
 
           await tx.inventory.updateMany({
             where: { productId: item.productId, branchId: dto.branchId },
-            data: this.buildInventoryDeductData(item.quantity, condition),
+            data: this.buildInventoryDeductData(item.quantity, condition, {
+              isGift: !!(item.isGift || item.lineType === 'gift'),
+              deductPromoStock: !!item.deductPromoStock,
+            }),
           });
+          touchedProductIds.add(item.productId);
 
           await tx.inventoryLog.create({
             data: {
@@ -1325,9 +1607,35 @@ export class InvoicesService {
               transactionPrice: Number(item.price),
               partnerId: dto.customerId || null,
               partnerName: customer?.name,
+              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+              // KHÔNG theo "Thời gian tạo" (createdAt). Đồng nhất với nhánh
+              // sửa hóa đơn (.xx) và khớp ý thiết kế schema (transactionDate
+              // là ngày phát sinh giao dịch, hỗ trợ lùi ngày khi backdate).
+              transactionDate: invoice.purchaseDate,
+              ...buildInventoryLogBase(logActor),
             },
           });
+
+          // Sổ cái loại tồn: trừ bucket (damaged/near_expiry/PROMO) khi bán.
+          await this.writeSaleConditionLog(tx, {
+            item,
+            branchId: dto.branchId!,
+            branchName: branch?.name || '',
+            invoiceCode: invoice.code,
+            invoiceId: invoice.id,
+            transactionDate: invoice.purchaseDate,
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          });
         }
+
+        // Recalc cache bucket từ sổ cái cho mọi sản phẩm vừa bán.
+        await recalcConditionBucketsForPairs(
+          tx,
+          effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: dto.branchId!,
+          })),
+        );
 
         // Ghi log khuyến mãi đã áp + tăng usageCount
         if (promo.logs.length > 0) {
@@ -1404,6 +1712,12 @@ export class InvoicesService {
       },
       { timeout: 30000 },
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async update(id: number, dto: UpdateInvoiceDto, userId?: number) {
@@ -1412,6 +1726,7 @@ export class InvoicesService {
     // Danh sách packing slip (giao-hang) bị ảnh hưởng bởi versioning để gửi lại Zalo
     // sau khi transaction commit (fire-and-forget).
     let affectedPackingSlipIds: number[] = [];
+    const touchedProductIds = new Set<number>();
 
     const result = await this.prisma.$transaction(async (tx) => {
       const currentInvoice = await tx.invoice.findUnique({
@@ -1447,6 +1762,13 @@ export class InvoicesService {
           select: { name: true },
         });
 
+        // Actor cho InventoryLog nhánh versioning (.xx). userId optional →
+        // guard tránh truyền undefined. Truy vết ai xuất kho cho hóa đơn sửa.
+        const versioningLogActor = buildInventoryLogActor(
+          userId,
+          userName?.name,
+        );
+
         await this.auditLogsService.create({
           actionType: 'DELETE',
           actionCode: 'INVOICE_CANCEL',
@@ -1476,8 +1798,16 @@ export class InvoicesService {
             data: this.buildInventoryRestoreData(
               Number(oldDetail.quantity),
               (oldDetail as any).conditionType || 'normal',
+              {
+                isGift: !!(
+                  (oldDetail as any).isGift ||
+                  (oldDetail as any).lineType === 'gift'
+                ),
+              },
             ),
           });
+          if (oldDetail.productId != null)
+            touchedProductIds.add(oldDetail.productId);
         }
 
         // Auto-cancel CTN gắn HĐ cũ (đồng bộ với D6 block trong CANCEL flow)
@@ -1507,14 +1837,52 @@ export class InvoicesService {
           },
         });
 
-        const totalAmount = dto.items.reduce(
+        // Revert log KM của HĐ cũ (tránh lệch usageCount khi tạo HĐ mới .xx).
+        // Bao gồm cả log orderId=null (HĐ bán thẳng) và log orderId!=null (HĐ từ
+        // đơn đã "tiếp quản" tracking). Log reverted giữ lại để audit.
+        const oldPromoLogs = await tx.invoicePromotionLog.findMany({
+          where: { invoiceId: id, status: 'applied' },
+          select: { id: true, promotionId: true },
+        });
+        if (oldPromoLogs.length > 0) {
+          for (const lg of oldPromoLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: oldPromoLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+
+        // Chạy engine KM để re-validate + sinh lại dòng quà authoritatively
+        // (kể cả KM cộng dồn rewardSelections). skipPromotions === true → giữ
+        // dto.items nguyên, không chạy engine.
+        let effectiveItems: any[] = dto.items as any[];
+        let extraInvoiceDiscount = 0;
+        let promoLogs: any[] = [];
+        if (dto.skipPromotions !== true) {
+          const promo = await this.processPromotions(tx, dto as any);
+          effectiveItems = promo.effectiveItems;
+          extraInvoiceDiscount = promo.extraInvoiceDiscount;
+          promoLogs = promo.logs;
+        }
+        effectiveItems = await this.markPromoStockDeductionItems(
+          tx,
+          effectiveItems,
+        );
+
+        const totalAmount = effectiveItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
         );
         const discountAmount =
           dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount
-            : (totalAmount * (dto.discountRatio || 0)) / 100;
+            ? dto.discountAmount + extraInvoiceDiscount
+            : (totalAmount * (dto.discountRatio || 0)) / 100 +
+              extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
@@ -1572,6 +1940,12 @@ export class InvoicesService {
           }
         }
 
+        // Snapshot địa chỉ cũ+mới: resolve lại theo customerId mới (nếu đổi khách) hoặc giữ snapshot cũ.
+        const updateCustomerId = dto.customerId ?? currentInvoice.customerId;
+        const updateAddrSnapshot = dto.delivery
+          ? await resolveDeliveryAddress(tx, updateCustomerId)
+          : null;
+
         const newInvoice = await tx.invoice.create({
           data: {
             code: newCode,
@@ -1601,7 +1975,7 @@ export class InvoicesService {
             description: dto.description ?? currentInvoice.description,
             createdBy: currentInvoice.createdBy,
             details: {
-              create: dto.items.map((item) => ({
+              create: effectiveItems.map((item) => ({
                 productId: item.productId,
                 productCode: item.productCode,
                 productName: item.productName,
@@ -1611,6 +1985,13 @@ export class InvoicesService {
                 discountRatio: item.discountRatio || 0,
                 totalPrice: item.totalPrice,
                 note: item.note,
+                conditionType: item.conditionType || 'normal',
+                soldExpiryDate: item.soldExpiryDate
+                  ? new Date(item.soldExpiryDate)
+                  : null,
+                lineType: item.lineType || 'normal',
+                isGift: item.isGift || false,
+                promotionId: item.promotionId ?? null,
               })),
             },
             ...(dto.delivery
@@ -1622,6 +2003,12 @@ export class InvoicesService {
                       address: dto.delivery.address,
                       locationName: dto.delivery.locationName,
                       wardName: dto.delivery.wardName,
+                      oldCityName: updateAddrSnapshot?.oldCityName ?? null,
+                      oldDistrictName:
+                        updateAddrSnapshot?.oldDistrictName ?? null,
+                      oldWardName: updateAddrSnapshot?.oldWardName ?? null,
+                      newCityName: updateAddrSnapshot?.newCityName ?? null,
+                      newWardName: updateAddrSnapshot?.newWardName ?? null,
                       weight: dto.delivery.weight,
                       weightUnit: dto.delivery.weightUnit || 'g',
                       length: dto.delivery.length,
@@ -1642,6 +2029,12 @@ export class InvoicesService {
                         address: currentInvoice.delivery.address,
                         locationName: currentInvoice.delivery.locationName,
                         wardName: currentInvoice.delivery.wardName,
+                        oldCityName: currentInvoice.delivery.oldCityName,
+                        oldDistrictName:
+                          currentInvoice.delivery.oldDistrictName,
+                        oldWardName: currentInvoice.delivery.oldWardName,
+                        newCityName: currentInvoice.delivery.newCityName,
+                        newWardName: currentInvoice.delivery.newWardName,
                         weight: currentInvoice.delivery.weight,
                         weightUnit: currentInvoice.delivery.weightUnit || 'g',
                         length: currentInvoice.delivery.length,
@@ -1698,7 +2091,7 @@ export class InvoicesService {
           });
         }
 
-        for (const item of dto.items) {
+        for (const item of effectiveItems) {
           const invSnapshot = await tx.inventory.findFirst({
             where: {
               productId: item.productId,
@@ -1713,14 +2106,19 @@ export class InvoicesService {
             newInvoice.branchId || 1,
             item.quantity,
             condition,
+            item.soldExpiryDate,
           );
           await tx.inventory.updateMany({
             where: {
               productId: item.productId,
               branchId: newInvoice.branchId || 1,
             },
-            data: this.buildInventoryDeductData(item.quantity, condition),
+            data: this.buildInventoryDeductData(item.quantity, condition, {
+              isGift: !!(item.isGift || item.lineType === 'gift'),
+              deductPromoStock: !!item.deductPromoStock,
+            }),
           });
+          touchedProductIds.add(item.productId);
 
           await tx.inventoryLog.create({
             data: {
@@ -1738,7 +2136,36 @@ export class InvoicesService {
               transactionPrice: Number(item.price),
               partnerId: newInvoice.customerId || null,
               partnerName: newInvoice.customer?.name || null,
+              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+              // KHÔNG theo "Thời gian tạo" (createdAt). Hóa đơn .xx kế thừa
+              // purchaseDate của hóa đơn gốc (dòng 1788) → transactionDate cũng
+              // phải kế thừa tương ứng, nếu không thẻ kho sẽ nhảy về thời điểm
+              // sửa (= createdAt) thay vì ngày bán gốc.
+              transactionDate: newInvoice.purchaseDate,
+              ...buildInventoryLogBase(versioningLogActor),
             },
+          });
+
+          // Sổ cái loại tồn cho HĐ .xx.
+          await this.writeSaleConditionLog(tx, {
+            item,
+            branchId: newInvoice.branchId || 1,
+            branchName: newInvoice.branch?.name || '',
+            invoiceCode: newInvoice.code,
+            invoiceId: newInvoice.id,
+            transactionDate: newInvoice.purchaseDate,
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          });
+        }
+
+        // Ghi log KM mới + tăng usageCount cho HĐ .xx.
+        if (promoLogs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: promoLogs.map((l) => ({ ...l, invoiceId: newInvoice.id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: promoLogs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
           });
         }
 
@@ -1750,7 +2177,19 @@ export class InvoicesService {
             productId: d.productId,
             branchId: currentInvoice.branchId || 1,
           })),
-          ...dto.items.map((item) => ({
+          ...effectiveItems.map((item) => ({
+            productId: item.productId,
+            branchId: newInvoice.branchId || 1,
+          })),
+        ]);
+
+        // Recalc cache bucket từ sổ cái (HĐ cũ hủy + HĐ .xx mới).
+        await recalcConditionBucketsForPairs(tx, [
+          ...currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+          ...effectiveItems.map((item) => ({
             productId: item.productId,
             branchId: newInvoice.branchId || 1,
           })),
@@ -1856,8 +2295,16 @@ export class InvoicesService {
               data: this.buildInventoryRestoreData(
                 Number(detail.quantity),
                 (detail as any).conditionType || 'normal',
+                {
+                  isGift: !!(
+                    (detail as any).isGift ||
+                    (detail as any).lineType === 'gift'
+                  ),
+                },
               ),
             });
+            if (detail.productId != null)
+              touchedProductIds.add(detail.productId);
           }
 
           // Hoàn khuyến mãi: chỉ áp cho hóa đơn bán thẳng (orderId = null).
@@ -1970,14 +2417,46 @@ export class InvoicesService {
       ) {
         await tx.invoiceDetail.deleteMany({ where: { invoiceId: id } });
 
-        const totalAmount = dto.items.reduce(
+        // Revert log KM cũ trước khi re-validate (tránh lệch usageCount).
+        const inPlaceOldLogs = await tx.invoicePromotionLog.findMany({
+          where: { invoiceId: id, status: 'applied' },
+          select: { id: true, promotionId: true },
+        });
+        if (inPlaceOldLogs.length > 0) {
+          for (const lg of inPlaceOldLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: inPlaceOldLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+
+        // Chạy engine KM để re-validate + sinh lại dòng quà (kể cả khi user
+        // sửa giá dòng X → thay đổi điều kiện KM). skipPromotions === true →
+        // giữ dto.items nguyên.
+        let inPlaceItems: any[] = dto.items as any[];
+        let inPlaceExtraDiscount = 0;
+        let inPlacePromoLogs: any[] = [];
+        if (dto.skipPromotions !== true) {
+          const promo = await this.processPromotions(tx, dto as any);
+          inPlaceItems = promo.effectiveItems;
+          inPlaceExtraDiscount = promo.extraInvoiceDiscount;
+          inPlacePromoLogs = promo.logs;
+        }
+
+        const totalAmount = inPlaceItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
         );
         const discountAmount =
           dto.discountAmount && dto.discountAmount > 0
-            ? dto.discountAmount
-            : (totalAmount * (dto.discountRatio || 0)) / 100;
+            ? dto.discountAmount + inPlaceExtraDiscount
+            : (totalAmount * (dto.discountRatio || 0)) / 100 +
+              inPlaceExtraDiscount;
         const grandTotal = totalAmount - discountAmount;
 
         // Tổng invoicePayment còn active (loại đã hủy)
@@ -2030,7 +2509,7 @@ export class InvoicesService {
         updateData.statusValue = getStatusLabel(status);
 
         updateData.details = {
-          create: dto.items.map((item) => ({
+          create: inPlaceItems.map((item) => ({
             productId: item.productId,
             productCode: item.productCode,
             productName: item.productName,
@@ -2040,11 +2519,35 @@ export class InvoicesService {
             discountRatio: item.discountRatio || 0,
             totalPrice: item.totalPrice,
             note: item.note,
+            conditionType: item.conditionType || 'normal',
+            soldExpiryDate: item.soldExpiryDate
+              ? new Date(item.soldExpiryDate)
+              : null,
+            lineType: item.lineType || 'normal',
+            isGift: item.isGift || false,
+            promotionId: item.promotionId ?? null,
           })),
         };
+
+        // Ghi log KM mới + tăng usageCount cho HĐ đang sửa.
+        if (inPlacePromoLogs.length > 0) {
+          await tx.invoicePromotionLog.createMany({
+            data: inPlacePromoLogs.map((l) => ({ ...l, invoiceId: id })),
+          });
+          await tx.promotion.updateMany({
+            where: { id: { in: inPlacePromoLogs.map((l) => l.promotionId) } },
+            data: { usageCount: { increment: 1 } },
+          });
+        }
       }
 
       if (dto.delivery) {
+        // Snapshot địa chỉ cũ+mới theo customerId (ưu tiên dto, fallback currentInvoice).
+        const inPlaceCustomerId = dto.customerId ?? currentInvoice.customerId;
+        const inPlaceAddrSnapshot = await resolveDeliveryAddress(
+          tx,
+          inPlaceCustomerId,
+        );
         await tx.invoiceDelivery.deleteMany({
           where: { invoiceId: id },
         });
@@ -2055,6 +2558,11 @@ export class InvoicesService {
             address: dto.delivery.address,
             locationName: dto.delivery.locationName,
             wardName: dto.delivery.wardName,
+            oldCityName: inPlaceAddrSnapshot.oldCityName,
+            oldDistrictName: inPlaceAddrSnapshot.oldDistrictName,
+            oldWardName: inPlaceAddrSnapshot.oldWardName,
+            newCityName: inPlaceAddrSnapshot.newCityName,
+            newWardName: inPlaceAddrSnapshot.newWardName,
             weight: dto.delivery.weight,
             length: dto.delivery.length,
             width: dto.delivery.width,
@@ -2101,11 +2609,17 @@ export class InvoicesService {
 
       // NGUỒN CHÂN LÝ: khi hủy hóa đơn (status=2 vừa ghi ở trên), log SALE trở
       // thành inactive → recalc onHand = Σ log active cho các sản phẩm của HĐ.
-      if (
-        dto.status === INVOICE_STATUS.CANCELLED &&
-        currentInvoice.branchId
-      ) {
+      if (dto.status === INVOICE_STATUS.CANCELLED && currentInvoice.branchId) {
         await recalcOnHandForPairs(
+          tx,
+          currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId!,
+          })),
+        );
+        // Log SALE_OUT của HĐ (status=2) trở thành inactive → recalc bucket
+        // để hoàn lại tồn loại tồn (damaged/near_expiry/PROMO).
+        await recalcConditionBucketsForPairs(
           tx,
           currentInvoice.details.map((d) => ({
             productId: d.productId,
@@ -2153,6 +2667,32 @@ export class InvoicesService {
           userName: updatingUser?.name || updatingUser?.email || 'System',
           branchId: currentInvoice.branchId || undefined,
         });
+      } else {
+        // Nhánh hủy hóa đơn đơn giản (chỉ đổi status, không versioning).
+        // Trước đây bị bỏ qua → không có vết audit khi hủy. Bổ sung INVOICE_CANCEL
+        // để truy vết ai hủy hóa đơn.
+        const cancellingUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+
+        await this.auditLogsService.create({
+          actionType: 'PUT',
+          actionCode: 'INVOICE_CANCEL',
+          entityType: 'invoices',
+          entityId: id.toString(),
+          entityCode: currentInvoice.code,
+          category: getCategoryFromActionCode('INVOICE_CANCEL'),
+          severity: getSeverityFromActionCode('INVOICE_CANCEL'),
+          snapshot: this.buildInvoiceSnapshot(updatedInvoice),
+          message: renderAuditMessage('INVOICE_CANCEL', {
+            invoiceCode: currentInvoice.code,
+          }),
+          messageTemplate: 'INVOICE_CANCEL',
+          userId: userId || currentInvoice.createdBy,
+          userName: cancellingUser?.name || cancellingUser?.email || 'System',
+          branchId: currentInvoice.branchId || undefined,
+        });
       }
 
       return updatedInvoice;
@@ -2163,6 +2703,10 @@ export class InvoicesService {
     const uniquePackingSlipIds = [...new Set(affectedPackingSlipIds)];
     for (const slipId of uniquePackingSlipIds) {
       void this.packingSlipsService.resendDeliverySafe(slipId);
+    }
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
     }
 
     return result;
@@ -2302,7 +2846,7 @@ export class InvoicesService {
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
-      const itemsToInvoice =
+      const rawItemsToInvoice =
         dto.items && dto.items.length > 0
           ? dto.items
           : remainingItems.map((item) => ({
@@ -2318,17 +2862,128 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: (item as any).conditionType || 'normal',
+              soldExpiryDate: (item as any).soldExpiryDate ?? null,
               lineType: (item as any).lineType || 'normal',
               isGift: (item as any).isGift || false,
               promotionId: (item as any).promotionId ?? null,
             }));
 
-      const totalAmount = itemsToInvoice.reduce(
+      // Stamp promotionId lên dòng thường (X) để mở lại HĐ còn opt-in KM.
+      // Nếu FE gửi appliedPromotions → chạy engine để BE re-validate + sinh lại
+      // dòng quà authoritatively (xử lý cả KM cộng dồn rewardSelections).
+      const isPromoGiftLine = (it: any) =>
+        !!(
+          it?.isGift ||
+          it?.lineType === 'gift' ||
+          it?.lineType === 'discounted_buy'
+        );
+
+      // Chỉ kế thừa promotionId từ đúng dòng X (hàng mua điều kiện) của đơn gốc.
+      // KHÔNG suy đoán từ dòng quà: khi SP quà trùng mã một SP bán thường
+      // (vd tặng "testcombo1" trong khi cũng bán "testcombo1"), việc gán id của
+      // quà cho dòng thường sẽ dán nhầm badge KM lên hàng bán giá thường.
+      // Chỉ kế thừa cho dòng conditionType='normal' — hàng bục rách (damaged) /
+      // cận date (near_expiry) KHÔNG hưởng KM nên không cần mang promotionId.
+      const orderNormalPromoByProduct = new Map<number, number>();
+      for (const oi of order.items) {
+        if (
+          oi.productId != null &&
+          (oi as any).promotionId != null &&
+          !isPromoGiftLine(oi) &&
+          ((oi as any).conditionType || 'normal') === 'normal'
+        ) {
+          orderNormalPromoByProduct.set(
+            oi.productId,
+            Number((oi as any).promotionId),
+          );
+        }
+      }
+
+      const itemsToInvoice = rawItemsToInvoice.map((item: any) => {
+        if (isPromoGiftLine(item)) {
+          return {
+            ...item,
+            lineType: item.lineType || (item.isGift ? 'gift' : 'normal'),
+            isGift: !!(item.isGift || item.lineType === 'gift'),
+            promotionId: item.promotionId ?? null,
+          };
+        }
+        // Hàng bục rách / cận date không được hưởng KM → luôn promotionId=null.
+        if ((item.conditionType || 'normal') !== 'normal') {
+          return {
+            ...item,
+            lineType: item.lineType || 'normal',
+            isGift: false,
+            promotionId: null,
+          };
+        }
+        let promotionId =
+          item.promotionId != null ? Number(item.promotionId) : null;
+        if (promotionId == null || Number.isNaN(promotionId)) {
+          const enabled = item.enabledPromotionIds;
+          if (Array.isArray(enabled) && enabled.length > 0) {
+            promotionId = Number(enabled[0]);
+          }
+        }
+        if (
+          (promotionId == null || Number.isNaN(promotionId)) &&
+          item.productId != null &&
+          orderNormalPromoByProduct.has(item.productId)
+        ) {
+          promotionId = orderNormalPromoByProduct.get(item.productId)!;
+        }
+        return {
+          ...item,
+          lineType: item.lineType || 'normal',
+          isGift: false,
+          promotionId:
+            promotionId != null && !Number.isNaN(promotionId)
+              ? promotionId
+              : null,
+        };
+      });
+
+      // Chạy engine KM nếu FE gửi appliedPromotions (user bật KM ở POS).
+      // - Re-validate trần/điều kiện, sinh lại dòng quà authoritatively (kể cả
+      //   KM cộng dồn rewardSelections), ghi InvoicePromotionLog + tăng usageCount.
+      // - Tránh double-count với order log: nếu order đã ghi log cùng KM (đơn mới
+      //   có KM), revert order log trước khi ghi HĐ log. HĐ "tiếp quản" tracking.
+      // - skipPromotions === true hoặc không gửi appliedPromotions → giữ nguyên
+      //   itemsToInvoice (kế thừa dòng quà từ payload/đơn gốc), không chạy engine.
+      let effectiveItems = itemsToInvoice;
+      let extraInvoiceDiscount = 0;
+      let promoLogs: any[] = [];
+      const hasAppliedPromos =
+        (dto.appliedPromotions && dto.appliedPromotions.length > 0) ||
+        (dto.appliedPromotionIds && dto.appliedPromotionIds.length > 0);
+      if (!dto.skipPromotions && hasAppliedPromos) {
+        const promo = await this.processPromotions(tx, {
+          items: itemsToInvoice as any,
+          branchId: order.branchId,
+          customerId: order.customerId ?? undefined,
+          soldById: dto.soldById ?? order.soldById ?? undefined,
+          purchaseDate: new Date().toISOString(),
+          appliedPromotions: dto.appliedPromotions,
+          appliedPromotionIds: dto.appliedPromotionIds,
+        } as any,
+        { reconstructCumulativeChoices: true },
+        );
+        effectiveItems = promo.effectiveItems;
+        extraInvoiceDiscount = promo.extraInvoiceDiscount;
+        promoLogs = promo.logs;
+      }
+      effectiveItems = await this.markPromoStockDeductionItems(
+        tx,
+        effectiveItems,
+      );
+
+      const totalAmount = effectiveItems.reduce(
         (sum, item) => sum + item.totalPrice,
         0,
       );
 
-      const grandTotal = totalAmount - discountForThisInvoice;
+      const grandTotal =
+        totalAmount - discountForThisInvoice - extraInvoiceDiscount;
       const debtAmount = grandTotal - totalPaid;
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
@@ -2356,7 +3011,7 @@ export class InvoicesService {
           priceBookName: order.priceBookName,
           purchaseDate: new Date(),
           totalAmount,
-          discount: discountForThisInvoice,
+          discount: discountForThisInvoice + extraInvoiceDiscount,
           discountRatio: 0,
           grandTotal,
           paidAmount: totalPaid,
@@ -2368,7 +3023,7 @@ export class InvoicesService {
           createdBy: userId,
           customerDebtSnapshot: null,
           details: {
-            create: itemsToInvoice.map((item) => ({
+            create: effectiveItems.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
               productName: item.productName,
@@ -2379,6 +3034,9 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
+              soldExpiryDate: item.soldExpiryDate
+                ? new Date(item.soldExpiryDate)
+                : null,
               lineType: item.lineType || 'normal',
               isGift: item.isGift || false,
               promotionId: item.promotionId ?? null,
@@ -2392,6 +3050,11 @@ export class InvoicesService {
                 address: order.delivery.address,
                 locationName: order.delivery.locationName,
                 wardName: order.delivery.wardName,
+                oldCityName: order.delivery.oldCityName,
+                oldDistrictName: order.delivery.oldDistrictName,
+                oldWardName: order.delivery.oldWardName,
+                newCityName: order.delivery.newCityName,
+                newWardName: order.delivery.newWardName,
                 weight: order.delivery.weight,
                 weightUnit: order.delivery.weightUnit || 'g',
                 length: order.delivery.length,
@@ -2427,6 +3090,12 @@ export class InvoicesService {
         where: { id: userId },
         select: { name: true },
       });
+
+      // Actor cho InventoryLog (xuất kho bán từ đơn hàng). Truy vết ai xuất kho.
+      const fromOrderLogActor = buildInventoryLogActor(
+        userId,
+        createdByName?.name,
+      );
 
       const invoiceData = invoice;
 
@@ -2533,7 +3202,8 @@ export class InvoicesService {
         select: { id: true, name: true },
       });
 
-      for (const item of itemsToInvoice) {
+      const touchedProductIds = new Set<number>();
+      for (const item of effectiveItems) {
         const invSnapshot = await tx.inventory.findFirst({
           where: { productId: item.productId, branchId: order.branchId },
         });
@@ -2545,11 +3215,16 @@ export class InvoicesService {
           order.branchId,
           item.quantity,
           condition,
+          item.soldExpiryDate,
         );
         await tx.inventory.updateMany({
           where: { productId: item.productId, branchId: order.branchId },
-          data: this.buildInventoryDeductData(item.quantity, condition),
+          data: this.buildInventoryDeductData(item.quantity, condition, {
+            isGift: !!(item.isGift || item.lineType === 'gift'),
+            deductPromoStock: !!item.deductPromoStock,
+          }),
         });
+        touchedProductIds.add(item.productId);
 
         await tx.inventoryLog.create({
           data: {
@@ -2567,13 +3242,67 @@ export class InvoicesService {
             transactionPrice: Number(item.price),
             partnerId: order.customerId || null,
             partnerName: order.customer?.name || null,
+            ...buildInventoryLogBase(fromOrderLogActor),
           },
+        });
+
+        // Sổ cái loại tồn khi xuất HĐ từ đơn hàng.
+        await this.writeSaleConditionLog(tx, {
+          item,
+          branchId: order.branchId,
+          branchName: branch?.name || '',
+          invoiceCode: invoice.code,
+          invoiceId: invoice.id,
+          transactionDate: invoice.purchaseDate,
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+        });
+      }
+
+      // Ghi log KM + tăng usageCount (HĐ "tiếp quản" tracking từ order).
+      // Trước tiên revert order log cùng KM (tránh double-count khi đơn đã có KM).
+      if (promoLogs.length > 0) {
+        const promoIds = promoLogs.map((l) => l.promotionId);
+        const orderLogs = await tx.invoicePromotionLog.findMany({
+          where: {
+            orderId: order.id,
+            status: 'applied',
+            promotionId: { in: promoIds },
+          },
+          select: { id: true, promotionId: true },
+        });
+        if (orderLogs.length > 0) {
+          for (const lg of orderLogs) {
+            await tx.promotion.updateMany({
+              where: { id: lg.promotionId },
+              data: { usageCount: { decrement: 1 } },
+            });
+          }
+          await tx.invoicePromotionLog.updateMany({
+            where: { id: { in: orderLogs.map((l) => l.id) } },
+            data: { status: 'reverted' },
+          });
+        }
+        await tx.invoicePromotionLog.createMany({
+          data: promoLogs.map((l) => ({ ...l, invoiceId: invoice.id })),
+        });
+        await tx.promotion.updateMany({
+          where: { id: { in: promoIds } },
+          data: { usageCount: { increment: 1 } },
         });
       }
 
       await recalcOnHandForPairs(
         tx,
-        itemsToInvoice.map((i) => ({
+        effectiveItems.map((i) => ({
+          productId: i.productId,
+          branchId: order.branchId,
+        })),
+      );
+
+      // Recalc cache bucket từ sổ cái cho mọi sản phẩm vừa xuất HĐ từ đơn.
+      await recalcConditionBucketsForPairs(
+        tx,
+        effectiveItems.map((i) => ({
           productId: i.productId,
           branchId: order.branchId,
         })),
@@ -2879,8 +3608,11 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
+              soldExpiryDate: (item as any).soldExpiryDate
+                ? new Date((item as any).soldExpiryDate)
+                : null,
               manufactureDate:
-                (item as any).manufactureDate ??
+                item.manufactureDate ??
                 mfgDateByProduct[item.productId] ??
                 null,
             })),
@@ -2998,6 +3730,9 @@ export class InvoicesService {
         entityCode: invoice.code,
         category: getCategoryFromActionCode('INVOICE_CREATE'),
         severity: getSeverityFromActionCode('INVOICE_CREATE'),
+        // Bổ sung snapshot (trước đây nhánh createFromConsignment không có
+        // snapshot → không truy vết được items đã xuất hóa đơn từ ký gửi).
+        snapshot: this.buildInvoiceSnapshot(invoice),
         message: renderAuditMessage('INVOICE_CREATE', {
           invoiceCode: invoice.code,
           orderCode: consignment.code,
@@ -3407,12 +4142,21 @@ export class InvoicesService {
     branchId?: number;
     pageSize?: number;
     search?: string;
+    excludeDelivered?: boolean;
   }) {
-    const { branchId, pageSize = 100, search } = query;
+    const { branchId, pageSize = 100, search, excludeDelivered } = query;
     const take = Math.min(Math.max(pageSize, 1), 200);
 
     const where: any = {};
     if (branchId) where.branchId = branchId;
+
+    // Khi tạo phiếu LOADING / ĐÓNG HÀNG: loại hóa đơn đã giao hàng thành công
+    // (DELIVERED) hoặc đã hoàn thành (COMPLETED) — không cho báo đơn lại.
+    if (excludeDelivered) {
+      where.status = {
+        notIn: [INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED],
+      };
+    }
 
     const keyword = search?.trim();
     if (keyword) {
@@ -3759,6 +4503,12 @@ export class InvoicesService {
             contactNumber: invoice.delivery.contactNumber,
             address: invoice.delivery.address,
             wardName: invoice.delivery.wardName,
+            // Địa chỉ cũ (3 cấp) + mới (2 cấp) — để shipper xem cả hai.
+            oldCityName: invoice.delivery.oldCityName,
+            oldDistrictName: invoice.delivery.oldDistrictName,
+            oldWardName: invoice.delivery.oldWardName,
+            newCityName: invoice.delivery.newCityName,
+            newWardName: invoice.delivery.newWardName,
             weight: invoice.delivery.weight,
             length: invoice.delivery.length,
             width: invoice.delivery.width,
@@ -3772,12 +4522,55 @@ export class InvoicesService {
   }
 
   /**
-   * Xây dựng data object để trừ kho dựa trên conditionType.
-   * Gộp onHand + damaged/nearExpiry vào 1 lần updateMany duy nhất.
+   * Đánh dấu dòng X phải trừ vào bucket PROMO theo cấu hình CTKM.
+   * Dòng quà Y vốn đã trừ PROMO qua isGift; damaged/near_expiry không bị đổi.
+   */
+  private async markPromoStockDeductionItems(
+    tx: any,
+    items: any[],
+  ): Promise<any[]> {
+    const promotionIds = Array.from(
+      new Set(
+        items
+          .filter(
+            (item) =>
+              item.promotionId != null &&
+              (item.conditionType || 'normal') === 'normal',
+          )
+          .map((item) => Number(item.promotionId)),
+      ),
+    ).filter((id) => Number.isInteger(id)) as number[];
+
+    if (promotionIds.length === 0) return items;
+
+    const promotions = await tx.promotion.findMany({
+      where: {
+        id: { in: promotionIds },
+        type: { in: ['BUY_X_GET_Y', 'BUY_N_GET_M_SAME'] },
+        deductPromoStock: true,
+      },
+      select: { id: true },
+    });
+    const enabledIds = new Set(promotions.map((promotion: any) => promotion.id));
+
+    return items.map((item) => ({
+      ...item,
+      deductPromoStock:
+        (item.conditionType || 'normal') === 'normal' &&
+        item.promotionId != null &&
+        enabledIds.has(Number(item.promotionId)),
+    }));
+  }
+
+  /**
+   * Trừ kho khi xuất HĐ.
+   * - conditionType damaged/near_expiry: trừ bucket tương ứng
+   * - isGift/deductPromoStock: trừ promoQuantity (cho phép âm)
    */
   private buildInventoryDeductData(
     quantity: number,
     conditionType?: string,
+    opts?: { isGift?: boolean; deductPromoStock?: boolean },
   ): Record<string, any> {
     const data: Record<string, any> = {
       onHand: { decrement: quantity },
@@ -3787,15 +4580,20 @@ export class InvoicesService {
     } else if (conditionType === 'near_expiry') {
       data.nearExpiryQuantity = { decrement: quantity };
     }
+    if (opts?.isGift || opts?.deductPromoStock) {
+      data.promoQuantity = { decrement: quantity };
+    }
     return data;
   }
 
   /**
    * Xây dựng data object để hoàn kho (khi hủy hóa đơn).
+   * Gift line: cộng lại promoQuantity (có thể từ số âm về 0/dương).
    */
   private buildInventoryRestoreData(
     quantity: number,
     conditionType?: string,
+    opts?: { isGift?: boolean },
   ): Record<string, any> {
     const data: Record<string, any> = {
       onHand: { increment: quantity },
@@ -3805,12 +4603,16 @@ export class InvoicesService {
     } else if (conditionType === 'near_expiry') {
       data.nearExpiryQuantity = { increment: quantity };
     }
+    if (opts?.isGift) {
+      data.promoQuantity = { increment: quantity };
+    }
     return data;
   }
 
   /**
-   * Validate số lượng damaged/nearExpiry trước khi trừ kho.
-   * Chỉ validate nếu conditionType !== 'normal'.
+   * Validate số lượng damaged/near_expiry trước khi trừ kho — ĐỌC TỪ SỔ CÁI
+   * StockConditionLog (nguồn chân lý), KHÔNG đọc cột cache Inventory (có thể
+   * stale trước recalc). Với near_expiry còn kiểm tồn theo từng lô (expiryDate).
    */
   private async validateConditionQuantity(
     tx: any,
@@ -3818,30 +4620,98 @@ export class InvoicesService {
     branchId: number,
     quantity: number,
     conditionType?: string,
+    soldExpiryDate?: string | Date | null,
   ): Promise<void> {
     if (!conditionType || conditionType === 'normal') return;
 
-    const inventory = await tx.inventory.findUnique({
-      where: { productId_branchId: { productId, branchId } },
-    });
-
-    if (!inventory) return;
+    const totals = await computeBucketTotals(tx, productId, branchId);
 
     if (conditionType === 'damaged') {
-      const available = Number(inventory.damagedQuantity || 0);
-      if (quantity > available) {
+      if (quantity > totals.damaged) {
         throw new BadRequestException(
-          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng bục rách, không đủ ${quantity}`,
+          `Sản phẩm (ID: ${productId}) chỉ có ${totals.damaged} hàng bục rách, không đủ ${quantity}`,
         );
       }
     } else if (conditionType === 'near_expiry') {
-      const available = Number(inventory.nearExpiryQuantity || 0);
-      if (quantity > available) {
+      if (quantity > totals.nearExpiry) {
         throw new BadRequestException(
-          `Sản phẩm (ID: ${productId}) chỉ có ${available} hàng cận date, không đủ ${quantity}`,
+          `Sản phẩm (ID: ${productId}) chỉ có ${totals.nearExpiry} hàng cận date, không đủ ${quantity}`,
+        );
+      }
+      // LUÔN validate theo LÔ, kể cả khi không chọn lô cụ thể.
+      //
+      // Không chọn lô → dòng bán được ghi sổ với expiryDate = null, tức trừ vào
+      // "lô chưa xác định NSX". Nếu chỉ validate theo TỔNG, người bán có thể
+      // bán số lượng lớn hơn tồn của lô null (vì tổng gồm cả các lô khác) →
+      // lô null bị âm dù tổng bucket vẫn dương.
+      const wanted = soldExpiryDate
+        ? new Date(soldExpiryDate).toISOString().slice(0, 10)
+        : null;
+      const lots = await computeNearExpiryLots(tx, productId, branchId);
+      const lot = lots.find((l) => l.expiryDate === wanted);
+      const lotQty = lot ? lot.quantity : 0;
+      if (quantity > lotQty) {
+        const lotLabel = wanted
+          ? `lô cận date ${wanted}`
+          : 'lô cận date chưa xác định NSX';
+        throw new BadRequestException(
+          `Sản phẩm (ID: ${productId}) ${lotLabel} chỉ còn ${lotQty}, không đủ ${quantity}. Vui lòng chọn lô (NSX) phù hợp.`,
         );
       }
     }
+  }
+
+  /**
+   * Ghi sổ cái StockConditionLog cho 1 dòng hóa đơn khi XUẤT BÁN (SALE_OUT).
+   * Chỉ ghi nếu dòng thuộc 1 bucket (damaged/near_expiry hoặc quà = PROMO).
+   * quantity ghi ÂM (rời khỏi bucket). Không ghi log đảo khi hủy — active-finder
+   * refType='invoice' (status != 2) tự loại log của hóa đơn đã hủy khi recalc.
+   */
+  private async writeSaleConditionLog(
+    tx: any,
+    params: {
+      item: any;
+      branchId: number;
+      branchName: string;
+      invoiceCode: string;
+      invoiceId: number;
+      transactionDate: Date;
+      costPrice?: number;
+      createdByName?: string | null;
+    },
+  ): Promise<void> {
+    const { item } = params;
+    if (item.productId == null) return;
+
+    const isGift = !!(item.isGift || item.lineType === 'gift');
+    let bucket: string | null = null;
+    if (item.conditionType === 'damaged') bucket = BUCKET_DAMAGED;
+    else if (item.conditionType === 'near_expiry') bucket = BUCKET_NEAR_EXPIRY;
+    else if (isGift || item.deductPromoStock) bucket = BUCKET_PROMO;
+    if (!bucket) return;
+
+    await tx.stockConditionLog.create({
+      data: {
+        productId: item.productId,
+        productCode: item.productCode || '',
+        productName: item.productName || '',
+        branchId: params.branchId,
+        branchName: params.branchName || '',
+        bucket,
+        transactionType: 'SALE_OUT',
+        refCode: params.invoiceCode,
+        refType: 'invoice',
+        refId: params.invoiceId,
+        quantity: -Number(item.quantity),
+        expiryDate:
+          bucket === BUCKET_NEAR_EXPIRY && item.soldExpiryDate
+            ? new Date(item.soldExpiryDate)
+            : null,
+        costPrice: params.costPrice ?? 0,
+        transactionDate: params.transactionDate,
+        createdByName: params.createdByName ?? null,
+      },
+    });
   }
 
   private async buildInvoiceExportWhere(query: InvoiceQueryDto): Promise<any> {
@@ -4377,6 +5247,417 @@ export class InvoicesService {
                   break;
                 case 'totalPrice':
                   row[col.key] = Number(detail.totalPrice);
+                  break;
+                default:
+                  row[col.key] = '';
+              }
+            } else {
+              row[col.key] = '';
+            }
+          }
+
+          sheet.addRow(row).commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  // ─── EXPORT VAT: Catalog cột chi tiết (1 dòng/sản phẩm, có VAT từng dòng) ───
+  getVatDetailColumns(): Array<{ key: string; header: string; width: number }> {
+    return [
+      { key: 'branchName', header: 'Chi nhánh', width: 18 },
+      { key: 'invoiceCode', header: 'Mã hóa đơn', width: 16 },
+      { key: 'purchaseDate', header: 'Thời gian', width: 18 },
+      { key: 'createdAt', header: 'Thời gian tạo', width: 18 },
+      { key: 'updatedAt', header: 'Ngày cập nhật', width: 18 },
+      { key: 'orderCode', header: 'Mã đặt hàng', width: 16 },
+      { key: 'customerCode', header: 'Mã khách hàng', width: 14 },
+      { key: 'customerName', header: 'Tên khách hàng', width: 22 },
+      { key: 'customerPhone', header: 'Điện thoại', width: 14 },
+      { key: 'customerTaxCode', header: 'Mã số thuế', width: 16 },
+      { key: 'customerInvoiceAddress', header: 'Địa chỉ xuất HĐ', width: 28 },
+      { key: 'misaEmployeeCode', header: 'Mã NV phụ trách', width: 16 },
+      { key: 'misaEmployeeName', header: 'Nhân viên phụ trách', width: 20 },
+      { key: 'soldByName', header: 'Người bán', width: 18 },
+      { key: 'creatorName', header: 'Người tạo', width: 18 },
+      { key: 'description', header: 'Ghi chú', width: 22 },
+      { key: 'misaStatusValue', header: 'Trạng thái Misa', width: 16 },
+      { key: 'misaOrgRefId', header: 'Mã chứng từ Misa', width: 26 },
+      { key: 'misaSyncedAt', header: 'Thời gian đồng bộ', width: 18 },
+      { key: 'missingMisaCode', header: 'Thiếu mã Misa', width: 14 },
+      { key: 'misaErrorMessage', header: 'Lỗi Misa', width: 30 },
+      { key: 'grandTotal', header: 'Tổng HĐ (gốc)', width: 16 },
+      { key: 'invoicePreTax', header: 'Tiền trước thuế (HĐ)', width: 18 },
+      { key: 'invoiceVat', header: 'Thuế VAT (HĐ)', width: 16 },
+      { key: 'invoiceAfterTax', header: 'Tiền sau thuế (HĐ)', width: 18 },
+      // ── Cột mức sản phẩm ──
+      { key: 'productCode', header: 'Mã hàng', width: 14 },
+      { key: 'productName', header: 'Tên hàng', width: 28 },
+      { key: 'misaCode', header: 'Mã Misa hàng hóa', width: 18 },
+      { key: 'misaUnit', header: 'ĐVT Misa', width: 12 },
+      { key: 'productNote', header: 'Ghi chú hàng hóa', width: 22 },
+      { key: 'quantity', header: 'Số lượng', width: 12 },
+      { key: 'vatRate', header: 'Thuế suất (%)', width: 12 },
+      { key: 'unitPriceAfterTax', header: 'Đơn giá sau thuế', width: 16 },
+      { key: 'unitPriceBeforeTax', header: 'Đơn giá trước thuế', width: 18 },
+      { key: 'linePreTax', header: 'Thành tiền trước thuế', width: 18 },
+      { key: 'lineVat', header: 'Tiền thuế VAT', width: 16 },
+      { key: 'lineAfterTax', header: 'Thành tiền sau thuế', width: 18 },
+    ];
+  }
+
+  /** Chuyển status hóa đơn (số) → nhãn trạng thái Misa cho file xuất. */
+  private misaStatusLabel(status?: string | null): string {
+    switch (status) {
+      case 'SYNCED':
+        return 'Đã đồng bộ';
+      case 'FAILED':
+        return 'Thất bại';
+      case 'PENDING':
+        return 'Chờ xử lý';
+      case 'SKIP':
+        return 'Bỏ qua';
+      default:
+        return 'Bỏ qua';
+    }
+  }
+
+  // ─── EXPORT VAT 1: Tổng quan (1 dòng/hóa đơn, có cột VAT) ───────────────────
+  async exportVatOverview(
+    query: InvoiceQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn VAT tổng quan');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Chi nhánh', key: 'branchName', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 16 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 22 },
+      { header: 'Mã số thuế', key: 'customerTaxCode', width: 16 },
+      { header: 'Địa chỉ xuất HĐ', key: 'customerInvoiceAddress', width: 28 },
+      { header: 'Nhân viên phụ trách', key: 'misaEmployeeName', width: 20 },
+      { header: 'Tiền trước thuế', key: 'invoicePreTax', width: 16 },
+      { header: 'Thuế VAT', key: 'invoiceVat', width: 16 },
+      { header: 'Tiền sau thuế', key: 'invoiceAfterTax', width: 16 },
+      { header: 'Tổng HĐ (gốc)', key: 'grandTotal', width: 16 },
+      { header: 'Trạng thái Misa', key: 'misaStatusValue', width: 16 },
+      { header: 'Mã chứng từ Misa', key: 'misaOrgRefId', width: 26 },
+      { header: 'Thời gian đồng bộ', key: 'misaSyncedAt', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          grandTotal: true,
+          misaSyncStatus: true,
+          misaOrgRefId: true,
+          misaSyncedAt: true,
+          branch: { select: { name: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              taxCode: true,
+              identificationNumber: true,
+              invoiceAddress: true,
+              misaEmployeeCode: true,
+              misaEmployeeName: true,
+            },
+          },
+          details: {
+            select: {
+              quantity: true,
+              price: true,
+              discount: true,
+              product: { select: { vat: true } },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        stt++;
+        const vat = computeInvoiceVat(
+          (inv.details || []).map((d) => ({
+            quantity: d.quantity,
+            price: d.price,
+            discount: d.discount,
+            vatRate: Number((d.product as any)?.vat ?? 8),
+          })),
+        );
+        sheet
+          .addRow({
+            stt,
+            branchName: inv.branch?.name ?? '',
+            invoiceCode: inv.code,
+            purchaseDate: new Date(inv.purchaseDate),
+            customerCode: inv.customer?.code ?? '',
+            customerName: inv.customer?.name ?? 'Khách lẻ',
+            customerTaxCode:
+              inv.customer?.taxCode ?? inv.customer?.identificationNumber ?? '',
+            customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
+            misaEmployeeName:
+              inv.customer?.misaEmployeeName ??
+              inv.customer?.misaEmployeeCode ??
+              '',
+            invoicePreTax: vat.totalPreTax,
+            invoiceVat: vat.totalVat,
+            invoiceAfterTax: vat.totalAfterTax,
+            grandTotal: Number(inv.grandTotal),
+            misaStatusValue: this.misaStatusLabel(inv.misaSyncStatus),
+            misaOrgRefId: inv.misaOrgRefId ?? '',
+            misaSyncedAt: inv.misaSyncedAt ? new Date(inv.misaSyncedAt) : '',
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  // ─── EXPORT VAT 2: Chi tiết (1 dòng/sản phẩm, VAT từng dòng) ────────────────
+  async exportVatDetail(
+    query: InvoiceQueryDto,
+    selectedColumns: string[],
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildInvoiceExportWhere(query);
+    const BATCH_SIZE = 500;
+    const catalog = this.getVatDetailColumns();
+
+    const activeCols =
+      selectedColumns.length > 0
+        ? catalog.filter((c) => selectedColumns.includes(c.key))
+        : catalog;
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Hóa đơn VAT chi tiết');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      ...activeCols.map((c) => ({
+        header: c.header,
+        key: c.key,
+        width: c.width,
+      })),
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.invoice.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { purchaseDate: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          createdAt: true,
+          updatedAt: true,
+          grandTotal: true,
+          description: true,
+          misaSyncStatus: true,
+          misaOrgRefId: true,
+          misaSyncedAt: true,
+          misaErrorMessage: true,
+          branch: { select: { name: true } },
+          order: { select: { code: true } },
+          customer: {
+            select: {
+              code: true,
+              name: true,
+              contactNumber: true,
+              phone: true,
+              taxCode: true,
+              identificationNumber: true,
+              invoiceAddress: true,
+              misaEmployeeCode: true,
+              misaEmployeeName: true,
+            },
+          },
+          soldBy: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: {
+              productCode: true,
+              productName: true,
+              note: true,
+              quantity: true,
+              price: true,
+              discount: true,
+              product: {
+                select: {
+                  vat: true,
+                  misa_code: true,
+                  misa_unit: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const inv of batch) {
+        const lines = (inv.details || []).map((d) => ({
+          quantity: d.quantity,
+          price: d.price,
+          discount: d.discount,
+          vatRate: Number((d.product as any)?.vat ?? 8),
+        }));
+        const invVat = computeInvoiceVat(lines);
+        const missingMisaCode = (inv.details || []).some(
+          (d) => !d.product?.misa_code || d.product.misa_code.trim() === '',
+        );
+
+        const invData: Record<string, any> = {
+          branchName: inv.branch?.name ?? '',
+          invoiceCode: inv.code,
+          purchaseDate: new Date(inv.purchaseDate),
+          createdAt: new Date(inv.createdAt),
+          updatedAt: new Date(inv.updatedAt),
+          orderCode: inv.order?.code ?? '',
+          customerCode: inv.customer?.code ?? '',
+          customerName: inv.customer?.name ?? 'Khách lẻ',
+          customerPhone:
+            inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
+          customerTaxCode:
+            inv.customer?.taxCode ?? inv.customer?.identificationNumber ?? '',
+          customerInvoiceAddress: inv.customer?.invoiceAddress ?? '',
+          misaEmployeeCode: inv.customer?.misaEmployeeCode ?? '',
+          misaEmployeeName: inv.customer?.misaEmployeeName ?? '',
+          soldByName: inv.soldBy?.name ?? '',
+          creatorName: inv.creator?.name ?? '',
+          description: inv.description ?? '',
+          misaStatusValue: this.misaStatusLabel(inv.misaSyncStatus),
+          misaOrgRefId: inv.misaOrgRefId ?? '',
+          misaSyncedAt: inv.misaSyncedAt ? new Date(inv.misaSyncedAt) : '',
+          missingMisaCode: missingMisaCode ? 'Có' : 'Không',
+          misaErrorMessage: inv.misaErrorMessage ?? '',
+          grandTotal: Number(inv.grandTotal),
+          invoicePreTax: invVat.totalPreTax,
+          invoiceVat: invVat.totalVat,
+          invoiceAfterTax: invVat.totalAfterTax,
+        };
+
+        const detailEntries = inv.details?.length ? inv.details : [null];
+
+        for (let i = 0; i < detailEntries.length; i++) {
+          const detail = detailEntries[i];
+          stt++;
+          const row: Record<string, any> = { stt };
+
+          const vatRate = detail
+            ? Number((detail.product as any)?.vat ?? 8)
+            : 0;
+          const lineVat = detail
+            ? computeLineVat(
+                {
+                  quantity: detail.quantity,
+                  price: detail.price,
+                  discount: detail.discount,
+                },
+                vatRate,
+              )
+            : null;
+
+          for (const col of activeCols) {
+            if (col.key in invData) {
+              row[col.key] = invData[col.key];
+            } else if (detail) {
+              switch (col.key) {
+                case 'productCode':
+                  row[col.key] = detail.productCode ?? '';
+                  break;
+                case 'productName':
+                  row[col.key] = detail.productName ?? '';
+                  break;
+                case 'misaCode':
+                  row[col.key] = (detail.product as any)?.misa_code ?? '';
+                  break;
+                case 'misaUnit':
+                  row[col.key] = (detail.product as any)?.misa_unit ?? '';
+                  break;
+                case 'productNote':
+                  row[col.key] = detail.note ?? '';
+                  break;
+                case 'quantity':
+                  row[col.key] = Number(detail.quantity);
+                  break;
+                case 'vatRate':
+                  row[col.key] = vatRate;
+                  break;
+                case 'unitPriceAfterTax':
+                  row[col.key] = lineVat?.unitPriceAfterTax ?? 0;
+                  break;
+                case 'unitPriceBeforeTax':
+                  row[col.key] = lineVat?.unitPrice ?? 0;
+                  break;
+                case 'linePreTax':
+                  row[col.key] = lineVat?.amountBeforeTax ?? 0;
+                  break;
+                case 'lineVat':
+                  row[col.key] = lineVat?.vatAmount ?? 0;
+                  break;
+                case 'lineAfterTax':
+                  row[col.key] = lineVat?.amountAfterTax ?? 0;
                   break;
                 default:
                   row[col.key] = '';

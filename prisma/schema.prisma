@@ -29,63 +29,78 @@ model User {
   canViewOnlyOwnLoadingInvoices Boolean @default(false) @map("can_view_only_own_loading_invoices")
   permissionVersion             Int     @default(1) @map("permission_version")
 
-  branch                         Branch?                @relation(fields: [branchId], references: [id])
-  supplier                       Supplier?              @relation("SupplierStaff", fields: [supplierId], references: [id])
-  userBranches                   UserBranch[]
-  userRoles                      UserRole[]
-  userPermissions                UserPermission[]
-  createdOrders                  Order[]                @relation("OrderCreator")
-  soldOrders                     Order[]                @relation("OrderSeller")
-  createdInvoices                Invoice[]              @relation("InvoiceCreator")
-  soldInvoices                   Invoice[]              @relation("InvoiceSeller")
-  createdPayments                OrderPayment[]         @relation("PaymentCreator")
-  createdConsignments            Consignment[]          @relation("ConsignmentCreator")
-  soldConsignments               Consignment[]          @relation("ConsignmentSeller")
-  createdOrderSuppliers          OrderSupplier[]        @relation("OrderSupplierCreator")
-  orderSuppliers                 OrderSupplier[]        @relation("OrderSupplierUser")
-  createdPurchaseOrders          PurchaseOrder[]        @relation("PurchaseOrderCreator")
-  purchaseOrders                 PurchaseOrder[]        @relation("PurchaseOrderBuyer")
-  posts                          Post[]                 @relation("PostAuthor")
-  priceBookUsers                 PriceBookUser[]
-  promotionUsers                 PromotionUser[]        @relation("PromotionUserRef")
-  createdTransfers               Transfer[]             @relation("TransferCreator")
-  createdCustomerGroups          CustomerGroup[]        @relation("CustomerGroupCreator")
-  createdCustomers               Customer[]             @relation("CustomerCreator")
-  updatedCustomers               Customer[]             @relation("CustomerUpdater")
-  cashFlowsCreated               CashFlow[]             @relation("CashFlowCreator")
-  cashFlowsCollected             CashFlow[]             @relation("CashFlowCollector")
-  createdProductions             Production[]           @relation("ProductionCreator")
-  createdDestructions            Destruction[]          @relation("DestructionCreator")
-  createdInternalUses            InternalUse[]          @relation("InternalUseCreator")
-  usedInternalUses               InternalUse[]          @relation("InternalUseUser")
-  createdSupplierGroups          SupplierGroup[]        @relation("SupplierGroupCreator")
-  createdSuppliers               Supplier[]             @relation("SupplierCreator")
-  createdPackingSlips            PackingSlip[]          @relation("PackingSlipCreator")
-  paidPackingSlips               PackingSlip[]          @relation("PackingSlipExpensePayer")
-  cancelledPackingSlips          PackingSlip[]          @relation("PackingSlipCancelledBy")
-  createdPackingHangs            PackingHang[]          @relation("PackingHangCreator")
-  cancelledPackingHangs          PackingHang[]          @relation("PackingHangCancelledBy")
-  createdPackingLoadings         PackingLoading[]       @relation("PackingLoadingCreator")
-  loadedPackingLoadings          PackingLoading[]       @relation("PackingLoadingUser")
-  cancelledPackingLoadings       PackingLoading[]       @relation("PackingLoadingCancelledBy")
-  createdPrintTemplates          PrintTemplate[]        @relation("PrintTemplateCreator")
-  updatedPrintTemplates          PrintTemplate[]        @relation("PrintTemplateUpdater")
-  auditLogs                      AuditLog[]             @relation("AuditLogUser")
-  branchPermissions              UserBranchPermission[]
-  createdReturnOrders            ReturnOrder[]          @relation("ReturnOrderCreator")
-  receivedReturnOrders           ReturnOrder[]          @relation("ReturnOrderReceiver")
-  confirmedReturnOrders          ReturnOrder[]          @relation("ReturnOrderConfirmer")
-  refundConfirmedReturnOrders    ReturnOrder[]          @relation("ReturnOrderRefundConfirmer")
-  createdInventoryChecks         InventoryCheck[]       @relation("InventoryCheckCreator")
-  stockAuditsCreated             StockAudit[]           @relation("StockAuditCreator")
-  stockAuditsCompleted           StockAudit[]           @relation("StockAuditCompleter")
-  userBranchRoles                UserBranchRole[]
-  createdSupplierReturns         SupplierReturn[]       @relation("SupplierReturnCreator")
-  exportedSupplierReturns        SupplierReturn[]       @relation("SupplierReturnExporter")
-  refundConfirmedSupplierReturns SupplierReturn[]       @relation("SupplierReturnRefundConfirmer")
-  bankAccountMapping             UserBankAccount?
-  notifications                  Notification[]
-  createdVehicleShipments        VehicleShipment[]      @relation("VehicleShipmentCreator")
+  branch                          Branch?                  @relation(fields: [branchId], references: [id])
+  supplier                        Supplier?                @relation("SupplierStaff", fields: [supplierId], references: [id])
+  userBranches                    UserBranch[]
+  userRoles                       UserRole[]
+  userPermissions                 UserPermission[]
+  createdOrders                   Order[]                  @relation("OrderCreator")
+  soldOrders                      Order[]                  @relation("OrderSeller")
+  createdInvoices                 Invoice[]                @relation("InvoiceCreator")
+  soldInvoices                    Invoice[]                @relation("InvoiceSeller")
+  createdPayments                 OrderPayment[]           @relation("PaymentCreator")
+  createdOrderPaymentNotes        OrderPaymentNote[]       @relation("OrderPaymentNoteCreator")
+  createdInvoicePaymentNotes      InvoicePaymentNote[]     @relation("InvoicePaymentNoteCreator")
+  createdConsignments             Consignment[]            @relation("ConsignmentCreator")
+  soldConsignments                Consignment[]            @relation("ConsignmentSeller")
+  createdOrderSuppliers           OrderSupplier[]          @relation("OrderSupplierCreator")
+  orderSuppliers                  OrderSupplier[]          @relation("OrderSupplierUser")
+  createdPurchaseOrders           PurchaseOrder[]          @relation("PurchaseOrderCreator")
+  purchaseOrders                  PurchaseOrder[]          @relation("PurchaseOrderBuyer")
+  posts                           Post[]                   @relation("PostAuthor")
+  priceBookUsers                  PriceBookUser[]
+  promotionUsers                  PromotionUser[]          @relation("PromotionUserRef")
+  createdTransfers                Transfer[]               @relation("TransferCreator")
+  createdCustomerGroups           CustomerGroup[]          @relation("CustomerGroupCreator")
+  createdCustomers                Customer[]               @relation("CustomerCreator")
+  updatedCustomers                Customer[]               @relation("CustomerUpdater")
+  createdContracts                Contract[]               @relation("ContractCreator")
+  cashFlowsCreated                CashFlow[]               @relation("CashFlowCreator")
+  cashFlowsCollected              CashFlow[]               @relation("CashFlowCollector")
+  createdProductions              Production[]             @relation("ProductionCreator")
+  createdDestructions             Destruction[]            @relation("DestructionCreator")
+  createdInternalUses             InternalUse[]            @relation("InternalUseCreator")
+  usedInternalUses                InternalUse[]            @relation("InternalUseUser")
+  createdSupplierGroups           SupplierGroup[]          @relation("SupplierGroupCreator")
+  createdSuppliers                Supplier[]               @relation("SupplierCreator")
+  createdPackingSlips             PackingSlip[]            @relation("PackingSlipCreator")
+  paidPackingSlips                PackingSlip[]            @relation("PackingSlipExpensePayer")
+  cancelledPackingSlips           PackingSlip[]            @relation("PackingSlipCancelledBy")
+  createdPackingHangs             PackingHang[]            @relation("PackingHangCreator")
+  cancelledPackingHangs           PackingHang[]            @relation("PackingHangCancelledBy")
+  createdPackingLoadings          PackingLoading[]         @relation("PackingLoadingCreator")
+  loadedPackingLoadings           PackingLoading[]         @relation("PackingLoadingUser")
+  cancelledPackingLoadings        PackingLoading[]         @relation("PackingLoadingCancelledBy")
+  createdPrintTemplates           PrintTemplate[]          @relation("PrintTemplateCreator")
+  updatedPrintTemplates           PrintTemplate[]          @relation("PrintTemplateUpdater")
+  auditLogs                       AuditLog[]               @relation("AuditLogUser")
+  branchPermissions               UserBranchPermission[]
+  createdReturnOrders             ReturnOrder[]            @relation("ReturnOrderCreator")
+  receivedReturnOrders            ReturnOrder[]            @relation("ReturnOrderReceiver")
+  confirmedReturnOrders           ReturnOrder[]            @relation("ReturnOrderConfirmer")
+  refundConfirmedReturnOrders     ReturnOrder[]            @relation("ReturnOrderRefundConfirmer")
+  createdInventoryChecks          InventoryCheck[]         @relation("InventoryCheckCreator")
+  createdInventoryPromoChecks     InventoryPromoCheck[]    @relation("InventoryPromoCheckCreator")
+  createdStockConditionTransfers  StockConditionTransfer[] @relation("StockConditionTransferCreator")
+  approvedStockConditionTransfers StockConditionTransfer[] @relation("StockConditionTransferApprover")
+  inventoryLogs                   InventoryLog[]           @relation("InventoryLogUser")
+  stockAuditsCreated              StockAudit[]             @relation("StockAuditCreator")
+  stockAuditsCompleted            StockAudit[]             @relation("StockAuditCompleter")
+  userBranchRoles                 UserBranchRole[]
+  createdSupplierReturns          SupplierReturn[]         @relation("SupplierReturnCreator")
+  exportedSupplierReturns         SupplierReturn[]         @relation("SupplierReturnExporter")
+  refundConfirmedSupplierReturns  SupplierReturn[]         @relation("SupplierReturnRefundConfirmer")
+  bankAccountMapping              UserBankAccount?
+  notifications                   Notification[]
+  createdVehicleShipments         VehicleShipment[]        @relation("VehicleShipmentCreator")
+  createdFactories                Factory[]                @relation("FactoryCreator")
+  factoryChangeLogs               FactoryChangeLog[]       @relation("FactoryChangeLogChanger")
+  createdRecipes                  Recipe[]                 @relation("RecipeCreator")
+  updatedRecipes                  Recipe[]                 @relation("RecipeUpdater")
+  publishedRecipes                Recipe[]                 @relation("RecipePublisher")
+  recipeComments                  RecipeComment[]          @relation("RecipeCommentAuthor")
+  createdIngredients              Ingredient[]             @relation("IngredientCreator")
+  updatedIngredients              Ingredient[]             @relation("IngredientUpdater")
 
   @@map("users")
 }
@@ -273,37 +288,40 @@ model Branch {
   updatedAt        DateTime  @updatedAt
   lastSyncedAt     DateTime? @map("last_synced_at")
 
-  location               Location?              @relation(fields: [locationId], references: [id])
-  users                  User[]
-  userBranches           UserBranch[]
-  orders                 Order[]
-  invoices               Invoice[]
-  purchaseOrders         PurchaseOrder[]
-  inventories            Inventory[]
-  priceBookBranches      PriceBookBranch[]
-  customers              Customer[]
-  suppliers              Supplier[]
-  orderSuppliers         OrderSupplier[]
-  consignments           Consignment[]
-  transfersFrom          Transfer[]             @relation("TransferFrom")
-  transfersTo            Transfer[]             @relation("TransferTo")
-  cashFlows              CashFlow[]
-  productionsSource      Production[]           @relation("ProductionSource")
-  productionsDestination Production[]           @relation("ProductionDestination")
-  destructions           Destruction[]
-  internalUses           InternalUse[]
-  packingSlips           PackingSlip[]
-  packingHangs           PackingHang[]
-  packingLoadings        PackingLoading[]
-  auditLogs              AuditLog[]             @relation("AuditLogBranch")
-  userBranchPermissions  UserBranchPermission[]
-  returnOrders           ReturnOrder[]
-  consignmentReturns     ConsignmentReturn[]
-  inventoryLogs          InventoryLog[]
-  inventoryChecks        InventoryCheck[]
-  stockAudits            StockAudit[]
-  roleBranchPermissions  RoleBranchPermission[]
-  userBranchRoles        UserBranchRole[]
+  location                Location?                @relation(fields: [locationId], references: [id])
+  users                   User[]
+  userBranches            UserBranch[]
+  orders                  Order[]
+  invoices                Invoice[]
+  purchaseOrders          PurchaseOrder[]
+  inventories             Inventory[]
+  priceBookBranches       PriceBookBranch[]
+  customers               Customer[]
+  suppliers               Supplier[]
+  orderSuppliers          OrderSupplier[]
+  consignments            Consignment[]
+  transfersFrom           Transfer[]               @relation("TransferFrom")
+  transfersTo             Transfer[]               @relation("TransferTo")
+  cashFlows               CashFlow[]
+  productionsSource       Production[]             @relation("ProductionSource")
+  productionsDestination  Production[]             @relation("ProductionDestination")
+  destructions            Destruction[]
+  internalUses            InternalUse[]
+  packingSlips            PackingSlip[]
+  packingHangs            PackingHang[]
+  packingLoadings         PackingLoading[]
+  auditLogs               AuditLog[]               @relation("AuditLogBranch")
+  userBranchPermissions   UserBranchPermission[]
+  returnOrders            ReturnOrder[]
+  consignmentReturns      ConsignmentReturn[]
+  inventoryLogs           InventoryLog[]
+  inventoryChecks         InventoryCheck[]
+  inventoryPromoChecks    InventoryPromoCheck[]
+  stockAudits             StockAudit[]
+  stockConditionLogs      StockConditionLog[]
+  stockConditionTransfers StockConditionTransfer[]
+  roleBranchPermissions   RoleBranchPermission[]
+  userBranchRoles         UserBranchRole[]
 
   supplierReturns   SupplierReturn[]
   promotionBranches PromotionBranch[]
@@ -427,6 +445,11 @@ model Customer {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  larkRecordId    String?
+  larkSyncStatus  String    @default("PENDING")
+  larkSyncRetries Int       @default(0)
+  larkSyncedAt    DateTime?
+
   parent               Customer?             @relation("CustomerHierarchy", fields: [parentId], references: [id])
   children             Customer[]            @relation("CustomerHierarchy")
   customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
@@ -444,7 +467,9 @@ model Customer {
   updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
   priceBookCustomers   PriceBookCustomer[]
   promotionCustomers   PromotionCustomer[]
+  contracts            Contract[]
 
+  @@index([larkSyncStatus])
   @@map("customers")
 }
 
@@ -531,9 +556,10 @@ model Supplier {
   purchaseOrders       PurchaseOrder[]
   supplierGroupDetails SupplierGroupDetail[]
   orderSuppliers       OrderSupplier[]
+  factories            Factory[]
 
   supplierReturns SupplierReturn[]
-  staffUsers      User[]                @relation("SupplierStaff")
+  staffUsers      User[]           @relation("SupplierStaff")
 
   @@map("suppliers")
 }
@@ -565,31 +591,36 @@ model SupplierGroupDetail {
 }
 
 model SupplierReturn {
-  id                    Int       @id @default(autoincrement())
-  code                  String    @unique
-  mode                  String    @default("by_purchase_order") // 'by_purchase_order' | 'by_product'
-  purchaseOrderId       Int?
-  supplierId            Int
-  branchId              Int
-  status                Int       @default(1)
-  statusValue           String?
-  totalReturnAmount     Decimal   @default(0)
-  refundAmount          Decimal   @default(0)
-  refundType            String? // 'cash_refund' | 'debt_offset'
-  refundedAmount        Decimal   @default(0)
-  note                  String?
-  exportedById          Int?
-  exportedByName        String?
-  exportedAt            DateTime?
-  refundConfirmedBy     Int?
-  refundConfirmedByName String?
-  refundConfirmedAt     DateTime?
-  cashFlowId            Int?
-  createdBy             Int
-  createdByName         String?
-  images                String?
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
+  id                       Int       @id @default(autoincrement())
+  code                     String    @unique
+  mode                     String    @default("by_purchase_order") // 'by_purchase_order' | 'by_product'
+  purchaseOrderId          Int?
+  supplierId               Int
+  branchId                 Int
+  status                   Int       @default(1)
+  statusValue              String?
+  currency                 String    @default("VND")
+  exchangeRate             Decimal   @default(1)
+  totalReturnAmount        Decimal   @default(0)
+  totalForeignReturnAmount Decimal?
+  refundAmount             Decimal   @default(0)
+  refundForeignAmount      Decimal?
+  refundType               String? // 'cash_refund' | 'debt_offset'
+  refundedAmount           Decimal   @default(0)
+  refundedForeignAmount    Decimal?
+  note                     String?
+  exportedById             Int?
+  exportedByName           String?
+  exportedAt               DateTime?
+  refundConfirmedBy        Int?
+  refundConfirmedByName    String?
+  refundConfirmedAt        DateTime?
+  cashFlowId               Int?
+  createdBy                Int
+  createdByName            String?
+  images                   String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
 
   purchaseOrder   PurchaseOrder?         @relation(fields: [purchaseOrderId], references: [id])
   supplier        Supplier               @relation(fields: [supplierId], references: [id])
@@ -608,23 +639,27 @@ model SupplierReturn {
 }
 
 model SupplierReturnDetail {
-  id                Int      @id @default(autoincrement())
-  supplierReturnId  Int
-  purchaseOrderId   Int?
-  purchaseOrderCode String?
-  productId         Int
-  productCode       String
-  productName       String
-  purchaseQuantity  Decimal  @default(0)
-  purchasePrice     Decimal  @default(0)
-  requestQuantity   Decimal
-  confirmedQuantity Decimal  @default(0)
-  returnPrice       Decimal
-  totalAmount       Decimal
-  conditionType     String   @default("normal")
-  note              String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                  Int       @id @default(autoincrement())
+  supplierReturnId    Int
+  purchaseOrderId     Int?
+  purchaseOrderCode   String?
+  productId           Int
+  productCode         String
+  productName         String
+  purchaseQuantity    Decimal   @default(0)
+  purchasePrice       Decimal   @default(0)
+  requestQuantity     Decimal
+  confirmedQuantity   Decimal   @default(0)
+  inputMode           String    @default("unit_price")
+  returnPrice         Decimal
+  totalAmount         Decimal
+  foreignReturnPrice  Decimal?
+  foreignReturnAmount Decimal?
+  conditionType       String    @default("normal")
+  manufactureDate     DateTime?
+  note                String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   supplierReturn SupplierReturn @relation(fields: [supplierReturnId], references: [id], onDelete: Cascade)
   purchaseOrder  PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
@@ -715,45 +750,66 @@ model Product {
   updatedAt          DateTime  @updatedAt
   priceBookId        Int?
 
+  // Lark sync
+  larkRecordId    String?
+  larkSyncStatus  String    @default("PENDING")
+  larkSyncRetries Int       @default(0)
+  larkSyncedAt    DateTime?
+
   // Thông tin công bố sản phẩm
   publicationLocation Json?     @map("publication_location") // { address, cityCode, cityName, districtCode, districtName, wardCode, wardName, newCityCode, newCityName, newWardCode, newWardName }
   publicationDate     DateTime? @map("publication_date")
   publicationLink     String?   @map("publication_link")
 
-  tradeMark             TradeMark?             @relation(fields: [tradeMarkId], references: [id])
-  variant               ProductVariant?        @relation(fields: [variantId], references: [id])
-  masterProduct         Product?               @relation("ProductUnits", fields: [masterProductId], references: [id])
-  productUnits          Product[]              @relation("ProductUnits")
-  attributes            ProductAttribute[]
-  images                ProductImage[]
-  documents             ProductDocument[]
-  inventories           Inventory[]
-  priceBookDetails      PriceBookDetail[]
-  orderItems            OrderItem[]
-  invoiceDetails        InvoiceDetail[]
-  purchaseOrderItems    PurchaseOrderItem[]
-  consignmentItems      ConsignmentItem[]
-  comboComponents       ProductComponent[]     @relation("ComboComponents")
-  componentOf           ProductComponent[]     @relation("ComponentOf")
-  priceBook             PriceBook?             @relation(fields: [priceBookId], references: [id])
-  transferDetails       TransferDetail[]
-  productions           Production[]
-  destructionDetails    DestructionDetail[]
-  internalUseDetails    InternalUseDetail[]
-  orderSupplierItems    OrderSupplierItem[]
-  returnOrderDetails    ReturnOrderDetail[]
-  consignmentReturnDetails ConsignmentReturnDetail[]
-  inventoryLogs         InventoryLog[]
-  productionComponents  ProductionComponent[]
-  inventoryCheckDetails InventoryCheckDetail[]
-  stockAuditDetails     StockAuditDetail[]
-  supplierReturnDetails SupplierReturnDetail[]
-  promotionBuyRewards   PromotionReward[]      @relation("PromotionBuyProduct")
-  promotionGiftRewards  PromotionReward[]      @relation("PromotionRewardProduct")
-  promotionProducts     PromotionProduct[]     @relation("PromotionProductRef")
-  vehicleShipmentItems  VehicleShipmentItem[]
+  tradeMark                     TradeMark?                     @relation(fields: [tradeMarkId], references: [id])
+  variant                       ProductVariant?                @relation(fields: [variantId], references: [id])
+  masterProduct                 Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
+  productUnits                  Product[]                      @relation("ProductUnits")
+  attributes                    ProductAttribute[]
+  images                        ProductImage[]
+  documents                     ProductDocument[]
+  inventories                   Inventory[]
+  priceBookDetails              PriceBookDetail[]
+  orderItems                    OrderItem[]
+  invoiceDetails                InvoiceDetail[]
+  purchaseOrderItems            PurchaseOrderItem[]
+  consignmentItems              ConsignmentItem[]
+  comboComponents               ProductComponent[]             @relation("ComboComponents")
+  componentOf                   ProductComponent[]             @relation("ComponentOf")
+  priceBook                     PriceBook?                     @relation(fields: [priceBookId], references: [id])
+  transferDetails               TransferDetail[]
+  productions                   Production[]
+  destructionDetails            DestructionDetail[]
+  internalUseDetails            InternalUseDetail[]
+  orderSupplierItems            OrderSupplierItem[]
+  returnOrderDetails            ReturnOrderDetail[]
+  consignmentReturnDetails      ConsignmentReturnDetail[]
+  inventoryLogs                 InventoryLog[]
+  productionComponents          ProductionComponent[]
+  inventoryCheckDetails         InventoryCheckDetail[]
+  inventoryPromoCheckDetails    InventoryPromoCheckDetail[]
+  stockAuditDetails             StockAuditDetail[]
+  stockConditionLogs            StockConditionLog[]
+  stockConditionTransferDetails StockConditionTransferDetail[]
+  supplierReturnDetails         SupplierReturnDetail[]
+  promotionBuyRewards           PromotionReward[]              @relation("PromotionBuyProduct")
+  promotionGiftRewards          PromotionReward[]              @relation("PromotionRewardProduct")
+  promotionProducts             PromotionProduct[]             @relation("PromotionProductRef")
+  vehicleShipmentItems          VehicleShipmentItem[]
+  outputRecipes                 Recipe[]                       @relation("RecipeOutputProduct")
+  recipeIngredients             RecipeIngredient[]             @relation("RecipeIngredientProduct")
+
+  // Liên kết nhà máy chính / backup (FK nullable, onDelete SetNull)
+  primaryFactoryId  Int?
+  backupFactoryId   Int?
+  primaryFactory    Factory?           @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id], onDelete: SetNull)
+  backupFactory     Factory?           @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id], onDelete: SetNull)
+  factoryChangeLogs FactoryChangeLog[]
 
   @@index([id, name])
+  @@index([larkSyncStatus])
+  @@index([primaryFactoryId])
+  @@index([backupFactoryId])
   @@map("products")
 }
 
@@ -931,6 +987,7 @@ model Inventory {
   totalWeight        Decimal? @default(0)
   damagedQuantity    Decimal  @default(0)
   nearExpiryQuantity Decimal  @default(0)
+  promoQuantity      Decimal  @default(0) // Hàng phân bổ cho khuyến mãi (gift). Cho phép âm khi xuất vượt.
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -984,8 +1041,53 @@ model InventoryCheckDetail {
   @@map("inventory_check_details")
 }
 
+// Phiếu kiểm hàng khuyến mãi — phân bổ số lượng tồn cho KM (gift).
+// Pattern giống InventoryCheck (loại B/cận date), nhưng chỉ quản lý promoQuantity.
+model InventoryPromoCheck {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  branchId      Int
+  branchName    String
+  checkDate     DateTime @default(now())
+  note          String?
+  createdById   Int
+  createdByName String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  status        Int      @default(1) // 1=Hoàn thành, 2=Đã hủy
+
+  branch  Branch                      @relation(fields: [branchId], references: [id])
+  creator User                        @relation("InventoryPromoCheckCreator", fields: [createdById], references: [id])
+  details InventoryPromoCheckDetail[]
+
+  @@index([branchId])
+  @@index([checkDate])
+  @@map("inventory_promo_checks")
+}
+
+model InventoryPromoCheckDetail {
+  id                    Int      @id @default(autoincrement())
+  inventoryPromoCheckId Int
+  productId             Int
+  productCode           String
+  productName           String
+  currentOnHand         Decimal  @default(0)
+  currentDamaged        Decimal  @default(0)
+  currentNearExpiry     Decimal  @default(0)
+  previousPromoQuantity Decimal  @default(0)
+  promoQuantity         Decimal  @default(0)
+  note                  String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  inventoryPromoCheck InventoryPromoCheck @relation(fields: [inventoryPromoCheckId], references: [id], onDelete: Cascade)
+  product             Product             @relation(fields: [productId], references: [id])
+
+  @@map("inventory_promo_check_details")
+}
+
 model InventoryLog {
-  id               Int      @id @default(autoincrement())
+  id               Int       @id @default(autoincrement())
   productId        Int
   productCode      String
   productName      String
@@ -996,20 +1098,24 @@ model InventoryLog {
   refType          String
   refId            Int
   quantity         Decimal
-  costPrice        Decimal  @default(0)
-  transactionPrice Decimal? @default(0)
+  costPrice        Decimal   @default(0)
+  transactionPrice Decimal?  @default(0)
   partnerId        Int?
   partnerName      String?
   note             String?
   manufactureDate  DateTime?
   // Thời điểm phát sinh giao dịch (cho phép lùi ngày — vd kiểm kho backdated).
   // Mặc định = createdAt khi không truyền. Thẻ kho sắp xếp theo field này.
-  transactionDate  DateTime @default(now())
-  createdAt        DateTime @default(now())
+  transactionDate  DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  // Người thực hiện giao dịch tồn kho (truy vết trách nhiệm trên thẻ kho).
+  // Nullable để tương thích dữ liệu cũ + các log do hệ thống sinh ra.
+  userId           Int?
   createdByName    String?
 
   product Product @relation(fields: [productId], references: [id])
   branch  Branch  @relation(fields: [branchId], references: [id])
+  user    User?   @relation("InventoryLogUser", fields: [userId], references: [id])
 
   @@index([productId])
   @@index([branchId])
@@ -1017,7 +1123,98 @@ model InventoryLog {
   @@index([createdAt])
   @@index([transactionDate])
   @@index([productId, branchId, transactionDate])
+  @@index([userId])
   @@map("inventory_logs")
+}
+
+// ============================================================================
+// CHUYỂN LOẠI TỒN (CLT) — luân chuyển nội bộ giữa các "loại tồn" (bucket)
+// của cùng một sản phẩm-chi nhánh: Hàng tốt <-> Bục rách / Cận date / Khuyến mãi.
+// Thay thế cơ chế ghi đè cột của InventoryCheck/InventoryPromoCheck bằng sổ cái.
+// ============================================================================
+
+// Sổ cái loại tồn — song song InventoryLog. Tồn cuối mỗi bucket (và mỗi lô cận
+// date) = cộng dồn quantity (có dấu) của các dòng active theo transactionDate.
+// 3 cột damaged/nearExpiry/promo trên Inventory là CACHE dẫn xuất từ bảng này.
+model StockConditionLog {
+  id              Int       @id @default(autoincrement())
+  productId       Int
+  productCode     String
+  productName     String
+  branchId        Int
+  branchName      String
+  bucket          String // DAMAGED | NEAR_EXPIRY | PROMO
+  transactionType String // OPENING | CLT_IN | CLT_CANCEL | SALE_OUT | SALE_CANCEL
+  refCode         String
+  refType         String // clt | invoice | opening
+  refId           Int
+  quantity        Decimal // có dấu: + vào bucket, - bán/xuất khỏi bucket
+  expiryDate      DateTime? // CHỈ dùng cho bucket = NEAR_EXPIRY (lô/hạn dùng)
+  costPrice       Decimal   @default(0)
+  note            String?
+  transactionDate DateTime  @default(now())
+  createdAt       DateTime  @default(now())
+  createdByName   String?
+
+  product Product @relation(fields: [productId], references: [id])
+  branch  Branch  @relation(fields: [branchId], references: [id])
+
+  @@index([productId, branchId, bucket, transactionDate])
+  @@index([productId, branchId, bucket, expiryDate])
+  @@index([refType, refId])
+  @@map("stock_condition_logs")
+}
+
+// Phiếu chuyển loại tồn (gộp bục rách / cận date / khuyến mãi vào 1 form).
+// Workflow: 1=Chờ duyệt -> 2=Đã duyệt (mới ghi sổ cái + đổi bucket) -> 3=Đã hủy.
+model StockConditionTransfer {
+  id             Int       @id @default(autoincrement())
+  code           String    @unique
+  branchId       Int
+  branchName     String
+  status         Int       @default(1) // 1=Chờ duyệt, 2=Đã duyệt, 3=Đã hủy
+  transferDate   DateTime  @default(now())
+  note           String?
+  createdById    Int
+  createdByName  String
+  approvedById   Int?
+  approvedByName String?
+  approvedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  branch   Branch                         @relation(fields: [branchId], references: [id])
+  creator  User                           @relation("StockConditionTransferCreator", fields: [createdById], references: [id])
+  approver User?                          @relation("StockConditionTransferApprover", fields: [approvedById], references: [id])
+  details  StockConditionTransferDetail[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([transferDate])
+  @@map("stock_condition_transfers")
+}
+
+model StockConditionTransferDetail {
+  id             Int       @id @default(autoincrement())
+  transferId     Int
+  productId      Int
+  productCode    String
+  productName    String
+  unit           String?
+  toBucket       String // DAMAGED | NEAR_EXPIRY | PROMO (loại tồn liên quan)
+  direction      String    @default("IN") // IN = hàng tốt -> loại; OUT = loại -> hàng tốt (điều chỉnh giảm)
+  quantity       Decimal   @default(0)
+  expiryDate     DateTime? // bắt buộc khi toBucket = NEAR_EXPIRY
+  currentOnHand  Decimal   @default(0) // snapshot onHand lúc tạo phiếu
+  costAtTransfer Decimal   @default(0)
+  note           String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  transfer StockConditionTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product  Product                @relation(fields: [productId], references: [id])
+
+  @@map("stock_condition_transfer_details")
 }
 
 model PriceBook {
@@ -1261,33 +1458,36 @@ model Order {
   surcharges    OrderSurcharge[]
   delivery      OrderDelivery?
   promotionLogs InvoicePromotionLog[]
+  paymentNotes  OrderPaymentNote[]
 
   @@index([larkSyncStatus])
   @@map("orders")
 }
 
 model OrderItem {
-  id            Int      @id @default(autoincrement())
-  orderId       Int
-  productId     Int
-  productCode   String
-  productName   String
-  quantity      Decimal  @default(0) @db.Decimal(18, 4)
-  price         Decimal  @default(0) @db.Decimal(18, 2)
-  appliedPrice  Decimal  @default(0) @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice    Decimal  @default(0) @db.Decimal(18, 2)
-  note          String?
-  conditionType String   @default("normal")
-  serialNumbers String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  lineNumber    Int?
+  id             Int       @id @default(autoincrement())
+  orderId        Int
+  productId      Int
+  productCode    String
+  productName    String
+  quantity       Decimal   @default(0) @db.Decimal(18, 4)
+  price          Decimal   @default(0) @db.Decimal(18, 2)
+  appliedPrice   Decimal   @default(0) @db.Decimal(18, 2)
+  discount       Decimal   @default(0) @db.Decimal(18, 2)
+  discountRatio  Decimal   @default(0) @db.Decimal(18, 4)
+  totalPrice     Decimal   @default(0) @db.Decimal(18, 2)
+  note           String?
+  conditionType  String    @default("normal")
+  // Lô cận date được chọn khi bán (chỉ dùng khi conditionType = near_expiry).
+  soldExpiryDate DateTime?
+  serialNumbers  String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lineNumber     Int?
   // Promotion / khuyến mãi
-  lineType      String   @default("normal") // normal | gift | discounted_buy
-  isGift        Boolean  @default(false)
-  promotionId   Int?
+  lineType       String    @default("normal") // normal | gift | discounted_buy
+  isGift         Boolean   @default(false)
+  promotionId    Int?
 
   order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product   Product    @relation(fields: [productId], references: [id])
@@ -1296,6 +1496,38 @@ model OrderItem {
   @@unique([orderId, lineNumber])
   @@index([promotionId])
   @@map("order_items")
+}
+
+model OrderPaymentNote {
+  id          Int      @id @default(autoincrement())
+  orderId     Int
+  paymentType String
+  amount      Decimal? @db.Decimal(18, 2)
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  order   Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  creator User  @relation("OrderPaymentNoteCreator", fields: [createdBy], references: [id])
+
+  @@index([orderId])
+  @@map("order_payment_notes")
+}
+
+model InvoicePaymentNote {
+  id          Int      @id @default(autoincrement())
+  invoiceId   Int
+  paymentType String
+  amount      Decimal? @db.Decimal(18, 2)
+  createdBy   Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  creator User    @relation("InvoicePaymentNoteCreator", fields: [createdBy], references: [id])
+
+  @@index([invoiceId])
+  @@map("invoice_payment_notes")
 }
 
 model OrderPayment {
@@ -1355,6 +1587,13 @@ model OrderDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo đơn. Nullable để không phá đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -1432,6 +1671,7 @@ model Invoice {
   returnOrders       ReturnOrder[]
   returnOrderDetails ReturnOrderDetail[]
   promotionLogs      InvoicePromotionLog[]
+  paymentNotes       InvoicePaymentNote[]
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
@@ -1441,26 +1681,29 @@ model Invoice {
 }
 
 model InvoiceDetail {
-  id            Int      @id @default(autoincrement())
-  invoiceId     Int
-  productId     Int?
-  productCode   String
-  productName   String
-  quantity      Decimal
-  price         Decimal
-  discount      Decimal  @default(0)
-  discountRatio Decimal  @default(0)
-  totalPrice    Decimal
-  note          String?
-  conditionType String   @default("normal")
+  id              Int       @id @default(autoincrement())
+  invoiceId       Int
+  productId       Int?
+  productCode     String
+  productName     String
+  quantity        Decimal
+  price           Decimal
+  discount        Decimal   @default(0)
+  discountRatio   Decimal   @default(0)
+  totalPrice      Decimal
+  note            String?
+  conditionType   String    @default("normal")
   manufactureDate DateTime?
-  serialNumbers String?
+  // Lô cận date được chọn khi bán (chỉ dùng khi conditionType = near_expiry).
+  // Trỏ tới StockConditionLog.expiryDate của lô để trừ đúng lô.
+  soldExpiryDate  DateTime?
+  serialNumbers   String?
   // Promotion / khuyến mãi
-  lineType      String   @default("normal") // normal | gift | promo_discount | discounted_buy
-  isGift        Boolean  @default(false)
-  promotionId   Int?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  lineType        String    @default("normal") // normal | gift | promo_discount | discounted_buy
+  isGift          Boolean   @default(false)
+  promotionId     Int?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   invoice   Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
   product   Product?   @relation(fields: [productId], references: [id])
@@ -1527,6 +1770,13 @@ model InvoiceDelivery {
   locationId        Int?
   locationName      String?
   wardName          String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  // Lấy từ customer_addresses (địa chỉ default) lúc tạo hóa đơn. Nullable để không phá hóa đơn cũ.
+  oldCityName       String?
+  oldDistrictName   String?
+  oldWardName       String?
+  newCityName       String?
+  newWardName       String?
   weight            Decimal?
   length            Decimal?
   width             Decimal?
@@ -1567,6 +1817,11 @@ model PurchaseOrder {
   statusValue       String?
   supplierDebt      Decimal   @default(0)
   supplierOldDebt   Decimal   @default(0)
+  // Tiền tệ & tỉ giá kế thừa từ OrderSupplier (snapshot). Mặc định VND với
+  // tỉ giá 1. Khi OrderSupplier có currency = 'CNY' thì khi tạo PurchaseOrder
+  // từ OrderSupplier, 2 cột này sẽ inherit theo.
+  currency          String?   @default("VND") @map("currency")
+  exchangeRate      Decimal?  @default(1) @map("exchange_rate")
   isDraft           Boolean   @default(false)
   partnerType       String?
   description       String?
@@ -1603,13 +1858,33 @@ model PurchaseOrderItem {
   totalPrice      Decimal
   description     String?
   serialNumbers   String?
+  // Số thứ tự dòng trong phiếu (1, 2, 3, ...). Dùng cho unique key thay vì
+  // productId để cho phép cùng 1 sản phẩm xuất hiện nhiều dòng (vd 1 dòng
+  // hàng thường + 1 dòng loại B). Nullable để an toàn với data cũ trước
+  // migration — sau khi backfill sẽ set NOT NULL trong bước tiếp theo.
+  lineNumber      Int?
+  // Phân loại hàng nhập: "normal" (hàng thường, mặc định) hoặc "damaged"
+  // (loại B = bục rách). Khi hoàn thành phiếu, phần "damaged" sẽ cộng thêm
+  // vào Inventory.damagedQuantity (giữ nguyên quy ước damaged <= onHand).
+  conditionType   String   @default("normal")
+  // Đơn giá gốc theo tiền tệ gốc (vd CNY) — kế thừa từ OrderSupplierItem
+  // khi tạo PurchaseOrder từ OrderSupplier. Null nếu phiếu nhập tạo trực
+  // tiếp (không qua PDN) hoặc PDN không có thông tin tỉ giá.
+  factoryPrice    Decimal? @map("factory_price")
+  // Thành tiền đã quy đổi sang VND — kế thừa từ OrderSupplierItem.factorySubTotal.
+  // Null trong cùng điều kiện với factoryPrice.
+  factorySubTotal Decimal? @map("factory_sub_total")
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
   product       Product       @relation(fields: [productId], references: [id])
 
-  @@unique([purchaseOrderId, productId])
+  // Unique theo (purchaseOrderId, lineNumber) thay vì (purchaseOrderId, productId)
+  // để 1 phiếu có thể có nhiều dòng cùng productId (phân biệt qua lineNumber +
+  // conditionType). Mirror với OrderItem pattern (order_items schema line 1311).
+  @@unique([purchaseOrderId, lineNumber])
+  @@index([productId])
   @@map("purchase_order_items")
 }
 
@@ -1625,6 +1900,8 @@ model PurchaseOrderPayment {
   status          Int      @default(1)
   statusValue     String?
   cashFlowId      Int?
+  exchangeRate    Decimal? @map("exchange_rate") @db.Decimal(18, 6)
+  foreignAmount   Decimal? @map("foreign_amount") @db.Decimal(18, 2)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -1712,15 +1989,19 @@ model PostTag {
 }
 
 model Settings {
-  id                         Int      @id @default(autoincrement())
-  managerCustomerByBranch    Boolean  @default(false)
-  allowOrderWhenOutStock     Boolean  @default(true)
-  allowSellWhenOrderOutStock Boolean  @default(true)
-  allowSellWhenOutStock      Boolean  @default(true)
-  syncKiotEnabled            Boolean  @default(true)
-  sepayFilterByAccount       Boolean  @default(false) @map("sepay_filter_by_account")
-  createdAt                  DateTime @default(now())
-  updatedAt                  DateTime @updatedAt
+  id                               Int      @id @default(autoincrement())
+  managerCustomerByBranch          Boolean  @default(false)
+  allowOrderWhenOutStock           Boolean  @default(true)
+  allowSellWhenOrderOutStock       Boolean  @default(true)
+  allowSellWhenOutStock            Boolean  @default(true)
+  syncKiotEnabled                  Boolean  @default(true)
+  sepayFilterByAccount             Boolean  @default(false) @map("sepay_filter_by_account")
+  larkProductRetryCronEnabled      Boolean  @default(true) @map("lark_product_retry_cron_enabled")
+  misaDictionaryCronEnabled        Boolean  @default(false) @map("misa_dictionary_cron_enabled")
+  /// Cron mỗi ngày 23h30 đồng bộ trạng thái HĐ với Documenso (phòng webhook miss).
+  contractDocumensoSyncCronEnabled Boolean  @default(true) @map("contract_documenso_sync_cron_enabled")
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @updatedAt
 
   @@map("settings")
 }
@@ -1813,6 +2094,9 @@ model CashFlow {
   collectionBranchId        Int?
   isReceipt                 Boolean
   amount                    Decimal
+  currency                  String?   @default("VND") @map("currency")
+  exchangeRate              Decimal?  @default(1) @map("exchange_rate")
+  foreignAmount             Decimal?  @map("foreign_amount") @db.Decimal(18, 2)
   transDate                 DateTime  @default(now())
   method                    String?
   accountId                 Int?
@@ -1978,6 +2262,15 @@ model OrderSupplier {
   viewPrice          Boolean   @default(true)
   supplierDebt       Decimal   @default(0)
   supplierOldDebt    Decimal   @default(0)
+  // Tiền tệ & tỉ giá áp dụng cho phiếu đặt hàng nhập này. Mặc định VND với
+  // tỉ giá 1. Khi supplier thuộc nhóm nước ngoài (vd supplierGroupId = 1),
+  // FE sẽ tự động load tỉ giá CNY→VND mới nhất từ ExchangeRateModule lúc tạo
+  // form và lưu snapshot vào 2 cột này. Tỉ giá có thể được refresh thủ công
+  // qua nút "Cập nhật tỉ giá" ở form (chỉ khi chưa có phiếu nhập hàng liên
+  // quan). Cột factoryPrice/factorySubTotal trên OrderSupplierItem lưu giá
+  // trị quy đổi sang VND (để tương thích ngược với data cũ + đồng bộ Lark).
+  currency           String?   @default("VND") @map("currency")
+  exchangeRate       Decimal?  @default(1) @map("exchange_rate")
   createdBy          Int
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
@@ -2007,6 +2300,14 @@ model OrderSupplierPayment {
   status          Int      @default(1)
   statusValue     String?
   cashFlowId      Int?
+  // Tỉ giá quy đổi VND/CNY user nhập tại thời điểm thanh toán. Snapshot riêng —
+  // KHÔNG liên quan OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+  // Lý do: tỉ giá thực tế khi chuyển khoản cho NCC Trung Quốc có thể khác tỉ giá
+  // snapshot tại ngày đặt hàng. null = NCC trong nước hoặc phiếu cũ.
+  exchangeRate    Decimal? @map("exchange_rate") @db.Decimal(18, 6)
+  // Thành tiền quy đổi sang tiền tệ NCC (CNY) snapshot tại thời điểm thanh toán.
+  // = amount / exchangeRate. null = NCC trong nước hoặc phiếu cũ.
+  foreignAmount   Decimal? @map("foreign_amount") @db.Decimal(18, 2)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -2077,15 +2378,15 @@ model Consignment {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  customer    Customer?         @relation(fields: [customerId], references: [id])
-  branch      Branch?           @relation(fields: [branchId], references: [id])
-  soldBy      User?             @relation("ConsignmentSeller", fields: [soldById], references: [id])
-  saleChannel SaleChannel?      @relation(fields: [saleChannelId], references: [id])
-  creator     User              @relation("ConsignmentCreator", fields: [createdBy], references: [id])
-  priceBook   PriceBook?        @relation("ConsignmentPriceBook", fields: [priceBookId], references: [id])
-  items       ConsignmentItem[]
-  invoices    Invoice[]
-  delivery    ConsignmentDelivery?
+  customer        Customer?               @relation(fields: [customerId], references: [id])
+  branch          Branch?                 @relation(fields: [branchId], references: [id])
+  soldBy          User?                   @relation("ConsignmentSeller", fields: [soldById], references: [id])
+  saleChannel     SaleChannel?            @relation(fields: [saleChannelId], references: [id])
+  creator         User                    @relation("ConsignmentCreator", fields: [createdBy], references: [id])
+  priceBook       PriceBook?              @relation("ConsignmentPriceBook", fields: [priceBookId], references: [id])
+  items           ConsignmentItem[]
+  invoices        Invoice[]
+  delivery        ConsignmentDelivery?
   packingSlips    PackingSlipInvoice[]
   packingHangs    PackingHangInvoice[]
   packingLoadings PackingLoadingInvoice[]
@@ -2095,20 +2396,20 @@ model Consignment {
 }
 
 model ConsignmentItem {
-  id            Int      @id @default(autoincrement())
-  consignmentId Int
-  productId     Int
-  productCode   String
-  productName   String
-  quantity      Decimal  @default(0) @db.Decimal(18, 4)
-  price         Decimal  @default(0) @db.Decimal(18, 2)
-  discount      Decimal  @default(0) @db.Decimal(18, 2)
-  discountRatio Decimal  @default(0) @db.Decimal(18, 4)
-  totalPrice    Decimal  @default(0) @db.Decimal(18, 2)
-  note          String?
+  id              Int       @id @default(autoincrement())
+  consignmentId   Int
+  productId       Int
+  productCode     String
+  productName     String
+  quantity        Decimal   @default(0) @db.Decimal(18, 4)
+  price           Decimal   @default(0) @db.Decimal(18, 2)
+  discount        Decimal   @default(0) @db.Decimal(18, 2)
+  discountRatio   Decimal   @default(0) @db.Decimal(18, 4)
+  totalPrice      Decimal   @default(0) @db.Decimal(18, 2)
+  note            String?
   manufactureDate DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   consignment Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
   product     Product     @relation(fields: [productId], references: [id])
@@ -2118,21 +2419,27 @@ model ConsignmentItem {
 }
 
 model ConsignmentDelivery {
-  id            Int       @id @default(autoincrement())
-  consignmentId Int       @unique
-  receiver      String
-  contactNumber String
-  address       String
-  locationName  String?
-  wardName      String?
-  weight        Decimal?
-  weightUnit    String?   @default("g")
-  length        Decimal?
-  width         Decimal?
-  height        Decimal?
-  noteForDriver String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id              Int      @id @default(autoincrement())
+  consignmentId   Int      @unique
+  receiver        String
+  contactNumber   String
+  address         String
+  locationName    String?
+  wardName        String?
+  // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) để shipper xem cả hai.
+  oldCityName     String?
+  oldDistrictName String?
+  oldWardName     String?
+  newCityName     String?
+  newWardName     String?
+  weight          Decimal?
+  weightUnit      String?  @default("g")
+  length          Decimal?
+  width           Decimal?
+  height          Decimal?
+  noteForDriver   String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   consignment Consignment @relation(fields: [consignmentId], references: [id], onDelete: Cascade)
 
@@ -2143,24 +2450,24 @@ model ConsignmentDelivery {
 /// Luồng 2 bước: REQUEST (1) -> STOCK_RECEIVED (2, hoàn kho). CANCELLED (5).
 /// Không phát sinh công nợ/hoàn tiền (ký gửi B1/B2 chưa có nợ).
 model ConsignmentReturn {
-  id              Int      @id @default(autoincrement())
-  code            String   @unique
-  consignmentId   Int
-  consignmentCode String
-  customerId      Int?
-  branchId        Int
-  status          Int      @default(1)
-  statusValue     String?
-  totalReturnQuantity Decimal @default(0) @db.Decimal(18, 4)
-  note            String?
-  receivedById    Int?
-  createdBy       Int
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                  Int      @id @default(autoincrement())
+  code                String   @unique
+  consignmentId       Int
+  consignmentCode     String
+  customerId          Int?
+  branchId            Int
+  status              Int      @default(1)
+  statusValue         String?
+  totalReturnQuantity Decimal  @default(0) @db.Decimal(18, 4)
+  note                String?
+  receivedById        Int?
+  createdBy           Int
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  consignment Consignment              @relation(fields: [consignmentId], references: [id])
-  customer    Customer?                @relation("ConsignmentReturnCustomer", fields: [customerId], references: [id])
-  branch      Branch                   @relation(fields: [branchId], references: [id])
+  consignment Consignment               @relation(fields: [consignmentId], references: [id])
+  customer    Customer?                 @relation("ConsignmentReturnCustomer", fields: [customerId], references: [id])
+  branch      Branch                    @relation(fields: [branchId], references: [id])
   details     ConsignmentReturnDetail[]
 
   @@index([consignmentId])
@@ -2171,18 +2478,18 @@ model ConsignmentReturn {
 }
 
 model ConsignmentReturnDetail {
-  id                Int     @id @default(autoincrement())
+  id                  Int       @id @default(autoincrement())
   consignmentReturnId Int
-  productId         Int
-  productCode       String
-  productName       String
-  consignedQuantity Decimal @default(0) @db.Decimal(18, 4)
-  returnQuantity    Decimal @default(0) @db.Decimal(18, 4)
-  goodQuantity      Decimal @default(0) @db.Decimal(18, 4)
-  damagedQuantity   Decimal @default(0) @db.Decimal(18, 4)
-  nearExpiryQuantity Decimal @default(0) @db.Decimal(18, 4)
-  manufactureDate   DateTime?
-  note              String?
+  productId           Int
+  productCode         String
+  productName         String
+  consignedQuantity   Decimal   @default(0) @db.Decimal(18, 4)
+  returnQuantity      Decimal   @default(0) @db.Decimal(18, 4)
+  goodQuantity        Decimal   @default(0) @db.Decimal(18, 4)
+  damagedQuantity     Decimal   @default(0) @db.Decimal(18, 4)
+  nearExpiryQuantity  Decimal   @default(0) @db.Decimal(18, 4)
+  manufactureDate     DateTime?
+  note                String?
 
   consignmentReturn ConsignmentReturn @relation(fields: [consignmentReturnId], references: [id], onDelete: Cascade)
   product           Product           @relation(fields: [productId], references: [id])
@@ -2191,8 +2498,6 @@ model ConsignmentReturnDetail {
   @@map("consignment_return_details")
 }
 
-/// Giai đoạn hiện tại của dòng đặt hàng nhập — master data, cho phép thêm/sửa
-/// như cửa khẩu (BorderGate). Gán cho từng dòng order_supplier_items.
 model PurchaseOrderProductionStage {
   id          Int      @id @default(autoincrement())
   name        String
@@ -2207,36 +2512,65 @@ model PurchaseOrderProductionStage {
   @@map("purchase_order_production_stage")
 }
 
-/// Nhà máy — master data cho dòng đặt hàng nhập, cho phép thêm/sửa như cửa khẩu.
 model Factory {
-  id          Int      @id @default(autoincrement())
-  name        String
-  description String?
-  isActive    Boolean  @default(true)
-  createdBy   Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            Int      @id @default(autoincrement())
+  code          String?  @unique
+  name          String
+  description   String?
+  country       String?
+  currency      String?  @default("VND")
+  contactNumber String?
+  address       String?
+  supplierId    Int?
+  isActive      Boolean  @default(true)
+  createdBy     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
+  supplier           Supplier?           @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  creator            User?               @relation("FactoryCreator", fields: [createdBy], references: [id])
+  primaryForProducts Product[]           @relation("ProductPrimaryFactory")
+  backupForProducts  Product[]           @relation("ProductBackupFactory")
   orderSupplierItems OrderSupplierItem[]
+  factoryChangeLogs  FactoryChangeLog[]
 
+  @@index([supplierId])
+  @@index([isActive])
   @@map("factories")
 }
 
-/// Phiếu ghép xe (vehicle shipment) — tầng điều phối optional giữa PDN
-/// (OrderSupplier) và PN (PurchaseOrder). Gom hàng từ nhiều PDN (có thể nhiều
-/// NCC) lên 1 chuyến xe. KHÔNG tác động kho/tiền/công nợ — chỉ theo dõi SL ghép.
-/// Tồn kho + thẻ kho vẫn chỉ phát sinh ở PN khi bấm "Tạo phiếu nhập".
+model FactoryChangeLog {
+  id                Int      @id @default(autoincrement())
+  productId         Int
+  factoryId         Int
+  role              String
+  previousFactoryId Int?
+  changedById       Int
+  changedByName     String?
+  reason            String?
+  createdAt         DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  factory Factory @relation(fields: [factoryId], references: [id])
+  changer User    @relation("FactoryChangeLogChanger", fields: [changedById], references: [id])
+
+  @@index([productId])
+  @@index([factoryId])
+  @@index([changedById])
+  @@map("factory_change_logs")
+}
+
 model VehicleShipment {
   id                  Int       @id @default(autoincrement())
   code                String    @unique
-  status              Int       @default(0) // 0 Phiếu tạm, 1 Đã xác nhận giao, 2 Đã nhập, 3 Đã hủy
+  status              Int       @default(0)
   statusValue         String?
-  branchId            Int? // chi nhánh nhận hàng (đích)
-  borderGateId        Int? // cửa khẩu (master data, có thể thêm/sửa)
-  vehicleInfo         String? // số hợp đồng (label FE: "Số hợp đồng")
-  files               Json? // danh sách file đính kèm: [{ filename, url, size, mimetype, originalname }]
-  expectedArrivalDate DateTime? // ngày dự kiến xe về kho
-  actualArrivalDate   DateTime? // ngày xe về kho thực tế (set khi createPurchaseOrders)
+  branchId            Int?
+  borderGateId        Int?
+  vehicleInfo         String?
+  files               Json?
+  expectedArrivalDate DateTime?
+  actualArrivalDate   DateTime?
   description         String?
   createdBy           Int
   createdAt           DateTime  @default(now())
@@ -2251,7 +2585,6 @@ model VehicleShipment {
   @@map("vehicle_shipments")
 }
 
-/// Cửa khẩu — master data cho phiếu ghép xe, cho phép thêm/sửa như nhóm KH.
 model BorderGate {
   id          Int      @id @default(autoincrement())
   name        String
@@ -2273,11 +2606,8 @@ model VehicleShipmentItem {
   productId         Int
   productCode       String
   productName       String
-  quantity          Decimal // SL ghép lên xe (dự kiến)
-  // Xử lý chênh lệch sau nhập (per sản phẩm): pending | returned | kept
-  // - pending : chưa xử lý, phần thiếu vẫn giữ chỗ (chưa trả về "còn để ghép")
-  // - returned: chuyển phần thiếu về "còn lại" (cho ghép/đặt lại)
-  // - kept    : chấp nhận thiếu, không trả về
+  quantity          Decimal
+  contractNo        String?
   postImportStatus  String   @default("pending")
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
@@ -2286,7 +2616,7 @@ model VehicleShipmentItem {
   orderSupplier   OrderSupplier   @relation(fields: [orderSupplierId], references: [id])
   product         Product         @relation(fields: [productId], references: [id])
 
-  @@unique([vehicleShipmentId, orderSupplierId, productId])
+  @@unique([vehicleShipmentId, orderSupplierId, productId, contractNo])
   @@map("vehicle_shipment_items")
 }
 
@@ -2322,6 +2652,8 @@ model PackingSlip {
   feeGrab              Decimal?  @default(0)
   hasCuocGuiHang       Boolean   @default(false)
   cuocGuiHang          Decimal?  @default(0)
+  hasCuocNhanHang      Boolean   @default(false)
+  cuocNhanHang         Decimal?  @default(0)
   expensePayerId       Int?
   note                 String?
   larkExpenseRecordIds Json?
@@ -2631,7 +2963,7 @@ model ReturnOrder {
 }
 
 model ReturnOrderDetail {
-  id                     Int      @id @default(autoincrement())
+  id                     Int       @id @default(autoincrement())
   returnOrderId          Int
   invoiceId              Int?
   invoiceCode            String
@@ -2641,18 +2973,19 @@ model ReturnOrderDetail {
   invoiceQuantity        Decimal
   invoicePrice           Decimal
   requestQuantity        Decimal
-  confirmedQuantity      Decimal  @default(0)
+  confirmedQuantity      Decimal   @default(0)
   returnPrice            Decimal
   totalAmount            Decimal
   note                   String?
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
-  goodQuantity           Decimal  @default(0)
-  damagedQuantity        Decimal  @default(0)
-  nearExpiryQuantity     Decimal  @default(0)
-  saleGoodQuantity       Decimal  @default(0)
-  saleDamagedQuantity    Decimal  @default(0)
-  saleNearExpiryQuantity Decimal  @default(0)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  goodQuantity           Decimal   @default(0)
+  damagedQuantity        Decimal   @default(0)
+  nearExpiryQuantity     Decimal   @default(0)
+  manufactureDate        DateTime?
+  saleGoodQuantity       Decimal   @default(0)
+  saleDamagedQuantity    Decimal   @default(0)
+  saleNearExpiryQuantity Decimal   @default(0)
 
   returnOrder ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
   invoice     Invoice?    @relation(fields: [invoiceId], references: [id])
@@ -2675,10 +3008,6 @@ model SyncControl {
 
   @@map("sync_controls")
 }
-
-// =====================================================
-// Misa AMIS Kế toán — dictionary cache + sync log
-// =====================================================
 
 model MisaInventoryItem {
   id                Int      @id @default(autoincrement())
@@ -2785,15 +3114,12 @@ enum MisaSyncStatus {
   SKIP
 }
 
-// Phiên upload ảnh từ điện thoại qua QR (mô hình qrcp).
-// Máy tính tạo phiên + hiển thị QR; điện thoại quét rồi upload ảnh vào phiên.
-// Postgres không có TTL → expiresAt là cột thường, kiểm tra hết hạn bằng code.
 model UploadSession {
   id          String   @id @default(uuid())
   token       String
   subfolder   String   @db.VarChar(100)
-  status      String   @default("active") @db.VarChar(20) // active | closed
-  images      Json     @default("[]") // mảng URL string[]
+  status      String   @default("active") @db.VarChar(20)
+  images      Json     @default("[]")
   maxFiles    Int      @default(30)
   createdById Int?     @map("created_by_id")
   expiresAt   DateTime @map("expires_at")
@@ -2805,11 +3131,6 @@ model UploadSession {
   @@map("upload_sessions")
 }
 
-// Lịch sử giao dịch thô đồng bộ từ Sepay API (GET /userapi/transactions/list).
-// Bảng ĐỘC LẬP — không có quan hệ tới Order/Invoice/CashFlow.
-// Chỉ lưu lịch sử để tra cứu/đối soát; KHÔNG tạo phiếu thu (việc đó do webhook lo).
-// sepayId = field "id" của giao dịch Sepay (cùng định danh với webhook payload.id),
-// dùng làm khóa chống trùng khi đồng bộ lặp lại.
 model SepayTransaction {
   id                 Int       @id @default(autoincrement())
   sepayId            String    @unique @map("sepay_id")
@@ -2827,13 +3148,6 @@ model SepayTransaction {
   rawPayload         Json?     @map("raw_payload")
   syncedAt           DateTime  @default(now()) @map("synced_at")
 
-  // ── Luồng đối soát thủ công (gán khách + tạo phiếu thu) ──
-  // KHÔNG dùng FK relation để giữ bảng độc lập, không đụng model Customer/CashFlow/User.
-  // Trạng thái được suy ra on-read (xem SepayMatchService), không lưu cột status:
-  //   - chưa gán khách        → "processing" (đang xử lý)
-  //   - đã gán khách          → "assigned"   (đã xác nhận khách)
-  //   - đã tạo phiếu thu       → "completed"  (hoàn thành)
-  //   - trùng sepayId webhook  → "completed"  (suy ra on-read, không lưu)
   assignedCustomerId   Int?      @map("assigned_customer_id")
   assignedCustomerName String?   @map("assigned_customer_name")
   assignedById         Int?      @map("assigned_by_id")
@@ -2841,6 +3155,9 @@ model SepayTransaction {
   cashFlowId           Int?      @map("cash_flow_id")
   confirmedById        Int?      @map("confirmed_by_id")
   confirmedAt          DateTime? @map("confirmed_at")
+
+  hiddenAt   DateTime? @map("hidden_at")
+  hiddenById Int?      @map("hidden_by_id")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -2850,15 +3167,10 @@ model SepayTransaction {
   @@index([referenceNumber])
   @@index([assignedCustomerId])
   @@index([cashFlowId])
+  @@index([hiddenAt])
   @@map("sepay_transactions")
 }
 
-// Phân bổ 1 giao dịch Sepay cho nhiều khách hàng (1 giao dịch → n khách).
-// Bảng độc lập (không FK relation) — giữ triết lý như SepayTransaction.
-// - Bước sale gán khách: tạo các dòng allocation (amount=0, note=null).
-// - Bước kế toán tạo phiếu thu: cập nhật amount + note cho từng dòng, tạo
-//   1 phiếu thu (CashFlow) riêng cho mỗi khách, lưu cashFlowId vào dòng đó.
-// Tổng amount các dòng = amount_in của giao dịch (validate ở service).
 model SepayAllocation {
   id                 Int       @id @default(autoincrement())
   sepayTransactionId Int       @map("sepay_transaction_id")
@@ -2885,17 +3197,19 @@ model Promotion {
   id                Int       @id @default(autoincrement())
   code              String    @unique
   name              String
-  type              String // INVOICE_DISCOUNT | PRODUCT_DISCOUNT | BUY_X_GET_Y | BUY_N_GET_M_SAME | BUY_X_BUY_Y_PRICE | GIFT_BY_INVOICE | CATEGORY_DISCOUNT
+  type              String
   description       String?
   isActive          Boolean   @default(false)
-  status            String    @default("draft") // draft | running | paused | stopped | expired
+  status            String    @default("draft")
   priority          Int       @default(0)
   stackable         Boolean   @default(false)
+  unitMode          String    @default("unit") @map("unit_mode")
+  deductPromoStock  Boolean   @default(true) @map("deduct_promo_stock")
   startDate         DateTime?
   endDate           DateTime?
-  applyTimeFrom     String? // "08:00"
-  applyTimeTo       String? // "22:00"
-  applyWeekdays     Int[]     @default([]) // [1..7], rỗng = mọi ngày
+  applyTimeFrom     String?
+  applyTimeTo       String?
+  applyWeekdays     Int[]     @default([])
   forAllBranch      Boolean   @default(true)
   forAllCustomer    Boolean   @default(true)
   forAllUser        Boolean   @default(true)
@@ -2952,6 +3266,7 @@ model PromotionProduct {
   role         String // 'buy' (X) | 'reward' (Y)
   productId    Int?
   categoryName String?
+  rewardLimit  Decimal? // Chỉ dùng cho role='reward': trần lifetime riêng cho dòng quà này (SP cụ thể hoặc cả category). null = không giới hạn riêng.
   createdAt    DateTime @default(now())
 
   promotion Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
@@ -3061,4 +3376,483 @@ model Notification {
   @@index([userId, readAt])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+/// Hợp đồng ký điện tử qua Documenso. Bảng proxy: lưu trạng thái + tham chiếu
+/// envelope bên Documenso, không lưu nội dung PDF (PDF đã ký tải về uploads/contracts/).
+model Contract {
+  id             Int     @id @default(autoincrement())
+  customerId     Int     @map("customer_id")
+  title          String
+  /// Nguồn tạo: "template" (từ template Documenso) | "upload" (PDF tải lên)
+  source         String  @default("template")
+  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
+  templateId     Int?    @map("template_id")
+  templateTitle  String? @map("template_title")
+  /// Envelope id bên Documenso (vd "envelope_abc123"). Unique để webhook map ngược.
+  documensoId    String? @unique @map("documenso_id")
+  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
+  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
+  externalId     String? @unique @map("external_id")
+  recipientEmail String? @map("recipient_email")
+  /// Trạng thái: DRAFT | SENT | PARTIALLY_SIGNED | SIGNED | REJECTED | EXPIRED | CANCELLED
+  /// - SENT: đã gửi bản ký (Documenso) cho khách hoặc NV (tuỳ thứ tự).
+  /// - PARTIALLY_SIGNED: HĐ 2 bên, 1 bên đã ký, đang chờ bên còn lại.
+  /// - SIGNED: tất cả bên đã ký xong (PDF hoàn tất, đã niêm phong số).
+  status         String  @default("DRAFT")
+  /// Link ký Documenso trả về khi distribute (để mở lại / gửi cho khách).
+  signingUrl     String? @map("signing_url")
+  /// Đường dẫn PDF đã ký tải về (vd /uploads/contracts/xxx.pdf).
+  signedFileUrl  String? @map("signed_file_url")
+  /// Lý do từ chối nếu khách reject.
+  rejectReason   String? @map("reject_reason")
+
+  /// Loại HĐ: SINGLE (1 bên ký) | DOUBLE (2 bên ký tuần tự). Phát hiện theo
+  /// số recipient SIGNER trong template Documenso.
+  contractType       String  @default("SINGLE") @map("contract_type")
+  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
+  companySignerEmail String? @map("company_signer_email")
+
+  sentAt   DateTime? @map("sent_at")
+  signedAt DateTime? @map("signed_at")
+
+  createdBy Int?     @map("created_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+  creator  User?    @relation("ContractCreator", fields: [createdBy], references: [id])
+
+  @@index([customerId])
+  @@index([status])
+  @@map("contracts")
+}
+
+/// Cache mapping Documenso user (email) ↔ phòng ban / vai trò ký BÊN A. Mỗi
+/// dòng ứng với 1 user Documenso được phép ký thay công ty. POS không quản lý
+/// chữ ký ở đây — Documenso tự apply personalSignature của user khi ký.
+model ContractSigner {
+  id             Int       @id @default(autoincrement())
+  /// Email của Documenso user (dùng làm recipient email khi tạo envelope).
+  documensoEmail String    @unique @map("documenso_email")
+  name           String?
+  /// Phòng ban / vai trò (vd "Phòng Sale", "Phòng Kế toán", "Ban GĐ").
+  department     String?
+  /// Mã nội bộ (vd "sale", "accounting", "director") — tiện cho filter/seed.
+  code           String?   @unique
+  isActive       Boolean   @default(true) @map("is_active")
+  lastSyncedAt   DateTime? @map("last_synced_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([department])
+  @@map("contract_signers")
+}
+
+/// Cache tỉ giá ngoại tệ. Dùng để cache response từ fxratesapi.com (hoặc
+/// nguồn khác) — tránh gọi API quá nhiều lần. Mỗi cặp (base, target) chỉ
+/// giữ 1 dòng; `fetchedAt` để ExchangeRateService quyết định có cần refresh
+/// hay không (TTL 15 phút theo cấu hình).
+model ExchangeRate {
+  id        Int      @id @default(autoincrement())
+  base      String
+  target    String
+  rate      Decimal
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([base, target])
+  @@map("exchange_rates")
+}
+
+// ─── Recipe / Công thức pha chế ─────────────────────────────────────────────
+// Domain độc lập với ProductComponent. Version bất biến sau publish.
+// Cost hybrid: snapshot STALE/FRESH + recalculate thủ công.
+
+model RecipeCategory {
+  id        Int       @id @default(autoincrement())
+  code      String?   @unique
+  name      String
+  type      String? // SEMI_FINISHED | FINISHED_PRODUCT | null = both
+  sortOrder Int       @default(0) @map("sort_order")
+  isActive  Boolean   @default(true) @map("is_active")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  recipes Recipe[]
+
+  @@index([isActive])
+  @@map("recipe_categories")
+}
+
+model Recipe {
+  id                Int       @id @default(autoincrement())
+  code              String
+  slug              String?   @unique
+  name              String
+  type              String // SEMI_FINISHED | FINISHED_PRODUCT
+  categoryId        Int?      @map("category_id")
+  outputProductId   Int?      @map("output_product_id")
+  status            String    @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
+  publishedAt       DateTime? @map("published_at")
+  publishedBy       Int?      @map("published_by")
+  changeNote        String?   @map("change_note")
+  description       String?
+  quantity          Decimal?  @db.Decimal(18, 6)
+  quantityUnit      String?   @map("quantity_unit")
+  unit              String?
+  storage           String?
+  currencyCode      String    @default("VND") @map("currency_code") @db.Char(3)
+  costStatus        String    @default("FRESH") @map("cost_status") // FRESH | STALE | CALCULATING | ERROR
+  materialCost      Decimal?  @map("material_cost") @db.Decimal(18, 6)
+  semiFinishedCost  Decimal?  @map("semi_finished_cost") @db.Decimal(18, 6)
+  customCost        Decimal?  @map("custom_cost") @db.Decimal(18, 6)
+  totalCost         Decimal?  @map("total_cost") @db.Decimal(18, 6)
+  costPerOutputUnit Decimal?  @map("cost_per_output_unit") @db.Decimal(18, 6)
+  createdBy         Int?      @map("created_by")
+  updatedBy         Int?      @map("updated_by")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+  deletedBy         Int?      @map("deleted_by")
+
+  category                RecipeCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  outputProduct           Product?           @relation("RecipeOutputProduct", fields: [outputProductId], references: [id], onDelete: SetNull)
+  creator                 User?              @relation("RecipeCreator", fields: [createdBy], references: [id])
+  updater                 User?              @relation("RecipeUpdater", fields: [updatedBy], references: [id])
+  publisher               User?              @relation("RecipePublisher", fields: [publishedBy], references: [id])
+  ingredients             RecipeIngredient[]
+  steps                   RecipeStep[]
+  images                  RecipeImage[]
+  // Closure table: recipe này là ancestor (cha) hoặc descendant (con)
+  ancestorDeps            RecipeDependency[] @relation("RecipeAncestor")
+  descendantDeps          RecipeDependency[] @relation("RecipeDescendant")
+  // Semi-finished references from other recipe ingredients
+  referencedByIngredients RecipeIngredient[] @relation("RecipeIngredientSemi")
+  comments                RecipeComment[]
+
+  @@unique([code])
+  @@index([type, status])
+  @@index([categoryId])
+  @@index([outputProductId])
+  @@index([updatedAt])
+  @@index([deletedAt])
+  @@map("recipes")
+}
+
+model RecipeComment {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  authorId  Int      @map("author_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  author User   @relation("RecipeCommentAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+
+  @@index([recipeId, createdAt])
+  @@index([authorId])
+  @@map("recipe_comments")
+}
+
+model RecipeIngredient {
+  id                  Int      @id @default(autoincrement())
+  recipeId            Int      @map("recipe_id")
+  sourceType          String   @map("source_type") // PRODUCT | SEMI_FINISHED | CUSTOM
+  productId           Int?     @map("product_id")
+  recipeReferenceId   Int?     @map("recipe_reference_id")
+  ingredientId        Int?     @map("ingredient_id")
+  customName          String?  @map("custom_name")
+  customUnit          String?  @map("custom_unit")
+  customPrice         Decimal? @map("custom_price") @db.Decimal(18, 6)
+  quantity            Decimal  @db.Decimal(18, 6)
+  unit                String? // đơn vị nhập trong recipe
+  includeInCost       Boolean  @default(true) @map("include_in_cost")
+  isInternal          Boolean  @default(false) @map("is_internal")
+  isTemporary         Boolean  @default(false) @map("is_temporary")
+  note                String?
+  sortOrder           Int      @default(0) @map("sort_order")
+  costSnapshot        Decimal? @map("cost_snapshot") @db.Decimal(18, 6)
+  unitCostSnapshot    Decimal? @map("unit_cost_snapshot") @db.Decimal(18, 6)
+  priceSourceSnapshot Json?    @map("price_source_snapshot")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  recipe          Recipe      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  product         Product?    @relation("RecipeIngredientProduct", fields: [productId], references: [id], onDelete: Restrict)
+  recipeReference Recipe?     @relation("RecipeIngredientSemi", fields: [recipeReferenceId], references: [id], onDelete: Restrict)
+  ingredient      Ingredient? @relation(fields: [ingredientId], references: [id], onDelete: SetNull)
+
+  @@index([recipeId, sortOrder])
+  @@index([productId])
+  @@index([recipeReferenceId])
+  @@index([ingredientId])
+  @@map("recipe_ingredients")
+}
+
+model RecipeStep {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  sortOrder Int      @default(0) @map("sort_order")
+  title     String?
+  content   String
+  tools     Json?
+  notes     String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId, sortOrder])
+  @@map("recipe_steps")
+}
+
+model RecipeImage {
+  id        Int      @id @default(autoincrement())
+  recipeId  Int      @map("recipe_id")
+  mediaType String   @default("IMAGE") @map("media_type") // IMAGE | VIDEO
+  fileUrl   String   @map("file_url")
+  fileName  String?  @map("file_name")
+  mimeType  String?  @map("mime_type")
+  altText   String?  @map("alt_text")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId, sortOrder])
+  @@map("recipe_images")
+}
+
+/// Thư viện custom ingredient (nguyên liệu ngoài Product)
+model Ingredient {
+  id                   Int       @id @default(autoincrement())
+  code                 String?
+  name                 String
+  baseUnit             String?   @map("base_unit")
+  defaultPrice         Decimal?  @map("default_price") @db.Decimal(18, 6)
+  currencyCode         String    @default("VND") @map("currency_code") @db.Char(3)
+  includeInCostDefault Boolean   @default(true) @map("include_in_cost_default")
+  inventoryManaged     Boolean   @default(false) @map("inventory_managed")
+  isInternal           Boolean   @default(false) @map("is_internal")
+  notes                String?
+  createdBy            Int?      @map("created_by")
+  updatedBy            Int?      @map("updated_by")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+
+  creator     User?              @relation("IngredientCreator", fields: [createdBy], references: [id])
+  updater     User?              @relation("IngredientUpdater", fields: [updatedBy], references: [id])
+  ingredients RecipeIngredient[]
+
+  @@index([name])
+  @@index([deletedAt])
+  @@map("ingredients")
+}
+
+/// Closure table dependency DAG (ancestor → descendant)
+model RecipeDependency {
+  id                 Int      @id @default(autoincrement())
+  ancestorRecipeId   Int      @map("ancestor_recipe_id")
+  descendantRecipeId Int      @map("descendant_recipe_id")
+  depth              Int // 1 = direct edge
+  isDirect           Boolean  @default(false) @map("is_direct")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  ancestor   Recipe @relation("RecipeAncestor", fields: [ancestorRecipeId], references: [id], onDelete: Cascade)
+  descendant Recipe @relation("RecipeDescendant", fields: [descendantRecipeId], references: [id], onDelete: Cascade)
+
+  @@unique([ancestorRecipeId, descendantRecipeId, depth])
+  @@index([descendantRecipeId])
+  @@map("recipe_dependencies")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PURCHASING PLANNING — Dự kiến đặt hàng
+// Tham chiếu: docs/purchasing-planning-technical-design.md §4 (Database Design)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cấu hình tham số tính toán theo EAV (TD §4.2).
+/// Độ ưu tiên khi resolve: SKU > SUPPLIER > CATEGORY > GLOBAL.
+model PlanningConfig {
+  id Int @id @default(autoincrement())
+
+  /// GLOBAL | CATEGORY | SUPPLIER | SKU
+  scopeType  String  @map("scope_type") @db.VarChar(20)
+  /// null khi scopeType = GLOBAL; FK mềm tới category/supplier/product
+  scopeId    Int?    @map("scope_id")
+  /// leadTimeDays, safetyDays, coverageDays, growthFactor, moq, packSize...
+  paramKey   String  @map("param_key") @db.VarChar(50)
+  paramValue Decimal @map("param_value") @db.Decimal(18, 4)
+
+  /// Soft delete — chỉ bản ghi is_active = true mới được resolve
+  isActive Boolean @default(true) @map("is_active")
+  note     String?
+
+  createdBy Int?     @map("created_by")
+  updatedBy Int?     @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([scopeType, scopeId, paramKey])
+  @@index([paramKey])
+  @@map("planning_config")
+}
+
+/// Mỗi lần chạy tính toán. Đồng thời là CƠ CHẾ LOCK chống chạy trùng (TD §4.3).
+model CalculationRun {
+  id Int @id @default(autoincrement())
+
+  /// DAILY | MANUAL | SINGLE_SKU
+  runType      String   @map("run_type") @db.VarChar(20)
+  /// RUNNING | COMPLETED | FAILED | PARTIAL
+  status       String   @db.VarChar(20)
+  /// Ngày dữ liệu (thường = ngày chạy)
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  skuTotal   Int @default(0) @map("sku_total")
+  skuSuccess Int @default(0) @map("sku_success")
+  skuFailed  Int @default(0) @map("sku_failed")
+  skuBlocked Int @default(0) @map("sku_blocked")
+
+  durationMs    Int?  @map("duration_ms")
+  errorSummary  Json? @map("error_summary")
+  triggeredBy   Int?  @map("triggered_by")
+  /// Snapshot toàn bộ config global tại thời điểm chạy
+  configVersion Json? @map("config_version")
+
+  recommendation PurchaseRecommendation?
+
+  @@index([status, startedAt(sort: Desc)])
+  @@index([snapshotDate(sort: Desc)])
+  @@map("calculation_run")
+}
+
+/// Một đợt đề xuất đặt hàng (TD §4.6).
+model PurchaseRecommendation {
+  id Int @id @default(autoincrement())
+
+  runId        Int      @unique @map("run_id")
+  snapshotDate DateTime @map("snapshot_date") @db.Date
+  /// ACTIVE | SUPERSEDED
+  status       String   @default("ACTIVE") @db.VarChar(20)
+
+  totalSku            Int      @default(0) @map("total_sku")
+  needOrderSku        Int      @default(0) @map("need_order_sku")
+  criticalCount       Int      @default(0) @map("critical_count")
+  highCount           Int      @default(0) @map("high_count")
+  totalEstimatedValue Decimal? @map("total_estimated_value") @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  run   CalculationRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  items RecommendationItem[]
+
+  @@index([snapshotDate(sort: Desc), status])
+  @@map("purchase_recommendation")
+}
+
+/// Đề xuất cho từng SKU — BẢNG TRUNG TÂM của module (TD §4.7).
+/// Cố ý denormalize product_code/product_name/supplier_name để tránh join khi đọc.
+model RecommendationItem {
+  id BigInt @id @default(autoincrement())
+
+  recommendationId Int @map("recommendation_id")
+  productId        Int @map("product_id")
+
+  productCode String  @map("product_code") @db.VarChar(50)
+  productName String  @map("product_name") @db.VarChar(500)
+  unit        String? @db.VarChar(50)
+
+  /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
+  parentName    String? @map("parent_name") @db.VarChar(255)
+  middleName    String? @map("middle_name") @db.VarChar(255)
+  childName     String? @map("child_name") @db.VarChar(255)
+  tradeMarkId   Int?    @map("trade_mark_id")
+  tradeMarkName String? @map("trade_mark_name") @db.VarChar(255)
+
+  /// null → cờ MISSING_SUPPLIER (Product không có supplierId, suy từ lịch sử đặt)
+  supplierId   Int?    @map("supplier_id")
+  supplierName String? @map("supplier_name") @db.VarChar(255)
+
+  // ── Kết quả tính ──
+  forecastDailyDemand Decimal  @map("forecast_daily_demand") @db.Decimal(18, 4)
+  /// HIGH | MEDIUM | LOW | VERY_LOW | NO_DATA
+  confidence          String   @db.VarChar(15)
+  /// INVENTORY_LOG | INVOICE_DETAIL | MIXED | NONE
+  demandSource        String   @map("demand_source") @db.VarChar(20)
+  ma30                Decimal? @db.Decimal(18, 4)
+  ma60                Decimal? @db.Decimal(18, 4)
+  ma90                Decimal? @db.Decimal(18, 4)
+  trendRatio          Decimal? @map("trend_ratio") @db.Decimal(10, 4)
+
+  leadTimeDays   Int    @map("lead_time_days") @db.SmallInt
+  /// GLOBAL | CATEGORY | SUPPLIER | SKU | DERIVED
+  leadTimeSource String @map("lead_time_source") @db.VarChar(15)
+  safetyDays     Int    @map("safety_days") @db.SmallInt
+  coverageDays   Int    @map("coverage_days") @db.SmallInt
+
+  leadTimeDemand Decimal @map("lead_time_demand") @db.Decimal(18, 4)
+  safetyBuffer   Decimal @map("safety_buffer") @db.Decimal(18, 4)
+  reorderPoint   Decimal @map("reorder_point") @db.Decimal(18, 4)
+
+  // ── Tồn kho ──
+  physicalStock  Decimal @map("physical_stock") @db.Decimal(18, 4)
+  reservedStock  Decimal @map("reserved_stock") @db.Decimal(18, 4)
+  availableStock Decimal @map("available_stock") @db.Decimal(18, 4)
+  incomingTotal  Decimal @map("incoming_total") @db.Decimal(18, 4)
+
+  inventoryPosition Decimal @map("inventory_position") @db.Decimal(18, 4)
+  /// Dương = cần đặt
+  reorderGap        Decimal @map("reorder_gap") @db.Decimal(18, 4)
+  needsOrder        Boolean @map("needs_order")
+
+  // ── SOQ ──
+  soqRaw             Decimal  @map("soq_raw") @db.Decimal(18, 4)
+  suggestedQuantity  Decimal  @map("suggested_quantity") @db.Decimal(18, 4)
+  suggestedPackCount Decimal? @map("suggested_pack_count") @db.Decimal(12, 2)
+  packSize           Decimal  @map("pack_size") @db.Decimal(12, 4)
+  moqApplied         Decimal? @map("moq_applied") @db.Decimal(18, 4)
+  estimatedUnitPrice Decimal? @map("estimated_unit_price") @db.Decimal(18, 2)
+  estimatedValue     Decimal? @map("estimated_value") @db.Decimal(18, 2)
+
+  // ── Phân loại ──
+  /// CRITICAL | HIGH | MEDIUM | LOW | HEALTHY | OVERSTOCK | NO_DATA
+  priority              String    @db.VarChar(15)
+  priorityRank          Int       @map("priority_rank") @db.SmallInt
+  /// HIGH | MEDIUM | LOW | UNRELIABLE
+  reliability           String    @db.VarChar(15)
+  urgencyRatio          Decimal?  @map("urgency_ratio") @db.Decimal(10, 4)
+  daysUntilStockout     Int?      @map("days_until_stockout") @db.SmallInt
+  daysOfSupply          Decimal?  @map("days_of_supply") @db.Decimal(10, 2)
+  projectedStockoutDate DateTime? @map("projected_stockout_date") @db.Date
+
+  // ── Trạng thái ──
+  /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
+  status          String @default("PENDING") @db.VarChar(15)
+  orderSupplierId Int?   @map("order_supplier_id")
+
+  // ── Hiển thị & explainability ──
+  /// Câu kết luận tiếng Việt do backend sinh (PRD §12.4)
+  summaryText      String @map("summary_text")
+  /// Toàn bộ input + từng bước tính + flags
+  calculationTrace Json   @map("calculation_trace")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  recommendation PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+
+  @@unique([recommendationId, productId])
+  @@index([recommendationId, priorityRank, daysUntilStockout])
+  @@index([productId, id(sort: Desc)])
+  @@index([recommendationId, supplierId])
+  @@index([recommendationId, status])
+  @@map("recommendation_item")
 }

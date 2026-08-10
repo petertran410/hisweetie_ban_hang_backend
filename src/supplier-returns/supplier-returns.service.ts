@@ -4,6 +4,8 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -18,12 +20,24 @@ import {
 } from './dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  recalcConditionBucketsForPairs,
+  writeConditionLogs,
+  computeBucketTotals,
+  computeNearExpiryLots,
+} from '../common/stock-condition-onhand.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from 'src/common/inventory-log.util';
 
 @Injectable()
 export class SupplierReturnsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -66,13 +80,80 @@ export class SupplierReturnsService {
     await recalcSupplierDebt(tx, supplierId);
   }
 
+  private roundMoney(value: number): number {
+    return Math.round((value + Number.EPSILON) * 100) / 100;
+  }
+
+  private normalizeCurrency(currency?: string | null, exchangeRate?: unknown) {
+    const normalizedCurrency = (currency || 'VND').toUpperCase();
+    if (!['VND', 'CNY'].includes(normalizedCurrency)) {
+      throw new BadRequestException('Chỉ hỗ trợ tiền tệ VND hoặc CNY');
+    }
+    const normalizedRate =
+      normalizedCurrency === 'VND' ? 1 : Number(exchangeRate);
+    if (!Number.isFinite(normalizedRate) || normalizedRate <= 0) {
+      throw new BadRequestException('Tỷ giá ngoại tệ phải lớn hơn 0');
+    }
+    return { currency: normalizedCurrency, exchangeRate: normalizedRate };
+  }
+
+  private normalizeDetailAmounts(
+    detail: any,
+    currency: string,
+    exchangeRate: number,
+  ) {
+    const quantity = Number(detail.requestQuantity);
+    const inputMode = detail.inputMode || 'unit_price';
+    if (currency === 'VND') {
+      const totalAmount = this.roundMoney(Number(detail.totalAmount));
+      return {
+        inputMode,
+        returnPrice: quantity > 0 ? this.roundMoney(totalAmount / quantity) : 0,
+        totalAmount,
+        foreignReturnPrice: null,
+        foreignReturnAmount: null,
+      };
+    }
+
+    let foreignReturnAmount: number;
+    let foreignReturnPrice: number;
+    if (inputMode === 'total_amount') {
+      foreignReturnAmount = this.roundMoney(Number(detail.foreignReturnAmount));
+      foreignReturnPrice =
+        quantity > 0 ? this.roundMoney(foreignReturnAmount / quantity) : 0;
+    } else {
+      foreignReturnPrice = this.roundMoney(Number(detail.foreignReturnPrice));
+      foreignReturnAmount = this.roundMoney(foreignReturnPrice * quantity);
+    }
+    if (
+      !Number.isFinite(foreignReturnAmount) ||
+      !Number.isFinite(foreignReturnPrice)
+    ) {
+      throw new BadRequestException(
+        `Sản phẩm ${detail.productName}: Thiếu số tiền ngoại tệ hợp lệ`,
+      );
+    }
+    const totalAmount = this.roundMoney(foreignReturnAmount * exchangeRate);
+    return {
+      inputMode,
+      foreignReturnPrice,
+      foreignReturnAmount,
+      totalAmount,
+      returnPrice: quantity > 0 ? this.roundMoney(totalAmount / quantity) : 0,
+    };
+  }
+
   // ─── findAll ─────────────────────────────────────────────────────────────────
 
-  async findAll(query: SupplierReturnQueryDto, supplierScope?: number | null) {
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu trả hàng nhập. Tách riêng để dùng chung
+   * giữa findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file
+   * khớp hoàn toàn với bộ lọc đang hiển thị (bao gồm cả scope NCC).
+   */
+  private buildSupplierReturnWhere(
+    query: SupplierReturnQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const where: any = {};
 
     if (query.search) {
@@ -121,6 +202,16 @@ export class SupplierReturnsService {
     // Scope NCC: ép theo nhà cung cấp của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
 
+    return where;
+  }
+
+  async findAll(query: SupplierReturnQueryDto, supplierScope?: number | null) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
     const [data, total] = await Promise.all([
       this.prisma.supplierReturn.findMany({
         where,
@@ -130,7 +221,14 @@ export class SupplierReturnsService {
         include: {
           supplier: { select: { id: true, code: true, name: true } },
           branch: { select: { id: true, name: true } },
-          purchaseOrder: { select: { id: true, code: true } },
+          purchaseOrder: {
+            select: {
+              id: true,
+              code: true,
+              currency: true,
+              exchangeRate: true,
+            },
+          },
           creator: { select: { id: true, name: true } },
           details: {
             include: {
@@ -145,6 +243,227 @@ export class SupplierReturnsService {
     return { data, total, page, limit };
   }
 
+  // ─── Export ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu trả hàng nhập = 1 dòng Excel. Bộ lọc dùng
+   * chung buildSupplierReturnWhere với danh sách.
+   */
+  async exportSupplierReturns(
+    query: SupplierReturnQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã phiếu nhập', key: 'purchaseOrderCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Tên nhà cung cấp', key: 'supplierName', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Tổng SL trả', key: 'totalQuantity', width: 14 },
+      { header: 'Tổng tiền trả', key: 'totalReturnAmount', width: 16 },
+      { header: 'Tiền cần hoàn', key: 'refundAmount', width: 16 },
+      { header: 'Đã hoàn', key: 'refundedAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 20 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.supplierReturn.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          purchaseOrder: { select: { code: true } },
+          creator: { select: { name: true } },
+          details: { select: { requestQuantity: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const totalQuantity = r.details.reduce(
+          (s, d) => s + Number(d.requestQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: r.code,
+          purchaseOrderCode: r.purchaseOrder?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          supplierCode: r.supplier?.code || '',
+          supplierName: r.supplier?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          totalGoods: r.details.length,
+          totalQuantity,
+          totalReturnAmount: Number(r.totalReturnAmount) || 0,
+          refundAmount: Number(r.refundAmount) || 0,
+          refundedAmount: Number(r.refundedAmount) || 0,
+          note: r.note || '',
+          status: SUPPLIER_RETURN_STATUS_LABELS[r.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildSupplierReturnWhere với export tổng quan.
+   */
+  async exportSupplierReturnsDetail(
+    query: SupplierReturnQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildSupplierReturnWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng nhập chi tiết');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã phiếu nhập', key: 'purchaseOrderCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Tên nhà cung cấp', key: 'supplierName', width: 24 },
+      { header: 'Chi nhánh', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 20 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL nhập', key: 'purchaseQuantity', width: 12 },
+      { header: 'SL yêu cầu trả', key: 'requestQuantity', width: 14 },
+      { header: 'SL xác nhận', key: 'confirmedQuantity', width: 12 },
+      { header: 'Đơn giá trả', key: 'returnPrice', width: 14 },
+      { header: 'Thành tiền', key: 'totalAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.supplierReturn.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { name: true } },
+          branch: { select: { name: true } },
+          purchaseOrder: { select: { code: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const base = {
+          code: r.code,
+          purchaseOrderCode: r.purchaseOrder?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          supplierName: r.supplier?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          status: SUPPLIER_RETURN_STATUS_LABELS[r.status] || '',
+        };
+
+        if (!r.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            purchaseQuantity: 0,
+            requestQuantity: 0,
+            confirmedQuantity: 0,
+            returnPrice: 0,
+            totalAmount: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of r.details) {
+          const row = sheet.addRow({
+            ...base,
+            // Mỗi dòng chi tiết có thể thuộc phiếu nhập riêng (mode by_product),
+            // ưu tiên mã phiếu nhập của dòng nếu có.
+            purchaseOrderCode: d.purchaseOrderCode || base.purchaseOrderCode,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            purchaseQuantity: Number(d.purchaseQuantity) || 0,
+            requestQuantity: Number(d.requestQuantity) || 0,
+            confirmedQuantity: Number(d.confirmedQuantity) || 0,
+            returnPrice: Number(d.returnPrice) || 0,
+            totalAmount: Number(d.totalAmount) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
   // ─── findOne ─────────────────────────────────────────────────────────────────
 
   async findOne(id: number, supplierScope?: number | null) {
@@ -153,7 +472,9 @@ export class SupplierReturnsService {
       include: {
         supplier: { select: { id: true, code: true, name: true } },
         branch: { select: { id: true, name: true } },
-        purchaseOrder: { select: { id: true, code: true } },
+        purchaseOrder: {
+          select: { id: true, code: true, currency: true, exchangeRate: true },
+        },
         creator: { select: { id: true, name: true } },
         exporter: { select: { id: true, name: true } },
         refundConfirmer: { select: { id: true, name: true } },
@@ -196,6 +517,7 @@ export class SupplierReturnsService {
       if (!supplier) throw new NotFoundException('Không tìm thấy nhà cung cấp');
 
       // ── Validate theo mode ───────────────────────────────────────────────
+      let monetary = this.normalizeCurrency(dto.currency, dto.exchangeRate);
       if (dto.mode === 'by_purchase_order') {
         if (!dto.purchaseOrderId) {
           throw new BadRequestException(
@@ -219,6 +541,7 @@ export class SupplierReturnsService {
             'Phiếu nhập hàng không thuộc nhà cung cấp này',
           );
         }
+        monetary = this.normalizeCurrency(po.currency, po.exchangeRate);
 
         // Lấy số lượng đã trả trước đó (không tính phiếu bị hủy)
         const existingReturns = await tx.supplierReturn.findMany({
@@ -285,8 +608,11 @@ export class SupplierReturnsService {
         purchasePrice: d.purchasePrice,
         requestQuantity: d.requestQuantity,
         confirmedQuantity: 0,
-        returnPrice: d.returnPrice,
-        totalAmount: d.returnPrice * d.requestQuantity,
+        ...this.normalizeDetailAmounts(
+          d,
+          monetary.currency,
+          monetary.exchangeRate,
+        ),
         note: d.note,
       }));
 
@@ -294,6 +620,15 @@ export class SupplierReturnsService {
         (sum, d) => sum + d.totalAmount,
         0,
       );
+      const totalForeignReturnAmount =
+        monetary.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              detailsData.reduce(
+                (sum, d) => sum + Number(d.foreignReturnAmount || 0),
+                0,
+              ),
+            );
 
       const status = dto.isDraft
         ? SUPPLIER_RETURN_STATUS.DRAFT
@@ -308,7 +643,10 @@ export class SupplierReturnsService {
           branchId: dto.branchId,
           status,
           statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
+          currency: monetary.currency,
+          exchangeRate: monetary.exchangeRate,
           totalReturnAmount,
+          totalForeignReturnAmount,
           note: dto.note,
           createdBy: userId,
           createdByName: user?.name || 'System',
@@ -370,6 +708,10 @@ export class SupplierReturnsService {
       });
 
       // ── Validate lại theo mode ────────────────────────────────────────────
+      let monetary = this.normalizeCurrency(
+        supplierReturn.currency,
+        supplierReturn.exchangeRate,
+      );
       if (
         supplierReturn.mode === 'by_purchase_order' &&
         supplierReturn.purchaseOrderId
@@ -380,6 +722,7 @@ export class SupplierReturnsService {
         });
 
         if (!po) throw new NotFoundException('Không tìm thấy phiếu nhập hàng');
+        monetary = this.normalizeCurrency(po.currency, po.exchangeRate);
 
         const existingReturns = await tx.supplierReturn.findMany({
           where: {
@@ -450,8 +793,11 @@ export class SupplierReturnsService {
           purchasePrice: d.purchasePrice,
           requestQuantity: d.requestQuantity,
           confirmedQuantity: 0,
-          returnPrice: d.returnPrice,
-          totalAmount: d.returnPrice * d.requestQuantity,
+          ...this.normalizeDetailAmounts(
+            d,
+            monetary.currency,
+            monetary.exchangeRate,
+          ),
           note: d.note,
         }));
 
@@ -463,6 +809,15 @@ export class SupplierReturnsService {
         (sum, d) => sum + d.totalAmount,
         0,
       );
+      const totalForeignReturnAmount =
+        monetary.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              detailsData.reduce(
+                (sum, d) => sum + Number(d.foreignReturnAmount || 0),
+                0,
+              ),
+            );
 
       const newStatus = dto.isDraft
         ? SUPPLIER_RETURN_STATUS.DRAFT
@@ -473,7 +828,10 @@ export class SupplierReturnsService {
         data: {
           status: newStatus,
           statusValue: SUPPLIER_RETURN_STATUS_LABELS[newStatus],
+          currency: monetary.currency,
+          exchangeRate: monetary.exchangeRate,
           totalReturnAmount,
+          totalForeignReturnAmount,
           note: dto.note ?? supplierReturn.note,
         },
       });
@@ -505,7 +863,8 @@ export class SupplierReturnsService {
   // ─── confirmExport (Bước 2) ──────────────────────────────────────────────────
 
   async confirmExport(id: number, dto: ConfirmExportDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const supplierReturn = await tx.supplierReturn.findUnique({
         where: { id },
         include: {
@@ -532,6 +891,9 @@ export class SupplierReturnsService {
         where: { id: userId },
         select: { id: true, name: true },
       });
+
+      // Actor cho InventoryLog (truy vết ai xuất kho trả NCC).
+      const supplierReturnLogActor = buildInventoryLogActor(userId, user?.name);
 
       if (dto.isDraft) {
         await tx.supplierReturn.update({
@@ -581,35 +943,27 @@ export class SupplierReturnsService {
         }
 
         // Validate damaged/nearExpiry buckets nếu user chỉ định loại hàng.
-        // Đối xứng `invoices.service.ts:validateConditionQuantity`: chỉ
-        // check khi conditionType !== 'normal'.
+        // Tồn bucket đọc TỪ SỔ CÁI (nguồn chân lý), không đọc cache trên
+        // Inventory vì cache có thể trôi khỏi sổ cái.
         const condition = confirmDetail.conditionType || 'normal';
-        if (condition === 'damaged') {
-          if (Number(inv.damagedQuantity || 0) < confirmedQty) {
+        if (condition === 'damaged' || condition === 'near_expiry') {
+          const totals = await computeBucketTotals(
+            tx,
+            detail.productId,
+            supplierReturn.branchId,
+          );
+          const available =
+            condition === 'damaged' ? totals.damaged : totals.nearExpiry;
+          if (available < confirmedQty) {
+            const label = condition === 'damaged' ? 'bục rách' : 'cận date';
             throw new BadRequestException(
-              `Sản phẩm ${detail.productName}: Tồn kho hàng damaged không đủ (cần ${confirmedQty}, còn ${Number(inv.damagedQuantity || 0)})`,
-            );
-          }
-        } else if (condition === 'near_expiry') {
-          if (Number(inv.nearExpiryQuantity || 0) < confirmedQty) {
-            throw new BadRequestException(
-              `Sản phẩm ${detail.productName}: Tồn kho hàng cận date không đủ (cần ${confirmedQty}, còn ${Number(inv.nearExpiryQuantity || 0)})`,
+              `Sản phẩm ${detail.productName}: Tồn kho hàng ${label} không đủ (cần ${confirmedQty}, còn ${available})`,
             );
           }
         }
 
-        // Giảm tồn kho theo conditionType. Đối xứng
-        // `invoices.service.ts:buildInventoryDeductData`: trừ `onHand` luôn,
-        // trừ thêm bucket damaged/nearExpiry nếu chỉ định.
-        const deductData: Record<string, any> = {
-          onHand: { decrement: confirmedQty },
-        };
-        if (condition === 'damaged') {
-          deductData.damagedQuantity = { decrement: confirmedQty };
-        } else if (condition === 'near_expiry') {
-          deductData.nearExpiryQuantity = { decrement: confirmedQty };
-        }
-
+        // Trừ onHand. Tồn bucket KHÔNG sửa trực tiếp ở đây nữa — ghi sổ cái
+        // bên dưới rồi recalc, để bucket luôn = Σ log active.
         await tx.inventory.update({
           where: {
             productId_branchId: {
@@ -617,10 +971,30 @@ export class SupplierReturnsService {
               branchId: supplierReturn.branchId,
             },
           },
-          data: deductData,
+          data: { onHand: { decrement: confirmedQty } },
         });
+        touchedProductIds.add(detail.productId);
 
-        // Ghi InventoryLog
+        // Ghi sổ cái loại tồn: xuất trả NCC từ bucket nào thì trừ bucket đó.
+        if (condition === 'damaged' || condition === 'near_expiry') {
+          await writeConditionLogs(tx, {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: supplierReturn.branchId,
+            branchName: supplierReturn.branch?.name || '',
+            refCode: supplierReturn.code,
+            refType: 'supplier_return',
+            refId: supplierReturn.id,
+            transactionType: 'SUPPLIER_RETURN_OUT',
+            costPrice: Number(inv.cost || 0),
+            note: 'Xuất trả nhà cung cấp',
+            damaged: condition === 'damaged' ? -confirmedQty : 0,
+            nearExpiry: condition === 'near_expiry' ? -confirmedQty : 0,
+            nearExpiryDate: detail.manufactureDate ?? null,
+          });
+        }
+
         await tx.inventoryLog.create({
           data: {
             productId: detail.productId,
@@ -637,6 +1011,7 @@ export class SupplierReturnsService {
             transactionPrice: Number(detail.returnPrice),
             partnerId: supplierReturn.supplierId,
             partnerName: supplierReturn.supplier?.name || null,
+            ...buildInventoryLogBase(supplierReturnLogActor),
           },
         });
 
@@ -651,9 +1026,18 @@ export class SupplierReturnsService {
       }
 
       // NGUỒN CHÂN LÝ: onHand = Σ log active. Recalc sau khi ghi log
-      // SUPPLIER_RETURN cho mọi item (đè decrement rời rạc). damaged/nearExpiry
-      // giữ nguyên theo deductData bên trên.
+      // SUPPLIER_RETURN cho mọi item (đè decrement rời rạc).
       await recalcOnHandForPairs(
+        tx,
+        supplierReturn.details.map((d) => ({
+          productId: d.productId,
+          branchId: supplierReturn.branchId,
+        })),
+      );
+
+      // NGUỒN CHÂN LÝ bucket: tồn bucket = Σ log active. Recalc cache sau khi
+      // đã ghi sổ cái SUPPLIER_RETURN_OUT.
+      await recalcConditionBucketsForPairs(
         tx,
         supplierReturn.details.map((d) => ({
           productId: d.productId,
@@ -666,10 +1050,26 @@ export class SupplierReturnsService {
         where: { supplierReturnId: id },
       });
 
-      const refundAmount = updatedDetails.reduce(
-        (sum, d) => sum + Number(d.confirmedQuantity) * Number(d.returnPrice),
-        0,
+      const refundAmount = this.roundMoney(
+        updatedDetails.reduce(
+          (sum, d) =>
+            sum + (Number(d.confirmedQuantity) > 0 ? Number(d.totalAmount) : 0),
+          0,
+        ),
       );
+      const refundForeignAmount =
+        supplierReturn.currency === 'VND'
+          ? null
+          : this.roundMoney(
+              updatedDetails.reduce(
+                (sum, d) =>
+                  sum +
+                  (Number(d.confirmedQuantity) > 0
+                    ? Number(d.foreignReturnAmount || 0)
+                    : 0),
+                0,
+              ),
+            );
 
       await tx.supplierReturn.update({
         where: { id },
@@ -680,6 +1080,7 @@ export class SupplierReturnsService {
               SUPPLIER_RETURN_STATUS.STOCK_EXPORTED
             ],
           refundAmount,
+          refundForeignAmount,
           exportedById: userId,
           exportedByName: user?.name || 'System',
           exportedAt: new Date(),
@@ -700,7 +1101,18 @@ export class SupplierReturnsService {
         entityCode: supplierReturn.code,
         category: 'supplier_return',
         severity: 'info',
-        snapshot: { code: supplierReturn.code, refundAmount },
+        snapshot: {
+          code: supplierReturn.code,
+          refundAmount,
+          // Bổ sung danh sách sản phẩm + số lượng xuất trả NCC để truy vết
+          // trực tiếp trên audit log (trước đây chỉ có code + refundAmount).
+          items: supplierReturn.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+          })),
+        },
         message: `Xác nhận xuất kho phiếu trả hàng nhập ${supplierReturn.code}`,
         messageTemplate: 'SUPPLIER_RETURN_STOCK_EXPORTED',
         userId,
@@ -710,6 +1122,12 @@ export class SupplierReturnsService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   // ─── confirmRefund (Bước 3) ──────────────────────────────────────────────────
@@ -736,6 +1154,8 @@ export class SupplierReturnsService {
               paidAmount: true,
               total: true,
               discount: true,
+              currency: true,
+              exchangeRate: true,
             },
           },
         },
@@ -800,6 +1220,12 @@ export class SupplierReturnsService {
             branchId: supplierReturn.branchId,
             isReceipt: true,
             amount: refundAmount,
+            currency: supplierReturn.currency,
+            exchangeRate: Number(supplierReturn.exchangeRate),
+            foreignAmount:
+              supplierReturn.refundForeignAmount == null
+                ? null
+                : Number(supplierReturn.refundForeignAmount),
             transDate: new Date(),
             method: dto.method || 'cash',
             accountId: dto.accountId || null,
@@ -849,6 +1275,7 @@ export class SupplierReturnsService {
             SUPPLIER_RETURN_STATUS_LABELS[SUPPLIER_RETURN_STATUS.COMPLETED],
           refundType: dto.refundType,
           refundedAmount: refundAmount,
+          refundedForeignAmount: supplierReturn.refundForeignAmount,
           refundConfirmedBy: userId,
           refundConfirmedByName: user?.name || 'System',
           refundConfirmedAt: new Date(),
@@ -883,7 +1310,8 @@ export class SupplierReturnsService {
   // ─── cancel ──────────────────────────────────────────────────────────────────
 
   async cancel(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const supplierReturn = await tx.supplierReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -902,22 +1330,15 @@ export class SupplierReturnsService {
         throw new BadRequestException('Phiếu trả hàng nhập đã bị hủy');
       }
 
-      // Rollback tồn kho nếu đã xuất kho — restore cả damaged/nearExpiry
-      // buckets theo conditionType (đối xứng `return-orders.cancel:817-826`).
+      // Rollback tồn kho nếu đã xuất kho.
+      // KHÔNG restore bucket thủ công: phiếu chuyển sang CANCELLED bên dưới →
+      // active-finder 'supplier_return' loại toàn bộ StockConditionLog của phiếu
+      // này → recalc bucket tự đưa tồn loại về đúng. Chỉ hoàn onHand ở đây
+      // (onHand cũng được recalc lại sau đó từ thẻ kho).
       if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
         for (const detail of supplierReturn.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty <= 0) continue;
-
-          const restoreData: Record<string, any> = {
-            onHand: { increment: confirmedQty },
-          };
-          const condition = (detail as any).conditionType || 'normal';
-          if (condition === 'damaged') {
-            restoreData.damagedQuantity = { increment: confirmedQty };
-          } else if (condition === 'near_expiry') {
-            restoreData.nearExpiryQuantity = { increment: confirmedQty };
-          }
 
           await tx.inventory.update({
             where: {
@@ -926,8 +1347,9 @@ export class SupplierReturnsService {
                 branchId: supplierReturn.branchId,
               },
             },
-            data: restoreData,
+            data: { onHand: { increment: confirmedQty } },
           });
+          touchedProductIds.add(detail.productId);
         }
       }
 
@@ -945,16 +1367,16 @@ export class SupplierReturnsService {
         },
       });
 
-      // NGUỒN CHÂN LÝ: status=5 → log SUPPLIER_RETURN inactive → recalc cộng
-      // lại onHand (damaged/nearExpiry đã restore thủ công ở trên).
+      // NGUỒN CHÂN LÝ: status=CANCELLED → mọi log (InventoryLog +
+      // StockConditionLog) trỏ phiếu này thành inactive → recalc đưa onHand và
+      // tồn bucket về Σ log active. Không cần cộng/trừ cache thủ công.
       if (supplierReturn.status === SUPPLIER_RETURN_STATUS.STOCK_EXPORTED) {
-        await recalcOnHandForPairs(
-          tx,
-          supplierReturn.details.map((d) => ({
-            productId: d.productId,
-            branchId: supplierReturn.branchId,
-          })),
-        );
+        const pairs = supplierReturn.details.map((d) => ({
+          productId: d.productId,
+          branchId: supplierReturn.branchId,
+        }));
+        await recalcOnHandForPairs(tx, pairs);
+        await recalcConditionBucketsForPairs(tx, pairs);
       }
 
       // Phiếu bị hủy → loại khỏi offsets của Formula B → recalc để hoàn nợ NCC
@@ -969,7 +1391,16 @@ export class SupplierReturnsService {
         entityCode: supplierReturn.code,
         category: 'supplier_return',
         severity: 'warning',
-        snapshot: { code: supplierReturn.code },
+        snapshot: {
+          code: supplierReturn.code,
+          // Bổ sung danh sách sản phẩm để truy vết hủy phiếu trả NCC.
+          items: supplierReturn.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+          })),
+        },
         message: `Hủy phiếu trả hàng nhập ${supplierReturn.code}`,
         messageTemplate: 'SUPPLIER_RETURN_CANCEL',
         userId,
@@ -979,6 +1410,12 @@ export class SupplierReturnsService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async importFromExcel(dto: ImportSupplierReturnsDto, userId: number) {
@@ -1040,6 +1477,7 @@ export class SupplierReturnsService {
               purchasePrice: d.returnPrice,
               requestQuantity: d.quantity,
               confirmedQuantity: d.quantity,
+              inputMode: 'total_amount',
               returnPrice: d.returnPrice,
               totalAmount: d.totalAmount,
               note: d.note || null,
@@ -1060,8 +1498,13 @@ export class SupplierReturnsService {
                 status,
                 statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
                 totalReturnAmount: item.totalReturnAmount,
+                currency: 'VND',
+                exchangeRate: 1,
+                totalForeignReturnAmount: null,
                 refundAmount: item.totalReturnAmount,
+                refundForeignAmount: null,
                 refundedAmount,
+                refundedForeignAmount: null,
                 refundType,
                 note: item.note || null,
                 createdByName:
@@ -1084,8 +1527,13 @@ export class SupplierReturnsService {
                 status,
                 statusValue: SUPPLIER_RETURN_STATUS_LABELS[status],
                 totalReturnAmount: item.totalReturnAmount,
+                currency: 'VND',
+                exchangeRate: 1,
+                totalForeignReturnAmount: null,
                 refundAmount: item.totalReturnAmount,
+                refundForeignAmount: null,
                 refundedAmount,
+                refundedForeignAmount: null,
                 refundType,
                 note: item.note || null,
                 createdBy: userId,

@@ -16,6 +16,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
@@ -24,12 +25,17 @@ import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
 } from '../common/consignment-packing.util';
+import {
+  buildInventoryLogActor,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 
 @Injectable()
 export class PackingHangsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: PackingHangQueryDto) {
@@ -152,8 +158,8 @@ export class PackingHangsService {
   }
 
   async create(dto: CreatePackingHangDto, userId: number) {
-    const isConsignment =
-      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const touchedProductIds = new Set<number>();
 
     const packingHang = await this.prisma.$transaction(async (tx) => {
       if (isConsignment) {
@@ -183,7 +189,48 @@ export class PackingHangsService {
         });
 
         // Đóng hàng → PACKED (+ trừ kho lần đầu rời CONFIRMED)
-        await applyPackingToConsignments(tx, dto.consignmentIds!, 'dong-hang');
+        // Fetch người thực hiện trong tx để ghi userId/createdByName vào
+        // InventoryLog CONSIGNMENT_OUT (truy vết ai xuất kho ký gửi).
+        const consignActorUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const consignActor: InventoryLogActor = buildInventoryLogActor(
+          userId,
+          consignActorUser?.name || consignActorUser?.email,
+        );
+        const touched = await applyPackingToConsignments(
+          tx,
+          dto.consignmentIds!,
+          'dong-hang',
+          consignActor,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
+
+        // Ghi audit log cho action xuất kho ký gửi (truy vết ai trừ kho ký gửi).
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'CONSIGNMENT_STOCK_OUT',
+          entityType: 'consignments',
+          entityCode: created.code,
+          category: getCategoryFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          severity: getSeverityFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          snapshot: {
+            packingCode: created.code,
+            packingType: 'dong-hang',
+            consignmentIds: dto.consignmentIds,
+            productCount: touched.size,
+          },
+          message: renderAuditMessage('CONSIGNMENT_STOCK_OUT', {
+            consignmentCode: created.code,
+            productCount: touched.size,
+          }),
+          messageTemplate: 'CONSIGNMENT_STOCK_OUT',
+          userId,
+          userName:
+            consignActorUser?.name || consignActorUser?.email || 'System',
+          branchId: created.branchId || undefined,
+        });
 
         return created;
       }
@@ -194,12 +241,27 @@ export class PackingHangsService {
         },
         select: {
           id: true,
+          code: true,
+          status: true,
           branchId: true,
         },
       });
 
       if (invoices.length === 0) {
         throw new BadRequestException('Không tìm thấy hóa đơn');
+      }
+
+      // Chặn đóng hàng cho hóa đơn đã giao hàng thành công (DELIVERED)
+      // hoặc đã hoàn thành (COMPLETED).
+      const delivered = invoices.find(
+        (inv) =>
+          inv.status === INVOICE_STATUS.DELIVERED ||
+          inv.status === INVOICE_STATUS.COMPLETED,
+      );
+      if (delivered) {
+        throw new BadRequestException(
+          `Hóa đơn ${delivered.code} đã giao hàng, không thể đóng hàng`,
+        );
       }
 
       const firstBranchId = invoices[0].branchId;
@@ -249,7 +311,11 @@ export class PackingHangsService {
         where: {
           id: { in: dto.invoiceIds },
           status: {
-            notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+            notIn: [
+              INVOICE_STATUS.CANCELLED,
+              INVOICE_STATUS.COMPLETED,
+              INVOICE_STATUS.DELIVERED,
+            ],
           },
         },
         data: {
@@ -260,6 +326,10 @@ export class PackingHangsService {
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     // Audit log ngoài transaction
     const user = await this.prisma.user.findUnique({
@@ -379,6 +449,8 @@ export class PackingHangsService {
       .map((i: any) => i.consignmentId)
       .filter((v: any) => v != null);
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       if (invoiceIds.length > 0) {
         await assertCanCancelPacking(tx, invoiceIds, 'dong-hang', id);
@@ -393,9 +465,17 @@ export class PackingHangsService {
         await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
       }
       if (consignmentIds.length > 0) {
-        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+        const touched = await recalcConsignmentStatusAfterPackingCancel(
+          tx,
+          consignmentIds,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     if (userId) {
       const user = await this.prisma.user.findUnique({

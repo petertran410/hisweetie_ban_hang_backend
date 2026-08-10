@@ -1,6 +1,7 @@
 import {
   ArrayNotEmpty,
   IsArray,
+  IsBoolean,
   IsOptional,
   IsString,
   ValidateNested,
@@ -33,6 +34,14 @@ export class MisaCreateVoucherRequestDto {
   @ValidateNested()
   @Type(() => MisaBuyerOverrideDto)
   buyerOverride?: MisaBuyerOverrideDto;
+
+  /**
+   * Đẩy lại (force) ngay cả khi hóa đơn đã SYNCED / đã có misaOrgRefId.
+   * Dùng khi chứng từ trên Misa bị xóa và cần tạo lại với cùng orgRefId.
+   */
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
 }
 
 /**
@@ -50,4 +59,11 @@ export class MisaBulkVoucherRequestDto {
    */
   @IsOptional()
   buyerOverrides?: Record<string, MisaBuyerOverrideDto>;
+
+  /**
+   * Đẩy lại (force) toàn bộ hóa đơn trong danh sách kể cả đã SYNCED.
+   */
+  @IsOptional()
+  @IsBoolean()
+  force?: boolean;
 }

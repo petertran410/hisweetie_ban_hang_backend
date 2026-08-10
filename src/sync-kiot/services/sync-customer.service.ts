@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
+import { LarkCustomerSyncService } from '../../lark-sync/services/lark-customer-sync.service';
 
 interface CustomerLookupContext {
   branchByKiotId: Map<string, number>;
@@ -15,7 +16,11 @@ export class SyncCustomerService extends BaseSyncService {
   protected readonly endpoint = 'customers';
   protected concurrency = 8;
 
-  constructor(prisma: PrismaService, api: SyncKiotApiService) {
+  constructor(
+    prisma: PrismaService,
+    api: SyncKiotApiService,
+    private readonly larkCustomerSync: LarkCustomerSyncService,
+  ) {
     super(prisma, api);
   }
 
@@ -164,6 +169,8 @@ export class SyncCustomerService extends BaseSyncService {
           ctx,
         );
       }
+      // Đẩy lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+      this.larkCustomerSync.syncSingleAsync(existingId);
       return 'updated';
     }
 
@@ -191,6 +198,9 @@ export class SyncCustomerService extends BaseSyncService {
         ctx,
       );
     }
+
+    // Đẩy lên Lark (fire-and-forget, chỉ KH đang hoạt động)
+    this.larkCustomerSync.syncSingleAsync(created.id);
 
     return 'created';
   }

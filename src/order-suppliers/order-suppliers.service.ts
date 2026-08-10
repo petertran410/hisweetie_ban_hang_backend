@@ -4,6 +4,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CancelOrderSupplierDto,
@@ -54,7 +56,15 @@ export class OrderSuppliersService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: OrderSupplierQueryDto, supplierScope?: number | null) {
+  /**
+   * Dựng điều kiện `where` cho PĐN. Tách riêng để dùng chung giữa findAll,
+   * getDetailItems và export/export-detail — đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị trên UI.
+   */
+  private buildOrderSupplierWhere(
+    query: OrderSupplierQueryDto,
+    supplierScope?: number | null,
+  ): any {
     const {
       branchId,
       branchIds,
@@ -64,8 +74,6 @@ export class OrderSuppliersService {
       userId,
       createdDateFrom,
       createdDateTo,
-      pageSize = 15,
-      currentItem = 0,
       search,
     } = query;
 
@@ -83,13 +91,6 @@ export class OrderSuppliersService {
                 { productCode: { contains: search, mode: 'insensitive' } },
                 { productName: { contains: search, mode: 'insensitive' } },
               ],
-            },
-          },
-        },
-        {
-          purchaseOrders: {
-            some: {
-              code: { contains: search, mode: 'insensitive' },
             },
           },
         },
@@ -117,8 +118,15 @@ export class OrderSuppliersService {
       }
     }
 
-    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
+    // Scope NCC: ép theo NCC của user (ghi đè mọi supplierId từ query).
     if (supplierScope != null) where.supplierId = supplierScope;
+
+    return where;
+  }
+
+  async findAll(query: OrderSupplierQueryDto, supplierScope?: number | null) {
+    const { pageSize = 15, currentItem = 0 } = query;
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
 
     const [data, total] = await Promise.all([
       this.prisma.orderSupplier.findMany({
@@ -163,6 +171,18 @@ export class OrderSuppliersService {
               createdAt: 'asc',
             },
           },
+          // Cần foreignAmount để FE list tính "Đã trả / Cần trả NCC" (CNY)
+          // đúng khi tỉ giá TT ≠ tỉ giá phiếu — mirror PurchaseOrder list.
+          payments: {
+            where: { status: { not: 2 } },
+            select: {
+              id: true,
+              amount: true,
+              foreignAmount: true,
+              exchangeRate: true,
+              status: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       }),
@@ -187,57 +207,8 @@ export class OrderSuppliersService {
     query: OrderSupplierQueryDto,
     supplierScope?: number | null,
   ) {
-    const {
-      branchId,
-      branchIds,
-      supplierId,
-      status,
-      createdById,
-      userId,
-      createdDateFrom,
-      createdDateTo,
-      pageSize = 15,
-      currentItem = 0,
-      search,
-    } = query;
-
-    const where: any = {};
-    if (search) {
-      where.OR = [
-        { code: { contains: search, mode: 'insensitive' } },
-        { supplier: { name: { contains: search, mode: 'insensitive' } } },
-        { supplier: { code: { contains: search, mode: 'insensitive' } } },
-        {
-          items: {
-            some: {
-              OR: [
-                { productCode: { contains: search, mode: 'insensitive' } },
-                { productName: { contains: search, mode: 'insensitive' } },
-              ],
-            },
-          },
-        },
-      ];
-    }
-    if (branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
-    } else if (branchId) {
-      where.branchId = branchId;
-    }
-    if (supplierId) where.supplierId = supplierId;
-    if (status !== undefined && status.length > 0) {
-      where.status = status.length === 1 ? status[0] : { in: status };
-    }
-    if (createdById) where.createdBy = createdById;
-    if (userId) where.userId = userId;
-    if (createdDateFrom || createdDateTo) {
-      where.createdAt = {};
-      if (createdDateFrom) where.createdAt.gte = new Date(createdDateFrom);
-      if (createdDateTo) where.createdAt.lte = new Date(createdDateTo);
-    }
-
-    // Scope nhà cung cấp: ép theo NCC của user (ghi đè mọi supplierId từ query).
-    if (supplierScope != null) where.supplierId = supplierScope;
+    const { pageSize = 15, currentItem = 0, search } = query;
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
 
     const orderSuppliers = await this.prisma.orderSupplier.findMany({
       where,
@@ -270,14 +241,16 @@ export class OrderSuppliersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    // Lấy cửa khẩu / số hợp đồng / ngày về kho qua phiếu ghép xe MỚI NHẤT
-    // (chưa hủy) chứa từng (orderSupplierId, productId).
+    // Gom DISTINCT Số HĐ + thông tin xe (cửa khẩu, ngày về kho) qua tất cả phiếu
+    // ghép xe chưa hủy chứa từng (orderSupplierId, productId). Trước đây chỉ lấy
+    // phiếu xe MỚI NHẤT cho mỗi cặp key, làm "nuốt" các Số HĐ khác khi 1 PĐN
+    // xuất hiện trên nhiều xe (vd HH00082-26 thuộc HĐ 2026-169 + 2026-197).
     const osIds = orderSuppliers.map((o) => o.id);
-    const vehicleByKey = new Map<
+    const contractNosByKey = new Map<string, string[]>();
+    const vehicleInfoByKey = new Map<
       string,
       {
         borderGateName: string | null;
-        contractNo: string | null;
         expectedArrivalDate: Date | null;
         actualArrivalDate: Date | null;
       }
@@ -291,28 +264,32 @@ export class OrderSuppliersService {
         select: {
           orderSupplierId: true,
           productId: true,
+          contractNo: true,
           vehicleShipment: {
             select: {
-              vehicleInfo: true,
               expectedArrivalDate: true,
               actualArrivalDate: true,
-              createdAt: true,
               borderGate: { select: { name: true } },
             },
           },
         },
-        orderBy: { vehicleShipment: { createdAt: 'desc' } },
       });
-      // Vì đã sort xe mới nhất trước, chỉ giữ bản ghi đầu tiên cho mỗi key.
       for (const si of shipItems) {
         const key = `${si.orderSupplierId}:${si.productId}`;
-        if (vehicleByKey.has(key)) continue;
-        vehicleByKey.set(key, {
-          borderGateName: si.vehicleShipment?.borderGate?.name ?? null,
-          contractNo: si.vehicleShipment?.vehicleInfo ?? null,
-          expectedArrivalDate: si.vehicleShipment?.expectedArrivalDate ?? null,
-          actualArrivalDate: si.vehicleShipment?.actualArrivalDate ?? null,
-        });
+        if (si.contractNo) {
+          const arr = contractNosByKey.get(key) ?? [];
+          if (!arr.includes(si.contractNo)) arr.push(si.contractNo);
+          contractNosByKey.set(key, arr);
+        }
+        // borderGate/date dùng lần xuất hiện đầu tiên (không quan trọng thứ tự
+        // vì cùng SP cùng PĐN thường đi cùng cửa khẩu + xe).
+        if (!vehicleInfoByKey.has(key) && si.vehicleShipment) {
+          vehicleInfoByKey.set(key, {
+            borderGateName: si.vehicleShipment.borderGate?.name ?? null,
+            expectedArrivalDate: si.vehicleShipment.expectedArrivalDate,
+            actualArrivalDate: si.vehicleShipment.actualArrivalDate,
+          });
+        }
       }
     }
 
@@ -361,7 +338,7 @@ export class OrderSuppliersService {
         ]
           .filter(Boolean)
           .join(' / ');
-        const veh = vehicleByKey.get(`${os.id}:${item.productId}`);
+        const veh = vehicleInfoByKey.get(`${os.id}:${item.productId}`);
         flat.push({
           orderSupplierId: os.id,
           orderSupplierCode: os.code,
@@ -400,9 +377,14 @@ export class OrderSuppliersService {
           productionStageName: (item as any).productionStage?.name ?? null,
           factoryId: (item as any).factoryId ?? null,
           factoryName: (item as any).factory?.name ?? null,
-          // Từ phiếu ghép xe mới nhất
+          // Từ phiếu ghép xe (gom DISTINCT — 1 dòng item có thể thuộc nhiều Số HĐ)
           borderGateName: veh?.borderGateName ?? null,
-          contractNo: veh?.contractNo ?? null,
+          // Giữ `contractNo` (string|null) cho backward-compat với FE cũ —
+          // trả về phần tử đầu tiên của danh sách DISTINCT (hoặc null nếu
+          // dòng chưa được gán HĐ nào).
+          contractNo:
+            contractNosByKey.get(`${os.id}:${item.productId}`)?.[0] ?? null,
+          contractNos: contractNosByKey.get(`${os.id}:${item.productId}`) ?? [],
           expectedArrivalDate: veh?.expectedArrivalDate ?? null,
           actualArrivalDate: veh?.actualArrivalDate ?? null,
         });
@@ -412,6 +394,402 @@ export class OrderSuppliersService {
     const total = flat.length;
     const data = flat.slice(currentItem, currentItem + pageSize);
     return { data, total, pageSize, currentItem };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu đặt hàng nhập = 1 dòng Excel. Bộ lọc dùng
+   * chung buildOrderSupplierWhere với danh sách/chi tiết.
+   *
+   * Cột tài chính (Tổng tiền hàng / Cần trả NCC / Đã trả NCC) ưu tiên CNY +
+   * VND phụ khi phiếu NCC nước ngoài (currency='CNY') — đối xứng cách hiển
+   * thị ở FE trang danh sách. Các phiếu NCC nội địa xuất 1 cột VND như cũ.
+   */
+  async exportOrderSuppliers(
+    query: OrderSupplierQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Đặt hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã đặt hàng nhập', key: 'code', width: 18 },
+      { header: 'Mã nhập hàng', key: 'purchaseOrderCodes', width: 24 },
+      { header: 'Số HĐ', key: 'contractNos', width: 24 },
+      { header: 'Ngày dự kiến nhập', key: 'orderDate', width: 20 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 20 },
+      { header: 'Ngày cập nhật', key: 'updatedAt', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 18 },
+      { header: 'Người đặt', key: 'orderBy', width: 18 },
+      { header: 'Người tạo', key: 'creator', width: 18 },
+      { header: 'Tổng SL', key: 'totalQty', width: 12 },
+      { header: 'Số mặt hàng', key: 'productQty', width: 12 },
+      { header: 'Loại tiền', key: 'currency', width: 10 },
+      { header: 'Tổng tiền hàng (VND)', key: 'totalVnd', width: 18 },
+      { header: 'Tổng tiền hàng (CNY)', key: 'totalCny', width: 18 },
+      { header: 'Giảm giá (VND)', key: 'discountVnd', width: 16 },
+      { header: 'Cần trả NCC (VND)', key: 'supplierDebtVnd', width: 18 },
+      { header: 'Cần trả NCC (CNY)', key: 'supplierDebtCny', width: 18 },
+      { header: 'Đã trả NCC (VND)', key: 'paidAmountVnd', width: 18 },
+      { header: 'Đã trả NCC (CNY)', key: 'paidAmountCny', width: 18 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Ghi chú', key: 'description', width: 28 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.orderSupplier.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          supplier: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          user: { select: { name: true } },
+          creator: { select: { name: true } },
+          purchaseOrders: { select: { code: true } },
+          items: {
+            select: {
+              quantity: true,
+              factorySubTotal: true,
+            },
+          },
+          vehicleShipmentItems: {
+            where: { vehicleShipment: { status: { not: 3 } } },
+            select: { contractNo: true },
+            distinct: ['contractNo'],
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const os of batch) {
+        const purchaseOrderCodes = (os.purchaseOrders || [])
+          .map((po) => po.code)
+          .filter(Boolean)
+          .join(' | ');
+        const contractNos = Array.from(
+          new Set(
+            (os.vehicleShipmentItems || [])
+              .map((v) => v.contractNo)
+              .filter(Boolean) as string[],
+          ),
+        ).join(', ');
+
+        const rate = Number(os.exchangeRate) || 1;
+        const isCny = os.currency === 'CNY';
+
+        // Tổng tiền hàng: ưu tiên CNY (factorySubTotal) khi NCC nước ngoài.
+        const totalCny = (os.items || []).reduce(
+          (s, it) => s + (Math.abs(Number(it.factorySubTotal)) || 0),
+          0,
+        );
+        const totalVnd = Number(os.total) || 0;
+
+        const paidAmountVnd = Math.abs(Number(os.paidAmount || 0));
+        const paidAmountCny = paidAmountVnd > 0 ? paidAmountVnd / rate : 0;
+
+        let discountCny = 0;
+        if (Number(os.discountRatio) > 0) {
+          discountCny = (totalCny * Number(os.discountRatio)) / 100;
+        } else if (os.discount) {
+          discountCny = Math.abs(Number(os.discount)) / rate;
+        }
+        const supplierDebtCny = Math.max(
+          0,
+          totalCny - discountCny - paidAmountCny,
+        );
+        const supplierDebtVnd = Number(os.supplierDebt) || 0;
+
+        const row = sheet.addRow({
+          code: os.code,
+          purchaseOrderCodes,
+          contractNos,
+          orderDate: fmtDateTime(os.orderDate),
+          createdAt: fmtDateTime(os.createdAt),
+          updatedAt: fmtDateTime(os.updatedAt),
+          supplier: os.supplier?.name || '',
+          supplierCode: os.supplier?.code || '',
+          branch: os.branch?.name || '',
+          orderBy: os.user?.name || '',
+          creator: os.creator?.name || '',
+          totalQty: Number(os.totalQty) || 0,
+          productQty: Number(os.productQty) || 0,
+          currency: isCny ? 'CNY' : 'VND',
+          totalVnd,
+          totalCny: isCny ? totalCny : '',
+          discountVnd: Number(os.discount) || 0,
+          supplierDebtVnd,
+          supplierDebtCny: isCny ? supplierDebtCny : '',
+          paidAmountVnd,
+          paidAmountCny: isCny ? paidAmountCny : '',
+          status: getOrderSupplierStatusLabel(os.status),
+          description: os.description || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm của PĐN = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildOrderSupplierWhere. Reuse toàn bộ
+   * logic gom receivedQty + contractNos + vehicle info của getDetailItems để
+   * kết quả xuất file khớp 1-1 với những gì UI đang hiển thị.
+   */
+  async exportOrderSuppliersDetail(
+    query: OrderSupplierQueryDto,
+    res: Response,
+    supplierScope?: number | null,
+  ): Promise<void> {
+    const where = this.buildOrderSupplierWhere(query, supplierScope);
+    const { search } = query;
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const orderSuppliers = await this.prisma.orderSupplier.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        supplier: { select: { id: true, code: true, name: true } },
+        branch: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+        user: { select: { id: true, name: true } },
+        items: {
+          include: {
+            product: {
+              select: {
+                kiotVietId: true,
+                weight: true,
+                weightUnit: true,
+                parentName: true,
+                middleName: true,
+                childName: true,
+                tradeMark: { select: { name: true } },
+              },
+            },
+            productionStage: { select: { id: true, name: true } },
+            factory: { select: { id: true, name: true } },
+          },
+        },
+        purchaseOrders: {
+          where: { isDraft: false, status: { not: 2 } },
+          select: { items: { select: { productId: true, quantity: true } } },
+        },
+      },
+    });
+
+    // Gom DISTINCT Số HĐ + thông tin xe giống getDetailItems (xem comment ở
+    // trên để hiểu vì sao cần lặp qua nhiều phiếu xe).
+    const osIds = orderSuppliers.map((o) => o.id);
+    const contractNosByKey = new Map<string, string[]>();
+    const vehicleInfoByKey = new Map<
+      string,
+      {
+        borderGateName: string | null;
+        expectedArrivalDate: Date | null;
+        actualArrivalDate: Date | null;
+      }
+    >();
+    if (osIds.length > 0) {
+      const shipItems = await this.prisma.vehicleShipmentItem.findMany({
+        where: {
+          orderSupplierId: { in: osIds },
+          vehicleShipment: { status: { not: 3 } },
+        },
+        select: {
+          orderSupplierId: true,
+          productId: true,
+          contractNo: true,
+          vehicleShipment: {
+            select: {
+              expectedArrivalDate: true,
+              actualArrivalDate: true,
+              borderGate: { select: { name: true } },
+            },
+          },
+        },
+      });
+      for (const si of shipItems) {
+        const key = `${si.orderSupplierId}:${si.productId}`;
+        if (si.contractNo) {
+          const arr = contractNosByKey.get(key) ?? [];
+          if (!arr.includes(si.contractNo)) arr.push(si.contractNo);
+          contractNosByKey.set(key, arr);
+        }
+        if (!vehicleInfoByKey.has(key) && si.vehicleShipment) {
+          vehicleInfoByKey.set(key, {
+            borderGateName: si.vehicleShipment.borderGate?.name ?? null,
+            expectedArrivalDate: si.vehicleShipment.expectedArrivalDate,
+            actualArrivalDate: si.vehicleShipment.actualArrivalDate,
+          });
+        }
+      }
+    }
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết đặt hàng nhập');
+
+    sheet.columns = [
+      { header: 'Mã PĐN', key: 'orderSupplierCode', width: 18 },
+      { header: 'Số HĐ', key: 'contractNos', width: 24 },
+      { header: 'Ngày tạo', key: 'orderDate', width: 20 },
+      { header: 'Nhà cung cấp', key: 'supplier', width: 24 },
+      { header: 'Mã NCC', key: 'supplierCode', width: 14 },
+      { header: 'Chi nhánh', key: 'branch', width: 18 },
+      { header: 'Người tạo', key: 'creator', width: 18 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 32 },
+      { header: 'Thương hiệu', key: 'tradeMark', width: 16 },
+      { header: 'Nhóm hàng', key: 'productGroup', width: 22 },
+      { header: 'SL đặt', key: 'orderedQty', width: 10 },
+      { header: 'Đã nhập', key: 'receivedQty', width: 10 },
+      { header: 'Còn lại', key: 'remainingQty', width: 10 },
+      { header: 'Đơn giá', key: 'price', width: 14 },
+      { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Thành tiền', key: 'subTotal', width: 16 },
+      { header: 'Đơn giá NM', key: 'factoryPrice', width: 14 },
+      { header: 'Thành tiền NM', key: 'factorySubTotal', width: 16 },
+      { header: 'Giai đoạn', key: 'productionStage', width: 18 },
+      { header: 'Nhà máy', key: 'factory', width: 18 },
+      { header: 'Cửa khẩu', key: 'borderGate', width: 16 },
+      { header: 'Ngày dự kiến về', key: 'expectedArrival', width: 20 },
+      { header: 'Ngày về thực tế', key: 'actualArrival', width: 20 },
+      { header: 'Ghi chú dòng', key: 'itemDescription', width: 24 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    // Áp lọc dòng SP khớp `search` (giống getDetailItems): khi search khớp ở
+    // cấp phiếu thì giữ toàn bộ dòng, ngược lại chỉ giữ dòng có mã/tên SP
+    // khớp. Xuất theo cách này để tệp không phình khi user chỉ tìm 1 SP.
+    const term = (search || '').trim().toLowerCase();
+
+    let rowCount = 0;
+    for (const os of orderSuppliers) {
+      const receivedByProduct: Record<number, number> = {};
+      for (const po of os.purchaseOrders) {
+        for (const it of po.items) {
+          receivedByProduct[it.productId] =
+            (receivedByProduct[it.productId] || 0) + Number(it.quantity);
+        }
+      }
+      const matchHeader =
+        !!term &&
+        ((os.code || '').toLowerCase().includes(term) ||
+          (os.supplier?.name || '').toLowerCase().includes(term) ||
+          (os.supplier?.code || '').toLowerCase().includes(term));
+
+      for (const item of os.items) {
+        const code = (item.productCode || '').toLowerCase();
+        const name = (item.productName || '').toLowerCase();
+        if (
+          term &&
+          !matchHeader &&
+          !code.includes(term) &&
+          !name.includes(term)
+        )
+          continue;
+
+        const ordered = Number(item.quantity);
+        const received = receivedByProduct[item.productId] || 0;
+        const product = (item as any).product;
+        const productGroup = [
+          product?.parentName,
+          product?.middleName,
+          product?.childName,
+        ]
+          .filter(Boolean)
+          .join(' / ');
+        const veh = vehicleInfoByKey.get(`${os.id}:${item.productId}`);
+        const contractNos =
+          contractNosByKey.get(`${os.id}:${item.productId}`) ?? [];
+
+        const row = sheet.addRow({
+          orderSupplierCode: os.code,
+          contractNos: contractNos.join(', '),
+          orderDate: fmtDateTime(os.createdAt),
+          supplier: os.supplier?.name || '',
+          supplierCode: os.supplier?.code || '',
+          branch: os.branch?.name || '',
+          creator: os.creator?.name || '',
+          status: getOrderSupplierStatusLabel(os.status),
+          productCode: item.productCode || '',
+          productName: item.productName || '',
+          tradeMark: product?.tradeMark?.name || '',
+          productGroup,
+          orderedQty: ordered,
+          receivedQty: received,
+          remainingQty: Math.max(ordered - received, 0),
+          price: Number(item.price) || 0,
+          discount: Number(item.discount || 0),
+          subTotal: Number(item.subTotal) || 0,
+          factoryPrice:
+            item.factoryPrice != null ? Number(item.factoryPrice) : '',
+          factorySubTotal:
+            item.factorySubTotal != null ? Number(item.factorySubTotal) : '',
+          productionStage: (item as any).productionStage?.name || '',
+          factory: (item as any).factory?.name || '',
+          borderGate: veh?.borderGateName || '',
+          expectedArrival: fmtDateTime(veh?.expectedArrivalDate),
+          actualArrival: fmtDateTime(veh?.actualArrivalDate),
+          itemDescription: item.description || '',
+        });
+        row.commit();
+        rowCount += 1;
+      }
+    }
+
+    // Nếu không có dòng nào, vẫn commit workbook để file tải về có header
+    // (tránh trả về file rỗng gây nhầm lẫn cho user).
+    if (rowCount === 0) {
+      await workbook.commit();
+      return;
+    }
+
+    await workbook.commit();
   }
 
   /**
@@ -442,8 +820,12 @@ export class OrderSuppliersService {
       factoryPrice?: number | null;
       factorySubTotal?: number | null;
     } = {};
-    if ('factoryPrice' in dto) data.factoryPrice = dto.factoryPrice ?? null;
-    if ('factorySubTotal' in dto)
+    // Dùng !== undefined (không phải `in`) để tránh bị class-transformer
+    // tự tạo key undefined cho field optional: như vậy field không gửi lên
+    // sẽ KHÔNG bị ghi đè về null trong DB.
+    if (dto.factoryPrice !== undefined)
+      data.factoryPrice = dto.factoryPrice ?? null;
+    if (dto.factorySubTotal !== undefined)
       data.factorySubTotal = dto.factorySubTotal ?? null;
 
     return this.prisma.orderSupplierItem.update({
@@ -676,7 +1058,18 @@ export class OrderSuppliersService {
             );
           }
 
-          const subTotal = (item.price - (item.discount || 0)) * item.quantity;
+          // Nếu client KHÔNG gửi price (user không có quyền xem giá vốn) thì
+          // tự tìm: (1) giá NCC gần nhất theo supplierId, (2) giá vốn CN.
+          // Không ép = 0 để đơn giá luôn đúng dù người tạo không được phép nhìn thấy giá.
+          const price = await this.resolveItemPrice(
+            tx,
+            item.price,
+            item.productId,
+            dto.branchId,
+            dto.supplierId,
+          );
+
+          const subTotal = (price - (item.discount || 0)) * item.quantity;
 
           const factoryPrice =
             item.factoryPrice != null ? item.factoryPrice : null;
@@ -692,7 +1085,7 @@ export class OrderSuppliersService {
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
-            price: item.price,
+            price,
             discount: item.discount || 0,
             subTotal,
             factoryPrice,
@@ -719,6 +1112,23 @@ export class OrderSuppliersService {
 
       const paidAmount = Number(dto.paymentAmount || 0);
 
+      // Chuẩn hoá currency/exchangeRate. Mặc định VND + rate=1 nếu client
+      // không gửi. Khi currency = VND ép rate = 1 (không cho tỉ giá khác 1
+      // với đồng nội tệ). Chỉ hỗ trợ 2 mã: VND | CNY (theo use case hiện tại).
+      const currency = (dto.currency || 'VND').toUpperCase();
+      if (!['VND', 'CNY'].includes(currency)) {
+        throw new BadRequestException(
+          `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
+        );
+      }
+      const exchangeRate =
+        currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
+      if (currency === 'CNY' && exchangeRate <= 0) {
+        throw new BadRequestException(
+          'Khi currency = CNY thì exchangeRate phải > 0',
+        );
+      }
+
       const orderSupplier = await tx.orderSupplier.create({
         data: {
           code,
@@ -740,6 +1150,8 @@ export class OrderSuppliersService {
           supplierDebt: subTotal - paidAmount,
           toComplete: dto.toComplete || false,
           orderDate: dto.orderDate ? new Date(dto.orderDate) : new Date(),
+          currency,
+          exchangeRate,
           createdBy: userId,
           items: {
             create: itemsData,
@@ -783,6 +1195,12 @@ export class OrderSuppliersService {
             amount: dto.paymentAmount,
             transDate: new Date(),
             method: cashFlowMethod,
+            // Gắn tài khoản ngân hàng công ty khi chuyển khoản để đối chiếu
+            // sao kê + lọc sổ quỹ theo tài khoản.
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? (dto.paymentAccountId ?? null)
+                : null,
             partnerType: 'S',
             partnerId: orderSupplier.supplierId,
             partnerName: orderSupplier.supplier?.name,
@@ -804,6 +1222,15 @@ export class OrderSuppliersService {
             amount: dto.paymentAmount,
             paymentDate: new Date(),
             paymentMethod: dto.paymentMethod || 'cash',
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? (dto.paymentAccountId ?? null)
+                : null,
+            // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
+            // Snapshot riêng tại thời điểm thanh toán — không liên quan
+            // OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+            exchangeRate: dto.paymentExchangeRate ?? null,
+            foreignAmount: dto.paymentForeignAmount ?? null,
             description: `Trả tiền đặt hàng nhập ${orderSupplier.code}`,
             status: 1,
             statusValue: 'Đã thanh toán',
@@ -877,6 +1304,37 @@ export class OrderSuppliersService {
       let currentPaidAmount = Number(existing.paidAmount);
       let productQty = Number(existing.productQty);
 
+      // 1. Chỉ block xóa sản phẩm khỏi phiếu đặt khi sản phẩm đó đã được nhập kho
+      // qua các phiếu nhập hàng liên kết (chưa hủy).
+      if (dto.items) {
+        const incomingProductIds = dto.items.map((item) => item.productId);
+        const deletedProductIds = existing.items
+          .map((item) => item.productId)
+          .filter((prodId) => !incomingProductIds.includes(prodId));
+
+        if (deletedProductIds.length > 0) {
+          const hasReceived = await tx.purchaseOrderItem.findFirst({
+            where: {
+              productId: { in: deletedProductIds },
+              purchaseOrder: {
+                orderSupplierId: id,
+                status: { not: 4 }, // Trừ các phiếu nhập đã bị hủy
+              },
+            },
+            select: {
+              productId: true,
+              productName: true,
+            },
+          });
+
+          if (hasReceived) {
+            throw new BadRequestException(
+              `Sản phẩm "${hasReceived.productName}" đã phát sinh phiếu nhập hàng liên quan. Không thể xóa sản phẩm này khỏi phiếu đặt.`,
+            );
+          }
+        }
+      }
+
       if (dto.items) {
         await tx.orderSupplierItem.deleteMany({
           where: { orderSupplierId: id },
@@ -894,8 +1352,17 @@ export class OrderSuppliersService {
               );
             }
 
-            const subTotal =
-              (item.price - (item.discount || 0)) * item.quantity;
+            // Resolve giá nếu client không gửi (thiếu quyền xem giá vốn):
+            // (1) giá NCC gần nhất, (2) giá vốn CN.
+            const price = await this.resolveItemPrice(
+              tx,
+              item.price,
+              item.productId,
+              dto.branchId ?? existing.branchId ?? undefined,
+              dto.supplierId ?? existing.supplierId ?? undefined,
+            );
+
+            const subTotal = (price - (item.discount || 0)) * item.quantity;
 
             const factoryPrice =
               item.factoryPrice != null ? item.factoryPrice : null;
@@ -912,7 +1379,7 @@ export class OrderSuppliersService {
               productCode: product.code,
               productName: product.name,
               quantity: item.quantity,
-              price: item.price,
+              price,
               discount: item.discount || 0,
               subTotal,
               factoryPrice,
@@ -940,14 +1407,96 @@ export class OrderSuppliersService {
         productQty = itemsData.length;
       }
 
-      // Đối xứng `Order.update` phía bán: KHÔNG tạo payment + cashflow trực
-      // tiếp trong update. Mỗi lần save form sẽ tạo MỚI một CashFlow → user
-      // dễ vô tình nhân đôi/nhân ba khoản chi. Ép user dùng endpoint riêng
-      // `POST /api/order-suppliers/:id/payments` cho thanh toán bổ sung.
+      // Cho phép đặt cọc / trả thêm cho NCC ngay khi cập nhật phiếu. Mỗi lần
+      // submit form chỉ tạo MỚI một payment khi `dto.paymentAmount > 0` (FE
+      // gửi undefined khi không thanh toán → không bao giờ nhân đôi khoản cũ).
       if (dto.paymentAmount && dto.paymentAmount > 0) {
-        throw new BadRequestException(
-          'Không thể thanh toán trực tiếp khi cập nhật phiếu đặt hàng nhập. Vui lòng dùng chức năng thanh toán riêng.',
-        );
+        const payBranchId = dto.branchId ?? existing.branchId;
+        const paySupplierId = dto.supplierId ?? existing.supplierId;
+
+        // Bắt buộc PDN có chi nhánh trước khi tạo CashFlow (tránh fallback ?? 1
+        // ghi sai chi nhánh tiền chi) — đối xứng nhánh `create`.
+        if (!payBranchId) {
+          throw new NotFoundException(
+            'Phiếu đặt hàng nhập chưa có chi nhánh. Vui lòng chọn chi nhánh trước khi thanh toán.',
+          );
+        }
+
+        const paymentCode = await this.generatePaymentCode(tx);
+
+        let cashFlowMethod = 'cash';
+        if (dto.paymentMethod === 'transfer') {
+          cashFlowMethod = 'transfer';
+        } else if (dto.paymentMethod === 'card') {
+          cashFlowMethod = 'card';
+        }
+
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code: paymentCode,
+            branchId: payBranchId,
+            cashFlowGroupId: 9,
+            isReceipt: false,
+            amount: dto.paymentAmount,
+            transDate: new Date(),
+            method: cashFlowMethod,
+            // Gắn tài khoản ngân hàng công ty khi chuyển khoản để đối chiếu
+            // sao kê + lọc sổ quỹ theo tài khoản.
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? (dto.paymentAccountId ?? null)
+                : null,
+            partnerType: 'S',
+            partnerId: paySupplierId,
+            partnerName: existing.supplier?.name,
+            contactNumber: existing.supplier?.contactNumber,
+            address: existing.supplier?.address,
+            description: `Chi tiền đặt hàng nhập ${existing.code}`,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            usedForFinancialReporting: 1,
+            supplierDebtSnapshot: null,
+          },
+        });
+
+        await tx.orderSupplierPayment.create({
+          data: {
+            code: paymentCode,
+            orderSupplierId: id,
+            amount: dto.paymentAmount,
+            paymentDate: new Date(),
+            paymentMethod: dto.paymentMethod || 'cash',
+            accountId:
+              dto.paymentMethod === 'transfer'
+                ? (dto.paymentAccountId ?? null)
+                : null,
+            // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
+            // Snapshot riêng tại thời điểm thanh toán — không liên quan
+            // OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+            exchangeRate: dto.paymentExchangeRate ?? null,
+            foreignAmount: dto.paymentForeignAmount ?? null,
+            description: `Trả tiền đặt hàng nhập ${existing.code}`,
+            status: 1,
+            statusValue: 'Đã thanh toán',
+            cashFlowId: cashFlow.id,
+          },
+        });
+
+        // Recalc Supplier.debt global (Formula B) + snapshot vào CashFlow.
+        await this.updateSupplierDebt(paySupplierId, tx);
+        const paidSupplier = await tx.supplier.findUnique({
+          where: { id: paySupplierId },
+          select: { debt: true },
+        });
+        await tx.cashFlow.update({
+          where: { id: cashFlow.id },
+          data: {
+            supplierDebtSnapshot: paidSupplier
+              ? Number(paidSupplier.debt)
+              : null,
+          },
+        });
       }
 
       // Recompute paidAmount từ active payments (mirror Order.calculateTotals)
@@ -968,6 +1517,54 @@ export class OrderSuppliersService {
         dto.code === undefined
           ? existing.code
           : await this.resolveOrderSupplierCode(tx, dto.code, id);
+
+      // 2. Chỉ block thay đổi tiền tệ/tỉ giá khi có sự thay đổi thực tế so với DB
+      // và đã phát sinh phiếu nhập hàng liên quan.
+      let nextCurrency = existing.currency || 'VND';
+      let nextExchangeRate: number | null =
+        existing.exchangeRate != null ? Number(existing.exchangeRate) : 1;
+
+      const incomingCurrency =
+        dto.currency !== undefined ? dto.currency.toUpperCase() : undefined;
+      const incomingExchangeRate =
+        dto.exchangeRate !== undefined ? Number(dto.exchangeRate) : undefined;
+
+      const isCurrencyChanged =
+        incomingCurrency !== undefined && incomingCurrency !== nextCurrency;
+      const isExchangeRateChanged =
+        incomingExchangeRate !== undefined &&
+        incomingExchangeRate !== nextExchangeRate;
+
+      if (isCurrencyChanged || isExchangeRateChanged) {
+        const hasPurchaseOrder = await tx.purchaseOrder.findFirst({
+          where: { orderSupplierId: id },
+          select: { id: true },
+        });
+        if (hasPurchaseOrder) {
+          throw new BadRequestException(
+            'Phiếu đặt hàng nhập này đã có phiếu nhập hàng liên quan. ' +
+              'Không thể thay đổi tiền tệ/tỉ giá vì sẽ làm lệch dữ liệu các phiếu nhập đã phát sinh.',
+          );
+        }
+        if (incomingCurrency !== undefined) {
+          if (!['VND', 'CNY'].includes(incomingCurrency)) {
+            throw new BadRequestException(
+              `currency không hợp lệ: ${incomingCurrency}. Chỉ chấp nhận VND hoặc CNY.`,
+            );
+          }
+          nextCurrency = incomingCurrency;
+        }
+        if (nextCurrency === 'VND') {
+          nextExchangeRate = 1;
+        } else if (incomingExchangeRate !== undefined) {
+          if (!(incomingExchangeRate > 0)) {
+            throw new BadRequestException(
+              'Khi currency = CNY thì exchangeRate phải > 0',
+            );
+          }
+          nextExchangeRate = incomingExchangeRate;
+        }
+      }
 
       const updatedOrderSupplier = await tx.orderSupplier.update({
         where: { id },
@@ -991,6 +1588,8 @@ export class OrderSuppliersService {
           orderDate: dto.orderDate
             ? new Date(dto.orderDate)
             : existing.orderDate,
+          currency: nextCurrency,
+          exchangeRate: nextExchangeRate,
         },
         include: {
           supplier: true,
@@ -1020,6 +1619,9 @@ export class OrderSuppliersService {
           discountRatio: Number(existing.discountRatio || 0),
           description: existing.description,
           supplierId: existing.supplierId,
+          currency: existing.currency || 'VND',
+          exchangeRate:
+            existing.exchangeRate != null ? Number(existing.exchangeRate) : 1,
         },
         {
           code: updatedOrderSupplier.code,
@@ -1029,6 +1631,11 @@ export class OrderSuppliersService {
           discountRatio: Number(updatedOrderSupplier.discountRatio || 0),
           description: updatedOrderSupplier.description,
           supplierId: updatedOrderSupplier.supplierId,
+          currency: updatedOrderSupplier.currency || 'VND',
+          exchangeRate:
+            updatedOrderSupplier.exchangeRate != null
+              ? Number(updatedOrderSupplier.exchangeRate)
+              : 1,
         },
       );
 
@@ -1360,6 +1967,64 @@ export class OrderSuppliersService {
    * Nếu truyền branchId thì chỉ đếm phiếu thuộc chi nhánh đó.
    * Đối xứng `OrdersService.getPendingSummary` của phía bán.
    */
+  /**
+   * Giá nhập gần nhất của từng sản phẩm theo MỘT nhà cung cấp.
+   * Lấy cột `price` (đơn giá nhập, KHÔNG trừ giảm giá) của dòng thuộc phiếu
+   * đặt hàng nhập gần nhất (theo orderDate desc) của cặp supplier + product.
+   * Loại trừ phiếu Đã hủy (status = 4).
+   * Sản phẩm chưa có lịch sử với NCC này → fallback giá vốn hiện tại theo chi
+   * nhánh (inventory.cost) nếu truyền branchId. Endpoint chạy ở BE nên KHÔNG bị
+   * strip giá vốn theo quyền → dùng làm "giá nền" thống nhất cho mọi user.
+   * Trả về { [productId]: number | null } — null nếu không có cả hai nguồn.
+   */
+  async getLatestSupplierPrices(
+    supplierId: number,
+    productIds: number[],
+    branchId?: number,
+  ): Promise<Record<number, number | null>> {
+    const result: Record<number, number | null> = {};
+    if (!supplierId || Number.isNaN(supplierId) || !productIds?.length) {
+      return result;
+    }
+    productIds.forEach((id) => (result[id] = null));
+
+    const items = await this.prisma.orderSupplierItem.findMany({
+      where: {
+        productId: { in: productIds },
+        orderSupplier: { supplierId, status: { not: 4 } },
+      },
+      select: {
+        productId: true,
+        price: true,
+        orderSupplier: { select: { orderDate: true } },
+      },
+      orderBy: [{ orderSupplier: { orderDate: 'desc' } }, { id: 'desc' }],
+    });
+
+    // Đã sort theo phiếu mới nhất trước → dòng đầu tiên gặp cho mỗi product là gần nhất.
+    for (const it of items) {
+      if (result[it.productId] == null) {
+        result[it.productId] = Number(it.price);
+      }
+    }
+
+    // Fallback giá vốn chi nhánh cho sản phẩm chưa từng nhập từ NCC này.
+    if (branchId && !Number.isNaN(branchId)) {
+      const missing = productIds.filter((id) => result[id] == null);
+      if (missing.length > 0) {
+        const invs = await this.prisma.inventory.findMany({
+          where: { productId: { in: missing }, branchId },
+          select: { productId: true, cost: true },
+        });
+        for (const inv of invs) {
+          result[inv.productId] = Number(inv.cost);
+        }
+      }
+    }
+
+    return result;
+  }
+
   async getConfirmedSummary(
     productIds: number[],
     branchId?: number,
@@ -1676,6 +2341,46 @@ export class OrderSuppliersService {
 
   private async updateSupplierDebt(supplierId: number, tx: any) {
     await recalcSupplierDebt(tx, supplierId);
+  }
+
+  /**
+   * Resolve đơn giá nhập cho 1 dòng item.
+   * - Nếu client gửi `price` (user có quyền xem giá vốn) → dùng nguyên giá đó.
+   * - Nếu KHÔNG gửi (user bị ẩn giá vốn nên FE không có dữ liệu) → tự lấy giá
+   *   vốn hiện tại của sản phẩm theo chi nhánh từ inventory. KHÔNG ép = 0 để
+   *   đơn giá luôn đúng dù người tạo không được phép nhìn thấy giá.
+   */
+  private async resolveItemPrice(
+    tx: any,
+    price: number | undefined | null,
+    productId: number,
+    branchId?: number | null,
+    supplierId?: number | null,
+  ): Promise<number> {
+    if (price !== undefined && price !== null && !Number.isNaN(Number(price))) {
+      return Number(price);
+    }
+    // Giá nhập gần nhất theo NCC (loại phiếu Đã hủy). Áp dụng cho cả user không
+    // có quyền xem giá vốn (FE không gửi price) → nghiệp vụ đồng nhất mọi user.
+    if (supplierId) {
+      const latest = await tx.orderSupplierItem.findFirst({
+        where: {
+          productId,
+          orderSupplier: { supplierId, status: { not: 4 } },
+        },
+        select: { price: true },
+        orderBy: [{ orderSupplier: { orderDate: 'desc' } }, { id: 'desc' }],
+      });
+      if (latest) return Number(latest.price);
+    }
+    if (branchId) {
+      const inventory = await tx.inventory.findUnique({
+        where: { productId_branchId: { productId, branchId } },
+        select: { cost: true },
+      });
+      if (inventory) return Number(inventory.cost);
+    }
+    return 0;
   }
 
   /**

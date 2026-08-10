@@ -89,6 +89,11 @@ export class OrderSupplierPaymentsService {
           amount: dto.amount,
           paymentMethod: dto.paymentMethod || 'cash',
           accountId: dto.accountId,
+          // Tỉ giá quy đổi + thành tiền ngoại tệ (chỉ có khi NCC nước ngoài).
+          // Snapshot riêng tại thời điểm thanh toán, KHÔNG liên quan
+          // OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).
+          exchangeRate: dto.exchangeRate ?? null,
+          foreignAmount: dto.foreignAmount ?? null,
           description:
             dto.notes || `Trả tiền đặt hàng nhập ${orderSupplier.code} - PCPDN`,
           status: 1,
@@ -155,6 +160,12 @@ export class OrderSupplierPaymentsService {
           code: payment.code,
           amount: Number(payment.amount),
           paymentMethod: payment.paymentMethod,
+          exchangeRate: payment.exchangeRate
+            ? Number(payment.exchangeRate)
+            : null,
+          foreignAmount: payment.foreignAmount
+            ? Number(payment.foreignAmount)
+            : null,
           orderSupplier: {
             code: orderSupplier.code,
             supplier: orderSupplier.supplier?.name,

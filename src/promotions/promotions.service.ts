@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePromotionDto,
@@ -16,6 +18,33 @@ import {
   EngineItem,
   evaluatePromotions,
 } from './promotion-engine';
+import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
+import { ORDER_STATUS } from '../orders/dto/order-status.constants';
+
+const PROMOTION_TYPE_LABELS: Record<string, string> = {
+  INVOICE_DISCOUNT: 'Giảm giá hóa đơn',
+  PRODUCT_DISCOUNT: 'Giảm giá hàng hóa',
+  BUY_X_GET_Y: 'Mua X tặng Y',
+  BUY_N_GET_M_SAME: 'Mua N tặng M cùng loại',
+  BUY_X_BUY_Y_PRICE: 'Mua X mua kèm Y giá KM',
+  GIFT_BY_INVOICE: 'Quà tặng theo hóa đơn',
+  CATEGORY_DISCOUNT: 'Giảm giá theo nhóm hàng',
+};
+
+const PROMOTION_STATUS_LABELS: Record<string, string> = {
+  draft: 'Nháp',
+  running: 'Đang chạy',
+  paused: 'Tạm dừng',
+  stopped: 'Đã ngừng',
+  expired: 'Hết hạn',
+};
+
+const REWARD_TYPE_LABELS: Record<string, string> = {
+  discount_percent: 'Giảm %',
+  discount_amount: 'Giảm tiền',
+  gift: 'Quà tặng',
+  discounted_buy: 'Mua kèm giá KM',
+};
 
 @Injectable()
 export class PromotionsService {
@@ -43,6 +72,8 @@ export class PromotionsService {
         status: dto.isActive ? 'running' : 'draft',
         priority: dto.priority ?? 0,
         stackable: dto.stackable ?? false,
+        unitMode: dto.unitMode ?? 'unit',
+        deductPromoStock: dto.deductPromoStock ?? true,
         startDate: dto.startDate ? new Date(dto.startDate) : null,
         endDate: dto.endDate ? new Date(dto.endDate) : null,
         applyTimeFrom: dto.applyTimeFrom,
@@ -166,6 +197,8 @@ export class PromotionsService {
           description: dto.description,
           priority: dto.priority,
           stackable: dto.stackable,
+          unitMode: dto.unitMode,
+          deductPromoStock: dto.deductPromoStock,
           startDate: dto.startDate ? new Date(dto.startDate) : undefined,
           endDate: dto.endDate ? new Date(dto.endDate) : undefined,
           applyTimeFrom: dto.applyTimeFrom,
@@ -237,6 +270,7 @@ export class PromotionsService {
       role: string;
       productId: number | null;
       categoryName: string | null;
+      rewardLimit: number | null;
     }[] = [];
     for (const r of rewards) {
       for (const b of r.buyItems ?? []) {
@@ -244,6 +278,7 @@ export class PromotionsService {
           role: 'buy',
           productId: b.productId ?? null,
           categoryName: b.categoryName ?? null,
+          rewardLimit: null,
         });
       }
       for (const y of r.rewardItems ?? []) {
@@ -251,6 +286,10 @@ export class PromotionsService {
           role: 'reward',
           productId: y.productId ?? null,
           categoryName: y.categoryName ?? null,
+          rewardLimit:
+            y.rewardLimit != null && y.rewardLimit !== ''
+              ? Number(y.rewardLimit)
+              : null,
         });
       }
     }
@@ -293,21 +332,7 @@ export class PromotionsService {
     const pageSize = query.pageSize || 20;
     const skip = (page - 1) * pageSize;
 
-    const where: any = {};
-    if (query.type) where.type = query.type;
-    if (query.status) where.status = query.status;
-    if (query.search) {
-      where.OR = [
-        { code: { contains: query.search, mode: 'insensitive' } },
-        { name: { contains: query.search, mode: 'insensitive' } },
-      ];
-    }
-    if (query.branchId) {
-      where.OR = [
-        { forAllBranch: true },
-        { branches: { some: { branchId: query.branchId } } },
-      ];
-    }
+    const where = this.buildPromotionWhere(query);
 
     const [data, total] = await this.prisma.$transaction([
       this.prisma.promotion.findMany({
@@ -324,6 +349,358 @@ export class PromotionsService {
       this.prisma.promotion.count({ where }),
     ]);
     return { data, total };
+  }
+
+  /**
+   * Dựng điều kiện `where` cho danh sách/xuất file khuyến mãi. Tách riêng để
+   * dùng chung giữa findAll và export/export-detail — filter xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị trên UI.
+   */
+  private buildPromotionWhere(query: PromotionQueryDto): any {
+    const where: any = {};
+    if (query.type) where.type = query.type;
+    if (query.status) where.status = query.status;
+    if (query.search) {
+      where.OR = [
+        { code: { contains: query.search, mode: 'insensitive' } },
+        { name: { contains: query.search, mode: 'insensitive' } },
+      ];
+    }
+    if (query.branchId) {
+      // branchId filter ghi đè OR search (giữ hành vi cũ của findAll).
+      where.OR = [
+        { forAllBranch: true },
+        { branches: { some: { branchId: query.branchId } } },
+      ];
+    }
+    return where;
+  }
+
+  /**
+   * Xuất Excel TỔNG QUAN chương trình khuyến mãi (mỗi CTKM = 1 dòng). Bộ lọc
+   * dùng chung buildPromotionWhere với danh sách.
+   */
+  async exportPromotions(
+    query: PromotionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildPromotionWhere(query);
+
+    const fmtDate = (d?: Date | null) =>
+      d ? new Date(d).toLocaleDateString('vi-VN') : '';
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Khuyến mãi');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã', key: 'code', width: 16 },
+      { header: 'Tên', key: 'name', width: 28 },
+      { header: 'Loại', key: 'type', width: 22 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Bật', key: 'isActive', width: 10 },
+      { header: 'Ưu tiên', key: 'priority', width: 10 },
+      { header: 'Cộng dồn', key: 'stackable', width: 12 },
+      { header: 'Tự áp dụng', key: 'autoApply', width: 12 },
+      { header: 'Ngày bắt đầu', key: 'startDate', width: 14 },
+      { header: 'Ngày kết thúc', key: 'endDate', width: 14 },
+      { header: 'Giờ áp dụng từ', key: 'applyTimeFrom', width: 14 },
+      { header: 'Giờ áp dụng đến', key: 'applyTimeTo', width: 14 },
+      { header: 'Thứ áp dụng', key: 'applyWeekdays', width: 16 },
+      { header: 'Áp dụng mọi CN', key: 'forAllBranch', width: 14 },
+      { header: 'Áp dụng mọi KH', key: 'forAllCustomer', width: 14 },
+      { header: 'Áp dụng mọi NV', key: 'forAllUser', width: 14 },
+      { header: 'Đơn tối thiểu', key: 'minOrderValue', width: 14 },
+      { header: 'SL tối thiểu', key: 'minQuantity', width: 12 },
+      { header: 'Giảm tối đa', key: 'maxDiscountAmount', width: 14 },
+      { header: 'SL quà tối đa', key: 'maxRewardQuantity', width: 14 },
+      { header: 'Giới hạn lượt', key: 'usageLimit', width: 12 },
+      { header: 'Đã dùng', key: 'usageCount', width: 10 },
+      { header: 'Số reward', key: 'rewardCount', width: 10 },
+      { header: 'Mô tả', key: 'description', width: 28 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.promotion.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          rewards: { select: { id: true } },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        stt++;
+        sheet
+          .addRow({
+            stt,
+            code: p.code,
+            name: p.name,
+            type: PROMOTION_TYPE_LABELS[p.type] || p.type,
+            status: PROMOTION_STATUS_LABELS[p.status] || p.status,
+            isActive: p.isActive ? 'Bật' : 'Tắt',
+            priority: p.priority,
+            stackable: p.stackable ? 'Có' : 'Không',
+            autoApply: p.autoApply ? 'Có' : 'Không',
+            startDate: fmtDate(p.startDate),
+            endDate: fmtDate(p.endDate),
+            applyTimeFrom: p.applyTimeFrom || '',
+            applyTimeTo: p.applyTimeTo || '',
+            applyWeekdays: (p.applyWeekdays || []).join(', '),
+            forAllBranch: p.forAllBranch ? 'Có' : 'Không',
+            forAllCustomer: p.forAllCustomer ? 'Có' : 'Không',
+            forAllUser: p.forAllUser ? 'Có' : 'Không',
+            minOrderValue: Number(p.minOrderValue) || 0,
+            minQuantity: Number(p.minQuantity) || 0,
+            maxDiscountAmount:
+              p.maxDiscountAmount != null ? Number(p.maxDiscountAmount) : '',
+            maxRewardQuantity:
+              p.maxRewardQuantity != null ? Number(p.maxRewardQuantity) : '',
+            usageLimit: p.usageLimit ?? '',
+            usageCount: p.usageCount,
+            rewardCount: p.rewards.length,
+            description: p.description || '',
+            createdAt: fmtDateTime(p.createdAt),
+          })
+          .commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất Excel CHI TIẾT chương trình khuyến mãi.
+   *
+   * Mỗi dòng Excel = 1 cặp (reward, SP mua) — vì SP mua được lưu ở
+   * `promotion_products` (role='buy') dạng mảng (buyItems), không còn chỉ
+   * dựa vào field legacy `reward.buyProductId`. Nếu reward không có SP mua
+   * (vd GIFT_BY_INVOICE) thì vẫn xuất 1 dòng với cột SP mua trống.
+   */
+  async exportPromotionsDetail(
+    query: PromotionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildPromotionWhere(query);
+
+    const fmtDate = (d?: Date | null) =>
+      d ? new Date(d).toLocaleDateString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết khuyến mãi');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã CTKM', key: 'code', width: 16 },
+      { header: 'Tên CTKM', key: 'name', width: 28 },
+      { header: 'Loại', key: 'type', width: 22 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Bật', key: 'isActive', width: 10 },
+      { header: 'Ưu tiên', key: 'priority', width: 10 },
+      { header: 'Ngày bắt đầu', key: 'startDate', width: 14 },
+      { header: 'Ngày kết thúc', key: 'endDate', width: 14 },
+      { header: 'Loại reward', key: 'rewardType', width: 16 },
+      { header: 'Mã SP mua', key: 'buyProductCode', width: 14 },
+      { header: 'Tên SP mua', key: 'buyProductName', width: 24 },
+      { header: 'Nhóm SP mua', key: 'buyCategoryName', width: 18 },
+      { header: 'SL mua', key: 'buyQuantity', width: 10 },
+      { header: 'Mã SP tặng/KM', key: 'rewardProductCode', width: 14 },
+      { header: 'Tên SP tặng/KM', key: 'rewardProductName', width: 24 },
+      { header: 'Nhóm SP tặng/KM', key: 'rewardCategoryName', width: 18 },
+      { header: 'SL tặng', key: 'rewardQuantity', width: 10 },
+      { header: 'Giá trị KM', key: 'rewardValue', width: 12 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let stt = 0;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.promotion.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        include: {
+          rewards: {
+            include: {
+              buyProduct: { select: { code: true, name: true } },
+              rewardProduct: { select: { code: true, name: true } },
+            },
+          },
+          // SP mua / tặng hiện đại lưu ở đây (buyItems / rewardItems).
+          products: {
+            include: {
+              product: { select: { code: true, name: true } },
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const base = {
+          code: p.code,
+          name: p.name,
+          type: PROMOTION_TYPE_LABELS[p.type] || p.type,
+          status: PROMOTION_STATUS_LABELS[p.status] || p.status,
+          isActive: p.isActive ? 'Bật' : 'Tắt',
+          priority: p.priority,
+          startDate: fmtDate(p.startDate),
+          endDate: fmtDate(p.endDate),
+        };
+
+        // Gom SP mua / tặng từ promotion_products (nguồn chân lý hiện tại).
+        const buyProducts = p.products
+          .filter((pp) => pp.role === 'buy')
+          .map((pp) => ({
+            code: pp.product?.code || '',
+            name: pp.product?.name || '',
+            categoryName: pp.categoryName || '',
+          }));
+        const rewardProducts = p.products
+          .filter((pp) => pp.role === 'reward')
+          .map((pp) => ({
+            code: pp.product?.code || '',
+            name: pp.product?.name || '',
+            categoryName: pp.categoryName || '',
+          }));
+
+        if (!p.rewards.length) {
+          // Không có reward: vẫn xuất theo danh sách SP mua (nếu có).
+          const rows =
+            buyProducts.length > 0
+              ? buyProducts
+              : [{ code: '', name: '', categoryName: '' }];
+          for (const buy of rows) {
+            stt++;
+            sheet
+              .addRow({
+                ...base,
+                stt,
+                rewardType: '',
+                buyProductCode: buy.code,
+                buyProductName: buy.name,
+                buyCategoryName: buy.categoryName,
+                buyQuantity: '',
+                rewardProductCode: '',
+                rewardProductName: '',
+                rewardCategoryName: '',
+                rewardQuantity: '',
+                rewardValue: '',
+              })
+              .commit();
+          }
+          continue;
+        }
+
+        for (const r of p.rewards) {
+          // Fallback legacy: nếu không có products role=buy thì dùng
+          // reward.buyProduct / buyCategoryName.
+          const buyList =
+            buyProducts.length > 0
+              ? buyProducts
+              : [
+                  {
+                    code: r.buyProduct?.code || '',
+                    name: r.buyProduct?.name || '',
+                    categoryName: r.buyCategoryName || '',
+                  },
+                ];
+
+          // SP tặng/KM: ưu tiên products role=reward; fallback rewardProduct.
+          const giftList =
+            rewardProducts.length > 0
+              ? rewardProducts
+              : [
+                  {
+                    code: r.rewardProduct?.code || '',
+                    name: r.rewardProduct?.name || '',
+                    categoryName: '',
+                  },
+                ];
+
+          // Cartesian tối thiểu: mỗi SP mua × mỗi SP tặng (thường 1×1 hoặc N×1).
+          // Khi cả 2 list rỗng → 1 dòng trống.
+          const buys =
+            buyList.length > 0
+              ? buyList
+              : [{ code: '', name: '', categoryName: '' }];
+          const gifts =
+            giftList.length > 0
+              ? giftList
+              : [{ code: '', name: '', categoryName: '' }];
+
+          for (const buy of buys) {
+            for (const gift of gifts) {
+              stt++;
+              sheet
+                .addRow({
+                  ...base,
+                  stt,
+                  rewardType: REWARD_TYPE_LABELS[r.rewardType] || r.rewardType,
+                  buyProductCode: buy.code,
+                  buyProductName: buy.name,
+                  buyCategoryName: buy.categoryName,
+                  buyQuantity: Number(r.buyQuantity) || 0,
+                  rewardProductCode: gift.code,
+                  rewardProductName: gift.name,
+                  rewardCategoryName: gift.categoryName,
+                  rewardQuantity: Number(r.rewardQuantity) || 0,
+                  rewardValue: Number(r.rewardValue) || 0,
+                })
+                .commit();
+            }
+          }
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {
@@ -363,7 +740,10 @@ export class PromotionsService {
   async getUsage(id: number) {
     const [orders, invoices] = await this.prisma.$transaction([
       this.prisma.order.findMany({
-        where: { items: { some: { promotionId: id } } },
+        where: {
+          items: { some: { promotionId: id } },
+          status: { not: ORDER_STATUS.CANCELLED },
+        },
         select: {
           id: true,
           code: true,
@@ -375,7 +755,10 @@ export class PromotionsService {
         take: 200,
       }),
       this.prisma.invoice.findMany({
-        where: { details: { some: { promotionId: id } } },
+        where: {
+          details: { some: { promotionId: id } },
+          status: { not: INVOICE_STATUS.CANCELLED },
+        },
         select: {
           id: true,
           code: true,
@@ -405,8 +788,253 @@ export class PromotionsService {
     };
   }
 
-  // --------------------------- EVALUATE ---------------------------
+  /**
+   * Thống kê hàng bán / hàng khuyến mãi của 1 chương trình.
+   * - Hàng bán: dòng lineType normal | promo_discount có gắn promotionId.
+   * - Hàng KM: dòng lineType gift | discounted_buy.
+   * CHỈ tính trên hóa đơn (invoice), KHÔNG tính đơn đặt hàng. Loại trừ HĐ Đã hủy.
+   */
+  /**
+   * Đếm số quà ĐÃ TẶNG (lifetime) của 1 chương trình từ các dòng hóa đơn
+   * lineType gift | discounted_buy, loại HĐ Đã hủy.
+   * Trả về map theo từng SP + tổng gộp — dùng để tính "còn lại" khi đánh giá KM.
+   */
+  async getIssuedRewards(
+    promotionId: number,
+  ): Promise<{ byProduct: Record<number, number>; total: number }> {
+    const lines = await this.prisma.invoiceDetail.findMany({
+      where: {
+        promotionId,
+        lineType: { in: ['gift', 'discounted_buy'] },
+        invoice: { status: { not: INVOICE_STATUS.CANCELLED } },
+      },
+      select: { productId: true, quantity: true },
+    });
+    const byProduct: Record<number, number> = {};
+    let total = 0;
+    for (const l of lines) {
+      if (l.productId == null) continue;
+      const qty = Number(l.quantity);
+      byProduct[l.productId] = (byProduct[l.productId] ?? 0) + qty;
+      total += qty;
+    }
+    return { byProduct, total };
+  }
 
+  async getStats(id: number, branchId?: number) {
+    const promo = await this.prisma.promotion.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        usageLimit: true,
+        usageCount: true,
+        maxRewardQuantity: true,
+        products: {
+          select: {
+            role: true,
+            productId: true,
+            categoryName: true,
+            rewardLimit: true,
+            product: { select: { id: true, code: true, name: true } },
+          },
+        },
+      },
+    });
+    if (!promo)
+      throw new NotFoundException('Không tìm thấy chương trình khuyến mãi');
+
+    const invoiceLines = await this.prisma.invoiceDetail.findMany({
+      where: {
+        promotionId: id,
+        invoice: { status: { not: INVOICE_STATUS.CANCELLED } },
+      },
+      select: {
+        productId: true,
+        productCode: true,
+        productName: true,
+        quantity: true,
+        lineType: true,
+      },
+    });
+
+    const SOLD = new Set(['normal', 'promo_discount']);
+    const PROMO = new Set(['gift', 'discounted_buy']);
+    const map = new Map<
+      number,
+      {
+        productId: number;
+        code: string;
+        name: string;
+        soldQty: number;
+        promoQty: number;
+      }
+    >();
+    const addLine = (l: {
+      productId: number | null;
+      productCode: string;
+      productName: string;
+      quantity: any;
+      lineType: string;
+    }) => {
+      if (l.productId == null) return;
+      const key = l.productId;
+      const row = map.get(key) || {
+        productId: key,
+        code: l.productCode,
+        name: l.productName,
+        soldQty: 0,
+        promoQty: 0,
+      };
+      const qty = Number(l.quantity);
+      if (SOLD.has(l.lineType)) row.soldQty += qty;
+      else if (PROMO.has(l.lineType)) row.promoQty += qty;
+      map.set(key, row);
+    };
+    invoiceLines.forEach(addLine);
+
+    // Seed sẵn SP cấu hình (buy + reward) để stats hiện đủ dù chưa phát sinh HĐ.
+    const configuredRewardProducts = promo.products.filter(
+      (p) => p.role === 'reward' && p.productId != null,
+    );
+    const configuredBuyProducts = promo.products.filter(
+      (p) => p.role === 'buy' && p.productId != null,
+    );
+    for (const rp of [...configuredRewardProducts, ...configuredBuyProducts]) {
+      const pid = rp.productId!;
+      if (map.has(pid)) continue;
+      map.set(pid, {
+        productId: pid,
+        code: rp.product?.code || `SP#${pid}`,
+        name: rp.product?.name || `SP#${pid}`,
+        soldQty: 0,
+        promoQty: 0,
+      });
+    }
+
+    const items = [...map.values()].sort((a, b) => b.soldQty - a.soldQty);
+    const totals = items.reduce(
+      (acc, it) => ({
+        soldQty: acc.soldQty + it.soldQty,
+        promoQty: acc.promoQty + it.promoQty,
+      }),
+      { soldQty: 0, promoQty: 0 },
+    );
+
+    const usageLimit = promo.usageLimit;
+    const usageCount = promo.usageCount;
+    const maxRewardQuantity =
+      promo.maxRewardQuantity != null ? Number(promo.maxRewardQuantity) : null;
+
+    // Trần riêng từng SP quà (rewardLimit) — lấy từ cấu hình role=reward.
+    // Nạp bucket tồn kho theo chi nhánh đang chọn (header X-Branch-Id).
+    const rewardLimitByProduct: Record<number, number | null> = {};
+    const productIdsForStock = new Set<number>();
+    for (const rp of configuredRewardProducts) {
+      const pid = rp.productId!;
+      productIdsForStock.add(pid);
+      rewardLimitByProduct[pid] =
+        rp.rewardLimit != null ? Number(rp.rewardLimit) : null;
+    }
+    items.forEach((it) => productIdsForStock.add(it.productId));
+
+    const inventories =
+      productIdsForStock.size > 0
+        ? await this.prisma.inventory.findMany({
+            where: {
+              productId: { in: [...productIdsForStock] },
+              ...(branchId != null ? { branchId } : {}),
+            },
+            select: {
+              productId: true,
+              branchId: true,
+              onHand: true,
+              damagedQuantity: true,
+              nearExpiryQuantity: true,
+              promoQuantity: true,
+            },
+          })
+        : [];
+
+    const stockByProduct = new Map<
+      number,
+      {
+        onHand: number;
+        damagedQuantity: number;
+        nearExpiryQuantity: number;
+        promoQuantity: number;
+      }
+    >();
+    for (const inv of inventories) {
+      const prev = stockByProduct.get(inv.productId) || {
+        onHand: 0,
+        damagedQuantity: 0,
+        nearExpiryQuantity: 0,
+        promoQuantity: 0,
+      };
+      prev.onHand += Number(inv.onHand || 0);
+      prev.damagedQuantity += Number(inv.damagedQuantity || 0);
+      prev.nearExpiryQuantity += Number(inv.nearExpiryQuantity || 0);
+      prev.promoQuantity += Number(inv.promoQuantity || 0);
+      stockByProduct.set(inv.productId, prev);
+    }
+
+    // perProduct: luôn list ĐỦ SP quà đã cấu hình (role=reward), kể cả chưa tặng.
+    const perProduct = configuredRewardProducts.map((rp) => {
+      const pid = rp.productId!;
+      const issued = map.get(pid)?.promoQty ?? 0;
+      const limit = rewardLimitByProduct[pid];
+      const stock = stockByProduct.get(pid);
+      return {
+        productId: pid,
+        code: rp.product?.code || map.get(pid)?.code || `SP#${pid}`,
+        name: rp.product?.name || map.get(pid)?.name || `SP#${pid}`,
+        rewardLimit: limit,
+        rewardIssued: issued,
+        rewardRemaining: limit != null ? limit - issued : null,
+        onHand: stock?.onHand ?? 0,
+        damagedQuantity: stock?.damagedQuantity ?? 0,
+        nearExpiryQuantity: stock?.nearExpiryQuantity ?? 0,
+        promoQuantity: stock?.promoQuantity ?? 0,
+      };
+    });
+
+    // Bảng "items" (bảng 2) chỉ hiển thị SP điều kiện MUA (role=buy).
+    // SP quà đã có bảng "Trần SL tặng" riêng, không lặp lại ở đây.
+    const buyProductIds = new Set<number>(
+      configuredBuyProducts.map((rp) => rp.productId!),
+    );
+    const itemsWithStock = items
+      .filter((it) => buyProductIds.has(it.productId))
+      .map((it) => {
+        const stock = stockByProduct.get(it.productId);
+        return {
+          ...it,
+          onHand: stock?.onHand ?? 0,
+          damagedQuantity: stock?.damagedQuantity ?? 0,
+          nearExpiryQuantity: stock?.nearExpiryQuantity ?? 0,
+          promoQuantity: stock?.promoQuantity ?? 0,
+        };
+      });
+
+    return {
+      items: itemsWithStock,
+      totals,
+      limits: {
+        usageLimit,
+        usageCount,
+        usageRemaining: usageLimit != null ? usageLimit - usageCount : null,
+        maxRewardQuantity,
+        rewardIssued: totals.promoQty,
+        rewardRemaining:
+          maxRewardQuantity != null
+            ? maxRewardQuantity - totals.promoQty
+            : null,
+        perProduct,
+      },
+    };
+  }
+
+  // --------------------------- EVALUATE ---------------------------
   async evaluate(dto: EvaluatePromotionDto) {
     if (!dto.items || dto.items.length === 0)
       throw new BadRequestException('Giỏ hàng trống');
@@ -469,12 +1097,32 @@ export class PromotionsService {
       customerGroupIds,
       params.userId ?? null,
     );
+
+    // KM cộng dồn (stackable) đã được FE chọn áp → tự inject promotionId vào
+    // enabledPromotionIds của MỌI dòng, để engine gộp tổng SL đủ mọi mã X kể cả
+    // khi FE gửi thiếu opt-in trên vài dòng (do debounce đóng dấu). Không bỏ opt-in
+    // sẵn có; chỉ thêm. KM thường vẫn cần opt-in đúng dòng như cũ.
+    const appliedIdSet = new Set(params.appliedPromotionIds ?? []);
+    const stackableAppliedIds = promotions
+      .filter((p) => p.stackable && appliedIdSet.has(p.id))
+      .map((p) => p.id);
+    const items: EngineItem[] =
+      stackableAppliedIds.length > 0
+        ? params.items.map((it) => {
+            const cur = new Set(it.enabledPromotionIds ?? []);
+            // enabledPromotionIds === undefined nghĩa "không lọc" → giữ nguyên.
+            if (it.enabledPromotionIds === undefined) return it;
+            stackableAppliedIds.forEach((id) => cur.add(id));
+            return { ...it, enabledPromotionIds: [...cur] };
+          })
+        : params.items;
+
     const ctx = await this.buildContext(
       params.branchId,
       params.customerId ?? null,
       params.userId ?? null,
       now,
-      params.items,
+      items,
       promotions,
     );
     const evalResult = evaluatePromotions(promotions, ctx);
@@ -482,7 +1130,8 @@ export class PromotionsService {
     // KM được áp: KM mà FE đã chọn (appliedPromotionIds).
     // KM loại sinh quà / mua kèm (BUY_X_GET_Y, BUY_N_GET_M_SAME,
     // BUY_X_BUY_Y_PRICE, GIFT_BY_INVOICE) chỉ áp khi opt-in — KHÔNG auto.
-    // KM giảm giá (INVOICE/PRODUCT/CATEGORY_DISCOUNT) giữ auto như cũ.
+    // KM giảm giá (INVOICE/PRODUCT/CATEGORY_DISCOUNT) chỉ auto khi autoApply=true.
+    // Nếu FE chọn (applyIds có id) thì vẫn áp, kể cả autoApply=false (user opt-in).
     const giftTypes = new Set([
       'BUY_X_GET_Y',
       'BUY_N_GET_M_SAME',
@@ -493,7 +1142,7 @@ export class PromotionsService {
     const applied = evalResult.eligiblePromotions.filter((r) => {
       if (applyIds.has(r.promotionId)) return true;
       if (giftTypes.has(r.type)) return false;
-      return r.selected && applyIds.size === 0;
+      return r.selected && r.autoApply && applyIds.size === 0;
     });
     return { ...evalResult, applied };
   }
@@ -556,6 +1205,7 @@ export class PromotionsService {
         .map((pp) => ({
           productId: pp.productId,
           categoryName: pp.categoryName,
+          rewardLimit: pp.rewardLimit != null ? Number(pp.rewardLimit) : null,
         }));
       return {
         id: p.id,
@@ -564,6 +1214,8 @@ export class PromotionsService {
         type: p.type,
         priority: p.priority,
         stackable: p.stackable,
+        deductPromoStock: p.deductPromoStock,
+        unitMode: p.unitMode ?? 'unit',
         autoApply: p.autoApply,
         startDate: p.startDate,
         endDate: p.endDate,
@@ -665,34 +1317,63 @@ export class PromotionsService {
         parentName: true,
         middleName: true,
         childName: true,
+        conversionValue: true,
       },
     });
     const productNameMap: Record<number, string> = {};
     const productCodeMap: Record<number, string> = {};
+    const conversionValueMap: Record<number, number> = {};
     const catMap: Record<number, any> = {};
     products.forEach((p) => {
       productNameMap[p.id] = p.name;
       productCodeMap[p.id] = p.code;
+      // conversionValue = số gói/thùng. Mặc định 1 nếu null/0.
+      conversionValueMap[p.id] = Number(p.conversionValue) || 1;
       catMap[p.id] = p;
     });
 
-    // Tồn kho (onHand) tại branch cho các productId
+    // Tồn được phép khuyến mãi (promoQuantity) tại branch cho các productId.
+    // Quà KM chỉ được lấy từ bucket này, không phải tổng tồn onHand.
     const inventories = await this.prisma.inventory.findMany({
       where: { branchId, productId: { in: ids } },
-      select: { productId: true, onHand: true },
+      select: { productId: true, promoQuantity: true },
     });
     const stockMap: Record<number, number> = {};
     inventories.forEach((inv) => {
-      stockMap[inv.productId] = Number(inv.onHand);
+      stockMap[inv.productId] = Number(inv.promoQuantity || 0);
     });
 
-    // Bổ sung category cho item trong giỏ (để engine match CATEGORY_DISCOUNT)
+    // Bổ sung category + conversionValue cho item trong giỏ (để engine match
+    // CATEGORY_DISCOUNT và quy đổi gói↔thùng khi unitMode=carton).
     const enrichedItems: EngineItem[] = items.map((it) => ({
       ...it,
       parentName: catMap[it.productId]?.parentName ?? null,
       middleName: catMap[it.productId]?.middleName ?? null,
       childName: catMap[it.productId]?.childName ?? null,
+      conversionValue: conversionValueMap[it.productId] ?? 1,
     }));
+
+    // Nạp số quà ĐÃ TẶNG (lifetime) cho các KM có ràng buộc trần
+    // (trần tổng maxRewardQuantity hoặc trần riêng dòng quà rewardLimit).
+    const rewardIssuedMap: Record<
+      number,
+      { byProduct: Record<number, number>; total: number }
+    > = {};
+    const promoNeedIssued = promotions.filter(
+      (p) =>
+        p.maxRewardQuantity != null ||
+        (p.rewards ?? []).some((r) =>
+          (r.rewardItems ?? []).some((y) => y.rewardLimit != null),
+        ),
+    );
+    if (promoNeedIssued.length > 0) {
+      const issuedList = await Promise.all(
+        promoNeedIssued.map((p) => this.getIssuedRewards(p.id)),
+      );
+      promoNeedIssued.forEach((p, idx) => {
+        rewardIssuedMap[p.id] = issuedList[idx];
+      });
+    }
 
     return {
       branchId,
@@ -703,7 +1384,9 @@ export class PromotionsService {
       stockMap,
       productNameMap,
       productCodeMap,
+      conversionValueMap,
       categoryProductMap,
+      rewardIssuedMap,
     };
   }
 

@@ -4,6 +4,7 @@ import axios, { AxiosError } from 'axios';
 
 interface PackingSlipInvoiceCustomer {
   id?: number;
+  code?: string | null;
   name?: string | null;
   contactNumber?: string | null;
 }
@@ -50,6 +51,8 @@ interface PackingSlipForNotify {
   feeGrab?: any;
   hasCuocGuiHang?: boolean;
   cuocGuiHang?: any;
+  hasCuocNhanHang?: boolean;
+  cuocNhanHang?: any;
   note?: string | null;
   invoices?: PackingSlipInvoice[];
   images?: PackingSlipImage[];
@@ -113,6 +116,87 @@ export class N8nNotifyService {
     }
   }
 
+  /**
+   * Mã khách hàng Bibi cấu hình qua N8N_BIBI_CUSTOMER_CODE (mặc định KH242699).
+   */
+  private getBibiCustomerCode(): string {
+    return (
+      this.config.get<string>('N8N_BIBI_CUSTOMER_CODE') || 'KH242699'
+    ).trim();
+  }
+
+  /**
+   * Phiếu có được coi là "đơn Bibi" hay không: TRUE nếu có ít nhất một hóa đơn
+   * thuộc khách hàng có mã trùng N8N_BIBI_CUSTOMER_CODE.
+   * Dùng để routing loại trừ: đơn Bibi CHỈ gửi webhook Bibi, KHÔNG gửi mặc định.
+   */
+  isBibiPackingSlip(packingSlip: PackingSlipForNotify): boolean {
+    const targetCode = this.getBibiCustomerCode();
+    return (packingSlip.invoices || []).some(
+      (inv) => inv.invoice?.customer?.code === targetCode,
+    );
+  }
+
+  /**
+   * Luồng riêng: gửi báo đơn sang n8n workflow "Gửi tin nhắn giao hàng"
+   * (node "Webhook Báo Đơn Thủy Bibi") KHI phiếu có hóa đơn của khách hàng
+   * có mã cấu hình qua N8N_BIBI_CUSTOMER_CODE (mặc định KH242699).
+   *
+   * Fire-and-log: KHÔNG throw để không ảnh hưởng nghiệp vụ tạo/cập nhật
+   * packing slip. Bỏ qua im lặng nếu phiếu không chứa khách hàng mục tiêu.
+   */
+  async notifyBibiDelivery(
+    packingSlip: PackingSlipForNotify,
+  ): Promise<NotifyDeliveryResult> {
+    const webhookUrl = this.config.get<string>('N8N_BIBI_WEBHOOK_URL');
+
+    if (!webhookUrl) {
+      this.logger.warn(
+        'N8N_BIBI_WEBHOOK_URL is not set — skipping Bibi delivery notification',
+      );
+      return { ok: false, skipped: true };
+    }
+
+    if (!this.isBibiPackingSlip(packingSlip)) {
+      // Không phải đơn của khách Bibi → không gửi.
+      return { ok: false, skipped: true };
+    }
+
+    const secret = this.config.get<string>('N8N_WEBHOOK_SECRET');
+    const publicUrl =
+      this.config.get<string>('APP_PUBLIC_URL') ||
+      this.config.get<string>('API_URL') ||
+      '';
+
+    const payload = this.buildPayload(packingSlip, publicUrl);
+
+    try {
+      const res = await axios.post(webhookUrl, payload, {
+        timeout: 10_000,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(secret ? { 'X-Webhook-Secret': secret } : {}),
+        },
+      });
+      this.logger.log(
+        `Notified n8n Bibi delivery for packing slip ${packingSlip.code} (id=${packingSlip.id})`,
+      );
+      return { ok: true, skipped: false, status: res.status };
+    } catch (err) {
+      const ax = err as AxiosError;
+      const status = ax.response?.status;
+      const body =
+        typeof ax.response?.data === 'string'
+          ? ax.response?.data
+          : JSON.stringify(ax.response?.data ?? {});
+      this.logger.error(
+        `Failed to notify n8n Bibi delivery for packing slip ${packingSlip.code} (id=${packingSlip.id}): ` +
+          `status=${status} message=${ax.message} body=${body}`,
+      );
+      return { ok: false, skipped: false, status, error: ax.message };
+    }
+  }
+
   private buildPayload(ps: PackingSlipForNotify, publicUrl: string) {
     const base = publicUrl.replace(/\/+$/, '');
 
@@ -128,6 +212,7 @@ export class N8nNotifyService {
       customer: inv.invoice?.customer
         ? {
             id: inv.invoice.customer.id,
+            code: inv.invoice.customer.code ?? null,
             name: inv.invoice.customer.name ?? null,
             contactNumber: inv.invoice.customer.contactNumber ?? null,
           }
@@ -162,6 +247,8 @@ export class N8nNotifyService {
         feeGrab: this.toNumber(ps.feeGrab),
         hasCuocGuiHang: !!ps.hasCuocGuiHang,
         cuocGuiHang: this.toNumber(ps.cuocGuiHang),
+        hasCuocNhanHang: !!ps.hasCuocNhanHang,
+        cuocNhanHang: this.toNumber(ps.cuocNhanHang),
         note: ps.note ?? null,
         imageUrls,
         invoices,

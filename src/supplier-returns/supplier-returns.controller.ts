@@ -8,7 +8,9 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { SupplierReturnsService } from './supplier-returns.service';
 import {
   CreateSupplierReturnDto,
@@ -40,10 +42,67 @@ export class SupplierReturnsController {
     );
   }
 
+  @Get('export')
+  @RequirePermissions('supplier_returns:export')
+  async export(
+    @Query() query: SupplierReturnQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=TraHangNhap_${ts}.xlsx`,
+    );
+
+    await this.supplierReturnsService.exportSupplierReturns(
+      query,
+      res,
+      getSupplierScopeFromUser(user),
+    );
+  }
+
+  @Get('export-detail')
+  @RequirePermissions('supplier_returns:export')
+  async exportDetail(
+    @Query() query: SupplierReturnQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=TraHangNhap_ChiTiet_${ts}.xlsx`,
+    );
+
+    await this.supplierReturnsService.exportSupplierReturnsDetail(
+      query,
+      res,
+      getSupplierScopeFromUser(user),
+    );
+  }
+
   @Get(':id')
   @RequirePermissions('supplier_returns:view')
   findOne(@Param('id', ParseIntPipe) id: number, @CurrentUser() user: any) {
-    return this.supplierReturnsService.findOne(id, getSupplierScopeFromUser(user));
+    return this.supplierReturnsService.findOne(
+      id,
+      getSupplierScopeFromUser(user),
+    );
   }
 
   @Post()

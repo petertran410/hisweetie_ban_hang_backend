@@ -91,6 +91,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'product',
     severity: 'warning',
   },
+  PRODUCT_BULK_IMPORT: {
+    template:
+      'Import sản phẩm từ file "{fileName}": {importedCount} tạo mới, {updatedCount} cập nhật',
+    category: 'product',
+    severity: 'info',
+  },
 
   PACKING_SLIP_UPDATE: {
     template: 'Cập nhật phiếu đóng hàng {packingCode}',
@@ -168,6 +174,12 @@ export const AUDIT_TEMPLATES: Record<
     template: 'Hủy phiếu chuyển kho {transferCode} ({cancelReason})',
     category: 'transfer',
     severity: 'warning',
+  },
+  TRANSFER_SHORTAGE_RESOLVE: {
+    template:
+      'Đồng bộ hoàn shortage phiếu {transferCode}: {shortageCount} sản phẩm được trả tồn về kho chuyển',
+    category: 'transfer',
+    severity: 'info',
   },
 
   PURCHASE_ORDER_CREATE: {
@@ -499,6 +511,18 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  INVENTORY_PROMO_CHECK_CREATE: {
+    template:
+      'Tạo phiếu kiểm hàng KM {checkCode} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  INVENTORY_PROMO_CHECK_CANCEL: {
+    template: 'Hủy phiếu kiểm hàng KM {checkCode}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+
   STOCK_AUDIT_CREATE: {
     template:
       'Tạo phiếu kiểm kho {auditCode} tại {branchName}, {productCount} sản phẩm',
@@ -525,6 +549,29 @@ export const AUDIT_TEMPLATES: Record<
     template: 'Cập nhật tình trạng tồn {productName} tại {branchName}',
     category: 'inventory',
     severity: 'info',
+  },
+
+  STOCK_CONDITION_TRANSFER_CREATE: {
+    template:
+      'Tạo phiếu chuyển loại tồn {code} tại {branchName}, {productCount} sản phẩm',
+    category: 'inventory',
+    severity: 'info',
+  },
+  STOCK_CONDITION_TRANSFER_APPROVE: {
+    template: 'Duyệt phiếu chuyển loại tồn {code}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+  STOCK_CONDITION_TRANSFER_UPDATE: {
+    template:
+      'Sửa phiếu chuyển loại tồn {code}: {changeSummary}',
+    category: 'inventory',
+    severity: 'warning',
+  },
+  STOCK_CONDITION_TRANSFER_CANCEL: {
+    template: 'Hủy phiếu chuyển loại tồn {code}',
+    category: 'inventory',
+    severity: 'warning',
   },
 
   RETURN_ORDER_CREATE: {
@@ -557,6 +604,45 @@ export const AUDIT_TEMPLATES: Record<
   RETURN_ORDER_CANCEL: {
     template: 'Hủy phiếu trả hàng {returnOrderCode}',
     category: 'return_order',
+    severity: 'warning',
+  },
+
+  CONSIGNMENT_CREATE: {
+    template: 'Tạo phiếu ký gửi {consignmentCode}, khách hàng: {customerName}',
+    category: 'consignment',
+    severity: 'info',
+  },
+  CONSIGNMENT_UPDATE: {
+    template: 'Cập nhật phiếu ký gửi {consignmentCode}',
+    category: 'consignment',
+    severity: 'info',
+  },
+  CONSIGNMENT_CANCEL: {
+    template: 'Hủy phiếu ký gửi {consignmentCode}',
+    category: 'consignment',
+    severity: 'warning',
+  },
+  CONSIGNMENT_STOCK_OUT: {
+    template:
+      'Xuất kho ký gửi {consignmentCode} ({productCount} sản phẩm) khi chuyển trạng thái đóng/giao hàng',
+    category: 'consignment',
+    severity: 'info',
+  },
+
+  CONSIGNMENT_RETURN_CREATE: {
+    template:
+      'Tạo phiếu hoàn ký gửi {consignmentReturnCode}, khách hàng: {customerName}',
+    category: 'consignment_return',
+    severity: 'info',
+  },
+  CONSIGNMENT_RETURN_STOCK_RECEIVED: {
+    template: 'Xác nhận nhận hàng hoàn ký gửi {consignmentReturnCode} vào kho',
+    category: 'consignment_return',
+    severity: 'info',
+  },
+  CONSIGNMENT_RETURN_CANCEL: {
+    template: 'Hủy phiếu hoàn ký gửi {consignmentReturnCode}',
+    category: 'consignment_return',
     severity: 'warning',
   },
 };

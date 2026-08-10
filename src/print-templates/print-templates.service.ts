@@ -141,7 +141,8 @@ export class PrintTemplatesService {
     for (const [key, value] of Object.entries(data)) {
       if (key !== 'items' && !Array.isArray(value)) {
         const regex = new RegExp(`{${key}}`, 'g');
-        result = result.replace(regex, value?.toString() || '');
+        const replacement = this.formatVariableValue(key, value);
+        result = result.replace(regex, () => replacement);
       }
     }
 
@@ -175,9 +176,10 @@ export class PrintTemplatesService {
           let itemRow = row;
           for (const key of itemKeys) {
             const value = item[key] ?? '';
+            const replacement = this.formatVariableValue(key, value);
             itemRow = itemRow.replace(
               new RegExp(`{${key}}`, 'g'),
-              value.toString(),
+              () => replacement,
             );
           }
           return itemRow;
@@ -188,6 +190,22 @@ export class PrintTemplatesService {
     }
 
     return content;
+  }
+
+  private formatVariableValue(key: string, value: any): string {
+    const text = value?.toString() || '';
+    if (!key.startsWith('Ghi_Chu')) return text;
+
+    return this.escapeHtml(text).replace(/\r\n|\r|\n/g, '<br />');
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // ==================== DISPATCHER ====================
@@ -237,8 +255,14 @@ export class PrintTemplatesService {
         return this.mapPurchaseOrder(await this.loadPurchaseOrder(entityId));
       case 'return_order':
         return this.mapReturnOrder(await this.loadReturnOrder(entityId));
+      case 'supplier_return':
+        return this.mapSupplierReturn(
+          await this.loadSupplierReturn(entityId),
+        );
       case 'transfer':
         return this.mapTransfer(await this.loadTransfer(entityId));
+      case 'internal_use':
+        return this.mapInternalUse(await this.loadInternalUse(entityId));
       case 'cash_flow_receipt':
       case 'cash_flow_payment':
         return this.mapCashFlow(await this.loadCashFlow(entityId));
@@ -282,7 +306,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        details: { include: { product: true } },
+        details: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Invoice not found');
@@ -311,7 +340,12 @@ export class PrintTemplatesService {
         creator: true,
         branch: true,
         delivery: true,
-        items: { include: { product: true } },
+        items: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
       },
     });
     if (!entity) throw new NotFoundException('Order not found');
@@ -422,6 +456,21 @@ export class PrintTemplatesService {
     return entity;
   }
 
+  private async loadSupplierReturn(id: number) {
+    const entity = await this.prisma.supplierReturn.findUnique({
+      where: { id },
+      include: {
+        supplier: true,
+        branch: true,
+        creator: true,
+        purchaseOrder: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('SupplierReturn not found');
+    return entity;
+  }
+
   private async loadTransfer(id: number) {
     const entity = await this.prisma.transfer.findUnique({
       where: { id },
@@ -433,6 +482,21 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('Transfer not found');
+    return entity;
+  }
+
+  private async loadInternalUse(id: number) {
+    const entity = await this.prisma.internalUse.findUnique({
+      where: { id },
+      include: {
+        branch: true,
+        creator: true,
+        user: true,
+        purpose: true,
+        details: { include: { product: true } },
+      },
+    });
+    if (!entity) throw new NotFoundException('InternalUse not found');
     return entity;
   }
 
@@ -487,6 +551,14 @@ export class PrintTemplatesService {
         defaultAddr?.newCityName ||
         defaultAddr?.cityName ||
         '',
+      // Địa chỉ cũ (3 cấp) — để shipper đối chiếu với địa chỉ cũ khi cần.
+      // Lấy từ snapshot delivery (ưu tiên), fallback default address của khách.
+      Phuong_Xa_Cu_Khach_Hang:
+        delivery?.oldWardName || defaultAddr?.wardName || '',
+      Quan_Huyen_Cu_Khach_Hang:
+        delivery?.oldDistrictName || defaultAddr?.districtName || '',
+      Tinh_Thanh_Cu_Khach_Hang:
+        delivery?.oldCityName || defaultAddr?.cityName || '',
     };
   }
 
@@ -514,6 +586,13 @@ export class PrintTemplatesService {
         defaultAddr?.newCityName ||
         defaultAddr?.cityName ||
         '',
+      // Địa chỉ cũ (3 cấp) — để shipper đối chiếu với địa chỉ cũ khi cần.
+      Phuong_Xa_Cu_Giao_Hang:
+        delivery?.oldWardName || defaultAddr?.wardName || '',
+      Quan_Huyen_Cu_Giao_Hang:
+        delivery?.oldDistrictName || defaultAddr?.districtName || '',
+      Tinh_Thanh_Cu_Giao_Hang:
+        delivery?.oldCityName || defaultAddr?.cityName || '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
       Khoi_Luong: formatted,
@@ -708,7 +787,7 @@ export class PrintTemplatesService {
       Da_Thanh_Toan: this.money(po.paidAmount),
       Con_Lai: this.money(Number(po.total || 0) - Number(po.paidAmount || 0)),
       Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(Number(po.total || 0)),
-      items: (po.items || []).map((i: any) => this.mapItem(i)),
+      items: (po.items || []).map((i: any) => this.mapItemPurchaseOrder(i)),
     };
   }
 
@@ -731,6 +810,37 @@ export class PrintTemplatesService {
         So_Luong: Number(d.requestQuantity),
         Don_Gia: this.money(d.returnPrice),
         Don_Gia_Sau_Chiet_Khau: this.money(d.returnPrice),
+        Ghi_Chu_Hang_Hoa: d.note || '',
+        Thanh_Tien: this.money(d.totalAmount),
+      })),
+    };
+  }
+
+  // Mapper phiếu trả hàng nhập (supplier_return): trả hàng cho nhà cung cấp.
+  // - Dùng supplierVars (NCC) thay cho customerVars.
+  // - Ma_Nhap_Hang_Goc = mã phiếu nhập gốc (nếu trả theo phiếu nhập).
+  // - So_Luong = requestQuantity; Don_Gia = returnPrice; Thanh_Tien = totalAmount.
+  private mapSupplierReturn(sr: any) {
+    const totalReturn = Number(sr.totalReturnAmount || 0);
+    return {
+      ...this.storeVars(sr.branch),
+      ...this.dateVars(sr.createdAt),
+      ...this.supplierVars(sr.supplier),
+      Ma_Tra_Hang_Nhap: sr.code || '',
+      Ma_Nhap_Hang_Goc: sr.purchaseOrder?.code || '',
+      Nhan_Vien_Ban_Hang: sr.creator?.name || sr.createdByName || '',
+      Nguoi_Lap: sr.creator?.name || sr.createdByName || '',
+      Ghi_Chu: sr.note || '',
+      Tong_Tien_Tra: this.money(totalReturn),
+      Tien_Hoan: this.money(sr.refundAmount),
+      Da_Hoan_Tra: this.money(sr.refundedAmount),
+      Tong_Tien_Tra_Bang_Chu: this.numberToWords(totalReturn),
+      items: (sr.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || d.product?.code || '',
+        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        Don_Vi_Tinh: d.product?.unit || '',
+        So_Luong: Number(d.requestQuantity || 0),
+        Don_Gia: this.money(d.returnPrice),
         Ghi_Chu_Hang_Hoa: d.note || '',
         Thanh_Tien: this.money(d.totalAmount),
       })),
@@ -774,6 +884,32 @@ export class PrintTemplatesService {
     };
   }
 
+  private mapInternalUse(iu: any) {
+    const totalValue = Number(iu.totalValue || 0);
+    return {
+      ...this.storeVars(iu.branch),
+      ...this.dateVars(iu.transDate || iu.createdAt),
+      Ma_Xuat_Dung_Noi_Bo: iu.code || '',
+      Chi_Nhanh: iu.branchName || iu.branch?.name || '',
+      Muc_Dich_Su_Dung: iu.purpose?.name || '',
+      Nguoi_Su_Dung: iu.userName || iu.user?.name || '',
+      Nhan_Vien_Ban_Hang: iu.creator?.name || '',
+      Nguoi_Lap: iu.createdByName || iu.creator?.name || '',
+      Ghi_Chu: iu.description || '',
+      Tong_Gia_Tri: this.money(totalValue),
+      Tong_Gia_Tri_Bang_Chu: this.numberToWords(totalValue),
+      items: (iu.details || []).map((d: any) => ({
+        Ma_Hang: d.productCode || d.product?.code || '',
+        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        Don_Vi_Tinh: d.unit || d.product?.unit || '',
+        So_Luong: Number(d.quantity),
+        Gia_Von: this.money(d.cost),
+        Gia_Tri_Xuat: this.money(d.value),
+        Thanh_Tien: this.money(d.value),
+      })),
+    };
+  }
+
   private mapCashFlow(cf: any) {
     const codeKey = cf.isReceipt ? 'Ma_Phieu_Thu' : 'Ma_Phieu_Chi';
     const partnerKey = cf.isReceipt ? 'Nguoi_Nop' : 'Nguoi_Nhan';
@@ -803,13 +939,78 @@ export class PrintTemplatesService {
         ? Number(item.appliedPrice)
         : price - discount - (price * discountRatio) / 100;
 
+    // Phân loại dòng theo KM:
+    // - gift/discounted_buy → hàng thưởng (reward)
+    // - normal/promo_discount + có promotionId → hàng thuộc CT khuyến mãi (dòng X)
+    // - còn lại → hàng bán thường
+    const lineType = item.lineType || 'normal';
+    const isReward =
+      item.isGift || lineType === 'gift' || lineType === 'discounted_buy';
+    const isPromoBuy =
+      !isReward &&
+      (lineType === 'normal' || lineType === 'promo_discount') &&
+      item.promotionId != null;
+
+    let loaiDongKM = '';
+    if (lineType === 'gift' || item.isGift) loaiDongKM = 'Quà tặng';
+    else if (lineType === 'discounted_buy') loaiDongKM = 'Mua kèm KM';
+    else if (isPromoBuy) loaiDongKM = 'Hàng KM';
+
+    const baseName = item.productName || item.product?.name || '';
+    // Nhãn chèn mặc định vào tên hàng (hiện ngay trên template cũ, chỉ chữ).
+    const nameSuffix =
+      lineType === 'gift' || item.isGift
+        ? ' (Quà KM)'
+        : lineType === 'discounted_buy'
+          ? ' (Mua kèm KM)'
+          : isPromoBuy
+            ? ' (KM)'
+            : '';
+
+    return {
+      Ma_Hang: item.productCode || item.product?.code || '',
+      Ten_Hang_Hoa: baseName + nameSuffix,
+      Don_Vi_Tinh: item.product?.unit || '',
+      So_Luong: Number(item.quantity),
+      Don_Gia: this.money(item.price),
+      Chiet_Khau_Phan_Tram: discountRatio ? String(discountRatio) : '',
+      Chiet_Khau_Tien: discount ? this.money(discount) : '',
+      Giam_Gia_Don_Gia: this.money(item.discount),
+      Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
+      Ghi_Chu_Hang_Hoa: item.note || item.description || '',
+      Thanh_Tien: this.money(item.totalPrice || item.subTotal),
+      NSX: item.manufactureDate
+        ? new Date(item.manufactureDate).toLocaleDateString('vi-VN')
+        : '',
+      // Biến KM (item-variable) — người dùng có thể chèn vào template để tạo cột riêng.
+      Loai_Dong_KM: loaiDongKM,
+      La_Hang_KM: isReward || isPromoBuy ? '1' : '',
+      Ma_KM: item.promotion?.code || '',
+      Ten_KM: item.promotion?.name || '',
+    };
+  }
+
+  // Mapper riêng cho phiếu nhập hàng (purchase_order):
+  // - Bỏ Giam_Gia_Don_Gia (trùng ý nghĩa với Don_Gia_Sau_Chiet_Khau)
+  // - Bỏ Loai_Dong_KM / La_Hang_KM / Ma_KM / Ten_KM (phiếu nhập không cần KM)
+  // - Bổ sung Chiet_Khau_Phan_Tram + Chiet_Khau_Tien
+  private mapItemPurchaseOrder(item: any) {
+    const price = Number(item.price || 0);
+    const discount = Number(item.discount || 0);
+    const discountRatio = Number(item.discountRatio || 0);
+    const priceAfterDiscount =
+      item.appliedPrice != null
+        ? Number(item.appliedPrice)
+        : price - discount - (price * discountRatio) / 100;
+
     return {
       Ma_Hang: item.productCode || item.product?.code || '',
       Ten_Hang_Hoa: item.productName || item.product?.name || '',
       Don_Vi_Tinh: item.product?.unit || '',
       So_Luong: Number(item.quantity),
-      Don_Gia: this.money(item.price),
-      Giam_Gia_Don_Gia: this.money(item.discount),
+      Don_Gia: this.money(price),
+      Chiet_Khau_Phan_Tram: discountRatio ? String(discountRatio) : '',
+      Chiet_Khau_Tien: discount ? this.money(discount) : '',
       Don_Gia_Sau_Chiet_Khau: this.money(priceAfterDiscount),
       Ghi_Chu_Hang_Hoa: item.note || item.description || '',
       Thanh_Tien: this.money(item.totalPrice || item.subTotal),

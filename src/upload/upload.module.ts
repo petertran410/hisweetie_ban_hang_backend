@@ -9,7 +9,7 @@ import { UploadService } from './upload.service';
     MulterModule.register({
       storage: memoryStorage(),
       limits: {
-        fileSize: 30 * 1024 * 1024, // 30MB per file
+        fileSize: 50 * 1024 * 1024, // 50MB per file
         files: 30,
       },
     }),

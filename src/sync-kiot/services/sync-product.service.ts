@@ -2,13 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
+import { LarkProductSyncService } from '../../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class SyncProductService extends BaseSyncService {
   protected readonly entityName = 'product';
   protected readonly endpoint = 'products';
 
-  constructor(prisma: PrismaService, api: SyncKiotApiService) {
+  constructor(
+    prisma: PrismaService,
+    api: SyncKiotApiService,
+    private readonly larkProductSync: LarkProductSyncService,
+  ) {
     super(prisma, api);
   }
 
@@ -70,6 +75,9 @@ export class SyncProductService extends BaseSyncService {
     if (targetType === 4) {
       await this.syncProductComponents(existing.id, formulas);
     }
+
+    // Đẩy sản phẩm lên Lark (debounce, fire-and-forget).
+    this.larkProductSync.enqueueSync(existing.id);
 
     // ───────────────────────────────────────────────────────────────
     // ❌ KHÔNG đồng bộ tồn kho / hình ảnh (theo yêu cầu — đã bỏ hẳn).

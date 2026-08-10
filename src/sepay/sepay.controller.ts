@@ -4,6 +4,7 @@ import {
   Get,
   Put,
   Delete,
+  Patch,
   Body,
   Param,
   Query,
@@ -28,6 +29,8 @@ import { SepayMatchService } from './sepay-match.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
 import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
+import { SepayBackfillDto } from './dto/sepay-backfill.dto';
+import { SepayBackfillCashflowDto } from './dto/sepay-backfill-cashflow.dto';
 
 @ApiTags('Sepay')
 @Controller('sepay')
@@ -104,6 +107,61 @@ export class SepayController {
     }
 
     return this.sepayService.handleWebhook(payload);
+  }
+
+  /**
+   * Nhận tin nhắn SMS ngân hàng từ MacroDroid gửi thẳng vào backend.
+   * Auth bằng shared secret (X-External-Secret header) thay vì HMAC vì
+   * MacroDroid không hỗ trợ ký HMAC.
+   *
+   * Body là object đầy đủ chứa field `body_message` (đoạn SMS ngân hàng).
+   * Idempotent: cùng body_message → upsert (không trùng record).
+   */
+  @Public()
+  @Post('external-message')
+  @ApiOperation({
+    summary: 'Nhận tin nhắn ngân hàng từ MacroDroid (SMS forwarding)',
+  })
+  async handleExternalMessage(
+    @Headers('x-external-secret') secretHeader: string,
+    @Query('X-External-Secret') secretQueryUpper: string,
+    @Query('secret') secretQueryLower: string,
+    @Body() body: any,
+  ) {
+    const secret = this.configService.get<string>('SEPAY_EXTERNAL_SECRET');
+    if (!secret) {
+      throw new InternalServerErrorException(
+        'SEPAY_EXTERNAL_SECRET chưa được cấu hình',
+      );
+    }
+
+    // Chấp nhận secret ở header (khuyến nghị) hoặc query (tương thích cấu hình
+    // MacroDroid hiện tại). Query bị ghi vào log → nên ưu tiên dùng header.
+    const received = secretHeader || secretQueryUpper || secretQueryLower || '';
+
+    if (!received) {
+      throw new UnauthorizedException(
+        'Missing X-External-Secret (header hoặc query)',
+      );
+    }
+
+    // timingSafeEqual chống timing attack
+    let valid = false;
+    try {
+      const expectedBuf = Buffer.from(secret);
+      const receivedBuf = Buffer.from(received);
+      valid =
+        expectedBuf.length === receivedBuf.length &&
+        crypto.timingSafeEqual(expectedBuf, receivedBuf);
+    } catch {
+      valid = false;
+    }
+
+    if (!valid) {
+      throw new UnauthorizedException('Invalid secret');
+    }
+
+    return this.sepayService.handleExternalMessage(body);
   }
 
   /**
@@ -205,5 +263,165 @@ export class SepayController {
       dto,
       user?.id || 1,
     );
+  }
+
+  /**
+   * Ẩn 1 giao dịch khỏi danh sách (ẩn chung toàn hệ thống).
+   */
+  @Patch('transactions/:id/hide')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Ẩn giao dịch Sepay khỏi danh sách' })
+  async hideTransaction(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.sepaySyncService.hideTransaction(Number(id), user?.id);
+  }
+
+  /**
+   * Bỏ ẩn 1 giao dịch — hiển thị lại trong danh sách.
+   */
+  @Patch('transactions/:id/unhide')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Bỏ ẩn giao dịch Sepay' })
+  async unhideTransaction(@Param('id') id: string) {
+    return this.sepaySyncService.unhideTransaction(Number(id));
+  }
+
+  /**
+   * Backfill transactionContent cho các sepay_transactions thuộc TK đặc biệt
+   * (env SEPAY_SPECIAL_ACCOUNT_NUMBERS). Lấy lại content gốc từ rawPayload
+   * và cập nhật transactionContent. KHÔNG đụng CashFlow.description.
+   * Idempotent — chạy lại nhiều lần không thay đổi record đã đúng.
+   */
+  @Post('backfill-content')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Backfill transactionContent cho TK Sepay đặc biệt',
+  })
+  async backfillContent(
+    @Body() dto: SepayBackfillDto,
+    @CurrentUser() user: any,
+  ) {
+    this.logger.log(
+      `📨 Manual Sepay backfill-content triggered by user=${user?.id ?? 'system'}`,
+    );
+    const result = await this.sepaySyncService.backfillSpecialAccountContent(
+      dto.limit ?? 1000,
+      user?.id,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Preview backfill CashFlow.description cho các phiếu thu liên quan Sepay.
+   * KHÔNG ghi DB. Trả về danh sách đầy đủ các phiếu thu sẽ bị sửa + nội dung mới.
+   *
+   * Áp dụng cho:
+   *   - Phiếu thu từ webhook (InvoicePayment/OrderPayment có sepayTransactionId)
+   *   - Phiếu thu từ biến động số dư (qua SepayAllocation)
+   * BỎ QUA phiếu thu thủ công từ trang KH/sổ quỹ.
+   *
+   * Nội dung mới:
+   *   - TK đặc biệt (env) → transactionContent
+   *   - Ngân hàng khác → referenceNumber
+   */
+  @Post('backfill-cashflow-description-preview')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Preview backfill CashFlow.description (KHÔNG ghi DB)',
+  })
+  async previewCashflowDescription(@Body() dto: SepayBackfillCashflowDto) {
+    this.logger.log(
+      `🔍 Sepay backfill-cashflow-description-preview triggered (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.previewCashflowDescription(
+      dto.limit ?? 1000,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Apply backfill CashFlow.description cho các phiếu thu liên quan Sepay.
+   * GHI DB. Idempotent — chạy lại nhiều lần không thay đổi record đã đúng.
+   *
+   * Nên chạy preview trước để kiểm tra danh sách sẽ bị sửa.
+   */
+  @Post('backfill-cashflow-description')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Apply backfill CashFlow.description (GHI DB)',
+  })
+  async backfillCashflowDescription(
+    @Body() dto: SepayBackfillCashflowDto,
+    @CurrentUser() user: any,
+  ) {
+    this.logger.log(
+      `📨 Sepay backfill-cashflow-description triggered by user=${user?.id ?? 'system'} (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.backfillCashflowDescription(
+      dto.limit ?? 1000,
+      user?.id,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Preview backfill accountId cho các phiếu thu liên quan Sepay.
+   * KHÔNG ghi DB. Trả danh sách phiếu thu có accountId = null có thể resolve được.
+   */
+  @Post('backfill-cashflow-account-preview')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Preview backfill CashFlow.accountId (KHÔNG ghi DB)',
+  })
+  async previewCashflowAccount(@Body() dto: SepayBackfillCashflowDto) {
+    this.logger.log(
+      `🔍 Sepay backfill-cashflow-account-preview triggered (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.previewCashflowAccount(
+      dto.limit ?? 1000,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Apply backfill accountId cho các phiếu thu liên quan Sepay.
+   * GHI DB. Idempotent.
+   */
+  @Post('backfill-cashflow-account')
+  @RequirePermissions('sepay:sync')
+  @ApiOperation({
+    summary: 'Apply backfill CashFlow.accountId (GHI DB)',
+  })
+  async backfillCashflowAccount(
+    @Body() dto: SepayBackfillCashflowDto,
+    @CurrentUser() user: any,
+  ) {
+    this.logger.log(
+      `📨 Sepay backfill-cashflow-account triggered by user=${user?.id ?? 'system'} (limit=${dto.limit ?? 1000})`,
+    );
+    const result = await this.sepaySyncService.backfillCashflowAccount(
+      dto.limit ?? 1000,
+      user?.id,
+    );
+    return {
+      success: true,
+      result,
+      timestamp: new Date().toISOString(),
+    };
   }
 }

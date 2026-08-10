@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
@@ -13,12 +17,19 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import {
+  computeBucketTotals,
+  computeBucketTotalsBatch,
+  computeNearExpiryLots,
+} from '../common/stock-condition-onhand.util';
+import {
   getActiveLogKeys,
   isLogActive,
   computeOnHandFromLogs,
   recalcStockAuditChain,
 } from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { StockAuditsService } from '../stock-audits/stock-audits.service';
 
 @Injectable()
 export class ProductsService {
@@ -27,6 +38,8 @@ export class ProductsService {
     private auditLogsService: AuditLogsService,
     private ordersService: OrdersService,
     private orderSuppliersService: OrderSuppliersService,
+    private larkProductSync: LarkProductSyncService,
+    private stockAuditsService: StockAuditsService,
   ) {}
 
   private parseAttributes(
@@ -93,7 +106,11 @@ export class ProductsService {
   }
 
   private calculateManufacturingCost(
-    components: { componentProductId: number; quantity: number }[],
+    components: {
+      componentProductId: number;
+      quantity: number;
+      inputMode?: string;
+    }[],
     componentProducts: any[],
     costMap: Map<number, number>,
     productType: number,
@@ -103,6 +120,15 @@ export class ProductsService {
       const quantity = Number(comp.quantity);
 
       if (productType === 4) {
+        // ─── PIECE / CARTON MODE ──────────────────────────────────
+        // Tính theo đơn vị: cost/đơn-vị × quantity. CARTON: quantity=1/N
+        // → mỗi thành phẩm gánh cost-thùng/N. Đặt TRƯỚC check weight===0
+        // vì thùng không có khối lượng (weight=0).
+        if (comp.inputMode === 'piece' || comp.inputMode === 'carton') {
+          return sum + componentCost * quantity;
+        }
+        // ───────────────────────────────────────────────────────────
+
         const componentProduct = componentProducts.find(
           (p) => p.id === comp.componentProductId,
         );
@@ -148,6 +174,11 @@ export class ProductsService {
       onlyInPriceBook,
       orderBy,
       orderDirection,
+      supplierId,
+      factoryId,
+      factoryRelation,
+      fromCreatedDate,
+      toCreatedDate,
     } = query;
     const skip = limit ? (page - 1) * limit : 0;
     const sortDir: 'asc' | 'desc' = orderDirection === 'asc' ? 'asc' : 'desc';
@@ -200,10 +231,38 @@ export class ProductsService {
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
 
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
+
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };
     } else if (stockStatus === 'outstock') {
       where.inventories = { every: { onHand: { lte: 0 } } };
+    }
+
+    // ── Filter theo nhà máy (mới) ────────────────────────────────────────────
+    // supplierId: filter product mà primary HOẶC backup factory thuộc NCC này.
+    // factoryId + factoryRelation: filter product có primary/backup match.
+    if (supplierId) {
+      where.OR = [
+        { primaryFactory: { supplierId } },
+        { backupFactory: { supplierId } },
+      ];
+    } else if (factoryId) {
+      if (factoryRelation === 'primary') {
+        where.primaryFactoryId = factoryId;
+      } else if (factoryRelation === 'backup') {
+        where.backupFactoryId = factoryId;
+      } else {
+        // 'either' hoặc mặc định
+        where.OR = [
+          { primaryFactoryId: factoryId },
+          { backupFactoryId: factoryId },
+        ];
+      }
     }
 
     let inventoriesInclude: any = { include: { branch: true } };
@@ -230,6 +289,24 @@ export class ProductsService {
           componentProduct: {
             include: { images: true, inventories: true },
           },
+        },
+      },
+      primaryFactory: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          country: true,
+          currency: true,
+        },
+      },
+      backupFactory: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          country: true,
+          currency: true,
         },
       },
     };
@@ -412,6 +489,9 @@ export class ProductsService {
       priceBookId,
       onlyInPriceBook,
       columns,
+      fromCreatedDate,
+      toCreatedDate,
+      asOfDate,
     } = query;
 
     // ── Build where (mirror findAll) ─────────────────────────────────────────
@@ -457,6 +537,12 @@ export class ProductsService {
       where.tradeMarkId = { in: tradeMarkIds };
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
+
+    if (fromCreatedDate || toCreatedDate) {
+      where.createdAt = {};
+      if (fromCreatedDate) where.createdAt.gte = new Date(fromCreatedDate);
+      if (toCreatedDate) where.createdAt.lte = new Date(toCreatedDate);
+    }
 
     if (stockStatus === 'instock') {
       where.inventories = { some: { onHand: { gt: 0 } } };
@@ -511,6 +597,15 @@ export class ProductsService {
         header: 'Tồn kho',
         width: 12,
         value: (p, ctx) => {
+          // Tồn kho tại thời điểm (asOfDate) — chỉ dùng khi ctx cung cấp map
+          // (yêu cầu branchId). Khi có, ưu tiên tuyệt đối để file phản ánh tồn
+          // tại ngày đã chọn thay vì onHand hiện tại.
+          const stockAtDateMap = ctx?.stockAtDateMap as
+            | Record<number, number>
+            | undefined;
+          if (stockAtDateMap) {
+            return stockAtDateMap[p.id] ?? 0;
+          }
           if (ctx.branchId) {
             const inv = p.inventories?.find(
               (i: any) => i.branchId === ctx.branchId,
@@ -570,7 +665,8 @@ export class ProductsService {
       shippingWeight: {
         header: 'Trọng lượng vận chuyển',
         width: 20,
-        value: (p) => (p.shippingWeight != null ? Number(p.shippingWeight) : ''),
+        value: (p) =>
+          p.shippingWeight != null ? Number(p.shippingWeight) : '',
       },
       vat: {
         header: 'VAT (%)',
@@ -652,6 +748,12 @@ export class ProductsService {
     const needPending = selectedKeys.includes('customerOrder');
     const needSupplier = selectedKeys.includes('supplierOrder');
 
+    // Tồn kho tại thời điểm (asOfDate): chỉ kích hoạt khi có cả asOfDate và
+    // branchId (previewStockAtDate yêu cầu branchId). Khi không đủ điều kiện,
+    // bỏ qua → cột stock dùng onHand hiện tại như cũ.
+    const needStockAtDate =
+      selectedKeys.includes('stock') && !!asOfDate && !!branchId;
+
     // ── Stream Excel ─────────────────────────────────────────────────────────
     const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
       stream: res,
@@ -707,8 +809,19 @@ export class ProductsService {
       const supplierMap = needSupplier
         ? await this.orderSuppliersService.getConfirmedSummary(ids, branchId)
         : {};
+      // Map tồn kho tại thời điểm asOfDate (theo branchId). Dùng đúng nguồn
+      // chân lý previewStockAtDate (getActiveLogKeys + isLogActive), khớp thẻ
+      // kho. Bỏ qua khi needStockAtDate = false → ctx không có stockAtDateMap
+      // → cột stock dùng onHand hiện tại.
+      const stockAtDateMap = needStockAtDate
+        ? await this.stockAuditsService.previewStockAtDate(
+            branchId,
+            ids,
+            asOfDate,
+          )
+        : undefined;
 
-      const ctx = { branchId, pendingMap, supplierMap };
+      const ctx = { branchId, pendingMap, supplierMap, stockAtDateMap };
 
       for (const p of batch) {
         const rowData: Record<string, any> = {};
@@ -747,6 +860,8 @@ export class ProductsService {
             },
           },
         },
+        primaryFactory: true,
+        backupFactory: true,
       },
     });
 
@@ -754,7 +869,26 @@ export class ProductsService {
       throw new NotFoundException(`Product with id ${id} not found`);
     }
 
-    return product;
+    // Inventory bucket columns are derived cache. Normalize the detail response
+    // from the StockConditionLog ledger so product detail and transfer form use
+    // the same values for damaged/near-expiry/promo stock.
+    const inventories = await Promise.all(
+      product.inventories.map(async (inventory) => {
+        const totals = await computeBucketTotals(
+          this.prisma,
+          product.id,
+          inventory.branchId,
+        );
+        return {
+          ...inventory,
+          damagedQuantity: totals.damaged,
+          nearExpiryQuantity: totals.nearExpiry,
+          promoQuantity: totals.promo,
+        };
+      }),
+    );
+
+    return { ...product, inventories };
   }
 
   async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
@@ -793,16 +927,61 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
+      primaryFactoryId,
+      backupFactoryId,
       ...productData
     } = dto;
 
-    console.log('[DEBUG CREATE] costScope:', costScope);
-    console.log('[DEBUG CREATE] costBranchIds:', costBranchIds);
-    console.log('[DEBUG CREATE] typeof costBranchIds:', typeof costBranchIds);
-    console.log(
-      '[DEBUG CREATE] Array.isArray(costBranchIds):',
-      Array.isArray(costBranchIds),
+    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
+    if (
+      primaryFactoryId != null &&
+      backupFactoryId != null &&
+      primaryFactoryId === backupFactoryId
+    ) {
+      throw new BadRequestException(
+        'Nhà máy chính và nhà máy backup không được trùng nhau',
+      );
+    }
+
+    // Validate factory tồn tại
+    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
+      (id) => id != null,
     );
+    if (factoryIdsToCheck.length > 0) {
+      const foundFactories = await this.prisma.factory.findMany({
+        where: { id: { in: factoryIdsToCheck } },
+        select: { id: true },
+      });
+      const foundIds = new Set(foundFactories.map((f) => f.id));
+      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Nhà máy không tồn tại: ${missing.join(', ')}`,
+        );
+      }
+    }
+
+    // Phòng vệ NaN (xem update()): loại số không hợp lệ trước khi đưa vào Prisma.
+    const sanitizeNumber = (v: any): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+    const safePurchasePrice = sanitizeNumber(purchasePrice);
+    const safeBasePrice = sanitizeNumber(basePrice);
+    const safeStockQuantity = sanitizeNumber(stockQuantity);
+    const safeMinStockAlert = sanitizeNumber(minStockAlert);
+    const safeMaxStockAlert = sanitizeNumber(maxStockAlert);
+    for (const key of [
+      'weight',
+      'vat',
+      'shippingWeight',
+      'conversionValue',
+    ] as const) {
+      if (
+        key in productData &&
+        sanitizeNumber((productData as any)[key]) === undefined
+      ) {
+        delete (productData as any)[key];
+      }
+    }
 
     const name = dto.name;
     const attributesText = dto.attributesText || null;
@@ -825,7 +1004,7 @@ export class ProductsService {
           type: productData.type || 2,
           allowsSale: productData.allowsSale,
           hasVariants: productData.hasVariants,
-          basePrice: basePrice || 0,
+          basePrice: safeBasePrice ?? 0,
           unit: productData.unit,
           conversionValue: productData.conversionValue,
           weight: productData.weight,
@@ -841,7 +1020,9 @@ export class ProductsService {
           publicationLocation: publicationLocation
             ? (publicationLocation as any)
             : undefined,
-          publicationDate: publicationDate ? new Date(publicationDate) : undefined,
+          publicationDate: publicationDate
+            ? new Date(publicationDate)
+            : undefined,
           publicationLink: publicationLink ?? undefined,
           masterUnitId: masterUnitId,
           ...(masterUnitId && { masterUnitId }),
@@ -854,8 +1035,56 @@ export class ProductsService {
           ...(masterProductId && {
             masterProduct: { connect: { id: masterProductId } },
           }),
+          ...(primaryFactoryId != null && {
+            primaryFactory: { connect: { id: primaryFactoryId } },
+          }),
+          ...(backupFactoryId != null && {
+            backupFactory: { connect: { id: backupFactoryId } },
+          }),
         },
       });
+
+      // Ghi audit log cho lần gắn nhà máy đầu tiên (nếu có)
+      if (factoryIdsToCheck.length > 0 && userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+        const logs: Array<{
+          productId: number;
+          factoryId: number;
+          role: string;
+          previousFactoryId: number | null;
+          changedById: number;
+          changedByName: string | null;
+          reason: string;
+        }> = [];
+        if (primaryFactoryId != null) {
+          logs.push({
+            productId: product.id,
+            factoryId: primaryFactoryId,
+            role: 'primary',
+            previousFactoryId: null,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: 'set_primary',
+          });
+        }
+        if (backupFactoryId != null) {
+          logs.push({
+            productId: product.id,
+            factoryId: backupFactoryId,
+            role: 'backup',
+            previousFactoryId: null,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: 'set_backup',
+          });
+        }
+        if (logs.length > 0) {
+          await tx.factoryChangeLog.createMany({ data: logs });
+        }
+      }
 
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
@@ -883,10 +1112,10 @@ export class ProductsService {
         select: { id: true, name: true },
       });
 
-      const cost = purchasePrice || 0;
-      const onHand = stockQuantity || 0;
-      const minQuality = minStockAlert || 0;
-      const maxQuality = maxStockAlert || 0;
+      const cost = safePurchasePrice ?? 0;
+      const onHand = safeStockQuantity ?? 0;
+      const minQuality = safeMinStockAlert ?? 0;
+      const maxQuality = safeMaxStockAlert ?? 0;
 
       let branchesToCreateInventory: { id: number; name: string }[] = [];
 
@@ -1040,6 +1269,8 @@ export class ProductsService {
         });
       }
 
+      this.larkProductSync.enqueueSync(product.id);
+
       return tx.product.findUnique({
         where: { id: product.id },
         include: {
@@ -1110,8 +1341,112 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
+      primaryFactoryId,
+      backupFactoryId,
       ...productData
     } = dto;
+
+    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
+    if (
+      primaryFactoryId != null &&
+      backupFactoryId != null &&
+      primaryFactoryId === backupFactoryId
+    ) {
+      throw new BadRequestException(
+        'Nhà máy chính và nhà máy backup không được trùng nhau',
+      );
+    }
+
+    // Validate factory tồn tại nếu được truyền (không null)
+    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
+      (id) => id != null,
+    );
+    if (factoryIdsToCheck.length > 0) {
+      const foundFactories = await this.prisma.factory.findMany({
+        where: { id: { in: factoryIdsToCheck } },
+        select: { id: true },
+      });
+      const foundIds = new Set(foundFactories.map((f) => f.id));
+      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
+      if (missing.length > 0) {
+        throw new BadRequestException(
+          `Nhà máy không tồn tại: ${missing.join(', ')}`,
+        );
+      }
+    }
+
+    // Detect thay đổi primary/backup factory để ghi audit log sau
+    const factoryChanges: Array<{
+      role: 'primary' | 'backup';
+      factoryId: number;
+      previousFactoryId: number | null;
+      reason: string;
+    }> = [];
+
+    if (primaryFactoryId !== undefined) {
+      const newId = primaryFactoryId ?? null;
+      const oldId = currentProduct.primaryFactoryId ?? null;
+      if (newId !== oldId) {
+        factoryChanges.push({
+          role: 'primary',
+          factoryId: newId ?? 0,
+          previousFactoryId: oldId,
+          reason:
+            newId === null
+              ? 'unlink'
+              : oldId === backupFactoryId && oldId != null
+                ? 'swap'
+                : 'set_primary',
+        });
+        (productData as any).primaryFactoryId = newId;
+      }
+    }
+    if (backupFactoryId !== undefined) {
+      const newId = backupFactoryId ?? null;
+      const oldId = currentProduct.backupFactoryId ?? null;
+      if (newId !== oldId) {
+        factoryChanges.push({
+          role: 'backup',
+          factoryId: newId ?? 0,
+          previousFactoryId: oldId,
+          reason:
+            newId === null
+              ? 'unlink'
+              : oldId === primaryFactoryId && oldId != null
+                ? 'swap'
+                : 'set_backup',
+        });
+        (productData as any).backupFactoryId = newId;
+      }
+    }
+
+    // Phòng vệ NaN: client có thể gửi NaN khi giá trị số được derive từ dữ liệu
+    // đã bị strip (vd giá vốn bị ẩn theo quyền → Number(undefined) = NaN). Prisma
+    // không nhận NaN cho cột Decimal → ném PrismaClientValidationError ("Dữ liệu
+    // không hợp lệ"). Loại bỏ mọi số không hợp lệ trước khi đưa vào Prisma.
+    const sanitizeNumber = (v: any): number | undefined =>
+      typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+
+    const safePurchasePrice = sanitizeNumber(purchasePrice);
+    const safeBasePrice = sanitizeNumber(basePrice);
+    const safeStockQuantity = sanitizeNumber(stockQuantity);
+    const safeMinStockAlert = sanitizeNumber(minStockAlert);
+    const safeMaxStockAlert = sanitizeNumber(maxStockAlert);
+
+    // Làm sạch các field số nằm trong productData (đổ thẳng vào product.update).
+    for (const key of [
+      'weight',
+      'vat',
+      'shippingWeight',
+      'conversionValue',
+    ] as const) {
+      if (
+        key in productData &&
+        sanitizeNumber((productData as any)[key]) === undefined
+      ) {
+        delete (productData as any)[key];
+      }
+    }
 
     return this.prisma.$transaction(async (tx) => {
       const product = await tx.product.update({
@@ -1120,7 +1455,9 @@ export class ProductsService {
           ...productData,
           fullName,
           basePrice:
-            basePrice !== undefined ? basePrice : currentProduct.basePrice,
+            safeBasePrice !== undefined
+              ? safeBasePrice
+              : currentProduct.basePrice,
           ...(masterUnitId !== undefined && { masterUnitId }),
           ...(publicationLocation !== undefined && {
             publicationLocation: publicationLocation as any,
@@ -1152,6 +1489,25 @@ export class ProductsService {
           }),
         },
       });
+
+      // Ghi audit log nếu có thay đổi primary/backup factory
+      if (factoryChanges.length > 0 && userId) {
+        const user = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true },
+        });
+        await tx.factoryChangeLog.createMany({
+          data: factoryChanges.map((change) => ({
+            productId: id,
+            factoryId: change.factoryId,
+            role: change.role,
+            previousFactoryId: change.previousFactoryId,
+            changedById: userId,
+            changedByName: user?.name ?? null,
+            reason: change.reason,
+          })),
+        });
+      }
 
       if (dto.code || dto.name) {
         const newCode = dto.code || currentProduct.code;
@@ -1201,10 +1557,10 @@ export class ProductsService {
         }
       }
 
-      const cost = purchasePrice;
-      const onHand = stockQuantity;
-      const minQuality = minStockAlert;
-      const maxQuality = maxStockAlert;
+      const cost = safePurchasePrice;
+      const onHand = safeStockQuantity;
+      const minQuality = safeMinStockAlert;
+      const maxQuality = safeMaxStockAlert;
 
       // Đọc giá trị onHand cũ để so sánh sau khi upsert
       let oldOnHand: number | null = null;
@@ -1524,6 +1880,7 @@ export class ProductsService {
               costPrice: currentCost,
               transactionDate: new Date(),
               note: `Điều chỉnh tồn kho từ trang sản phẩm: ${product.name} (${sumLogs} → ${onHand})`,
+              userId: userId ?? undefined,
               createdByName: auditUserName,
             },
           });
@@ -1607,6 +1964,8 @@ export class ProductsService {
           branchId: user?.branchId || undefined,
         });
       }
+
+      this.larkProductSync.enqueueSync(id);
 
       return tx.product.findUnique({
         where: { id },
@@ -1765,6 +2124,141 @@ export class ProductsService {
     return { data, total };
   }
 
+  // ─── Thẻ kho LOẠI TỒN (bucket) — song song findInventoryLogs ───────────
+  // Trả về sổ cái StockConditionLog của 1 bucket (DAMAGED/NEAR_EXPIRY/PROMO)
+  // kèm "Tồn cuối" cộng dồn xuôi theo transactionDate. Dùng chung bộ lọc active
+  // để log thuộc phiếu CLT chưa duyệt / đã hủy bị loại.
+  async findConditionLogs(
+    productId: number,
+    bucket: string,
+    branchId?: number,
+    page = 1,
+    limit = 15,
+  ) {
+    const where: any = { productId, bucket };
+    if (branchId) where.branchId = branchId;
+
+    const rawLogs = await this.prisma.stockConditionLog.findMany({
+      where,
+      orderBy: [
+        { transactionDate: 'desc' },
+        { createdAt: 'desc' },
+        { id: 'desc' },
+      ],
+    });
+
+    const activeKeys = await getActiveLogKeys(this.prisma, rawLogs);
+    const activeLogs = rawLogs.filter((log) => isLogActive(log, activeKeys));
+
+    // Gộp các dòng cùng CHỨNG TỪ trong cùng bucket thành 1 dòng (cộng dồn
+    // quantity). Một hóa đơn có thể sinh nhiều dòng log cùng bucket cho cùng SP
+    // (vd: hàng điều kiện X + hàng tặng Y đều trừ PROMO) — hiển thị tách sẽ gây
+    // hiểu nhầm "trừ 2 lần". Khóa gộp gồm cả expiryDate để KHÔNG gộp nhầm các
+    // lô cận date (NEAR_EXPIRY) khác NSX.
+    const mergedMap = new Map<string, (typeof activeLogs)[number]>();
+    const mergedOrder: string[] = [];
+    for (const log of activeLogs) {
+      const expiryKey = log.expiryDate
+        ? new Date(log.expiryDate).toISOString()
+        : '';
+      const key = [
+        log.refType ?? '',
+        log.refId ?? '',
+        log.refCode ?? '',
+        log.transactionType ?? '',
+        expiryKey,
+      ].join('|');
+      const existing = mergedMap.get(key);
+      if (existing) {
+        // activeLogs đã sort desc; giữ log đầu tiên (mới nhất) làm đại diện,
+        // chỉ cộng thêm quantity của dòng cùng chứng từ.
+        (existing as any).quantity =
+          Number(existing.quantity) + Number(log.quantity);
+      } else {
+        mergedMap.set(key, { ...log });
+        mergedOrder.push(key);
+      }
+    }
+    const mergedLogs = mergedOrder.map((key) => mergedMap.get(key)!);
+
+    // Cộng dồn xuôi (cũ → mới) để ra tồn cuối từng dòng.
+    const withBalance = mergedLogs.map(
+      (log) =>
+        ({ ...log }) as (typeof mergedLogs)[number] & { tonCuoi: number },
+    );
+    let running = 0;
+    for (let i = withBalance.length - 1; i >= 0; i--) {
+      running += Number(withBalance[i].quantity);
+      withBalance[i].tonCuoi = running;
+    }
+
+    const total = withBalance.length;
+    const skip = (page - 1) * limit;
+    const data = withBalance.slice(skip, skip + limit);
+    return { data, total };
+  }
+
+  // Tồn cận date theo từng lô (expiryDate) — dùng cho bán hàng chọn lô.
+  async findNearExpiryLots(productId: number, branchId: number) {
+    const lots = await computeNearExpiryLots(this.prisma, productId, branchId);
+    return { data: lots };
+  }
+
+  // Tồn tổng hợp: Hàng tốt / Bục rách / Cận date / KM. Bất biến:
+  //   good + damaged + nearExpiry + promo = onHand
+  async getConditionSummary(productId: number, branchId: number) {
+    const inv = await this.prisma.inventory.findUnique({
+      where: { productId_branchId: { productId, branchId } },
+      select: { onHand: true },
+    });
+    const onHand = inv ? Number(inv.onHand) : 0;
+    const totals = await computeBucketTotals(this.prisma, productId, branchId);
+    const good = onHand - totals.damaged - totals.nearExpiry - totals.promo;
+    return {
+      productId,
+      branchId,
+      onHand,
+      good,
+      damaged: totals.damaged,
+      nearExpiry: totals.nearExpiry,
+      promo: totals.promo,
+    };
+  }
+
+  // Tồn bucket cho NHIỀU sản phẩm trong 1 chi nhánh — đọc TỪ SỔ CÁI.
+  // Dùng cho dropdown bán hàng: trước đây FE đọc cache Inventory
+  // (damagedQuantity/nearExpiryQuantity/promoQuantity) nên bị lệch khi cache
+  // trôi khỏi sổ cái. Nay dropdown đọc endpoint này → một nguồn chân lý duy nhất.
+  async getConditionSummaryBatch(productIds: number[], branchId: number) {
+    const ids = [...new Set((productIds || []).filter((id) => !!id))];
+    if (ids.length === 0 || !branchId) {
+      return {} as Record<
+        number,
+        { damaged: number; nearExpiry: number; promo: number }
+      >;
+    }
+
+    const totalsMap = await computeBucketTotalsBatch(
+      this.prisma,
+      ids,
+      branchId,
+    );
+
+    const result: Record<
+      number,
+      { damaged: number; nearExpiry: number; promo: number }
+    > = {};
+    for (const id of ids) {
+      const t = totalsMap[id] || { damaged: 0, nearExpiry: 0, promo: 0 };
+      result[id] = {
+        damaged: t.damaged,
+        nearExpiry: t.nearExpiry,
+        promo: t.promo,
+      };
+    }
+    return result;
+  }
+
   async checkLowStock() {
     const allInventories = await this.prisma.inventory.findMany({
       include: {
@@ -1879,7 +2373,14 @@ export class ProductsService {
     };
   }
 
-  private async generateSafeProductCode(tx: any): Promise<string> {
+  /**
+   * Sinh mã sản phẩm duy nhất theo pattern `SP{NNNNNN}`.
+   * Được promote từ `private` sang method công khai để ImportService
+   * có thể dùng khi tạo sản phẩm mới qua file Excel mà người dùng
+   * không nhập mã. Truyền `tx` để đảm bảo thao tác nằm trong cùng
+   * transaction với create, tránh trùng mã do race condition.
+   */
+  async generateSafeProductCode(tx: any): Promise<string> {
     const prefix = 'SP';
     const regex = new RegExp(`^${prefix}\\d{6}$`);
     let attempts = 0;
@@ -1957,7 +2458,10 @@ export class ProductsService {
       basePrice: product.basePrice ? Number(product.basePrice) : 0,
       weight: product.weight ? Number(product.weight) : 0,
       weightUnit: product.weightUnit,
-      vat: product.vat !== null && product.vat !== undefined ? Number(product.vat) : 8,
+      vat:
+        product.vat !== null && product.vat !== undefined
+          ? Number(product.vat)
+          : 8,
       shippingWeight:
         product.shippingWeight !== null && product.shippingWeight !== undefined
           ? Number(product.shippingWeight)

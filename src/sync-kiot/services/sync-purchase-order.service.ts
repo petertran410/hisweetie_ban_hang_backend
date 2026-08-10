@@ -183,36 +183,58 @@ export class SyncPurchaseOrderService extends BaseSyncService {
         continue;
       }
 
-      await this.prisma.purchaseOrderItem.upsert({
+      // Đổi từ `upsert` theo unique key cũ `(purchaseOrderId, productId)` sang
+      // `findFirst` + `update`/`create` vì unique key đã chuyển sang
+      // `(purchaseOrderId, lineNumber)` (khi sửa schema thêm 2 cột mới
+      // lineNumber + conditionType). Vì cùng 1 SP có thể xuất hiện nhiều
+      // dòng trong cùng phiếu, upsert theo productId sẽ ghi đè lên nhau
+      // sai. KiotViet sync vẫn giả định 1 dòng/SP nên findFirst cũng an toàn.
+      const existing = await this.prisma.purchaseOrderItem.findFirst({
         where: {
-          purchaseOrderId_productId: {
-            purchaseOrderId,
-            productId: product.id,
-          },
-        },
-        update: {
-          productCode: d.productCode || product.code,
-          productName: d.productName || product.name,
-          quantity: d.quantity || 0,
-          price: d.price || 0,
-          discount: d.discount || 0,
-          discountRatio: d.discountRatio || 0,
-          totalPrice: Number(d.quantity || 0) * Number(d.price || 0),
-          description: d.description || null,
-        },
-        create: {
           purchaseOrderId,
           productId: product.id,
-          productCode: d.productCode || product.code,
-          productName: d.productName || product.name,
-          quantity: d.quantity || 0,
-          price: d.price || 0,
-          discount: d.discount || 0,
-          discountRatio: d.discountRatio || 0,
-          totalPrice: Number(d.quantity || 0) * Number(d.price || 0),
-          description: d.description || null,
         },
+        select: { id: true },
       });
+
+      const itemData = {
+        productCode: d.productCode || product.code,
+        productName: d.productName || product.name,
+        quantity: d.quantity || 0,
+        price: d.price || 0,
+        discount: d.discount || 0,
+        discountRatio: d.discountRatio || 0,
+        totalPrice: Number(d.quantity || 0) * Number(d.price || 0),
+        description: d.description || null,
+        // KiotViet hiện không gửi phân loại hàng → mặc định "normal".
+        // Nếu sau này KiotViet bổ sung field conditionType, chỉ cần
+        // đọc từ `d.conditionType` ở đây.
+        conditionType: 'normal',
+      };
+
+      if (existing) {
+        await this.prisma.purchaseOrderItem.update({
+          where: { id: existing.id },
+          data: itemData,
+        });
+      } else {
+        // Tính lineNumber tiếp theo trong phiếu = max(lineNumber) + 1 (nếu
+        // chưa có thì bắt đầu từ 1). Tránh trùng unique key khi insert.
+        const maxLine = await this.prisma.purchaseOrderItem.aggregate({
+          where: { purchaseOrderId },
+          _max: { lineNumber: true },
+        });
+        const nextLineNumber = (maxLine._max.lineNumber ?? 0) + 1;
+
+        await this.prisma.purchaseOrderItem.create({
+          data: {
+            purchaseOrderId,
+            productId: product.id,
+            ...itemData,
+            lineNumber: nextLineNumber,
+          },
+        });
+      }
     }
   }
 

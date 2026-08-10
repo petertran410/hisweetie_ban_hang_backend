@@ -45,9 +45,7 @@ export class ProductsController {
     }
 
     const branchIdRaw =
-      req.headers?.['x-branch-id'] ||
-      req.body?.branchId ||
-      req.query?.branchId;
+      req.headers?.['x-branch-id'] || req.body?.branchId || req.query?.branchId;
     const branchId = branchIdRaw ? parseInt(String(branchIdRaw)) : undefined;
 
     if (branchId && !isNaN(branchId)) {
@@ -62,6 +60,30 @@ export class ProductsController {
     }
 
     return { isSuperAdmin: false, permissions: user.permissions || [] };
+  }
+
+  /**
+   * Nếu user KHÔNG có quyền `products:assign_factory` mà body có gửi kèm
+   * primaryFactoryId / backupFactoryId → âm thầm loại bỏ 2 field này khỏi dto
+   * (không ghi đè dữ liệu nhà máy thật, không ném lỗi). Super Admin luôn được
+   * phép. Đây là lớp chặn backend bổ trợ cho việc ẩn/disable ở frontend.
+   */
+  private async stripFactoryFieldsIfNoPermission<
+    T extends { primaryFactoryId?: number; backupFactoryId?: number },
+  >(dto: T, req: any): Promise<T> {
+    const hasFactoryField =
+      dto?.primaryFactoryId !== undefined || dto?.backupFactoryId !== undefined;
+    if (!hasFactoryField) return dto;
+
+    const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
+    const canAssignFactory =
+      isSuperAdmin || permissions.includes('products:assign_factory');
+    if (canAssignFactory) return dto;
+
+    const sanitized = { ...dto };
+    delete sanitized.primaryFactoryId;
+    delete sanitized.backupFactoryId;
+    return sanitized;
   }
 
   /**
@@ -94,11 +116,12 @@ export class ProductsController {
     if (!canViewCost && Array.isArray(product.comboComponents)) {
       product.comboComponents = product.comboComponents.map((c: any) => {
         if (c?.componentProduct?.inventories) {
-          c.componentProduct.inventories =
-            c.componentProduct.inventories.map((inv: any) => ({
+          c.componentProduct.inventories = c.componentProduct.inventories.map(
+            (inv: any) => ({
               ...inv,
               cost: undefined,
-            }));
+            }),
+          );
         }
         return c;
       });
@@ -178,6 +201,64 @@ export class ProductsController {
     );
   }
 
+  @Get(':id/condition-logs')
+  @RequirePermissions('products:view')
+  findConditionLogs(
+    @Param('id') id: string,
+    @Query('bucket') bucket: string,
+    @Query('branchId') branchId?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.productsService.findConditionLogs(
+      +id,
+      bucket,
+      branchId ? +branchId : undefined,
+      page ? +page : 1,
+      limit ? +limit : 15,
+    );
+  }
+
+  @Get(':id/near-expiry-lots')
+  @RequirePermissions('products:view')
+  findNearExpiryLots(
+    @Param('id') id: string,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.productsService.findNearExpiryLots(+id, +branchId);
+  }
+
+  @Get(':id/condition-summary')
+  @RequirePermissions('products:view')
+  getConditionSummary(
+    @Param('id') id: string,
+    @Query('branchId') branchId: string,
+  ) {
+    return this.productsService.getConditionSummary(+id, +branchId);
+  }
+
+  /**
+   * Tồn 3 bucket của NHIỀU sản phẩm trong 1 chi nhánh, đọc TỪ SỔ CÁI.
+   * Dùng cho dropdown bán hàng: trước đây FE đọc cache Inventory
+   * (damagedQuantity/nearExpiryQuantity/promoQuantity) nên bị lệch khi cache
+   * trôi khỏi sổ cái. Endpoint này trả về đúng nguồn chân lý.
+   *
+   * LƯU Ý: route tĩnh này PHẢI khai báo trước @Get(':id') để không bị Nest
+   * match thành param id.
+   */
+  @Get('condition-summary-batch')
+  @RequirePermissions('products:view')
+  getConditionSummaryBatch(
+    @Query('productIds') productIds: string,
+    @Query('branchId') branchId: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+    return this.productsService.getConditionSummaryBatch(ids, +branchId);
+  }
+
   @Get(':id')
   @RequirePermissions('products:view')
   async findOne(@Param('id') id: string, @Req() req: any) {
@@ -192,20 +273,22 @@ export class ProductsController {
 
   @Post()
   @RequirePermissions('products:create')
-  create(@Body() dto: CreateProductDto, @Req() req: any) {
+  async create(@Body() dto: CreateProductDto, @Req() req: any) {
     const userId = req.user?.id;
-    return this.productsService.create(dto, userId);
+    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    return this.productsService.create(sanitized, userId);
   }
 
   @Put(':id')
   @RequirePermissions('products:update')
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateProductDto,
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    return this.productsService.update(+id, dto, userId);
+    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    return this.productsService.update(+id, sanitized, userId);
   }
 
   @Delete(':id')

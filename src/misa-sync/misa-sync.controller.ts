@@ -6,14 +6,23 @@ import {
   Logger,
   Param,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequireAnyPermission } from '../auth/decorators/permissions.decorator';
 import { MisaCallbackRequestDto } from './dto';
 import { MisaBulkVoucherRequestDto, MisaCreateVoucherRequestDto } from './dto';
 import { MisaDictionaryService } from './misa-dictionary.service';
 import { MisaVoucherService } from './misa-voucher.service';
+import { MisaSyncCron } from './misa-sync.cron';
+import { IsBoolean } from 'class-validator';
+
+class ToggleCronDto {
+  @IsBoolean()
+  enabled!: boolean;
+}
 
 @ApiTags('Misa Sync')
 @ApiBearerAuth()
@@ -24,15 +33,33 @@ export class MisaSyncController {
   constructor(
     private readonly misaVoucherService: MisaVoucherService,
     private readonly misaDictionaryService: MisaDictionaryService,
+    private readonly cron: MisaSyncCron,
   ) {}
 
   @Get('employees')
-  @RequirePermissions('vat_invoices:view')
+  @RequireAnyPermission('vat_invoices:view', 'customers:link_misa')
   @ApiOperation({
     summary: 'Danh sách nhân viên phụ trách (Misa, isEmployee = true)',
   })
   async getEmployees(): Promise<{ id: string; code: string; name: string }[]> {
     return this.misaDictionaryService.findEmployees();
+  }
+
+  @Get('inventory-items')
+  @RequirePermissions('products:link_misa')
+  @ApiOperation({
+    summary: 'Tìm kiếm vật tư hàng hóa Misa để liên kết với sản phẩm',
+  })
+  async getInventoryItems(
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+  ): Promise<
+    { id: string; code: string; name: string; unitName: string | null }[]
+  > {
+    return this.misaDictionaryService.findInventoryItems(
+      search,
+      limit ? Number(limit) : undefined,
+    );
   }
 
   @Post('dictionary/sync')
@@ -87,6 +114,7 @@ export class MisaSyncController {
       return await this.misaVoucherService.createSaleVoucherFromInvoice(
         invoiceCode,
         body?.buyerOverride,
+        body?.force,
       );
     } catch (error) {
       this.logger.error(
@@ -124,6 +152,7 @@ export class MisaSyncController {
     return this.misaVoucherService.createVouchersBulk(
       body.invoiceCodes,
       body.buyerOverrides,
+      body.force,
     );
   }
 
@@ -233,5 +262,22 @@ export class MisaSyncController {
       status: 'ok',
       timestamp: new Date().toISOString(),
     };
+  }
+
+  @Get('cron/dictionary/status')
+  @ApiOperation({
+    summary: 'Trạng thái cron đồng bộ danh mục Misa (mỗi 6 giờ)',
+  })
+  async getDictionaryCronStatus() {
+    return this.cron.getStatus();
+  }
+
+  @Post('cron/dictionary/toggle')
+  @ApiOperation({
+    summary:
+      'Bật/tắt cron đồng bộ danh mục Misa — bật sẽ chạy mỗi 6 giờ, tắt sẽ dừng',
+  })
+  async toggleDictionaryCron(@Body() body: ToggleCronDto) {
+    return this.cron.setEnabled(body.enabled);
   }
 }

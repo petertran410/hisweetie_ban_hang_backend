@@ -19,10 +19,15 @@ import {
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
 } from '../common/consignment-packing.util';
+import {
+  buildInventoryLogActor,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
@@ -35,6 +40,7 @@ export class PackingSlipsService {
     private auditLogsService: AuditLogsService,
     private n8nNotifyService: N8nNotifyService,
     private larkExpenseSync: LarkExpenseSyncService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -140,6 +146,7 @@ export class PackingSlipsService {
                 customer: {
                   select: {
                     id: true,
+                    code: true,
                     name: true,
                     contactNumber: true,
                   },
@@ -167,8 +174,8 @@ export class PackingSlipsService {
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {
-    const isConsignment =
-      !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const isConsignment = !!dto.consignmentIds && dto.consignmentIds.length > 0;
+    const touchedProductIds = new Set<number>();
 
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
@@ -186,6 +193,8 @@ export class PackingSlipsService {
           feeGrab: dto.feeGrab || 0,
           hasCuocGuiHang: dto.hasCuocGuiHang,
           cuocGuiHang: dto.cuocGuiHang || 0,
+          hasCuocNhanHang: dto.hasCuocNhanHang,
+          cuocNhanHang: dto.cuocNhanHang || 0,
           expensePayerId: dto.expensePayerId ?? null,
           note: dto.note,
           createdBy: userId,
@@ -221,7 +230,48 @@ export class PackingSlipsService {
 
       if (isConsignment) {
         // Giao hàng → DELIVERED (+ trừ kho lần đầu rời CONFIRMED)
-        await applyPackingToConsignments(tx, dto.consignmentIds!, 'giao-hang');
+        // Fetch người thực hiện trong tx để ghi userId/createdByName vào
+        // InventoryLog CONSIGNMENT_OUT (truy vết ai xuất kho ký gửi).
+        const consignActorUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const consignActor: InventoryLogActor = buildInventoryLogActor(
+          userId,
+          consignActorUser?.name || consignActorUser?.email,
+        );
+        const touched = await applyPackingToConsignments(
+          tx,
+          dto.consignmentIds!,
+          'giao-hang',
+          consignActor,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
+
+        // Ghi audit log cho action xuất kho ký gửi (truy vết ai trừ kho ký gửi).
+        await this.auditLogsService.create({
+          actionType: 'POST',
+          actionCode: 'CONSIGNMENT_STOCK_OUT',
+          entityType: 'consignments',
+          entityCode: created.code,
+          category: getCategoryFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          severity: getSeverityFromActionCode('CONSIGNMENT_STOCK_OUT'),
+          snapshot: {
+            packingCode: created.code,
+            packingType: 'giao-hang',
+            consignmentIds: dto.consignmentIds,
+            productCount: touched.size,
+          },
+          message: renderAuditMessage('CONSIGNMENT_STOCK_OUT', {
+            consignmentCode: created.code,
+            productCount: touched.size,
+          }),
+          messageTemplate: 'CONSIGNMENT_STOCK_OUT',
+          userId,
+          userName:
+            consignActorUser?.name || consignActorUser?.email || 'System',
+          branchId: created.branchId || undefined,
+        });
       } else {
         await tx.invoice.updateMany({
           where: {
@@ -239,6 +289,10 @@ export class PackingSlipsService {
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     // Audit log ngoài transaction
     const user = await this.prisma.user.findUnique({
@@ -270,24 +324,32 @@ export class PackingSlipsService {
     if (!isConsignment) {
       try {
         const fullPackingSlip = await this.findOne(packingSlip.id);
-      // Không await để response API tạo packing slip không bị chờ webhook.
-      // notifyDelivery đã tự nuốt lỗi bên trong, nhưng vẫn bọc thêm để chắc.
-      void this.n8nNotifyService
-        .notifyDelivery(fullPackingSlip as any)
-        .catch((err) => {
-          // Phòng ngừa, dù service đã tự log
+        // Routing loại trừ lẫn nhau: phiếu có hóa đơn của khách Bibi (mã cấu
+        // hình qua env) → CHỈ gửi luồng Bibi; ngược lại → CHỈ gửi luồng mặc định.
+        // Không await để response API tạo packing slip không bị chờ webhook.
+        // Service đã tự nuốt lỗi, nhưng vẫn bọc thêm để chắc.
+        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+          void this.n8nNotifyService
+            .notifyBibiDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyBibiDelivery unexpected error:', err);
+            });
+        } else {
+          void this.n8nNotifyService
+            .notifyDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyDelivery unexpected error:', err);
+            });
+        }
 
-          console.error('notifyDelivery unexpected error:', err);
-        });
-
-      // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
-      // Best-effort: lỗi ở đây không ảnh hưởng response.
-      void this.larkExpenseSync
-        .syncPackingSlipExpenses(fullPackingSlip as any)
-        .catch((err) => {
-          console.error('larkExpenseSync unexpected error:', err);
-        });
-    } catch (err) {
+        // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
+        // Best-effort: lỗi ở đây không ảnh hưởng response.
+        void this.larkExpenseSync
+          .syncPackingSlipExpenses(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('larkExpenseSync unexpected error:', err);
+          });
+      } catch (err) {
         console.error(
           'Failed to load packing slip for n8n notify:',
           (err as Error).message,
@@ -313,6 +375,8 @@ export class PackingSlipsService {
         feeGrab: dto.feeGrab || 0,
         hasCuocGuiHang: dto.hasCuocGuiHang,
         cuocGuiHang: dto.cuocGuiHang || 0,
+        hasCuocNhanHang: dto.hasCuocNhanHang,
+        cuocNhanHang: dto.cuocNhanHang || 0,
         note: dto.note,
       };
 
@@ -395,12 +459,24 @@ export class PackingSlipsService {
     if (this.hasNotifiableChange(packingSlip, dto)) {
       try {
         const fullPackingSlip = await this.findOne(id);
-        // Fire-and-forget: không chặn response cập nhật.
-        void this.n8nNotifyService
-          .notifyDelivery(fullPackingSlip as any)
-          .catch((err) => {
-            console.error('notifyDelivery (update) unexpected error:', err);
-          });
+        // Routing loại trừ: phiếu có khách Bibi (mã cấu hình qua env) → CHỈ gửi
+        // Bibi; ngược lại → CHỈ gửi luồng mặc định. Fire-and-forget.
+        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+          void this.n8nNotifyService
+            .notifyBibiDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error(
+                'notifyBibiDelivery (update) unexpected error:',
+                err,
+              );
+            });
+        } else {
+          void this.n8nNotifyService
+            .notifyDelivery(fullPackingSlip as any)
+            .catch((err) => {
+              console.error('notifyDelivery (update) unexpected error:', err);
+            });
+        }
       } catch (err) {
         console.error(
           'Failed to load packing slip for n8n notify (update):',
@@ -418,23 +494,36 @@ export class PackingSlipsService {
    */
   async resendDeliveryNotification(id: number) {
     const fullPackingSlip = await this.findOne(id);
-    const result = await this.n8nNotifyService.notifyDelivery(
+
+    // Định tuyến loại trừ: phiếu có khách Bibi → chỉ gửi luồng Bibi,
+    // ngược lại → gửi luồng mặc định. (Đồng nhất với create/update.)
+    const isBibi = this.n8nNotifyService.isBibiPackingSlip(
       fullPackingSlip as any,
     );
 
+    const result = isBibi
+      ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+      : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
+
     if (result.skipped) {
       throw new ServiceUnavailableException(
-        'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
+        isBibi
+          ? 'Webhook Bibi chưa được cấu hình (N8N_BIBI_WEBHOOK_URL)'
+          : 'Webhook Zalo chưa được cấu hình (N8N_DELIVERY_WEBHOOK_URL)',
       );
     }
 
     if (!result.ok) {
       throw new BadGatewayException(
-        `Gửi tin nhắn Zalo thất bại${result.error ? `: ${result.error}` : ''}`,
+        `Gửi tin nhắn thất bại${result.error ? `: ${result.error}` : ''}`,
       );
     }
 
-    return { message: 'Đã gửi lại thông báo giao hàng vào Zalo' };
+    return {
+      message: isBibi
+        ? 'Đã gửi lại thông báo giao hàng (Bibi)'
+        : 'Đã gửi lại thông báo giao hàng vào Zalo',
+    };
   }
 
   /**
@@ -464,12 +553,16 @@ export class PackingSlipsService {
   async resendDeliverySafe(id: number): Promise<void> {
     try {
       const fullPackingSlip = await this.findOne(id);
-      const result = await this.n8nNotifyService.notifyDelivery(
+      // Định tuyến loại trừ: Bibi → chỉ Bibi, ngược lại → mặc định.
+      const isBibi = this.n8nNotifyService.isBibiPackingSlip(
         fullPackingSlip as any,
       );
+      const result = isBibi
+        ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+        : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
       if (!result.ok && !result.skipped) {
         console.error(
-          `resendDeliverySafe: gửi Zalo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
+          `resendDeliverySafe: gửi thông báo thất bại cho packing slip id=${id}: ${result.error ?? ''}`,
         );
       }
     } catch (err) {
@@ -560,6 +653,8 @@ export class PackingSlipsService {
       .map((i: any) => i.consignmentId)
       .filter((v: any) => v != null);
 
+    const touchedProductIds = new Set<number>();
+
     await this.prisma.$transaction(async (tx) => {
       // Chặn hủy nếu có hóa đơn đã hủy / sai thứ tự bậc
       if (invoiceIds.length > 0) {
@@ -577,9 +672,17 @@ export class PackingSlipsService {
         await recalcInvoiceStatusAfterPackingCancel(tx, invoiceIds);
       }
       if (consignmentIds.length > 0) {
-        await recalcConsignmentStatusAfterPackingCancel(tx, consignmentIds);
+        const touched = await recalcConsignmentStatusAfterPackingCancel(
+          tx,
+          consignmentIds,
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     if (userId) {
       const user = await this.prisma.user.findUnique({
@@ -637,6 +740,7 @@ export class PackingSlipsService {
       feeGuiBen: Number(ps.feeGuiBen || 0),
       feeGrab: Number(ps.feeGrab || 0),
       cuocGuiHang: Number(ps.cuocGuiHang || 0),
+      cuocNhanHang: Number(ps.cuocNhanHang || 0),
       note: ps.note,
       invoices: (ps.invoices || []).map((i: any) => ({
         invoiceId: i.invoiceId,

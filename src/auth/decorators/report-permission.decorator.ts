@@ -4,7 +4,7 @@ import { SetMetadata } from '@nestjs/common';
 export const REPORT_PERMISSION_KEY = 'reportPermission';
 
 // Nhóm báo cáo dùng để suy quyền động theo query.viewType.
-export type ReportGroup = 'sale' | 'product' | 'supplier' | 'eod';
+export type ReportGroup = 'sale' | 'product' | 'supplier' | 'eod' | 'customer';
 
 export interface ReportPermissionConfig {
   // Nhóm có nhiều ViewType → guard dựng key xem từ viewType.

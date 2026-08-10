@@ -3,11 +3,17 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateStockAuditDto } from './dto/create-stock-audit.dto';
 import { UpdateStockAuditDto } from './dto/update-stock-audit.dto';
 import { StockAuditQueryDto } from './dto/stock-audit-query.dto';
-import { recalcStockAuditChain } from '../common/inventory-onhand.util';
+import {
+  recalcStockAuditChain,
+  getActiveLogKeys,
+  isLogActive,
+} from '../common/inventory-onhand.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   renderAuditMessage,
@@ -80,49 +86,25 @@ export class StockAuditsService {
     return u?.name || u?.email || 'System';
   }
 
-  // ─── Lọc bỏ log thuộc các phiếu kiểm ĐÃ HỦY ────────────────────
-  // Log STOCK_AUDIT/STOCK_AUDIT_CANCEL của phiếu có status = CANCELLED không
-  // được tính vào tồn (thẻ kho cũng ẩn chúng). Cặp +delta/−delta của 1 phiếu
-  // hủy có thể lệch transactionDate nên KHÔNG tự triệt tiêu khi cộng theo mốc
-  // thời gian — phải loại hẳn theo refId của phiếu đã hủy.
-  private async filterOutCancelledAuditLogs(
-    tx: any,
-    logs: { refType?: string | null; refId?: number | null; quantity: any }[],
-  ): Promise<{ quantity: any }[]> {
-    const auditIds = [
-      ...new Set(
-        logs
-          .filter((l) => l.refType === 'stock_audit' && l.refId)
-          .map((l) => l.refId as number),
-      ),
-    ];
-    if (auditIds.length === 0) return logs;
-    const cancelled = await tx.stockAudit.findMany({
-      where: { id: { in: auditIds }, status: STOCK_AUDIT_STATUS.CANCELLED },
-      select: { id: true },
-    });
-    const cancelledSet = new Set(cancelled.map((a: any) => a.id));
-    return logs.filter(
-      (l) => l.refType !== 'stock_audit' || !cancelledSet.has(l.refId),
-    );
-  }
-
-  // ─── Tồn kho tại thời điểm kiểm (point-in-time, LOG-BASED) ──────
-  // Tồn ngay TRƯỚC thời điểm `checkDate` = TỔNG các giao dịch THẬT (InventoryLog)
-  // có transactionDate < checkDate. Chỉ tính những gì đã ghi vào thẻ kho:
-  //   stockBefore(T) = Σ quantity(log.transactionDate < T)
-  // → Nếu trước thời điểm kiểm KHÔNG có giao dịch nào thì tồn = 0 (không tính
-  //   "tồn ảo" khởi tạo sản phẩm chưa từng ghi log). Khớp đúng với thẻ kho.
-  // Loại bỏ: (a) log của phiếu kiểm đang xử lý (`excludeAuditId`), (b) log của
-  // mọi phiếu kiểm ĐÃ HỦY.
+  // ─── Nguồn chân lý DUY NHẤT cho tồn tại thời điểm ─────────────────
+  // Khớp tuyệt đối với "Tồn cuối" trong thẻ kho (findInventoryLogs):
+  //   1. Dùng cùng bộ lọc cancelled (getActiveLogKeys + isLogActive) — bao
+  //      gồm TẤT CẢ 8 refType (invoice, purchase_order, transfer, production,
+  //      destruction, return_order, supplier_return, stock_audit).
+  //   2. Merge các log cùng (refType|refCode|transactionType) — tránh double
+  //      count khi 1 chứng từ ghi nhiều dòng log cùng key.
+  //   3. Ẩn dòng gộp có tổng quantity = 0 (NGOẠI TRỪ STOCK_AUDIT — giữ làm
+  //      mốc neo tuyệt đối, giống findInventoryLogs).
+  // Trước đây getStockBeforeDate chỉ filter cancelled cho `stock_audit` →
+  // form kiểm kho hiển thị cột "Tồn kho" sai (vd sản phẩm TD: -28 thay vì
+  // -12 do 2 hóa đơn đã hủy có tổng SL 16 chưa được loại).
   private async getStockBeforeDate(
-    tx: any,
     productId: number,
     branchId: number,
     checkDate: Date,
     excludeAuditId?: number,
   ): Promise<number> {
-    const earlierLogs = await tx.inventoryLog.findMany({
+    const logs = await this.prisma.inventoryLog.findMany({
       where: {
         productId,
         branchId,
@@ -131,22 +113,30 @@ export class StockAuditsService {
           ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
           : {}),
       },
-      select: { quantity: true, refType: true, refId: true },
+      select: {
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
     });
-    const active = await this.filterOutCancelledAuditLogs(tx, earlierLogs);
-    return active.reduce((s: number, l: any) => s + Number(l.quantity), 0);
+
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+    return this.mergeAndSumActiveLogs(active);
   }
 
   // ─── Tổng toàn bộ giao dịch (Σ log) của 1 sản phẩm tại 1 chi nhánh ──
   // Dùng để set lại onHand = Σ log sau khi kiểm — giữ onHand luôn khớp với
-  // thẻ kho (loại bỏ tồn ảo không có log + log phiếu kiểm đã hủy).
+  // thẻ kho. Cùng bộ lọc + merge với getStockBeforeDate để 1 nguồn chân lý.
   private async getTotalLogSum(
-    tx: any,
     productId: number,
     branchId: number,
     excludeAuditId?: number,
   ): Promise<number> {
-    const logs = await tx.inventoryLog.findMany({
+    const logs = await this.prisma.inventoryLog.findMany({
       where: {
         productId,
         branchId,
@@ -154,15 +144,62 @@ export class StockAuditsService {
           ? { NOT: { refType: 'stock_audit', refId: excludeAuditId } }
           : {}),
       },
-      select: { quantity: true, refType: true, refId: true },
+      select: {
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
     });
-    const active = await this.filterOutCancelledAuditLogs(tx, logs);
-    return active.reduce((s: number, l: any) => s + Number(l.quantity), 0);
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+    return this.mergeAndSumActiveLogs(active);
+  }
+
+  // Helper: gộp log cùng (refType|refCode|transactionType) → sum quantity,
+  // bỏ dòng gộp có tổng = 0 (trừ STOCK_AUDIT). Cùng logic findInventoryLogs.
+  private mergeAndSumActiveLogs(
+    logs: Array<{
+      quantity: any;
+      refType?: string | null;
+      refCode?: string | null;
+      transactionType: string;
+    }>,
+  ): number {
+    type Row = (typeof logs)[number];
+    const mergedMap = new Map<string, Row>();
+    const ungrouped: Row[] = [];
+
+    for (const log of logs) {
+      if (!log.refCode) {
+        ungrouped.push(log);
+        continue;
+      }
+      const key = `${log.refType}|${log.refCode}|${log.transactionType}`;
+      const existing = mergedMap.get(key);
+      if (!existing) {
+        mergedMap.set(key, { ...log });
+      } else {
+        existing.quantity = (Number(existing.quantity) +
+          Number(log.quantity)) as any;
+      }
+    }
+
+    const merged = [...mergedMap.values(), ...ungrouped].filter(
+      (log) =>
+        !log.refCode ||
+        log.transactionType === 'STOCK_AUDIT' ||
+        Number(log.quantity) !== 0,
+    );
+    return merged.reduce((s, l) => s + Number(l.quantity), 0);
   }
 
   // ─── Preview tồn tại thời điểm cho nhiều sản phẩm (phục vụ UI form) ──
-  // Trả về { productId: stockAtMoment } để form hiển thị cột "Tồn kho" đúng
-  // theo checkDate trước khi lưu — khớp với cách `complete` tính difference.
+  // Tối ưu N+1: load TẤT CẢ log của TẤT CẢ productIds trong 1 query, tính
+  // activeKeys chung 1 lần, sau đó group theo productId.
+  // Trả về { productId: stockAtMoment } — khớp thẻ kho và complete.
   async previewStockAtDate(
     branchId: number,
     productIds: number[],
@@ -170,14 +207,37 @@ export class StockAuditsService {
   ): Promise<Record<number, number>> {
     const date = checkDate ? new Date(checkDate) : new Date();
     const unique = [...new Set(productIds)].filter((id) => !!id);
+    if (unique.length === 0) return {};
+
+    const logs = await this.prisma.inventoryLog.findMany({
+      where: {
+        productId: { in: unique },
+        branchId,
+        transactionDate: { lt: date },
+      },
+      select: {
+        productId: true,
+        id: true,
+        quantity: true,
+        refType: true,
+        refId: true,
+        refCode: true,
+        transactionType: true,
+      },
+    });
+    const activeKeys = await getActiveLogKeys(this.prisma, logs);
+    const active = logs.filter((l) => isLogActive(l, activeKeys));
+
+    // Group theo productId, áp dụng merge trong từng nhóm.
+    const byProduct = new Map<number, typeof active>();
+    for (const l of active) {
+      const arr = byProduct.get(l.productId) ?? [];
+      arr.push(l);
+      byProduct.set(l.productId, arr);
+    }
     const result: Record<number, number> = {};
     for (const pid of unique) {
-      result[pid] = await this.getStockBeforeDate(
-        this.prisma,
-        pid,
-        branchId,
-        date,
-      );
+      result[pid] = this.mergeAndSumActiveLogs(byProduct.get(pid) ?? []);
     }
     return result;
   }
@@ -196,10 +256,12 @@ export class StockAuditsService {
   }
 
   // ─── Find All ───────────────────────────────────────────────────
-  async findAll(query: StockAuditQueryDto) {
-    const page = query.page ? +query.page : 1;
-    const limit = query.limit ? +query.limit : 20;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu kiểm kho. Tách riêng để dùng chung giữa
+   * findAll (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp
+   * hoàn toàn với bộ lọc đang hiển thị.
+   */
+  private buildStockAuditWhere(query: StockAuditQueryDto): any {
     const where: any = {};
 
     if (query.search) {
@@ -220,6 +282,9 @@ export class StockAuditsService {
     }
     if (query.status) where.status = +query.status;
     if (query.creatorId) where.createdById = +query.creatorId;
+    if (query.productId) {
+      where.details = { some: { productId: +query.productId } };
+    }
 
     if (query.fromDate || query.toDate) {
       where.checkDate = {};
@@ -230,6 +295,15 @@ export class StockAuditsService {
         where.checkDate.lte = to;
       }
     }
+
+    return where;
+  }
+
+  async findAll(query: StockAuditQueryDto) {
+    const page = query.page ? +query.page : 1;
+    const limit = query.limit ? +query.limit : 20;
+
+    const where = this.buildStockAuditWhere(query);
 
     const [data, total] = await Promise.all([
       this.prisma.stockAudit.findMany({
@@ -243,6 +317,231 @@ export class StockAuditsService {
     ]);
 
     return { data, total, page, limit };
+  }
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu kiểm kho = 1 dòng Excel. Bộ lọc dùng chung
+   * buildStockAuditWhere với danh sách.
+   */
+  async exportStockAudits(
+    query: StockAuditQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildStockAuditWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Kiểm kho');
+
+    sheet.columns = [
+      { header: 'Mã phiếu', key: 'code', width: 18 },
+      { header: 'Chi nhánh', key: 'branch', width: 22 },
+      { header: 'Người kiểm', key: 'createdBy', width: 20 },
+      { header: 'Ngày kiểm', key: 'checkDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Số sản phẩm', key: 'totalGoods', width: 12 },
+      { header: 'Tổng tồn ban đầu', key: 'totalSystem', width: 16 },
+      { header: 'Tổng tồn thực tế', key: 'totalActual', width: 16 },
+      { header: 'Tổng SL lệch', key: 'totalDiff', width: 14 },
+      { header: 'Tổng giá trị lệch', key: 'totalDiffValue', width: 18 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.stockAudit.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: {
+              systemQuantity: true,
+              actualQuantity: true,
+              difference: true,
+              differenceValue: true,
+            },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const a of batch) {
+        const totalSystem = a.details.reduce(
+          (s, d) => s + Number(d.systemQuantity),
+          0,
+        );
+        const totalActual = a.details.reduce(
+          (s, d) => s + Number(d.actualQuantity),
+          0,
+        );
+        const totalDiff = a.details.reduce(
+          (s, d) => s + Number(d.difference),
+          0,
+        );
+        const totalDiffValue = a.details.reduce(
+          (s, d) => s + Number(d.differenceValue),
+          0,
+        );
+        const row = sheet.addRow({
+          code: a.code,
+          branch: a.branchName || a.branch?.name || '',
+          createdBy: a.createdByName || a.creator?.name || '',
+          checkDate: fmtDateTime(a.checkDate),
+          createdAt: fmtDateTime(a.createdAt),
+          totalGoods: a.details.length,
+          totalSystem,
+          totalActual,
+          totalDiff,
+          totalDiffValue,
+          note: a.note || '',
+          status: STOCK_AUDIT_STATUS_LABEL[a.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildStockAuditWhere với export tổng
+   * quan.
+   */
+  async exportStockAuditsDetail(
+    query: StockAuditQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildStockAuditWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết kiểm kho');
+
+    sheet.columns = [
+      { header: 'Mã phiếu', key: 'code', width: 18 },
+      { header: 'Chi nhánh', key: 'branch', width: 22 },
+      { header: 'Người kiểm', key: 'createdBy', width: 20 },
+      { header: 'Ngày kiểm', key: 'checkDate', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'ĐVT', key: 'unit', width: 10 },
+      { header: 'Tồn ban đầu', key: 'systemQuantity', width: 14 },
+      { header: 'Tồn thực tế', key: 'actualQuantity', width: 14 },
+      { header: 'SL lệch', key: 'difference', width: 12 },
+      { header: 'Giá vốn', key: 'costAtCheck', width: 14 },
+      { header: 'Giá trị lệch', key: 'differenceValue', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.stockAudit.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const a of batch) {
+        const base = {
+          code: a.code,
+          branch: a.branchName || a.branch?.name || '',
+          createdBy: a.createdByName || a.creator?.name || '',
+          checkDate: fmtDateTime(a.checkDate),
+          status: STOCK_AUDIT_STATUS_LABEL[a.status] || '',
+        };
+
+        if (!a.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            unit: '',
+            systemQuantity: 0,
+            actualQuantity: 0,
+            difference: 0,
+            costAtCheck: 0,
+            differenceValue: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of a.details) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            unit: d.unit || '',
+            systemQuantity: Number(d.systemQuantity) || 0,
+            actualQuantity: Number(d.actualQuantity) || 0,
+            difference: Number(d.difference) || 0,
+            costAtCheck: Number(d.costAtCheck) || 0,
+            differenceValue: Number(d.differenceValue) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   // ─── Find One ───────────────────────────────────────────────────
@@ -303,7 +602,7 @@ export class StockAuditsService {
     for (const id of uniqueIds) {
       systemQtyMap.set(
         id,
-        await this.getStockBeforeDate(this.prisma, id, dto.branchId, checkDate),
+        await this.getStockBeforeDate(id, dto.branchId, checkDate),
       );
     }
 
@@ -429,7 +728,6 @@ export class StockAuditsService {
           systemQtyMap.set(
             pid,
             await this.getStockBeforeDate(
-              tx,
               pid,
               audit.branchId,
               effectiveCheckDate,
@@ -534,7 +832,6 @@ export class StockAuditsService {
         // Tính lại tồn TẠI THỜI ĐIỂM kiểm theo LOG (Σ giao dịch thật trước
         // checkDate) ngay lúc Hoàn thành. difference = thực tế − tồn-log-trước.
         const systemQty = await this.getStockBeforeDate(
-          tx,
           detail.productId,
           audit.branchId,
           checkDate,
@@ -571,6 +868,7 @@ export class StockAuditsService {
             costPrice: cost,
             transactionDate: checkDate,
             note: `Kiểm kho: ${detail.productName} (HT: ${systemQty} → TT: ${detail.actualQuantity})`,
+            userId: user?.id ?? userId,
             createdByName: user?.name || audit.createdByName,
           },
         });
@@ -663,6 +961,7 @@ export class StockAuditsService {
                 costPrice: Number(detail.costAtCheck),
                 transactionDate: audit.checkDate ?? new Date(),
                 note: `Hủy kiểm kho: ${detail.productName}`,
+                userId: userId ?? undefined,
                 createdByName: audit.createdByName,
               },
             });

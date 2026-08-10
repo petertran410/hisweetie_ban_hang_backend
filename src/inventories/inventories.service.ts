@@ -1,18 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuditLogsService } from '../audit-logs/audit-logs.service';
-import {
-  renderAuditMessage,
-  getCategoryFromActionCode,
-  getSeverityFromActionCode,
-} from '../audit-logs/audit-templates';
+import { computeBucketTotalsBatch } from '../common/stock-condition-onhand.util';
 
 @Injectable()
 export class InventoriesService {
-  constructor(
-    private prisma: PrismaService,
-    private auditLogsService: AuditLogsService,
-  ) {}
+  constructor(private prisma: PrismaService) {}
 
   async getInventoryByBranch(branchId: number, productIds?: number[]) {
     const where: any = { branchId };
@@ -21,7 +13,7 @@ export class InventoriesService {
       where.productId = { in: productIds };
     }
 
-    return this.prisma.inventory.findMany({
+    const inventories = await this.prisma.inventory.findMany({
       where,
       include: {
         product: {
@@ -43,10 +35,35 @@ export class InventoriesService {
       },
       orderBy: [{ productCode: 'asc' }],
     });
+
+    // NGUỒN CHÂN LÝ: 3 cột bucket trên Inventory chỉ là CACHE và có thể trôi
+    // khỏi sổ cái (một số module cũ — trả hàng, trả NCC, trả ký gửi, KLB/KKM,
+    // sửa tình trạng thủ công — còn ghi trực tiếp vào cột cache mà không ghi
+    // sổ). Vì vậy ghi đè 3 cột này TRONG RESPONSE bằng số tính từ
+    // StockConditionLog, để mọi màn đọc endpoint này (giỏ hàng POS...) luôn
+    // khớp tab "Thẻ kho loại tồn". KHÔNG ghi DB ở đây.
+    if (inventories.length === 0) return inventories;
+
+    const totalsMap = await computeBucketTotalsBatch(
+      this.prisma,
+      inventories.map((inv) => inv.productId),
+      branchId,
+    );
+
+    return inventories.map((inv) => {
+      const totals = totalsMap[inv.productId];
+      if (!totals) return inv;
+      return {
+        ...inv,
+        damagedQuantity: totals.damaged as any,
+        nearExpiryQuantity: totals.nearExpiry as any,
+        promoQuantity: totals.promo as any,
+      };
+    });
   }
 
   async getProductInventoryAcrossBranches(productId: number) {
-    return this.prisma.inventory.findMany({
+    const inventories = await this.prisma.inventory.findMany({
       where: { productId },
       include: {
         branch: {
@@ -67,6 +84,41 @@ export class InventoriesService {
         },
       },
       orderBy: [{ branchName: 'asc' }],
+    });
+
+    // Giống getInventoryByBranch: bucket trong Inventory chỉ là cache; trả về
+    // số tính từ sổ cái để màn tồn kho và condition-summary dùng cùng một nguồn.
+    if (inventories.length === 0) return inventories;
+
+    const totalsByBranch = new Map<
+      string,
+      { damaged: number; nearExpiry: number; promo: number }
+    >();
+    for (const inventory of inventories) {
+      const totals = await computeBucketTotalsBatch(
+        this.prisma,
+        [inventory.productId],
+        inventory.branchId,
+      );
+      totalsByBranch.set(
+        `${inventory.productId}:${inventory.branchId}`,
+        totals[inventory.productId] ?? {
+          damaged: 0,
+          nearExpiry: 0,
+          promo: 0,
+        },
+      );
+    }
+
+    return inventories.map((inv) => {
+      const totals = totalsByBranch.get(`${inv.productId}:${inv.branchId}`);
+      if (!totals) return inv;
+      return {
+        ...inv,
+        damagedQuantity: totals.damaged as any,
+        nearExpiryQuantity: totals.nearExpiry as any,
+        promoQuantity: totals.promo as any,
+      };
     });
   }
 
@@ -199,118 +251,24 @@ export class InventoriesService {
     );
   }
 
+  // ĐÃ NGỪNG SỬ DỤNG — thay thế bằng "Chuyển loại tồn" (CLT).
+  //
+  // Bản cũ GHI ĐÈ tuyệt đối vào cột cache Inventory.damagedQuantity /
+  // nearExpiryQuantity mà KHÔNG ghi sổ cái StockConditionLog. Từ khi tồn bucket
+  // được dẫn xuất từ sổ cái (tồn bucket = Σ log active), ghi đè ở đây sẽ khiến
+  // cache trôi khỏi sổ cái và sinh ra chênh lệch không thể tự kéo về.
+  //
+  // Frontend đã không còn gọi endpoint này (editor tình trạng cũ trên trang
+  // sản phẩm đã được bỏ ở GĐ1). Giữ lại endpoint trả lỗi rõ ràng thay vì xóa
+  // để client cũ (nếu còn) nhận được thông báo hướng dẫn.
   async updateProductCondition(
-    productId: number,
-    branchId: number,
-    data: { damagedQuantity?: number; nearExpiryQuantity?: number },
-    userId?: number,
-  ) {
-    const inventory = await this.prisma.inventory.findUnique({
-      where: {
-        productId_branchId: { productId, branchId },
-      },
-    });
-
-    if (!inventory) {
-      throw new Error(
-        `Inventory not found for product ${productId} at branch ${branchId}`,
-      );
-    }
-
-    const onHand = Number(inventory.onHand);
-    const newDamaged =
-      data.damagedQuantity ?? Number(inventory.damagedQuantity);
-    const newNearExpiry =
-      data.nearExpiryQuantity ?? Number(inventory.nearExpiryQuantity);
-
-    if (newDamaged + newNearExpiry > onHand) {
-      throw new Error(
-        `Tổng hàng bục rách (${newDamaged}) + cận date (${newNearExpiry}) = ${newDamaged + newNearExpiry} vượt quá tồn kho (${onHand})`,
-      );
-    }
-
-    const oldDamaged = Number(inventory.damagedQuantity);
-    const oldNearExpiry = Number(inventory.nearExpiryQuantity);
-
-    const updated = await this.prisma.inventory.update({
-      where: {
-        productId_branchId: { productId, branchId },
-      },
-      data: {
-        ...(data.damagedQuantity !== undefined && {
-          damagedQuantity: data.damagedQuantity,
-        }),
-        ...(data.nearExpiryQuantity !== undefined && {
-          nearExpiryQuantity: data.nearExpiryQuantity,
-        }),
-      },
-    });
-
-    // Audit log
-    const [product, branch, actor] = await Promise.all([
-      this.prisma.product.findUnique({
-        where: { id: productId },
-        select: { code: true, name: true },
-      }),
-      this.prisma.branch.findUnique({
-        where: { id: branchId },
-        select: { name: true },
-      }),
-      userId
-        ? this.prisma.user.findUnique({
-            where: { id: userId },
-            select: { name: true, email: true },
-          })
-        : Promise.resolve(null),
-    ]);
-
-    const changes: any[] = [];
-    if (oldDamaged !== newDamaged) {
-      changes.push({
-        field: 'damagedQuantity',
-        label: 'Hàng loại B',
-        from: oldDamaged,
-        to: newDamaged,
-        type: 'field_changed',
-      });
-    }
-    if (oldNearExpiry !== newNearExpiry) {
-      changes.push({
-        field: 'nearExpiryQuantity',
-        label: 'Hàng cận date',
-        from: oldNearExpiry,
-        to: newNearExpiry,
-        type: 'field_changed',
-      });
-    }
-
-    await this.auditLogsService.create({
-      actionType: 'PUT',
-      actionCode: 'INVENTORY_CONDITION_UPDATE',
-      entityType: 'inventory_condition',
-      entityId: `${productId}-${branchId}`,
-      entityCode: product?.code,
-      category: getCategoryFromActionCode('INVENTORY_CONDITION_UPDATE'),
-      severity: getSeverityFromActionCode('INVENTORY_CONDITION_UPDATE'),
-      snapshot: {
-        productCode: product?.code,
-        productName: product?.name,
-        branchName: branch?.name,
-        onHand,
-        damagedQuantity: newDamaged,
-        nearExpiryQuantity: newNearExpiry,
-      },
-      changes: changes.length > 0 ? changes : null,
-      message: renderAuditMessage('INVENTORY_CONDITION_UPDATE', {
-        productName: product?.name || `#${productId}`,
-        branchName: branch?.name || `#${branchId}`,
-      }),
-      messageTemplate: 'INVENTORY_CONDITION_UPDATE',
-      userId: userId || 1,
-      userName: actor?.name || actor?.email || 'System',
-      branchId,
-    });
-
-    return updated;
+    _productId: number,
+    _branchId: number,
+    _data: { damagedQuantity?: number; nearExpiryQuantity?: number },
+    _userId?: number,
+  ): Promise<never> {
+    throw new BadRequestException(
+      'Chỉnh sửa tình trạng hàng trực tiếp đã ngừng sử dụng. Vui lòng dùng "Chuyển loại tồn" (CLT) để điều chỉnh hàng bục rách / cận date / khuyến mãi.',
+    );
   }
 }

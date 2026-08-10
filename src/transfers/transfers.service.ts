@@ -3,12 +3,15 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateTransferDto,
   UpdateTransferDto,
   TransferQueryDto,
   CancelTransferDto,
+  ConfirmShortageDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -18,12 +21,19 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class TransfersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   async findAll(query: TransferQueryDto) {
@@ -231,6 +241,345 @@ export class TransfersService {
     };
   }
 
+  /**
+   * Dựng where filter cho phiếu chuyển hàng — GIỮ NGUYÊN logic của findAll.
+   * Dùng chung cho export tổng quan và export chi tiết.
+   */
+  private buildTransferWhere(query: TransferQueryDto): any {
+    const {
+      search,
+      fromBranchIds,
+      toBranchIds,
+      currentBranchId,
+      status,
+      fromReceivedDate,
+      toReceivedDate,
+      fromTransferDate,
+      toTransferDate,
+    } = query;
+
+    const where: any = {};
+
+    if (search && search.trim()) {
+      where.code = { contains: search.trim(), mode: 'insensitive' };
+    }
+
+    if (currentBranchId) {
+      const baseConditions: any[] = [
+        { fromBranchId: currentBranchId },
+        { toBranchId: currentBranchId, status: { gte: 2 } },
+      ];
+
+      if (fromBranchIds && fromBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ fromBranchId: { in: fromBranchIds } }],
+          },
+        ];
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.OR = [
+          {
+            fromBranchId: currentBranchId,
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+          {
+            toBranchId: currentBranchId,
+            status: { gte: 2 },
+            AND: [{ toBranchId: { in: toBranchIds } }],
+          },
+        ];
+      } else {
+        where.OR = baseConditions;
+      }
+    } else {
+      if (
+        fromBranchIds &&
+        fromBranchIds.length > 0 &&
+        toBranchIds &&
+        toBranchIds.length > 0
+      ) {
+        where.AND = [
+          { fromBranchId: { in: fromBranchIds } },
+          { toBranchId: { in: toBranchIds } },
+          { status: { gte: 2 } },
+        ];
+      } else if (fromBranchIds && fromBranchIds.length > 0) {
+        where.fromBranchId = { in: fromBranchIds };
+      } else if (toBranchIds && toBranchIds.length > 0) {
+        where.toBranchId = { in: toBranchIds };
+        where.status = { gte: 2 };
+      }
+    }
+
+    if (status && status.length > 0) {
+      if (where.OR) {
+        where.OR = where.OR.map((condition: any) => {
+          if (condition.status && condition.status.gte) {
+            return {
+              ...condition,
+              status: { in: status.filter((s) => s >= 2) },
+            };
+          }
+          return { ...condition, status: { in: status } };
+        });
+      } else if (where.AND) {
+        where.AND = where.AND.map((condition: any) => {
+          if (condition.status) {
+            return { status: { in: status } };
+          }
+          return condition;
+        });
+      } else {
+        where.status = { in: status };
+      }
+    }
+
+    if (fromReceivedDate || toReceivedDate) {
+      where.receivedDate = {};
+      if (fromReceivedDate) where.receivedDate.gte = new Date(fromReceivedDate);
+      if (toReceivedDate) where.receivedDate.lte = new Date(toReceivedDate);
+    }
+
+    if (fromTransferDate || toTransferDate) {
+      where.transferredDate = {};
+      if (fromTransferDate)
+        where.transferredDate.gte = new Date(fromTransferDate);
+      if (toTransferDate) where.transferredDate.lte = new Date(toTransferDate);
+    }
+
+    return where;
+  }
+
+  async exportTransfers(query: TransferQueryDto, res: Response): Promise<void> {
+    const where = this.buildTransferWhere(query);
+
+    const STATUS_LABEL: Record<number, string> = {
+      1: 'Phiếu tạm',
+      2: 'Đang chuyển',
+      3: 'Đã nhận',
+      4: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    // ── Stream Excel ──────────────────────────────────────────────────────────
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chuyển hàng');
+
+    sheet.columns = [
+      { header: 'Mã chuyển hàng', key: 'code', width: 18 },
+      { header: 'Ngày chuyển', key: 'transferredDate', width: 20 },
+      { header: 'Ngày nhận', key: 'receivedDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Từ chi nhánh', key: 'fromBranch', width: 22 },
+      { header: 'Tới chi nhánh', key: 'toBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Tổng SL chuyển', key: 'totalSendQuantity', width: 16 },
+      { header: 'Tổng SL nhận', key: 'totalReceivedQuantity', width: 16 },
+      { header: 'Tổng mặt hàng', key: 'totalGoods', width: 14 },
+      { header: 'Giá trị chuyển', key: 'totalTransfer', width: 16 },
+      { header: 'Giá trị nhận', key: 'totalReceive', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.transfer.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          fromBranch: { select: { name: true } },
+          toBranch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: { sendQuantity: true, receivedQuantity: true },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const t of batch) {
+        const totalSendQuantity = t.details.reduce(
+          (s, d) => s + Number(d.sendQuantity),
+          0,
+        );
+        const totalReceivedQuantity = t.details.reduce(
+          (s, d) => s + Number(d.receivedQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: t.code,
+          transferredDate: fmtDateTime(t.transferredDate),
+          receivedDate: fmtDateTime(t.receivedDate),
+          createdAt: fmtDateTime(t.createdAt),
+          fromBranch: t.fromBranch?.name || '',
+          toBranch: t.toBranch?.name || '',
+          createdBy: t.creator?.name || '',
+          totalSendQuantity,
+          totalReceivedQuantity,
+          totalGoods: t.details.length,
+          totalTransfer: Number(t.totalTransfer) || 0,
+          totalReceive: Number(t.totalReceive) || 0,
+          note: t.noteBySource || '',
+          status: STATUS_LABEL[t.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm
+   * thông tin phiếu. Bộ lọc dùng chung buildTransferWhere với export tổng quan.
+   */
+  async exportTransfersDetail(
+    query: TransferQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildTransferWhere(query);
+
+    const STATUS_LABEL: Record<number, string> = {
+      1: 'Phiếu tạm',
+      2: 'Đang chuyển',
+      3: 'Đã nhận',
+      4: 'Đã hủy',
+    };
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết chuyển hàng');
+
+    sheet.columns = [
+      { header: 'Mã chuyển hàng', key: 'code', width: 18 },
+      { header: 'Ngày chuyển', key: 'transferredDate', width: 20 },
+      { header: 'Ngày nhận', key: 'receivedDate', width: 20 },
+      { header: 'Từ chi nhánh', key: 'fromBranch', width: 22 },
+      { header: 'Tới chi nhánh', key: 'toBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL chuyển', key: 'sendQuantity', width: 12 },
+      { header: 'SL nhận', key: 'receivedQuantity', width: 12 },
+      { header: 'Đơn giá', key: 'sendPrice', width: 14 },
+      { header: 'Thành tiền', key: 'lineTotal', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.transfer.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          fromBranch: { select: { name: true } },
+          toBranch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const t of batch) {
+        const base = {
+          code: t.code,
+          transferredDate: fmtDateTime(t.transferredDate),
+          receivedDate: fmtDateTime(t.receivedDate),
+          fromBranch: t.fromBranch?.name || '',
+          toBranch: t.toBranch?.name || '',
+          createdBy: t.creator?.name || '',
+          status: STATUS_LABEL[t.status] || '',
+        };
+
+        if (!t.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            sendQuantity: 0,
+            receivedQuantity: 0,
+            sendPrice: 0,
+            lineTotal: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of t.details) {
+          const sendQuantity = Number(d.sendQuantity) || 0;
+          const sendPrice = Number(d.sendPrice) || 0;
+          const row = sheet.addRow({
+            ...base,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            sendQuantity,
+            // SL nhận chỉ có ý nghĩa khi phiếu đã nhận (status=3), giống UI.
+            receivedQuantity:
+              t.status === 3 ? Number(d.receivedQuantity) || 0 : 0,
+            sendPrice,
+            lineTotal: sendQuantity * sendPrice,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
   async findOne(id: number) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id },
@@ -355,11 +704,14 @@ export class TransfersService {
       },
     });
 
+    // Actor cho InventoryLog (truy vết ai xuất/nhập kho khi chuyển hàng).
+    const createLogActor = buildInventoryLogActor(userId, user.name);
+
     if (finalStatus === 2) {
-      await this.decrementInventoryFromBranch(transfer.id);
+      await this.decrementInventoryFromBranch(transfer.id, createLogActor);
     } else if (finalStatus === 3) {
-      await this.decrementInventoryFromBranch(transfer.id);
-      await this.incrementInventoryToBranch(transfer.id);
+      await this.decrementInventoryFromBranch(transfer.id, createLogActor);
+      await this.incrementInventoryToBranch(transfer.id, createLogActor);
     }
 
     await this.auditLogsService.create({
@@ -485,17 +837,42 @@ export class TransfersService {
 
     const oldStatus = currentTransfer.status;
 
+    // Fetch người thực hiện sớm để truyền actor xuống các private method ghi
+    // InventoryLog (truy vết ai xuất/nhập/hoàn kho khi cập nhật chuyển hàng).
+    const updateUser = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        })
+      : null;
+    const updateLogActor = buildInventoryLogActor(
+      userId,
+      updateUser?.name || updateUser?.email,
+    );
+
     if (oldStatus === 1 && newStatus === 2) {
-      await this.decrementInventoryFromBranch(id);
+      await this.decrementInventoryFromBranch(id, updateLogActor);
     } else if (oldStatus === 1 && newStatus === 3) {
-      await this.decrementInventoryFromBranch(id);
-      await this.incrementInventoryToBranch(id);
+      // Draft → Đã nhận (bỏ qua "Đang chuyển"): trừ kho chuyển theo send,
+      // cộng kho nhận theo received, rồi reconcile chênh lệch (shortage/
+      // surplus) để net kho chuyển = -received.
+      await this.decrementInventoryFromBranch(id, updateLogActor);
+      await this.incrementInventoryToBranch(id, updateLogActor);
+      await this.returnShortageToFromBranch(id, updateLogActor);
+      await this.deductSurplusFromFromBranch(id, updateLogActor);
     } else if (oldStatus === 2 && newStatus === 1) {
-      await this.incrementInventoryFromBranch(id);
+      await this.incrementInventoryFromBranch(id, updateLogActor);
     } else if (oldStatus === 2 && newStatus === 3) {
-      await this.incrementInventoryToBranch(id);
+      await this.incrementInventoryToBranch(id, updateLogActor);
+      // Hoàn shortage về kho chuyển: kho nhận nhận ít hơn → kho chuyển
+      // vẫn giữ lại phần chênh lệch. Pattern y hệt KiotViet — dùng
+      // receivedQuantity làm con số vừa trừ kho chuyển vừa cộng kho nhận.
+      await this.returnShortageToFromBranch(id, updateLogActor);
+      // Nhận dư (received > send): trừ thêm surplus khỏi kho chuyển —
+      // thực tế hàng đã rời kho chuyển nhiều hơn số ghi lúc "Đang chuyển".
+      await this.deductSurplusFromFromBranch(id, updateLogActor);
     } else if (oldStatus === 3 && newStatus === 2) {
-      await this.decrementInventoryToBranch(id);
+      await this.decrementInventoryToBranch(id, updateLogActor);
     }
 
     if (userId) {
@@ -594,7 +971,10 @@ export class TransfersService {
     return code;
   }
 
-  private async decrementInventoryFromBranch(transferId: number) {
+  private async decrementInventoryFromBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
       include: {
@@ -608,6 +988,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -656,6 +1038,7 @@ export class TransfersService {
             totalWeight: totalWeight,
           },
         });
+        touchedProductIds.add(detail.productId);
 
         await tx.inventoryLog.create({
           data: {
@@ -672,6 +1055,7 @@ export class TransfersService {
             costPrice: inventory ? Number(inventory.cost) : 0,
             transactionPrice: null,
             partnerName: null,
+            ...buildInventoryLogBase(actor),
           },
         });
       }
@@ -685,9 +1069,16 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
-  private async incrementInventoryFromBranch(transferId: number) {
+  private async incrementInventoryFromBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
       include: {
@@ -701,6 +1092,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -724,6 +1117,7 @@ export class TransfersService {
             onHand: { increment: detail.sendQuantity },
           },
         });
+        touchedProductIds.add(detail.productId);
 
         // Ghi thẻ kho đảo chiều CHUYỂN khi hoàn tác (2→1): cộng lại số chuyển đi.
         // Gộp với dòng TRANSFER_OUT -sendQuantity trước đó sẽ triệt tiêu về 0.
@@ -743,6 +1137,7 @@ export class TransfersService {
               costPrice: inventory ? Number(inventory.cost) : 0,
               transactionPrice: null,
               partnerName: null,
+              ...buildInventoryLogBase(actor),
             },
           });
         }
@@ -757,9 +1152,16 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
-  private async incrementInventoryToBranch(transferId: number) {
+  private async incrementInventoryToBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
       include: {
@@ -773,6 +1175,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     await this.prisma.$transaction(async (tx) => {
       for (const detail of transfer.details) {
@@ -802,6 +1206,7 @@ export class TransfersService {
             onHand: { increment: detail.receivedQuantity },
           },
         });
+        touchedProductIds.add(detail.productId);
 
         // Ghi thẻ kho chiều NHẬN: cộng đúng số lượng nhận thực tế của chi
         // nhánh nhận (có thể khác số chuyển đi). Bỏ qua khi nhận = 0.
@@ -821,6 +1226,7 @@ export class TransfersService {
               costPrice: inventory ? Number(inventory.cost) : 0,
               transactionPrice: null,
               partnerName: null,
+              ...buildInventoryLogBase(actor),
             },
           });
         }
@@ -835,9 +1241,241 @@ export class TransfersService {
         })),
       );
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
   }
 
-  private async decrementInventoryToBranch(transferId: number) {
+  /**
+   * Trừ surplus khỏi kho chuyển — chạy ngay sau khi kho nhận xác nhận
+   * "Đã nhận" (status 2→3) khi received > send.
+   *
+   * Ví dụ: send=1.5 → kho chuyển đã -1.5 lúc "Đang chuyển". Nhận 2.5
+   * → kho nhận +2.5. Phần dư 1.0 thực tế cũng đã rời kho chuyển
+   * (nhân viên để dư lúc chuyển) → trừ thêm 1.0 khỏi kho chuyển.
+   *
+   * Net log kho chuyển sau nhận dư: TRANSFER_OUT -send + TRANSFER_OUT
+   * -surplus = -received. Khớp thực tế.
+   *
+   * Idempotent: skip nếu đã có log note chứa "Trừ surplus".
+   */
+  private async deductSurplusFromFromBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { details: true, fromBranch: true },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    const touchedProductIds = new Set<number>();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const surplus =
+          Number(detail.receivedQuantity) - Number(detail.sendQuantity);
+        if (surplus <= 0) continue;
+
+        // Idempotent: đã ghi log trừ surplus → skip.
+        const existing = await tx.inventoryLog.findFirst({
+          where: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+            transactionType: 'TRANSFER_OUT',
+            refType: 'transfer',
+            refId: transfer.id,
+            note: { contains: 'Trừ surplus' },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+        });
+
+        // Cho phép âm (đồng bộ với policy tồn âm khi chuyển vượt).
+        if (inventory) {
+          await tx.inventory.update({
+            where: {
+              productId_branchId: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+              },
+            },
+            data: {
+              onHand: { decrement: surplus },
+            },
+          });
+        }
+        touchedProductIds.add(detail.productId);
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.fromBranchId,
+            branchName: transfer.fromBranch?.name || '',
+            transactionType: 'TRANSFER_OUT',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: -Number(surplus),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+            note: `Trừ surplus (nhận dư) - phiếu ${transfer.code}`,
+            ...buildInventoryLogBase(actor),
+          },
+        });
+      }
+
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+      );
+    });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+  }
+
+  /**
+   * Hoàn shortage về kho chuyển — chạy ngay sau khi kho nhận xác nhận
+   * "Đã nhận" (status 2→3). Nếu kho nhận nhận ít hơn số chuyển, phần
+   * chênh lệch vẫn còn thực tế ở kho chuyển → cộng lại vào tồn kho
+   * kho chuyển.
+   *
+   * Pattern y hệt KiotViet: dùng `TRANSFER_OUT` với quantity dương
+   * (gộp với dòng -sendQuantity trước đó sẽ triệt tiêu về -receivedQty).
+   * Nhờ vậy "Tồn cuối" trên thẻ kho kho chuyển khớp tuyệt đối với
+   * onHand sau khi recalc.
+   *
+   * Idempotent: nếu log hoàn shortage đã tồn tại (refType='transfer',
+   * refId=transferId, transactionType='TRANSFER_OUT', quantity>0,
+   * note chứa 'Hoàn shortage') thì bỏ qua — đảm bảo an toàn khi
+   * confirmShortage được gọi 2 lần.
+   */
+  private async returnShortageToFromBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
+    const transfer = await this.prisma.transfer.findUnique({
+      where: { id: transferId },
+      include: { details: true, fromBranch: true },
+    });
+
+    if (!transfer) {
+      throw new NotFoundException(
+        `Transfer với ID ${transferId} không tồn tại`,
+      );
+    }
+
+    const touchedProductIds = new Set<number>();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (const detail of transfer.details) {
+        const shortage =
+          Number(detail.sendQuantity) - Number(detail.receivedQuantity);
+        if (shortage <= 0) continue;
+
+        // Idempotent check: nếu đã ghi log hoàn shortage cho dòng này
+        // thì skip (tránh cộng 2 lần khi user F5/refresh dialog).
+        const existing = await tx.inventoryLog.findFirst({
+          where: {
+            productId: detail.productId,
+            branchId: transfer.fromBranchId,
+            transactionType: 'TRANSFER_OUT',
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: shortage,
+            note: {
+              contains: 'Hoàn shortage',
+            },
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+
+        const inventory = await tx.inventory.findUnique({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+        });
+
+        await tx.inventory.update({
+          where: {
+            productId_branchId: {
+              productId: detail.productId,
+              branchId: transfer.fromBranchId,
+            },
+          },
+          data: {
+            onHand: { increment: shortage },
+          },
+        });
+        touchedProductIds.add(detail.productId);
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: transfer.fromBranchId,
+            branchName: transfer.fromBranch?.name || '',
+            transactionType: 'TRANSFER_OUT',
+            refCode: transfer.code,
+            refType: 'transfer',
+            refId: transfer.id,
+            quantity: Number(shortage),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: null,
+            partnerName: null,
+            note: `Hoàn shortage - phiếu ${transfer.code}`,
+            ...buildInventoryLogBase(actor),
+          },
+        });
+      }
+
+      // NGUỒN CHÂN LÝ: onHand = Σ log active (chi nhánh nguồn).
+      await recalcOnHandForPairs(
+        tx,
+        transfer.details.map((d) => ({
+          productId: d.productId,
+          branchId: transfer.fromBranchId,
+        })),
+      );
+    });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+  }
+
+  private async decrementInventoryToBranch(
+    transferId: number,
+    actor?: InventoryLogActor,
+  ) {
     const transfer = await this.prisma.transfer.findUnique({
       where: { id: transferId },
       include: {
@@ -850,6 +1488,8 @@ export class TransfersService {
         `Transfer với ID ${transferId} không tồn tại`,
       );
     }
+
+    const touchedProductIds = new Set<number>();
 
     for (const detail of transfer.details) {
       const inventorySnapshot = await this.prisma.inventory.findUnique({
@@ -872,6 +1512,7 @@ export class TransfersService {
           onHand: { decrement: detail.receivedQuantity },
         },
       });
+      touchedProductIds.add(detail.productId);
 
       // Ghi thẻ kho đảo chiều NHẬN khi hoàn tác (3→2): trừ đúng số đã nhận.
       // Gộp với dòng TRANSFER_IN +receivedQuantity trước đó sẽ triệt tiêu về 0.
@@ -891,6 +1532,7 @@ export class TransfersService {
             costPrice: inventorySnapshot ? Number(inventorySnapshot.cost) : 0,
             transactionPrice: null,
             partnerName: null,
+            ...buildInventoryLogBase(actor),
           },
         });
       }
@@ -904,10 +1546,98 @@ export class TransfersService {
         branchId: transfer.toBranchId,
       })),
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+  }
+
+  /**
+   * Đảm bảo shortage được hoàn về kho chuyển (idempotent).
+   *
+   * Logic nghiệp vụ: khi kho nhận nhận ít hơn số chuyển, phần chênh lệch
+   * (sendQty - receivedQty) vẫn thực tế ở kho chuyển → cộng lại tồn kho
+   * kho chuyển. Method này idempotent — chạy nhiều lần vẫn an toàn.
+   *
+   * Lưu ý: Logic này ĐÃ ĐƯỢC tự động gọi khi transition status 2→3
+   * (xem `update()` → `returnShortageToFromBranch`). Method `confirmShortage`
+   * này tồn tại để:
+   *  - Cho phép frontend force-sync nếu cần (vd sau lỗi mạng).
+   *  - Đảm bảo idempotency cho retry từ client.
+   *  - Ghi audit log để truy vết.
+   */
+  async confirmShortage(id: number, _dto: ConfirmShortageDto, userId?: number) {
+    const transfer = await this.findOne(id);
+
+    if (transfer.status === 4) {
+      throw new BadRequestException('Phiếu chuyển hàng đã bị hủy');
+    }
+    if (transfer.status !== 3) {
+      throw new BadRequestException(
+        'Chỉ có thể xác nhận shortage sau khi kho nhận đã nhận hàng (status=3)',
+      );
+    }
+
+    // Đếm số SP có shortage để ghi audit log
+    const shortageCount = transfer.details.filter(
+      (d) => Number(d.sendQuantity) > Number(d.receivedQuantity),
+    ).length;
+
+    // Fetch người thực hiện sớm để truyền actor xuống returnShortageToFromBranch
+    // (truy vết ai hoàn shortage trên thẻ kho).
+    const confirmUser = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        })
+      : null;
+    const confirmLogActor = buildInventoryLogActor(
+      userId,
+      confirmUser?.name || confirmUser?.email,
+    );
+
+    // Gọi lại logic hoàn shortage (idempotent)
+    await this.returnShortageToFromBranch(id, confirmLogActor);
+
+    if (userId && shortageCount > 0) {
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'TRANSFER_SHORTAGE_RESOLVE',
+        entityType: 'transfers',
+        entityId: id.toString(),
+        entityCode: transfer.code,
+        category: getCategoryFromActionCode('TRANSFER_SHORTAGE_RESOLVE'),
+        severity: getSeverityFromActionCode('TRANSFER_SHORTAGE_RESOLVE'),
+        snapshot: this.buildTransferSnapshot(transfer),
+        message: renderAuditMessage('TRANSFER_SHORTAGE_RESOLVE', {
+          transferCode: transfer.code,
+          shortageCount,
+        }),
+        messageTemplate: 'TRANSFER_SHORTAGE_RESOLVE',
+        userId,
+        userName: confirmUser?.name || confirmUser?.email || 'System',
+        branchId: transfer.fromBranchId,
+      });
+    }
+
+    return this.findOne(id);
   }
 
   async cancelTransfer(id: number, dto: CancelTransferDto, userId?: number) {
     const transfer = await this.findOne(id);
+
+    // Fetch người thực hiện sớm để truyền actor vào mọi InventoryLog đảo chiều
+    // khi hủy (truy vết ai hoàn/trừ kho khi hủy chuyển hàng).
+    const cancelUser = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        })
+      : null;
+    const cancelLogActor = buildInventoryLogActor(
+      userId,
+      cancelUser?.name || cancelUser?.email,
+    );
 
     if (transfer.status === 4) {
       throw new BadRequestException('Phiếu chuyển hàng đã bị hủy');
@@ -1004,6 +1734,7 @@ export class TransfersService {
               costPrice: fromInv ? Number(fromInv.cost) : 0,
               transactionPrice: null,
               partnerName: null,
+              ...buildInventoryLogBase(cancelLogActor),
             },
           });
         }
@@ -1048,8 +1779,93 @@ export class TransfersService {
               costPrice: fromInv ? Number(fromInv.cost) : 0,
               transactionPrice: null,
               partnerName: null,
+              ...buildInventoryLogBase(cancelLogActor),
             },
           });
+
+          // Nếu trước đó shortage đã được resolve (RETURN_TO_SOURCE/WRITE_OFF),
+          // cần đảo ngược log hoàn shortage bằng log TRANSFER_CANCEL âm để
+          // triệt tiêu về 0. Nếu không: triệt tiêu, tồn kho bị cộng thêm 1 lần.
+          const shortage =
+            Number(detail.sendQuantity) - Number(detail.receivedQuantity);
+          if (shortage > 0) {
+            // Tìm log "Hoàn shortage" tương ứng để đảo chiều
+            const shortageLog = await tx.inventoryLog.findFirst({
+              where: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+                transactionType: 'TRANSFER_OUT',
+                refType: 'transfer',
+                refId: transfer.id,
+                note: { contains: 'Hoàn shortage' },
+              },
+              orderBy: { id: 'desc' },
+            });
+            if (shortageLog) {
+              // Ghi log đảo chiều (-shortage) với transactionType TRANSFER_CANCEL
+              // để cùng refType='transfer' bị loại khi transfer.status=4.
+              await tx.inventoryLog.create({
+                data: {
+                  productId: detail.productId,
+                  productCode: detail.productCode,
+                  productName: detail.productName,
+                  branchId: transfer.fromBranchId,
+                  branchName: transfer.fromBranch?.name || '',
+                  transactionType: 'TRANSFER_CANCEL',
+                  refCode: transfer.code,
+                  refType: 'transfer',
+                  refId: transfer.id,
+                  quantity: -Number(shortageLog.quantity),
+                  costPrice: fromInv ? Number(fromInv.cost) : 0,
+                  transactionPrice: null,
+                  partnerName: null,
+                  note: `Đảo chiều Hoàn shortage do hủy phiếu ${transfer.code}`,
+                  ...buildInventoryLogBase(cancelLogActor),
+                },
+              });
+            }
+          }
+
+          // Nhận dư (received > send): lúc nhận đã trừ thêm surplus khỏi
+          // kho chuyển. Hủy phiếu phải đảo chiều log "Trừ surplus" để net
+          // về 0 (cùng với TRANSFER_CANCEL +sendQuantity ở trên).
+          const surplus =
+            Number(detail.receivedQuantity) - Number(detail.sendQuantity);
+          if (surplus > 0) {
+            const surplusLog = await tx.inventoryLog.findFirst({
+              where: {
+                productId: detail.productId,
+                branchId: transfer.fromBranchId,
+                transactionType: 'TRANSFER_OUT',
+                refType: 'transfer',
+                refId: transfer.id,
+                note: { contains: 'Trừ surplus' },
+              },
+              orderBy: { id: 'desc' },
+            });
+            if (surplusLog) {
+              // surplusLog.quantity là âm (-surplus) → đảo chiều = +surplus
+              await tx.inventoryLog.create({
+                data: {
+                  productId: detail.productId,
+                  productCode: detail.productCode,
+                  productName: detail.productName,
+                  branchId: transfer.fromBranchId,
+                  branchName: transfer.fromBranch?.name || '',
+                  transactionType: 'TRANSFER_CANCEL',
+                  refCode: transfer.code,
+                  refType: 'transfer',
+                  refId: transfer.id,
+                  quantity: -Number(surplusLog.quantity),
+                  costPrice: fromInv ? Number(fromInv.cost) : 0,
+                  transactionPrice: null,
+                  partnerName: null,
+                  note: `Đảo chiều Trừ surplus do hủy phiếu ${transfer.code}`,
+                  ...buildInventoryLogBase(cancelLogActor),
+                },
+              });
+            }
+          }
 
           // Trừ tồn ở chi nhánh nhận đúng số lượng đã nhận thực tế
           // (atomic decrement, không overwrite — cho phép âm vì hệ thống đã chấp nhận tồn âm)
@@ -1090,6 +1906,7 @@ export class TransfersService {
                 costPrice: toInv ? Number(toInv.cost) : 0,
                 transactionPrice: null,
                 partnerName: null,
+                ...buildInventoryLogBase(cancelLogActor),
               },
             });
           }

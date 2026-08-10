@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
 import { SepayMatchService } from './sepay-match.service';
+import { isSepaySpecialAccount } from './utils/sepay-special-account';
 
 /**
  * Một giao dịch trả về từ Sepay List API.
@@ -39,6 +40,8 @@ export interface SepaySyncResult {
   created: number;
   updated: number;
   pages: number;
+  /** Số giao dịch bị bỏ qua vì tài khoản không nằm trong whitelist bank_accounts. */
+  skipped: number;
 }
 
 @Injectable()
@@ -85,7 +88,29 @@ export class SepaySyncService {
       created: 0,
       updated: 0,
       pages: 0,
+      skipped: 0,
     };
+
+    // Whitelist tài khoản: chỉ đồng bộ giao dịch của các TK đã đăng ký trong
+    // bank_accounts. Sepay trả về account_number (TK chính) và sub_account (VA).
+    //   - TK thường (MB, ACB, Techcombank): số TK nằm ở account_number.
+    //   - BIDV VA: bank_accounts lưu VA (96460248888) — Sepay để ở sub_account,
+    //     còn account_number là TK chính (8601539888).
+    // Vậy giữ giao dịch nếu account_number HOẶC sub_account khớp whitelist.
+    // Guard: nếu whitelist rỗng (bank_accounts trống) → KHÔNG lọc, lấy hết
+    // để tránh mất dữ liệu do lỗi cấu hình.
+    const bankAccounts = await this.prisma.bankAccount.findMany({
+      select: { accountNumber: true },
+    });
+    const accountWhitelist = new Set(
+      bankAccounts.map((b) => b.accountNumber).filter((v): v is string => !!v),
+    );
+    const applyWhitelist = accountWhitelist.size > 0;
+    if (!applyWhitelist) {
+      this.logger.warn(
+        'Sepay sync: bank_accounts rỗng → KHÔNG lọc theo whitelist, lấy tất cả giao dịch.',
+      );
+    }
 
     // Boundary thời gian cho trang kế (Sepay format "yyyy-mm-dd HH:MM:SS", giờ VN).
     let transactionDateMax: string | undefined = undefined;
@@ -108,12 +133,28 @@ export class SepaySyncService {
       let oldestDate: string | undefined = undefined;
       for (const tx of freshTxs) {
         seenIds.add(String(tx.id));
+        // Cập nhật mốc thời gian TRƯỚC khi lọc, để phân trang không bị kẹt
+        // (giao dịch bị bỏ qua vẫn phải tính vào boundary cuốn chiếu).
         if (
           tx.transaction_date &&
           (oldestDate === undefined || tx.transaction_date < oldestDate)
         ) {
           oldestDate = tx.transaction_date;
         }
+
+        // Lọc theo whitelist tài khoản (nếu có).
+        if (applyWhitelist) {
+          const accNum = tx.account_number ?? undefined;
+          const subAcc = tx.sub_account ?? undefined;
+          const matched =
+            (accNum && accountWhitelist.has(accNum)) ||
+            (subAcc && accountWhitelist.has(subAcc));
+          if (!matched) {
+            result.skipped += 1;
+            continue;
+          }
+        }
+
         const { isCreated } = await this.upsertTransaction(tx);
         if (isCreated) result.created += 1;
         else result.updated += 1;
@@ -121,7 +162,7 @@ export class SepaySyncService {
 
       this.logger.log(
         `Sepay sync: page ${result.pages}, +${freshTxs.length} new tx ` +
-          `(fetched=${result.fetched}, created=${result.created}, updated=${result.updated})`,
+          `(fetched=${result.fetched}, created=${result.created}, updated=${result.updated}, skipped=${result.skipped})`,
       );
 
       // Trang chưa đầy => đã chạm giao dịch cũ nhất => dừng.
@@ -457,6 +498,10 @@ export class SepaySyncService {
       where.AND = andClauses;
     }
 
+    // ── Lọc ẩn: mặc định chỉ hiện giao dịch CHƯA ẩn (hiddenAt = null).
+    // hidden=true → chỉ giao dịch ĐÃ ẩn (để xem lại / bỏ ẩn).
+    where.hiddenAt = query.hidden === 'true' ? { not: null } : null;
+
     // BẮT BUỘC chỉ hiển thị tiền vào (amountIn > 0). Không bao giờ hiện tiền ra.
     const amountFilter: Prisma.DecimalFilter = { gt: 0 };
     const amountMin = Number(query.amountMin);
@@ -533,6 +578,38 @@ export class SepaySyncService {
     return { data: withMatch, total, page, limit };
   }
 
+  /** Ẩn 1 giao dịch khỏi danh sách (ẩn chung toàn hệ thống). */
+  async hideTransaction(id: number, userId?: number) {
+    const existing = await this.prisma.sepayTransaction.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new Error('Không tìm thấy giao dịch');
+    }
+    await this.prisma.sepayTransaction.update({
+      where: { id },
+      data: { hiddenAt: new Date(), hiddenById: userId ?? null },
+    });
+    return { success: true };
+  }
+
+  /** Bỏ ẩn 1 giao dịch — hiển thị lại trong danh sách. */
+  async unhideTransaction(id: number) {
+    const existing = await this.prisma.sepayTransaction.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new Error('Không tìm thấy giao dịch');
+    }
+    await this.prisma.sepayTransaction.update({
+      where: { id },
+      data: { hiddenAt: null, hiddenById: null },
+    });
+    return { success: true };
+  }
+
   /** Gắn thông tin đối soát (match) vào từng giao dịch. */
   private async attachMatch<T extends { id: number; sepayId: string }>(
     rows: T[],
@@ -555,5 +632,697 @@ export class SepaySyncService {
       : value;
     const d = new Date(iso);
     return isNaN(d.getTime()) ? undefined : d;
+  }
+
+  /**
+   * Backfill transactionContent cho các sepay_transactions thuộc TK đặc biệt
+   * (env SEPAY_SPECIAL_ACCOUNT_NUMBERS). Lấy lại content gốc từ rawPayload
+   * (webhook: payload.content | List API: transaction_content | SMS: body_message)
+   * và cập nhật transactionContent.
+   *
+   * KHÔNG đụng CashFlow.description — phiếu thu đã tạo từ trước giữ nguyên note.
+   * Idempotent: chạy lại nhiều lần không tạo thay đổi nếu content đã đúng.
+   *
+   * Trả { updated, skipped, scanned }.
+   */
+  async backfillSpecialAccountContent(limit: number, _userId?: number) {
+    const special = (process.env.SEPAY_SPECIAL_ACCOUNT_NUMBERS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (special.length === 0) {
+      return {
+        updated: 0,
+        skipped: 0,
+        scanned: 0,
+        message: 'SEPAY_SPECIAL_ACCOUNT_NUMBERS rỗng',
+      };
+    }
+
+    const targets = await this.prisma.sepayTransaction.findMany({
+      where: {
+        OR: [
+          { accountNumber: { in: special } },
+          { subAccount: { in: special } },
+        ],
+        rawPayload: { not: Prisma.DbNull },
+      },
+      take: limit,
+      orderBy: { id: 'desc' },
+      select: {
+        id: true,
+        sepayId: true,
+        rawPayload: true,
+        transactionContent: true,
+      },
+    });
+
+    let updated = 0;
+    let skipped = 0;
+    for (const row of targets) {
+      const payload = row.rawPayload as any;
+      // Sepay webhook payload: content
+      // Sepay List API: transaction_content
+      // MacroDroid SMS: body_message
+      const original =
+        payload?.content ??
+        payload?.transaction_content ??
+        payload?.body_message ??
+        null;
+      if (typeof original !== 'string' || !original.trim()) {
+        skipped += 1;
+        continue;
+      }
+      const next = original.trim();
+      if (next === row.transactionContent) {
+        skipped += 1;
+        continue;
+      }
+      await this.prisma.sepayTransaction.update({
+        where: { id: row.id },
+        data: { transactionContent: next },
+      });
+      updated += 1;
+    }
+
+    this.logger.log(
+      `Sepay backfill content: scanned=${targets.length}, updated=${updated}, skipped=${skipped}`,
+    );
+    return { updated, skipped, scanned: targets.length };
+  }
+
+  /**
+   * Preview backfill CashFlow.description cho các phiếu thu liên quan Sepay.
+   * KHÔNG ghi DB — chỉ trả về danh sách đầy đủ các phiếu thu sẽ bị sửa + nội dung mới.
+   *
+   * Tiêu chí lọc (ít nhất 1 trong 4):
+   *   - CashFlow.sepayReferenceCode != null
+   *   - Có InvoicePayment với cashFlowId = cf.id (status != hủy)
+   *   - Có OrderPayment với cashFlowId = cf.id (status != hủy)
+   *   - Có SepayAllocation với cashFlowId = cf.id
+   *
+   * Nội dung mới:
+   *   - TK đặc biệt (env SEPAY_SPECIAL_ACCOUNT_NUMBERS) → transactionContent
+   *   - Ngân hàng khác → referenceNumber
+   *
+   * Trả { scanned, willUpdate, skipped, items }.
+   */
+  async previewCashflowDescription(limit: number) {
+    const items = await this.collectCashflowDescriptionChanges(limit, false);
+    const willUpdate = items.filter((i) => i.willUpdate).length;
+    const skipped = items.length - willUpdate;
+    return {
+      scanned: items.length,
+      willUpdate,
+      skipped,
+      items,
+    };
+  }
+
+  /**
+   * Apply backfill CashFlow.description cho các phiếu thu liên quan Sepay.
+   * Ghi DB. Idempotent — chạy lại không thay đổi record đã đúng.
+   *
+   * Trả { scanned, updated, skipped, items }.
+   */
+  async backfillCashflowDescription(limit: number, userId?: number) {
+    const items = await this.collectCashflowDescriptionChanges(limit, true);
+    let updated = 0;
+    for (const item of items) {
+      if (!item.willUpdate) continue;
+      await this.prisma.cashFlow.update({
+        where: { id: item.cashFlowId },
+        data: { description: item.newDescription },
+      });
+      updated += 1;
+    }
+    const skipped = items.length - updated;
+    this.logger.log(
+      `Sepay backfill cashflow description: scanned=${items.length}, updated=${updated}, skipped=${skipped}, by user=${userId ?? 'system'}`,
+    );
+    return {
+      scanned: items.length,
+      updated,
+      skipped,
+      items,
+    };
+  }
+
+  /**
+   * Helper chung cho preview/apply: tính nội dung mới cho từng phiếu thu.
+   *
+   * Tiêu chí lọc phiếu thu liên quan Sepay (ít nhất 1 trong 3):
+   *   1. CashFlow.sepayReferenceCode != null (cả webhook + biến động số dư)
+   *   2. Có InvoicePayment với cashFlowId = cf.id (status != hủy) — webhook tạo
+   *   3. Có SepayAllocation với cashFlowId = cf.id — biến động số dư
+   *
+   * Lưu ý: OrderPayment KHÔNG có quan hệ với CashFlow trong schema hiện tại
+   * (order_payments table không có cột cash_flow_id). Vậy với OrderPayment từ
+   * webhook Sepay sẽ không có CashFlow — không có gì để backfill.
+   *
+   * Query ngược: lấy cashFlowId từ InvoicePayment + SepayAllocation, sau đó
+   * query CashFlow theo id.
+   */
+  private async collectCashflowDescriptionChanges(
+    limit: number,
+    _apply: boolean,
+  ) {
+    // 1. Lấy cashFlowId từ InvoicePayment (webhook tạo hóa đơn qua Sepay).
+    //    Lọc sepayTransactionId != null để BỎ QUA payment thủ công từ trang KH.
+    const invPayments = await this.prisma.invoicePayment.findMany({
+      where: {
+        cashFlowId: { not: null },
+        sepayTransactionId: { not: null },
+        status: { not: 2 },
+      },
+      select: {
+        cashFlowId: true,
+        sepayTransactionId: true,
+        invoice: { select: { code: true } },
+      },
+      take: limit,
+      orderBy: { id: 'desc' },
+    });
+
+    // 2. Lấy cashFlowId từ SepayAllocation (biến động số dư)
+    const allocations = await this.prisma.sepayAllocation.findMany({
+      where: {
+        cashFlowId: { not: null },
+      },
+      select: {
+        cashFlowId: true,
+        sepayTransactionId: true,
+        customerName: true,
+      },
+      take: limit,
+      orderBy: { id: 'desc' },
+    });
+
+    // 2a. Map từ PK id (Int) của sepay_transactions → sepayId (String).
+    //     SepayAllocation.sepayTransactionId là FK tới sepay_transactions.id (Int),
+    //     không phải sepayId (String). Cần query để lấy sepayId tương ứng.
+    const allocTxPks = Array.from(
+      new Set(
+        allocations
+          .map((a) => a.sepayTransactionId)
+          .filter((v): v is number => v != null),
+      ),
+    );
+    const allocSepayTxs =
+      allocTxPks.length > 0
+        ? await this.prisma.sepayTransaction.findMany({
+            where: { id: { in: allocTxPks } },
+            select: { id: true, sepayId: true },
+          })
+        : [];
+    const allocPkToSepayId = new Map(
+      allocSepayTxs.map((t) => [t.id, t.sepayId]),
+    );
+
+    // 3. Gom cashFlowId, dedupe + map nguồn
+    const cfMap = new Map<
+      number,
+      {
+        source: 'webhook-invoice' | 'bien-dong-so-du' | 'webhook-sepay-ref';
+        sepayTxId: string | null;
+        refCode: string | null;
+      }
+    >();
+    for (const p of invPayments) {
+      if (!p.cashFlowId) continue;
+      if (!cfMap.has(p.cashFlowId)) {
+        cfMap.set(p.cashFlowId, {
+          source: 'webhook-invoice',
+          sepayTxId: p.sepayTransactionId,
+          refCode: null,
+        });
+      }
+    }
+    for (const a of allocations) {
+      if (!a.cashFlowId) continue;
+      if (!cfMap.has(a.cashFlowId)) {
+        // SepayAllocation.sepayTransactionId là Int (PK id của sepay_transactions).
+        // Tra map để lấy sepayId (String) — key dùng để tra sepay_transactions.
+        const sepayIdStr =
+          a.sepayTransactionId != null
+            ? (allocPkToSepayId.get(a.sepayTransactionId) ?? null)
+            : null;
+        cfMap.set(a.cashFlowId, {
+          source: 'bien-dong-so-du',
+          sepayTxId: sepayIdStr,
+          refCode: null,
+        });
+      }
+    }
+
+    // 4. Lấy cashFlow theo id
+    const cfIds = Array.from(cfMap.keys());
+    let cashFlows =
+      cfIds.length > 0
+        ? await this.prisma.cashFlow.findMany({
+            where: { id: { in: cfIds } },
+            orderBy: { id: 'desc' },
+            select: {
+              id: true,
+              code: true,
+              description: true,
+              accountId: true,
+              sepayReferenceCode: true,
+              account: {
+                select: {
+                  accountNumber: true,
+                  bankCode: true,
+                  bankName: true,
+                },
+              },
+            },
+          })
+        : [];
+
+    // 4b. Bổ sung: các phiếu thu có sepayReferenceCode nhưng KHÔNG qua
+    //     InvoicePayment/SepayAllocation (vd: phiếu thu cũ tạo qua OrderPayment
+    //     không có quan hệ với CashFlow, hoặc phiếu thu webhook có sepayReferenceCode
+    //     nhưng InvoicePayment.sepayTransactionId = null do logic cũ).
+    //     Đây là trường hợp phiếu thu CÓ sepayReferenceCode nhưng không có
+    //     trong cfMap. Ta query trực tiếp bảng CashFlow.
+    const resolvedIds = new Set(cashFlows.map((cf) => cf.id));
+    const extraCfs = await this.prisma.cashFlow.findMany({
+      where: {
+        sepayReferenceCode: { not: null },
+        id: { notIn: Array.from(resolvedIds) },
+      },
+      orderBy: { id: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        code: true,
+        description: true,
+        accountId: true,
+        sepayReferenceCode: true,
+        account: {
+          select: {
+            accountNumber: true,
+            bankCode: true,
+            bankName: true,
+          },
+        },
+      },
+    });
+    if (extraCfs.length > 0) {
+      cashFlows = [...cashFlows, ...extraCfs];
+      // Thêm vào cfMap với placeholder — sẽ resolve sepayTxId ở bước 5b.
+      for (const cf of extraCfs) {
+        if (!cfMap.has(cf.id)) {
+          cfMap.set(cf.id, {
+            source: 'webhook-sepay-ref',
+            sepayTxId: null,
+            refCode: cf.sepayReferenceCode ?? null,
+          });
+        }
+      }
+    }
+
+    // 5. Gom sepayId (string) cần tra
+    const sepayIds = new Set<string>();
+    for (const info of cfMap.values()) {
+      if (info.sepayTxId) sepayIds.add(info.sepayTxId);
+    }
+
+    const sepayTxs =
+      sepayIds.size > 0
+        ? await this.prisma.sepayTransaction.findMany({
+            where: { sepayId: { in: Array.from(sepayIds) } },
+            select: {
+              sepayId: true,
+              accountNumber: true,
+              subAccount: true,
+              transactionContent: true,
+              referenceNumber: true,
+            },
+          })
+        : [];
+
+    const txBySepayId = new Map(sepayTxs.map((t) => [t.sepayId, t]));
+
+    // 5b. Fallback: với các phiếu thu CHƯA resolve được qua InvoicePayment/SepayAllocation
+    //     (sepayTxId vẫn null) nhưng có sepayReferenceCode, query trực tiếp
+    //     sepay_transactions theo referenceNumber. Đây là trường hợp phiếu thu webhook
+    //     có sepayReferenceCode nhưng InvoicePayment.sepayTransactionId = null
+    //     (vd: phiếu thu tạo qua OrderPayment không có quan hệ với CashFlow, hoặc
+    //     InvoicePayment.sepayTransactionId chưa được set do lỗi logic cũ).
+    const unresolvedCfs = cashFlows.filter(
+      (cf) => !cfMap.get(cf.id)?.sepayTxId && cf.sepayReferenceCode,
+    );
+    if (unresolvedCfs.length > 0) {
+      const refCodes = unresolvedCfs
+        .map((cf) => cf.sepayReferenceCode!)
+        .filter(Boolean);
+      if (refCodes.length > 0) {
+        const txsByRef = await this.prisma.sepayTransaction.findMany({
+          where: { referenceNumber: { in: refCodes } },
+          select: {
+            sepayId: true,
+            referenceNumber: true,
+            accountNumber: true,
+            subAccount: true,
+            transactionContent: true,
+          },
+        });
+        const refToSepayId = new Map<string, string>();
+        for (const t of txsByRef) {
+          if (t.referenceNumber) refToSepayId.set(t.referenceNumber, t.sepayId);
+        }
+        // Map sepayId → full tx info để tra sau
+        for (const t of txsByRef) {
+          if (t.sepayId && !txBySepayId.has(t.sepayId)) {
+            txBySepayId.set(t.sepayId, t);
+          }
+        }
+        // Cập nhật cfMap với sepayTxId resolve được
+        for (const cf of unresolvedCfs) {
+          const sepayId = refToSepayId.get(cf.sepayReferenceCode!);
+          if (sepayId) {
+            cfMap.set(cf.id, {
+              source: 'webhook-sepay-ref',
+              sepayTxId: sepayId,
+              refCode: cf.sepayReferenceCode,
+            });
+          }
+        }
+      }
+    }
+
+    const items: any[] = [];
+    for (const cf of cashFlows) {
+      const info = cfMap.get(cf.id)!;
+      const sepayTx = info.sepayTxId ? txBySepayId.get(info.sepayTxId) : null;
+
+      const isSpecial = await isSepaySpecialAccount(
+        this.prisma,
+        sepayTx?.accountNumber ?? null,
+        sepayTx?.subAccount ?? null,
+      );
+
+      let newDescription: string | null = null;
+      if (sepayTx) {
+        newDescription = isSpecial
+          ? (sepayTx.transactionContent || '').trim()
+          : (sepayTx.referenceNumber || '').trim();
+      }
+
+      const currentDescription = cf.description ?? '';
+      const willUpdate =
+        newDescription !== null && newDescription !== currentDescription;
+
+      items.push({
+        cashFlowId: cf.id,
+        cashFlowCode: cf.code,
+        currentDescription: cf.description,
+        newDescription,
+        willUpdate,
+        source: info.source,
+        bankAccountNumber: cf.account?.accountNumber ?? null,
+        bankCode: cf.account?.bankCode ?? null,
+        bankName: cf.account?.bankName ?? null,
+        isSpecialAccount: isSpecial,
+        sepayTransactionId: info.sepayTxId,
+        sepayReferenceCode: cf.sepayReferenceCode,
+        transactionContent: sepayTx?.transactionContent ?? null,
+        referenceNumber: sepayTx?.referenceNumber ?? null,
+      });
+    }
+
+    // Sắp xếp theo id desc (cashFlow mới nhất trước)
+    items.sort((a, b) => b.cashFlowId - a.cashFlowId);
+    return items.slice(0, limit);
+  }
+
+  /**
+   * Preview backfill accountId cho các phiếu thu liên quan Sepay.
+   * KHÔNG ghi DB. Trả danh sách đầy đủ các phiếu thu có accountId = null
+   * nhưng có thể resolve được từ sepay_transactions (subAccount/accountNumber).
+   *
+   * Trả { scanned, willUpdate, skipped, items }.
+   */
+  async previewCashflowAccount(limit: number) {
+    const items = await this.collectCashflowAccountChanges(limit);
+    const willUpdate = items.filter((i) => i.willUpdate).length;
+    const skipped = items.length - willUpdate;
+    return {
+      scanned: items.length,
+      willUpdate,
+      skipped,
+      items,
+    };
+  }
+
+  /**
+   * Apply backfill accountId cho các phiếu thu liên quan Sepay.
+   * Ghi DB. Idempotent.
+   *
+   * Trả { scanned, updated, skipped, items }.
+   */
+  async backfillCashflowAccount(limit: number, userId?: number) {
+    const items = await this.collectCashflowAccountChanges(limit);
+    let updated = 0;
+    for (const item of items) {
+      if (!item.willUpdate) continue;
+      await this.prisma.cashFlow.update({
+        where: { id: item.cashFlowId },
+        data: { accountId: item.newAccountId },
+      });
+      updated += 1;
+    }
+    const skipped = items.length - updated;
+    this.logger.log(
+      `Sepay backfill cashflow accountId: scanned=${items.length}, updated=${updated}, skipped=${skipped}, by user=${userId ?? 'system'}`,
+    );
+    return {
+      scanned: items.length,
+      updated,
+      skipped,
+      items,
+    };
+  }
+
+  /**
+   * Helper chung cho preview/apply accountId.
+   * Tìm các phiếu thu Sepay có accountId = null, resolve lại từ
+   * sepay_transactions.subAccount (ưu tiên) / accountNumber.
+   *
+   * Tiêu chí lọc: phiếu thu liên quan Sepay (qua InvoicePayment.sepayTransactionId
+   * hoặc SepayAllocation) VÀ accountId = null.
+   */
+  private async collectCashflowAccountChanges(limit: number) {
+    // 1. Lấy cashFlowId từ InvoicePayment (webhook Sepay)
+    const invPayments = await this.prisma.invoicePayment.findMany({
+      where: {
+        cashFlowId: { not: null },
+        sepayTransactionId: { not: null },
+        status: { not: 2 },
+      },
+      select: { cashFlowId: true, sepayTransactionId: true },
+      take: limit,
+      orderBy: { id: 'desc' },
+    });
+
+    // 2. Lấy cashFlowId từ SepayAllocation (biến động số dư)
+    const allocations = await this.prisma.sepayAllocation.findMany({
+      where: { cashFlowId: { not: null } },
+      select: { cashFlowId: true, sepayTransactionId: true },
+      take: limit,
+      orderBy: { id: 'desc' },
+    });
+
+    // 3. Map PK id (sepay_transactions.id) → sepayId (string)
+    const allocTxPks = Array.from(
+      new Set(
+        allocations
+          .map((a) => a.sepayTransactionId)
+          .filter((v): v is number => v != null),
+      ),
+    );
+    const allocSepayTxs =
+      allocTxPks.length > 0
+        ? await this.prisma.sepayTransaction.findMany({
+            where: { id: { in: allocTxPks } },
+            select: { id: true, sepayId: true },
+          })
+        : [];
+    const allocPkToSepayId = new Map(
+      allocSepayTxs.map((t) => [t.id, t.sepayId]),
+    );
+
+    // 4. Gom cashFlowId + sepayTxId (string)
+    const cfToSepayTxId = new Map<number, string | null>();
+    for (const p of invPayments) {
+      if (p.cashFlowId && !cfToSepayTxId.has(p.cashFlowId)) {
+        cfToSepayTxId.set(p.cashFlowId, p.sepayTransactionId);
+      }
+    }
+    for (const a of allocations) {
+      if (a.cashFlowId && !cfToSepayTxId.has(a.cashFlowId)) {
+        const sepayIdStr =
+          a.sepayTransactionId != null
+            ? (allocPkToSepayId.get(a.sepayTransactionId) ?? null)
+            : null;
+        cfToSepayTxId.set(a.cashFlowId, sepayIdStr);
+      }
+    }
+
+    // 5. Lấy CashFlow có accountId = null VÀ id trong tập cfToSepayTxId
+    const cfIds = Array.from(cfToSepayTxId.keys());
+    let cashFlows =
+      cfIds.length > 0
+        ? await this.prisma.cashFlow.findMany({
+            where: {
+              id: { in: cfIds },
+              accountId: null,
+            },
+            orderBy: { id: 'desc' },
+            select: {
+              id: true,
+              code: true,
+              accountId: true,
+              sepayReferenceCode: true,
+            },
+          })
+        : [];
+
+    // 5b. Bổ sung: phiếu thu có sepayReferenceCode mà KHÔNG qua
+    //     InvoicePayment/SepayAllocation (vd: webhook phiếu thu đơn hàng không
+    //     có quan hệ với CashFlow, hoặc InvoicePayment.sepayTransactionId null).
+    const resolvedIds = new Set(cashFlows.map((cf) => cf.id));
+    const extraCfs = await this.prisma.cashFlow.findMany({
+      where: {
+        sepayReferenceCode: { not: null },
+        accountId: null,
+        id: { notIn: Array.from(resolvedIds) },
+      },
+      orderBy: { id: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        code: true,
+        accountId: true,
+        sepayReferenceCode: true,
+      },
+    });
+    if (extraCfs.length > 0) {
+      cashFlows = [...cashFlows, ...extraCfs];
+      // Map sepayReferenceCode → sepayId (sẽ resolve ở bước 6b).
+      for (const cf of extraCfs) {
+        if (cf.sepayReferenceCode) {
+          cfToSepayTxId.set(cf.id, null); // placeholder; sẽ lookup bằng referenceNumber
+        }
+      }
+    }
+
+    if (cashFlows.length === 0) {
+      return [];
+    }
+
+    // 6. Lấy sepay_transactions theo sepayId (đã resolve)
+    const sepayIds = new Set<string>();
+    for (const id of cfIds) {
+      const sid = cfToSepayTxId.get(id);
+      if (sid) sepayIds.add(sid);
+    }
+
+    // 6b. Fallback: query sepay_transactions theo referenceNumber cho các
+    //     phiếu thu chưa resolve được qua sepayId (nhóm bổ sung ở bước 5b).
+    const refCodeToCfId = new Map<string, number>();
+    for (const cf of cashFlows) {
+      if (cf.sepayReferenceCode && !cfToSepayTxId.get(cf.id)) {
+        refCodeToCfId.set(cf.sepayReferenceCode, cf.id);
+      }
+    }
+    if (refCodeToCfId.size > 0) {
+      const refCodes = Array.from(refCodeToCfId.keys());
+      const txsByRef = await this.prisma.sepayTransaction.findMany({
+        where: { referenceNumber: { in: refCodes } },
+        select: {
+          sepayId: true,
+          referenceNumber: true,
+          accountNumber: true,
+          subAccount: true,
+        },
+      });
+      for (const t of txsByRef) {
+        if (t.referenceNumber && refCodeToCfId.has(t.referenceNumber)) {
+          const cfId = refCodeToCfId.get(t.referenceNumber)!;
+          cfToSepayTxId.set(cfId, t.sepayId);
+        }
+      }
+    }
+
+    // Re-build sepayIds sau khi resolve thêm
+    const allSepayIds = new Set<string>();
+    for (const id of cashFlows.map((cf) => cf.id)) {
+      const sid = cfToSepayTxId.get(id);
+      if (sid) allSepayIds.add(sid);
+    }
+
+    const sepayTxs =
+      allSepayIds.size > 0
+        ? await this.prisma.sepayTransaction.findMany({
+            where: { sepayId: { in: Array.from(allSepayIds) } },
+            select: {
+              sepayId: true,
+              accountNumber: true,
+              subAccount: true,
+            },
+          })
+        : [];
+    const txBySepayId = new Map(sepayTxs.map((t) => [t.sepayId, t]));
+
+    // 7. Resolve accountId cho mỗi phiếu thu
+    const items: any[] = [];
+    for (const cf of cashFlows) {
+      const sid = cfToSepayTxId.get(cf.id);
+      if (!sid) continue;
+      const tx = txBySepayId.get(sid);
+      if (!tx) continue;
+
+      // Ưu tiên subAccount (VA) trước, fallback accountNumber (TK chính)
+      const candidates = [tx.subAccount, tx.accountNumber].filter(
+        (v): v is string => !!v,
+      );
+      let bankAccount: {
+        id: number;
+        accountNumber: string;
+        bankCode: string;
+        bankName: string;
+      } | null = null;
+      for (const acc of candidates) {
+        bankAccount = await this.prisma.bankAccount.findFirst({
+          where: { accountNumber: acc },
+          select: {
+            id: true,
+            accountNumber: true,
+            bankCode: true,
+            bankName: true,
+          },
+        });
+        if (bankAccount) break;
+      }
+
+      items.push({
+        cashFlowId: cf.id,
+        cashFlowCode: cf.code,
+        currentAccountId: cf.accountId,
+        newAccountId: bankAccount?.id ?? null,
+        willUpdate: bankAccount !== null,
+        sepayTransactionId: sid,
+        sepayAccountNumber: tx.accountNumber,
+        sepaySubAccount: tx.subAccount,
+        resolvedAccountNumber: bankAccount?.accountNumber ?? null,
+        resolvedBankCode: bankAccount?.bankCode ?? null,
+        resolvedBankName: bankAccount?.bankName ?? null,
+      });
+    }
+
+    items.sort((a, b) => b.cashFlowId - a.cashFlowId);
+    return items.slice(0, limit);
   }
 }

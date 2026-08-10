@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
@@ -47,6 +48,7 @@ export class VehicleShipmentsService {
     private prisma: PrismaService,
     private purchaseOrdersService: PurchaseOrdersService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -153,7 +155,8 @@ export class VehicleShipmentsService {
         },
       });
       for (const po of vehiclePOs) {
-        if (po.vehicleShipmentId == null || po.orderSupplierId == null) continue;
+        if (po.vehicleShipmentId == null || po.orderSupplierId == null)
+          continue;
         for (const it of po.items) {
           const vk = `${po.vehicleShipmentId}:${po.orderSupplierId}:${it.productId}`;
           receivedByVehicle.set(
@@ -253,7 +256,12 @@ export class VehicleShipmentsService {
 
   private async buildItemsData(
     tx: any,
-    items: { orderSupplierId: number; productId: number; quantity: number }[],
+    items: {
+      orderSupplierId: number;
+      productId: number;
+      quantity: number;
+      contractNo?: string;
+    }[],
     excludeVehicleId?: number,
   ) {
     if (!items || items.length === 0) {
@@ -261,9 +269,6 @@ export class VehicleShipmentsService {
         'Phiếu ghép xe phải có ít nhất 1 dòng hàng',
       );
     }
-
-    const osIds = [...new Set(items.map((i) => i.orderSupplierId))];
-    const qtyMap = await this.getQuantityMap(osIds, excludeVehicleId);
 
     const result: any[] = [];
     for (const item of items) {
@@ -281,19 +286,12 @@ export class VehicleShipmentsService {
         );
       }
 
-      const entry = qtyMap.get(`${item.orderSupplierId}:${item.productId}`);
-      const remaining = entry
-        ? entry.ordered - entry.received - entry.shipped
-        : 0;
-      if (item.quantity > remaining) {
-        throw new BadRequestException(
-          `Sản phẩm "${product.name}" chỉ còn ${remaining} có thể ghép (đặt ${
-            entry?.ordered ?? 0
-          } − đã nhập ${entry?.received ?? 0} − đã ghép ${
-            entry?.shipped ?? 0
-          }), không thể ghép ${item.quantity}.`,
-        );
-      }
+      // Bỏ chặn cho phép ghép vượt số lượng có thể ghép (over-pick).
+      // Lý do: thực tế vận chuyển có thể giao dư/thiếu so với PĐN, hoặc NV
+      // muốn chủ động điều chỉnh dòng hàng cho khớp thực tế. Check
+      // `quantity > 0` ở trên đã đủ chặn nhập 0/âm. Tồn kho khi sinh phiếu
+      // nhập từ xe (`createPurchaseOrders` → `updateInventory`) sẽ cộng đúng
+      // theo `receivedQuantity` user nhập, không cap về ordered.
 
       result.push({
         orderSupplierId: item.orderSupplierId,
@@ -301,6 +299,11 @@ export class VehicleShipmentsService {
         productCode: product.code,
         productName: product.name,
         quantity: item.quantity,
+        // Số HĐ per-item. Trim + null khi rỗng để DB nhận đúng giá trị
+        // (Prisma coi '' và null khác nhau — tránh conflict với unique
+        // `(vehicleShipmentId, orderSupplierId, productId, contractNo)`
+        // vì PostgreSQL coi NULL không bằng nhau trong unique).
+        contractNo: item.contractNo?.trim() || null,
       });
     }
     return result;
@@ -315,6 +318,7 @@ export class VehicleShipmentsService {
       pageSize = 15,
       currentItem = 0,
       search,
+      contractNo,
       branchId,
       branchIds,
       borderGateId,
@@ -335,6 +339,7 @@ export class VehicleShipmentsService {
               OR: [
                 { productCode: { contains: search, mode: 'insensitive' } },
                 { productName: { contains: search, mode: 'insensitive' } },
+                { contractNo: { contains: search, mode: 'insensitive' } },
                 {
                   orderSupplier: {
                     code: { contains: search, mode: 'insensitive' },
@@ -342,6 +347,16 @@ export class VehicleShipmentsService {
                 },
               ],
             },
+          },
+        },
+      ];
+    }
+    if (contractNo) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          items: {
+            some: { contractNo: { equals: contractNo } },
           },
         },
       ];
@@ -362,9 +377,14 @@ export class VehicleShipmentsService {
 
     // Scope NCC: chỉ trả phiếu ghép xe có chứa hàng của NCC này.
     if (supplierScope != null) {
-      where.items = {
-        some: { orderSupplier: { supplierId: supplierScope } },
-      };
+      where.AND = [
+        ...(where.AND || []),
+        {
+          items: {
+            some: { orderSupplier: { supplierId: supplierScope } },
+          },
+        },
+      ];
     }
 
     const [data, total] = await Promise.all([
@@ -405,6 +425,25 @@ export class VehicleShipmentsService {
     }
 
     return { data, total, pageSize, currentItem };
+  }
+
+  async getContractNos(supplierScope?: number | null) {
+    const rows = await this.prisma.vehicleShipmentItem.findMany({
+      where: {
+        contractNo: { not: null },
+        vehicleShipment: { status: { not: 3 } },
+        ...(supplierScope != null
+          ? { orderSupplier: { supplierId: supplierScope } }
+          : {}),
+      },
+      select: { contractNo: true },
+      distinct: ['contractNo'],
+      orderBy: { contractNo: 'asc' },
+    });
+
+    return rows
+      .map((r) => r.contractNo?.trim())
+      .filter((v): v is string => !!v);
   }
 
   async findOne(id: number, supplierScope?: number | null) {
@@ -822,7 +861,12 @@ export class VehicleShipmentsService {
    */
   async resolveItem(
     id: number,
-    dto: { orderSupplierId: number; productId: number; action: string },
+    dto: {
+      vehicleShipmentItemId?: number;
+      orderSupplierId?: number;
+      productId?: number;
+      action: string;
+    },
     userId: number,
   ) {
     const allowed = ['pending', 'returned', 'kept'];
@@ -843,16 +887,37 @@ export class VehicleShipmentsService {
       );
     }
 
-    const item = await this.prisma.vehicleShipmentItem.findFirst({
-      where: {
-        vehicleShipmentId: id,
-        orderSupplierId: dto.orderSupplierId,
-        productId: dto.productId,
-      },
-      select: { id: true },
-    });
+    // Ưu tiên match bằng vehicleShipmentItemId (id trực tiếp của dòng) — chính
+    // xác khi 1 phiếu xe có 2 dòng cùng (orderSupplierId, productId) nhưng
+    // khác contractNo. Fallback (orderSupplierId, productId) cho phiếu cũ
+    // (giữ backward-compat với FE chưa cập nhật).
+    let item: { id: number } | null = null;
+    if (dto.vehicleShipmentItemId != null) {
+      item = await this.prisma.vehicleShipmentItem.findFirst({
+        where: {
+          id: dto.vehicleShipmentItemId,
+          vehicleShipmentId: id,
+        },
+        select: { id: true },
+      });
+    } else if (dto.orderSupplierId != null && dto.productId != null) {
+      item = await this.prisma.vehicleShipmentItem.findFirst({
+        where: {
+          vehicleShipmentId: id,
+          orderSupplierId: dto.orderSupplierId,
+          productId: dto.productId,
+        },
+        select: { id: true },
+      });
+    } else {
+      throw new BadRequestException(
+        'Thiếu vehicleShipmentItemId (hoặc orderSupplierId + productId)',
+      );
+    }
     if (!item) {
-      throw new NotFoundException('Không tìm thấy dòng hàng trên phiếu ghép xe');
+      throw new NotFoundException(
+        'Không tìm thấy dòng hàng trên phiếu ghép xe',
+      );
     }
 
     await this.prisma.vehicleShipmentItem.update({
@@ -896,7 +961,8 @@ export class VehicleShipmentsService {
     dto: CreatePurchaseOrdersFromVehicleDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(
       async (tx) => {
         const shipment = await tx.vehicleShipment.findUnique({
           where: { id },
@@ -992,6 +1058,7 @@ export class VehicleShipmentsService {
               } as any,
               userId,
               id,
+              touchedProductIds,
             );
           createdPOs.push(po);
         }
@@ -1038,5 +1105,11 @@ export class VehicleShipmentsService {
       },
       { timeout: 60000, maxWait: 10000 },
     );
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 }

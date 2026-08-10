@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseIntPipe,
   Post,
   Put,
   Query,
@@ -14,6 +15,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { FactoriesService } from './factories.service';
+import { CreateFactoryDto, FactoryQueryDto, UpdateFactoryDto } from './dto';
 
 @ApiTags('Factories')
 @ApiBearerAuth()
@@ -22,40 +24,58 @@ import { FactoriesService } from './factories.service';
 export class FactoriesController {
   constructor(private factoriesService: FactoriesService) {}
 
+  /**
+   * List nhà máy với filter. Permission: factories:view (user tự thêm qua UI).
+   * Backward compatible: giữ query `includeInactive` cho code cũ nếu có.
+   */
   @Get()
-  @RequirePermissions('order_suppliers:view')
-  findAll(@Query('includeInactive') includeInactive?: string) {
-    return this.factoriesService.findAll(includeInactive === 'true');
+  @RequirePermissions('factories:view')
+  findAll(@Query() query: FactoryQueryDto) {
+    return this.factoriesService.findAll(query);
+  }
+
+  /**
+   * Lấy tất cả nhà máy (active) của 1 NCC — dùng cho dropdown trong các form
+   * liên quan đến NCC (đặt hàng nhập, sản phẩm...).
+   */
+  @Get('by-supplier/:supplierId')
+  @RequirePermissions('factories:view')
+  getBySupplier(@Param('supplierId', ParseIntPipe) supplierId: number) {
+    return this.factoriesService.getBySupplier(supplierId);
+  }
+
+  /**
+   * Danh sách Product gắn nhà máy này (chia theo vai trò primary/backup) —
+   * dùng cho trang read-only /san-pham/nha-may/[id]/san-pham.
+   */
+  @Get(':id/products')
+  @RequirePermissions('factories:view')
+  getProductsByFactory(@Param('id', ParseIntPipe) id: number) {
+    return this.factoriesService.getProductsByFactory(id);
   }
 
   @Get(':id')
-  @RequirePermissions('order_suppliers:view')
-  findOne(@Param('id') id: string) {
-    return this.factoriesService.findOne(+id);
+  @RequirePermissions('factories:view')
+  findOne(@Param('id', ParseIntPipe) id: number) {
+    return this.factoriesService.findOne(id);
   }
 
   @Post()
-  @RequirePermissions('order_suppliers:update')
-  create(
-    @Body() dto: { name: string; description?: string; isActive?: boolean },
-    @Req() req: any,
-  ) {
+  @RequirePermissions('factories:create')
+  create(@Body() dto: CreateFactoryDto, @Req() req: any) {
     const userId = req.user?.id || 1;
     return this.factoriesService.create(dto, userId);
   }
 
   @Put(':id')
-  @RequirePermissions('order_suppliers:update')
-  update(
-    @Param('id') id: string,
-    @Body() dto: { name?: string; description?: string; isActive?: boolean },
-  ) {
-    return this.factoriesService.update(+id, dto);
+  @RequirePermissions('factories:update')
+  update(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateFactoryDto) {
+    return this.factoriesService.update(id, dto);
   }
 
   @Delete(':id')
-  @RequirePermissions('order_suppliers:update')
-  remove(@Param('id') id: string) {
-    return this.factoriesService.remove(+id);
+  @RequirePermissions('factories:delete')
+  remove(@Param('id', ParseIntPipe) id: number) {
+    return this.factoriesService.remove(id);
   }
 }

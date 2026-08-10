@@ -7,6 +7,8 @@ import {
   IsArray,
   ValidateNested,
   IsDateString,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty } from '@nestjs/swagger';
@@ -20,9 +22,15 @@ class OrderSupplierItemDto {
   @IsNumber()
   quantity: number;
 
-  @ApiProperty()
+  @ApiProperty({
+    required: false,
+    description:
+      'Đơn giá nhập. Có thể bỏ trống nếu user không có quyền xem giá vốn — ' +
+      'backend sẽ tự lấy giá vốn hiện tại của sản phẩm theo chi nhánh.',
+  })
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number;
 
   @ApiProperty({ required: false })
   @IsOptional()
@@ -157,8 +165,68 @@ export class CreateOrderSupplierDto {
   @IsString()
   paymentMethod?: string;
 
+  @ApiProperty({
+    required: false,
+    description:
+      'Id tài khoản ngân hàng công ty dùng để chuyển khoản cho NCC. ' +
+      'Chỉ cần khi paymentMethod = "transfer". Map vào CashFlow.accountId và ' +
+      'OrderSupplierPayment.accountId để đối chiếu sao kê ngân hàng.',
+  })
+  @IsOptional()
+  @IsInt()
+  paymentAccountId?: number;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Tỉ giá quy đổi VND/CNY user nhập tại thời điểm thanh toán (chỉ dùng cho ' +
+      'NCC nước ngoài). Snapshot riêng ở OrderSupplierPayment.exchangeRate — ' +
+      'khác OrderSupplier.exchangeRate (tỉ giá đặt hàng, chỉ tham khảo).',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  paymentExchangeRate?: number;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Thành tiền quy đổi sang tiền tệ NCC (CNY) snapshot tại thời điểm ' +
+      'thanh toán. = paymentAmount / paymentExchangeRate. Snapshot riêng ở ' +
+      'OrderSupplierPayment.foreignAmount — không quy đổi ngược từ VND.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  paymentForeignAmount?: number;
+
   @ApiProperty({ required: false, description: 'Dự kiến ngày nhập hàng' })
   @IsOptional()
   @IsDateString()
   orderDate?: string;
+
+  @ApiProperty({
+    required: false,
+    enum: ['VND', 'CNY'],
+    default: 'VND',
+    description:
+      'Mã tiền tệ áp dụng cho phiếu (VND mặc định). Khi supplier thuộc nhóm ' +
+      'nước ngoài (vd supplierGroupId = 1), FE sẽ gửi CNY kèm exchangeRate.',
+  })
+  @IsOptional()
+  @IsString()
+  @IsIn(['VND', 'CNY'])
+  currency?: string;
+
+  @ApiProperty({
+    required: false,
+    default: 1,
+    description:
+      'Tỉ giá quy đổi (1 đơn vị currency = X VND). Ví dụ: 3500 = 1 CNY = 3500 VND. ' +
+      'Mặc định 1. Bắt buộc > 0 khi currency = CNY.',
+  })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  exchangeRate?: number;
 }

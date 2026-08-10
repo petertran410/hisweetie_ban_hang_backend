@@ -51,7 +51,7 @@ export class ProductsWithPricesQueryDto {
           const num = typeof id === 'string' ? parseInt(id, 10) : Number(id);
           return isNaN(num) ? null : num;
         })
-        .filter((id) => id !== null && id > 0);
+        .filter((id) => id !== null && id >= 0);
       return result;
     }
 
@@ -59,7 +59,7 @@ export class ProductsWithPricesQueryDto {
       const result = value
         .split(',')
         .map((id) => parseInt(id.trim(), 10))
-        .filter((id) => !isNaN(id) && id > 0);
+        .filter((id) => !isNaN(id) && id >= 0);
       return result;
     }
 

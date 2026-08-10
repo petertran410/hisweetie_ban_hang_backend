@@ -15,6 +15,8 @@ export class CreatePurchaseOrderPaymentDto {
   accountId?: number;
   paymentDate?: string;
   notes?: string;
+  exchangeRate?: number;
+  foreignAmount?: number;
 }
 
 @Injectable()
@@ -52,6 +54,28 @@ export class PurchaseOrderPaymentsService {
         throw new Error('Phiếu nhập hàng chưa có chi nhánh');
       }
 
+      const isCNY = purchaseOrder.currency === 'CNY';
+      if (isCNY) {
+        if (
+          dto.exchangeRate == null ||
+          Number(dto.exchangeRate) <= 0 ||
+          dto.foreignAmount == null ||
+          Number(dto.foreignAmount) <= 0
+        ) {
+          throw new Error(
+            'Phiếu nhập dùng CNY, vui lòng nhập đủ tỉ giá và số tiền CNY',
+          );
+        }
+        if (
+          Math.round(Number(dto.foreignAmount) * Number(dto.exchangeRate)) !==
+          dto.amount
+        ) {
+          throw new Error('Số tiền CNY quy đổi không khớp số tiền VND');
+        }
+      } else if (dto.exchangeRate != null || dto.foreignAmount != null) {
+        throw new Error('Phiếu nhập dùng VND, không được gửi số tiền CNY');
+      }
+
       // Generate payment code PCPN
       const code = await this.generatePaymentCode(tx);
 
@@ -71,6 +95,9 @@ export class PurchaseOrderPaymentsService {
           cashFlowGroupId: 9,
           isReceipt: false,
           amount: dto.amount,
+          currency: isCNY ? 'CNY' : 'VND',
+          exchangeRate: isCNY ? Number(dto.exchangeRate) : 1,
+          foreignAmount: isCNY ? Number(dto.foreignAmount) : null,
           transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
           method: cashFlowMethod,
           accountId: dto.accountId,
@@ -102,6 +129,10 @@ export class PurchaseOrderPaymentsService {
           status: 1,
           statusValue: 'Đã thanh toán',
           cashFlowId: cashFlow.id,
+          exchangeRate:
+            dto.exchangeRate != null ? Number(dto.exchangeRate) : null,
+          foreignAmount:
+            dto.foreignAmount != null ? Number(dto.foreignAmount) : null,
         },
       });
 
@@ -296,10 +327,23 @@ export class PurchaseOrderPaymentsService {
       where: { purchaseOrderId, status: { not: 2 } },
       select: { amount: true },
     });
-    const paidAmount = activePayments.reduce(
+    const paymentAmount = activePayments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),
       0,
     );
+    const manualOffsets = await tx.supplierReturn.findMany({
+      where: {
+        purchaseOrderId,
+        status: 3,
+        refundType: 'manual_offset',
+      },
+      select: { refundedAmount: true },
+    });
+    const offsetAmount = manualOffsets.reduce(
+      (sum: number, offset: any) => sum + Number(offset.refundedAmount),
+      0,
+    );
+    const paidAmount = paymentAmount + offsetAmount;
     const debtAmount = Number(po.subTotal) - paidAmount;
 
     await tx.purchaseOrder.update({

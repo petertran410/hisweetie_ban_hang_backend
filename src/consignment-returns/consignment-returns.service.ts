@@ -10,14 +10,31 @@ import {
   CreateConsignmentReturnDto,
   getReturnStatusLabel,
 } from './dto';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+} from '../common/stock-condition-onhand.util';
 import { CONSIGNMENT_STATUS } from '../consignments/dto/consignment-status.constants';
 import { ConsignmentsService } from '../consignments/consignments.service';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import {
+  getCategoryFromActionCode,
+  getSeverityFromActionCode,
+  renderAuditMessage,
+} from '../audit-logs/audit-templates';
 
 @Injectable()
 export class ConsignmentReturnsService {
   constructor(
     private prisma: PrismaService,
     private consignmentsService: ConsignmentsService,
+    private larkProductSync: LarkProductSyncService,
+    private auditLogsService: AuditLogsService,
   ) {}
 
   private async generateCode(tx: any): Promise<string> {
@@ -111,10 +128,13 @@ export class ConsignmentReturnsService {
   }
 
   async create(dto: CreateConsignmentReturnDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       const consignment = await tx.consignment.findUnique({
         where: { id: dto.consignmentId },
-        include: { items: true, customer: { select: { id: true, name: true } } },
+        include: {
+          items: true,
+          customer: { select: { id: true, name: true } },
+        },
       });
       if (!consignment) {
         throw new NotFoundException('Không tìm thấy phiếu ký gửi');
@@ -204,6 +224,53 @@ export class ConsignmentReturnsService {
 
       return created;
     });
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai tạo phiếu hoàn ký gửi).
+    if (result) {
+      const [actorUser, customer] = await Promise.all([
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        }),
+        result.customerId
+          ? this.prisma.customer.findUnique({
+              where: { id: result.customerId },
+              select: { name: true },
+            })
+          : null,
+      ]);
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'CONSIGNMENT_RETURN_CREATE',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_CREATE'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_RETURN_CREATE'),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          totalReturnQuantity: result.totalReturnQuantity,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_CREATE', {
+          consignmentReturnCode: result.code,
+          customerName: customer?.name || '',
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_CREATE',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -211,7 +278,8 @@ export class ConsignmentReturnsService {
    * 'CONSIGNMENT_RETURN'. Không đụng công nợ.
    */
   async confirmStockReceived(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const ro = await tx.consignmentReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -235,6 +303,17 @@ export class ConsignmentReturnsService {
           })
         : null;
 
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+      // (truy vết ai nhận hàng hoàn ký gửi vào kho).
+      const crReceiveUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const crReceiveLogActor = buildInventoryLogActor(
+        userId,
+        crReceiveUser?.name || crReceiveUser?.email,
+      );
+
       for (const d of ro.details) {
         const good = Number(d.goodQuantity) || 0;
         const damaged = Number(d.damagedQuantity) || 0;
@@ -244,6 +323,9 @@ export class ConsignmentReturnsService {
           where: { productId: d.productId, branchId: ro.branchId },
         });
 
+        // Cột bucket trên Inventory là CACHE dẫn xuất từ sổ cái → KHÔNG ghi
+        // trực tiếp ở đây. Chỉ tạo dòng cho sản phẩm chưa có Inventory, phần
+        // bucket ghi qua sổ cái bên dưới rồi recalc.
         await tx.inventory.upsert({
           where: {
             productId_branchId: {
@@ -253,10 +335,6 @@ export class ConsignmentReturnsService {
           },
           update: {
             onHand: { increment: total },
-            ...(damaged > 0 && { damagedQuantity: { increment: damaged } }),
-            ...(nearExpiry > 0 && {
-              nearExpiryQuantity: { increment: nearExpiry },
-            }),
           },
           create: {
             productId: d.productId,
@@ -265,9 +343,27 @@ export class ConsignmentReturnsService {
             branchId: ro.branchId,
             branchName: branch?.name || '',
             onHand: total,
-            damagedQuantity: damaged,
-            nearExpiryQuantity: nearExpiry,
           },
+        });
+        touchedProductIds.add(d.productId);
+
+        // Ghi sổ cái phần hàng hoàn về thuộc loại bục rách / cận date.
+        // Lô cận date dùng NSX khai trên dòng phiếu hoàn.
+        await writeConditionLogs(tx, {
+          productId: d.productId,
+          productCode: d.productCode,
+          productName: d.productName,
+          branchId: ro.branchId,
+          branchName: branch?.name || '',
+          refCode: ro.code,
+          refType: 'consignment_return',
+          refId: ro.id,
+          transactionType: 'CONSIGNMENT_RETURN_IN',
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          note: 'Hoàn hàng ký gửi về kho',
+          damaged,
+          nearExpiry,
+          nearExpiryDate: d.manufactureDate ?? null,
         });
 
         await tx.inventoryLog.create({
@@ -287,9 +383,19 @@ export class ConsignmentReturnsService {
             partnerId: ro.customerId || null,
             partnerName: customer?.name || null,
             manufactureDate: d.manufactureDate ?? null,
+            ...buildInventoryLogBase(crReceiveLogActor),
           },
         });
       }
+
+      // NGUỒN CHÂN LÝ: bucket = Σ log active → recalc cache sau khi ghi sổ.
+      await recalcConditionBucketsForPairs(
+        tx,
+        ro.details.map((d) => ({
+          productId: d.productId,
+          branchId: ro.branchId,
+        })),
+      );
 
       const updated = await tx.consignmentReturn.update({
         where: { id },
@@ -311,10 +417,60 @@ export class ConsignmentReturnsService {
 
       return updated;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai nhận hàng hoàn ký gửi vào kho).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode(
+          'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        ),
+        severity: getSeverityFromActionCode(
+          'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        ),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          totalReturnQuantity: result.totalReturnQuantity,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            goodQuantity: d.goodQuantity,
+            damagedQuantity: d.damagedQuantity,
+            nearExpiryQuantity: d.nearExpiryQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_STOCK_RECEIVED', {
+          consignmentReturnCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_STOCK_RECEIVED',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   async cancel(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const ro = await tx.consignmentReturn.findUnique({
         where: { id },
         include: { details: true },
@@ -330,20 +486,28 @@ export class ConsignmentReturnsService {
           where: { id: ro.branchId },
           select: { id: true, name: true },
         });
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // đảo chiều khi hủy (truy vết ai rollback kho hoàn ký gửi).
+        const crCancelUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const crCancelLogActor = buildInventoryLogActor(
+          userId,
+          crCancelUser?.name || crCancelUser?.email,
+        );
         for (const d of ro.details) {
-          const damaged = Number(d.damagedQuantity) || 0;
-          const nearExpiry = Number(d.nearExpiryQuantity) || 0;
           const total = Number(d.returnQuantity);
+          // KHÔNG trừ cache bucket thủ công: phiếu chuyển sang CANCELLED bên
+          // dưới → active-finder 'consignment_return' loại toàn bộ
+          // StockConditionLog của phiếu này → recalc tự đưa bucket về đúng.
           await tx.inventory.updateMany({
             where: { productId: d.productId, branchId: ro.branchId },
             data: {
               onHand: { decrement: total },
-              ...(damaged > 0 && { damagedQuantity: { decrement: damaged } }),
-              ...(nearExpiry > 0 && {
-                nearExpiryQuantity: { decrement: nearExpiry },
-              }),
             },
           });
+          touchedProductIds.add(d.productId);
           await tx.inventoryLog.create({
             data: {
               productId: d.productId,
@@ -360,6 +524,7 @@ export class ConsignmentReturnsService {
               transactionPrice: 0,
               partnerId: ro.customerId || null,
               partnerName: null,
+              ...buildInventoryLogBase(crCancelLogActor),
             },
           });
         }
@@ -369,10 +534,24 @@ export class ConsignmentReturnsService {
         where: { id },
         data: {
           status: CONSIGNMENT_RETURN_STATUS.CANCELLED,
-          statusValue: getReturnStatusLabel(CONSIGNMENT_RETURN_STATUS.CANCELLED),
+          statusValue: getReturnStatusLabel(
+            CONSIGNMENT_RETURN_STATUS.CANCELLED,
+          ),
         },
         include: { details: true },
       });
+
+      // NGUỒN CHÂN LÝ: phiếu đã CANCELLED ở trên → active-finder loại toàn bộ
+      // StockConditionLog của phiếu → recalc đưa bucket về đúng Σ log active.
+      if (ro.branchId) {
+        await recalcConditionBucketsForPairs(
+          tx,
+          ro.details.map((d) => ({
+            productId: d.productId,
+            branchId: ro.branchId,
+          })),
+        );
+      }
 
       // Hủy phiếu đã nhận kho → hàng rời kho lại → phiếu KG có thể rời
       // COMPLETED về PARTIALLY_INVOICED. Recompute để đồng bộ.
@@ -383,6 +562,47 @@ export class ConsignmentReturnsService {
 
       return updated;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    // Ghi audit log sau khi nghiệp vụ đã commit (truy vết ai hủy phiếu hoàn ký gửi).
+    if (result) {
+      const actorUser = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PUT',
+        actionCode: 'CONSIGNMENT_RETURN_CANCEL',
+        entityType: 'consignment_returns',
+        entityId: result.id.toString(),
+        entityCode: result.code,
+        category: getCategoryFromActionCode('CONSIGNMENT_RETURN_CANCEL'),
+        severity: getSeverityFromActionCode('CONSIGNMENT_RETURN_CANCEL'),
+        snapshot: {
+          code: result.code,
+          consignmentCode: result.consignmentCode,
+          status: result.status,
+          statusValue: result.statusValue,
+          items: result.details?.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+          })),
+        },
+        message: renderAuditMessage('CONSIGNMENT_RETURN_CANCEL', {
+          consignmentReturnCode: result.code,
+        }),
+        messageTemplate: 'CONSIGNMENT_RETURN_CANCEL',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId: result.branchId || undefined,
+      });
+    }
+
+    return result;
   }
 
   async findAll(query: ConsignmentReturnQueryDto) {
@@ -405,7 +625,10 @@ export class ConsignmentReturnsService {
   async findOne(id: number) {
     const ro = await this.prisma.consignmentReturn.findUnique({
       where: { id },
-      include: { details: true, customer: { select: { id: true, name: true } } },
+      include: {
+        details: true,
+        customer: { select: { id: true, name: true } },
+      },
     });
     if (!ro) throw new NotFoundException('Không tìm thấy phiếu hoàn ký gửi');
     return ro;

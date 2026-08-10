@@ -2,7 +2,10 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateInternalUseDto,
@@ -20,13 +23,94 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+
+const SUPER_ADMIN_ROLE = 'Super Admin';
+const COMPLETE_PERMISSION = 'internal-use:complete';
 
 @Injectable()
 export class InternalUseService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
+
+  /**
+   * Chỉ user có quyền `internal-use:complete` (hoặc Super Admin) mới được
+   * "duyệt/hoàn thành" phiếu (chuyển status 1 → 2, xuất kho). Người tạo
+   * thường (chỉ có `internal-use:create`) chỉ được lưu tạm.
+   */
+  private ensureCanComplete(user: {
+    permissions?: string[];
+    roles?: string[];
+  }): void {
+    if (user.roles?.includes(SUPER_ADMIN_ROLE)) return;
+    if (user.permissions?.includes(COMPLETE_PERMISSION)) return;
+    throw new ForbiddenException(
+      'Bạn không có quyền duyệt/hoàn thành phiếu. Cần quyền internal-use:complete.',
+    );
+  }
+
+  // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
+  // khớp đúng danh sách đang hiển thị trên UI.
+  private buildInternalUseWhere(
+    query: InternalUseQueryDto,
+  ): Prisma.InternalUseWhereInput {
+    const {
+      branchIds,
+      status,
+      fromDate,
+      toDate,
+      search,
+      createdById,
+      userId,
+      purposeId,
+    } = query;
+
+    const where: Prisma.InternalUseWhereInput = {};
+
+    if (branchIds && branchIds.length > 0) {
+      where.branchId = { in: branchIds };
+    }
+
+    if (status && status.length > 0) {
+      where.status = { in: status };
+    }
+
+    if (createdById) {
+      where.createdById = createdById;
+    }
+
+    if (userId) {
+      where.userId = userId;
+    }
+
+    if (purposeId) {
+      where.purposeId = purposeId;
+    }
+
+    if (search) {
+      where.code = { contains: search, mode: 'insensitive' };
+    }
+
+    if (fromDate || toDate) {
+      where.createdAt = {};
+      if (fromDate) {
+        where.createdAt.gte = new Date(fromDate);
+      }
+      if (toDate) {
+        where.createdAt.lte = new Date(toDate);
+      }
+    }
+
+    return where;
+  }
 
   async findAllPurposes() {
     return this.prisma.internalUsePurpose.findMany({
@@ -72,54 +156,9 @@ export class InternalUseService {
   }
 
   async findAll(query: InternalUseQueryDto) {
-    const {
-      branchIds,
-      status,
-      pageSize = 15,
-      currentItem = 0,
-      fromDate,
-      toDate,
-      search,
-      createdById,
-      userId,
-      purposeId,
-    } = query;
+    const { pageSize = 15, currentItem = 0 } = query;
 
-    const where: Prisma.InternalUseWhereInput = {};
-
-    if (branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
-    }
-
-    if (status && status.length > 0) {
-      where.status = { in: status };
-    }
-
-    if (createdById) {
-      where.createdById = createdById;
-    }
-
-    if (userId) {
-      where.userId = userId;
-    }
-
-    if (purposeId) {
-      where.purposeId = purposeId;
-    }
-
-    if (search) {
-      where.code = { contains: search, mode: 'insensitive' };
-    }
-
-    if (fromDate || toDate) {
-      where.createdAt = {};
-      if (fromDate) {
-        where.createdAt.gte = new Date(fromDate);
-      }
-      if (toDate) {
-        where.createdAt.lte = new Date(toDate);
-      }
-    }
+    const where = this.buildInternalUseWhere(query);
 
     const [data, total, agg] = await Promise.all([
       this.prisma.internalUse.findMany({
@@ -147,6 +186,203 @@ export class InternalUseService {
     };
   }
 
+  // Nhãn trạng thái dùng chung cho cả 2 file xuất.
+  private static readonly EXPORT_STATUS_LABEL: Record<number, string> = {
+    1: 'Phiếu tạm',
+    2: 'Hoàn thành',
+    3: 'Đã hủy',
+  };
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu xuất dùng nội bộ = 1 dòng Excel. Bộ lọc
+   * dùng chung buildInternalUseWhere với findAll để khớp danh sách đang hiển thị.
+   */
+  async exportInternalUses(
+    query: InternalUseQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildInternalUseWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Xuất dùng nội bộ');
+
+    sheet.columns = [
+      { header: 'Mã xuất dùng nội bộ', key: 'code', width: 22 },
+      { header: 'Thời gian', key: 'transDate', width: 20 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Chi nhánh', key: 'branchName', width: 22 },
+      { header: 'Mục đích sử dụng', key: 'purposeName', width: 24 },
+      { header: 'Người sử dụng', key: 'userName', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Tổng mặt hàng', key: 'totalGoods', width: 14 },
+      { header: 'Tổng SL xuất', key: 'totalQuantity', width: 14 },
+      { header: 'Tổng giá trị', key: 'totalValue', width: 18 },
+      { header: 'Ghi chú', key: 'description', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.internalUse.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { details: true, purpose: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const d of batch) {
+        const totalQuantity = d.details.reduce(
+          (s, item) => s + Number(item.quantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: d.code,
+          transDate: fmtDateTime(d.transDate),
+          createdAt: fmtDateTime(d.createdAt),
+          branchName: d.branchName || '',
+          purposeName: d.purpose?.name || '',
+          userName: d.userName || '',
+          createdBy: d.createdByName || '',
+          totalGoods: d.details.length,
+          totalQuantity,
+          totalValue: Number(d.totalValue) || 0,
+          description: d.description || '',
+          status: InternalUseService.EXPORT_STATUS_LABEL[d.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi sản phẩm trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildInternalUseWhere với export tổng quan.
+   */
+  async exportInternalUsesDetail(
+    query: InternalUseQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildInternalUseWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết xuất dùng nội bộ');
+
+    sheet.columns = [
+      { header: 'Mã xuất dùng nội bộ', key: 'code', width: 22 },
+      { header: 'Thời gian', key: 'transDate', width: 20 },
+      { header: 'Chi nhánh', key: 'branchName', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'ĐVT', key: 'unit', width: 10 },
+      { header: 'Số lượng xuất', key: 'quantity', width: 14 },
+      { header: 'Giá vốn', key: 'cost', width: 14 },
+      { header: 'Thành tiền', key: 'lineTotal', width: 16 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.internalUse.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { details: true, purpose: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const d of batch) {
+        const base = {
+          code: d.code,
+          transDate: fmtDateTime(d.transDate),
+          branchName: d.branchName || '',
+          createdBy: d.createdByName || '',
+          status: InternalUseService.EXPORT_STATUS_LABEL[d.status] || '',
+        };
+
+        if (!d.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            unit: '',
+            quantity: 0,
+            cost: 0,
+            lineTotal: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const item of d.details) {
+          const quantity = Number(item.quantity) || 0;
+          const cost = Number(item.cost) || 0;
+          const row = sheet.addRow({
+            ...base,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            unit: item.unit || '',
+            quantity,
+            cost,
+            lineTotal: Number(item.value) || quantity * cost,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
   async findOne(id: number) {
     const internalUse = await this.prisma.internalUse.findUnique({
       where: { id },
@@ -166,8 +402,14 @@ export class InternalUseService {
     return internalUse;
   }
 
-  async create(dto: CreateInternalUseDto, userId: number) {
-    const creator = await this.prisma.user.findUnique({ where: { id: userId } });
+  async create(
+    dto: CreateInternalUseDto,
+    userId: number,
+    user: { permissions?: string[]; roles?: string[] },
+  ) {
+    const creator = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
     const branch = await this.prisma.branch.findUnique({
       where: { id: dto.branchId },
     });
@@ -186,6 +428,12 @@ export class InternalUseService {
     }
 
     const isDraft = dto.isDraft ?? true;
+
+    // Chỉ người duyệt (có internal-use:complete) mới được tạo và hoàn thành
+    // trong một bước (isDraft=false). Người tạo thường chỉ được lưu tạm.
+    if (!isDraft) {
+      this.ensureCanComplete(user);
+    }
 
     this.validateDetails(dto.internalUseDetails, isDraft);
 
@@ -212,6 +460,8 @@ export class InternalUseService {
     for (const detail of resolvedDetails) {
       totalValue += Number(detail.quantity) * Number(detail.cost);
     }
+
+    const touchedProductIds = new Set<number>();
 
     const internalUse = await this.prisma.$transaction(async (tx) => {
       const created = await tx.internalUse.create({
@@ -244,11 +494,20 @@ export class InternalUseService {
       });
 
       if (!isDraft) {
-        await this.decrementInventory(created.id, tx);
+        const touched = await this.decrementInventory(
+          created.id,
+          tx,
+          buildInventoryLogActor(userId, creator?.name),
+        );
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return created;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     await this.auditLogsService.create({
       actionType: 'POST',
@@ -271,7 +530,12 @@ export class InternalUseService {
     return internalUse;
   }
 
-  async update(id: number, dto: UpdateInternalUseDto, userId: number) {
+  async update(
+    id: number,
+    dto: UpdateInternalUseDto,
+    userId: number,
+    user: { permissions?: string[]; roles?: string[] },
+  ) {
     const internalUse = await this.findOne(id);
 
     if (internalUse.status === 3) {
@@ -340,6 +604,8 @@ export class InternalUseService {
 
     const willComplete = dto.status === 2 || dto.isDraft === false;
     if (willComplete) {
+      // Chỉ người duyệt (có internal-use:complete) mới được hoàn thành phiếu.
+      this.ensureCanComplete(user);
       const details = dto.internalUseDetails ?? internalUse.details;
       this.validateDetails(details, false);
       updateData.status = 2;
@@ -360,6 +626,8 @@ export class InternalUseService {
       }
       updateData.totalValue = totalValue;
     }
+
+    const touchedProductIds = new Set<number>();
 
     const updated = await this.prisma.$transaction(async (tx) => {
       if (resolvedDetails) {
@@ -387,11 +655,26 @@ export class InternalUseService {
       });
 
       if (internalUse.status === 1 && willComplete) {
-        await this.decrementInventory(id, tx);
+        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+        // (truy vết ai xuất nội bộ khi cập nhật phiếu).
+        const iuUpdateUser = await tx.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        });
+        const iuUpdateLogActor = buildInventoryLogActor(
+          userId,
+          iuUpdateUser?.name || iuUpdateUser?.email,
+        );
+        const touched = await this.decrementInventory(id, tx, iuUpdateLogActor);
+        for (const productId of touched) touchedProductIds.add(productId);
       }
 
       return result;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const actor = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -433,15 +716,32 @@ export class InternalUseService {
 
     this.validateDetails(internalUse.details, false);
 
+    const touchedProductIds = new Set<number>();
+
     const completed = await this.prisma.$transaction(async (tx) => {
       const result = await tx.internalUse.update({
         where: { id },
         data: { status: 2, transDate: internalUse.transDate ?? new Date() },
         include: { details: true },
       });
-      await this.decrementInventory(id, tx);
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+      // (truy vết ai hoàn thành xuất nội bộ).
+      const iuCompleteUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const iuCompleteLogActor = buildInventoryLogActor(
+        userId,
+        iuCompleteUser?.name || iuCompleteUser?.email,
+      );
+      const touched = await this.decrementInventory(id, tx, iuCompleteLogActor);
+      for (const productId of touched) touchedProductIds.add(productId);
       return result;
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
 
     const actor = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -486,6 +786,7 @@ export class InternalUseService {
         data: { status: 3, description },
       });
     } else {
+      const touchedProductIds = new Set<number>();
       await this.prisma.$transaction(async (tx) => {
         await tx.internalUse.update({
           where: { id },
@@ -502,6 +803,7 @@ export class InternalUseService {
             },
             data: { onHand: { increment: detail.quantity } },
           });
+          touchedProductIds.add(detail.productId);
         }
 
         // Xóa các dòng thẻ kho gốc của phiếu (transactionType INTERNAL_USE)
@@ -520,6 +822,9 @@ export class InternalUseService {
           })),
         );
       });
+      for (const productId of touchedProductIds) {
+        this.larkProductSync.enqueueSync(productId);
+      }
     }
 
     const actor = await this.prisma.user.findUnique({
@@ -570,10 +875,7 @@ export class InternalUseService {
 
   private async resolveDetailCosts<
     T extends { productId: number; quantity: number | string; cost?: number },
-  >(
-    details: T[],
-    branchId: number,
-  ): Promise<(T & { cost: number })[]> {
+  >(details: T[], branchId: number): Promise<(T & { cost: number })[]> {
     return Promise.all(
       details.map(async (detail) => {
         if (detail.cost !== undefined && detail.cost !== null) {
@@ -621,7 +923,12 @@ export class InternalUseService {
     return `${prefix}${sequence.toString().padStart(6, '0')}`;
   }
 
-  private async decrementInventory(internalUseId: number, tx: any) {
+  private async decrementInventory(
+    internalUseId: number,
+    tx: any,
+    actor?: InventoryLogActor,
+  ): Promise<Set<number>> {
+    const touched = new Set<number>();
     const internalUse = await tx.internalUse.findUnique({
       where: { id: internalUseId },
       include: { details: true },
@@ -640,7 +947,9 @@ export class InternalUseService {
         },
       });
 
-      const costPrice = inventory ? Number(inventory.cost) : Number(detail.cost);
+      const costPrice = inventory
+        ? Number(inventory.cost)
+        : Number(detail.cost);
 
       if (inventory) {
         const newOnHand = Number(inventory.onHand) - Number(detail.quantity);
@@ -660,28 +969,30 @@ export class InternalUseService {
           },
           data: {
             onHand: { decrement: detail.quantity },
-            totalWeight,
+            totalWeight: totalWeight,
+          },
+        });
+        touched.add(detail.productId);
+
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: internalUse.branchId,
+            branchName: internalUse.branchName,
+            transactionType: 'INTERNAL_USE',
+            refCode: internalUse.code,
+            refType: 'internal_use',
+            refId: internalUse.id,
+            quantity: -Number(detail.quantity),
+            costPrice,
+            transactionPrice: null,
+            partnerName: null,
+            ...buildInventoryLogBase(actor),
           },
         });
       }
-
-      await tx.inventoryLog.create({
-        data: {
-          productId: detail.productId,
-          productCode: detail.productCode,
-          productName: detail.productName,
-          branchId: internalUse.branchId,
-          branchName: internalUse.branchName,
-          transactionType: 'INTERNAL_USE',
-          refCode: internalUse.code,
-          refType: 'internal_use',
-          refId: internalUse.id,
-          quantity: -Number(detail.quantity),
-          costPrice,
-          transactionPrice: null,
-          partnerName: null,
-        },
-      });
     }
 
     // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log INTERNAL_USE
@@ -693,6 +1004,7 @@ export class InternalUseService {
         branchId: internalUse.branchId,
       })),
     );
+    return touched;
   }
 
   private buildSnapshot(d: any) {

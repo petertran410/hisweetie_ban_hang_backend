@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductionDto,
@@ -15,6 +17,12 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+  InventoryLogActor,
+} from '../common/inventory-log.util';
 
 @Injectable()
 export class ProductionsService {
@@ -23,14 +31,14 @@ export class ProductionsService {
     private auditLogsService: AuditLogsService,
   ) {}
 
-  async findAll(query: ProductionQueryDto) {
+  // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
+  // khớp đúng danh sách đang hiển thị trên UI.
+  private buildProductionWhere(query: ProductionQueryDto): any {
     const {
       branchIds,
       status,
       fromManufacturedDate,
       toManufacturedDate,
-      pageSize = 15,
-      currentItem = 0,
       search,
     } = query;
 
@@ -74,6 +82,14 @@ export class ProductionsService {
       where.AND = and;
     }
 
+    return where;
+  }
+
+  async findAll(query: ProductionQueryDto) {
+    const { pageSize = 15, currentItem = 0 } = query;
+
+    const where = this.buildProductionWhere(query);
+
     const [total, data] = await Promise.all([
       this.prisma.production.count({ where }),
       this.prisma.production.findMany({
@@ -89,6 +105,202 @@ export class ProductionsService {
       pageSize,
       data,
     };
+  }
+
+  // Nhãn trạng thái dùng chung cho cả 2 file xuất.
+  private static readonly EXPORT_STATUS_LABEL: Record<number, string> = {
+    1: 'Phiếu tạm',
+    2: 'Hoàn thành',
+    3: 'Đã hủy',
+  };
+
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu sản xuất = 1 dòng Excel. Bộ lọc dùng chung
+   * buildProductionWhere với findAll để khớp danh sách đang hiển thị.
+   */
+  async exportProductions(
+    query: ProductionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildProductionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Sản xuất');
+
+    sheet.columns = [
+      { header: 'Mã sản xuất', key: 'code', width: 18 },
+      { header: 'Thời gian SX', key: 'manufacturedDate', width: 20 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên sản phẩm', key: 'productName', width: 36 },
+      { header: 'Kho đầu vào', key: 'sourceBranch', width: 22 },
+      { header: 'Kho đầu ra', key: 'destinationBranch', width: 22 },
+      { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Tổng chi phí', key: 'totalCost', width: 16 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Ngày tạo', key: 'createdAt', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.production.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const row = sheet.addRow({
+          code: p.code,
+          manufacturedDate: fmtDateTime(p.manufacturedDate),
+          productCode: p.productCode || '',
+          productName: p.productName || '',
+          sourceBranch: p.sourceBranchName || '',
+          destinationBranch: p.destinationBranchName || '',
+          quantity: Number(p.quantity) || 0,
+          totalCost: Number(p.totalCost) || 0,
+          createdBy: p.createdByName || '',
+          note: p.note || '',
+          createdAt: fmtDateTime(p.createdAt),
+          status: ProductionsService.EXPORT_STATUS_LABEL[p.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi nguyên liệu (component) trong phiếu = 1 dòng Excel,
+   * kèm thông tin phiếu. Bộ lọc dùng chung buildProductionWhere với export tổng
+   * quan.
+   */
+  async exportProductionsDetail(
+    query: ProductionQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = this.buildProductionWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết sản xuất');
+
+    sheet.columns = [
+      { header: 'Mã sản xuất', key: 'code', width: 18 },
+      { header: 'Thời gian SX', key: 'manufacturedDate', width: 20 },
+      { header: 'Kho đầu vào', key: 'sourceBranch', width: 22 },
+      { header: 'Kho đầu ra', key: 'destinationBranch', width: 22 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 14 },
+      { header: 'Mã thành phẩm', key: 'productCode', width: 16 },
+      { header: 'Tên thành phẩm', key: 'productName', width: 30 },
+      { header: 'SL thành phẩm', key: 'quantity', width: 12 },
+      { header: 'Mã nguyên liệu', key: 'componentCode', width: 16 },
+      { header: 'Tên nguyên liệu', key: 'componentName', width: 30 },
+      { header: 'SL nguyên liệu (g)', key: 'actualGrams', width: 16 },
+      { header: 'Định lượng (g)', key: 'formulaGrams', width: 14 },
+      { header: 'SL trừ kho', key: 'unitsDeducted', width: 14 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.production.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: { components: true },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const p of batch) {
+        const base = {
+          code: p.code,
+          manufacturedDate: fmtDateTime(p.manufacturedDate),
+          sourceBranch: p.sourceBranchName || '',
+          destinationBranch: p.destinationBranchName || '',
+          createdBy: p.createdByName || '',
+          status: ProductionsService.EXPORT_STATUS_LABEL[p.status] || '',
+          productCode: p.productCode || '',
+          productName: p.productName || '',
+          quantity: Number(p.quantity) || 0,
+        };
+
+        if (!p.components.length) {
+          const row = sheet.addRow({
+            ...base,
+            componentCode: '',
+            componentName: '',
+            formulaGrams: 0,
+            actualGrams: 0,
+            unitsDeducted: 0,
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const c of p.components) {
+          const row = sheet.addRow({
+            ...base,
+            componentCode: c.componentCode || '',
+            componentName: c.componentName || '',
+            formulaGrams: Number(c.formulaGrams) || 0,
+            actualGrams: Number(c.actualGrams) || 0,
+            unitsDeducted: Number(c.unitsDeducted) || 0,
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
   }
 
   async findOne(id: number) {
@@ -188,12 +400,21 @@ export class ProductionsService {
           dto.sourceBranchId,
           dto.destinationBranchId,
           dto.quantity,
-          dto.components, // ← truyền actualComponents
+          dto.components, // ← actualComponents
+          {
+            id: production.id,
+            code: production.code,
+            manufacturedDate: production.manufacturedDate,
+          },
+          buildInventoryLogActor(userId, user?.name),
         );
       }
 
+      // Khai báo ngoài if để snapshot audit log có thể truy cập danh sách
+      // nguyên liệu đã xuất (comboComponents) cho truy vết.
+      let componentDetails: any[] = [];
       if (dto.components && dto.components.length > 0) {
-        const componentDetails = await Promise.all(
+        componentDetails = await Promise.all(
           dto.components.map(async (c) => {
             const comp = product.comboComponents.find(
               (pc) => pc.componentProductId === c.componentProductId,
@@ -211,8 +432,11 @@ export class ProductionsService {
               componentName: componentProduct?.name || '',
               formulaGrams: c.formulaGrams,
               actualGrams: c.actualGrams,
+              // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
               unitsDeducted:
-                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                weightInGrams > 0
+                  ? c.actualGrams / weightInGrams
+                  : c.actualGrams,
             };
           }),
         );
@@ -228,7 +452,7 @@ export class ProductionsService {
         entityCode: production.code,
         category: getCategoryFromActionCode('PRODUCTION_CREATE'),
         severity: getSeverityFromActionCode('PRODUCTION_CREATE'),
-        snapshot: this.buildProductionSnapshot(production),
+        snapshot: this.buildProductionSnapshot(production, componentDetails),
         message: renderAuditMessage('PRODUCTION_CREATE', {
           productionCode: production.code,
         }),
@@ -291,8 +515,11 @@ export class ProductionsService {
               componentName: componentProduct?.name || '',
               formulaGrams: c.formulaGrams,
               actualGrams: c.actualGrams,
+              // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
               unitsDeducted:
-                weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                weightInGrams > 0
+                  ? c.actualGrams / weightInGrams
+                  : c.actualGrams,
             };
           });
 
@@ -316,6 +543,18 @@ export class ProductionsService {
         });
 
         if (product && updateData.autoDeductComponents !== false) {
+          // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+          // (truy vết ai xuất nguyên liệu/nhập thành phẩm khi cập nhật sản xuất).
+          const prodUpdateUser = userId
+            ? await tx.user.findUnique({
+                where: { id: userId },
+                select: { name: true, email: true },
+              })
+            : null;
+          const prodUpdateLogActor = buildInventoryLogActor(
+            userId,
+            prodUpdateUser?.name || prodUpdateUser?.email,
+          );
           await this.processInventoryChanges(
             tx,
             product,
@@ -323,6 +562,14 @@ export class ProductionsService {
             production.destinationBranchId,
             Number(dto.quantity ?? production.quantity),
             dto.components,
+            {
+              id: production.id,
+              code: production.code,
+              manufacturedDate: dto.manufacturedDate
+                ? new Date(dto.manufacturedDate)
+                : production.manufacturedDate,
+            },
+            prodUpdateLogActor,
           );
         }
 
@@ -349,8 +596,11 @@ export class ProductionsService {
                 componentName: componentProduct?.name || '',
                 formulaGrams: c.formulaGrams,
                 actualGrams: c.actualGrams,
+                // weight=0 (piece/carton): actualGrams chính là số đơn vị/thùng
                 unitsDeducted:
-                  weightInGrams > 0 ? c.actualGrams / weightInGrams : 0,
+                  weightInGrams > 0
+                    ? c.actualGrams / weightInGrams
+                    : c.actualGrams,
               };
             }),
           );
@@ -371,12 +621,20 @@ export class ProductionsService {
         });
 
         if (product && production.autoDeductComponents) {
+          // LOG-TRUTH: đổi status → 3 (CANCELLED) TRƯỚC để active-finder loại
+          // toàn bộ log của phiếu (PRODUCTION_OUT/IN, refType='production',
+          // status!=3) khỏi Σ, rồi recalc đưa onHand component@source +
+          // thành phẩm@dest về Σ log active (tự khôi phục đúng số đã trừ/cộng).
+          await tx.production.update({
+            where: { id },
+            data: { status: 3 },
+          });
+
           await this.reverseInventoryChanges(
             tx,
             product,
             production.sourceBranchId,
             production.destinationBranchId,
-            Number(production.quantity),
           );
         }
       }
@@ -389,6 +647,7 @@ export class ProductionsService {
 
         const updatedProduction = await tx.production.findUnique({
           where: { id },
+          include: { components: true },
         });
 
         await this.auditLogsService.create({
@@ -422,13 +681,42 @@ export class ProductionsService {
   async remove(id: number, userId?: number) {
     const production = await this.prisma.production.findUnique({
       where: { id },
+      include: {
+        product: {
+          include: {
+            comboComponents: { include: { componentProduct: true } },
+          },
+        },
+      },
     });
 
     if (!production) {
       throw new NotFoundException(`Production with id ${id} not found`);
     }
 
-    await this.prisma.production.delete({ where: { id } });
+    // LOG-TRUTH: xóa cứng phiếu trong transaction; log PRODUCTION_OUT/IN trỏ
+    // refId này sẽ thành inactive (active-finder không tìm thấy phiếu) → recalc
+    // đưa onHand component@source + thành phẩm@dest về Σ log active. Chỉ recalc
+    // khi phiếu ĐÃ hoàn thành (status=2) vì chỉ khi đó mới có log để loại.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.production.delete({ where: { id } });
+
+      if (production.status === 2 && production.product) {
+        const affectedPairs: { productId: number; branchId: number }[] = [
+          {
+            productId: production.productId,
+            branchId: production.destinationBranchId,
+          },
+        ];
+        for (const comp of production.product.comboComponents) {
+          affectedPairs.push({
+            productId: comp.componentProductId,
+            branchId: production.sourceBranchId,
+          });
+        }
+        await recalcOnHandForPairs(tx, affectedPairs);
+      }
+    });
 
     if (userId) {
       const user = await this.prisma.user.findUnique({
@@ -476,10 +764,13 @@ export class ProductionsService {
       });
 
       if (inventory) {
-        // ─── PIECE MODE ─────────────────────────────────────────────
-        if (comp.inputMode === 'piece') {
-          const totalPieces = Number(comp.quantity) * Number(quantity);
-          totalCost += Number(inventory.cost) * totalPieces;
+        // ─── PIECE / CARTON MODE ────────────────────────────────────
+        // Cả hai mode tính cost theo đơn vị: cost/đơn-vị × tổng-đơn-vị.
+        // CARTON: comp.quantity = 1/N (N = sức chứa) → mỗi thành phẩm gánh
+        // cost-thùng/N; nhân quantity sản xuất ra tổng số thùng tiêu hao.
+        if (comp.inputMode === 'piece' || comp.inputMode === 'carton') {
+          const totalUnits = Number(comp.quantity) * Number(quantity);
+          totalCost += Number(inventory.cost) * totalUnits;
           continue;
         }
         // ─────────────────────────────────────────────────────────────
@@ -511,7 +802,19 @@ export class ProductionsService {
     destinationBranchId: number,
     quantity: number,
     actualComponents?: { componentProductId: number; actualGrams: number }[],
+    production?: { id: number; code: string; manufacturedDate?: Date | null },
+    actor?: InventoryLogActor,
   ) {
+    // refCode/refId neo log về chính phiếu sản xuất → active-finder
+    // (status != 3) loại log khi phiếu bị hủy/xóa. transactionDate neo theo
+    // manufacturedDate để phiếu lùi ngày đứng đúng vị trí trên thẻ kho.
+    const refCode = production?.code || '';
+    const refId = production?.id || 0;
+    const transactionDate = production?.manufacturedDate || new Date();
+
+    // Gom các cặp (productId, branchId) bị tác động để recalc cuối hàm.
+    const affectedPairs: { productId: number; branchId: number }[] = [];
+
     for (const comp of product.comboComponents) {
       const componentProduct = comp.componentProduct;
       const componentWeight = componentProduct.weight
@@ -525,78 +828,24 @@ export class ProductionsService {
         (a) => a.componentProductId === comp.componentProductId,
       );
 
-      // ─── PIECE MODE: trừ kho theo số chiếc trực tiếp ───────────────
-      if (comp.inputMode === 'piece') {
-        const totalPiecesToDeduct = actual
-          ? actual.actualGrams // field này chứa số chiếc thực tế khi piece mode
-          : Number(comp.quantity) * Number(quantity);
+      // PIECE-LIKE: trừ kho theo số đơn vị trực tiếp. Áp dụng cho
+      // inputMode='piece', inputMode='carton' (thùng — quantity=1/N), LẪN
+      // trường hợp component không có weight (weightInGrams===0) — tránh
+      // chia 0 / throw oan ở nhánh gram.
+      // CARTON: comp.quantity = 1/N → comp.quantity × quantity = số thùng
+      // tiêu hao (phân số, KHÔNG làm tròn để các đợt cộng dồn khít nhau).
+      const isPieceLike =
+        comp.inputMode === 'piece' ||
+        comp.inputMode === 'carton' ||
+        weightInGrams === 0;
 
-        const sourceInventory = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-        });
-
-        if (!sourceInventory) {
-          throw new NotFoundException(
-            `Inventory for component ${componentProduct.name} not found at source branch`,
-          );
-        }
-
-        if (Number(sourceInventory.onHand) < totalPiecesToDeduct) {
-          throw new BadRequestException(
-            `Insufficient inventory for component ${componentProduct.name}. Required: ${totalPiecesToDeduct}, Available: ${sourceInventory.onHand}`,
-          );
-        }
-
-        const newOnHand = Number(sourceInventory.onHand) - totalPiecesToDeduct;
-        const newTotalWeight = newOnHand * weightInGrams;
-
-        await tx.inventory.update({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-          data: { onHand: newOnHand, totalWeight: newTotalWeight },
-        });
-
-        await tx.inventoryLog.create({
-          data: {
-            productId: comp.componentProductId,
-            productCode: componentProduct.code,
-            productName: componentProduct.name,
-            branchId: sourceBranchId,
-            branchName: '',
-            transactionType: 'PRODUCTION_OUT',
-            refCode: '',
-            refType: 'production',
-            refId: 0,
-            quantity: -totalPiecesToDeduct,
-            costPrice: Number(sourceInventory.cost),
-            transactionPrice: null,
-          },
-        });
-        continue; // ← skip gram logic bên dưới
-      }
-      // ───────────────────────────────────────────────────────────────
-
-      // GRAM MODE (logic gốc)
-      if (weightInGrams === 0) {
-        throw new BadRequestException(
-          `Component ${componentProduct.name} must have weight defined`,
-        );
-      }
-
-      const totalGramsToDeduct = actual
-        ? actual.actualGrams
-        : Number(comp.quantity) * Number(quantity);
-
-      const unitsToDeduct = totalGramsToDeduct / weightInGrams;
+      const unitsToDeduct = isPieceLike
+        ? actual
+          ? actual.actualGrams // field này chứa số đơn vị thực tế khi piece/carton
+          : Number(comp.quantity) * Number(quantity)
+        : (actual
+            ? actual.actualGrams
+            : Number(comp.quantity) * Number(quantity)) / weightInGrams;
 
       const sourceInventory = await tx.inventory.findUnique({
         where: {
@@ -619,188 +868,32 @@ export class ProductionsService {
         );
       }
 
-      const newOnHand = Number(sourceInventory.onHand) - unitsToDeduct;
-      const newTotalWeight = newOnHand * weightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-        data: { onHand: newOnHand, totalWeight: newTotalWeight },
-      });
-
       await tx.inventoryLog.create({
         data: {
           productId: comp.componentProductId,
           productCode: componentProduct.code,
           productName: componentProduct.name,
           branchId: sourceBranchId,
-          branchName: '',
+          branchName: sourceInventory.branchName || '',
           transactionType: 'PRODUCTION_OUT',
-          refCode: '',
+          refCode,
           refType: 'production',
-          refId: 0,
+          refId,
           quantity: -unitsToDeduct,
-          costPrice: sourceInventory ? Number(sourceInventory.cost) : 0,
+          costPrice: Number(sourceInventory.cost),
           transactionPrice: null,
+          transactionDate,
+          ...buildInventoryLogBase(actor),
         },
+      });
+
+      affectedPairs.push({
+        productId: comp.componentProductId,
+        branchId: sourceBranchId,
       });
     }
 
-    const productWeight = product.weight ? Number(product.weight) : 0;
-    const productWeightUnit = product.weightUnit || 'g';
-    const productWeightInGrams =
-      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
-
-    const destInventory = await tx.inventory.findUnique({
-      where: {
-        productId_branchId: {
-          productId: product.id,
-          branchId: destinationBranchId,
-        },
-      },
-    });
-
-    if (destInventory) {
-      const newOnHand = Number(destInventory.onHand) + Number(quantity);
-      const newTotalWeight = newOnHand * productWeightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: product.id,
-            branchId: destinationBranchId,
-          },
-        },
-        data: {
-          onHand: newOnHand,
-          totalWeight: newTotalWeight,
-        },
-      });
-    } else {
-      const destBranch = await tx.branch.findUnique({
-        where: { id: destinationBranchId },
-      });
-
-      const totalWeight = Number(quantity) * productWeightInGrams;
-
-      await tx.inventory.create({
-        data: {
-          productId: product.id,
-          productCode: product.code,
-          productName: product.name,
-          branchId: destinationBranchId,
-          branchName: destBranch?.name || '',
-          cost: 0,
-          onHand: Number(quantity),
-          totalWeight: totalWeight,
-          reserved: 0,
-          onOrder: 0,
-          minQuality: 0,
-          maxQuality: 0,
-        },
-      });
-    }
-  }
-
-  private async reverseInventoryChanges(
-    tx: any,
-    product: any,
-    sourceBranchId: number,
-    destinationBranchId: number,
-    quantity: number,
-  ) {
-    for (const comp of product.comboComponents) {
-      const componentProduct = comp.componentProduct;
-      const componentWeight = componentProduct.weight
-        ? Number(componentProduct.weight)
-        : 0;
-      const componentWeightUnit = componentProduct.weightUnit || 'g';
-      const weightInGrams =
-        componentWeightUnit === 'kg' ? componentWeight * 1000 : componentWeight;
-
-      // ─── PIECE MODE ─────────────────────────────────────────────────
-      if (comp.inputMode === 'piece') {
-        const totalPiecesToRestore = Number(comp.quantity) * Number(quantity);
-
-        const sourceInventory = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-        });
-
-        if (!sourceInventory) {
-          throw new NotFoundException(
-            `Inventory for component ${componentProduct.name} not found at source branch`,
-          );
-        }
-
-        const newOnHand = Number(sourceInventory.onHand) + totalPiecesToRestore;
-        const newTotalWeight = newOnHand * weightInGrams;
-
-        await tx.inventory.update({
-          where: {
-            productId_branchId: {
-              productId: comp.componentProductId,
-              branchId: sourceBranchId,
-            },
-          },
-          data: { onHand: newOnHand, totalWeight: newTotalWeight },
-        });
-        continue; // ← skip gram logic
-      }
-      // ─────────────────────────────────────────────────────────────────
-
-      // GRAM MODE (logic gốc)
-      if (weightInGrams === 0) {
-        throw new BadRequestException(
-          `Component ${componentProduct.name} must have weight defined`,
-        );
-      }
-
-      const requiredGrams = Number(comp.quantity) * Number(quantity);
-      const unitsToRestore = requiredGrams / weightInGrams;
-
-      const sourceInventory = await tx.inventory.findUnique({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-      });
-
-      if (!sourceInventory) {
-        throw new NotFoundException(
-          `Inventory for component ${componentProduct.name} not found at source branch`,
-        );
-      }
-
-      const newOnHand = Number(sourceInventory.onHand) + unitsToRestore;
-      const newTotalWeight = newOnHand * weightInGrams;
-
-      await tx.inventory.update({
-        where: {
-          productId_branchId: {
-            productId: comp.componentProductId,
-            branchId: sourceBranchId,
-          },
-        },
-        data: { onHand: newOnHand, totalWeight: newTotalWeight },
-      });
-    }
-
-    const productWeight = product.weight ? Number(product.weight) : 0;
-    const productWeightUnit = product.weightUnit || 'g';
-    const productWeightInGrams =
-      productWeightUnit === 'kg' ? productWeight * 1000 : productWeight;
-
+    // ─── Thành phẩm nhập kho đích: ghi log PRODUCTION_IN ──────────────────
     const destInventory = await tx.inventory.findUnique({
       where: {
         productId_branchId: {
@@ -811,29 +904,81 @@ export class ProductionsService {
     });
 
     if (!destInventory) {
-      throw new NotFoundException(
-        `Inventory for product ${product.name} not found at destination branch`,
-      );
+      // Khởi tạo bản ghi tồn (onHand=0) — giá trị thật sẽ do recalc set lại
+      // theo Σ log active. Tạo trước để recalc có chỗ ghi.
+      const destBranch = await tx.branch.findUnique({
+        where: { id: destinationBranchId },
+      });
+      await tx.inventory.create({
+        data: {
+          productId: product.id,
+          productCode: product.code,
+          productName: product.name,
+          branchId: destinationBranchId,
+          branchName: destBranch?.name || '',
+          cost: 0,
+          onHand: 0,
+          totalWeight: 0,
+          reserved: 0,
+          onOrder: 0,
+          minQuality: 0,
+          maxQuality: 0,
+        },
+      });
     }
 
-    const newOnHand = Number(destInventory.onHand) - Number(quantity);
-    const newTotalWeight = newOnHand * productWeightInGrams;
-
-    await tx.inventory.update({
-      where: {
-        productId_branchId: {
-          productId: product.id,
-          branchId: destinationBranchId,
-        },
-      },
+    await tx.inventoryLog.create({
       data: {
-        onHand: newOnHand,
-        totalWeight: newTotalWeight,
+        productId: product.id,
+        productCode: product.code,
+        productName: product.name,
+        branchId: destinationBranchId,
+        branchName: destInventory?.branchName || '',
+        transactionType: 'PRODUCTION_IN',
+        refCode,
+        refType: 'production',
+        refId,
+        quantity: Number(quantity),
+        costPrice: destInventory ? Number(destInventory.cost) : 0,
+        transactionPrice: null,
+        transactionDate,
+        ...buildInventoryLogBase(actor),
       },
     });
+
+    affectedPairs.push({
+      productId: product.id,
+      branchId: destinationBranchId,
+    });
+
+    // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi đã ghi mọi log
+    // PRODUCTION_OUT/IN, recalc lại onHand từ thẻ kho.
+    await recalcOnHandForPairs(tx, affectedPairs);
   }
 
-  private buildProductionSnapshot(production: any) {
+  // LOG-TRUTH: phiếu đã được set status=3 (CANCELLED) TRƯỚC khi gọi hàm này,
+  // nên active-finder (status!=3) tự loại mọi log PRODUCTION_OUT/IN của phiếu
+  // khỏi Σ. Chỉ cần recalc onHand cho component@source + thành phẩm@dest →
+  // tự khôi phục đúng số đã trừ/cộng (KHÔNG cộng/trừ tay, KHÔNG ghi log đối ứng).
+  private async reverseInventoryChanges(
+    tx: any,
+    product: any,
+    sourceBranchId: number,
+    destinationBranchId: number,
+  ) {
+    const affectedPairs: { productId: number; branchId: number }[] = [
+      { productId: product.id, branchId: destinationBranchId },
+    ];
+    for (const comp of product.comboComponents) {
+      affectedPairs.push({
+        productId: comp.componentProductId,
+        branchId: sourceBranchId,
+      });
+    }
+    await recalcOnHandForPairs(tx, affectedPairs);
+  }
+
+  private buildProductionSnapshot(production: any, components?: any[]) {
     return {
       code: production.code,
       status: production.status,
@@ -848,6 +993,16 @@ export class ProductionsService {
       autoDeductComponents: production.autoDeductComponents,
       manufacturedDate: production.manufacturedDate,
       createdByName: production.createdByName,
+      // Bổ sung danh sách nguyên liệu đã xuất (comboComponents) để truy vết
+      // trực tiếp trên audit log (trước đây chỉ có thành phẩm → không biết xuất
+      // bao nhiêu nguyên liệu A, B, C). Lấy từ production.components (include)
+      // hoặc từ componentDetails truyền vào khi tạo.
+      components: (components || production.components || []).map((c: any) => ({
+        componentCode: c.componentCode,
+        componentName: c.componentName,
+        actualGrams: c.actualGrams,
+        unitsDeducted: c.unitsDeducted,
+      })),
     };
   }
 }

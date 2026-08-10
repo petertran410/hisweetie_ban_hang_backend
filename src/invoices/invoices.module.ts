@@ -9,6 +9,7 @@ import { ConsignmentsModule } from '../consignments/consignments.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { PackingSlipsModule } from '../packing-slips/packing-slips.module';
 import { PromotionsModule } from '../promotions/promotions.module';
+import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PromotionsModule } from '../promotions/promotions.module';
     AuditLogsModule,
     PackingSlipsModule,
     PromotionsModule,
+    LarkSyncModule,
   ],
   controllers: [InvoicesController, InvoicePaymentsController],
   providers: [InvoicesService, InvoicePaymentsService],

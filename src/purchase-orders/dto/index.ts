@@ -7,6 +7,8 @@ import {
   ValidateNested,
   IsBoolean,
   IsNumber,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -39,6 +41,30 @@ export class PurchaseOrderItemDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  // Số thứ tự dòng (1, 2, 3...) trong phiếu. BE tự generate nếu FE không
+  // gửi. Đảm bảo cùng 1 sản phẩm có thể xuất hiện nhiều dòng (vd 1 dòng
+  // hàng thường + 1 dòng loại B) — mirror pattern OrderItem.lineNumber.
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  lineNumber?: number;
+
+  // Phân loại hàng: "normal" (hàng thường, mặc định) hoặc "damaged" (loại B
+  // = bục rách). Khi hoàn thành phiếu, phần "damaged" cộng vào
+  // Inventory.damagedQuantity; phần "normal" cộng vào Inventory.onHand.
+  @IsString()
+  @IsIn(['normal', 'damaged'])
+  @IsOptional()
+  conditionType?: 'normal' | 'damaged';
+
+  @IsNumber()
+  @IsOptional()
+  factoryPrice?: number;
+
+  @IsNumber()
+  @IsOptional()
+  factorySubTotal?: number;
 }
 
 export class PurchaseOrderSurchargeDto {
@@ -113,6 +139,30 @@ export class CreatePurchaseOrderDto {
   @IsOptional()
   purchaseById?: number;
 
+  @IsString()
+  @IsOptional()
+  currency?: string;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
+
+  @IsString()
+  @IsOptional()
+  paymentMethod?: string;
+
+  @IsInt()
+  @IsOptional()
+  paymentAccountId?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paymentExchangeRate?: number;
+
+  @IsNumber()
+  @IsOptional()
+  paymentForeignAmount?: number;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => PurchaseOrderItemDto)
@@ -169,6 +219,14 @@ export class UpdatePurchaseOrderDto {
   @IsInt()
   @IsOptional()
   purchaseById?: number;
+
+  @IsString()
+  @IsOptional()
+  currency?: string;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
 
   @IsArray()
   @ValidateNested({ each: true })
@@ -280,6 +338,28 @@ export class CreatePurchaseOrderFromOrderSupplierItemDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  // Số thứ tự dòng trong phiếu (1, 2, 3...). BE tự generate nếu FE không
+  // gửi — mirror với PurchaseOrderItemDto để đồng nhất giữa 2 entry point.
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  lineNumber?: number;
+
+  // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B). Khi tạo
+  // PN từ PDN, mặc định tất cả item là "normal" vì PDN không có field này.
+  @IsString()
+  @IsIn(['normal', 'damaged'])
+  @IsOptional()
+  conditionType?: 'normal' | 'damaged';
+
+  @IsNumber()
+  @IsOptional()
+  factoryPrice?: number;
+
+  @IsNumber()
+  @IsOptional()
+  factorySubTotal?: number;
 }
 
 export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
@@ -292,6 +372,14 @@ export class CreatePurchaseOrderFromOrderSupplierPaymentDto {
   @IsInt()
   @IsOptional()
   accountId?: number;
+
+  @IsNumber()
+  @IsOptional()
+  exchangeRate?: number;
+
+  @IsNumber()
+  @IsOptional()
+  foreignAmount?: number;
 }
 
 export class CreatePurchaseOrderFromOrderSupplierDto {

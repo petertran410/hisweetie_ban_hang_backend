@@ -56,7 +56,9 @@ export const CONSIGNMENT_STATUS_NUMBER_TO_STRING = {
 } as const;
 
 export function convertStatusStringToNumber(statusString: string): number {
-  return CONSIGNMENT_STATUS_STRING_MAP[statusString] || CONSIGNMENT_STATUS.PENDING;
+  return (
+    CONSIGNMENT_STATUS_STRING_MAP[statusString] || CONSIGNMENT_STATUS.PENDING
+  );
 }
 
 export function convertStatusNumberToString(statusNumber: number): string {

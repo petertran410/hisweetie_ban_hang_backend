@@ -3,6 +3,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
@@ -22,13 +24,23 @@ import {
 import { INVOICE_STATUS, INVOICE_STATUS_LABELS } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
+import {
+  writeConditionLogs,
+  recalcConditionBucketsForPairs,
+} from 'src/common/stock-condition-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import {
+  buildInventoryLogActor,
+  buildInventoryLogBase,
+} from '../common/inventory-log.util';
+import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
 @Injectable()
 export class ReturnOrdersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private larkProductSync: LarkProductSyncService,
   ) {}
 
   private async generateCode(tx: any): Promise<string> {
@@ -40,11 +52,15 @@ export class ReturnOrdersService {
     return `TH${nextId.toString().padStart(6, '0')}`;
   }
 
-  async findAll(query: ReturnOrderQueryDto) {
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
-
+  /**
+   * Dựng điều kiện `where` cho phiếu trả hàng. Async vì cần tra cứu khách hàng
+   * theo từ khóa (searchCustomerIds). Tách riêng để dùng chung giữa findAll
+   * (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp hoàn
+   * toàn với bộ lọc đang hiển thị.
+   */
+  private async buildReturnOrderWhere(
+    query: ReturnOrderQueryDto,
+  ): Promise<any> {
     const where: any = {};
 
     if (query.search) {
@@ -93,6 +109,16 @@ export class ReturnOrdersService {
       if (query.toDate) where.createdAt.lte = new Date(query.toDate);
     }
 
+    return where;
+  }
+
+  async findAll(query: ReturnOrderQueryDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = await this.buildReturnOrderWhere(query);
+
     const [data, total] = await Promise.all([
       this.prisma.returnOrder.findMany({
         where,
@@ -134,6 +160,232 @@ export class ReturnOrdersService {
     return { data, total, page, limit };
   }
 
+  /**
+   * Xuất file TỔNG QUAN: mỗi phiếu trả hàng = 1 dòng Excel. Bộ lọc dùng chung
+   * buildReturnOrderWhere với danh sách.
+   */
+  async exportReturnOrders(
+    query: ReturnOrderQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildReturnOrderWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Trả hàng');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng', key: 'code', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Người bán (HĐ)', key: 'invoiceSeller', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Mã KH', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
+      { header: 'Số mặt hàng', key: 'totalGoods', width: 12 },
+      { header: 'Tổng SL trả', key: 'totalQuantity', width: 14 },
+      { header: 'Tiền cần trả KH', key: 'refundAmount', width: 16 },
+      { header: 'Đã trả cho KH', key: 'refundedAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.returnOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          invoice: {
+            select: {
+              code: true,
+              soldBy: { select: { name: true } },
+            },
+          },
+          customer: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: {
+            select: { requestQuantity: true },
+          },
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const totalQuantity = r.details.reduce(
+          (s, d) => s + Number(d.requestQuantity),
+          0,
+        );
+        const row = sheet.addRow({
+          code: r.code,
+          invoiceCode: r.invoice?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          invoiceSeller: r.invoice?.soldBy?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          customerCode: r.customer?.code || '',
+          customerName: r.customer?.name || '',
+          branch: r.branch?.name || '',
+          totalGoods: r.details.length,
+          totalQuantity,
+          refundAmount: Number(r.refundAmount || r.totalReturnAmount) || 0,
+          refundedAmount: Number(r.refundedAmount) || 0,
+          note: r.note || '',
+          status: RETURN_ORDER_STATUS_LABELS[r.status] || '',
+        });
+        row.commit();
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
+  /**
+   * Xuất file CHI TIẾT: mỗi dòng sản phẩm trong phiếu = 1 dòng Excel, kèm thông
+   * tin phiếu. Bộ lọc dùng chung buildReturnOrderWhere với export tổng quan.
+   */
+  async exportReturnOrdersDetail(
+    query: ReturnOrderQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const where = await this.buildReturnOrderWhere(query);
+
+    const fmtDateTime = (d?: Date | null) =>
+      d ? new Date(d).toLocaleString('vi-VN') : '';
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Chi tiết trả hàng');
+
+    sheet.columns = [
+      { header: 'Mã trả hàng', key: 'code', width: 18 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian tạo', key: 'createdAt', width: 20 },
+      { header: 'Mã KH', key: 'customerCode', width: 14 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      { header: 'Chi nhánh nhận', key: 'branch', width: 20 },
+      { header: 'Người tạo', key: 'createdBy', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 18 },
+      { header: 'Mã hàng', key: 'productCode', width: 16 },
+      { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'SL trên HĐ', key: 'invoiceQuantity', width: 12 },
+      { header: 'SL yêu cầu trả', key: 'requestQuantity', width: 14 },
+      { header: 'SL xác nhận', key: 'confirmedQuantity', width: 12 },
+      { header: 'Đơn giá trả', key: 'returnPrice', width: 14 },
+      { header: 'Thành tiền', key: 'totalAmount', width: 16 },
+      { header: 'Ghi chú', key: 'note', width: 30 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 300;
+    let cursor = 0;
+
+    while (true) {
+      const batch = await this.prisma.returnOrder.findMany({
+        where,
+        skip: cursor,
+        take: BATCH_SIZE,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          invoice: { select: { code: true } },
+          customer: { select: { code: true, name: true } },
+          branch: { select: { name: true } },
+          creator: { select: { name: true } },
+          details: true,
+        },
+      });
+
+      if (batch.length === 0) break;
+
+      for (const r of batch) {
+        const base = {
+          code: r.code,
+          invoiceCode: r.invoice?.code || '',
+          createdAt: fmtDateTime(r.createdAt),
+          customerCode: r.customer?.code || '',
+          customerName: r.customer?.name || '',
+          branch: r.branch?.name || '',
+          createdBy: r.creator?.name || r.createdByName || '',
+          status: RETURN_ORDER_STATUS_LABELS[r.status] || '',
+        };
+
+        if (!r.details.length) {
+          const row = sheet.addRow({
+            ...base,
+            productCode: '',
+            productName: '',
+            invoiceQuantity: 0,
+            requestQuantity: 0,
+            confirmedQuantity: 0,
+            returnPrice: 0,
+            totalAmount: 0,
+            note: '',
+          });
+          row.commit();
+          continue;
+        }
+
+        for (const d of r.details) {
+          const row = sheet.addRow({
+            ...base,
+            // Mỗi dòng chi tiết có mã HĐ riêng (phiếu trả nhiều HĐ), ưu tiên
+            // mã HĐ của dòng nếu có.
+            invoiceCode: d.invoiceCode || base.invoiceCode,
+            productCode: d.productCode || '',
+            productName: d.productName || '',
+            invoiceQuantity: Number(d.invoiceQuantity) || 0,
+            requestQuantity: Number(d.requestQuantity) || 0,
+            confirmedQuantity: Number(d.confirmedQuantity) || 0,
+            returnPrice: Number(d.returnPrice) || 0,
+            totalAmount: Number(d.totalAmount) || 0,
+            note: d.note || '',
+          });
+          row.commit();
+        }
+      }
+
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+
+    await workbook.commit();
+  }
+
   async findOne(id: number) {
     const returnOrder = await this.prisma.returnOrder.findUnique({
       where: { id },
@@ -172,7 +424,8 @@ export class ReturnOrdersService {
   }
 
   async create(dto: CreateReturnOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const invoices = await tx.invoice.findMany({
         where: { id: { in: dto.invoiceIds } },
         include: {
@@ -343,6 +596,12 @@ export class ReturnOrdersService {
 
       return { ...returnOrder, _promotionWarnings: promotionWarnings };
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   /**
@@ -471,7 +730,8 @@ export class ReturnOrdersService {
     dto: ConfirmStockReceivedDto,
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
@@ -501,6 +761,12 @@ export class ReturnOrdersService {
         where: { id: userId },
         select: { id: true, name: true, email: true },
       });
+
+      // Actor cho InventoryLog (truy vết ai nhập hàng trả lại vào kho).
+      const returnLogActor = buildInventoryLogActor(
+        userId,
+        user?.name || user?.email,
+      );
 
       const branch = await tx.branch.findUnique({
         where: { id: returnOrder.branchId },
@@ -601,12 +867,6 @@ export class ReturnOrdersService {
             },
             update: {
               onHand: { increment: totalConfirmed },
-              ...(damagedQty > 0 && {
-                damagedQuantity: { increment: damagedQty },
-              }),
-              ...(nearExpiryQty > 0 && {
-                nearExpiryQuantity: { increment: nearExpiryQty },
-              }),
             },
             create: {
               productId: detail.productId,
@@ -615,10 +875,28 @@ export class ReturnOrdersService {
               branchId: returnOrder.branchId,
               branchName: branch?.name || '',
               onHand: totalConfirmed,
-              damagedQuantity: damagedQty,
-              nearExpiryQuantity: nearExpiryQty,
             },
           });
+          touchedProductIds.add(detail.productId);
+
+  // Bucket đi qua SỔ CÁI (không ghi trực tiếp cột cache nữa) để tồn
+  // loại tồn luôn = Σ log active. Cache được recalc ở cuối luồng.
+  await writeConditionLogs(tx, {
+    productId: detail.productId,
+    productCode: detail.productCode,
+    productName: detail.productName,
+    branchId: returnOrder.branchId,
+    branchName: branch?.name || '',
+    refCode: returnOrder.code,
+    refType: 'return_order',
+    refId: returnOrder.id,
+    transactionType: 'RETURN_IN',
+    createdByName: user?.name || null,
+    note: 'Nhập hàng trả từ khách',
+    damaged: damagedQty,
+    nearExpiry: nearExpiryQty,
+    nearExpiryDate: (detail as any).manufactureDate ?? null,
+  });
 
           await tx.inventoryLog.create({
             data: {
@@ -636,23 +914,26 @@ export class ReturnOrdersService {
               transactionPrice: Number(detail.returnPrice),
               partnerId: returnOrder.customerId || null,
               partnerName: returnOrder.customer?.name || null,
+              ...buildInventoryLogBase(returnLogActor),
             },
           });
         }
       }
 
       // NGUỒN CHÂN LÝ: onHand = Σ log active. Sau khi ghi log RETURN cho mọi
-      // item, recalc lại onHand (đè increment rời rạc). KHÔNG đụng
-      // damaged/nearExpiry — các field đó vẫn do upsert ở trên quản lý.
-      await recalcOnHandForPairs(
-        tx,
-        dto.details.map((d) => {
-          const detail = returnOrder.details.find(
-            (rd) => rd.id === d.detailId,
-          );
-          return { productId: detail?.productId, branchId: returnOrder.branchId };
-        }),
-      );
+      // item, recalc lại onHand (đè increment rời rạc).
+      const touchedPairs = dto.details.map((d) => {
+        const detail = returnOrder.details.find((rd) => rd.id === d.detailId);
+        return {
+          productId: detail?.productId,
+          branchId: returnOrder.branchId,
+        };
+      });
+      await recalcOnHandForPairs(tx, touchedPairs);
+
+      // Tồn bucket cũng là giá trị DẪN XUẤT từ sổ cái StockConditionLog (đã ghi
+      // ở trên). Recalc cache để khớp sổ cái, thay cho việc increment rời rạc.
+      await recalcConditionBucketsForPairs(tx, touchedPairs);
 
       const updatedDetails = await tx.returnOrderDetail.findMany({
         where: { returnOrderId: id },
@@ -679,16 +960,25 @@ export class ReturnOrdersService {
             0,
             Number(inv.debtAmount) - refundAmount,
           );
-          const invoiceStatus = newDebtAmount <= 0 ? 1 : 3;
+
+          // Trả hàng KHÔNG được đổi trạng thái giao vận vốn có của hóa đơn.
+          // Chỉ cập nhật công nợ; và chỉ nâng lên "Hoàn thành" khi công nợ về 0.
+          const invoiceUpdate: {
+            debtAmount: number;
+            status?: number;
+            statusValue?: string;
+          } = {
+            debtAmount: newDebtAmount,
+          };
+          if (newDebtAmount <= 0) {
+            invoiceUpdate.status = INVOICE_STATUS.COMPLETED;
+            invoiceUpdate.statusValue =
+              INVOICE_STATUS_LABELS[INVOICE_STATUS.COMPLETED];
+          }
 
           await tx.invoice.update({
             where: { id: returnOrder.invoiceId },
-            data: {
-              debtAmount: newDebtAmount,
-              status: invoiceStatus,
-              statusValue:
-                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
-            },
+            data: invoiceUpdate,
           });
         }
       }
@@ -731,6 +1021,17 @@ export class ReturnOrdersService {
           code: returnOrder.code,
           refundAmount,
           totalReturnAmount: newTotalReturnAmount,
+          // Bổ sung danh sách sản phẩm + số lượng nhập trả để truy vết trực tiếp
+          // trên audit log (trước đây chỉ có refundAmount → không biết SP nào).
+          items: returnOrder.details.map((d: any) => ({
+            productCode: d.productCode,
+            productName: d.productName,
+            returnQuantity: d.returnQuantity,
+            confirmedQuantity: d.confirmedQuantity,
+            goodQuantity: d.goodQuantity,
+            damagedQuantity: d.damagedQuantity,
+            nearExpiryQuantity: d.nearExpiryQuantity,
+          })),
         },
         message: `Xác nhận nhập hàng trả ${returnOrder.code}`,
         messageTemplate: 'RETURN_ORDER_STOCK_RECEIVED',
@@ -741,6 +1042,12 @@ export class ReturnOrdersService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async confirmRefund(id: number, dto: ConfirmRefundDto, userId: number) {
@@ -942,7 +1249,8 @@ export class ReturnOrdersService {
   }
 
   async cancel(id: number, userId: number, roles: string[] = []) {
-    return this.prisma.$transaction(async (tx) => {
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
@@ -959,13 +1267,21 @@ export class ReturnOrdersService {
         throw new NotFoundException('Không tìm thấy phiếu trả hàng');
       }
 
+      // Fetch người thực hiện sớm để ghi userId/createdByName vào InventoryLog
+      // đảo chiều khi hủy (truy vết ai rollback kho).
+      const cancelUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const returnCancelLogActor = buildInventoryLogActor(
+        userId,
+        cancelUser?.name || cancelUser?.email,
+      );
+
       // Chỉ Admin/Super Admin mới được hủy phiếu đã hoàn thành (status 4).
       // Các role khác vẫn bị chặn như cũ.
-      const isAdmin = roles.some(
-        (r) => r === 'Super Admin' || r === 'Admin',
-      );
-      const wasCompleted =
-        returnOrder.status === RETURN_ORDER_STATUS.COMPLETED;
+      const isAdmin = roles.some((r) => r === 'Super Admin' || r === 'Admin');
+      const wasCompleted = returnOrder.status === RETURN_ORDER_STATUS.COMPLETED;
 
       if (wasCompleted && !isAdmin) {
         throw new BadRequestException(
@@ -987,19 +1303,13 @@ export class ReturnOrdersService {
         for (const detail of returnOrder.details) {
           const confirmedQty = Number(detail.confirmedQuantity);
           if (confirmedQty > 0) {
+            // KHÔNG trừ tay cột bucket ở đây. Phiếu chuyển sang CANCELLED nên
+            // active-finder 'return_order' (status != 5) tự loại mọi
+            // StockConditionLog của phiếu → recalcConditionBucketsForPairs bên
+            // dưới đưa bucket về đúng Σ log active. Trừ tay sẽ trừ hai lần.
             const rollbackData: any = {
               onHand: { decrement: confirmedQty },
             };
-
-            const damagedQty = Number(detail.damagedQuantity || 0);
-            const nearExpiryQty = Number(detail.nearExpiryQuantity || 0);
-
-            if (damagedQty > 0) {
-              rollbackData.damagedQuantity = { decrement: damagedQty };
-            }
-            if (nearExpiryQty > 0) {
-              rollbackData.nearExpiryQuantity = { decrement: nearExpiryQty };
-            }
 
             await tx.inventory.update({
               where: {
@@ -1010,6 +1320,7 @@ export class ReturnOrdersService {
               },
               data: rollbackData,
             });
+            touchedProductIds.add(detail.productId);
 
             // Ghi InventoryLog đảo chiều để thẻ kho khớp với việc rollback.
             await tx.inventoryLog.create({
@@ -1029,6 +1340,7 @@ export class ReturnOrdersService {
                 partnerId: returnOrder.customerId || null,
                 partnerName: returnOrder.customer?.name || null,
                 note: 'Hủy phiếu trả hàng',
+                ...buildInventoryLogBase(returnCancelLogActor),
               },
             });
           }
@@ -1042,15 +1354,25 @@ export class ReturnOrdersService {
             Number(returnOrder.invoice.grandTotal),
             Number(returnOrder.invoice.debtAmount) + refundAmount,
           );
-          const invoiceStatus = restoredDebt <= 0 ? 1 : 3;
+
+          // Hủy trả hàng KHÔNG được đổi trạng thái giao vận vốn có của hóa đơn.
+          // Chỉ khôi phục công nợ; và chỉ nâng lên "Hoàn thành" khi công nợ về 0.
+          const invoiceUpdate: {
+            debtAmount: number;
+            status?: number;
+            statusValue?: string;
+          } = {
+            debtAmount: restoredDebt,
+          };
+          if (restoredDebt <= 0) {
+            invoiceUpdate.status = INVOICE_STATUS.COMPLETED;
+            invoiceUpdate.statusValue =
+              INVOICE_STATUS_LABELS[INVOICE_STATUS.COMPLETED];
+          }
+
           await tx.invoice.update({
             where: { id: returnOrder.invoice.id },
-            data: {
-              debtAmount: restoredDebt,
-              status: invoiceStatus,
-              statusValue:
-                invoiceStatus === 1 ? 'Hoàn thành' : 'Thanh toán một phần',
-            },
+            data: invoiceUpdate,
           });
         }
       }
@@ -1093,6 +1415,15 @@ export class ReturnOrdersService {
             branchId: returnOrder.branchId,
           })),
         );
+        // Tương tự cho 3 bucket: log điều kiện của phiếu đã inactive →
+        // recalc kéo cache về đúng sổ cái.
+        await recalcConditionBucketsForPairs(
+          tx,
+          returnOrder.details.map((d) => ({
+            productId: d.productId,
+            branchId: returnOrder.branchId,
+          })),
+        );
       }
 
       // RO chuyển sang status 5 → tự loại khỏi debtOffsets của Formula A.
@@ -1127,6 +1458,12 @@ export class ReturnOrdersService {
 
       return this.findOne(id);
     });
+
+    for (const productId of touchedProductIds) {
+      this.larkProductSync.enqueueSync(productId);
+    }
+
+    return result;
   }
 
   async updateStep1(id: number, dto: UpdateStep1Dto, userId: number) {

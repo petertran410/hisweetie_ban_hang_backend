@@ -1,0 +1,10 @@
+import { Module } from '@nestjs/common';
+import { InventoryPromoChecksController } from './inventory-promo-checks.controller';
+import { InventoryPromoChecksService } from './inventory-promo-checks.service';
+
+@Module({
+  controllers: [InventoryPromoChecksController],
+  providers: [InventoryPromoChecksService],
+  exports: [InventoryPromoChecksService],
+})
+export class InventoryPromoChecksModule {}

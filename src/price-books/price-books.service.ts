@@ -3,6 +3,8 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { Response } from 'express';
+import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreatePriceBookDto,
@@ -10,6 +12,7 @@ import {
   PriceBookQueryDto,
   ApplicablePriceBooksDto,
   ProductPriceDto,
+  ProductsWithPricesQueryDto,
 } from './dto';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
 import { searchProductIds } from '../common/product-search.util';
@@ -993,6 +996,116 @@ export class PriceBooksService {
     }
 
     return this.findOne(priceBookId);
+  }
+
+  /**
+   * Xuất Excel ma trận giá sản phẩm theo đúng bộ lọc của danh sách bảng giá.
+   * File được stream theo batch để không giữ toàn bộ dữ liệu trong bộ nhớ.
+   */
+  async exportProductsWithMultiplePrices(
+    query: ProductsWithPricesQueryDto,
+    res: Response,
+  ): Promise<void> {
+    const priceBookIds = query.priceBookIds || [];
+    const realPriceBookIds = priceBookIds.filter((id) => id > 0);
+    const priceBooks = realPriceBookIds.length
+      ? await this.prisma.priceBook.findMany({
+          where: { id: { in: realPriceBookIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const priceBookNames = new Map(
+      priceBooks.map((priceBook) => [priceBook.id, priceBook.name]),
+    );
+    const selectedPriceBooks = priceBookIds
+      .map((id) =>
+        id === 0
+          ? { id, name: 'Bảng giá chung' }
+          : { id, name: priceBookNames.get(id) },
+      )
+      .filter((priceBook): priceBook is { id: number; name: string } =>
+        Boolean(priceBook.name),
+      );
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Bảng giá');
+    sheet.columns = [
+      { header: 'Mã hàng', key: 'code', width: 16 },
+      { header: 'Tên hàng', key: 'name', width: 40 },
+      { header: 'Đơn vị tính', key: 'unit', width: 16 },
+      { header: 'Giá vốn', key: 'cost', width: 18 },
+      ...selectedPriceBooks.map((priceBook) => ({
+        header: priceBook.name,
+        key: `priceBook_${priceBook.id}`,
+        width: 18,
+      })),
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    const BATCH_SIZE = 500;
+    let page = 1;
+    while (true) {
+      const result = await this.getProductsWithMultiplePrices(
+        priceBookIds,
+        query.search,
+        query.categoryIds,
+        query.branchId,
+        page,
+        BATCH_SIZE,
+        {
+          parentName: query.parentName,
+          middleName: query.middleName,
+          childName: query.childName,
+          stockStatus: query.stockStatus,
+        },
+      );
+
+      if (result.data.length === 0) break;
+
+      for (const product of result.data) {
+        const inventory = product.inventories.find(
+          (item) => item.branchId === query.branchId,
+        );
+        const row: Record<string, string | number> = {
+          code: product.code,
+          name: product.name,
+          unit: product.unit || '',
+          cost: inventory ? Number(inventory.cost) : 0,
+        };
+        selectedPriceBooks.forEach((priceBook) => {
+          const price =
+            priceBook.id === 0
+              ? Number(product.basePrice)
+              : product.prices[priceBook.id];
+          if (price !== undefined) row[`priceBook_${priceBook.id}`] = price;
+        });
+
+        const worksheetRow = sheet.addRow(row);
+        worksheetRow.eachCell((cell, columnNumber) => {
+          if (columnNumber >= 4 && typeof cell.value === 'number') {
+            cell.numFmt = '#,##0';
+          }
+        });
+        worksheetRow.commit();
+      }
+
+      if (result.data.length < BATCH_SIZE) break;
+      page += 1;
+    }
+
+    await workbook.commit();
   }
 
   async getProductsWithMultiplePrices(

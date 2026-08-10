@@ -5,6 +5,7 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import helmet from 'helmet';
+import * as compression from 'compression';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -33,7 +34,14 @@ async function bootstrap() {
     }),
   );
 
+  // Nén response (gzip/deflate). Login trả về permissions[]/roles[] khá lớn;
+  // nén giúp client mạng yếu / latency cao nhận đủ body nhanh hơn, giảm rủi ro
+  // đứt giữa chừng trên chuỗi proxy nhiều hop.
+  app.use(compression());
+
   app.useBodyParser('json', { limit: '20mb' });
+  // text/plain cho nguồn ngoài gửi tin nhắn thô (vd MacroDroid) — không bọc JSON.
+  app.useBodyParser('text', { type: ['text/plain'], limit: '1mb' });
 
   app.enableCors({
     origin: (origin, callback) => {
@@ -118,7 +126,16 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
 
   const port = process.env.PORT || 3060;
-  await app.listen(port);
+  const server = await app.listen(port);
+  // Chuỗi proxy trước app: Cloudflare (proxied) → NAS public (Synology
+  // Reverse Proxy) → nginx container (keepalive_timeout rất lớn) → Node.
+  // Node default keepAliveTimeout=5s → NHỎ NHẤT trong chuỗi: sau 5s idle Node
+  // đóng TCP trong khi các layer trên vẫn giữ connection để tái sử dụng, khiến
+  // request kế tiếp (đặc biệt từ client latency cao) rơi vào socket đã chết →
+  // ERR_CONNECTION_CLOSED. Nâng lên 65s để Node KHÔNG phải là bên đóng trước.
+  // headersTimeout phải > keepAliveTimeout để tránh race đóng khi đang đọc header.
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
   console.log(
     `CORS allowed origins: ${process.env.CORS_ORIGIN || 'None set - requests may be blocked'}`,
   );

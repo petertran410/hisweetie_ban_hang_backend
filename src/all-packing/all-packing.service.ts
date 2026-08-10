@@ -15,6 +15,9 @@ export class AllPackingService {
       search,
       invoiceSearch,
       customerSearch,
+      paymentMethod,
+      fromCreatedDate,
+      toCreatedDate,
       limit,
       pageSize,
       currentItem = 0,
@@ -26,6 +29,15 @@ export class AllPackingService {
       ? branchIds
       : branchId
         ? [branchId]
+        : undefined;
+
+    // Khoảng thời gian tạo (createdAt) — áp dụng cho cả 3 loại packing.
+    const createdDateRange =
+      fromCreatedDate || toCreatedDate
+        ? {
+            gte: fromCreatedDate ? new Date(fromCreatedDate) : undefined,
+            lte: toCreatedDate ? new Date(toCreatedDate) : undefined,
+          }
         : undefined;
 
     // Nếu user bị giới hạn chỉ xem báo đơn của chính mình → filter createdBy
@@ -43,7 +55,21 @@ export class AllPackingService {
     let allData: any[] = [];
     let total = 0;
 
-    if (!type || type === 'all') {
+    // Khi lọc theo paymentMethod → chỉ PackingSlip (giao hàng) có trường này.
+    // PackingHang (đóng hàng) & PackingLoading (loading) không có paymentMethod
+    // nên bị loại bỏ hoàn toàn, bất kể `type` được chọn là gì.
+    if (paymentMethod) {
+      const packingSlips = await this.getPackingSlips(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerMatchedIds,
+        ownerFilterId,
+        paymentMethod,
+        createdDateRange,
+      );
+      allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
+    } else if (!type || type === 'all') {
       const [packingSlips, packingHangs, packingLoadings] = await Promise.all([
         this.getPackingSlips(
           effectiveBranchIds,
@@ -51,6 +77,8 @@ export class AllPackingService {
           invoiceSearch,
           customerMatchedIds,
           ownerFilterId,
+          undefined,
+          createdDateRange,
         ),
         this.getPackingHangs(
           effectiveBranchIds,
@@ -58,6 +86,7 @@ export class AllPackingService {
           invoiceSearch,
           customerMatchedIds,
           ownerFilterId,
+          createdDateRange,
         ),
         this.getPackingLoadings(
           effectiveBranchIds,
@@ -65,6 +94,7 @@ export class AllPackingService {
           invoiceSearch,
           customerMatchedIds,
           ownerFilterId,
+          createdDateRange,
         ),
       ]);
 
@@ -80,6 +110,8 @@ export class AllPackingService {
         invoiceSearch,
         customerMatchedIds,
         ownerFilterId,
+        undefined,
+        createdDateRange,
       );
       allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
     } else if (type === 'dong-hang') {
@@ -89,6 +121,7 @@ export class AllPackingService {
         invoiceSearch,
         customerMatchedIds,
         ownerFilterId,
+        createdDateRange,
       );
       allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
     } else if (type === 'loading') {
@@ -98,6 +131,7 @@ export class AllPackingService {
         invoiceSearch,
         customerMatchedIds,
         ownerFilterId,
+        createdDateRange,
       );
       allData = packingLoadings.map((item) => ({
         ...item,
@@ -122,6 +156,8 @@ export class AllPackingService {
     invoiceSearch?: string,
     customerMatchedIds?: number[],
     ownerFilterId?: number,
+    paymentMethod?: string,
+    createdDateRange?: { gte?: Date; lte?: Date },
   ) {
     const where: any = {};
 
@@ -132,6 +168,19 @@ export class AllPackingService {
     if (ownerFilterId) {
       where.createdBy = ownerFilterId;
     }
+
+    // Chỉ PackingSlip có paymentMethod (cash | transfer).
+    if (paymentMethod) {
+      where.paymentMethod = paymentMethod;
+    }
+
+    // Lọc theo thời gian tạo (createdAt).
+    if (createdDateRange) {
+      where.createdAt = {};
+      if (createdDateRange.gte) where.createdAt.gte = createdDateRange.gte;
+      if (createdDateRange.lte) where.createdAt.lte = createdDateRange.lte;
+    }
+
     if (search) {
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },
@@ -212,6 +261,7 @@ export class AllPackingService {
     invoiceSearch?: string,
     customerMatchedIds?: number[],
     ownerFilterId?: number,
+    createdDateRange?: { gte?: Date; lte?: Date },
   ) {
     const where: any = {};
 
@@ -221,6 +271,13 @@ export class AllPackingService {
 
     if (ownerFilterId) {
       where.createdBy = ownerFilterId;
+    }
+
+    // Lọc theo thời gian tạo (createdAt).
+    if (createdDateRange) {
+      where.createdAt = {};
+      if (createdDateRange.gte) where.createdAt.gte = createdDateRange.gte;
+      if (createdDateRange.lte) where.createdAt.lte = createdDateRange.lte;
     }
 
     if (search) {
@@ -303,6 +360,7 @@ export class AllPackingService {
     invoiceSearch?: string,
     customerMatchedIds?: number[],
     ownerFilterId?: number,
+    createdDateRange?: { gte?: Date; lte?: Date },
   ) {
     const where: any = {};
 
@@ -312,6 +370,13 @@ export class AllPackingService {
 
     if (ownerFilterId) {
       where.createdBy = ownerFilterId;
+    }
+
+    // Lọc theo thời gian tạo (createdAt).
+    if (createdDateRange) {
+      where.createdAt = {};
+      if (createdDateRange.gte) where.createdAt.gte = createdDateRange.gte;
+      if (createdDateRange.lte) where.createdAt.lte = createdDateRange.lte;
     }
 
     if (search) {

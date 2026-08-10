@@ -13,11 +13,21 @@ export interface EngineItem {
   parentName?: string | null;
   middleName?: string | null;
   childName?: string | null;
+  // Số gói/thùng (Product.conversionValue) — dùng khi unitMode=carton để quy
+  // đổi quantity (gói) trong giỏ sang thùng. Service nạp sẵn, mặc định 1.
+  conversionValue?: number;
+  // Opt-in per-line: danh sách promotionId mà thu ngân bật KM cho dòng này.
+  // undefined => không lọc (giữ hành vi cũ cho auto-apply / luồng ngoài POS).
+  // [] hoặc mảng => chỉ tính dòng này cho promotion nằm trong mảng.
+  enabledPromotionIds?: number[];
 }
 
 export interface EngineProductRef {
   productId?: number | null;
   categoryName?: string | null;
+  // Chỉ dùng cho rewardItems (Y): trần lifetime riêng cho dòng quà này.
+  // Với category: trần dùng chung cho cả nhóm (tổng SL tặng mọi SP trong nhóm).
+  rewardLimit?: number | null;
 }
 
 export interface EngineReward {
@@ -40,6 +50,13 @@ export interface EnginePromotion {
   type: string;
   priority: number;
   stackable: boolean;
+  // Chỉ có ý nghĩa với BUY_X_GET_Y / BUY_N_GET_M_SAME. Khi true: cả hàng điều
+  // kiện (X) lẫn hàng tặng (Y) đều trừ vào tồn kho khuyến mãi (PROMO bucket)
+  // thay vì trừ hàng tốt. Mặc định true.
+  deductPromoStock?: boolean;
+  // "unit" (gói) | "carton" (thùng). carton: buyQuantity/rewardQuantity tính
+  // theo thùng; engine quy đổi số gói trong giỏ → thùng theo conversionValue.
+  unitMode?: string;
   autoApply: boolean;
   startDate?: Date | null;
   endDate?: Date | null;
@@ -92,6 +109,13 @@ export interface RewardOption {
   productName?: string;
   productCode?: string;
   availableStock: number;
+  // Số quà còn được tặng (lifetime) cho SP này = min(trần riêng SP, trần tổng CT) - đã tặng.
+  // null = không giới hạn (không có trần riêng lẫn trần tổng).
+  // Đơn vị = đơn vị của CT (gói với unit, thùng với carton).
+  remaining?: number | null;
+  // Số gói/thùng (Product.conversionValue) — FE dùng để quy đổi số quà (thùng)
+  // sang gói khi phân bổ ở carton mode.
+  conversionValue?: number;
 }
 
 export interface PromotionResult {
@@ -104,6 +128,8 @@ export interface PromotionResult {
   scope: string; // INVOICE | product:<id> | category:<name>
   priority: number;
   stackable: boolean;
+  // Xem EnginePromotion.deductPromoStock. FE dùng để cảnh báo tồn PROMO.
+  deductPromoStock?: boolean;
   discountAmount: number;
   giftLines: GiftLine[];
   discountedBuyLines: DiscountedBuyLine[];
@@ -114,6 +140,36 @@ export interface PromotionResult {
   promoPrice?: number; // dùng cho discounted_buy
   requiresChoice?: boolean; // true khi rewardOptions > 1 → cần thu ngân chọn
   matchedProductIds?: number[]; // các productId trong giỏ khớp điều kiện mua X
+  // Với KM có nhiều mã X: mỗi kết quả thuộc về đúng 1 mã X đạt ngưỡng.
+  triggerProductId?: number;
+  // Cộng dồn (stackable=true): kết quả gộp tổng SL mọi mã X, không neo 1 triggerProductId.
+  cumulative?: boolean;
+  // Số suất (số lần đạt ngưỡng buyQuantity) — dùng để FE phân bổ quà theo suất.
+  rewardTimes?: number;
+  // Chế độ tính: "unit" | "carton". FE dùng để gắn nhãn "thùng" cho tiến độ/quà.
+  unitMode?: string;
+}
+
+/**
+ * Tiến độ tích lũy của 1 KM sinh quà — dùng để FE hiển thị thanh tiến độ
+ * ngay cả khi chưa đạt ngưỡng (chưa đủ điều kiện tặng). Chỉ phát sinh khi
+ * giỏ có ít nhất 1 SP thuộc nhóm X của CT (và đã opt-in nếu có lọc).
+ */
+export interface PromotionProgress {
+  promotionId: number;
+  code: string;
+  name: string;
+  type: string;
+  stackable: boolean;
+  matchedProductIds: number[]; // SP X trong giỏ đang được tính
+  currentQuantity: number; // tổng SL X hợp lệ hiện tại (gói hoặc thùng theo unitMode)
+  requiredQuantity: number; // ngưỡng buyQuantity cho 1 suất (gói hoặc thùng)
+  completedTimes: number; // số suất đã đạt
+  remainingToNextReward: number; // còn thiếu bao nhiêu để đạt suất kế tiếp
+  rewardQuantityPerTime: number; // SL quà mỗi suất (gói hoặc thùng)
+  earnedRewardQuantity: number; // tổng SL quà được nhận hiện tại (gói hoặc thùng)
+  // Chế độ tính: "unit" | "carton" — FE gắn nhãn đơn vị hiển thị.
+  unitMode?: string;
 }
 
 export interface EngineContext {
@@ -122,7 +178,7 @@ export interface EngineContext {
   userId?: number | null;
   now: Date;
   items: EngineItem[];
-  // map productId -> onHand tại branch (để check tồn hàng tặng)
+  // map productId -> tồn được phép khuyến mãi (promoQuantity) tại branch
   stockMap: Record<number, number>;
   // tên SP để hiển thị
   productNameMap: Record<number, string>;
@@ -130,6 +186,16 @@ export interface EngineContext {
   productCodeMap: Record<number, string>;
   // resolve danh sách SP thuộc 1 category (parent/middle/child name) -> [productId]
   categoryProductMap: Record<string, number[]>;
+  // map productId -> conversionValue (số gói/thùng). Dùng cho unitMode=carton.
+  // Optional để giữ tương thích test/luồng cũ — thiếu thì mặc định 1.
+  conversionValueMap?: Record<number, number>;
+  // Số quà ĐÃ TẶNG (lifetime) theo từng promotion:
+  //   { [promotionId]: { byProduct: { [productId]: qty }, total } }
+  // Dùng để tính "còn lại" per-SP và trần tổng chương trình. Thiếu => coi như 0.
+  rewardIssuedMap?: Record<
+    number,
+    { byProduct: Record<number, number>; total: number }
+  >;
 }
 
 export interface EvaluateOutput {
@@ -139,9 +205,44 @@ export interface EvaluateOutput {
   conflicts: { promotionIds: number[]; reason: string }[];
   estimatedDiscount: number;
   estimatedTotalAfter: number;
+  // Tiến độ tích lũy cho KM sinh quà (kể cả chưa đạt ngưỡng) — FE hiển thị thanh tiến độ.
+  progress: PromotionProgress[];
 }
 
 const round = (n: number) => Math.round(n);
+
+/** CT tính theo thùng (carton) hay gói (unit). Mặc định unit. */
+function isCartonMode(p: EnginePromotion): boolean {
+  return p.unitMode === 'carton';
+}
+
+/** conversionValue của 1 SP (số gói/thùng), mặc định 1. */
+function convOf(ctx: EngineContext, pid: number): number {
+  return ctx.conversionValueMap?.[pid] ?? 1;
+}
+
+/**
+ * Số quà ĐÃ TẶNG (lifetime) cho 1 CT, quy về đơn vị của CT.
+ * - unit: giữ nguyên gói.
+ * - carton: đổi từng SP quà từ gói → thùng (chia conversionValue của SP đó).
+ */
+function getIssuedForMode(
+  ctx: EngineContext,
+  p: EnginePromotion,
+): { byProduct: Record<number, number>; total: number } {
+  const raw = ctx.rewardIssuedMap?.[p.id];
+  if (!raw) return { byProduct: {}, total: 0 };
+  if (!isCartonMode(p)) return raw;
+  const byProduct: Record<number, number> = {};
+  let total = 0;
+  for (const [pidStr, goi] of Object.entries(raw.byProduct)) {
+    const pid = Number(pidStr);
+    const thung = goi / convOf(ctx, pid);
+    byProduct[pid] = thung;
+    total += thung;
+  }
+  return { byProduct, total };
+}
 
 function calcSubtotal(items: EngineItem[]): number {
   return items.reduce(
@@ -197,50 +298,126 @@ function getRewardItems(rw: EngineReward): EngineProductRef[] {
   return [];
 }
 
-/** Tổng SL trong giỏ khớp BẤT KỲ buyItem (gộp nhóm X). */
+/** Dòng này có được thu ngân bật KM cho promotion đang xét không.
+ * undefined => không lọc (giữ hành vi cũ). */
+function itemEnabledForPromo(it: EngineItem, promotionId: number): boolean {
+  if (it.enabledPromotionIds === undefined) return true;
+  return it.enabledPromotionIds.includes(promotionId);
+}
+
+/** Tổng SL trong giỏ khớp BẤT KỲ buyItem (gộp nhóm X), chỉ tính dòng opt-in.
+ *  carton mode: tổng tính theo thùng = Σ (quantity / conversionValue). */
 function sumBoughtQty(
   ctx: EngineContext,
   buyItems: EngineProductRef[],
+  promotionId: number,
+  unitMode?: string,
 ): number {
+  const carton = unitMode === 'carton';
   return ctx.items
-    .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
-    .reduce((s, it) => s + it.quantity, 0);
+    .filter(
+      (it) =>
+        itemEnabledForPromo(it, promotionId) &&
+        buyItems.some((ref) => itemMatchesRef(it, ref)),
+    )
+    .reduce((s, it) => {
+      if (carton) {
+        const conv = it.conversionValue ?? convOf(ctx, it.productId) ?? 1;
+        return s + it.quantity / (conv || 1);
+      }
+      return s + it.quantity;
+    }, 0);
 }
 
-/** Các productId trong giỏ khớp điều kiện mua X. */
+/** Các productId trong giỏ khớp điều kiện mua X, chỉ tính dòng opt-in. */
 function matchedProductIds(
   ctx: EngineContext,
   buyItems: EngineProductRef[],
+  promotionId: number,
 ): number[] {
   return [
     ...new Set(
       ctx.items
-        .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
+        .filter(
+          (it) =>
+            itemEnabledForPromo(it, promotionId) &&
+            buyItems.some((ref) => itemMatchesRef(it, ref)),
+        )
         .map((it) => it.productId),
     ),
   ];
 }
 
-/** Resolve danh sách SP cụ thể từ rewardItems (expand category) kèm tồn kho. */
+/** Số quà còn được tặng ở cấp TỔNG chương trình (lifetime). null = không giới hạn.
+ *  Đơn vị = đơn vị CT (gói hoặc thùng). */
+function overallRemainingOf(
+  p: EnginePromotion,
+  ctx: EngineContext,
+): number | null {
+  if (p.maxRewardQuantity == null) return null;
+  const issuedTotal = getIssuedForMode(ctx, p).total;
+  return Math.max(0, Number(p.maxRewardQuantity) - issuedTotal);
+}
+
+/** Gộp trần riêng-SP và trần tổng CT thành số còn lại hiệu dụng. */
+function combineRemaining(
+  groupRemaining: number | null,
+  overallRemaining: number | null,
+): number | null {
+  const parts: number[] = [];
+  if (groupRemaining != null) parts.push(groupRemaining);
+  if (overallRemaining != null) parts.push(overallRemaining);
+  return parts.length ? Math.min(...parts) : null;
+}
+
+/** Cap số muốn tặng theo suất còn lại (null = không giới hạn). */
+function capByRemaining(want: number, remaining?: number | null): number {
+  if (remaining == null) return want;
+  return Math.max(0, Math.min(want, remaining));
+}
+
+/**
+ * Resolve danh sách SP cụ thể từ rewardItems (expand category) kèm tồn kho + số còn lại.
+ * remaining mỗi option = min(trần riêng dòng quà − đã tặng, trần tổng CT − đã tặng tổng).
+ * Với category: trần riêng dùng chung cả nhóm (issued = tổng SL tặng mọi SP trong nhóm).
+ */
 function resolveRewardOptions(
   ctx: EngineContext,
   rewardItems: EngineProductRef[],
+  p: EnginePromotion,
 ): RewardOption[] {
-  const ids = new Set<number>();
+  const issued = getIssuedForMode(ctx, p).byProduct;
+  const overallRemaining = overallRemainingOf(p, ctx);
+
+  const options: RewardOption[] = [];
+  const seen = new Set<number>();
   for (const ref of rewardItems) {
-    if (ref.productId) ids.add(ref.productId);
-    else if (ref.categoryName) {
-      (ctx.categoryProductMap[ref.categoryName] || []).forEach((id) =>
-        ids.add(id),
-      );
+    let pids: number[] = [];
+    if (ref.productId) pids = [ref.productId];
+    else if (ref.categoryName)
+      pids = ctx.categoryProductMap[ref.categoryName] || [];
+    if (pids.length === 0) continue;
+
+    let groupRemaining: number | null = null;
+    if (ref.rewardLimit != null) {
+      const groupIssued = pids.reduce((s, id) => s + (issued[id] ?? 0), 0);
+      groupRemaining = Math.max(0, Number(ref.rewardLimit) - groupIssued);
+    }
+
+    for (const productId of pids) {
+      if (seen.has(productId)) continue;
+      seen.add(productId);
+      options.push({
+        productId,
+        productName: ctx.productNameMap[productId] ?? '',
+        productCode: ctx.productCodeMap[productId] ?? '',
+        availableStock: ctx.stockMap[productId] ?? 0,
+        remaining: combineRemaining(groupRemaining, overallRemaining),
+        conversionValue: convOf(ctx, productId),
+      });
     }
   }
-  return [...ids].map((productId) => ({
-    productId,
-    productName: ctx.productNameMap[productId] ?? '',
-    productCode: ctx.productCodeMap[productId] ?? '',
-    availableStock: ctx.stockMap[productId] ?? 0,
-  }));
+  return options;
 }
 
 /** Lọc điều kiện áp dụng theo thời điểm + ngưỡng (B2). DB đã lọc B1. */
@@ -288,6 +465,7 @@ export function computeReward(
     selected: p.autoApply,
     priority: p.priority,
     stackable: p.stackable,
+    deductPromoStock: p.deductPromoStock,
   };
 
   const stockOf = (pid: number) => ctx.stockMap[pid] ?? 0;
@@ -383,55 +561,64 @@ export function computeReward(
     case 'BUY_N_GET_M_SAME': {
       const buyItems = getBuyItems(rw);
       if (buyItems.length === 0 || rw.buyQuantity <= 0) return null;
-      const boughtQty = sumBoughtQty(ctx, buyItems);
+      const carton = isCartonMode(p);
+      const boughtQty = sumBoughtQty(ctx, buyItems, p.id, p.unitMode);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
-      let giftQty = times * Number(rw.rewardQuantity);
-      if (p.maxRewardQuantity != null)
-        giftQty = Math.min(giftQty, Number(p.maxRewardQuantity));
-      if (giftQty <= 0) return null;
+      // Số quà "muốn tặng" theo số lần đạt điều kiện (chưa cap theo trần).
+      // Đơn vị = đơn vị CT (gói hoặc thùng).
+      const wantQty = times * Number(rw.rewardQuantity);
+      if (wantQty <= 0) return null;
 
       // BUY_N_GET_M_SAME: tặng chính SP đã mua (các SP trong giỏ khớp X).
-      // BUY_X_GET_Y: tặng SP thuộc nhóm Y (rewardItems).
+      //   → không có trần riêng dòng quà, chỉ chịu trần tổng chương trình.
+      // BUY_X_GET_Y: tặng SP thuộc nhóm Y (rewardItems) → có thể có trần riêng.
       let options: RewardOption[];
       if (p.type === 'BUY_N_GET_M_SAME') {
-        const boughtIds = [
-          ...new Set(
-            ctx.items
-              .filter((it) => buyItems.some((ref) => itemMatchesRef(it, ref)))
-              .map((it) => it.productId),
-          ),
-        ];
+        const overallRemaining = overallRemainingOf(p, ctx);
+        const boughtIds = matchedProductIds(ctx, buyItems, p.id);
         options = boughtIds.map((productId) => ({
           productId,
           productName: nameOf(productId),
           productCode: codeOf(productId),
           availableStock: stockOf(productId),
+          remaining: overallRemaining,
+          conversionValue: convOf(ctx, productId),
         }));
       } else {
-        options = resolveRewardOptions(ctx, getRewardItems(rw));
+        options = resolveRewardOptions(ctx, getRewardItems(rw), p);
       }
+      // Loại option đã hết suất tặng (còn lại = 0).
+      options = options.filter((o) => o.remaining == null || o.remaining > 0);
       if (options.length === 0) return null;
 
       const scope = `buy:${p.id}`;
       const requiresChoice = options.length > 1;
-      // Nếu chỉ 1 option → tự sinh giftLine luôn. Nếu nhiều → chờ thu ngân chọn.
-      const giftLines: GiftLine[] = requiresChoice
-        ? []
-        : [
-            {
-              productId: options[0].productId,
-              productName: options[0].productName,
-              productCode: options[0].productCode,
-              quantity: giftQty,
-              price: 0,
-              lineType: 'gift',
-              isGift: true,
-              promotionId: p.id,
-              availableStock: options[0].availableStock,
-              stockEnough: options[0].availableStock >= giftQty,
-            },
-          ];
+      // Nếu chỉ 1 option → tự sinh giftLine, cap theo suất còn lại của SP đó.
+      // Nếu nhiều → chờ thu ngân chọn; qty sẽ được cap theo option ở BE/FE.
+      const only = options[0];
+      const giftQty = capByRemaining(wantQty, only.remaining); // đơn vị CT
+      // carton: quy số quà (thùng) → gói theo conversionValue của SP được tặng.
+      const giftQtyGoi = carton
+        ? round(giftQty * convOf(ctx, only.productId))
+        : giftQty;
+      const giftLines: GiftLine[] =
+        requiresChoice || giftQtyGoi <= 0
+          ? []
+          : [
+              {
+                productId: only.productId,
+                productName: only.productName,
+                productCode: only.productCode,
+                quantity: giftQtyGoi,
+                price: 0,
+                lineType: 'gift',
+                isGift: true,
+                promotionId: p.id,
+                availableStock: only.availableStock,
+                stockEnough: only.availableStock >= giftQtyGoi,
+              },
+            ];
       return {
         ...base,
         scope,
@@ -439,10 +626,14 @@ export function computeReward(
         giftLines,
         discountedBuyLines: [],
         discountLines: [],
-        rewardQuantity: giftQty,
+        // requiresChoice: giữ wantQty theo đơn vị CT (FE quy đổi khi phân bổ).
+        // không choice: trả về số gói thực tế sinh ra (giftQtyGoi).
+        rewardQuantity: requiresChoice ? wantQty : giftQtyGoi,
         rewardOptions: options,
         requiresChoice,
-        matchedProductIds: matchedProductIds(ctx, buyItems),
+        rewardTimes: times,
+        matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
+        unitMode: p.unitMode,
       };
     }
 
@@ -455,33 +646,40 @@ export function computeReward(
         rewardItems.length === 0
       )
         return null;
-      const boughtQty = sumBoughtQty(ctx, buyItems);
+      const carton = isCartonMode(p);
+      const boughtQty = sumBoughtQty(ctx, buyItems, p.id, p.unitMode);
       const times = Math.floor(boughtQty / Number(rw.buyQuantity));
       if (times === 0) return null;
-      let buyableQty = times * Number(rw.rewardQuantity);
-      if (p.maxRewardQuantity != null)
-        buyableQty = Math.min(buyableQty, Number(p.maxRewardQuantity));
-      if (buyableQty <= 0) return null;
+      const wantQty = times * Number(rw.rewardQuantity); // đơn vị CT
+      if (wantQty <= 0) return null;
       const promoPrice = round(Number(rw.rewardValue));
-      const options = resolveRewardOptions(ctx, rewardItems);
+      let options = resolveRewardOptions(ctx, rewardItems, p);
+      options = options.filter((o) => o.remaining == null || o.remaining > 0);
       if (options.length === 0) return null;
 
       const scope = `buy:${p.id}`;
       const requiresChoice = options.length > 1;
-      const discountedBuyLines: DiscountedBuyLine[] = requiresChoice
-        ? []
-        : [
-            {
-              productId: options[0].productId,
-              productName: options[0].productName,
-              productCode: options[0].productCode,
-              maxQuantity: buyableQty,
-              promoPrice,
-              lineType: 'discounted_buy',
-              promotionId: p.id,
-              availableStock: options[0].availableStock,
-            },
-          ];
+      const only = options[0];
+      const buyableQty = capByRemaining(wantQty, only.remaining); // đơn vị CT
+      // carton: quy số mua kèm (thùng) → gói theo conversionValue của SP mua kèm.
+      const buyableQtyGoi = carton
+        ? round(buyableQty * convOf(ctx, only.productId))
+        : buyableQty;
+      const discountedBuyLines: DiscountedBuyLine[] =
+        requiresChoice || buyableQtyGoi <= 0
+          ? []
+          : [
+              {
+                productId: only.productId,
+                productName: only.productName,
+                productCode: only.productCode,
+                maxQuantity: buyableQtyGoi,
+                promoPrice,
+                lineType: 'discounted_buy',
+                promotionId: p.id,
+                availableStock: only.availableStock,
+              },
+            ];
       return {
         ...base,
         scope,
@@ -489,11 +687,13 @@ export function computeReward(
         giftLines: [],
         discountedBuyLines,
         discountLines: [],
-        rewardQuantity: buyableQty,
+        rewardQuantity: requiresChoice ? wantQty : buyableQtyGoi,
         rewardOptions: options,
         promoPrice,
         requiresChoice,
-        matchedProductIds: matchedProductIds(ctx, buyItems),
+        rewardTimes: times,
+        matchedProductIds: matchedProductIds(ctx, buyItems, p.id),
+        unitMode: p.unitMode,
       };
     }
 
@@ -545,6 +745,55 @@ export function resolveConflicts(results: PromotionResult[]): {
   return { eligible: winners, conflicts };
 }
 
+const GIFT_LIKE_TYPES = new Set([
+  'BUY_X_GET_Y',
+  'BUY_N_GET_M_SAME',
+  'BUY_X_BUY_Y_PRICE',
+]);
+
+/**
+ * Tính tiến độ tích lũy cho 1 KM sinh quà (chỉ dựa trên nhóm X của CHÍNH CT).
+ * Trả null nếu giỏ không có SP X nào (đã lọc opt-in) → không hiển thị.
+ */
+function buildProgress(
+  p: EnginePromotion,
+  ctx: EngineContext,
+): PromotionProgress | null {
+  const rw = p.rewards[0];
+  if (!rw) return null;
+  const buyItems = getBuyItems(rw);
+  if (buyItems.length === 0 || rw.buyQuantity <= 0) return null;
+
+  const matched = matchedProductIds(ctx, buyItems, p.id);
+  if (matched.length === 0) return null;
+
+  // carton: currentQuantity tính theo thùng (Σ gói/conversionValue).
+  const currentQuantity = sumBoughtQty(ctx, buyItems, p.id, p.unitMode);
+  const requiredQuantity = Number(rw.buyQuantity);
+  const completedTimes = Math.floor(currentQuantity / requiredQuantity);
+  const remainingToNextReward =
+    completedTimes >= 0
+      ? (completedTimes + 1) * requiredQuantity - currentQuantity
+      : requiredQuantity - currentQuantity;
+  const rewardQuantityPerTime = Number(rw.rewardQuantity);
+
+  return {
+    promotionId: p.id,
+    code: p.code,
+    name: p.name,
+    type: p.type,
+    stackable: p.stackable,
+    matchedProductIds: matched,
+    currentQuantity,
+    requiredQuantity,
+    completedTimes,
+    remainingToNextReward,
+    rewardQuantityPerTime,
+    earnedRewardQuantity: completedTimes * rewardQuantityPerTime,
+    unitMode: p.unitMode,
+  };
+}
+
 /** Entry point chính. */
 export function evaluatePromotions(
   promotions: EnginePromotion[],
@@ -554,10 +803,73 @@ export function evaluatePromotions(
   const totalQty = ctx.items.reduce((s, it) => s + it.quantity, 0);
 
   const results: PromotionResult[] = [];
+  const progress: PromotionProgress[] = [];
   for (const p of promotions) {
+    const isGiftLike = GIFT_LIKE_TYPES.has(p.type);
+
+    // Tiến độ tích lũy: tính cả khi chưa đạt ngưỡng (miễn giỏ có SP X).
+    // Không phụ thuộc isTimeAndThresholdEligible để FE luôn thấy thanh tiến độ.
+    if (isGiftLike) {
+      const pr = buildProgress(p, ctx);
+      if (pr) progress.push(pr);
+    }
+
     if (!isTimeAndThresholdEligible(p, ctx, subtotal, totalQty)) continue;
-    const r = computeReward(p, ctx, subtotal);
-    if (r) results.push(r);
+
+    if (!isGiftLike) {
+      const r = computeReward(p, ctx, subtotal);
+      if (r) results.push(r);
+      continue;
+    }
+
+    // KM cộng dồn (stackable=true): gộp tổng SL mọi mã X trong CT → 1 kết quả.
+    // sumBoughtQty đã chỉ cộng SP khớp buyItems của chính CT (không cộng chéo CT).
+    if (p.stackable) {
+      const rw = p.rewards[0];
+      const buyItems = getBuyItems(rw);
+      const matched = matchedProductIds(ctx, buyItems, p.id);
+      const r = computeReward(p, ctx, subtotal);
+      if (!r) continue;
+      results.push({
+        ...r,
+        scope: `buy:${p.id}:cumulative`,
+        matchedProductIds: matched,
+        triggerProductId: undefined,
+        cumulative: true,
+      });
+      continue;
+    }
+
+    // KM không cộng dồn: mỗi mã X tự đạt ngưỡng, không cộng chéo SL giữa các mã.
+    const rw = p.rewards[0];
+    const buyItems = getBuyItems(rw);
+    const triggerProductIds = [
+      ...new Set(
+        ctx.items
+          .filter(
+            (it) =>
+              itemEnabledForPromo(it, p.id) &&
+              buyItems.some((ref) => itemMatchesRef(it, ref)),
+          )
+          .map((it) => it.productId),
+      ),
+    ];
+
+    for (const triggerProductId of triggerProductIds) {
+      const scopedCtx: EngineContext = {
+        ...ctx,
+        items: ctx.items.filter((it) => it.productId === triggerProductId),
+      };
+      const r = computeReward(p, scopedCtx, subtotal);
+      if (!r) continue;
+      results.push({
+        ...r,
+        scope: `${r.scope}:trigger:${triggerProductId}`,
+        matchedProductIds: [triggerProductId],
+        triggerProductId,
+        cumulative: false,
+      });
+    }
   }
 
   const { eligible, conflicts } = resolveConflicts(results);
@@ -579,5 +891,6 @@ export function evaluatePromotions(
     conflicts,
     estimatedDiscount,
     estimatedTotalAfter: subtotal - estimatedDiscount,
+    progress,
   };
 }

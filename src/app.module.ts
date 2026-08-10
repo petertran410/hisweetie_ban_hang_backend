@@ -15,6 +15,7 @@ import { CustomersModule } from './customers/customers.module';
 import { SuppliersModule } from './suppliers/suppliers.module';
 import { OrdersModule } from './orders/orders.module';
 import { ConsignmentsModule } from './consignments/consignments.module';
+import { ContractsModule } from './contracts/contracts.module';
 import { PurchaseOrdersModule } from './purchase-orders/purchase-orders.module';
 import { UploadModule } from './upload/upload.module';
 import { UploadSessionModule } from './upload-session/upload-session.module';
@@ -63,10 +64,13 @@ import { ReturnOrdersModule } from './return-orders/return-orders.module';
 import { ConsignmentReturnsModule } from './consignment-returns/consignment-returns.module';
 import { CashFlowCollectionBranchesModule } from './cashflow-collection-branches/cashflow-collection-branches.module';
 import { InventoryChecksModule } from './inventory-checks/inventory-checks.module';
+import { InventoryPromoChecksModule } from './inventory-promo-checks/inventory-promo-checks.module';
 import { StockAuditsModule } from './stock-audits/stock-audits.module';
+import { StockConditionTransfersModule } from './stock-condition-transfers/stock-condition-transfers.module';
 import { PermissionCacheModule } from './permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 // import { SyncKiotModule } from './sync-kiot/sync-kiot.module'; // disabled: bỏ hoàn toàn sync-kiot
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { MisaSyncModule } from './misa-sync/misa-sync.module';
@@ -76,6 +80,10 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
+import { PaymentNotesModule } from './payment-notes/payment-notes.module';
+import { RecipesModule } from './recipes/recipes.module';
+import { PurchasingPlanningModule } from './purchasing-planning/purchasing-planning.module';
 
 @Module({
   controllers: [HealthController],
@@ -87,11 +95,15 @@ import { NotificationsModule } from './notifications/notifications.module';
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
-        // Giới hạn mặc định toàn cục: 100 request / 60 giây / IP.
-        // Đủ thoải mái cho người dùng thật, nhưng chặn bot quét hàng loạt.
+        // Giới hạn mặc định toàn cục: 300 request / 60 giây / user.
+        // Đếm theo user-id (UserThrottlerGuard) nên mỗi nhân viên có bucket
+        // riêng, không cạnh tranh nhau khi NAT chung IP. Con số 300 chừa đủ
+        // headroom cho FE bắn nhiều query song song (list + count + filter
+        // + react-query prefetch + đổi branch), vẫn chặn được bot quét.
+        // Auth endpoints override riêng xuống 5/60s (xem auth.controller.ts).
         name: 'default',
         ttl: 60000,
-        limit: 100,
+        limit: 300,
       },
     ]),
     PrismaModule,
@@ -115,6 +127,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     SuppliersModule,
     OrdersModule,
     ConsignmentsModule,
+    ContractsModule,
     InvoicesModule,
     PurchaseOrdersModule,
     PriceBooksModule,
@@ -152,7 +165,9 @@ import { NotificationsModule } from './notifications/notifications.module';
     ReturnOrdersModule,
     ConsignmentReturnsModule,
     InventoryChecksModule,
+    InventoryPromoChecksModule,
     StockAuditsModule,
+    StockConditionTransfersModule,
     CashFlowCollectionBranchesModule,
     // SyncKiotModule, // disabled: bỏ hoàn toàn sync-kiot
     LarkSyncModule,
@@ -161,12 +176,16 @@ import { NotificationsModule } from './notifications/notifications.module';
     SepayModule,
     PromotionsModule,
     NotificationsModule,
+    ExchangeRatesModule,
+    PaymentNotesModule,
+    RecipesModule,
+    PurchasingPlanningModule,
   ],
   providers: [
     {
       // Chạy đầu tiên: chặn flood/quét theo IP trước khi vào xác thực.
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: UserThrottlerGuard,
     },
     {
       provide: APP_GUARD,
