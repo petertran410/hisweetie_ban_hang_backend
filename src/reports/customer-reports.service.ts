@@ -13,6 +13,8 @@ export interface CustomerChartRow {
   value: number;
   total: number;
   extra1?: string | null;
+  // ID khách hàng (PK) — dùng cho drilldown exact match, tránh ILIKE nhầm KH
+  customerId?: number | null;
   // Profit view
   revenue?: number;
   totalCost?: number;
@@ -69,6 +71,15 @@ export class CustomerReportsService {
       conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
     if (query.customerId)
       conds.push(Prisma.sql`i."customerId" = ${query.customerId}`);
+    if (query.customerGroupId)
+      // EXISTS thay vì JOIN để 1 KH thuộc nhiều nhóm không bị nhân đôi dòng.
+      conds.push(
+        Prisma.sql`EXISTS (
+          SELECT 1 FROM customer_group_details cgd
+          WHERE cgd."customerId" = i."customerId"
+            AND cgd."customerGroupId" = ${query.customerGroupId}
+        )`,
+      );
     if (query.customerKeyword) {
       const kw = `%${query.customerKeyword}%`;
       conds.push(
@@ -174,6 +185,7 @@ export class CustomerReportsService {
       // ── Path cũ: aggregate grandTotal theo invoice ──
       const rows = await this.prisma.$queryRaw<any[]>`
         SELECT
+          c.id AS customer_id,
           c.code AS code,
           c.name AS name,
           SUM(i_rev.revenue)::float8 AS revenue
@@ -188,7 +200,7 @@ export class CustomerReportsService {
         ) i_rev
         JOIN customers c ON c.id = i_rev."customerId"
         WHERE c."isActive" = true
-        GROUP BY c.code, c.name
+        GROUP BY c.id, c.code, c.name
         ORDER BY revenue DESC
         LIMIT ${this.chartTop(query)}
       `;
@@ -197,12 +209,14 @@ export class CustomerReportsService {
         value: Number(r.revenue) || 0,
         total: Number(r.revenue) || 0,
         extra1: r.code || null,
+        customerId: r.customer_id != null ? Number(r.customer_id) : null,
       }));
     }
 
     // ── Có product filter: aggregate SUM(d."totalPrice") ở cấp detail ──
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
+        c.id AS customer_id,
         c.code AS code,
         c.name AS name,
         SUM(d."totalPrice")::float8 AS revenue
@@ -211,7 +225,7 @@ export class CustomerReportsService {
       JOIN customers c ON c.id = i."customerId"
       LEFT JOIN products p ON p.id = d."productId"
       WHERE ${where} AND c."isActive" = true
-      GROUP BY c.code, c.name
+      GROUP BY c.id, c.code, c.name
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
     `;
@@ -220,6 +234,7 @@ export class CustomerReportsService {
       value: Number(r.revenue) || 0,
       total: Number(r.revenue) || 0,
       extra1: r.code || null,
+      customerId: r.customer_id != null ? Number(r.customer_id) : null,
     }));
   }
 
@@ -233,6 +248,7 @@ export class CustomerReportsService {
       : Prisma.empty;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
+        c.id AS customer_id,
         c.code AS code,
         c.name AS name,
         SUM(d."totalPrice")::float8 AS revenue,
@@ -244,7 +260,7 @@ export class CustomerReportsService {
       LEFT JOIN inventories inv
         ON inv."productId" = d."productId" AND inv."branchId" = i."branchId"
       WHERE ${where} AND c."isActive" = true
-      GROUP BY c.code, c.name
+      GROUP BY c.id, c.code, c.name
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
     `;
@@ -259,6 +275,7 @@ export class CustomerReportsService {
         totalCost: cost,
         profit: revenue - cost,
         extra1: r.code || null,
+        customerId: r.customer_id != null ? Number(r.customer_id) : null,
       };
     });
   }
@@ -289,6 +306,7 @@ export class CustomerReportsService {
       : Prisma.empty;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
+        c.id AS customer_id,
         c.code AS code,
         c.name AS name,
         SUM(d."totalPrice")::float8 AS revenue
@@ -297,7 +315,7 @@ export class CustomerReportsService {
       JOIN customers c ON c.id = i."customerId"
       ${productFilterJoin}
       WHERE ${where} AND c."isActive" = true
-      GROUP BY c.code, c.name
+      GROUP BY c.id, c.code, c.name
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
     `;
@@ -306,6 +324,7 @@ export class CustomerReportsService {
       value: Number(r.revenue) || 0,
       total: Number(r.revenue) || 0,
       extra1: r.code || null,
+      customerId: r.customer_id != null ? Number(r.customer_id) : null,
     }));
   }
 
