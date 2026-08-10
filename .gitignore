@@ -12,6 +12,8 @@ deploy.sh
 deploy-app.sh
 deploy-full.sh
 deploy-sandbox.sh
+restore-pos-db.sh
+setup-backup-dirs.sh
 nginx
 
 /uploads
