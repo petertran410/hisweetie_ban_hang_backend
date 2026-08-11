@@ -42,6 +42,8 @@ model User {
   factory_product_price_histories                           factory_product_price_histories[]
   factory_products_factory_products_createdByTousers        factory_products[]                @relation("factory_products_createdByTousers")
   factory_products_factory_products_priceUpdatedByIdTousers factory_products[]                @relation("factory_products_priceUpdatedByIdTousers")
+  createdIngredients                                        Ingredient[]                      @relation("IngredientCreator")
+  updatedIngredients                                        Ingredient[]                      @relation("IngredientUpdater")
   createdInternalUses                                       InternalUse[]                     @relation("InternalUseCreator")
   usedInternalUses                                          InternalUse[]                     @relation("InternalUseUser")
   createdInventoryChecks                                    InventoryCheck[]                  @relation("InventoryCheckCreator")
@@ -73,6 +75,10 @@ model User {
   promotionUsers                                            PromotionUser[]                   @relation("PromotionUserRef")
   createdPurchaseOrders                                     PurchaseOrder[]                   @relation("PurchaseOrderCreator")
   purchaseOrders                                            PurchaseOrder[]                   @relation("PurchaseOrderBuyer")
+  recipeComments                                            RecipeComment[]                   @relation("RecipeCommentAuthor")
+  createdRecipes                                            Recipe[]                          @relation("RecipeCreator")
+  publishedRecipes                                          Recipe[]                          @relation("RecipePublisher")
+  updatedRecipes                                            Recipe[]                          @relation("RecipeUpdater")
   confirmedReturnOrders                                     ReturnOrder[]                     @relation("ReturnOrderConfirmer")
   createdReturnOrders                                       ReturnOrder[]                     @relation("ReturnOrderCreator")
   receivedReturnOrders                                      ReturnOrder[]                     @relation("ReturnOrderReceiver")
@@ -96,12 +102,6 @@ model User {
   branch                                                    Branch?                           @relation(fields: [branchId], references: [id])
   supplier                                                  Supplier?                         @relation("SupplierStaff", fields: [supplierId], references: [id])
   createdVehicleShipments                                   VehicleShipment[]                 @relation("VehicleShipmentCreator")
-  createdRecipes                                            Recipe[]                          @relation("RecipeCreator")
-  updatedRecipes                                            Recipe[]                          @relation("RecipeUpdater")
-  publishedRecipes                                          Recipe[]                          @relation("RecipePublisher")
-  recipeComments                                            RecipeComment[]                   @relation("RecipeCommentAuthor")
-  createdIngredients                                        Ingredient[]                      @relation("IngredientCreator")
-  updatedIngredients                                        Ingredient[]                      @relation("IngredientUpdater")
 
   @@map("users")
 }
@@ -150,12 +150,12 @@ model Permission {
   name                  String                 @unique
   resource              String
   action                String
+  scope                 String                 @default("all")
+  field                 String?
   description           String?
+  category              String?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
-  category              String?
-  field                 String?
-  scope                 String                 @default("all")
   roleBranchPermissions RoleBranchPermission[]
   rolePermissions       RolePermission[]
   userBranchPermissions UserBranchPermission[]
@@ -227,8 +227,8 @@ model UserRole {
 model RolePermission {
   roleId       Int
   permissionId Int
-  createdAt    DateTime   @default(now())
   conditions   Json?
+  createdAt    DateTime   @default(now())
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
@@ -253,9 +253,9 @@ model RoleBranchPermission {
 model UserPermission {
   userId       Int
   permissionId Int
+  type         String     @default("grant")
   conditions   Json?
   createdAt    DateTime   @default(now())
-  type         String     @default("grant")
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -363,13 +363,13 @@ model CustomerGroup {
   id                      Int                      @id @default(autoincrement())
   name                    String
   description             String?
+  discount                Decimal?
   createdBy               Int?
   createdAt               DateTime                 @default(now())
   allowedUserIds          Int[]                    @default([])
   autoAddConditions       Json?
-  autoExecute             Boolean                  @default(false)
   autoUpdateMode          String?
-  discount                Decimal?
+  autoExecute             Boolean                  @default(false)
   kiotVietId              Int?                     @unique @map("kiot_viet_id")
   lastSyncedAt            DateTime?                @map("last_synced_at")
   customerGroupDetails    CustomerGroupDetail[]
@@ -393,6 +393,17 @@ model Customer {
   organization         String?
   taxCode              String?
   groups               String?
+  invoiceBuyerName     String?
+  invoiceCityCode      String?
+  invoiceCityName      String?
+  invoiceWardCode      String?
+  invoiceWardName      String?
+  invoiceAddress       String?
+  invoiceCccdCmnd      String?
+  invoiceBankAccount   String?
+  invoiceEmail         String?
+  invoicePhone         String?
+  invoiceDvqhnsCode    String?
   comments             String?
   customerTypeId       Int?
   branchId             Int?
@@ -405,17 +416,6 @@ model Customer {
   isActive             Boolean               @default(true)
   createdAt            DateTime              @default(now())
   updatedAt            DateTime              @updatedAt
-  invoiceAddress       String?
-  invoiceBankAccount   String?
-  invoiceBuyerName     String?
-  invoiceCccdCmnd      String?
-  invoiceCityCode      String?
-  invoiceCityName      String?
-  invoiceDvqhnsCode    String?
-  invoiceEmail         String?
-  invoicePhone         String?
-  invoiceWardCode      String?
-  invoiceWardName      String?
   parentId             Int?
   kiotVietId           BigInt?               @unique @map("kiot_viet_id")
   lastSyncedAt         DateTime?             @map("last_synced_at")
@@ -473,12 +473,12 @@ model CustomerAddress {
   isDefault        Boolean   @default(false)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
-  formattedAddress String?   @map("formatted_address")
-  geocodePrecision String?   @map("geocode_precision")
-  geocodeProvider  String?   @map("geocode_provider")
-  geocodedAt       DateTime? @map("geocoded_at")
   latitude         Float?
   longitude        Float?
+  formattedAddress String?   @map("formatted_address")
+  geocodeProvider  String?   @map("geocode_provider")
+  geocodePrecision String?   @map("geocode_precision")
+  geocodedAt       DateTime? @map("geocoded_at")
   customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_addresses")
@@ -671,93 +671,94 @@ model ProductVariant {
 }
 
 model Product {
-  id                            Int                            @id @default(autoincrement())
-  code                          String                         @unique
-  name                          String
-  fullName                      String?
-  description                   String?
-  orderTemplate                 String?
-  parentName                    String?                        @map("parent_name")
-  middleName                    String?                        @map("middle_name")
-  childName                     String?                        @map("child_name")
-  tradeMarkId                   Int?
-  variantId                     Int?
-  masterProductId               Int?
-  masterUnitId                  Int?
-  type                          Int                            @default(2)
-  allowsSale                    Boolean                        @default(true)
-  hasVariants                   Boolean                        @default(false)
-  basePrice                     Decimal                        @default(0)
-  unit                          String?
-  conversionValue               Decimal                        @default(1)
-  weight                        Decimal?
-  weightUnit                    String?                        @default("kg")
-  isRewardPoint                 Boolean                        @default(true)
-  isActive                      Boolean                        @default(true)
-  isDirectSale                  Boolean                        @default(false)
-  createdAt                     DateTime                       @default(now())
-  updatedAt                     DateTime                       @updatedAt
-  priceBookId                   Int?
-  isPieceUnit                   Boolean                        @default(false)
-  kiotVietId                    BigInt?                        @unique @map("kiot_viet_id")
-  lastSyncedAt                  DateTime?                      @map("last_synced_at")
-  isCommerce                    Boolean                        @default(false)
-  misa_code                     String                         @default("")
-  misa_name                     String                         @default("")
-  misa_unit                     String                         @default("")
-  shippingWeight                Decimal?
-  vat                           Decimal                        @default(8)
-  shippingWeightUnit            String?                        @default("g") @map("shipping_weight_unit")
-  publicationDate               DateTime?                      @map("publication_date")
-  publicationLink               String?                        @map("publication_link")
-  publicationLocation           Json?                          @map("publication_location")
-  larkRecordId                  String?
-  larkSyncRetries               Int                            @default(0)
-  larkSyncStatus                String                         @default("PENDING")
-  larkSyncedAt                  DateTime?
-  backupFactoryId               Int?
-  primaryFactoryId              Int?
-  consignmentItems              ConsignmentItem[]
-  consignmentReturnDetails      ConsignmentReturnDetail[]
-  destructionDetails            DestructionDetail[]
-  factoryChangeLogs             FactoryChangeLog[]
-  factory_products              factory_products[]
-  internalUseDetails            InternalUseDetail[]
-  inventories                   Inventory[]
-  inventoryCheckDetails         InventoryCheckDetail[]
-  inventoryLogs                 InventoryLog[]
-  inventoryPromoCheckDetails    InventoryPromoCheckDetail[]
-  invoiceDetails                InvoiceDetail[]
-  orderItems                    OrderItem[]
-  orderSupplierItems            OrderSupplierItem[]
-  priceBookDetails              PriceBookDetail[]
-  attributes                    ProductAttribute[]
-  comboComponents               ProductComponent[]             @relation("ComboComponents")
-  componentOf                   ProductComponent[]             @relation("ComponentOf")
-  documents                     ProductDocument[]
-  images                        ProductImage[]
-  productionComponents          ProductionComponent[]
-  productions                   Production[]
-  backupFactory                 Factory?                       @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id])
-  masterProduct                 Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
-  productUnits                  Product[]                      @relation("ProductUnits")
-  priceBook                     PriceBook?                     @relation(fields: [priceBookId], references: [id])
-  primaryFactory                Factory?                       @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id])
-  tradeMark                     TradeMark?                     @relation(fields: [tradeMarkId], references: [id])
-  variant                       ProductVariant?                @relation(fields: [variantId], references: [id])
-  promotionProducts             PromotionProduct[]             @relation("PromotionProductRef")
-  promotionBuyRewards           PromotionReward[]              @relation("PromotionBuyProduct")
-  promotionGiftRewards          PromotionReward[]              @relation("PromotionRewardProduct")
-  purchaseOrderItems            PurchaseOrderItem[]
-  returnOrderDetails            ReturnOrderDetail[]
-  stockAuditDetails             StockAuditDetail[]
-  stockConditionLogs            StockConditionLog[]
-  stockConditionTransferDetails StockConditionTransferDetail[]
-  supplierReturnDetails         SupplierReturnDetail[]
-  transferDetails               TransferDetail[]
-  vehicleShipmentItems          VehicleShipmentItem[]
-  outputRecipes                 Recipe[]                       @relation("RecipeOutputProduct")
-  recipeIngredients             RecipeIngredient[]             @relation("RecipeIngredientProduct")
+  id                             Int                            @id @default(autoincrement())
+  code                           String                         @unique
+  name                           String
+  fullName                       String?
+  description                    String?
+  orderTemplate                  String?
+  parentName                     String?                        @map("parent_name")
+  middleName                     String?                        @map("middle_name")
+  childName                      String?                        @map("child_name")
+  tradeMarkId                    Int?
+  variantId                      Int?
+  masterProductId                Int?
+  masterUnitId                   Int?
+  type                           Int                            @default(2)
+  allowsSale                     Boolean                        @default(true)
+  hasVariants                    Boolean                        @default(false)
+  basePrice                      Decimal                        @default(0)
+  unit                           String?
+  conversionValue                Decimal                        @default(1)
+  weight                         Decimal?
+  weightUnit                     String?                        @default("kg")
+  isRewardPoint                  Boolean                        @default(true)
+  isActive                       Boolean                        @default(true)
+  isDirectSale                   Boolean                        @default(false)
+  createdAt                      DateTime                       @default(now())
+  updatedAt                      DateTime                       @updatedAt
+  priceBookId                    Int?
+  isPieceUnit                    Boolean                        @default(false)
+  kiotVietId                     BigInt?                        @unique @map("kiot_viet_id")
+  lastSyncedAt                   DateTime?                      @map("last_synced_at")
+  isCommerce                     Boolean                        @default(false)
+  misa_code                      String                         @default("")
+  misa_name                      String                         @default("")
+  misa_unit                      String                         @default("")
+  shippingWeight                 Decimal?
+  shippingWeightUnit             String?                        @default("g") @map("shipping_weight_unit")
+  vat                            Decimal                        @default(8)
+  publicationDate                DateTime?                      @map("publication_date")
+  publicationLink                String?                        @map("publication_link")
+  publicationLocation            Json?                          @map("publication_location")
+  larkRecordId                   String?
+  larkSyncRetries                Int                            @default(0)
+  larkSyncStatus                 String                         @default("PENDING")
+  larkSyncedAt                   DateTime?
+  backupFactoryId                Int?
+  primaryFactoryId               Int?
+  is_purchasing_planning_tracked Boolean                        @default(true)
+  consignmentItems               ConsignmentItem[]
+  consignmentReturnDetails       ConsignmentReturnDetail[]
+  destructionDetails             DestructionDetail[]
+  factoryChangeLogs              FactoryChangeLog[]
+  factory_products               factory_products[]
+  internalUseDetails             InternalUseDetail[]
+  inventories                    Inventory[]
+  inventoryCheckDetails          InventoryCheckDetail[]
+  inventoryLogs                  InventoryLog[]
+  inventoryPromoCheckDetails     InventoryPromoCheckDetail[]
+  invoiceDetails                 InvoiceDetail[]
+  orderItems                     OrderItem[]
+  orderSupplierItems             OrderSupplierItem[]
+  priceBookDetails               PriceBookDetail[]
+  attributes                     ProductAttribute[]
+  comboComponents                ProductComponent[]             @relation("ComboComponents")
+  componentOf                    ProductComponent[]             @relation("ComponentOf")
+  documents                      ProductDocument[]
+  images                         ProductImage[]
+  productionComponents           ProductionComponent[]
+  productions                    Production[]
+  backupFactory                  Factory?                       @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id])
+  masterProduct                  Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
+  productUnits                   Product[]                      @relation("ProductUnits")
+  priceBook                      PriceBook?                     @relation(fields: [priceBookId], references: [id])
+  primaryFactory                 Factory?                       @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id])
+  tradeMark                      TradeMark?                     @relation(fields: [tradeMarkId], references: [id])
+  variant                        ProductVariant?                @relation(fields: [variantId], references: [id])
+  promotionProducts              PromotionProduct[]             @relation("PromotionProductRef")
+  promotionBuyRewards            PromotionReward[]              @relation("PromotionBuyProduct")
+  promotionGiftRewards           PromotionReward[]              @relation("PromotionRewardProduct")
+  purchaseOrderItems             PurchaseOrderItem[]
+  recipeIngredients              RecipeIngredient[]             @relation("RecipeIngredientProduct")
+  outputRecipes                  Recipe[]                       @relation("RecipeOutputProduct")
+  returnOrderDetails             ReturnOrderDetail[]
+  stockAuditDetails              StockAuditDetail[]
+  stockConditionLogs             StockConditionLog[]
+  stockConditionTransferDetails  StockConditionTransferDetail[]
+  supplierReturnDetails          SupplierReturnDetail[]
+  transferDetails                TransferDetail[]
+  vehicleShipmentItems           VehicleShipmentItem[]
 
   @@index([id, name])
   @@index([larkSyncStatus])
@@ -1295,14 +1296,14 @@ model Surcharge {
 
 model BankAccount {
   id                    Int                    @id @default(autoincrement())
-  bankName              String
   accountNumber         String
-  createdAt             DateTime               @default(now())
-  accountHolder         String
   bankCode              String
-  branchIds             Json?
+  bankName              String
+  accountHolder         String
   note                  String?
   scope                 String
+  branchIds             Json?
+  createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   kiotVietId            Int?                   @unique @map("kiot_viet_id")
   lastSyncedAt          DateTime?              @map("last_synced_at")
@@ -1351,6 +1352,8 @@ model Order {
   branchId        Int?
   soldById        Int?
   saleChannelId   Int?
+  priceBookId     Int?
+  priceBookName   String?
   orderDate       DateTime              @default(now())
   totalAmount     Decimal               @default(0)
   discount        Decimal               @default(0)
@@ -1368,14 +1371,12 @@ model Order {
   createdBy       Int
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
-  priceBookId     Int?
-  priceBookName   String?
   kiotVietId      BigInt?               @unique @map("kiot_viet_id")
   lastSyncedAt    DateTime?             @map("last_synced_at")
   larkRecordId    String?
+  larkSyncRetries Int                   @default(0)
   larkSyncStatus  String                @default("PENDING")
   larkSyncedAt    DateTime?
-  larkSyncRetries Int                   @default(0)
   promotionLogs   InvoicePromotionLog[]
   invoices        Invoice[]
   delivery        OrderDelivery?
@@ -1540,6 +1541,8 @@ model Invoice {
   branchId               Int?
   soldById               Int?
   saleChannelId          Int?
+  priceBookId            Int?
+  priceBookName          String?
   purchaseDate           DateTime                @default(now())
   totalAmount            Decimal                 @default(0)
   discount               Decimal                 @default(0)
@@ -1555,8 +1558,6 @@ model Invoice {
   createdBy              Int
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
-  priceBookId            Int?
-  priceBookName          String?
   parentCustomerId       Int?
   kiotVietId             BigInt?                 @unique @map("kiot_viet_id")
   lastSyncedAt           DateTime?               @map("last_synced_at")
@@ -1634,13 +1635,13 @@ model InvoicePayment {
   paymentDate        DateTime     @default(now())
   amount             Decimal
   status             Int
+  statusValue        String?
   paymentMethod      String?
   accountId          Int?
   description        String?
   cashFlowId         Int?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
-  statusValue        String?
   sepayTransactionId String?      @unique @map("sepay_transaction_id")
   kiotVietId         BigInt?      @unique @map("kiot_viet_id")
   sepayReferenceCode String?      @map("sepay_reference_code")
@@ -2465,9 +2466,9 @@ model VehicleShipmentItem {
   productCode       String
   productName       String
   quantity          Decimal
+  postImportStatus  String          @default("pending")
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
-  postImportStatus  String          @default("pending")
   contractNo        String?
   orderSupplier     OrderSupplier   @relation(fields: [orderSupplierId], references: [id])
   product           Product         @relation(fields: [productId], references: [id])
@@ -2702,10 +2703,10 @@ model PrintTemplateVariable {
   dataType       String   @default("string")
   description    String?
   isActive       Boolean  @default(true)
+  isItemVariable Boolean  @default(false)
   sortOrder      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
-  isItemVariable Boolean  @default(false)
 
   @@unique([templateFor, key])
   @@index([templateFor])
@@ -2714,28 +2715,28 @@ model PrintTemplateVariable {
 
 model AuditLog {
   id              Int      @id @default(autoincrement())
-  metadata        Json?
-  actionCode      String   @map("action_code")
   actionType      String   @map("action_type")
-  branchId        Int?     @map("branch_id")
-  branchName      String?  @map("branch_name")
-  createdAt       DateTime @default(now()) @map("created_at")
-  deviceInfo      Json?    @map("device_info")
-  entityCode      String?  @map("entity_code")
-  entityId        String?  @map("entity_id")
+  actionCode      String   @map("action_code")
   entityType      String   @map("entity_type")
-  ipAddress       String?  @map("ip_address")
-  message         String
-  messageParams   Json?    @map("message_params")
-  messageTemplate String?  @map("message_template")
-  requestId       String?  @map("request_id")
-  userAgent       String?  @map("user_agent")
-  userId          Int      @map("user_id")
-  userName        String   @map("user_name")
+  entityId        String?  @map("entity_id")
+  entityCode      String?  @map("entity_code")
   category        String?  @map("category")
-  changes         Json?    @map("changes")
   severity        String   @default("info") @map("severity")
   snapshot        Json?    @map("snapshot")
+  changes         Json?    @map("changes")
+  message         String
+  messageTemplate String?  @map("message_template")
+  messageParams   Json?    @map("message_params")
+  userId          Int      @map("user_id")
+  userName        String   @map("user_name")
+  branchId        Int?     @map("branch_id")
+  branchName      String?  @map("branch_name")
+  ipAddress       String?  @map("ip_address")
+  userAgent       String?  @map("user_agent")
+  requestId       String?  @map("request_id")
+  deviceInfo      Json?    @map("device_info")
+  metadata        Json?
+  createdAt       DateTime @default(now()) @map("created_at")
   branch          Branch?  @relation("AuditLogBranch", fields: [branchId], references: [id])
   user            User     @relation("AuditLogUser", fields: [userId], references: [id])
 
@@ -2760,6 +2761,7 @@ model ReturnOrder {
   statusValue           String?
   totalReturnAmount     Decimal             @default(0)
   refundAmount          Decimal             @default(0)
+  refundType            String?
   refundedAmount        Decimal             @default(0)
   note                  String?
   receivedById          Int?
@@ -2775,7 +2777,6 @@ model ReturnOrder {
   customerDebtSnapshot  Decimal?            @db.Decimal(15, 2)
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
-  refundType            String?
   cashFlowId            Int?
   images                String?
   stockImages           String?
@@ -2802,6 +2803,8 @@ model ReturnOrder {
 model ReturnOrderDetail {
   id                     Int         @id @default(autoincrement())
   returnOrderId          Int
+  invoiceId              Int?
+  invoiceCode            String
   productId              Int
   productCode            String
   productName            String
@@ -2814,8 +2817,6 @@ model ReturnOrderDetail {
   note                   String?
   createdAt              DateTime    @default(now())
   updatedAt              DateTime    @updatedAt
-  invoiceCode            String
-  invoiceId              Int?
   damagedQuantity        Decimal     @default(0)
   goodQuantity           Decimal     @default(0)
   nearExpiryQuantity     Decimal     @default(0)
@@ -2976,15 +2977,15 @@ model SepayTransaction {
   bankAccountId        String?   @map("bank_account_id")
   rawPayload           Json?     @map("raw_payload")
   syncedAt             DateTime  @default(now()) @map("synced_at")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
-  assignedAt           DateTime? @map("assigned_at")
-  assignedById         Int?      @map("assigned_by_id")
   assignedCustomerId   Int?      @map("assigned_customer_id")
   assignedCustomerName String?   @map("assigned_customer_name")
+  assignedById         Int?      @map("assigned_by_id")
+  assignedAt           DateTime? @map("assigned_at")
   cashFlowId           Int?      @map("cash_flow_id")
-  confirmedAt          DateTime? @map("confirmed_at")
   confirmedById        Int?      @map("confirmed_by_id")
+  confirmedAt          DateTime? @map("confirmed_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
   hiddenAt             DateTime? @map("hidden_at")
   hiddenById           Int?      @map("hidden_by_id")
 
@@ -3201,8 +3202,14 @@ model Contract {
   title              String
   /// Nguồn tạo: "template" (từ template Documenso) | "upload" (PDF tải lên)
   source             String    @default("template")
+  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
+  templateId         Int?      @map("template_id")
+  templateTitle      String?   @map("template_title")
   /// Envelope id bên Documenso (vd "envelope_abc123"). Unique để webhook map ngược.
   documensoId        String?   @unique @map("documenso_id")
+  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
+  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
+  externalId         String?   @unique @map("external_id")
   recipientEmail     String?   @map("recipient_email")
   /// Trạng thái: DRAFT | SENT | PARTIALLY_SIGNED | SIGNED | REJECTED | EXPIRED | CANCELLED
   /// - SENT: đã gửi bản ký (Documenso) cho khách hoặc NV (tuỳ thứ tự).
@@ -3220,17 +3227,11 @@ model Contract {
   createdBy          Int?      @map("created_by")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
-  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
-  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
-  externalId         String?   @unique @map("external_id")
-  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
-  templateId         Int?      @map("template_id")
-  templateTitle      String?   @map("template_title")
+  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
+  companySignerEmail String?   @map("company_signer_email")
   /// Loại HĐ: SINGLE (1 bên ký) | DOUBLE (2 bên ký tuần tự). Phát hiện theo
   /// số recipient SIGNER trong template Documenso.
   contractType       String    @default("SINGLE") @map("contract_type")
-  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
-  companySignerEmail String?   @map("company_signer_email")
   creator            User?     @relation("ContractCreator", fields: [createdBy], references: [id])
   customer           Customer  @relation(fields: [customerId], references: [id])
 
@@ -3326,81 +3327,65 @@ model factory_products {
   @@index([role])
 }
 
-enum MisaSyncStatus {
-  PENDING
-  SYNCED
-  FAILED
-  SKIP
-}
-
-// ─── Recipe / Công thức pha chế ─────────────────────────────────────────────
-// Domain độc lập với ProductComponent. Version bất biến sau publish.
-// Cost hybrid: snapshot STALE/FRESH + recalculate thủ công.
-
 model RecipeCategory {
   id        Int       @id @default(autoincrement())
   code      String?   @unique
   name      String
-  type      String? // SEMI_FINISHED | FINISHED_PRODUCT | null = both
+  type      String?
   sortOrder Int       @default(0) @map("sort_order")
   isActive  Boolean   @default(true) @map("is_active")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
-
-  recipes Recipe[]
+  recipes   Recipe[]
 
   @@index([isActive])
   @@map("recipe_categories")
 }
 
 model Recipe {
-  id                Int       @id @default(autoincrement())
-  code              String
-  slug              String?   @unique
-  name              String
-  type              String // SEMI_FINISHED | FINISHED_PRODUCT
-  categoryId        Int?      @map("category_id")
-  outputProductId   Int?      @map("output_product_id")
-  status            String    @default("DRAFT") // DRAFT | PUBLISHED | ARCHIVED
-  publishedAt       DateTime? @map("published_at")
-  publishedBy       Int?      @map("published_by")
-  changeNote        String?   @map("change_note")
-  description       String?
-  quantity          Decimal?  @db.Decimal(18, 6)
-  quantityUnit      String?   @map("quantity_unit")
-  unit              String?
-  storage           String?
-  currencyCode      String    @default("VND") @map("currency_code") @db.Char(3)
-  costStatus        String    @default("FRESH") @map("cost_status") // FRESH | STALE | CALCULATING | ERROR
-  materialCost      Decimal?  @map("material_cost") @db.Decimal(18, 6)
-  semiFinishedCost  Decimal?  @map("semi_finished_cost") @db.Decimal(18, 6)
-  customCost        Decimal?  @map("custom_cost") @db.Decimal(18, 6)
-  totalCost         Decimal?  @map("total_cost") @db.Decimal(18, 6)
-  costPerOutputUnit Decimal?  @map("cost_per_output_unit") @db.Decimal(18, 6)
-  createdBy         Int?      @map("created_by")
-  updatedBy         Int?      @map("updated_by")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
-  deletedAt         DateTime? @map("deleted_at")
-  deletedBy         Int?      @map("deleted_by")
-
-  category                RecipeCategory?    @relation(fields: [categoryId], references: [id], onDelete: SetNull)
-  outputProduct           Product?           @relation("RecipeOutputProduct", fields: [outputProductId], references: [id], onDelete: SetNull)
-  creator                 User?              @relation("RecipeCreator", fields: [createdBy], references: [id])
-  updater                 User?              @relation("RecipeUpdater", fields: [updatedBy], references: [id])
-  publisher               User?              @relation("RecipePublisher", fields: [publishedBy], references: [id])
-  ingredients             RecipeIngredient[]
-  steps                   RecipeStep[]
-  images                  RecipeImage[]
-  // Closure table: recipe này là ancestor (cha) hoặc descendant (con)
+  id                      Int                @id @default(autoincrement())
+  code                    String             @unique
+  slug                    String?            @unique
+  name                    String
+  type                    String
+  categoryId              Int?               @map("category_id")
+  outputProductId         Int?               @map("output_product_id")
+  status                  String             @default("DRAFT")
+  publishedAt             DateTime?          @map("published_at")
+  publishedBy             Int?               @map("published_by")
+  changeNote              String?            @map("change_note")
+  description             String?
+  quantity                Decimal?           @db.Decimal(18, 6)
+  quantityUnit            String?            @map("quantity_unit")
+  unit                    String?
+  storage                 String?
+  currencyCode            String             @default("VND") @map("currency_code") @db.Char(3)
+  costStatus              String             @default("FRESH") @map("cost_status")
+  materialCost            Decimal?           @map("material_cost") @db.Decimal(18, 6)
+  semiFinishedCost        Decimal?           @map("semi_finished_cost") @db.Decimal(18, 6)
+  customCost              Decimal?           @map("custom_cost") @db.Decimal(18, 6)
+  totalCost               Decimal?           @map("total_cost") @db.Decimal(18, 6)
+  costPerOutputUnit       Decimal?           @map("cost_per_output_unit") @db.Decimal(18, 6)
+  createdBy               Int?               @map("created_by")
+  updatedBy               Int?               @map("updated_by")
+  createdAt               DateTime           @default(now()) @map("created_at")
+  updatedAt               DateTime           @updatedAt @map("updated_at")
+  deletedAt               DateTime?          @map("deleted_at")
+  deletedBy               Int?               @map("deleted_by")
+  comments                RecipeComment[]
   ancestorDeps            RecipeDependency[] @relation("RecipeAncestor")
   descendantDeps          RecipeDependency[] @relation("RecipeDescendant")
-  // Semi-finished references from other recipe ingredients
+  images                  RecipeImage[]
+  ingredients             RecipeIngredient[]
   referencedByIngredients RecipeIngredient[] @relation("RecipeIngredientSemi")
-  comments                RecipeComment[]
+  steps                   RecipeStep[]
+  category                RecipeCategory?    @relation(fields: [categoryId], references: [id])
+  creator                 User?              @relation("RecipeCreator", fields: [createdBy], references: [id])
+  outputProduct           Product?           @relation("RecipeOutputProduct", fields: [outputProductId], references: [id])
+  publisher               User?              @relation("RecipePublisher", fields: [publishedBy], references: [id])
+  updater                 User?              @relation("RecipeUpdater", fields: [updatedBy], references: [id])
 
-  @@unique([code])
   @@index([type, status])
   @@index([categoryId])
   @@index([outputProductId])
@@ -3416,9 +3401,8 @@ model RecipeComment {
   content   String
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-
-  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
-  author User   @relation("RecipeCommentAuthor", fields: [authorId], references: [id], onDelete: Restrict)
+  author    User     @relation("RecipeCommentAuthor", fields: [authorId], references: [id])
+  recipe    Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
 
   @@index([recipeId, createdAt])
   @@index([authorId])
@@ -3426,32 +3410,31 @@ model RecipeComment {
 }
 
 model RecipeIngredient {
-  id                  Int      @id @default(autoincrement())
-  recipeId            Int      @map("recipe_id")
-  sourceType          String   @map("source_type") // PRODUCT | SEMI_FINISHED | CUSTOM
-  productId           Int?     @map("product_id")
-  recipeReferenceId   Int?     @map("recipe_reference_id")
-  ingredientId        Int?     @map("ingredient_id")
-  customName          String?  @map("custom_name")
-  customUnit          String?  @map("custom_unit")
-  customPrice         Decimal? @map("custom_price") @db.Decimal(18, 6)
-  quantity            Decimal  @db.Decimal(18, 6)
-  unit                String? // đơn vị nhập trong recipe
-  includeInCost       Boolean  @default(true) @map("include_in_cost")
-  isInternal          Boolean  @default(false) @map("is_internal")
-  isTemporary         Boolean  @default(false) @map("is_temporary")
+  id                  Int         @id @default(autoincrement())
+  recipeId            Int         @map("recipe_id")
+  sourceType          String      @map("source_type")
+  productId           Int?        @map("product_id")
+  recipeReferenceId   Int?        @map("recipe_reference_id")
+  ingredientId        Int?        @map("ingredient_id")
+  customName          String?     @map("custom_name")
+  customUnit          String?     @map("custom_unit")
+  customPrice         Decimal?    @map("custom_price") @db.Decimal(18, 6)
+  quantity            Decimal     @db.Decimal(18, 6)
+  unit                String?
+  includeInCost       Boolean     @default(true) @map("include_in_cost")
+  isInternal          Boolean     @default(false) @map("is_internal")
+  isTemporary         Boolean     @default(false) @map("is_temporary")
   note                String?
-  sortOrder           Int      @default(0) @map("sort_order")
-  costSnapshot        Decimal? @map("cost_snapshot") @db.Decimal(18, 6)
-  unitCostSnapshot    Decimal? @map("unit_cost_snapshot") @db.Decimal(18, 6)
-  priceSourceSnapshot Json?    @map("price_source_snapshot")
-  createdAt           DateTime @default(now()) @map("created_at")
-  updatedAt           DateTime @updatedAt @map("updated_at")
-
-  recipe          Recipe      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
-  product         Product?    @relation("RecipeIngredientProduct", fields: [productId], references: [id], onDelete: Restrict)
-  recipeReference Recipe?     @relation("RecipeIngredientSemi", fields: [recipeReferenceId], references: [id], onDelete: Restrict)
-  ingredient      Ingredient? @relation(fields: [ingredientId], references: [id], onDelete: SetNull)
+  sortOrder           Int         @default(0) @map("sort_order")
+  costSnapshot        Decimal?    @map("cost_snapshot") @db.Decimal(18, 6)
+  unitCostSnapshot    Decimal?    @map("unit_cost_snapshot") @db.Decimal(18, 6)
+  priceSourceSnapshot Json?       @map("price_source_snapshot")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  updatedAt           DateTime    @updatedAt @map("updated_at")
+  ingredient          Ingredient? @relation(fields: [ingredientId], references: [id])
+  product             Product?    @relation("RecipeIngredientProduct", fields: [productId], references: [id], onDelete: Restrict)
+  recipe              Recipe      @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  recipeReference     Recipe?     @relation("RecipeIngredientSemi", fields: [recipeReferenceId], references: [id], onDelete: Restrict)
 
   @@index([recipeId, sortOrder])
   @@index([productId])
@@ -3470,8 +3453,7 @@ model RecipeStep {
   notes     String?
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
-
-  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  recipe    Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
 
   @@index([recipeId, sortOrder])
   @@map("recipe_steps")
@@ -3480,15 +3462,14 @@ model RecipeStep {
 model RecipeImage {
   id        Int      @id @default(autoincrement())
   recipeId  Int      @map("recipe_id")
-  mediaType String   @default("IMAGE") @map("media_type") // IMAGE | VIDEO
+  mediaType String   @default("IMAGE") @map("media_type")
   fileUrl   String   @map("file_url")
   fileName  String?  @map("file_name")
   mimeType  String?  @map("mime_type")
   altText   String?  @map("alt_text")
   sortOrder Int      @default(0) @map("sort_order")
   createdAt DateTime @default(now()) @map("created_at")
-
-  recipe Recipe @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  recipe    Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
 
   @@index([recipeId, sortOrder])
   @@map("recipe_images")
@@ -3496,25 +3477,24 @@ model RecipeImage {
 
 /// Thư viện custom ingredient (nguyên liệu ngoài Product)
 model Ingredient {
-  id                   Int       @id @default(autoincrement())
+  id                   Int                @id @default(autoincrement())
   code                 String?
   name                 String
-  baseUnit             String?   @map("base_unit")
-  defaultPrice         Decimal?  @map("default_price") @db.Decimal(18, 6)
-  currencyCode         String    @default("VND") @map("currency_code") @db.Char(3)
-  includeInCostDefault Boolean   @default(true) @map("include_in_cost_default")
-  inventoryManaged     Boolean   @default(false) @map("inventory_managed")
-  isInternal           Boolean   @default(false) @map("is_internal")
+  baseUnit             String?            @map("base_unit")
+  defaultPrice         Decimal?           @map("default_price") @db.Decimal(18, 6)
+  currencyCode         String             @default("VND") @map("currency_code") @db.Char(3)
+  includeInCostDefault Boolean            @default(true) @map("include_in_cost_default")
+  inventoryManaged     Boolean            @default(false) @map("inventory_managed")
+  isInternal           Boolean            @default(false) @map("is_internal")
   notes                String?
-  createdBy            Int?      @map("created_by")
-  updatedBy            Int?      @map("updated_by")
-  createdAt            DateTime  @default(now()) @map("created_at")
-  updatedAt            DateTime  @updatedAt @map("updated_at")
-  deletedAt            DateTime? @map("deleted_at")
-
-  creator     User?              @relation("IngredientCreator", fields: [createdBy], references: [id])
-  updater     User?              @relation("IngredientUpdater", fields: [updatedBy], references: [id])
-  ingredients RecipeIngredient[]
+  createdBy            Int?               @map("created_by")
+  updatedBy            Int?               @map("updated_by")
+  createdAt            DateTime           @default(now()) @map("created_at")
+  updatedAt            DateTime           @updatedAt @map("updated_at")
+  deletedAt            DateTime?          @map("deleted_at")
+  creator              User?              @relation("IngredientCreator", fields: [createdBy], references: [id])
+  updater              User?              @relation("IngredientUpdater", fields: [updatedBy], references: [id])
+  ingredients          RecipeIngredient[]
 
   @@index([name])
   @@index([deletedAt])
@@ -3526,44 +3506,35 @@ model RecipeDependency {
   id                 Int      @id @default(autoincrement())
   ancestorRecipeId   Int      @map("ancestor_recipe_id")
   descendantRecipeId Int      @map("descendant_recipe_id")
-  depth              Int // 1 = direct edge
+  depth              Int
   isDirect           Boolean  @default(false) @map("is_direct")
   createdAt          DateTime @default(now()) @map("created_at")
-
-  ancestor   Recipe @relation("RecipeAncestor", fields: [ancestorRecipeId], references: [id], onDelete: Cascade)
-  descendant Recipe @relation("RecipeDescendant", fields: [descendantRecipeId], references: [id], onDelete: Cascade)
+  ancestor           Recipe   @relation("RecipeAncestor", fields: [ancestorRecipeId], references: [id], onDelete: Cascade)
+  descendant         Recipe   @relation("RecipeDescendant", fields: [descendantRecipeId], references: [id], onDelete: Cascade)
 
   @@unique([ancestorRecipeId, descendantRecipeId, depth])
   @@index([descendantRecipeId])
   @@map("recipe_dependencies")
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PURCHASING PLANNING — Dự kiến đặt hàng
-// Tham chiếu: docs/purchasing-planning-technical-design.md §4 (Database Design)
-// ═══════════════════════════════════════════════════════════════════════════
-
 /// Cấu hình tham số tính toán theo EAV (TD §4.2).
 /// Độ ưu tiên khi resolve: SKU > SUPPLIER > CATEGORY > GLOBAL.
 model PlanningConfig {
-  id Int @id @default(autoincrement())
-
+  id         Int      @id @default(autoincrement())
   /// GLOBAL | CATEGORY | SUPPLIER | SKU
-  scopeType  String  @map("scope_type") @db.VarChar(20)
+  scopeType  String   @map("scope_type") @db.VarChar(20)
   /// null khi scopeType = GLOBAL; FK mềm tới category/supplier/product
-  scopeId    Int?    @map("scope_id")
+  scopeId    Int?     @map("scope_id")
   /// leadTimeDays, safetyDays, coverageDays, growthFactor, moq, packSize...
-  paramKey   String  @map("param_key") @db.VarChar(50)
-  paramValue Decimal @map("param_value") @db.Decimal(18, 4)
-
+  paramKey   String   @map("param_key") @db.VarChar(50)
+  paramValue Decimal  @map("param_value") @db.Decimal(18, 4)
   /// Soft delete — chỉ bản ghi is_active = true mới được resolve
-  isActive Boolean @default(true) @map("is_active")
-  note     String?
-
-  createdBy Int?     @map("created_by")
-  updatedBy Int?     @map("updated_by")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  isActive   Boolean  @default(true) @map("is_active")
+  note       String?
+  createdBy  Int?     @map("created_by")
+  updatedBy  Int?     @map("updated_by")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
 
   @@index([scopeType, scopeId, paramKey])
   @@index([paramKey])
@@ -3572,29 +3543,24 @@ model PlanningConfig {
 
 /// Mỗi lần chạy tính toán. Đồng thời là CƠ CHẾ LOCK chống chạy trùng (TD §4.3).
 model CalculationRun {
-  id Int @id @default(autoincrement())
-
+  id             Int                     @id @default(autoincrement())
   /// DAILY | MANUAL | SINGLE_SKU
-  runType      String   @map("run_type") @db.VarChar(20)
+  runType        String                  @map("run_type") @db.VarChar(20)
   /// RUNNING | COMPLETED | FAILED | PARTIAL
-  status       String   @db.VarChar(20)
+  status         String                  @db.VarChar(20)
   /// Ngày dữ liệu (thường = ngày chạy)
-  snapshotDate DateTime @map("snapshot_date") @db.Date
-
-  startedAt   DateTime  @default(now()) @map("started_at")
-  completedAt DateTime? @map("completed_at")
-
-  skuTotal   Int @default(0) @map("sku_total")
-  skuSuccess Int @default(0) @map("sku_success")
-  skuFailed  Int @default(0) @map("sku_failed")
-  skuBlocked Int @default(0) @map("sku_blocked")
-
-  durationMs    Int?  @map("duration_ms")
-  errorSummary  Json? @map("error_summary")
-  triggeredBy   Int?  @map("triggered_by")
+  snapshotDate   DateTime                @map("snapshot_date") @db.Date
+  startedAt      DateTime                @default(now()) @map("started_at")
+  completedAt    DateTime?               @map("completed_at")
+  skuTotal       Int                     @default(0) @map("sku_total")
+  skuSuccess     Int                     @default(0) @map("sku_success")
+  skuFailed      Int                     @default(0) @map("sku_failed")
+  skuBlocked     Int                     @default(0) @map("sku_blocked")
+  durationMs     Int?                    @map("duration_ms")
+  errorSummary   Json?                   @map("error_summary")
+  triggeredBy    Int?                    @map("triggered_by")
   /// Snapshot toàn bộ config global tại thời điểm chạy
-  configVersion Json? @map("config_version")
-
+  configVersion  Json?                   @map("config_version")
   recommendation PurchaseRecommendation?
 
   @@index([status, startedAt(sort: Desc)])
@@ -3604,23 +3570,19 @@ model CalculationRun {
 
 /// Một đợt đề xuất đặt hàng (TD §4.6).
 model PurchaseRecommendation {
-  id Int @id @default(autoincrement())
-
-  runId        Int      @unique @map("run_id")
-  snapshotDate DateTime @map("snapshot_date") @db.Date
+  id                  Int                  @id @default(autoincrement())
+  runId               Int                  @unique @map("run_id")
+  snapshotDate        DateTime             @map("snapshot_date") @db.Date
   /// ACTIVE | SUPERSEDED
-  status       String   @default("ACTIVE") @db.VarChar(20)
-
-  totalSku            Int      @default(0) @map("total_sku")
-  needOrderSku        Int      @default(0) @map("need_order_sku")
-  criticalCount       Int      @default(0) @map("critical_count")
-  highCount           Int      @default(0) @map("high_count")
-  totalEstimatedValue Decimal? @map("total_estimated_value") @db.Decimal(18, 2)
-
-  createdAt DateTime @default(now()) @map("created_at")
-
-  run   CalculationRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
-  items RecommendationItem[]
+  status              String               @default("ACTIVE") @db.VarChar(20)
+  totalSku            Int                  @default(0) @map("total_sku")
+  needOrderSku        Int                  @default(0) @map("need_order_sku")
+  criticalCount       Int                  @default(0) @map("critical_count")
+  highCount           Int                  @default(0) @map("high_count")
+  totalEstimatedValue Decimal?             @map("total_estimated_value") @db.Decimal(18, 2)
+  createdAt           DateTime             @default(now()) @map("created_at")
+  run                 CalculationRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  items               RecommendationItem[]
 
   @@index([snapshotDate(sort: Desc), status])
   @@map("purchase_recommendation")
@@ -3629,92 +3591,71 @@ model PurchaseRecommendation {
 /// Đề xuất cho từng SKU — BẢNG TRUNG TÂM của module (TD §4.7).
 /// Cố ý denormalize product_code/product_name/supplier_name để tránh join khi đọc.
 model RecommendationItem {
-  id BigInt @id @default(autoincrement())
-
-  recommendationId Int @map("recommendation_id")
-  productId        Int @map("product_id")
-
-  productCode String  @map("product_code") @db.VarChar(50)
-  productName String  @map("product_name") @db.VarChar(500)
-  unit        String? @db.VarChar(50)
-
+  id                    BigInt                 @id @default(autoincrement())
+  recommendationId      Int                    @map("recommendation_id")
+  productId             Int                    @map("product_id")
+  productCode           String                 @map("product_code") @db.VarChar(50)
+  productName           String                 @map("product_name") @db.VarChar(500)
+  unit                  String?                @db.VarChar(50)
   /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
-  parentName    String? @map("parent_name") @db.VarChar(255)
-  middleName    String? @map("middle_name") @db.VarChar(255)
-  childName     String? @map("child_name") @db.VarChar(255)
-  tradeMarkId   Int?    @map("trade_mark_id")
-  tradeMarkName String? @map("trade_mark_name") @db.VarChar(255)
-
+  parentName            String?                @map("parent_name") @db.VarChar(255)
+  middleName            String?                @map("middle_name") @db.VarChar(255)
+  childName             String?                @map("child_name") @db.VarChar(255)
+  tradeMarkId           Int?                   @map("trade_mark_id")
+  tradeMarkName         String?                @map("trade_mark_name") @db.VarChar(255)
   /// null → cờ MISSING_SUPPLIER (Product không có supplierId, suy từ lịch sử đặt)
-  supplierId   Int?    @map("supplier_id")
-  supplierName String? @map("supplier_name") @db.VarChar(255)
-
-  // ── Kết quả tính ──
-  forecastDailyDemand Decimal  @map("forecast_daily_demand") @db.Decimal(18, 4)
+  supplierId            Int?                   @map("supplier_id")
+  supplierName          String?                @map("supplier_name") @db.VarChar(255)
+  forecastDailyDemand   Decimal                @map("forecast_daily_demand") @db.Decimal(18, 4)
   /// HIGH | MEDIUM | LOW | VERY_LOW | NO_DATA
-  confidence          String   @db.VarChar(15)
+  confidence            String                 @db.VarChar(15)
   /// INVENTORY_LOG | INVOICE_DETAIL | MIXED | NONE
-  demandSource        String   @map("demand_source") @db.VarChar(20)
-  ma30                Decimal? @db.Decimal(18, 4)
-  ma60                Decimal? @db.Decimal(18, 4)
-  ma90                Decimal? @db.Decimal(18, 4)
-  trendRatio          Decimal? @map("trend_ratio") @db.Decimal(10, 4)
-
-  leadTimeDays   Int    @map("lead_time_days") @db.SmallInt
+  demandSource          String                 @map("demand_source") @db.VarChar(20)
+  ma30                  Decimal?               @db.Decimal(18, 4)
+  ma60                  Decimal?               @db.Decimal(18, 4)
+  ma90                  Decimal?               @db.Decimal(18, 4)
+  trendRatio            Decimal?               @map("trend_ratio") @db.Decimal(10, 4)
+  leadTimeDays          Int                    @map("lead_time_days") @db.SmallInt
   /// GLOBAL | CATEGORY | SUPPLIER | SKU | DERIVED
-  leadTimeSource String @map("lead_time_source") @db.VarChar(15)
-  safetyDays     Int    @map("safety_days") @db.SmallInt
-  coverageDays   Int    @map("coverage_days") @db.SmallInt
-
-  leadTimeDemand Decimal @map("lead_time_demand") @db.Decimal(18, 4)
-  safetyBuffer   Decimal @map("safety_buffer") @db.Decimal(18, 4)
-  reorderPoint   Decimal @map("reorder_point") @db.Decimal(18, 4)
-
-  // ── Tồn kho ──
-  physicalStock  Decimal @map("physical_stock") @db.Decimal(18, 4)
-  reservedStock  Decimal @map("reserved_stock") @db.Decimal(18, 4)
-  availableStock Decimal @map("available_stock") @db.Decimal(18, 4)
-  incomingTotal  Decimal @map("incoming_total") @db.Decimal(18, 4)
-
-  inventoryPosition Decimal @map("inventory_position") @db.Decimal(18, 4)
+  leadTimeSource        String                 @map("lead_time_source") @db.VarChar(15)
+  safetyDays            Int                    @map("safety_days") @db.SmallInt
+  coverageDays          Int                    @map("coverage_days") @db.SmallInt
+  leadTimeDemand        Decimal                @map("lead_time_demand") @db.Decimal(18, 4)
+  safetyBuffer          Decimal                @map("safety_buffer") @db.Decimal(18, 4)
+  reorderPoint          Decimal                @map("reorder_point") @db.Decimal(18, 4)
+  physicalStock         Decimal                @map("physical_stock") @db.Decimal(18, 4)
+  reservedStock         Decimal                @map("reserved_stock") @db.Decimal(18, 4)
+  availableStock        Decimal                @map("available_stock") @db.Decimal(18, 4)
+  incomingTotal         Decimal                @map("incoming_total") @db.Decimal(18, 4)
+  inventoryPosition     Decimal                @map("inventory_position") @db.Decimal(18, 4)
   /// Dương = cần đặt
-  reorderGap        Decimal @map("reorder_gap") @db.Decimal(18, 4)
-  needsOrder        Boolean @map("needs_order")
-
-  // ── SOQ ──
-  soqRaw             Decimal  @map("soq_raw") @db.Decimal(18, 4)
-  suggestedQuantity  Decimal  @map("suggested_quantity") @db.Decimal(18, 4)
-  suggestedPackCount Decimal? @map("suggested_pack_count") @db.Decimal(12, 2)
-  packSize           Decimal  @map("pack_size") @db.Decimal(12, 4)
-  moqApplied         Decimal? @map("moq_applied") @db.Decimal(18, 4)
-  estimatedUnitPrice Decimal? @map("estimated_unit_price") @db.Decimal(18, 2)
-  estimatedValue     Decimal? @map("estimated_value") @db.Decimal(18, 2)
-
-  // ── Phân loại ──
+  reorderGap            Decimal                @map("reorder_gap") @db.Decimal(18, 4)
+  needsOrder            Boolean                @map("needs_order")
+  soqRaw                Decimal                @map("soq_raw") @db.Decimal(18, 4)
+  suggestedQuantity     Decimal                @map("suggested_quantity") @db.Decimal(18, 4)
+  suggestedPackCount    Decimal?               @map("suggested_pack_count") @db.Decimal(12, 2)
+  packSize              Decimal                @map("pack_size") @db.Decimal(12, 4)
+  moqApplied            Decimal?               @map("moq_applied") @db.Decimal(18, 4)
+  estimatedUnitPrice    Decimal?               @map("estimated_unit_price") @db.Decimal(18, 2)
+  estimatedValue        Decimal?               @map("estimated_value") @db.Decimal(18, 2)
   /// CRITICAL | HIGH | MEDIUM | LOW | HEALTHY | OVERSTOCK | NO_DATA
-  priority              String    @db.VarChar(15)
-  priorityRank          Int       @map("priority_rank") @db.SmallInt
+  priority              String                 @db.VarChar(15)
+  priorityRank          Int                    @map("priority_rank") @db.SmallInt
   /// HIGH | MEDIUM | LOW | UNRELIABLE
-  reliability           String    @db.VarChar(15)
-  urgencyRatio          Decimal?  @map("urgency_ratio") @db.Decimal(10, 4)
-  daysUntilStockout     Int?      @map("days_until_stockout") @db.SmallInt
-  daysOfSupply          Decimal?  @map("days_of_supply") @db.Decimal(10, 2)
-  projectedStockoutDate DateTime? @map("projected_stockout_date") @db.Date
-
-  // ── Trạng thái ──
+  reliability           String                 @db.VarChar(15)
+  urgencyRatio          Decimal?               @map("urgency_ratio") @db.Decimal(10, 4)
+  daysUntilStockout     Int?                   @map("days_until_stockout") @db.SmallInt
+  daysOfSupply          Decimal?               @map("days_of_supply") @db.Decimal(10, 2)
+  projectedStockoutDate DateTime?              @map("projected_stockout_date") @db.Date
   /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
-  status          String @default("PENDING") @db.VarChar(15)
-  orderSupplierId Int?   @map("order_supplier_id")
-
-  // ── Hiển thị & explainability ──
+  status                String                 @default("PENDING") @db.VarChar(15)
+  orderSupplierId       Int?                   @map("order_supplier_id")
   /// Câu kết luận tiếng Việt do backend sinh (PRD §12.4)
-  summaryText      String @map("summary_text")
+  summaryText           String                 @map("summary_text")
   /// Toàn bộ input + từng bước tính + flags
-  calculationTrace Json   @map("calculation_trace")
-
-  createdAt DateTime @default(now()) @map("created_at")
-
-  recommendation PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  calculationTrace      Json                   @map("calculation_trace")
+  createdAt             DateTime               @default(now()) @map("created_at")
+  recommendation        PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
 
   @@unique([recommendationId, productId])
   @@index([recommendationId, priorityRank, daysUntilStockout])
@@ -3722,4 +3663,11 @@ model RecommendationItem {
   @@index([recommendationId, supplierId])
   @@index([recommendationId, status])
   @@map("recommendation_item")
+}
+
+enum MisaSyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  SKIP
 }
