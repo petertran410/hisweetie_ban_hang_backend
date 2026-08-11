@@ -563,8 +563,7 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
   STOCK_CONDITION_TRANSFER_UPDATE: {
-    template:
-      'Sửa phiếu chuyển loại tồn {code}: {changeSummary}',
+    template: 'Sửa phiếu chuyển loại tồn {code}: {changeSummary}',
     category: 'inventory',
     severity: 'warning',
   },

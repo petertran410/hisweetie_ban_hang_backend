@@ -22,7 +22,10 @@ export class PublicRecipesController {
     @Query() query: PublicRecipePdfQueryDto,
     @Res() response: Response,
   ) {
-    const { buffer, filename } = await this.recipes.generatePdf(slug, query.variant);
+    const { buffer, filename } = await this.recipes.generatePdf(
+      slug,
+      query.variant,
+    );
     response.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="${filename}"`,

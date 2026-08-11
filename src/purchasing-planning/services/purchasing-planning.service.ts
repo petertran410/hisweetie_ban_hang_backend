@@ -564,7 +564,7 @@ export class PurchasingPlanningService {
         ? firstSale
         : product.createdAt;
     const dates = this.calendar(firstActivity, snapshotDate);
-    let demand = resolveDemand({
+    const demand = resolveDemand({
       invoiceDetails: invoiceRows.map((row: any) => ({
         date: row.invoice.purchaseDate,
         quantity: Number(row.quantity),
@@ -1032,7 +1032,7 @@ export class PurchasingPlanningService {
   }
 
   private mapListItem(item: any) {
-    const trace = item.calculationTrace as any;
+    const trace = item.calculationTrace;
     return {
       itemId: Number(item.id),
       productId: item.productId,

@@ -82,7 +82,6 @@ export class ConsignmentItemDto {
   @IsOptional()
   @IsIn(['normal', 'damaged', 'near_expiry'])
   conditionType?: string;
-
 }
 
 export class CreateConsignmentDto {

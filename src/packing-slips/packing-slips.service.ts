@@ -504,7 +504,9 @@ export class PackingSlipsService {
                 err,
               );
             });
-        } else if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+        } else if (
+          this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)
+        ) {
           void this.n8nNotifyService
             .notifyBibiDelivery(fullPackingSlip as any)
             .catch((err) => {
@@ -541,9 +543,9 @@ export class PackingSlipsService {
     const hasConsignments = (fullPackingSlip.invoices || []).some(
       (item: any) => item.consignmentId != null,
     );
-    const isBibi = !hasConsignments && this.n8nNotifyService.isBibiPackingSlip(
-      fullPackingSlip as any,
-    );
+    const isBibi =
+      !hasConsignments &&
+      this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any);
 
     const result = hasConsignments
       ? await this.n8nNotifyService.notifyConsignmentDelivery(
@@ -616,7 +618,9 @@ export class PackingSlipsService {
             fullPackingSlip as any,
           )
         : isBibi
-          ? await this.n8nNotifyService.notifyBibiDelivery(fullPackingSlip as any)
+          ? await this.n8nNotifyService.notifyBibiDelivery(
+              fullPackingSlip as any,
+            )
           : await this.n8nNotifyService.notifyDelivery(fullPackingSlip as any);
       if (!result.ok && !result.skipped) {
         console.error(

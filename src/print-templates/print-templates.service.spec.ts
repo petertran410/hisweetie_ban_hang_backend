@@ -4,9 +4,7 @@ describe('PrintTemplatesService', () => {
   const createService = (itemKeys: string[] = []) => {
     const prisma = {
       printTemplateVariable: {
-        findMany: jest
-          .fn()
-          .mockResolvedValue(itemKeys.map((key) => ({ key }))),
+        findMany: jest.fn().mockResolvedValue(itemKeys.map((key) => ({ key }))),
       },
     };
 
@@ -44,9 +42,7 @@ describe('PrintTemplatesService', () => {
         'order',
       );
 
-      expect(content).toContain(
-        '<td>Dễ vỡ<br />Để thẳng đứng</td>',
-      );
+      expect(content).toContain('<td>Dễ vỡ<br />Để thẳng đứng</td>');
     });
 
     it('escapes HTML in notes but keeps intentional HTML variables', async () => {
@@ -116,9 +112,7 @@ describe('PrintTemplatesService', () => {
     });
 
     it('styles gift and discounted-buy promotion labels', () => {
-      expect(
-        mapItem({ lineType: 'gift', isGift: true }).Ten_Hang_Hoa,
-      ).toBe(
+      expect(mapItem({ lineType: 'gift', isGift: true }).Ten_Hang_Hoa).toBe(
         'Trà đào <span style="font-size:7pt;font-weight:bold;font-style:italic">(Quà KM)</span>',
       );
       expect(mapItem({ lineType: 'discounted_buy' }).Ten_Hang_Hoa).toBe(

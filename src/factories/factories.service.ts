@@ -145,6 +145,12 @@ export class FactoriesService {
       code?: string;
       name: string;
       description?: string;
+      strategicLevel?: string;
+      wechat?: string;
+      email?: string;
+      moq?: number;
+      leadtimeDays?: number;
+      paymentTerm?: string;
       country?: string;
       currency?: string;
       contactNumber?: string;
@@ -193,6 +199,12 @@ export class FactoriesService {
         code: dto.code?.trim() || null,
         name,
         description: dto.description,
+        strategicLevel: dto.strategicLevel,
+        wechat: dto.wechat,
+        email: dto.email,
+        moq: dto.moq,
+        leadtimeDays: dto.leadtimeDays,
+        paymentTerm: dto.paymentTerm,
         country: dto.country,
         currency: dto.currency || 'VND',
         contactNumber: dto.contactNumber,
@@ -210,6 +222,12 @@ export class FactoriesService {
       code?: string;
       name?: string;
       description?: string;
+      strategicLevel?: string;
+      wechat?: string;
+      email?: string;
+      moq?: number;
+      leadtimeDays?: number;
+      paymentTerm?: string;
       country?: string;
       currency?: string;
       contactNumber?: string;
@@ -246,6 +264,13 @@ export class FactoriesService {
       data.name = name;
     }
     if (dto.description !== undefined) data.description = dto.description;
+    if (dto.strategicLevel !== undefined)
+      data.strategicLevel = dto.strategicLevel;
+    if (dto.wechat !== undefined) data.wechat = dto.wechat;
+    if (dto.email !== undefined) data.email = dto.email;
+    if (dto.moq !== undefined) data.moq = dto.moq;
+    if (dto.leadtimeDays !== undefined) data.leadtimeDays = dto.leadtimeDays;
+    if (dto.paymentTerm !== undefined) data.paymentTerm = dto.paymentTerm;
     if (dto.country !== undefined) data.country = dto.country;
     if (dto.currency !== undefined) data.currency = dto.currency;
     if (dto.contactNumber !== undefined) data.contactNumber = dto.contactNumber;

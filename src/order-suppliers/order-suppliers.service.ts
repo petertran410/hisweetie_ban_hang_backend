@@ -14,6 +14,7 @@ import {
   OrderSupplierQueryDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { FactoryProductsService } from '../factory-products/factory-products.service';
 import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
@@ -54,6 +55,7 @@ export class OrderSuppliersService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private factoryProductsService: FactoryProductsService,
   ) {}
 
   /**
@@ -1088,6 +1090,7 @@ export class OrderSuppliersService {
             price,
             discount: item.discount || 0,
             subTotal,
+            factoryId: item.factoryId ?? null,
             factoryPrice,
             factorySubTotal,
             description: item.description,
@@ -1165,6 +1168,15 @@ export class OrderSuppliersService {
           items: true,
         },
       });
+
+      if (orderSupplier.status === 1) {
+        await this.factoryProductsService.recordConfirmedOrderSupplierPrices(
+          tx,
+          orderSupplier,
+          userId,
+          orderSupplier.creator?.name,
+        );
+      }
 
       if (dto.paymentAmount && dto.paymentAmount > 0) {
         // Đối xứng `purchase-orders.service.ts`: bắt buộc PDN phải có chi nhánh
@@ -1600,6 +1612,15 @@ export class OrderSuppliersService {
           payments: true,
         },
       });
+
+      if (existing.status !== 1 && updatedOrderSupplier.status === 1) {
+        await this.factoryProductsService.recordConfirmedOrderSupplierPrices(
+          tx,
+          updatedOrderSupplier,
+          userId,
+          updatedOrderSupplier.creator?.name,
+        );
+      }
 
       const user = await tx.user.findUnique({
         where: { id: userId },

@@ -39,6 +39,11 @@ class OrderSupplierItemDto {
 
   @ApiProperty({ required: false })
   @IsOptional()
+  @IsInt()
+  factoryId?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
   @IsNumber()
   factoryPrice?: number;
 

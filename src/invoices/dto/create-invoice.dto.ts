@@ -268,6 +268,18 @@ export class CreateInvoiceFromOrderDto {
   @IsNumber()
   soldById?: number;
 
+  // Giảm giá cấp hóa đơn do user chỉnh ở màn "Tạo hóa đơn" (từ đơn hàng).
+  // Không gửi → BE giữ cơ chế kế thừa "giảm giá còn lại" của đơn gốc.
+  // Có gửi → ưu tiên giá trị này (kể cả 0, nghĩa là bỏ giảm giá).
+  // discountRatio > 0 ⇒ mode %, BE quy đổi ra tiền theo tổng tiền hàng của HĐ.
+  @IsOptional()
+  @IsNumber()
+  discountAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  discountRatio?: number;
+
   // Khi đơn hàng có ít nhất 1 mã xuất thiếu so với số lượng đặt, FE hỏi người dùng
   // có muốn kết thúc đơn hàng không. true => ép hoàn thành (status 3) thay vì Ra 1 phần HĐ (status 6).
   @IsOptional()

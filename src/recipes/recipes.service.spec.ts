@@ -227,7 +227,9 @@ describe('RecipesService — vòng đời publish (không còn version)', () => 
     });
 
     it('từ chối unpublish công thức chưa publish', async () => {
-      const prisma = makePrismaMock({ recipe: baseRecipe({ status: 'DRAFT' }) });
+      const prisma = makePrismaMock({
+        recipe: baseRecipe({ status: 'DRAFT' }),
+      });
       const service = makeService(prisma);
 
       await expect(service.unpublish(1, 1)).rejects.toThrow(
@@ -297,7 +299,9 @@ describe('RecipesService — vòng đời publish (không còn version)', () => 
     });
 
     it('cho phép xóa mềm công thức DRAFT', async () => {
-      const prisma = makePrismaMock({ recipe: baseRecipe({ status: 'DRAFT' }) });
+      const prisma = makePrismaMock({
+        recipe: baseRecipe({ status: 'DRAFT' }),
+      });
       const service = makeService(prisma);
 
       await expect(service.remove(1, 1)).resolves.toEqual({ success: true });

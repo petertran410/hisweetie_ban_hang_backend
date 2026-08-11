@@ -23,10 +23,7 @@ import {
   BUCKET_NEAR_EXPIRY,
   BUCKET_DAMAGED,
 } from '../common/stock-condition-onhand.util';
-import {
-  getActiveLogKeys,
-  isLogActive,
-} from '../common/inventory-onhand.util';
+import { getActiveLogKeys, isLogActive } from '../common/inventory-onhand.util';
 
 // Trạng thái phiếu: 1=Chờ duyệt, 2=Đã duyệt, 3=Đã hủy
 export const CLT_STATUS = {
@@ -151,7 +148,8 @@ export class StockConditionTransfersService {
       where: { id },
       include: INCLUDE_FULL,
     });
-    if (!record) throw new NotFoundException('Phiếu chuyển loại tồn không tồn tại');
+    if (!record)
+      throw new NotFoundException('Phiếu chuyển loại tồn không tồn tại');
     return record;
   }
 
@@ -166,7 +164,9 @@ export class StockConditionTransfersService {
   ) {
     const at = new Date(transferDate);
     if (!branchId || Number.isNaN(at.getTime())) {
-      throw new BadRequestException('Chi nhánh hoặc thời điểm điều chỉnh không hợp lệ');
+      throw new BadRequestException(
+        'Chi nhánh hoặc thời điểm điều chỉnh không hợp lệ',
+      );
     }
 
     const uniqueProductIds = [...new Set(items.map((item) => item.productId))];
@@ -207,7 +207,9 @@ export class StockConditionTransfersService {
           continue;
         }
         if (item.toBucket === BUCKET_NEAR_EXPIRY) {
-          const expectedLot = item.expiryDate ? this.lotKey(item.expiryDate) : null;
+          const expectedLot = item.expiryDate
+            ? this.lotKey(item.expiryDate)
+            : null;
           const logLot = log.expiryDate ? this.lotKey(log.expiryDate) : null;
           if (expectedLot !== logLot) continue;
         }
@@ -340,7 +342,8 @@ export class StockConditionTransfersService {
             ? (totals?.damaged ?? 0)
             : (totals?.promo ?? 0);
         if (item.quantity > current) {
-          const label = item.toBucket === BUCKET_DAMAGED ? 'bục rách' : 'khuyến mãi';
+          const label =
+            item.toBucket === BUCKET_DAMAGED ? 'bục rách' : 'khuyến mãi';
           throw new BadRequestException(
             `${p?.name}: Điều chỉnh giảm ${label} (${item.quantity}) vượt quá tồn hiện có (${current}).`,
           );
@@ -535,11 +538,7 @@ export class StockConditionTransfersService {
             detail.productId,
             transfer.branchId,
           );
-          if (
-            totals.damaged < 0 ||
-            totals.nearExpiry < 0 ||
-            totals.promo < 0
-          ) {
+          if (totals.damaged < 0 || totals.nearExpiry < 0 || totals.promo < 0) {
             throw new BadRequestException(
               `${detail.productName}: Điều chỉnh giảm làm tồn loại tồn âm. Vui lòng kiểm tra lại tồn thực tế.`,
             );
@@ -635,7 +634,9 @@ export class StockConditionTransfersService {
     const matched = logs.filter((l: any) => this.lotKey(l.expiryDate) === lot);
     if (matched.length === 0) return [];
 
-    const invoiceIds = [...new Set(matched.map((l: any) => l.refId))] as number[];
+    const invoiceIds = [
+      ...new Set(matched.map((l: any) => l.refId)),
+    ] as number[];
     const invoices = await tx.invoice.findMany({
       where: { id: { in: invoiceIds }, status: { not: 2 } },
       select: { id: true, code: true, purchaseDate: true },
@@ -646,7 +647,12 @@ export class StockConditionTransfersService {
     // Đúng những dòng hóa đơn của lô này (khớp cả productId và soldExpiryDate).
     const details = await tx.invoiceDetail.findMany({
       where: { invoiceId: { in: [...aliveIds] }, productId },
-      select: { id: true, invoiceId: true, quantity: true, soldExpiryDate: true },
+      select: {
+        id: true,
+        invoiceId: true,
+        quantity: true,
+        soldExpiryDate: true,
+      },
     });
 
     const out = new Map<
@@ -752,21 +758,21 @@ export class StockConditionTransfersService {
           `Dòng #${it.detailId} không thuộc phiếu ${transfer.code}`,
         );
       }
-  // Khi SỬA phiếu, quantity = 0 có nghĩa là toàn bộ số của dòng đã nhập dư
-  // và cần loại hết tác động khỏi sổ cái. Dòng chi tiết vẫn được giữ với số
-  // 0 để bảo toàn lịch sử phiếu; chỉ không tạo log CLT cho dòng đó.
-  if (it.quantity != null && it.quantity < 0) {
-    throw new BadRequestException('Số lượng không được âm');
-  }
-  if (it.quantity != null) {
-    const original = detailMap.get(it.detailId);
-    if (original && it.quantity > Number(original.quantity)) {
-      throw new BadRequestException(
-        `${original.productName}: Số lượng sửa (${it.quantity}) vượt quá số đã ghi ban đầu (${Number(original.quantity)}). Chỉ được sửa giảm.`
-      );
+      // Khi SỬA phiếu, quantity = 0 có nghĩa là toàn bộ số của dòng đã nhập dư
+      // và cần loại hết tác động khỏi sổ cái. Dòng chi tiết vẫn được giữ với số
+      // 0 để bảo toàn lịch sử phiếu; chỉ không tạo log CLT cho dòng đó.
+      if (it.quantity != null && it.quantity < 0) {
+        throw new BadRequestException('Số lượng không được âm');
+      }
+      if (it.quantity != null) {
+        const original = detailMap.get(it.detailId);
+        if (original && it.quantity > Number(original.quantity)) {
+          throw new BadRequestException(
+            `${original.productName}: Số lượng sửa (${it.quantity}) vượt quá số đã ghi ban đầu (${Number(original.quantity)}). Chỉ được sửa giảm.`,
+          );
+        }
+      }
     }
-  }
-}
 
     const isApproved = transfer.status === CLT_STATUS.APPROVED;
 
@@ -1024,7 +1030,8 @@ export class StockConditionTransfersService {
       }),
       messageTemplate: 'STOCK_CONDITION_TRANSFER_UPDATE',
       userId: userId || transfer.createdById || 1,
-      userName: actor?.name || actor?.email || transfer.createdByName || 'System',
+      userName:
+        actor?.name || actor?.email || transfer.createdByName || 'System',
       branchId: transfer.branchId,
     });
 
@@ -1089,11 +1096,7 @@ export class StockConditionTransfersService {
             detail.productId,
             transfer.branchId,
           );
-          if (
-            totals.damaged < 0 ||
-            totals.nearExpiry < 0 ||
-            totals.promo < 0
-          ) {
+          if (totals.damaged < 0 || totals.nearExpiry < 0 || totals.promo < 0) {
             throw new BadRequestException(
               `Không thể hủy: ${detail.productName} đã được bán/xuất từ loại tồn này sau khi duyệt. Hủy sẽ làm tồn loại tồn âm.`,
             );
@@ -1131,7 +1134,8 @@ export class StockConditionTransfersService {
       }),
       messageTemplate: 'STOCK_CONDITION_TRANSFER_CANCEL',
       userId: userId || transfer.createdById || 1,
-      userName: actor?.name || actor?.email || transfer.createdByName || 'System',
+      userName:
+        actor?.name || actor?.email || transfer.createdByName || 'System',
       branchId: transfer.branchId,
     });
 
@@ -1216,9 +1220,7 @@ export class StockConditionTransfersService {
       orderBy: { code: 'desc' },
       select: { code: true },
     });
-    let nextId = last
-      ? parseInt(last.code.replace(prefix, ''), 10) + 1
-      : 1;
+    let nextId = last ? parseInt(last.code.replace(prefix, ''), 10) + 1 : 1;
     let code = `${prefix}${String(nextId).padStart(6, '0')}`;
     // Đảm bảo không đụng mã đã tồn tại (an toàn trước dữ liệu lệch).
     while (

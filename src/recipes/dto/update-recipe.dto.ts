@@ -1,6 +1,20 @@
-import { IsArray, IsIn, IsInt, IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested } from 'class-validator';
+import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsNumber,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
-import { CreateRecipeIngredientDto, CreateRecipeMediaDto, CreateRecipeStepDto } from './create-recipe.dto';
+import {
+  CreateRecipeIngredientDto,
+  CreateRecipeMediaDto,
+  CreateRecipeStepDto,
+} from './create-recipe.dto';
 
 export class UpdateRecipeDto {
   @IsOptional()

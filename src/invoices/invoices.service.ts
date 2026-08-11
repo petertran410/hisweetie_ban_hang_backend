@@ -971,7 +971,8 @@ export class InvoicesService {
         const isGift = !!(it.isGift || (it.lineType || 'normal') === 'gift');
         if (!isGift || it.promotionId == null) continue;
         const pid = Number(it.promotionId);
-        const inner = feGiftQtyByPromoProduct.get(pid) || new Map<number, number>();
+        const inner =
+          feGiftQtyByPromoProduct.get(pid) || new Map<number, number>();
         inner.set(
           Number(it.productId),
           (inner.get(Number(it.productId)) || 0) + Number(it.quantity || 0),
@@ -1005,7 +1006,9 @@ export class InvoicesService {
           totalPrice: manualGift ? 0 : Number(it.totalPrice),
           note: it.note,
           conditionType: it.conditionType || 'normal',
-          soldExpiryDate: it.soldExpiryDate ? new Date(it.soldExpiryDate) : null,
+          soldExpiryDate: it.soldExpiryDate
+            ? new Date(it.soldExpiryDate)
+            : null,
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
           promotionId: derivedNormalStamp ? null : (it.promotionId ?? null),
@@ -2831,8 +2834,25 @@ export class InvoicesService {
         0,
       );
       const remainingDiscount = Number(order.discount) - usedDiscount;
-      const discountForThisInvoice =
-        remainingDiscount > 0 ? remainingDiscount : 0;
+      // Giảm giá cho HĐ này:
+      // - FE gửi discountAmount/discountRatio (user chỉnh tay ở màn tạo HĐ) → ưu tiên,
+      //   kể cả 0 (nghĩa là bỏ giảm giá). ratio > 0 ⇒ mode %, quy đổi sau khi có
+      //   totalAmount (xem tính lại bên dưới).
+      // - Không gửi → giữ cơ chế kế thừa "giảm giá còn lại" của đơn gốc (xuất HĐ
+      //   nhiều lần thì mỗi HĐ chỉ dùng phần chưa dùng).
+      const dtoDiscountRatio =
+        dto.discountRatio != null ? Number(dto.discountRatio) : null;
+      const dtoDiscountAmount =
+        dto.discountAmount != null ? Number(dto.discountAmount) : null;
+      const hasManualDiscount =
+        dtoDiscountRatio != null || dtoDiscountAmount != null;
+      const discountForThisInvoice = hasManualDiscount
+        ? dtoDiscountAmount != null
+          ? dtoDiscountAmount
+          : 0
+        : remainingDiscount > 0
+          ? remainingDiscount
+          : 0;
 
       const code = await this.generateSafeInvoiceCode(tx);
 
@@ -2955,16 +2975,18 @@ export class InvoicesService {
         (dto.appliedPromotions && dto.appliedPromotions.length > 0) ||
         (dto.appliedPromotionIds && dto.appliedPromotionIds.length > 0);
       if (!dto.skipPromotions && hasAppliedPromos) {
-        const promo = await this.processPromotions(tx, {
-          items: itemsToInvoice as any,
-          branchId: order.branchId,
-          customerId: order.customerId ?? undefined,
-          soldById: dto.soldById ?? order.soldById ?? undefined,
-          purchaseDate: new Date().toISOString(),
-          appliedPromotions: dto.appliedPromotions,
-          appliedPromotionIds: dto.appliedPromotionIds,
-        } as any,
-        { reconstructCumulativeChoices: true },
+        const promo = await this.processPromotions(
+          tx,
+          {
+            items: itemsToInvoice as any,
+            branchId: order.branchId,
+            customerId: order.customerId ?? undefined,
+            soldById: dto.soldById ?? order.soldById ?? undefined,
+            purchaseDate: new Date().toISOString(),
+            appliedPromotions: dto.appliedPromotions,
+            appliedPromotionIds: dto.appliedPromotionIds,
+          } as any,
+          { reconstructCumulativeChoices: true },
         );
         effectiveItems = promo.effectiveItems;
         extraInvoiceDiscount = promo.extraInvoiceDiscount;
@@ -2980,8 +3002,14 @@ export class InvoicesService {
         0,
       );
 
+      // Mode %: quy đổi ra tiền theo tổng tiền hàng thực tế của HĐ này.
+      const effectiveManualDiscount =
+        dtoDiscountRatio != null && dtoDiscountRatio > 0
+          ? (totalAmount * dtoDiscountRatio) / 100
+          : discountForThisInvoice;
+
       const grandTotal =
-        totalAmount - discountForThisInvoice - extraInvoiceDiscount;
+        totalAmount - effectiveManualDiscount - extraInvoiceDiscount;
       const debtAmount = grandTotal - totalPaid;
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
@@ -3009,8 +3037,8 @@ export class InvoicesService {
           priceBookName: order.priceBookName,
           purchaseDate: new Date(),
           totalAmount,
-          discount: discountForThisInvoice + extraInvoiceDiscount,
-          discountRatio: 0,
+          discount: effectiveManualDiscount + extraInvoiceDiscount,
+          discountRatio: dtoDiscountRatio ?? 0,
           grandTotal,
           paidAmount: totalPaid,
           debtAmount,
@@ -3600,8 +3628,8 @@ export class InvoicesService {
               totalPrice: item.totalPrice,
               note: item.note,
               conditionType: item.conditionType || 'normal',
-              soldExpiryDate: (item as any).soldExpiryDate
-                ? new Date((item as any).soldExpiryDate)
+              soldExpiryDate: item.soldExpiryDate
+                ? new Date(item.soldExpiryDate)
                 : null,
             })),
           },
@@ -4527,7 +4555,7 @@ export class InvoicesService {
           )
           .map((item) => Number(item.promotionId)),
       ),
-    ).filter((id) => Number.isInteger(id)) as number[];
+    ).filter((id) => Number.isInteger(id));
 
     if (promotionIds.length === 0) return items;
 
@@ -4539,7 +4567,9 @@ export class InvoicesService {
       },
       select: { id: true },
     });
-    const enabledIds = new Set(promotions.map((promotion: any) => promotion.id));
+    const enabledIds = new Set(
+      promotions.map((promotion: any) => promotion.id),
+    );
 
     return items.map((item) => ({
       ...item,
@@ -5088,8 +5118,9 @@ export class InvoicesService {
             customerPhone:
               inv.customer?.contactNumber ?? (inv.customer as any)?.phone ?? '',
             customerAddress: defaultAddr,
-            customerGroupName: ((inv.customer as any)?.customerGroupDetails ??
-              [])
+            customerGroupName: (
+              (inv.customer as any)?.customerGroupDetails ?? []
+            )
               .map((d: any) => d.customerGroup?.name)
               .filter(Boolean)
               .join(', '),

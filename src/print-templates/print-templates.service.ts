@@ -256,9 +256,7 @@ export class PrintTemplatesService {
       case 'return_order':
         return this.mapReturnOrder(await this.loadReturnOrder(entityId));
       case 'supplier_return':
-        return this.mapSupplierReturn(
-          await this.loadSupplierReturn(entityId),
-        );
+        return this.mapSupplierReturn(await this.loadSupplierReturn(entityId));
       case 'transfer':
         return this.mapTransfer(await this.loadTransfer(entityId));
       case 'internal_use':

@@ -56,7 +56,9 @@ const PUBLIC_RECIPE_SELECT = {
   },
 } satisfies Prisma.RecipeSelect;
 
-type PublicRecipeRow = Awaited<ReturnType<PublicRecipesService['loadPublished']>>[number];
+type PublicRecipeRow = Awaited<
+  ReturnType<PublicRecipesService['loadPublished']>
+>[number];
 
 @Injectable()
 export class PublicRecipesService {
@@ -73,21 +75,28 @@ export class PublicRecipesService {
         slug: { not: null },
         ...(query.type ? { type: query.type } : {}),
         ...(query.categoryId ? { categoryId: query.categoryId } : {}),
-        ...(matchedIds ? { id: { in: matchedIds.length ? matchedIds : [-1] } } : {}),
+        ...(matchedIds
+          ? { id: { in: matchedIds.length ? matchedIds : [-1] } }
+          : {}),
       },
       select: PUBLIC_RECIPE_SELECT,
     });
     const rows = await this.loadPublished(recipes);
 
     rows.sort((a, b) => {
-      if (query.sort === 'name') return a.recipe.name.localeCompare(b.recipe.name, 'vi');
+      if (query.sort === 'name')
+        return a.recipe.name.localeCompare(b.recipe.name, 'vi');
       if (query.sort === 'cost') {
-        return (a.cost.totalCost ?? Number.POSITIVE_INFINITY) -
-          (b.cost.totalCost ?? Number.POSITIVE_INFINITY) ||
-          a.recipe.name.localeCompare(b.recipe.name, 'vi');
+        return (
+          (a.cost.totalCost ?? Number.POSITIVE_INFINITY) -
+            (b.cost.totalCost ?? Number.POSITIVE_INFINITY) ||
+          a.recipe.name.localeCompare(b.recipe.name, 'vi')
+        );
       }
-      return (b.recipe.publishedAt?.getTime() || 0) -
-        (a.recipe.publishedAt?.getTime() || 0);
+      return (
+        (b.recipe.publishedAt?.getTime() || 0) -
+        (a.recipe.publishedAt?.getTime() || 0)
+      );
     });
 
     const page = query.page || 1;
@@ -129,9 +138,11 @@ export class PublicRecipesService {
       storage: row.recipe.storage,
       ingredients: row.recipe.ingredients.map((ingredient) => ({
         sourceType: ingredient.sourceType,
-        name: ingredient.product?.name ||
+        name:
+          ingredient.product?.name ||
           ingredient.recipeReference?.name ||
-          ingredient.customName || '',
+          ingredient.customName ||
+          '',
         quantity: Number(ingredient.quantity),
         unit: ingredient.unit || ingredient.customUnit,
         note: ingredient.note,
@@ -153,7 +164,11 @@ export class PublicRecipesService {
   async generatePdf(slug: string, variant: 'full' | 'guide') {
     const recipe = await this.findOne(slug);
     const buffer = await new Promise<Buffer>((resolve, reject) => {
-      const doc = new PDFDocument({ size: 'A4', margin: 48, bufferPages: true });
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 48,
+        bufferPages: true,
+      });
       const chunks: Buffer[] = [];
       const sourceFontDir = join(process.cwd(), 'src/contracts/assets/fonts');
       const fontDir = existsSync(sourceFontDir)
@@ -166,9 +181,17 @@ export class PublicRecipesService {
       doc.on('error', reject);
 
       const heading = (text: string) => {
-        doc.moveDown().font('Times Bold').fontSize(14).text(text).moveDown(0.35);
+        doc
+          .moveDown()
+          .font('Times Bold')
+          .fontSize(14)
+          .text(text)
+          .moveDown(0.35);
       };
-      doc.font('Times Bold').fontSize(22).text(recipe.name, { align: 'center' });
+      doc
+        .font('Times Bold')
+        .fontSize(22)
+        .text(recipe.name, { align: 'center' });
       doc.moveDown().font('Times').fontSize(11);
       doc.text(`Mã công thức: ${recipe.code}`);
       doc.text(`Loại: ${recipe.type}`);
@@ -179,21 +202,29 @@ export class PublicRecipesService {
       if (variant === 'full') {
         heading('Chi phí');
         doc.text(`Tổng chi phí: ${this.money(recipe.totalCost)}`);
-        doc.text(`Chi phí / đơn vị đầu ra: ${this.money(recipe.costPerOutputUnit)}`);
+        doc.text(
+          `Chi phí / đơn vị đầu ra: ${this.money(recipe.costPerOutputUnit)}`,
+        );
       }
 
       heading('Nguyên liệu');
       recipe.ingredients.forEach((ingredient, index) => {
-        const cost = variant === 'full' ? ` - ${this.money(ingredient.lineCost)}` : '';
+        const cost =
+          variant === 'full' ? ` - ${this.money(ingredient.lineCost)}` : '';
         const note = ingredient.note ? ` (${ingredient.note})` : '';
-        doc.font('Times').fontSize(11).text(
-          `${index + 1}. ${ingredient.name}: ${this.quantityLabel(ingredient.quantity, ingredient.unit)}${cost}${note}`,
-        );
+        doc
+          .font('Times')
+          .fontSize(11)
+          .text(
+            `${index + 1}. ${ingredient.name}: ${this.quantityLabel(ingredient.quantity, ingredient.unit)}${cost}${note}`,
+          );
       });
 
       heading('Các bước thực hiện');
       recipe.steps.forEach((step, index) => {
-        doc.font('Times Bold').text(`${index + 1}. ${step.title || `Bước ${index + 1}`}`);
+        doc
+          .font('Times Bold')
+          .text(`${index + 1}. ${step.title || `Bước ${index + 1}`}`);
         doc.font('Times').text(step.content);
         if (step.notes) doc.text(`Ghi chú: ${step.notes}`);
         doc.moveDown(0.4);
@@ -206,7 +237,10 @@ export class PublicRecipesService {
       doc.end();
     });
 
-    return { buffer, filename: `${slug}-${variant}.pdf`.replace(/[^a-z0-9.-]/g, '-') };
+    return {
+      buffer,
+      filename: `${slug}-${variant}.pdf`.replace(/[^a-z0-9.-]/g, '-'),
+    };
   }
 
   private async loadPublished(recipes: Array<any>) {
@@ -215,20 +249,26 @@ export class PublicRecipesService {
       recipe.ingredients.flatMap((ingredient) => ingredient.productId ?? []),
     ) as number[];
     const priceBook = await this.prisma.priceBook.findFirst({
-      where: { name: { equals: 'Bảng Giá Lẻ HCM', mode: 'insensitive' }, isActive: true },
+      where: {
+        name: { equals: 'Bảng Giá Lẻ HCM', mode: 'insensitive' },
+        isActive: true,
+      },
       select: { id: true },
     });
-    const prices = priceBook && productIds.length
-      ? await this.prisma.priceBookDetail.findMany({
-          where: {
-            priceBookId: priceBook.id,
-            productId: { in: [...new Set(productIds)] },
-            isActive: true,
-          },
-          select: { productId: true, price: true },
-        })
-      : [];
-    const priceMap = new Map(prices.map((price) => [price.productId, Number(price.price)]));
+    const prices =
+      priceBook && productIds.length
+        ? await this.prisma.priceBookDetail.findMany({
+            where: {
+              priceBookId: priceBook.id,
+              productId: { in: [...new Set(productIds)] },
+              isActive: true,
+            },
+            select: { productId: true, price: true },
+          })
+        : [];
+    const priceMap = new Map(
+      prices.map((price) => [price.productId, Number(price.price)]),
+    );
 
     return recipes.map((recipe) => {
       const lineCosts: Array<number | null> = recipe.ingredients.map(
@@ -244,15 +284,19 @@ export class PublicRecipesService {
         priceMap,
         cost: {
           totalCost,
-          costPerOutputUnit: outputQuantity > 0 ? totalCost / outputQuantity : totalCost,
+          costPerOutputUnit:
+            outputQuantity > 0 ? totalCost / outputQuantity : totalCost,
         },
       };
     });
   }
 
   private mapSummary(row: PublicRecipeRow) {
-    const thumbnail = row.recipe.images.find((media) => media.mediaType === 'IMAGE');
-    const quantity = row.recipe.quantity == null ? null : Number(row.recipe.quantity);
+    const thumbnail = row.recipe.images.find(
+      (media) => media.mediaType === 'IMAGE',
+    );
+    const quantity =
+      row.recipe.quantity == null ? null : Number(row.recipe.quantity);
     const yieldUnit = row.recipe.unit || row.recipe.quantityUnit;
     return {
       slug: row.recipe.slug,
@@ -270,8 +314,10 @@ export class PublicRecipesService {
       publishedAt: row.recipe.publishedAt,
       thumbnail: thumbnail?.fileUrl || null,
       mediaCounts: {
-        images: row.recipe.images.filter((media) => media.mediaType === 'IMAGE').length,
-        videos: row.recipe.images.filter((media) => media.mediaType === 'VIDEO').length,
+        images: row.recipe.images.filter((media) => media.mediaType === 'IMAGE')
+          .length,
+        videos: row.recipe.images.filter((media) => media.mediaType === 'VIDEO')
+          .length,
       },
       totalCost: row.cost.totalCost,
       costPerOutputUnit: row.cost.costPerOutputUnit,
@@ -286,7 +332,9 @@ export class PublicRecipesService {
         deletedAt: null,
         slug: { not: null },
         OR: [
-          ...(source.recipe.categoryId ? [{ categoryId: source.recipe.categoryId }] : []),
+          ...(source.recipe.categoryId
+            ? [{ categoryId: source.recipe.categoryId }]
+            : []),
           { type: source.recipe.type },
         ],
       },
@@ -298,20 +346,32 @@ export class PublicRecipesService {
     return rows.slice(0, 3).map((row) => this.mapSummary(row));
   }
 
-  private lineCost(ingredient: any, priceMap: Map<number, number>): number | null {
+  private lineCost(
+    ingredient: any,
+    priceMap: Map<number, number>,
+  ): number | null {
     if (!ingredient.includeInCost) return 0;
     const quantity = Number(ingredient.quantity);
     if (ingredient.sourceType === 'CUSTOM') {
-      return ingredient.customPrice == null ? null : Number(ingredient.customPrice) * quantity;
+      return ingredient.customPrice == null
+        ? null
+        : Number(ingredient.customPrice) * quantity;
     }
     if (ingredient.sourceType === 'SEMI_FINISHED') {
       return ingredient.unitCostSnapshot == null
         ? null
         : Number(ingredient.unitCostSnapshot) * quantity;
     }
-    const price = ingredient.productId ? priceMap.get(ingredient.productId) : undefined;
-    const weightGram = this.toGram(ingredient.product?.weight, ingredient.product?.weightUnit);
-    return price == null || weightGram == null ? null : (price / weightGram) * quantity;
+    const price = ingredient.productId
+      ? priceMap.get(ingredient.productId)
+      : undefined;
+    const weightGram = this.toGram(
+      ingredient.product?.weight,
+      ingredient.product?.weightUnit,
+    );
+    return price == null || weightGram == null
+      ? null
+      : (price / weightGram) * quantity;
   }
 
   private toGram(weight: unknown, unit?: string | null) {
@@ -328,6 +388,8 @@ export class PublicRecipesService {
   }
 
   private money(value: number | null) {
-    return value == null ? 'Chưa xác định' : `${Math.round(value).toLocaleString('vi-VN')} đ`;
+    return value == null
+      ? 'Chưa xác định'
+      : `${Math.round(value).toLocaleString('vi-VN')} đ`;
   }
 }

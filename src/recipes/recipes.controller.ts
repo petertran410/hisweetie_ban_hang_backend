@@ -39,7 +39,9 @@ export class RecipesController {
   @Get('recipes')
   @RequirePermissions('recipes:view')
   findAll(@Query() query: RecipeQueryDto, @Req() req: any) {
-    return this.withCostPermission(req, (includeCost) => this.recipes.findAll(query, includeCost));
+    return this.withCostPermission(req, (includeCost) =>
+      this.recipes.findAll(query, includeCost),
+    );
   }
 
   @Get('recipe-categories')
@@ -56,7 +58,10 @@ export class RecipesController {
 
   @Get('recipes/ingredient-products')
   @RequirePermissions('recipes:view')
-  ingredientProducts(@Query('search') search: string | undefined, @Req() req: any) {
+  ingredientProducts(
+    @Query('search') search: string | undefined,
+    @Req() req: any,
+  ) {
     return this.getIngredientProducts(search, req);
   }
 
@@ -83,8 +88,9 @@ export class RecipesController {
     const branchId = branchIdRaw ? Number(branchIdRaw) : undefined;
     let permissions = user.permissions || [];
     if (branchId && Number.isInteger(branchId)) {
-      permissions = this.permissionCache.getBranch(user.id, branchId) ||
-        await this.authService.getPermissionsForBranch(user.id, branchId);
+      permissions =
+        this.permissionCache.getBranch(user.id, branchId) ||
+        (await this.authService.getPermissionsForBranch(user.id, branchId));
       this.permissionCache.setBranch(user.id, branchId, permissions);
     }
     return this.recipes.getIngredientProducts(
@@ -108,12 +114,18 @@ export class RecipesController {
   @Get('recipes/:id')
   @RequirePermissions('recipes:view')
   findOne(@Param('id') id: string, @Req() req: any) {
-    return this.withCostPermission(req, (includeCost) => this.recipes.findOne(+id, includeCost));
+    return this.withCostPermission(req, (includeCost) =>
+      this.recipes.findOne(+id, includeCost),
+    );
   }
 
   @Patch('recipes/:id')
   @RequirePermissions('recipes:update')
-  update(@Param('id') id: string, @Body() dto: UpdateRecipeDto, @Req() req: any) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateRecipeDto,
+    @Req() req: any,
+  ) {
     return this.recipes.update(+id, dto, req.user?.id || 1);
   }
 
@@ -125,7 +137,11 @@ export class RecipesController {
 
   @Post('recipes/:id/publish')
   @RequirePermissions('recipes:publish')
-  publish(@Param('id') id: string, @Body() dto: PublishRecipeDto, @Req() req: any) {
+  publish(
+    @Param('id') id: string,
+    @Body() dto: PublishRecipeDto,
+    @Req() req: any,
+  ) {
     return this.recipes.publish(+id, dto, req.user?.id || 1);
   }
 
@@ -201,7 +217,10 @@ export class RecipesController {
     return this.recipes.calculateCost(+id, dto, req.user?.id || 1);
   }
 
-  private async withCostPermission<T>(req: any, callback: (includeCost: boolean) => T | Promise<T>) {
+  private async withCostPermission<T>(
+    req: any,
+    callback: (includeCost: boolean) => T | Promise<T>,
+  ) {
     const user = req.user;
     if (!user?.id) return callback(false);
     if (user.roles?.includes('Super Admin')) return callback(true);
@@ -209,8 +228,9 @@ export class RecipesController {
     const branchId = branchIdRaw ? Number(branchIdRaw) : undefined;
     let permissions = user.permissions || [];
     if (branchId && Number.isInteger(branchId)) {
-      permissions = this.permissionCache.getBranch(user.id, branchId) ||
-        await this.authService.getPermissionsForBranch(user.id, branchId);
+      permissions =
+        this.permissionCache.getBranch(user.id, branchId) ||
+        (await this.authService.getPermissionsForBranch(user.id, branchId));
       this.permissionCache.setBranch(user.id, branchId, permissions);
     }
     return callback(permissions.includes('recipes:view_cost'));

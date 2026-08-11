@@ -918,24 +918,24 @@ export class ReturnOrdersService {
           });
           touchedProductIds.add(detail.productId);
 
-  // Bucket đi qua SỔ CÁI (không ghi trực tiếp cột cache nữa) để tồn
-  // loại tồn luôn = Σ log active. Cache được recalc ở cuối luồng.
-  await writeConditionLogs(tx, {
-    productId: detail.productId,
-    productCode: detail.productCode,
-    productName: detail.productName,
-    branchId: returnOrder.branchId,
-    branchName: branch?.name || '',
-    refCode: returnOrder.code,
-    refType: 'return_order',
-    refId: returnOrder.id,
-    transactionType: 'RETURN_IN',
-    createdByName: user?.name || null,
-    note: 'Nhập hàng trả từ khách',
-    damaged: damagedQty,
-    nearExpiry: nearExpiryQty,
-    nearExpiryDate: (detail as any).manufactureDate ?? null,
-  });
+          // Bucket đi qua SỔ CÁI (không ghi trực tiếp cột cache nữa) để tồn
+          // loại tồn luôn = Σ log active. Cache được recalc ở cuối luồng.
+          await writeConditionLogs(tx, {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId: returnOrder.branchId,
+            branchName: branch?.name || '',
+            refCode: returnOrder.code,
+            refType: 'return_order',
+            refId: returnOrder.id,
+            transactionType: 'RETURN_IN',
+            createdByName: user?.name || null,
+            note: 'Nhập hàng trả từ khách',
+            damaged: damagedQty,
+            nearExpiry: nearExpiryQty,
+            nearExpiryDate: (detail as any).manufactureDate ?? null,
+          });
 
           await tx.inventoryLog.create({
             data: {

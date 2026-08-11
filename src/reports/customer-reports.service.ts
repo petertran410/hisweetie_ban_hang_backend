@@ -189,7 +189,8 @@ export class CustomerReportsService {
       conds.push(Prisma.sql`i."purchaseDate" >= ${new Date(query.fromDate)}`);
     if (query.toDate)
       conds.push(Prisma.sql`i."purchaseDate" <= ${new Date(query.toDate)}`);
-    if (query.branchId) conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
+    if (query.branchId)
+      conds.push(Prisma.sql`i."branchId" = ${query.branchId}`);
     if (query.customerId)
       conds.push(Prisma.sql`i."customerId" = ${query.customerId}`);
     if (query.customerGroupId)
@@ -217,9 +218,14 @@ export class CustomerReportsService {
   private buildProductExistsSql(query: CustomerReportQueryDto): Prisma.Sql {
     const conds: Prisma.Sql[] = [];
     const parseCsv = (s: string | undefined): string[] =>
-      s?.split(',').map((x) => x.trim()).filter(Boolean) || [];
+      s
+        ?.split(',')
+        .map((x) => x.trim())
+        .filter(Boolean) || [];
     const parseCsvNumber = (s: string | undefined): number[] =>
-      parseCsv(s).map(Number).filter((n) => Number.isFinite(n));
+      parseCsv(s)
+        .map(Number)
+        .filter((n) => Number.isFinite(n));
     const types = parseCsvNumber(query.types);
     const parentNames = parseCsv(query.parentNames);
     const middleNames = parseCsv(query.middleNames);
@@ -279,7 +285,8 @@ export class CustomerReportsService {
       conds.push(
         Prisma.sql`COALESCE(ro."confirmedAt", ro."createdAt") <= ${new Date(query.toDate)}`,
       );
-    if (query.branchId) conds.push(Prisma.sql`ro."branchId" = ${query.branchId}`);
+    if (query.branchId)
+      conds.push(Prisma.sql`ro."branchId" = ${query.branchId}`);
     if (query.customerId)
       conds.push(Prisma.sql`ro."customerId" = ${query.customerId}`);
     // Phải bám đúng tập KH của bảng tổng hợp, nếu không sẽ trừ hàng trả của KH
@@ -394,7 +401,8 @@ export class CustomerReportsService {
 
       return rows
         .map((r) => {
-          const customerId = r.customer_id != null ? Number(r.customer_id) : null;
+          const customerId =
+            r.customer_id != null ? Number(r.customer_id) : null;
           const grossRevenue = Number(r.revenue) || 0;
           const returnAmount =
             customerId != null ? returnMap.get(customerId) || 0 : 0;

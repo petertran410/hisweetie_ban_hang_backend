@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Min,
@@ -24,6 +25,12 @@ export class CreateFactoryDto {
   @IsOptional() @IsString() code?: string;
   @IsString() name: string;
   @IsOptional() @IsString() description?: string;
+  @IsOptional() @IsString() strategicLevel?: string;
+  @IsOptional() @IsString() wechat?: string;
+  @IsOptional() @IsString() email?: string;
+  @IsOptional() @IsNumber() @Min(0) moq?: number;
+  @IsOptional() @IsInt() @Min(0) leadtimeDays?: number;
+  @IsOptional() @IsString() paymentTerm?: string;
   @IsOptional() @IsString() country?: string;
   @IsOptional() @IsString() currency?: string;
   @IsOptional() @IsString() contactNumber?: string;
