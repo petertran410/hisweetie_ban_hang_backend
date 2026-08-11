@@ -38,7 +38,7 @@ export class FactoryProductsService {
   }
 
   private mappingInclude = {
-    product: {
+    products: {
       select: {
         id: true,
         code: true,
@@ -82,6 +82,7 @@ export class FactoryProductsService {
     return mappings.map((mapping) =>
       this.serialize({
         ...mapping,
+        product: mapping.products,
         factory: mapping.factories,
         priceUpdatedBy: mapping.users_factory_products_priceUpdatedByIdTousers,
       }),
@@ -98,6 +99,7 @@ export class FactoryProductsService {
 
     return this.serialize({
       ...mapping,
+      product: mapping.products,
       factory: mapping.factories,
       priceUpdatedBy: mapping.users_factory_products_priceUpdatedByIdTousers,
     });
