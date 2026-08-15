@@ -189,7 +189,7 @@ export class CustomersController {
   }
 
   @Post('import')
-  @RequirePermissions('customers:create')
+  @RequirePermissions('customers:import')
   @ApiOperation({ summary: 'Import khách hàng từ file Excel' })
   importCustomers(@Body() dto: ImportCustomersDto, @Req() req: any) {
     const userId = req.user?.id;
@@ -197,7 +197,7 @@ export class CustomersController {
   }
 
   @Post('import-balance-adjustments')
-  @RequirePermissions('customers:create')
+  @RequirePermissions('customers:import')
   @ApiOperation({ summary: 'Import phiếu cân bằng nợ từ Excel' })
   importBalanceAdjustments(@Body() dto: ImportBalanceAdjustmentsDto) {
     return this.customersService.importBalanceAdjustments(dto);
