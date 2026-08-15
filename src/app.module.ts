@@ -85,6 +85,7 @@ import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { PaymentNotesModule } from './payment-notes/payment-notes.module';
 import { RecipesModule } from './recipes/recipes.module';
 import { PurchasingPlanningModule } from './purchasing-planning/purchasing-planning.module';
+import { PublicApiModule } from './public-api/public-api.module';
 
 @Module({
   controllers: [HealthController],
@@ -182,6 +183,7 @@ import { PurchasingPlanningModule } from './purchasing-planning/purchasing-plann
     PaymentNotesModule,
     RecipesModule,
     PurchasingPlanningModule,
+    PublicApiModule,
   ],
   providers: [
     {

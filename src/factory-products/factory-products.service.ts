@@ -4,16 +4,28 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { toVnd } from '../common/currency.util';
 import {
   CreateFactoryProductDto,
   FactoryProductQueryDto,
+  PriceHistorySeriesQueryDto,
   ReferencePricesQueryDto,
   UpdateFactoryProductDto,
 } from './dto';
 
+const PURCHASE_ORDER_REASON_PREFIX = 'Giá đặt hàng nhập ';
+
 @Injectable()
 export class FactoryProductsService {
   constructor(private prisma: PrismaService) {}
+
+  private toVnd(
+    price: any,
+    currency: string | null | undefined,
+    exchangeRate: any,
+  ) {
+    return toVnd(price, currency, exchangeRate);
+  }
 
   private serialize(mapping: any) {
     const referencePrice =
@@ -162,8 +174,16 @@ export class FactoryProductsService {
             factoryProductId: created.id,
             oldPrice: null,
             newPrice: referencePrice,
+            oldPriceVnd: null,
+            newPriceVnd: this.toVnd(
+              referencePrice,
+              currency,
+              dto.exchangeRate ?? (currency === 'VND' ? 1 : null),
+            ),
             currency,
             exchangeRate: dto.exchangeRate ?? (currency === 'VND' ? 1 : null),
+            eventType: 'reference',
+            refCode: null,
             reason: dto.reason || 'Thiết lập giá tham chiếu',
             changedById: userId,
             changedByName: userName || null,
@@ -224,8 +244,16 @@ export class FactoryProductsService {
             factoryProductId: id,
             oldPrice: existing.referencePrice,
             newPrice: nextReferencePrice,
+            oldPriceVnd: this.toVnd(
+              existing.referencePrice,
+              existing.currency,
+              existing.exchangeRate,
+            ),
+            newPriceVnd: this.toVnd(nextReferencePrice, currency, exchangeRate),
             currency,
             exchangeRate,
+            eventType: 'reference',
+            refCode: null,
             reason: dto.reason || 'Cập nhật giá tham chiếu',
             changedById: userId,
             changedByName: userName || null,
@@ -254,10 +282,135 @@ export class FactoryProductsService {
       ...history,
       oldPrice: history.oldPrice == null ? null : Number(history.oldPrice),
       newPrice: history.newPrice == null ? null : Number(history.newPrice),
+      oldPriceVnd:
+        history.oldPriceVnd == null ? null : Number(history.oldPriceVnd),
+      newPriceVnd:
+        history.newPriceVnd == null ? null : Number(history.newPriceVnd),
       exchangeRate:
         history.exchangeRate == null ? null : Number(history.exchangeRate),
       changer: history.users,
     }));
+  }
+
+  async getPriceHistorySeries(query: PriceHistorySeriesQueryDto) {
+    const factoryIds = query.factoryIds
+      ? [
+          ...new Set(
+            query.factoryIds
+              .split(',')
+              .map((id) => Number(id.trim()))
+              .filter((id) => Number.isInteger(id) && id > 0),
+          ),
+        ]
+      : [];
+    if (query.factoryIds && !factoryIds.length) {
+      throw new BadRequestException('factoryIds không hợp lệ');
+    }
+
+    const from = query.from ? new Date(query.from) : undefined;
+    const to = query.to ? new Date(query.to) : undefined;
+    if (from && to && from > to) {
+      throw new BadRequestException('Khoảng thời gian không hợp lệ');
+    }
+
+    const where: any = {};
+    if (query.eventType) where.eventType = query.eventType;
+    if (from || to) {
+      where.createdAt = {
+        ...(from ? { gte: from } : {}),
+        ...(to ? { lte: to } : {}),
+      };
+    }
+    if (query.productId != null || factoryIds.length) {
+      where.factory_products = {
+        productId: query.productId,
+        ...(factoryIds.length ? { factoryId: { in: factoryIds } } : {}),
+      };
+    }
+
+    const page = query.page ?? 1;
+    const limit = Math.min(query.limit ?? 100, 500);
+    const [histories, total] = await this.prisma.$transaction([
+      this.prisma.factory_product_price_histories.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: {
+          users: { select: { id: true, name: true } },
+          factory_products: {
+            select: {
+              id: true,
+              factoryId: true,
+              productId: true,
+              factories: { select: { id: true, code: true, name: true } },
+              products: { select: { id: true, code: true, name: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.factory_product_price_histories.count({ where }),
+    ]);
+
+    const currencyMode = query.currencyMode ?? 'vnd';
+    const points = histories.map((history) => {
+      const mapping = history.factory_products;
+      const nativePrice =
+        history.newPrice == null ? null : Number(history.newPrice);
+      const vndPrice =
+        history.newPriceVnd == null
+          ? this.toVnd(
+              history.newPrice,
+              history.currency,
+              history.exchangeRate,
+            )
+          : Number(history.newPriceVnd);
+      return {
+        id: history.id,
+        factoryProductId: history.factoryProductId,
+        factory: mapping.factories,
+        product: mapping.products,
+        eventType: history.eventType,
+        refCode: history.refCode,
+        reason: history.reason,
+        nativePrice,
+        vndPrice,
+        value: currencyMode === 'vnd' ? vndPrice : nativePrice,
+        currency: history.currency,
+        exchangeRate:
+          history.exchangeRate == null ? null : Number(history.exchangeRate),
+        changedByName: history.changedByName || history.users?.name || null,
+        createdAt: history.createdAt,
+      };
+    });
+    const values = points
+      .map((point) => point.value)
+      .filter((value): value is number => value != null && Number.isFinite(value));
+    const first = values[0] ?? null;
+    const latest = values.length ? values[values.length - 1] : null;
+
+    return {
+      points,
+      summary: {
+        first,
+        latest,
+        min: values.length ? Math.min(...values) : null,
+        max: values.length ? Math.max(...values) : null,
+        change:
+          first == null || latest == null ? null : latest - first,
+        changePercent:
+          first == null || latest == null || first === 0
+            ? null
+            : ((latest - first) / first) * 100,
+      },
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+      currencyMode,
+    };
   }
 
   async getReferencePrices(query: ReferencePricesQueryDto) {
@@ -366,11 +519,15 @@ export class FactoryProductsService {
           },
         });
       }
+      const reason = `${PURCHASE_ORDER_REASON_PREFIX}${orderSupplier.code}`;
       const alreadyRecorded =
         await tx.factory_product_price_histories.findFirst({
           where: {
             factoryProductId: mapping.id,
-            reason: `Giá đặt hàng nhập ${orderSupplier.code}`,
+            OR: [
+              { eventType: 'purchase_order', refCode: orderSupplier.code },
+              { reason },
+            ],
           },
           select: { id: true },
         });
@@ -379,19 +536,32 @@ export class FactoryProductsService {
       const previous = await tx.factory_product_price_histories.findFirst({
         where: {
           factoryProductId: mapping.id,
-          reason: { startsWith: 'Giá đặt hàng nhập ' },
+          eventType: 'purchase_order',
         },
         orderBy: { createdAt: 'desc' },
-        select: { newPrice: true },
+        select: {
+          newPrice: true,
+          newPriceVnd: true,
+        },
       });
       await tx.factory_product_price_histories.create({
         data: {
           factoryProductId: mapping.id,
           oldPrice: previous?.newPrice ?? mapping.referencePrice,
           newPrice: item.factoryPrice,
+          oldPriceVnd:
+            previous?.newPriceVnd ??
+            this.toVnd(
+              mapping.referencePrice,
+              mapping.currency,
+              mapping.exchangeRate,
+            ),
+          newPriceVnd: this.toVnd(item.factoryPrice, currency, exchangeRate),
           currency,
           exchangeRate,
-          reason: `Giá đặt hàng nhập ${orderSupplier.code}`,
+          eventType: 'purchase_order',
+          refCode: orderSupplier.code,
+          reason,
           changedById: userId,
           changedByName: userName || null,
         },

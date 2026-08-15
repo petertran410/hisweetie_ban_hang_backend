@@ -1,5 +1,6 @@
 import {
   IsBoolean,
+  IsDateString,
   IsIn,
   IsInt,
   IsNumber,
@@ -56,6 +57,19 @@ export class CreateFactoryProductDto {
 export class UpdateFactoryProductDto extends PartialType(
   CreateFactoryProductDto,
 ) {}
+
+export class PriceHistorySeriesQueryDto {
+  @IsInt() @Min(1) @Transform(toInt) productId: number;
+  @IsOptional() @IsString() factoryIds?: string;
+  @IsOptional() @IsDateString() from?: string;
+  @IsOptional() @IsDateString() to?: string;
+  @IsOptional() @IsIn(['native', 'vnd']) currencyMode?: 'native' | 'vnd';
+  @IsOptional() @IsIn(['reference', 'purchase_order']) eventType?:
+    | 'reference'
+    | 'purchase_order';
+  @IsOptional() @IsInt() @Min(1) @Transform(toInt) page?: number;
+  @IsOptional() @IsInt() @Min(1) @Transform(toInt) limit?: number;
+}
 
 export class ReferencePricesQueryDto {
   @IsString() productIds: string;

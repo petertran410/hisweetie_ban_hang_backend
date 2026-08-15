@@ -1,0 +1,673 @@
+openapi: 3.1.0
+info:
+  title: Hisweetie POS Public API
+  version: 1.0.0
+  description: |
+    API đọc dữ liệu POS cho đối tác tích hợp (website, sàn TMĐT, CRM...).
+
+    Thiết kế bám theo tài liệu KiotViet Public API để đối tác đã quen KiotViet
+    có thể tái sử dụng client sẵn có:
+      - Xác thực OAuth 2.0 `client_credentials`.
+      - Đồng bộ tăng dần (delta sync) bằng `lastModifiedFrom` đọc cột `updatedAt`.
+      - Phân trang `pageSize` (mặc định 20, tối đa 100) + `currentItem` (offset).
+      - Envelope thống nhất `{ total, pageSize, currentItem, data, timestamp }`.
+
+    Khác biệt có chủ đích so với KiotViet:
+      - KHÔNG yêu cầu header `Retailer` (hệ thống dùng một cơ sở dữ liệu).
+      - Phiên bản này chỉ ĐỌC; các thao tác ghi sẽ bổ sung ở phiên bản sau.
+
+    Giới hạn: 5000 request/giờ cho mỗi client.
+servers:
+  - url: /api/public/v1
+security:
+  - bearerAuth: []
+paths:
+  /oauth/token:
+    post:
+      summary: Lấy access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+      responses:
+        '200':
+          description: Cấp token thành công
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks:
+    post:
+      summary: Đăng ký webhook
+      description: |
+        Đăng ký lại cùng cặp `resource` + `url` sẽ cập nhật bản ghi cũ và đặt lại
+        bộ đếm lỗi, không tạo bản trùng.
+
+        Mốc quét bắt đầu từ thời điểm đăng ký nên đối tác không bị dội lại toàn
+        bộ dữ liệu lịch sử.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterWebhookRequest' }
+      responses:
+        '201':
+          description: Đăng ký thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Webhook' }
+                  timestamp: { type: string, format: date-time }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    get:
+      summary: Danh sách webhook đã đăng ký
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /webhooks/{webhookId}:
+    get:
+      summary: Chi tiết webhook kèm 20 lần gọi gần nhất
+      parameters: [{ $ref: '#/components/parameters/WebhookId' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      summary: Huỷ đăng ký webhook
+      parameters: [{ $ref: '#/components/parameters/WebhookId' }]
+      responses:
+        '200':
+          description: Huỷ thành công
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  timestamp: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /customers:
+    post:
+      summary: Tạo khách hàng
+      description: |
+        Gọi lại đúng nghiệp vụ tạo khách hàng của POS. Nên gửi kèm
+        `Idempotency-Key` để lần retry sau timeout không tạo bản ghi trùng.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCustomerRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /customers/{id}:
+    put:
+      summary: Cập nhật khách hàng
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    delete:
+      summary: Ngừng hoạt động khách hàng
+      description: |
+        Đặt `isActive = false`, KHÔNG xoá bản ghi. Vẫn đọc lại được bằng
+        `includeInactive=true`.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200':
+          description: Đã ngừng hoạt động
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  timestamp: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /products:
+    post:
+      summary: Tạo sản phẩm
+      description: |
+        Dùng đúng `CreateProductDto` của POS. Bắt buộc `code` và `name`; các
+        trường giá, tồn kho, thuộc tính, ảnh, components áp cùng validation và
+        nghiệp vụ với form sản phẩm nội bộ.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateProductRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /products/{id}:
+    put:
+      summary: Cập nhật sản phẩm
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /products/{id}/deactivate:
+    post:
+      summary: Ngừng kinh doanh sản phẩm
+      description: Đặt `isActive=false`, không xóa sản phẩm hay lịch sử tồn kho/bán hàng.
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /categories:
+    post:
+      summary: Tạo nhóm sản phẩm
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCategoryRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ResourceItem' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /categories/{id}:
+    put:
+      summary: Cập nhật nhóm sản phẩm
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCategoryRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /{resource}:
+    get:
+      summary: Lấy danh sách theo resource
+      parameters:
+        - $ref: '#/components/parameters/Resource'
+        - $ref: '#/components/parameters/LastModifiedFrom'
+        - $ref: '#/components/parameters/LastModifiedTo'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/CurrentItem'
+        - $ref: '#/components/parameters/OrderBy'
+        - $ref: '#/components/parameters/OrderDirection'
+        - $ref: '#/components/parameters/IncludeInactive'
+        - $ref: '#/components/parameters/Search'
+        - $ref: '#/components/parameters/BranchIds'
+        - $ref: '#/components/parameters/CustomerIds'
+        - $ref: '#/components/parameters/Status'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200': { $ref: '#/components/responses/ResourcePage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+
+  /{resource}/{id}:
+    get:
+      summary: Lấy chi tiết một bản ghi
+      parameters:
+        - $ref: '#/components/parameters/Resource'
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/Include'
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /customers/{id}/addresses:
+    get:
+      summary: Danh sách địa chỉ giao hàng của khách
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /customers/{id}/groups:
+    get:
+      summary: Danh sách nhóm khách hàng mà khách thuộc về
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /customers/{id}/ledger:
+    get:
+      summary: Sổ công nợ khách hàng
+      description: |
+        Tổng hợp từ hóa đơn, phiếu thu/chi và phiếu trả hàng, sắp xếp theo thời
+        gian rồi cộng dồn để ra dư nợ tại từng thời điểm.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - name: fromDate
+          in: query
+          schema: { type: string, format: date-time }
+        - name: toDate
+          in: query
+          schema: { type: string, format: date-time }
+        - name: types
+          in: query
+          description: Lọc loại bút toán, phân tách bằng dấu phẩy - invoice,payment,refund,return.
+          schema: { type: string }
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/CurrentItem'
+      responses:
+        '200':
+          description: Sổ công nợ
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  customer: { type: object }
+                  total: { type: integer }
+                  pageSize: { type: integer }
+                  currentItem: { type: integer }
+                  data: { type: array, items: { $ref: '#/components/schemas/LedgerEntry' } }
+                  timestamp: { type: string, format: date-time }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orders/{id}/payments:
+    get:
+      summary: Danh sách thanh toán của đơn đặt hàng
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /invoices/{id}/payments:
+    get:
+      summary: Danh sách thanh toán của hóa đơn
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceList' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orders/{id}/delivery:
+    get:
+      summary: Thông tin giao hàng của đơn đặt hàng
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /invoices/{id}/delivery:
+    get:
+      summary: Thông tin giao hàng của hóa đơn
+      parameters: [{ $ref: '#/components/parameters/Id' }]
+      responses:
+        '200': { $ref: '#/components/responses/SubResourceItem' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    Resource:
+      name: resource
+      in: path
+      required: true
+      description: Tên resource cần truy vấn.
+      schema:
+        type: string
+        enum:
+          - branches
+          - customer-types
+          - customer-groups
+          - customers
+          - products
+          - inventories
+          - orders
+          - invoices
+          - return-orders
+          - categories
+          - trademarks
+          - sale-channels
+          - bank-accounts
+          - users
+          - suppliers
+          - supplier-groups
+          - price-books
+          - purchase-orders
+          - transfers
+          - cashflows
+          - surchages
+          - locations
+          - settings
+          - order-suppliers
+          - consignments
+          - supplier-returns
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: integer, minimum: 1 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: |
+        Chuỗi ngẫu nhiên (UUID) do client sinh cho mỗi thao tác. Gọi lại với
+        cùng khoá và cùng nội dung sẽ trả lại phản hồi đã lưu thay vì tạo bản
+        ghi mới. Khoá được giữ 24 giờ.
+      schema: { type: string, maxLength: 255 }
+    WebhookId:
+      name: webhookId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    LastModifiedFrom:
+      name: lastModifiedFrom
+      in: query
+      description: |
+        Mốc đồng bộ tăng dần. Lấy các bản ghi có `updatedAt >= lastModifiedFrom`.
+        Đối tác nên lưu lại `timestamp` của lần gọi trước và truyền vào đây cho
+        lần gọi kế tiếp.
+      schema: { type: string, format: date-time }
+    LastModifiedTo:
+      name: lastModifiedTo
+      in: query
+      description: Cận trên của mốc thời gian (không có trong KiotViet).
+      schema: { type: string, format: date-time }
+    PageSize:
+      name: pageSize
+      in: query
+      description: Số bản ghi mỗi trang. Mặc định 20, tối đa 100.
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    CurrentItem:
+      name: currentItem
+      in: query
+      description: Bỏ qua bao nhiêu bản ghi (offset). Mặc định 0.
+      schema: { type: integer, minimum: 0, default: 0 }
+    OrderBy:
+      name: orderBy
+      in: query
+      description: Trường sắp xếp. Mặc định `updatedAt`. Luôn chốt thêm `id` làm khoá phụ để phân trang ổn định.
+      schema:
+        type: string
+        enum: [createdAt, updatedAt, purchaseDate, orderDate, id, code, name]
+    OrderDirection:
+      name: orderDirection
+      in: query
+      schema: { type: string, enum: [asc, desc], default: asc }
+    IncludeInactive:
+      name: includeInactive
+      in: query
+      description: Mặc định chỉ trả bản ghi đang hoạt động. Đặt `true` để lấy cả bản ghi đã ngừng.
+      schema: { type: boolean, default: false }
+    Search:
+      name: search
+      in: query
+      description: Tìm theo tên/mã/số điện thoại tùy resource.
+      schema: { type: string }
+    BranchIds:
+      name: branchIds
+      in: query
+      description: Lọc theo chi nhánh, phân tách bằng dấu phẩy. Với `transfers` khớp cả chi nhánh gửi và nhận.
+      schema: { type: string }
+    CustomerIds:
+      name: customerIds
+      in: query
+      schema: { type: string }
+    Status:
+      name: status
+      in: query
+      description: Lọc theo trạng thái, phân tách bằng dấu phẩy. Với `categories` là lọc theo `type`.
+      schema: { type: string }
+    Include:
+      name: include
+      in: query
+      description: |
+        Nạp kèm dữ liệu liên quan, phân tách bằng dấu phẩy.
+        Ví dụ `details`, `payments`, `delivery`, `addresses`, `groups`,
+        `images`, `attributes`, `inventories`.
+      schema: { type: string }
+
+  responses:
+    ResourcePage:
+      description: Một trang dữ liệu
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Page' }
+    ResourceItem:
+      description: Chi tiết một bản ghi
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: object }
+              timestamp: { type: string, format: date-time }
+    SubResourceList:
+      description: Danh sách dữ liệu con
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              total: { type: integer }
+              data: { type: array, items: { type: object } }
+              timestamp: { type: string, format: date-time }
+    SubResourceItem:
+      description: Một bản ghi con, có thể null nếu chưa phát sinh
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data: { type: [object, 'null'] }
+              timestamp: { type: string, format: date-time }
+    BadRequest:
+      description: Tham số không hợp lệ
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Thiếu token, token sai hoặc đã hết hạn
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Không tìm thấy bản ghi
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: |
+        Xung đột `Idempotency-Key` - đang xử lý, hoặc khoá đã dùng cho request
+        có nội dung khác.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    TooManyRequests:
+      description: Vượt giới hạn 5000 request/giờ
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    TokenRequest:
+      type: object
+      required: [grant_type, client_id, client_secret]
+      properties:
+        grant_type: { type: string, enum: [client_credentials] }
+        client_id: { type: string }
+        client_secret: { type: string }
+        scopes: { type: string, description: Giữ để tương thích client KiotViet; hiện bỏ qua. }
+    TokenResponse:
+      type: object
+      properties:
+        access_token: { type: string }
+        expires_in: { type: integer, example: 3600 }
+        token_type: { type: string, example: Bearer }
+    Page:
+      type: object
+      description: Envelope thống nhất cho mọi endpoint danh sách.
+      properties:
+        total:
+          type: integer
+          description: Tổng số bản ghi khớp điều kiện lọc, đọc cùng ảnh chụp dữ liệu với `data`.
+        pageSize: { type: integer }
+        currentItem: { type: integer }
+        data: { type: array, items: { type: object } }
+        timestamp:
+          type: string
+          format: date-time
+          description: Thời điểm máy chủ trả kết quả. Dùng làm `lastModifiedFrom` cho lần đồng bộ kế tiếp.
+    LedgerEntry:
+      type: object
+      properties:
+        type: { type: string, enum: [invoice, payment, refund, return] }
+        reference: { type: string }
+        sourceId: { type: integer }
+        date: { type: string, format: date-time }
+        amount: { type: number }
+        direction: { type: string, enum: [debit, credit] }
+        runningDebt: { type: number }
+        status: { type: string }
+        description: { type: string }
+    RegisterWebhookRequest:
+      type: object
+      required: [resource, url]
+      properties:
+        resource:
+          type: string
+          description: Tên resource cần theo dõi, dùng chung danh sách với endpoint danh sách.
+        url:
+          type: string
+          format: uri
+          description: Bắt buộc HTTPS - payload chứa dữ liệu khách hàng và đơn hàng.
+        secret:
+          type: string
+          minLength: 16
+          maxLength: 255
+          description: |
+            Nếu có, mỗi lần gọi sẽ kèm header `X-Webhook-Signature` chứa
+            HMAC SHA-256 của body. Đối tác nên tính lại và so sánh trước khi xử lý.
+        description: { type: string }
+        isActive: { type: boolean, default: true }
+    Webhook:
+      type: object
+      description: Không bao giờ trả lại `secret`; chỉ báo có hay không qua `hasSecret`.
+      properties:
+        id: { type: string, format: uuid }
+        resource: { type: string }
+        url: { type: string, format: uri }
+        hasSecret: { type: boolean }
+        description: { type: string }
+        isActive: { type: boolean }
+        cursorAt:
+          type: string
+          format: date-time
+          description: Mốc đã quét tới. Chỉ tiến khi đối tác nhận thành công.
+        lastStatus: { type: integer }
+        lastError: { type: string }
+        lastSuccessAt: { type: string, format: date-time }
+        failureCount:
+          type: integer
+          description: Lỗi liên tiếp. Đạt 10 thì tạm ngưng gọi; đăng ký lại để đặt về 0.
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    CreateCustomerRequest:
+      type: object
+      required: [name, addresses]
+      description: Dùng đúng cấu trúc nội bộ của POS, không định nghĩa lại schema riêng.
+      properties:
+        name: { type: string }
+        code: { type: string, description: Bỏ trống thì POS tự sinh mã. }
+        contactNumber: { type: string }
+        email: { type: string, format: email }
+        gender: { type: boolean }
+        birthDate: { type: string, format: date-time }
+        organization: { type: string }
+        taxCode: { type: string }
+        comments: { type: string }
+        branchId: { type: integer }
+        groupIds: { type: array, items: { type: integer } }
+        addresses:
+          type: array
+          minItems: 1
+          description: Bắt buộc ít nhất một địa chỉ giao hàng.
+          items: { type: object }
+    CreateProductRequest:
+      type: object
+      required: [code, name]
+      description: Subset tài liệu của CreateProductDto; backend nhận đầy đủ các field DTO POS.
+      properties:
+        code: { type: string }
+        name: { type: string }
+        description: { type: string }
+        basePrice: { type: number, minimum: 0 }
+        purchasePrice: { type: number, minimum: 0 }
+        unit: { type: string }
+        parentName: { type: string }
+        middleName: { type: string }
+        childName: { type: string }
+        tradeMarkId: { type: integer }
+        isActive: { type: boolean }
+        initialInventory: { type: array, items: { type: object } }
+        attributes: { type: array, items: { type: object } }
+    CreateCategoryRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        type: { type: string, enum: [parent, middle, child], default: child }
+    WebhookPayload:
+      type: object
+      description: |
+        Thân request POST gửi tới endpoint của đối tác. Hệ thống chờ phản hồi tối
+        đa 5 giây; quá hạn hoặc mã lỗi đều tính là thất bại và sẽ gửi lại ở chu
+        kỳ sau vì mốc quét chưa tiến.
+      properties:
+        resource: { type: string }
+        total: { type: integer }
+        data: { type: array, items: { type: object } }
+        timestamp: { type: string, format: date-time }
+    Error:
+      type: object
+      properties:
+        statusCode: { type: integer }
+        message: { type: string }
+        error: { type: string }

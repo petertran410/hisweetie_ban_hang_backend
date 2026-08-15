@@ -24,6 +24,7 @@ const toBool = ({ value }: { value: unknown }) => {
 export class CreateFactoryDto {
   @IsOptional() @IsString() code?: string;
   @IsString() name: string;
+  @IsOptional() @IsString() fullName?: string;
   @IsOptional() @IsString() description?: string;
   @IsOptional() @IsString() strategicLevel?: string;
   @IsOptional() @IsString() wechat?: string;

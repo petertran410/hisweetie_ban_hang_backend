@@ -40,6 +40,8 @@ async function bootstrap() {
   app.use(compression());
 
   app.useBodyParser('json', { limit: '20mb' });
+  // OAuth 2.0 client-credentials libraries commonly submit form-urlencoded bodies.
+  app.useBodyParser('urlencoded', { extended: true, limit: '20mb' });
   // text/plain cho nguồn ngoài gửi tin nhắn thô (vd MacroDroid) — không bọc JSON.
   app.useBodyParser('text', { type: ['text/plain'], limit: '1mb' });
 
@@ -97,6 +99,8 @@ async function bootstrap() {
       'X-Force-Signature',
       'X-Site-Code',
       'X-Branch-Id',
+      'X-Request-Id',
+      'Idempotency-Key',
     ],
     exposedHeaders: ['Set-Cookie'],
     maxAge: 86400,
