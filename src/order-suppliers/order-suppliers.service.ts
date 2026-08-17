@@ -1613,19 +1613,19 @@ export class OrderSuppliersService {
         },
       });
 
+      const user = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+
       if (existing.status !== 1 && updatedOrderSupplier.status === 1) {
         await this.factoryProductsService.recordConfirmedOrderSupplierPrices(
           tx,
           updatedOrderSupplier,
           userId,
-          updatedOrderSupplier.creator?.name,
+          user?.name,
         );
       }
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true, branchId: true },
-      });
 
       // Build fieldChanges + itemChanges đối xứng `Order.update` phía bán
       // (orders.service.ts:476-513). Audit trail PDN giờ có đủ thông tin

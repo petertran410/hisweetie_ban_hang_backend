@@ -317,6 +317,7 @@ model Branch {
   users                   User[]
   vehicleShipments        VehicleShipment[]
 
+  @@index([updatedAt, id])
   @@map("branches")
 }
 
@@ -366,6 +367,10 @@ model CustomerGroup {
   discount                Decimal?
   createdBy               Int?
   createdAt               DateTime                 @default(now())
+  // Nullable + @updatedAt: cột cho phép NULL nên thêm được vào bảng đã có dữ liệu mà
+  // KHÔNG cần default và KHÔNG mất dữ liệu. Cần trường này để Public API hỗ trợ
+  // `lastModifiedFrom` (delta sync) cho nhóm khách hàng.
+  updatedAt               DateTime?                @updatedAt @map("updated_at")
   allowedUserIds          Int[]                    @default([])
   autoAddConditions       Json?
   autoUpdateMode          String?
@@ -377,6 +382,7 @@ model CustomerGroup {
   priceBookCustomerGroups PriceBookCustomerGroup[]
   promotionCustomerGroups PromotionCustomerGroup[]
 
+  @@index([updatedAt, id])
   @@map("customer_groups")
 }
 
@@ -449,6 +455,7 @@ model Customer {
   parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
 
   @@index([larkSyncStatus])
+  @@index([updatedAt, id])
   @@map("customers")
 }
 
@@ -764,6 +771,7 @@ model Product {
   @@index([larkSyncStatus])
   @@index([primaryFactoryId])
   @@index([backupFactoryId])
+  @@index([updatedAt, id])
   @@map("products")
 }
 
@@ -1392,6 +1400,7 @@ model Order {
   soldBy          User?                 @relation("OrderSeller", fields: [soldById], references: [id])
 
   @@index([larkSyncStatus])
+  @@index([updatedAt, id])
   @@map("orders")
 }
 
@@ -1595,6 +1604,7 @@ model Invoice {
   @@index([customerId, purchaseDate])
   @@index([branchId, purchaseDate])
   @@index([misaSyncStatus])
+  @@index([updatedAt, id])
   @@map("invoices")
 }
 
@@ -2363,6 +2373,7 @@ model PurchaseOrderProductionStage {
 model Factory {
   id                 Int                 @id @default(autoincrement())
   name               String
+  fullName           String?
   description        String?
   isActive           Boolean             @default(true)
   createdBy          Int?
@@ -2797,6 +2808,7 @@ model ReturnOrder {
   @@index([customerId])
   @@index([branchId])
   @@index([status])
+  @@index([updatedAt, id])
   @@map("return_orders")
 }
 
@@ -3283,8 +3295,12 @@ model factory_product_price_histories {
   factoryProductId Int
   oldPrice         Decimal?
   newPrice         Decimal?
+  oldPriceVnd      Decimal?
+  newPriceVnd      Decimal?
   currency         String           @default("VND")
   exchangeRate     Decimal?
+  eventType        String           @default("reference")
+  refCode          String?
   reason           String?
   changedById      Int?
   changedByName    String?
@@ -3294,6 +3310,8 @@ model factory_product_price_histories {
 
   @@index([createdAt])
   @@index([factoryProductId])
+  @@index([factoryProductId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model factory_products {
@@ -3598,6 +3616,7 @@ model RecommendationItem {
   productName           String                 @map("product_name") @db.VarChar(500)
   unit                  String?                @db.VarChar(50)
   /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
+  is_purchasing_planning_tracked Boolean                        @default(true)
   parentName            String?                @map("parent_name") @db.VarChar(255)
   middleName            String?                @map("middle_name") @db.VarChar(255)
   childName             String?                @map("child_name") @db.VarChar(255)
@@ -3663,6 +3682,112 @@ model RecommendationItem {
   @@index([recommendationId, supplierId])
   @@index([recommendationId, status])
   @@map("recommendation_item")
+}
+
+model PublicApiClient {
+  id             String              @id @default(uuid())
+  name           String
+  clientId       String              @unique @map("client_id")
+  clientSecret   String              @map("client_secret")
+  description    String?
+  isActive       Boolean             @default(true) @map("is_active")
+  accessTokenTtl Int                 @default(3600) @map("access_token_ttl")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  updatedAt      DateTime            @updatedAt @map("updated_at")
+  auditLogs      PublicApiAuditLog[]
+  webhooks       PublicApiWebhook[]
+  idempotencyKeys PublicApiIdempotencyKey[]
+
+  @@index([isActive])
+  @@map("public_api_clients")
+}
+
+model PublicApiAuditLog {
+  id         BigInt          @id @default(autoincrement())
+  clientId   String          @map("client_id")
+  method     String
+  path       String
+  query      Json?
+  statusCode Int             @map("status_code")
+  ipAddress  String?         @map("ip_address")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  client     PublicApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@index([clientId, createdAt])
+  @@index([createdAt])
+  @@map("public_api_audit_logs")
+}
+
+/// Đăng ký webhook của đối tác. `cursorAt` là mốc đã quét tới của resource này:
+/// bộ quét chỉ lấy bản ghi có `updatedAt > cursorAt`, nên không phải chèn hook
+/// vào bất kỳ service nghiệp vụ nào của POS.
+model PublicApiWebhook {
+  id           String                     @id @default(uuid())
+  clientId     String                     @map("client_id")
+  resource     String
+  url          String
+  secret       String?
+  description  String?
+  isActive     Boolean                    @default(true) @map("is_active")
+  cursorAt     DateTime?                  @map("cursor_at")
+  lastStatus   Int?                       @map("last_status")
+  lastError    String?                    @map("last_error")
+  lastSuccessAt DateTime?                 @map("last_success_at")
+  failureCount Int                        @default(0) @map("failure_count")
+  createdAt    DateTime                   @default(now()) @map("created_at")
+  updatedAt    DateTime                   @updatedAt @map("updated_at")
+  client       PublicApiClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  deliveries   PublicApiWebhookDelivery[]
+
+  @@unique([clientId, resource, url])
+  @@index([isActive, resource])
+  @@map("public_api_webhooks")
+}
+
+/// Nhật ký từng lần gọi webhook, phục vụ retry và tra cứu khi đối tác báo mất tin.
+model PublicApiWebhookDelivery {
+  id           BigInt           @id @default(autoincrement())
+  webhookId    String           @map("webhook_id")
+  resource     String
+  payload      Json
+  attempt      Int              @default(1)
+  statusCode   Int?             @map("status_code")
+  success      Boolean          @default(false)
+  errorMessage String?          @map("error_message")
+  nextRetryAt  DateTime?        @map("next_retry_at")
+  createdAt    DateTime         @default(now()) @map("created_at")
+  webhook      PublicApiWebhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId, createdAt])
+  @@index([success, nextRetryAt])
+  @@map("public_api_webhook_deliveries")
+}
+
+/// Khoá chống trùng cho các thao tác ghi của Public API.
+///
+/// Đối tác gọi qua mạng có thể gặp timeout SAU khi POS đã ghi xong: phía họ
+/// thấy lỗi và gọi lại, nếu không chặn sẽ tạo ra hai đơn/hai khách trùng nhau.
+/// Client gửi kèm header `Idempotency-Key`; lần gọi lại với cùng khoá sẽ được
+/// trả lại đúng phản hồi đã lưu thay vì chạy lại nghiệp vụ.
+model PublicApiIdempotencyKey {
+  id           BigInt          @id @default(autoincrement())
+  clientId     String          @map("client_id")
+  key          String
+  method       String
+  path         String
+  requestHash  String          @map("request_hash")
+  statusCode   Int?            @map("status_code")
+  response     Json?
+  /// PROCESSING khi request đầu tiên còn đang chạy, COMPLETED khi đã có phản hồi.
+  /// Nhờ vậy hai lần gọi song song không cùng chạy nghiệp vụ một lúc.
+  status       String          @default("PROCESSING")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  completedAt  DateTime?       @map("completed_at")
+  client       PublicApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, key])
+  @@index([createdAt])
+  @@map("public_api_idempotency_keys")
 }
 
 enum MisaSyncStatus {
