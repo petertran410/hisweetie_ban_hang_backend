@@ -11,8 +11,18 @@ import { PublicApiIdempotencyService } from './public-api-idempotency.service';
 import { RegisterWebhookDto } from './dto/register-webhook.dto';
 import { CreateCustomerDto, UpdateCustomerDto } from '../customers/dto';
 import { CreateProductDto, UpdateProductDto } from '../products/dto';
-import { IsIn, IsOptional, IsString } from 'class-validator';
+import { CreateOrderDto, UpdateOrderDto } from '../orders/dto';
+import { CancelOrderDto } from '../orders/dto/cancel-order.dto';
+import { CreateInvoiceDto } from '../invoices/dto/create-invoice.dto';
+import { UpdateInvoiceDto } from '../invoices/dto/update-invoice.dto';
+import { IsIn, IsOptional, IsString, IsBoolean } from 'class-validator';
 import { PublicCustomerLedgerQueryDto } from './dto/public-customer-ledger-query.dto';
+
+class PublicInvoiceCancelDto {
+  @IsOptional()
+  @IsBoolean()
+  cancelPayments?: boolean;
+}
 
 class PublicCategoryWriteDto {
   @IsString()
@@ -129,7 +139,83 @@ export class PublicApiController {
     );
   }
 
-  @Post('webhooks')
+  @Post('orders')
+  createOrder(
+    @Req() request: any,
+    @Body() dto: CreateOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/orders', body: dto },
+      () => this.writeService.createOrder(dto),
+    );
+  }
+
+  @Put('orders/:id')
+  updateOrder(
+    @Req() request: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/orders/${id}`, body: dto },
+      () => this.writeService.updateOrder(id, dto),
+    );
+  }
+
+  @Put('orders/:id/cancel')
+  cancelOrder(
+    @Req() request: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelOrderDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/orders/${id}/cancel`, body: dto },
+      () => this.writeService.cancelOrder(id, dto),
+    );
+  }
+
+  @Post('invoices')
+  createInvoice(
+    @Req() request: any,
+    @Body() dto: CreateInvoiceDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/invoices', body: dto },
+      () => this.writeService.createInvoice(dto),
+    );
+  }
+
+  @Put('invoices/:id')
+  updateInvoice(
+    @Req() request: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateInvoiceDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/invoices/${id}`, body: dto },
+      () => this.writeService.updateInvoice(id, dto),
+    );
+  }
+
+  @Put('invoices/:id/cancel')
+  cancelInvoice(
+    @Req() request: any,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: PublicInvoiceCancelDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.idempotency.run(
+      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/invoices/${id}/cancel`, body: dto },
+      () => this.writeService.cancelInvoice(id, dto.cancelPayments),
+    );
+  }
+
+
   registerWebhook(@Req() request: any, @Body() dto: RegisterWebhookDto) {
     return this.webhookService.register(request.publicApiClient.id, dto);
   }

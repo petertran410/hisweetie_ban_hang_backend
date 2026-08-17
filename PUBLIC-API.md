@@ -167,15 +167,17 @@ cố định khoảng thời gian để kết quả không xê dịch giữa cá
 
 ## 5. Ghi dữ liệu
 
-Hiện mở cho `customers`, `products` và `categories`. Các resource khác sẽ bổ sung sau.
+Hiện mở cho `customers`, `products`, `categories`, `orders` và `invoices`. Các resource khác sẽ bổ sung sau.
 
-| Resource | Tạo | Cập nhật | Ngừng hoạt động |
+| Resource | Tạo | Cập nhật | Hủy/ngừng hoạt động |
 |---|---|---|---|
 | `customers` | `POST /customers` | `PUT /customers/{id}` | `DELETE /customers/{id}` |
 | `products` | `POST /products` | `PUT /products/{id}` | `POST /products/{id}/deactivate` |
 | `categories` | `POST /categories` | `PUT /categories/{id}` | Không hỗ trợ |
+| `orders` | `POST /orders` | `PUT /orders/{id}` | `PUT /orders/{id}/cancel` |
+| `invoices` | `POST /invoices` | `PUT /invoices/{id}` | `PUT /invoices/{id}/cancel` |
 
-Thân request dùng đúng cấu trúc POS đang dùng. Với khách hàng, `addresses` bắt buộc ít nhất 1 phần tử khi tạo mới. Với sản phẩm, `code` và `name` là bắt buộc; các trường tồn kho/giá/thuộc tính dùng đúng `CreateProductDto` của POS.
+`orders` bắt buộc `branchId` và `items` khi tạo. `invoices` nên luôn gửi `branchId`; thao tác tạo hóa đơn có thể trừ kho, tạo thanh toán, cập nhật công nợ và promotion usage.
 
 ```bash
 curl -X POST https://<domain>/api/public/v1/customers \
@@ -218,6 +220,13 @@ Khoá giữ trong 24 giờ. **Mỗi thao tác một khoá mới** — dùng lạ
 khác sẽ bị từ chối.
 
 Không gửi `Idempotency-Key` vẫn gọi được, nhưng đối tác tự chịu rủi ro trùng.
+
+### Hủy đơn hàng và hóa đơn
+
+- Hủy order qua `PUT /orders/{id}/cancel` với `{ "cancelPayments": true }` nếu muốn hủy cả thanh toán và dòng tiền. POS không cho hủy order khi còn invoice chưa hủy.
+- Hủy invoice qua `PUT /invoices/{id}/cancel` với `{ "cancelPayments": true }`. Endpoint này hoàn tồn, cập nhật công nợ và không xóa cứng invoice.
+- Không dùng `DELETE` cho orders/invoices; `DELETE` invoice nội bộ là hard-delete và không được mở cho đối tác.
+- `Idempotency-Key` bắt buộc theo khuyến nghị cho mọi thao tác order/invoice, đặc biệt tạo invoice vì có thể trừ kho và ghi dòng tiền.
 
 ### Ngừng hoạt động thay vì xóa
 

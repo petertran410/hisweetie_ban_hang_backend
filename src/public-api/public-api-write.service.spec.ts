@@ -7,6 +7,8 @@ describe('PublicApiWriteService', () => {
     };
     const productsService: any = { create: jest.fn(), update: jest.fn() };
     const categoriesService: any = { create: jest.fn(), update: jest.fn() };
+    const ordersService: any = { create: jest.fn(), update: jest.fn(), cancelOrder: jest.fn() };
+    const invoicesService: any = { create: jest.fn(), update: jest.fn() };
     const publicApiService: any = {
       toPublicResource: jest.fn((_resource: string, row: unknown) => row),
     };
@@ -14,11 +16,15 @@ describe('PublicApiWriteService', () => {
       customersService,
       productsService,
       categoriesService,
+      ordersService,
+      invoicesService,
       publicApiService,
       service: new PublicApiWriteService(
         customersService,
         productsService,
         categoriesService,
+        ordersService,
+        invoicesService,
         publicApiService,
       ),
     };
@@ -82,6 +88,56 @@ describe('PublicApiWriteService', () => {
 
     expect(productsService.update).toHaveBeenCalledWith(15, { isActive: false }, 1);
     expect(productsService).not.toHaveProperty('remove');
+  });
+
+  it('gọi OrdersService.create dưới acting user và chuẩn hóa kết quả', async () => {
+    const { service, ordersService } = createService();
+    ordersService.create.mockResolvedValue({ order: { id: 21, code: 'DH000021' }, warnings: ['thiếu tồn'] });
+
+    const result = await service.createOrder({ branchId: 1, customerId: 2, items: [] } as any);
+
+    expect(ordersService.create).toHaveBeenCalledWith({ branchId: 1, customerId: 2, items: [] }, 1);
+    expect(result.data).toEqual({ id: 21, code: 'DH000021' });
+    expect(result.warnings).toEqual(['thiếu tồn']);
+  });
+
+  it('update order truyền user object cần cho audit log', async () => {
+    const { service, ordersService } = createService();
+    ordersService.update.mockResolvedValue({ id: 21 });
+
+    await service.updateOrder(21, { description: 'Cập nhật từ API' } as any);
+
+    expect(ordersService.update).toHaveBeenCalledWith(21, { description: 'Cập nhật từ API' }, {
+      id: 1, name: 'Public API', email: 'public-api@system.local',
+    });
+  });
+
+  it('hủy order gọi cancelOrder thay vì tự sửa trạng thái', async () => {
+    const { service, ordersService } = createService();
+    ordersService.cancelOrder.mockResolvedValue({ message: 'Hủy đơn hàng thành công' });
+
+    await service.cancelOrder(21, { cancelPayments: true });
+
+    expect(ordersService.cancelOrder).toHaveBeenCalledWith(21, { cancelPayments: true }, 1);
+  });
+
+  it('hủy invoice dùng status cancelled và không hard-delete', async () => {
+    const { service, invoicesService } = createService();
+    invoicesService.update.mockResolvedValue({ id: 31, status: 2 });
+
+    await service.cancelInvoice(31, true);
+
+    expect(invoicesService.update).toHaveBeenCalledWith(31, { status: 2, cancelPayments: true }, 1);
+    expect(invoicesService).not.toHaveProperty('remove');
+  });
+
+  it('gọi InvoicesService.create dưới acting user', async () => {
+    const { service, invoicesService } = createService();
+    invoicesService.create.mockResolvedValue({ id: 31, code: 'HD000031' });
+
+    await service.createInvoice({ branchId: 1, items: [] } as any);
+
+    expect(invoicesService.create).toHaveBeenCalledWith({ branchId: 1, items: [] }, 1);
   });
 
   it('gọi CategoriesService có sẵn cho create/update category', async () => {

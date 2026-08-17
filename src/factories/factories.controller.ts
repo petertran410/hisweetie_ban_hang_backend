@@ -103,6 +103,25 @@ export class FactoriesController {
     res.send(buffer);
   }
 
+  /**
+   * Xuất chi tiết toàn bộ nhà máy theo bộ lọc (kèm sheet sản phẩm liên kết).
+   * Khai báo trước `:id/export` để không bị route param nuốt mất.
+   */
+  @Get('export/detail')
+  @RequirePermissions('factories:view')
+  async exportAllDetail(@Query() query: FactoryQueryDto, @Res() res: Response) {
+    const buffer = await this.factoriesService.exportAllDetail(query);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename=factories_detail.xlsx',
+    );
+    res.send(buffer);
+  }
+
   @Get(':id/export')
   @RequirePermissions('factories:view')
   async exportDetail(

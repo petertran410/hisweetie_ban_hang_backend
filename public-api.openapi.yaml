@@ -217,6 +217,117 @@ paths:
         '200': { $ref: '#/components/responses/ResourceItem' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /orders:
+    post:
+      summary: Tạo đơn hàng
+      description: |
+        Gọi lại `OrdersService.create` của POS: chạy lại khuyến mãi phía backend,
+        sinh mã đơn, ghi nhật ký. Thiếu tồn kho chỉ trả cảnh báo trong `warnings`,
+        không chặn tạo đơn. Bắt buộc `branchId` và `items`.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateOrderRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /orders/{id}:
+    put:
+      summary: Cập nhật đơn hàng
+      description: |
+        Gửi `items` là thay toàn bộ dòng hàng, không phải vá từng dòng. POS không
+        cho phép đổi `branchId` của đơn đã tạo.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /orders/{id}/cancel:
+    put:
+      summary: Hủy đơn hàng
+      description: |
+        POS từ chối hủy khi đơn còn hóa đơn chưa hủy. `cancelPayments=true` hủy
+        luôn phiếu thu và dòng tiền liên quan, đồng thời tính lại công nợ.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /invoices:
+    post:
+      summary: Tạo hóa đơn
+      description: |
+        Thao tác bán hàng thật: trừ kho, ghi thẻ kho, tạo phiếu thu, cập nhật
+        công nợ và lượt dùng khuyến mãi. Luôn gửi `Idempotency-Key`.
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateInvoiceRequest' }
+      responses:
+        '201': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /invoices/{id}:
+    put:
+      summary: Cập nhật hóa đơn
+      description: |
+        Thay đổi dòng hàng có thể khiến POS phát hành bản hóa đơn mới với mã hậu
+        tố `.xx` và hủy bản cũ, kèm hoàn tồn rồi trừ lại kho.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /invoices/{id}/cancel:
+    put:
+      summary: Hủy hóa đơn
+      description: |
+        Đi qua nhánh hủy của POS (`status=2`): hoàn tồn kho, gỡ khuyến mãi, tính
+        lại công nợ. Không xóa dữ liệu. `cancelPayments=true` hủy cả phiếu thu.
+      parameters:
+        - $ref: '#/components/parameters/Id'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ResourceItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /{resource}:
     get:
       summary: Lấy danh sách theo resource
@@ -654,6 +765,52 @@ components:
       properties:
         name: { type: string }
         type: { type: string, enum: [parent, middle, child], default: child }
+    CreateOrderRequest:
+      type: object
+      required: [customerId, branchId, items]
+      properties:
+        customerId: { type: integer }
+        branchId: { type: integer }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, quantity, unitPrice]
+            properties:
+              productId: { type: integer }
+              quantity: { type: number }
+              unitPrice: { type: number }
+              discount: { type: number }
+              discountRatio: { type: number }
+        orderDate: { type: string, format: date-time }
+        saleChannelId: { type: integer }
+        description: { type: string }
+    CreateInvoiceRequest:
+      type: object
+      required: [branchId, items]
+      properties:
+        branchId: { type: integer }
+        customerId: { type: integer }
+        items:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [productId, productCode, productName, quantity, price, totalPrice]
+            properties:
+              productId: { type: integer }
+              productCode: { type: string }
+              productName: { type: string }
+              quantity: { type: number }
+              price: { type: number }
+              totalPrice: { type: number }
+        paidAmount: { type: number }
+        payments: { type: array, items: { type: object } }
+    CancelRequest:
+      type: object
+      properties:
+        cancelPayments: { type: boolean, default: false }
     WebhookPayload:
       type: object
       description: |
