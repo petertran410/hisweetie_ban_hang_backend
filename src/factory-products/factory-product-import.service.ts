@@ -2,6 +2,12 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import { toVnd } from '../common/currency.util';
+import {
+  MoqBasis,
+  MoqUnit,
+  basisOfUnit,
+  parseMoqUnit,
+} from '../common/moq.util';
 
 const REQUIRED_HEADERS = ['mã sản phẩm', 'mã nhà máy'];
 
@@ -29,6 +35,12 @@ const HEADER_KEYS: Record<string, keyof ParsedRow | undefined> = {
   'ty gia': 'exchangeRate',
   'exchange rate': 'exchangeRate',
   moq: 'moq',
+  'đơn vị moq': 'moqUnit',
+  'don vi moq': 'moqUnit',
+  'moq unit': 'moqUnit',
+  'bội số moq': 'moqIncrement',
+  'boi so moq': 'moqIncrement',
+  'moq increment': 'moqIncrement',
   'thời gian giao hàng (ngày)': 'leadtimeDays',
   'thoi gian giao hang (ngay)': 'leadtimeDays',
   'leadtime days': 'leadtimeDays',
@@ -51,6 +63,10 @@ export interface ParsedRow {
   currency?: string;
   exchangeRate?: number;
   moq?: number;
+  moqValue?: number;
+  moqBasis?: MoqBasis;
+  moqUnit?: MoqUnit;
+  moqIncrement?: number;
   leadtimeDays?: number;
   note?: string;
   isActive?: boolean;
@@ -137,6 +153,17 @@ export class FactoryProductImportService {
     return undefined;
   }
 
+  private moqUnit(value: string, errors: string[]): MoqUnit | undefined {
+    const parsed = parseMoqUnit(value);
+    if (parsed === null) {
+      errors.push(
+        `Đơn vị MOQ "${value.trim()}" không hợp lệ — chỉ nhận gói, thùng, kg hoặc tấn`,
+      );
+      return undefined;
+    }
+    return parsed;
+  }
+
   private async parse(file: Express.Multer.File): Promise<ParsedRow[]> {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer as any);
@@ -175,6 +202,8 @@ export class FactoryProductImportService {
       const errors: string[] = [];
       if (!productCode) errors.push('Thiếu mã sản phẩm');
       if (!factoryCode) errors.push('Thiếu mã nhà máy');
+      const moqValue = this.number(cell(excelRow, 'moq'), 'MOQ', errors);
+      const moqUnit = this.moqUnit(cell(excelRow, 'moqUnit'), errors);
       rows.push({
         row: rowNumber,
         productCode,
@@ -193,7 +222,17 @@ export class FactoryProductImportService {
           'Tỷ giá',
           errors,
         ),
-        moq: this.number(cell(excelRow, 'moq'), 'MOQ', errors),
+        moq: moqValue,
+        moqValue,
+        // Bỏ trống đơn vị → hiểu là "thùng", đúng với cách nhập trước đây.
+        moqUnit: moqValue == null ? undefined : (moqUnit ?? 'CARTON'),
+        moqBasis:
+          moqValue == null ? undefined : basisOfUnit(moqUnit ?? 'CARTON'),
+        moqIncrement: this.number(
+          cell(excelRow, 'moqIncrement'),
+          'Bội số MOQ',
+          errors,
+        ),
         leadtimeDays: this.number(
           cell(excelRow, 'leadtimeDays'),
           'Thời gian giao hàng',
@@ -343,6 +382,10 @@ export class FactoryProductImportService {
             currency,
             exchangeRate,
             moq: row.moq,
+            moqValue: row.moqValue,
+            moqBasis: row.moqBasis,
+            moqUnit: row.moqUnit,
+            moqIncrement: row.moqIncrement,
             leadtimeDays: row.leadtimeDays,
             note: row.note,
             isActive: row.isActive,
@@ -416,6 +459,12 @@ export class FactoryProductImportService {
       { header: 'Tỷ giá', key: 'exchangeRate', width: 14 },
       { header: 'MOQ', key: 'moq', width: 12 },
       {
+        header: 'Đơn vị MOQ (gói/thùng/kg/tấn)',
+        key: 'moqUnit',
+        width: 28,
+      },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
+      {
         header: 'Thời gian giao hàng (ngày)',
         key: 'leadtimeDays',
         width: 28,
@@ -433,10 +482,19 @@ export class FactoryProductImportService {
       currency: 'VND',
       exchangeRate: 1,
       moq: 100,
+      moqUnit: 'thùng',
       leadtimeDays: 14,
       note: 'Dòng mẫu',
       isActive: 'Có',
     });
+    // H = Đơn vị MOQ. Dropdown giúp nhập đúng nhãn backend hiểu được.
+    for (let row = 2; row <= 1000; row += 1) {
+      worksheet.getCell(`H${row}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"gói,thùng,kg,tấn"'],
+      };
+    }
     return workbook.xlsx.writeBuffer();
   }
 }

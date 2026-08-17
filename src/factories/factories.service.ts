@@ -10,6 +10,33 @@ import {
   nextFactoryCode,
 } from '../common/factory-code.util';
 import type { FactoryQueryDto } from './dto';
+import {
+  MOQ_SCOPE_LABEL,
+  MOQ_UNIT_LABEL,
+  MoqScope,
+  MoqUnit,
+  formatMoqSpec,
+  normalizeMoqSpec,
+} from '../common/moq.util';
+
+/**
+ * Các ô MOQ dùng chung cho mọi sheet export.
+ *
+ * Cột `moq` giữ nguyên tên/ý nghĩa cũ (con số) để file cũ vẫn đọc được;
+ * đơn vị và phạm vi tách sang cột riêng.
+ */
+function moqCells(
+  row: Parameters<typeof normalizeMoqSpec>[0],
+  defaultScope: MoqScope,
+) {
+  const spec = normalizeMoqSpec(row, defaultScope);
+  return {
+    moq: spec ? spec.value : '',
+    moqUnit: spec ? MOQ_UNIT_LABEL[spec.unit] : '',
+    moqScope: spec ? MOQ_SCOPE_LABEL[spec.scope] : '',
+    moqIncrement: spec?.increment ?? '',
+  };
+}
 
 const STRATEGIC_LEVEL_LABELS: Record<string, string> = {
   STRATEGIC: 'Chiến lược',
@@ -152,6 +179,9 @@ export class FactoriesService {
       { header: 'Email', key: 'email', width: 28 },
       { header: 'Wechat', key: 'wechat', width: 18 },
       { header: 'MOQ mặc định', key: 'moq', width: 16 },
+      { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
+      { header: 'Phạm vi MOQ', key: 'moqScope', width: 16 },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Điều khoản thanh toán', key: 'paymentTerm', width: 30 },
       { header: 'Sản phẩm chính', key: 'primaryCount', width: 18 },
@@ -182,7 +212,7 @@ export class FactoriesService {
         contactNumber: factory.contactNumber || '',
         email: factory.email || '',
         wechat: factory.wechat || '',
-        moq: factory.moq == null ? '' : Number(factory.moq),
+        ...moqCells(factory, 'PER_ORDER'),
         leadtimeDays: factory.leadtimeDays ?? '',
         paymentTerm: factory.paymentTerm || '',
         primaryCount,
@@ -229,6 +259,9 @@ export class FactoriesService {
       { header: 'Email', key: 'email', width: 28 },
       { header: 'Wechat', key: 'wechat', width: 18 },
       { header: 'MOQ mặc định', key: 'moq', width: 16 },
+      { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
+      { header: 'Phạm vi MOQ', key: 'moqScope', width: 16 },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Điều khoản thanh toán', key: 'paymentTerm', width: 30 },
       { header: 'Sản phẩm chính', key: 'primaryCount', width: 18 },
@@ -257,6 +290,8 @@ export class FactoriesService {
       { header: 'Tỉ giá', key: 'exchangeRate', width: 14 },
       { header: 'Giá quy đổi VND', key: 'referencePriceVnd', width: 20 },
       { header: 'MOQ', key: 'moq', width: 14 },
+      { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Đang hoạt động', key: 'isActive', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 36 },
@@ -292,7 +327,7 @@ export class FactoriesService {
         contactNumber: factory.contactNumber || '',
         email: factory.email || '',
         wechat: factory.wechat || '',
-        moq: factory.moq == null ? '' : Number(factory.moq),
+        ...moqCells(factory, 'PER_ORDER'),
         leadtimeDays: factory.leadtimeDays ?? '',
         paymentTerm: factory.paymentTerm || '',
         primaryCount: primaryItems.length,
@@ -337,7 +372,8 @@ export class FactoriesService {
                 : exchangeRate == null
                   ? ''
                   : referencePrice * exchangeRate,
-          moq: mapping.moq == null ? '' : Number(mapping.moq),
+          ...moqCells(mapping, 'PER_LINE'),
+          ...moqCells(mapping, 'PER_LINE'),
           leadtimeDays: mapping.leadtimeDays ?? '',
           isActive: mapping.isActive ? 'Có' : 'Không',
           note: mapping.note || '',
@@ -382,7 +418,10 @@ export class FactoriesService {
       ['Số điện thoại', factory.contactNumber || ''],
       ['Email', factory.email || ''],
       ['Wechat', factory.wechat || ''],
-      ['MOQ mặc định', factory.moq == null ? '' : Number(factory.moq)],
+      [
+        'MOQ mặc định',
+        formatMoqSpec(normalizeMoqSpec(factory, 'PER_ORDER'), true),
+      ],
       ['Leadtime (ngày)', factory.leadtimeDays ?? ''],
       ['Điều khoản thanh toán', factory.paymentTerm || ''],
       ['Trạng thái', factory.isActive ? 'Hoạt động' : 'Ngừng hoạt động'],
@@ -401,6 +440,8 @@ export class FactoriesService {
       { header: 'Tỉ giá', key: 'exchangeRate', width: 14 },
       { header: 'Giá quy đổi VND', key: 'referencePriceVnd', width: 20 },
       { header: 'MOQ', key: 'moq', width: 14 },
+      { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Đang hoạt động', key: 'isActive', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 36 },
@@ -428,7 +469,7 @@ export class FactoriesService {
               : exchangeRate == null
                 ? ''
                 : referencePrice * exchangeRate,
-        moq: mapping.moq == null ? '' : Number(mapping.moq),
+        ...moqCells(mapping, 'PER_LINE'),
         leadtimeDays: mapping.leadtimeDays ?? '',
         isActive: mapping.isActive ? 'Có' : 'Không',
         note: mapping.note || '',
@@ -525,6 +566,11 @@ export class FactoriesService {
       wechat?: string;
       email?: string;
       moq?: number;
+      moqValue?: number | null;
+      moqBasis?: string | null;
+      moqUnit?: string | null;
+      moqScope?: string | null;
+      moqIncrement?: number | null;
       leadtimeDays?: number;
       paymentTerm?: string;
       country?: string;
@@ -580,6 +626,11 @@ export class FactoriesService {
         wechat: dto.wechat,
         email: dto.email,
         moq: dto.moq,
+        moqValue: dto.moqValue ?? null,
+        moqBasis: dto.moqBasis ?? null,
+        moqUnit: dto.moqUnit ?? null,
+        moqScope: dto.moqScope ?? null,
+        moqIncrement: dto.moqIncrement ?? null,
         leadtimeDays: dto.leadtimeDays,
         paymentTerm: dto.paymentTerm,
         country: dto.country,
@@ -611,6 +662,11 @@ export class FactoriesService {
       wechat?: string;
       email?: string;
       moq?: number;
+      moqValue?: number | null;
+      moqBasis?: string | null;
+      moqUnit?: string | null;
+      moqScope?: string | null;
+      moqIncrement?: number | null;
       leadtimeDays?: number;
       paymentTerm?: string;
       country?: string;
@@ -661,6 +717,11 @@ export class FactoriesService {
     if (dto.wechat !== undefined) data.wechat = dto.wechat;
     if (dto.email !== undefined) data.email = dto.email;
     if (dto.moq !== undefined) data.moq = dto.moq;
+    if (dto.moqValue !== undefined) data.moqValue = dto.moqValue;
+    if (dto.moqBasis !== undefined) data.moqBasis = dto.moqBasis;
+    if (dto.moqUnit !== undefined) data.moqUnit = dto.moqUnit;
+    if (dto.moqScope !== undefined) data.moqScope = dto.moqScope;
+    if (dto.moqIncrement !== undefined) data.moqIncrement = dto.moqIncrement;
     if (dto.leadtimeDays !== undefined) data.leadtimeDays = dto.leadtimeDays;
     if (dto.paymentTerm !== undefined) data.paymentTerm = dto.paymentTerm;
     if (dto.country !== undefined) data.country = dto.country;

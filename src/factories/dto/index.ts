@@ -9,6 +9,19 @@ import {
   Min,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
+import {
+  MOQ_BASES,
+  MOQ_SCOPES,
+  MOQ_UNITS,
+  MoqBasis,
+  MoqScope,
+  MoqUnit,
+} from '../../common/moq.util';
+
+const toNum = ({ value }: { value: unknown }) =>
+  value === undefined || value === null || value === ''
+    ? undefined
+    : Number(value);
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === null || value === ''
@@ -30,6 +43,14 @@ export class CreateFactoryDto {
   @IsOptional() @IsString() wechat?: string;
   @IsOptional() @IsString() email?: string;
   @IsOptional() @IsNumber() @Min(0) moq?: number;
+  // ── MOQ có đơn vị (thay dần cho `moq` thuần số ở trên) ──
+  @IsOptional() @IsNumber() @Min(0) @Transform(toNum) moqValue?: number | null;
+  @IsOptional() @IsIn(MOQ_BASES) moqBasis?: MoqBasis | null;
+  @IsOptional() @IsIn(MOQ_UNITS) moqUnit?: MoqUnit | null;
+  @IsOptional() @IsIn(MOQ_SCOPES) moqScope?: MoqScope | null;
+  @IsOptional() @IsNumber() @Min(0) @Transform(toNum) moqIncrement?:
+    | number
+    | null;
   @IsOptional() @IsInt() @Min(0) leadtimeDays?: number;
   @IsOptional() @IsString() paymentTerm?: string;
   @IsOptional() @IsString() country?: string;

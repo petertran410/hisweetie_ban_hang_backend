@@ -2391,6 +2391,12 @@ model Factory {
   incoterm           String?
   leadtimeDays       Int?
   moq                Decimal?
+  /// Cấu hình MOQ có đơn vị. Giữ `moq` để tương thích dữ liệu/API cũ.
+  moqValue           Decimal?            @db.Decimal(18, 4)
+  moqBasis           String? // QUANTITY | WEIGHT
+  moqUnit            String? // PACK | CARTON | KG | TON
+  moqScope           String? // PER_ORDER | PER_LINE
+  moqIncrement       Decimal?            @db.Decimal(18, 4)
   notes              String?
   paymentTerm        String?
   port               String?
@@ -3325,6 +3331,11 @@ model factory_products {
   exchangeRate                                   Decimal?
   isManualRate                                   Boolean                           @default(false)
   moq                                            Decimal?
+  /// MOQ có đơn vị, luôn ở phạm vi PER_LINE. Giữ `moq` cho tương thích cũ.
+  moqValue                                       Decimal?                          @db.Decimal(18, 4)
+  moqBasis                                       String?
+  moqUnit                                        String?
+  moqIncrement                                   Decimal?                          @db.Decimal(18, 4)
   leadtimeDays                                   Int?
   note                                           String?
   isActive                                       Boolean                           @default(true)
@@ -3609,72 +3620,72 @@ model PurchaseRecommendation {
 /// Đề xuất cho từng SKU — BẢNG TRUNG TÂM của module (TD §4.7).
 /// Cố ý denormalize product_code/product_name/supplier_name để tránh join khi đọc.
 model RecommendationItem {
-  id                    BigInt                 @id @default(autoincrement())
-  recommendationId      Int                    @map("recommendation_id")
-  productId             Int                    @map("product_id")
-  productCode           String                 @map("product_code") @db.VarChar(50)
-  productName           String                 @map("product_name") @db.VarChar(500)
-  unit                  String?                @db.VarChar(50)
+  id                             BigInt                 @id @default(autoincrement())
+  recommendationId               Int                    @map("recommendation_id")
+  productId                      Int                    @map("product_id")
+  productCode                    String                 @map("product_code") @db.VarChar(50)
+  productName                    String                 @map("product_name") @db.VarChar(500)
+  unit                           String?                @db.VarChar(50)
   /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
-  is_purchasing_planning_tracked Boolean                        @default(true)
-  parentName            String?                @map("parent_name") @db.VarChar(255)
-  middleName            String?                @map("middle_name") @db.VarChar(255)
-  childName             String?                @map("child_name") @db.VarChar(255)
-  tradeMarkId           Int?                   @map("trade_mark_id")
-  tradeMarkName         String?                @map("trade_mark_name") @db.VarChar(255)
+  is_purchasing_planning_tracked Boolean                @default(true)
+  parentName                     String?                @map("parent_name") @db.VarChar(255)
+  middleName                     String?                @map("middle_name") @db.VarChar(255)
+  childName                      String?                @map("child_name") @db.VarChar(255)
+  tradeMarkId                    Int?                   @map("trade_mark_id")
+  tradeMarkName                  String?                @map("trade_mark_name") @db.VarChar(255)
   /// null → cờ MISSING_SUPPLIER (Product không có supplierId, suy từ lịch sử đặt)
-  supplierId            Int?                   @map("supplier_id")
-  supplierName          String?                @map("supplier_name") @db.VarChar(255)
-  forecastDailyDemand   Decimal                @map("forecast_daily_demand") @db.Decimal(18, 4)
+  supplierId                     Int?                   @map("supplier_id")
+  supplierName                   String?                @map("supplier_name") @db.VarChar(255)
+  forecastDailyDemand            Decimal                @map("forecast_daily_demand") @db.Decimal(18, 4)
   /// HIGH | MEDIUM | LOW | VERY_LOW | NO_DATA
-  confidence            String                 @db.VarChar(15)
+  confidence                     String                 @db.VarChar(15)
   /// INVENTORY_LOG | INVOICE_DETAIL | MIXED | NONE
-  demandSource          String                 @map("demand_source") @db.VarChar(20)
-  ma30                  Decimal?               @db.Decimal(18, 4)
-  ma60                  Decimal?               @db.Decimal(18, 4)
-  ma90                  Decimal?               @db.Decimal(18, 4)
-  trendRatio            Decimal?               @map("trend_ratio") @db.Decimal(10, 4)
-  leadTimeDays          Int                    @map("lead_time_days") @db.SmallInt
+  demandSource                   String                 @map("demand_source") @db.VarChar(20)
+  ma30                           Decimal?               @db.Decimal(18, 4)
+  ma60                           Decimal?               @db.Decimal(18, 4)
+  ma90                           Decimal?               @db.Decimal(18, 4)
+  trendRatio                     Decimal?               @map("trend_ratio") @db.Decimal(10, 4)
+  leadTimeDays                   Int                    @map("lead_time_days") @db.SmallInt
   /// GLOBAL | CATEGORY | SUPPLIER | SKU | DERIVED
-  leadTimeSource        String                 @map("lead_time_source") @db.VarChar(15)
-  safetyDays            Int                    @map("safety_days") @db.SmallInt
-  coverageDays          Int                    @map("coverage_days") @db.SmallInt
-  leadTimeDemand        Decimal                @map("lead_time_demand") @db.Decimal(18, 4)
-  safetyBuffer          Decimal                @map("safety_buffer") @db.Decimal(18, 4)
-  reorderPoint          Decimal                @map("reorder_point") @db.Decimal(18, 4)
-  physicalStock         Decimal                @map("physical_stock") @db.Decimal(18, 4)
-  reservedStock         Decimal                @map("reserved_stock") @db.Decimal(18, 4)
-  availableStock        Decimal                @map("available_stock") @db.Decimal(18, 4)
-  incomingTotal         Decimal                @map("incoming_total") @db.Decimal(18, 4)
-  inventoryPosition     Decimal                @map("inventory_position") @db.Decimal(18, 4)
+  leadTimeSource                 String                 @map("lead_time_source") @db.VarChar(15)
+  safetyDays                     Int                    @map("safety_days") @db.SmallInt
+  coverageDays                   Int                    @map("coverage_days") @db.SmallInt
+  leadTimeDemand                 Decimal                @map("lead_time_demand") @db.Decimal(18, 4)
+  safetyBuffer                   Decimal                @map("safety_buffer") @db.Decimal(18, 4)
+  reorderPoint                   Decimal                @map("reorder_point") @db.Decimal(18, 4)
+  physicalStock                  Decimal                @map("physical_stock") @db.Decimal(18, 4)
+  reservedStock                  Decimal                @map("reserved_stock") @db.Decimal(18, 4)
+  availableStock                 Decimal                @map("available_stock") @db.Decimal(18, 4)
+  incomingTotal                  Decimal                @map("incoming_total") @db.Decimal(18, 4)
+  inventoryPosition              Decimal                @map("inventory_position") @db.Decimal(18, 4)
   /// Dương = cần đặt
-  reorderGap            Decimal                @map("reorder_gap") @db.Decimal(18, 4)
-  needsOrder            Boolean                @map("needs_order")
-  soqRaw                Decimal                @map("soq_raw") @db.Decimal(18, 4)
-  suggestedQuantity     Decimal                @map("suggested_quantity") @db.Decimal(18, 4)
-  suggestedPackCount    Decimal?               @map("suggested_pack_count") @db.Decimal(12, 2)
-  packSize              Decimal                @map("pack_size") @db.Decimal(12, 4)
-  moqApplied            Decimal?               @map("moq_applied") @db.Decimal(18, 4)
-  estimatedUnitPrice    Decimal?               @map("estimated_unit_price") @db.Decimal(18, 2)
-  estimatedValue        Decimal?               @map("estimated_value") @db.Decimal(18, 2)
+  reorderGap                     Decimal                @map("reorder_gap") @db.Decimal(18, 4)
+  needsOrder                     Boolean                @map("needs_order")
+  soqRaw                         Decimal                @map("soq_raw") @db.Decimal(18, 4)
+  suggestedQuantity              Decimal                @map("suggested_quantity") @db.Decimal(18, 4)
+  suggestedPackCount             Decimal?               @map("suggested_pack_count") @db.Decimal(12, 2)
+  packSize                       Decimal                @map("pack_size") @db.Decimal(12, 4)
+  moqApplied                     Decimal?               @map("moq_applied") @db.Decimal(18, 4)
+  estimatedUnitPrice             Decimal?               @map("estimated_unit_price") @db.Decimal(18, 2)
+  estimatedValue                 Decimal?               @map("estimated_value") @db.Decimal(18, 2)
   /// CRITICAL | HIGH | MEDIUM | LOW | HEALTHY | OVERSTOCK | NO_DATA
-  priority              String                 @db.VarChar(15)
-  priorityRank          Int                    @map("priority_rank") @db.SmallInt
+  priority                       String                 @db.VarChar(15)
+  priorityRank                   Int                    @map("priority_rank") @db.SmallInt
   /// HIGH | MEDIUM | LOW | UNRELIABLE
-  reliability           String                 @db.VarChar(15)
-  urgencyRatio          Decimal?               @map("urgency_ratio") @db.Decimal(10, 4)
-  daysUntilStockout     Int?                   @map("days_until_stockout") @db.SmallInt
-  daysOfSupply          Decimal?               @map("days_of_supply") @db.Decimal(10, 2)
-  projectedStockoutDate DateTime?              @map("projected_stockout_date") @db.Date
+  reliability                    String                 @db.VarChar(15)
+  urgencyRatio                   Decimal?               @map("urgency_ratio") @db.Decimal(10, 4)
+  daysUntilStockout              Int?                   @map("days_until_stockout") @db.SmallInt
+  daysOfSupply                   Decimal?               @map("days_of_supply") @db.Decimal(10, 2)
+  projectedStockoutDate          DateTime?              @map("projected_stockout_date") @db.Date
   /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
-  status                String                 @default("PENDING") @db.VarChar(15)
-  orderSupplierId       Int?                   @map("order_supplier_id")
+  status                         String                 @default("PENDING") @db.VarChar(15)
+  orderSupplierId                Int?                   @map("order_supplier_id")
   /// Câu kết luận tiếng Việt do backend sinh (PRD §12.4)
-  summaryText           String                 @map("summary_text")
+  summaryText                    String                 @map("summary_text")
   /// Toàn bộ input + từng bước tính + flags
-  calculationTrace      Json                   @map("calculation_trace")
-  createdAt             DateTime               @default(now()) @map("created_at")
-  recommendation        PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
+  calculationTrace               Json                   @map("calculation_trace")
+  createdAt                      DateTime               @default(now()) @map("created_at")
+  recommendation                 PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
 
   @@unique([recommendationId, productId])
   @@index([recommendationId, priorityRank, daysUntilStockout])
@@ -3685,17 +3696,17 @@ model RecommendationItem {
 }
 
 model PublicApiClient {
-  id             String              @id @default(uuid())
-  name           String
-  clientId       String              @unique @map("client_id")
-  clientSecret   String              @map("client_secret")
-  description    String?
-  isActive       Boolean             @default(true) @map("is_active")
-  accessTokenTtl Int                 @default(3600) @map("access_token_ttl")
-  createdAt      DateTime            @default(now()) @map("created_at")
-  updatedAt      DateTime            @updatedAt @map("updated_at")
-  auditLogs      PublicApiAuditLog[]
-  webhooks       PublicApiWebhook[]
+  id              String                    @id @default(uuid())
+  name            String
+  clientId        String                    @unique @map("client_id")
+  clientSecret    String                    @map("client_secret")
+  description     String?
+  isActive        Boolean                   @default(true) @map("is_active")
+  accessTokenTtl  Int                       @default(3600) @map("access_token_ttl")
+  createdAt       DateTime                  @default(now()) @map("created_at")
+  updatedAt       DateTime                  @updatedAt @map("updated_at")
+  auditLogs       PublicApiAuditLog[]
+  webhooks        PublicApiWebhook[]
   idempotencyKeys PublicApiIdempotencyKey[]
 
   @@index([isActive])
@@ -3722,22 +3733,22 @@ model PublicApiAuditLog {
 /// bộ quét chỉ lấy bản ghi có `updatedAt > cursorAt`, nên không phải chèn hook
 /// vào bất kỳ service nghiệp vụ nào của POS.
 model PublicApiWebhook {
-  id           String                     @id @default(uuid())
-  clientId     String                     @map("client_id")
-  resource     String
-  url          String
-  secret       String?
-  description  String?
-  isActive     Boolean                    @default(true) @map("is_active")
-  cursorAt     DateTime?                  @map("cursor_at")
-  lastStatus   Int?                       @map("last_status")
-  lastError    String?                    @map("last_error")
-  lastSuccessAt DateTime?                 @map("last_success_at")
-  failureCount Int                        @default(0) @map("failure_count")
-  createdAt    DateTime                   @default(now()) @map("created_at")
-  updatedAt    DateTime                   @updatedAt @map("updated_at")
-  client       PublicApiClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
-  deliveries   PublicApiWebhookDelivery[]
+  id            String                     @id @default(uuid())
+  clientId      String                     @map("client_id")
+  resource      String
+  url           String
+  secret        String?
+  description   String?
+  isActive      Boolean                    @default(true) @map("is_active")
+  cursorAt      DateTime?                  @map("cursor_at")
+  lastStatus    Int?                       @map("last_status")
+  lastError     String?                    @map("last_error")
+  lastSuccessAt DateTime?                  @map("last_success_at")
+  failureCount  Int                        @default(0) @map("failure_count")
+  createdAt     DateTime                   @default(now()) @map("created_at")
+  updatedAt     DateTime                   @updatedAt @map("updated_at")
+  client        PublicApiClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  deliveries    PublicApiWebhookDelivery[]
 
   @@unique([clientId, resource, url])
   @@index([isActive, resource])
@@ -3770,20 +3781,20 @@ model PublicApiWebhookDelivery {
 /// Client gửi kèm header `Idempotency-Key`; lần gọi lại với cùng khoá sẽ được
 /// trả lại đúng phản hồi đã lưu thay vì chạy lại nghiệp vụ.
 model PublicApiIdempotencyKey {
-  id           BigInt          @id @default(autoincrement())
-  clientId     String          @map("client_id")
-  key          String
-  method       String
-  path         String
-  requestHash  String          @map("request_hash")
-  statusCode   Int?            @map("status_code")
-  response     Json?
+  id          BigInt          @id @default(autoincrement())
+  clientId    String          @map("client_id")
+  key         String
+  method      String
+  path        String
+  requestHash String          @map("request_hash")
+  statusCode  Int?            @map("status_code")
+  response    Json?
   /// PROCESSING khi request đầu tiên còn đang chạy, COMPLETED khi đã có phản hồi.
   /// Nhờ vậy hai lần gọi song song không cùng chạy nghiệp vụ một lúc.
-  status       String          @default("PROCESSING")
-  createdAt    DateTime        @default(now()) @map("created_at")
-  completedAt  DateTime?       @map("completed_at")
-  client       PublicApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  status      String          @default("PROCESSING")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  completedAt DateTime?       @map("completed_at")
+  client      PublicApiClient @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@unique([clientId, key])
   @@index([createdAt])

@@ -215,7 +215,7 @@ export class PublicApiController {
     );
   }
 
-
+  @Post('webhooks')
   registerWebhook(@Req() request: any, @Body() dto: RegisterWebhookDto) {
     return this.webhookService.register(request.publicApiClient.id, dto);
   }

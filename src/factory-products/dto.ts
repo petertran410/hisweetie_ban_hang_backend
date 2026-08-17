@@ -10,6 +10,12 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { PartialType } from '@nestjs/swagger';
+import {
+  MOQ_BASES,
+  MOQ_UNITS,
+  MoqBasis,
+  MoqUnit,
+} from '../common/moq.util';
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === null || value === ''
@@ -48,6 +54,15 @@ export class CreateFactoryProductDto {
     | null;
   @IsOptional() @IsBoolean() @Transform(toBool) isManualRate?: boolean;
   @IsOptional() @IsNumber() @Min(0) @Transform(toNumber) moq?: number | null;
+  // ── MOQ có đơn vị, luôn ở phạm vi PER_LINE ──
+  @IsOptional() @IsNumber() @Min(0) @Transform(toNumber) moqValue?:
+    | number
+    | null;
+  @IsOptional() @IsIn(MOQ_BASES) moqBasis?: MoqBasis | null;
+  @IsOptional() @IsIn(MOQ_UNITS) moqUnit?: MoqUnit | null;
+  @IsOptional() @IsNumber() @Min(0) @Transform(toNumber) moqIncrement?:
+    | number
+    | null;
   @IsOptional() @IsInt() @Min(0) @Transform(toInt) leadtimeDays?: number | null;
   @IsOptional() @IsString() note?: string | null;
   @IsOptional() @IsBoolean() @Transform(toBool) isActive?: boolean;

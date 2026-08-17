@@ -5,6 +5,14 @@ import {
   formatFactoryCode,
   nextFactoryCode,
 } from '../common/factory-code.util';
+import {
+  MoqBasis,
+  MoqScope,
+  MoqUnit,
+  basisOfUnit,
+  parseMoqScope,
+  parseMoqUnit,
+} from '../common/moq.util';
 
 const REQUIRED_HEADERS = ['tên nhà máy'];
 
@@ -66,6 +74,17 @@ const HEADER_KEYS: Record<string, keyof ParsedFactoryRow | undefined> = {
   wechat: 'wechat',
   email: 'email',
   moq: 'moq',
+  'moq mặc định': 'moq',
+  'moq mac dinh': 'moq',
+  'đơn vị moq': 'moqUnit',
+  'don vi moq': 'moqUnit',
+  'moq unit': 'moqUnit',
+  'phạm vi moq': 'moqScope',
+  'pham vi moq': 'moqScope',
+  'moq scope': 'moqScope',
+  'bội số moq': 'moqIncrement',
+  'boi so moq': 'moqIncrement',
+  'moq increment': 'moqIncrement',
   leadtime: 'leadtimeDays',
   'leadtime (ngày)': 'leadtimeDays',
   'leadtime (ngay)': 'leadtimeDays',
@@ -103,6 +122,11 @@ export interface ParsedFactoryRow {
   wechat?: string;
   email?: string;
   moq?: number;
+  moqValue?: number;
+  moqBasis?: MoqBasis;
+  moqUnit?: MoqUnit;
+  moqScope?: MoqScope;
+  moqIncrement?: number;
   leadtimeDays?: number;
   paymentTerm?: string;
   isActive?: boolean;
@@ -165,6 +189,28 @@ export class FactoryImportService {
       `Mức độ chiến lược "${value.trim()}" không hợp lệ — chỉ nhận Chiến lược, Ưu tiên, Dự phòng hoặc Thử nghiệm`,
     );
     return undefined;
+  }
+
+  private moqUnit(value: string, errors: string[]): MoqUnit | undefined {
+    const parsed = parseMoqUnit(value);
+    if (parsed === null) {
+      errors.push(
+        `Đơn vị MOQ "${value.trim()}" không hợp lệ — chỉ nhận gói, thùng, kg hoặc tấn`,
+      );
+      return undefined;
+    }
+    return parsed;
+  }
+
+  private moqScope(value: string, errors: string[]): MoqScope | undefined {
+    const parsed = parseMoqScope(value);
+    if (parsed === null) {
+      errors.push(
+        `Phạm vi MOQ "${value.trim()}" không hợp lệ — chỉ nhận "Toàn đơn" hoặc "Từng sản phẩm"`,
+      );
+      return undefined;
+    }
+    return parsed;
   }
 
   private bool(value: string, errors: string[]) {
@@ -232,6 +278,9 @@ export class FactoryImportService {
       if (!name && !code) return;
       const errors: string[] = [];
       if (!name) errors.push('Thiếu tên nhà máy');
+      const moqValue = this.number(cell(excelRow, 'moq'), 'MOQ', errors);
+      const moqUnit = this.moqUnit(cell(excelRow, 'moqUnit'), errors);
+      const moqScope = this.moqScope(cell(excelRow, 'moqScope'), errors);
       rows.push({
         row: rowNumber,
         code: code || undefined,
@@ -246,7 +295,18 @@ export class FactoryImportService {
         ),
         wechat: cell(excelRow, 'wechat') || undefined,
         email: cell(excelRow, 'email') || undefined,
-        moq: this.number(cell(excelRow, 'moq'), 'MOQ', errors),
+        moq: moqValue,
+        // Bỏ trống đơn vị → hiểu là "thùng", đúng với cách nhập trước đây.
+        moqValue,
+        moqUnit: moqValue == null ? undefined : (moqUnit ?? 'CARTON'),
+        moqBasis:
+          moqValue == null ? undefined : basisOfUnit(moqUnit ?? 'CARTON'),
+        moqScope: moqValue == null ? undefined : (moqScope ?? 'PER_ORDER'),
+        moqIncrement: this.number(
+          cell(excelRow, 'moqIncrement'),
+          'Bội số MOQ',
+          errors,
+        ),
         leadtimeDays: this.number(
           cell(excelRow, 'leadtimeDays'),
           'Leadtime',
@@ -369,6 +429,17 @@ export class FactoryImportService {
             ...(row.wechat !== undefined ? { wechat: row.wechat } : {}),
             ...(row.email !== undefined ? { email: row.email } : {}),
             ...(row.moq !== undefined ? { moq: row.moq } : {}),
+            ...(row.moqValue !== undefined
+              ? {
+                  moqValue: row.moqValue,
+                  moqBasis: row.moqBasis,
+                  moqUnit: row.moqUnit,
+                  moqScope: row.moqScope,
+                }
+              : {}),
+            ...(row.moqIncrement !== undefined
+              ? { moqIncrement: row.moqIncrement }
+              : {}),
             ...(row.leadtimeDays !== undefined
               ? { leadtimeDays: row.leadtimeDays }
               : {}),
@@ -425,6 +496,17 @@ export class FactoryImportService {
       { header: 'Wechat', key: 'wechat', width: 18 },
       { header: 'Email', key: 'email', width: 28 },
       { header: 'MOQ', key: 'moq', width: 12 },
+      {
+        header: 'Đơn vị MOQ (gói/thùng/kg/tấn)',
+        key: 'moqUnit',
+        width: 28,
+      },
+      {
+        header: 'Phạm vi MOQ (Toàn đơn/Từng sản phẩm)',
+        key: 'moqScope',
+        width: 34,
+      },
+      { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       { header: 'Leadtime', key: 'leadtimeDays', width: 14 },
       { header: 'Payment Term', key: 'paymentTerm', width: 26 },
       { header: 'Status', key: 'isActive', width: 16 },
@@ -446,7 +528,9 @@ export class FactoryImportService {
       strategicLevel: 'Ưu tiên',
       wechat: 'factory-wechat',
       email: 'factory@example.com',
-      moq: 100,
+      moq: 5,
+      moqUnit: 'tấn',
+      moqScope: 'Toàn đơn',
       leadtimeDays: 14,
       paymentTerm: 'T/T 30% - 70%',
       isActive: 'Hoạt động',
@@ -459,6 +543,17 @@ export class FactoryImportService {
         type: 'list',
         allowBlank: true,
         formulae: ['"Chiến lược,Ưu tiên,Dự phòng,Thử nghiệm"'],
+      };
+      // K = Đơn vị MOQ, L = Phạm vi MOQ.
+      sheet.getCell(`K${row}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"gói,thùng,kg,tấn"'],
+      };
+      sheet.getCell(`L${row}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"Toàn đơn,Từng sản phẩm"'],
       };
     }
     return workbook.xlsx.writeBuffer();

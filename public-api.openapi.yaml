@@ -34,8 +34,8 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/TokenRequest' }
       responses:
-        '200':
-          description: Cấp token thành công
+        '201':
+          description: Cấp token thành công (hiện tại endpoint trả HTTP 201)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TokenResponse' }
@@ -645,13 +645,25 @@ components:
         grant_type: { type: string, enum: [client_credentials] }
         client_id: { type: string }
         client_secret: { type: string }
-        scopes: { type: string, description: Giữ để tương thích client KiotViet; hiện bỏ qua. }
+        scope:
+          type: string
+          description: >-
+            Tuỳ chọn. Máy chủ trả lại đúng giá trị gửi lên, mặc định
+            `public_api.read`. Hiện chưa dùng để phân quyền.
     TokenResponse:
       type: object
       properties:
         access_token: { type: string }
-        expires_in: { type: integer, example: 3600 }
+        expires_in:
+          type: integer
+          example: 3600
+          minimum: 300
+          maximum: 86400
+          description: >-
+            Số giây token còn hiệu lực. Cấu hình riêng theo từng client, mặc định
+            3600. Luôn đọc giá trị này thay vì giả định 1 giờ.
         token_type: { type: string, example: Bearer }
+        scope: { type: string, example: public_api.read }
     Page:
       type: object
       description: Envelope thống nhất cho mọi endpoint danh sách.

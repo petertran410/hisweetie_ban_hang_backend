@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { toVnd } from '../common/currency.util';
+import { normalizeMoqSpec } from '../common/moq.util';
 import {
   CreateFactoryProductDto,
   FactoryProductQueryDto,
@@ -159,6 +160,10 @@ export class FactoryProductsService {
           exchangeRate: dto.exchangeRate ?? (currency === 'VND' ? 1 : null),
           isManualRate: dto.isManualRate ?? false,
           moq: dto.moq ?? null,
+          moqValue: dto.moqValue ?? null,
+          moqBasis: dto.moqBasis ?? null,
+          moqUnit: dto.moqUnit ?? null,
+          moqIncrement: dto.moqIncrement ?? null,
           leadtimeDays: dto.leadtimeDays ?? null,
           note: dto.note ?? null,
           isActive: dto.isActive ?? true,
@@ -231,6 +236,10 @@ export class FactoryProductsService {
           exchangeRate,
           isManualRate: dto.isManualRate,
           moq: dto.moq,
+          moqValue: dto.moqValue,
+          moqBasis: dto.moqBasis,
+          moqUnit: dto.moqUnit,
+          moqIncrement: dto.moqIncrement,
           leadtimeDays: dto.leadtimeDays,
           note: dto.note,
           isActive: dto.isActive,
@@ -433,7 +442,31 @@ export class FactoryProductsService {
     const mappings = await this.prisma.factory_products.findMany({
       where,
       orderBy: [{ priority: 'asc' }, { id: 'asc' }],
-      include: { factories: { select: { id: true, name: true } } },
+      include: {
+        factories: {
+          select: {
+            id: true,
+            name: true,
+            // MOQ cấp nhà máy — FE cần để cảnh báo ràng buộc toàn đơn.
+            moq: true,
+            moqValue: true,
+            moqBasis: true,
+            moqUnit: true,
+            moqScope: true,
+            moqIncrement: true,
+          },
+        },
+        // Dữ liệu quy đổi MOQ khối lượng / thùng.
+        products: {
+          select: {
+            id: true,
+            name: true,
+            conversionValue: true,
+            weight: true,
+            weightUnit: true,
+          },
+        },
+      },
     });
     const byProduct = new Map<number, any>();
     for (const mapping of mappings) {
@@ -469,6 +502,20 @@ export class FactoryProductsService {
                     ? null
                     : referencePrice * exchangeRate,
             moq: mapping.moq == null ? null : Number(mapping.moq),
+            /** Cụm MOQ đã chuẩn hoá — FE dùng thẳng để cảnh báo trên PĐN. */
+            moqSpec: normalizeMoqSpec(mapping, 'PER_LINE'),
+            /** MOQ cấp nhà máy (ràng buộc độc lập với MOQ cấp dòng). */
+            factoryMoqSpec: normalizeMoqSpec(mapping.factories, 'PER_ORDER'),
+            /** Dữ liệu để FE quy đổi gói lẻ → thùng / kg / tấn. */
+            conversionValue:
+              mapping.products?.conversionValue == null
+                ? null
+                : Number(mapping.products.conversionValue),
+            weight:
+              mapping.products?.weight == null
+                ? null
+                : Number(mapping.products.weight),
+            weightUnit: mapping.products?.weightUnit ?? null,
             priceUpdatedAt: mapping.priceUpdatedAt,
           },
         ];
