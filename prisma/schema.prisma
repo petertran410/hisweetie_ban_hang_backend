@@ -1609,29 +1609,30 @@ model Invoice {
 }
 
 model InvoiceDetail {
-  id              Int        @id @default(autoincrement())
-  invoiceId       Int
-  productId       Int?
-  productCode     String
-  productName     String
-  quantity        Decimal
-  price           Decimal
-  discount        Decimal    @default(0)
-  discountRatio   Decimal    @default(0)
-  totalPrice      Decimal
-  note            String?
-  serialNumbers   String?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  conditionType   String     @default("normal")
-  isGift          Boolean    @default(false)
-  lineType        String     @default("normal")
-  promotionId     Int?
-  manufactureDate DateTime?
-  soldExpiryDate  DateTime?
-  invoice         Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product         Product?   @relation(fields: [productId], references: [id])
-  promotion       Promotion? @relation(fields: [promotionId], references: [id])
+  id                 Int                 @id @default(autoincrement())
+  invoiceId          Int
+  productId          Int?
+  productCode        String
+  productName        String
+  quantity           Decimal
+  price              Decimal
+  discount           Decimal             @default(0)
+  discountRatio      Decimal             @default(0)
+  totalPrice         Decimal
+  note               String?
+  serialNumbers      String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  conditionType      String              @default("normal")
+  isGift             Boolean             @default(false)
+  lineType           String              @default("normal")
+  promotionId        Int?
+  manufactureDate    DateTime?
+  soldExpiryDate     DateTime?
+  invoice            Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product            Product?            @relation(fields: [productId], references: [id])
+  promotion          Promotion?          @relation(fields: [promotionId], references: [id])
+  returnOrderDetails ReturnOrderDetail[]
 
   @@index([invoiceId])
   @@index([promotionId])
@@ -2819,9 +2820,10 @@ model ReturnOrder {
 }
 
 model ReturnOrderDetail {
-  id                     Int         @id @default(autoincrement())
+  id                     Int            @id @default(autoincrement())
   returnOrderId          Int
   invoiceId              Int?
+  invoiceDetailId        Int?
   invoiceCode            String
   productId              Int
   productCode            String
@@ -2829,24 +2831,26 @@ model ReturnOrderDetail {
   invoiceQuantity        Decimal
   invoicePrice           Decimal
   requestQuantity        Decimal
-  confirmedQuantity      Decimal     @default(0)
+  confirmedQuantity      Decimal        @default(0)
   returnPrice            Decimal
   totalAmount            Decimal
   note                   String?
-  createdAt              DateTime    @default(now())
-  updatedAt              DateTime    @updatedAt
-  damagedQuantity        Decimal     @default(0)
-  goodQuantity           Decimal     @default(0)
-  nearExpiryQuantity     Decimal     @default(0)
-  saleDamagedQuantity    Decimal     @default(0)
-  saleGoodQuantity       Decimal     @default(0)
-  saleNearExpiryQuantity Decimal     @default(0)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  damagedQuantity        Decimal        @default(0)
+  goodQuantity           Decimal        @default(0)
+  nearExpiryQuantity     Decimal        @default(0)
+  saleDamagedQuantity    Decimal        @default(0)
+  saleGoodQuantity       Decimal        @default(0)
+  saleNearExpiryQuantity Decimal        @default(0)
   manufactureDate        DateTime?
-  invoice                Invoice?    @relation(fields: [invoiceId], references: [id])
-  product                Product     @relation(fields: [productId], references: [id])
-  returnOrder            ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
+  invoice                Invoice?       @relation(fields: [invoiceId], references: [id])
+  invoiceDetail          InvoiceDetail? @relation(fields: [invoiceDetailId], references: [id])
+  product                Product        @relation(fields: [productId], references: [id])
+  returnOrder            ReturnOrder    @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
+  @@index([invoiceDetailId])
   @@map("return_order_details")
 }
 

@@ -4104,6 +4104,7 @@ export class InvoicesService {
           where: { invoiceId: { in: invoiceIds } },
           select: {
             invoiceId: true,
+            invoiceDetailId: true,
             productId: true,
             requestQuantity: true,
             confirmedQuantity: true,
@@ -4116,23 +4117,33 @@ export class InvoicesService {
     // ── Status chưa nhập kho (bước 1, draft):  dùng requestQuantity (để block double-submit)
     const CONFIRMED_STATUSES = new Set([2, 3, 4]); // STOCK_RECEIVED, REFUND_REQUESTED, COMPLETED
 
+    // Gom số đã trả theo 2 cấp:
+    //  - byDetail: phiếu MỚI (có invoiceDetailId) → trừ chính xác vào dòng gốc
+    //  - byProduct: phiếu CŨ (chưa có invoiceDetailId) → phân bổ tuần tự
+    const returnedByDetail: Record<number, number> = {};
     const returnedMap: Record<string, number> = {};
     existingReturns.forEach((ro) => {
       const useConfirmed = CONFIRMED_STATUSES.has(ro.status);
       ro.details.forEach((d) => {
-        const key = `${d.invoiceId}-${d.productId}`;
         const qty = useConfirmed
           ? Number(d.confirmedQuantity ?? 0)
           : Number(d.requestQuantity ?? 0);
-        returnedMap[key] = (returnedMap[key] || 0) + qty;
+
+        if (d.invoiceDetailId) {
+          returnedByDetail[d.invoiceDetailId] =
+            (returnedByDetail[d.invoiceDetailId] || 0) + qty;
+        } else {
+          const key = `${d.invoiceId}-${d.productId}`;
+          returnedMap[key] = (returnedMap[key] || 0) + qty;
+        }
       });
     });
 
     return invoices
       .map((inv) => {
-        // Hóa đơn có thể có NHIỀU dòng cùng productId (khác lô / hàng tặng /
-        // lineType). returnedMap gom theo (invoiceId, productId) nên phải
-        // PHÂN BỔ TUẦN TỰ vào từng dòng, tránh trừ trùng số đã trả.
+        // Hóa đơn có thể có NHIỀU dòng cùng productId (khác lô / giá / hàng
+        // tặng). Phiếu trả CŨ chỉ biết productId nên phải PHÂN BỔ TUẦN TỰ,
+        // tránh trừ trùng; phiếu MỚI trừ chính xác vào dòng qua invoiceDetailId.
         const remainingPool: Record<string, number> = {};
 
         const mappedDetails = inv.details
@@ -4142,9 +4153,16 @@ export class InvoicesService {
               remainingPool[key] = returnedMap[key] || 0;
             }
             const lineQty = Number(d.quantity);
-            // Số đã trả "tiêu thụ" vào dòng này, tối đa bằng lượng của dòng
-            const consumed = Math.min(remainingPool[key], lineQty);
-            remainingPool[key] -= consumed;
+
+            // (1) Trừ chính xác phần đã trả gắn đúng dòng này
+            const exact = returnedByDetail[d.id] || 0;
+            const afterExact = Math.max(0, lineQty - exact);
+
+            // (2) Phần còn lại từ phiếu cũ (không rõ dòng) — phân bổ tuần tự
+            const legacy = Math.min(remainingPool[key], afterExact);
+            remainingPool[key] -= legacy;
+
+            const consumed = Math.min(lineQty, exact + legacy);
 
             return {
               ...d,
