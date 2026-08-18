@@ -4130,15 +4130,26 @@ export class InvoicesService {
 
     return invoices
       .map((inv) => {
+        // Hóa đơn có thể có NHIỀU dòng cùng productId (khác lô / hàng tặng /
+        // lineType). returnedMap gom theo (invoiceId, productId) nên phải
+        // PHÂN BỔ TUẦN TỰ vào từng dòng, tránh trừ trùng số đã trả.
+        const remainingPool: Record<string, number> = {};
+
         const mappedDetails = inv.details
           .map((d) => {
             const key = `${inv.id}-${d.productId}`;
-            const returned = returnedMap[key] || 0;
-            const remaining = Number(d.quantity) - returned;
+            if (remainingPool[key] === undefined) {
+              remainingPool[key] = returnedMap[key] || 0;
+            }
+            const lineQty = Number(d.quantity);
+            // Số đã trả "tiêu thụ" vào dòng này, tối đa bằng lượng của dòng
+            const consumed = Math.min(remainingPool[key], lineQty);
+            remainingPool[key] -= consumed;
+
             return {
               ...d,
-              alreadyReturned: returned,
-              remainingQuantity: remaining,
+              alreadyReturned: consumed,
+              remainingQuantity: lineQty - consumed,
             };
           })
           .filter((d) => d.remainingQuantity > 0);

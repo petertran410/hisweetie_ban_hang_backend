@@ -500,6 +500,17 @@ export class ReturnOrdersService {
         });
       });
 
+      // Cộng dồn số lượng yêu cầu trả của các dòng cùng (invoiceId, productId)
+      // trong CÙNG payload — hóa đơn có thể có nhiều dòng cùng sản phẩm
+      // (khác lô / hàng tặng / lineType), nên phải validate theo TỔNG.
+      const requestedByKey: Record<string, number> = {};
+      for (const detail of dto.details) {
+        const key = `${detail.invoiceId}-${detail.productId}`;
+        requestedByKey[key] =
+          (requestedByKey[key] || 0) + Number(detail.requestQuantity);
+      }
+
+      const checkedKeys = new Set<string>();
       for (const detail of dto.details) {
         const invoice = invoiceMap.get(detail.invoiceId);
         if (!invoice) {
@@ -508,22 +519,31 @@ export class ReturnOrdersService {
           );
         }
 
-        const invoiceDetail = invoice.details.find(
+        const matchedDetails = invoice.details.filter(
           (d) => d.productId === detail.productId,
         );
-        if (!invoiceDetail) {
+        if (matchedDetails.length === 0) {
           throw new BadRequestException(
             `Sản phẩm ${detail.productCode} không có trong hóa đơn ${detail.invoiceCode}`,
           );
         }
 
         const key = `${detail.invoiceId}-${detail.productId}`;
-        const alreadyReturned = returnedQuantities[key] || 0;
-        const maxReturnable = Number(invoiceDetail.quantity) - alreadyReturned;
+        if (checkedKeys.has(key)) continue;
+        checkedKeys.add(key);
 
-        if (detail.requestQuantity > maxReturnable) {
+        // Tổng quantity của TẤT CẢ dòng cùng productId trên hóa đơn
+        const totalQuantity = matchedDetails.reduce(
+          (sum, d) => sum + Number(d.quantity),
+          0,
+        );
+        const alreadyReturned = returnedQuantities[key] || 0;
+        const maxReturnable = totalQuantity - alreadyReturned;
+        const totalRequested = requestedByKey[key] || 0;
+
+        if (totalRequested > maxReturnable) {
           throw new BadRequestException(
-            `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${detail.requestQuantity}) vượt quá còn lại (${maxReturnable})`,
+            `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${totalRequested}) vượt quá còn lại (${maxReturnable})`,
           );
         }
       }
