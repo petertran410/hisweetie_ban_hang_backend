@@ -31,6 +31,12 @@ import {
 import { searchProductIds } from '../common/product-search.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { StockAuditsService } from '../stock-audits/stock-audits.service';
+import {
+  FACTORY_PRODUCTS_INCLUDE,
+  overlayFactoriesFromMappings,
+  unlinkMappingRole,
+  upsertMappingRole,
+} from '../common/factory-mapping.util';
 
 @Injectable()
 export class ProductsService {
@@ -312,17 +318,32 @@ export class ProductsService {
       where.OR = [
         { primaryFactory: { supplierId } },
         { backupFactory: { supplierId } },
+        { factory_products: { some: { factories: { supplierId } } } },
       ];
     } else if (factoryId) {
       if (factoryRelation === 'primary') {
-        where.primaryFactoryId = factoryId;
+        where.OR = [
+          { primaryFactoryId: factoryId },
+          {
+            factory_products: {
+              some: { factoryId, role: 'primary', isActive: true },
+            },
+          },
+        ];
       } else if (factoryRelation === 'backup') {
-        where.backupFactoryId = factoryId;
+        where.OR = [
+          { backupFactoryId: factoryId },
+          {
+            factory_products: {
+              some: { factoryId, role: 'backup', isActive: true },
+            },
+          },
+        ];
       } else {
-        // 'either' hoặc mặc định
         where.OR = [
           { primaryFactoryId: factoryId },
           { backupFactoryId: factoryId },
+          { factory_products: { some: { factoryId, isActive: true } } },
         ];
       }
     }
@@ -375,6 +396,7 @@ export class ProductsService {
           currency: true,
         },
       },
+      ...FACTORY_PRODUCTS_INCLUDE,
     };
 
     // Cột Inventory cần sắp theo chi nhánh đang chọn. Vì Inventory là quan hệ
@@ -470,7 +492,9 @@ export class ProductsService {
 
   /**
    * Chuyển product.attributes (quan hệ) → mảng phẳng {id, name, value} cho FE.
-   * Giữ nguyên các field còn lại của product.
+   * Đồng thời derive nhà máy chính/backup từ mapping `factory_products` — form
+   * sản phẩm đọc `primaryFactoryId`/`backupFactoryId`, còn trang nhà máy ghi
+   * vào bảng mapping, nên phải overlay để hai bên không lệch nhau.
    */
   private normalizeProductAttributes<T extends { attributes?: any }>(
     product: T | null | undefined,
@@ -483,7 +507,10 @@ export class ProductsService {
           value: pa.value?.value || '',
         }))
       : [];
-    return { ...(product as any), attributes };
+    return overlayFactoriesFromMappings({
+      ...(product as any),
+      attributes,
+    });
   }
 
   /**
@@ -958,6 +985,7 @@ export class ProductsService {
         },
         primaryFactory: true,
         backupFactory: true,
+        ...FACTORY_PRODUCTS_INCLUDE,
       },
     });
 
@@ -1197,6 +1225,25 @@ export class ProductsService {
         if (logs.length > 0) {
           await tx.factoryChangeLog.createMany({ data: logs });
         }
+      }
+
+      // Đồng bộ bảng mapping — nguồn chân lý mới. Form sản phẩm chỉ hiện 1
+      // nhà máy/role nên tạo đúng 1 dòng primary + 1 dòng backup (nếu có).
+      if (primaryFactoryId != null) {
+        await upsertMappingRole(tx, {
+          productId: product.id,
+          factoryId: primaryFactoryId,
+          role: 'primary',
+          userId,
+        });
+      }
+      if (backupFactoryId != null) {
+        await upsertMappingRole(tx, {
+          productId: product.id,
+          factoryId: backupFactoryId,
+          role: 'backup',
+          userId,
+        });
       }
 
       if (imageUrls && imageUrls.length > 0) {
@@ -1649,6 +1696,37 @@ export class ProductsService {
             reason: change.reason,
           })),
         });
+      }
+
+      // Đồng bộ mapping: gắn nhà máy mới / gỡ nhà máy cũ theo từng thay đổi.
+      for (const change of factoryChanges) {
+        if (change.reason === 'unlink' && change.previousFactoryId != null) {
+          await unlinkMappingRole(tx, {
+            productId: id,
+            factoryId: change.previousFactoryId,
+            role: change.role,
+          });
+          continue;
+        }
+        if (change.factoryId) {
+          await upsertMappingRole(tx, {
+            productId: id,
+            factoryId: change.factoryId,
+            role: change.role,
+            userId,
+          });
+        }
+        // Swap / đổi nhà máy: gỡ mapping của nhà máy cũ cùng role.
+        if (
+          change.previousFactoryId != null &&
+          change.previousFactoryId !== change.factoryId
+        ) {
+          await unlinkMappingRole(tx, {
+            productId: id,
+            factoryId: change.previousFactoryId,
+            role: change.role,
+          });
+        }
       }
 
       if (dto.code || dto.name) {
