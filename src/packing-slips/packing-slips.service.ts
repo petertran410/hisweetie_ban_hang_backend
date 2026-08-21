@@ -308,6 +308,24 @@ export class PackingSlipsService {
             statusValue: getStatusLabel(INVOICE_STATUS.DELIVERED),
           },
         });
+
+        // Mốc GIAO HÀNG ĐẦU TIÊN — gốc tính hạn công nợ.
+        // Điều kiện `deliveredAt: null` là CỐ Ý: một hóa đơn có thể được giao
+        // làm nhiều đợt (nhiều phiếu giao chưa hủy). Nếu ghi đè mỗi lần tạo
+        // phiếu thì lần giao sau sẽ đẩy lùi hạn nợ, khách được nợ lâu hơn
+        // thực tế. Luôn giữ lần giao sớm nhất.
+        // Khi hủy phiếu, giá trị này được tính lại ở
+        // recalcInvoiceStatusAfterPackingCancel (common/packing-status.util.ts).
+        await tx.invoice.updateMany({
+          where: {
+            id: { in: dto.invoiceIds },
+            deliveredAt: null,
+            status: {
+              notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+            },
+          },
+          data: { deliveredAt: created.createdAt },
+        });
       }
 
       return created;

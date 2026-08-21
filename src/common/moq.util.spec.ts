@@ -100,14 +100,19 @@ describe('normalizeMoqSpec', () => {
 
 describe('formatMoqSpec', () => {
   it('hiển thị 100 thùng', () => {
-    expect(
-      formatMoqSpec(normalizeMoqSpec({ moqValue: 100 }, 'PER_LINE')),
-    ).toBe('100 thùng');
+    expect(formatMoqSpec(normalizeMoqSpec({ moqValue: 100 }, 'PER_LINE'))).toBe(
+      '100 thùng',
+    );
   });
 
   it('hiển thị kèm phạm vi', () => {
     const spec = normalizeMoqSpec(
-      { moqValue: 5, moqBasis: 'WEIGHT', moqUnit: 'TON', moqScope: 'PER_ORDER' },
+      {
+        moqValue: 5,
+        moqBasis: 'WEIGHT',
+        moqUnit: 'TON',
+        moqScope: 'PER_ORDER',
+      },
       'PER_ORDER',
     );
     expect(formatMoqSpec(spec, true)).toBe('5 tấn · Toàn đơn');

@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
 import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
+import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-close.service';
 
 /**
  * Trạng thái đối soát của 1 giao dịch Sepay (suy ra on-read, KHÔNG lưu cột status):
@@ -52,6 +53,7 @@ export class SepayMatchService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cashFlowsService: CashFlowsService,
+    private readonly debtTicketAutoClose: DebtTicketAutoCloseService,
   ) {}
 
   /**
@@ -351,6 +353,14 @@ export class SepayMatchService {
       });
     });
 
+    // Đối chiếu ticket đòi nợ: gắn khách = ghi nhận khách đã thanh toán.
+    // Chạy NGOÀI transaction và tự nuốt lỗi bên trong service — việc đối chiếu
+    // ticket không được phép làm hỏng thao tác gắn khách của kế toán.
+    void this.debtTicketAutoClose.onSepayCustomersAssigned(
+      tx.id,
+      customers.map((c) => c.id),
+    );
+
     return { success: true, customers };
   }
 
@@ -412,6 +422,20 @@ export class SepayMatchService {
             },
       });
     });
+
+    // Gỡ ghi nhận thanh toán trên ticket cho các khách vừa bị bỏ gán, và mở
+    // lại ticket nếu nó đã được đóng TỰ ĐỘNG. Không có bước này thì một lần
+    // bấm nhầm sẽ khóa ticket vĩnh viễn.
+    const unassignedCustomerIds = existingAllocs
+      .filter((a) => removableIds.includes(a.id))
+      .map((a) => a.customerId);
+    if (unassignedCustomerIds.length > 0) {
+      void this.debtTicketAutoClose.onSepayCustomersUnassigned(
+        tx.id,
+        unassignedCustomerIds,
+      );
+    }
+
     return { success: true };
   }
 

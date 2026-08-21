@@ -151,6 +151,12 @@ export async function assertCanCancelPacking(
  * Tính lại & cập nhật trạng thái hóa đơn SAU KHI phiếu đã được đánh dấu hủy.
  * Mỗi hóa đơn tính độc lập dựa trên phiếu CHƯA HỦY còn lại.
  *
+ * Đồng thời tính lại `invoice.deliveredAt` = thời điểm phiếu GIAO HÀNG sớm
+ * nhất còn hiệu lực (null nếu không còn phiếu giao nào). Trường này là gốc
+ * tính hạn công nợ, nên bắt buộc phải đồng bộ khi hủy phiếu — nếu không,
+ * hóa đơn đã lùi về PROCESSING vẫn còn mốc giao hàng cũ và tiếp tục bị tính
+ * quá hạn.
+ *
  * @param tx          Prisma transaction client (phiếu đã set cancelledAt)
  * @param invoiceIds  Danh sách hóa đơn cần tính lại
  */
@@ -168,11 +174,20 @@ export async function recalcInvoiceStatusAfterPackingCancel(
 
     const counts = await countActivePackings(tx, invoiceId);
     const newStatus = resolveStatus(counts);
+
+    // Phiếu giao hàng sớm nhất còn hiệu lực → mốc công nợ.
+    const firstSlip = await tx.packingSlipInvoice.findFirst({
+      where: { invoiceId, packingSlip: { cancelledAt: null } },
+      orderBy: { packingSlip: { createdAt: 'asc' } },
+      select: { packingSlip: { select: { createdAt: true } } },
+    });
+
     await tx.invoice.update({
       where: { id: invoiceId },
       data: {
         status: newStatus,
         statusValue: getStatusLabel(newStatus),
+        deliveredAt: firstSlip?.packingSlip?.createdAt ?? null,
       },
     });
   }

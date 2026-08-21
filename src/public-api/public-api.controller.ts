@@ -1,4 +1,18 @@
-import { Body, Controller, Delete, Get, Headers, Param, ParseIntPipe, Post, Put, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Headers,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  Req,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Public } from '../auth/decorators/public.decorator';
 import { PublicApiAuthGuard } from './guards/public-api-auth.guard';
@@ -59,7 +73,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/customers', body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/customers',
+        body: dto,
+      },
       () => this.writeService.createCustomer(dto),
     );
   }
@@ -72,7 +92,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/customers/${id}`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/customers/${id}`,
+        body: dto,
+      },
       () => this.writeService.updateCustomer(id, dto),
     );
   }
@@ -89,7 +115,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/products', body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/products',
+        body: dto,
+      },
       () => this.writeService.createProduct(dto),
     );
   }
@@ -102,7 +134,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/products/${id}`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/products/${id}`,
+        body: dto,
+      },
       () => this.writeService.updateProduct(id, dto),
     );
   }
@@ -121,8 +159,18 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/categories', body: dto },
-      () => this.writeService.createCategory({ name: dto.name, type: dto.type ?? 'child' }),
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/categories',
+        body: dto,
+      },
+      () =>
+        this.writeService.createCategory({
+          name: dto.name,
+          type: dto.type ?? 'child',
+        }),
     );
   }
 
@@ -134,7 +182,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/categories/${id}`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/categories/${id}`,
+        body: dto,
+      },
       () => this.writeService.updateCategory(id, dto),
     );
   }
@@ -146,7 +200,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/orders', body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/orders',
+        body: dto,
+      },
       () => this.writeService.createOrder(dto),
     );
   }
@@ -159,7 +219,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/orders/${id}`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/orders/${id}`,
+        body: dto,
+      },
       () => this.writeService.updateOrder(id, dto),
     );
   }
@@ -172,7 +238,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/orders/${id}/cancel`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/orders/${id}/cancel`,
+        body: dto,
+      },
       () => this.writeService.cancelOrder(id, dto),
     );
   }
@@ -184,7 +256,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'POST', path: '/invoices', body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'POST',
+        path: '/invoices',
+        body: dto,
+      },
       () => this.writeService.createInvoice(dto),
     );
   }
@@ -197,7 +275,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/invoices/${id}`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/invoices/${id}`,
+        body: dto,
+      },
       () => this.writeService.updateInvoice(id, dto),
     );
   }
@@ -210,7 +294,13 @@ export class PublicApiController {
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
     return this.idempotency.run(
-      { clientId: request.publicApiClient.id, key: idempotencyKey, method: 'PUT', path: `/invoices/${id}/cancel`, body: dto },
+      {
+        clientId: request.publicApiClient.id,
+        key: idempotencyKey,
+        method: 'PUT',
+        path: `/invoices/${id}/cancel`,
+        body: dto,
+      },
       () => this.writeService.cancelInvoice(id, dto.cancelPayments),
     );
   }
@@ -274,8 +364,14 @@ export class PublicApiController {
   }
 
   @Get(':resource')
-  list(@Param('resource') resource: string, @Query() query: PublicApiListQueryDto) {
-    return this.publicApiService.list(this.publicApiService.assertResource(resource), query);
+  list(
+    @Param('resource') resource: string,
+    @Query() query: PublicApiListQueryDto,
+  ) {
+    return this.publicApiService.list(
+      this.publicApiService.assertResource(resource),
+      query,
+    );
   }
 
   @Get(':resource/:id')
@@ -284,6 +380,10 @@ export class PublicApiController {
     @Param('id', ParseIntPipe) id: number,
     @Query('include') include?: string,
   ) {
-    return this.publicApiService.get(this.publicApiService.assertResource(resource), id, include);
+    return this.publicApiService.get(
+      this.publicApiService.assertResource(resource),
+      id,
+      include,
+    );
   }
 }
