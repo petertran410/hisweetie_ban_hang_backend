@@ -1,4 +1,9 @@
-import { Injectable, CanActivate, ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 
@@ -29,11 +34,16 @@ export class PublicApiAuthGuard implements CanActivate {
     const token = authorization.slice('Bearer '.length).trim();
     let payload: PublicApiTokenPayload;
     try {
-      payload = await this.jwtService.verifyAsync<PublicApiTokenPayload>(token, {
-        secret: this.getTokenSecret(),
-      });
+      payload = await this.jwtService.verifyAsync<PublicApiTokenPayload>(
+        token,
+        {
+          secret: this.getTokenSecret(),
+        },
+      );
     } catch {
-      throw new UnauthorizedException('Invalid or expired public API bearer token');
+      throw new UnauthorizedException(
+        'Invalid or expired public API bearer token',
+      );
     }
 
     if (payload.typ !== 'public_api' || !payload.sub || !payload.clientId) {

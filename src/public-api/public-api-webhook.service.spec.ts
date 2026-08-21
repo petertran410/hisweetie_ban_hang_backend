@@ -8,8 +8,11 @@ describe('PublicApiWebhookService', () => {
   const createService = (listResult: any = { total: 0, data: [] }) => {
     const prisma: any = {
       publicApiWebhook: {
-        findMany: jest.fn(), findFirst: jest.fn(), upsert: jest.fn(),
-        update: jest.fn().mockResolvedValue({}), delete: jest.fn().mockResolvedValue({}),
+        findMany: jest.fn(),
+        findFirst: jest.fn(),
+        upsert: jest.fn(),
+        update: jest.fn().mockResolvedValue({}),
+        delete: jest.fn().mockResolvedValue({}),
       },
       publicApiWebhookDelivery: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -20,12 +23,22 @@ describe('PublicApiWebhookService', () => {
       assertResource: jest.fn((value: string) => value),
       list: jest.fn().mockResolvedValue(listResult),
     };
-    return { prisma, publicApiService, service: new PublicApiWebhookService(prisma, publicApiService) };
+    return {
+      prisma,
+      publicApiService,
+      service: new PublicApiWebhookService(prisma, publicApiService),
+    };
   };
 
   const webhook = (overrides: Record<string, unknown> = {}) => ({
-    id: 'wh-1', clientId, resource: 'customers', url: 'https://partner.example/hook',
-    secret: 'super-secret-value-1234', cursorAt: timestamp, isActive: true, failureCount: 0,
+    id: 'wh-1',
+    clientId,
+    resource: 'customers',
+    url: 'https://partner.example/hook',
+    secret: 'super-secret-value-1234',
+    cursorAt: timestamp,
+    isActive: true,
+    failureCount: 0,
     ...overrides,
   });
 
@@ -44,7 +57,9 @@ describe('PublicApiWebhookService', () => {
     prisma.publicApiWebhook.upsert.mockResolvedValue(webhook());
 
     const result = await service.register(clientId, {
-      resource: 'customers', url: 'https://partner.example/hook', secret: 'super-secret-value-1234',
+      resource: 'customers',
+      url: 'https://partner.example/hook',
+      secret: 'super-secret-value-1234',
     } as any);
 
     expect(result.data).not.toHaveProperty('secret');
@@ -55,7 +70,10 @@ describe('PublicApiWebhookService', () => {
     const { service, prisma } = createService();
     prisma.publicApiWebhook.upsert.mockResolvedValue(webhook());
 
-    await service.register(clientId, { resource: 'customers', url: 'https://partner.example/hook' } as any);
+    await service.register(clientId, {
+      resource: 'customers',
+      url: 'https://partner.example/hook',
+    } as any);
 
     const { create } = prisma.publicApiWebhook.upsert.mock.calls[0][0];
     expect(create.cursorAt).toBeInstanceOf(Date);
@@ -121,7 +139,8 @@ describe('PublicApiWebhookService', () => {
 
     await service.dispatchPending();
 
-    const delivery = prisma.publicApiWebhookDelivery.create.mock.calls[0][0].data;
+    const delivery =
+      prisma.publicApiWebhookDelivery.create.mock.calls[0][0].data;
     expect(delivery.success).toBe(false);
     expect(delivery.errorMessage).toContain('5000ms');
   });
@@ -146,8 +165,12 @@ describe('PublicApiWebhookService', () => {
     const { service, prisma } = createService();
     prisma.publicApiWebhook.findFirst.mockResolvedValue(null);
 
-    await expect(service.get(clientId, 'wh-other')).rejects.toBeInstanceOf(NotFoundException);
-    await expect(service.unregister(clientId, 'wh-other')).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.get(clientId, 'wh-other')).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    await expect(
+      service.unregister(clientId, 'wh-other'),
+    ).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.publicApiWebhook.delete).not.toHaveBeenCalled();
   });
 

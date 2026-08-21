@@ -16,8 +16,12 @@ import { PublicApiIdempotencyService } from './public-api-idempotency.service';
 export class PublicApiRetentionService {
   private readonly logger = new Logger(PublicApiRetentionService.name);
 
-  private readonly auditLogRetentionDays = Number(process.env.PUBLIC_API_AUDIT_RETENTION_DAYS || 30);
-  private readonly deliveryRetentionDays = Number(process.env.PUBLIC_API_DELIVERY_RETENTION_DAYS || 14);
+  private readonly auditLogRetentionDays = Number(
+    process.env.PUBLIC_API_AUDIT_RETENTION_DAYS || 30,
+  );
+  private readonly deliveryRetentionDays = Number(
+    process.env.PUBLIC_API_DELIVERY_RETENTION_DAYS || 14,
+  );
 
   constructor(
     private readonly prisma: PrismaService,
@@ -30,7 +34,9 @@ export class PublicApiRetentionService {
     const deliveryCutoff = this.cutoff(this.deliveryRetentionDays);
 
     const [audit, deliveries, idempotencyKeys] = await Promise.all([
-      this.prisma.publicApiAuditLog.deleteMany({ where: { createdAt: { lt: auditCutoff } } }),
+      this.prisma.publicApiAuditLog.deleteMany({
+        where: { createdAt: { lt: auditCutoff } },
+      }),
       // Giữ lại bản ghi thất bại còn hạn retry để không mất dấu vết khi đối tác
       // báo thiếu dữ liệu.
       this.prisma.publicApiWebhookDelivery.deleteMany({

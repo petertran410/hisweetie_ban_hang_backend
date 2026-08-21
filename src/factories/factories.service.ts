@@ -311,7 +311,9 @@ export class FactoriesService {
       const productList = (items: typeof factory.factory_products) =>
         items
           .map((item) =>
-            [item.products.code, item.products.name].filter(Boolean).join(' - '),
+            [item.products.code, item.products.name]
+              .filter(Boolean)
+              .join(' - '),
           )
           .join('\n');
 
@@ -350,7 +352,9 @@ export class FactoriesService {
 
       factory.factory_products.forEach((mapping) => {
         const referencePrice =
-          mapping.referencePrice == null ? null : Number(mapping.referencePrice);
+          mapping.referencePrice == null
+            ? null
+            : Number(mapping.referencePrice);
         const exchangeRate =
           mapping.exchangeRate == null ? null : Number(mapping.exchangeRate);
         products.addRow({

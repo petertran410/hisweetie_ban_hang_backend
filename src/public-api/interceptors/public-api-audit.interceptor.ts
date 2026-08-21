@@ -1,4 +1,9 @@
-import { Injectable, NestInterceptor, ExecutionContext, CallHandler } from '@nestjs/common';
+import {
+  Injectable,
+  NestInterceptor,
+  ExecutionContext,
+  CallHandler,
+} from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { catchError, finalize } from 'rxjs/operators';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -22,16 +27,22 @@ export class PublicApiAuditInterceptor implements NestInterceptor {
       finalize(() => {
         const client = request.publicApiClient;
         if (!client?.id) return;
-        void this.prisma.publicApiAuditLog.create({
-          data: {
-            clientId: client.id,
-            method: request.method,
-            path: request.originalUrl?.split('?')[0] || request.path,
-            query: Object.keys(request.query || {}).length ? request.query : undefined,
-            statusCode: failed ? Math.max(request.res?.statusCode || 500, 400) : request.res?.statusCode || 200,
-            ipAddress: request.ip || null,
-          },
-        }).catch(() => undefined);
+        void this.prisma.publicApiAuditLog
+          .create({
+            data: {
+              clientId: client.id,
+              method: request.method,
+              path: request.originalUrl?.split('?')[0] || request.path,
+              query: Object.keys(request.query || {}).length
+                ? request.query
+                : undefined,
+              statusCode: failed
+                ? Math.max(request.res?.statusCode || 500, 400)
+                : request.res?.statusCode || 200,
+              ipAddress: request.ip || null,
+            },
+          })
+          .catch(() => undefined);
       }),
     );
   }

@@ -70,7 +70,9 @@ export class PublicApiIdempotencyService {
     try {
       const result = await operation();
       await this.prisma.publicApiIdempotencyKey.update({
-        where: { clientId_key: { clientId: options.clientId, key: options.key } },
+        where: {
+          clientId_key: { clientId: options.clientId, key: options.key },
+        },
         data: {
           status: 'COMPLETED',
           statusCode: 200,
@@ -83,7 +85,11 @@ export class PublicApiIdempotencyService {
       // Thất bại thì xoá khoá để client sửa dữ liệu rồi gửi lại chính khoá đó.
       // Giữ lại sẽ khoá cứng client khỏi thao tác hợp lệ sau này.
       await this.prisma.publicApiIdempotencyKey
-        .delete({ where: { clientId_key: { clientId: options.clientId, key: options.key } } })
+        .delete({
+          where: {
+            clientId_key: { clientId: options.clientId, key: options.key },
+          },
+        })
         .catch(() => undefined);
       throw error;
     }
@@ -98,6 +104,8 @@ export class PublicApiIdempotencyService {
   }
 
   private hash(body: unknown): string {
-    return createHash('sha256').update(JSON.stringify(body ?? null)).digest('hex');
+    return createHash('sha256')
+      .update(JSON.stringify(body ?? null))
+      .digest('hex');
   }
 }

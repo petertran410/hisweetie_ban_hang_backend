@@ -422,11 +422,7 @@ export class FactoryProductsService {
         history.newPrice == null ? null : Number(history.newPrice);
       const vndPrice =
         history.newPriceVnd == null
-          ? this.toVnd(
-              history.newPrice,
-              history.currency,
-              history.exchangeRate,
-            )
+          ? this.toVnd(history.newPrice, history.currency, history.exchangeRate)
           : Number(history.newPriceVnd);
       return {
         id: history.id,
@@ -448,7 +444,9 @@ export class FactoryProductsService {
     });
     const values = points
       .map((point) => point.value)
-      .filter((value): value is number => value != null && Number.isFinite(value));
+      .filter(
+        (value): value is number => value != null && Number.isFinite(value),
+      );
     const first = values[0] ?? null;
     const latest = values.length ? values[values.length - 1] : null;
 
@@ -459,8 +457,7 @@ export class FactoryProductsService {
         latest,
         min: values.length ? Math.min(...values) : null,
         max: values.length ? Math.max(...values) : null,
-        change:
-          first == null || latest == null ? null : latest - first,
+        change: first == null || latest == null ? null : latest - first,
         changePercent:
           first == null || latest == null || first === 0
             ? null
