@@ -311,7 +311,9 @@ export class FactoriesService {
       const productList = (items: typeof factory.factory_products) =>
         items
           .map((item) =>
-            [item.products.code, item.products.name].filter(Boolean).join(' - '),
+            [item.products.code, item.products.name]
+              .filter(Boolean)
+              .join(' - '),
           )
           .join('\n');
 
@@ -350,7 +352,9 @@ export class FactoriesService {
 
       factory.factory_products.forEach((mapping) => {
         const referencePrice =
-          mapping.referencePrice == null ? null : Number(mapping.referencePrice);
+          mapping.referencePrice == null
+            ? null
+            : Number(mapping.referencePrice);
         const exchangeRate =
           mapping.exchangeRate == null ? null : Number(mapping.exchangeRate);
         products.addRow({
@@ -503,38 +507,32 @@ export class FactoriesService {
    */
   async getProductsByFactory(factoryId: number) {
     await this.findOne(factoryId);
-    const [primary, backup] = await Promise.all([
-      this.prisma.product.findMany({
-        where: { primaryFactoryId: factoryId },
-        orderBy: { name: 'asc' },
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          isActive: true,
-          images: {
-            take: 1,
-            orderBy: { id: 'asc' },
-            select: { image: true },
-          },
-        },
-      }),
-      this.prisma.product.findMany({
-        where: { backupFactoryId: factoryId },
-        orderBy: { name: 'asc' },
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          isActive: true,
-          images: {
-            take: 1,
-            orderBy: { id: 'asc' },
-            select: { image: true },
-          },
-        },
-      }),
-    ]);
+    const productSelect = {
+      id: true,
+      code: true,
+      name: true,
+      isActive: true,
+      images: {
+        take: 1,
+        orderBy: { id: 'asc' as const },
+        select: { image: true },
+      },
+    };
+    // Đọc từ bảng mapping — nguồn chân lý mới. Cột primaryFactoryId/backupFactoryId
+    // trên Product là cache cũ, không phản ánh gắn từ trang nhà máy.
+    const mappings = await this.prisma.factory_products.findMany({
+      where: { factoryId, isActive: true },
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+      include: { products: { select: productSelect } },
+    });
+    const primary = mappings
+      .filter((item) => item.role === 'primary')
+      .map((item) => item.products)
+      .filter(Boolean);
+    const backup = mappings
+      .filter((item) => item.role === 'backup')
+      .map((item) => item.products)
+      .filter(Boolean);
     return { primary, backup };
   }
 
@@ -756,13 +754,15 @@ export class FactoriesService {
     await this.findOne(id);
     // Soft delete: chặn xóa cứng nếu đang được dùng; chỉ ẩn đi.
     // Kiểm tra cả Product (primary/backup) + OrderSupplierItem (factoryId).
-    const [usedInProductPrimary, usedInProductBackup, usedInItem] =
+    const [usedInProductPrimary, usedInProductBackup, usedInMapping, usedInItem] =
       await Promise.all([
         this.prisma.product.count({ where: { primaryFactoryId: id } }),
         this.prisma.product.count({ where: { backupFactoryId: id } }),
+        this.prisma.factory_products.count({ where: { factoryId: id } }),
         this.prisma.orderSupplierItem.count({ where: { factoryId: id } }),
       ]);
-    const totalUsage = usedInProductPrimary + usedInProductBackup + usedInItem;
+    const totalUsage =
+      usedInProductPrimary + usedInProductBackup + usedInMapping + usedInItem;
     if (totalUsage > 0) {
       // Đang được sử dụng → soft-delete
       return this.prisma.factory.update({

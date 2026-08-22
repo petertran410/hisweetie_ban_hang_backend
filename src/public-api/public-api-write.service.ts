@@ -3,7 +3,10 @@ import { CustomersService } from '../customers/customers.service';
 import { CreateCustomerDto, UpdateCustomerDto } from '../customers/dto';
 import { ProductsService } from '../products/products.service';
 import { CreateProductDto, UpdateProductDto } from '../products/dto';
-import { CategoriesService, CategoryType } from '../categories/categories.service';
+import {
+  CategoriesService,
+  CategoryType,
+} from '../categories/categories.service';
 import { OrdersService } from '../orders/orders.service';
 import { CreateOrderDto, UpdateOrderDto } from '../orders/dto';
 import { CancelOrderDto } from '../orders/dto/cancel-order.dto';
@@ -26,7 +29,9 @@ export class PublicApiWriteService {
    * Mọi thao tác của đối tác ghi nhật ký dưới danh nghĩa user này. POS bắt buộc
    * có `userId` vì các bảng nghiệp vụ tham chiếu khoá ngoại sang `users`.
    */
-  private readonly actingUserId = Number(process.env.PUBLIC_API_ACTING_USER_ID || 1);
+  private readonly actingUserId = Number(
+    process.env.PUBLIC_API_ACTING_USER_ID || 1,
+  );
 
   constructor(
     private readonly customersService: CustomersService,
@@ -43,7 +48,11 @@ export class PublicApiWriteService {
   }
 
   async updateCustomer(id: number, dto: UpdateCustomerDto) {
-    const customer = await this.customersService.update(id, dto, this.actingUserId);
+    const customer = await this.customersService.update(
+      id,
+      dto,
+      this.actingUserId,
+    );
     return this.present('customers', customer);
   }
 
@@ -53,7 +62,10 @@ export class PublicApiWriteService {
    */
   async deactivateCustomer(id: number) {
     await this.customersService.remove(id, this.actingUserId);
-    return { message: 'Ngừng hoạt động khách hàng thành công', timestamp: new Date().toISOString() };
+    return {
+      message: 'Ngừng hoạt động khách hàng thành công',
+      timestamp: new Date().toISOString(),
+    };
   }
 
   async createProduct(dto: CreateProductDto) {
@@ -62,7 +74,11 @@ export class PublicApiWriteService {
   }
 
   async updateProduct(id: number, dto: UpdateProductDto) {
-    const product = await this.productsService.update(id, dto, this.actingUserId);
+    const product = await this.productsService.update(
+      id,
+      dto,
+      this.actingUserId,
+    );
     return this.present('products', product);
   }
 
@@ -84,7 +100,10 @@ export class PublicApiWriteService {
     return this.present('categories', category);
   }
 
-  async updateCategory(id: number, dto: { name?: string; type?: CategoryType }) {
+  async updateCategory(
+    id: number,
+    dto: { name?: string; type?: CategoryType },
+  ) {
     const category = await this.categoriesService.update(id, dto);
     return this.present('categories', category);
   }
@@ -101,7 +120,10 @@ export class PublicApiWriteService {
     );
     // OrdersService trả { order, warnings }; warnings gồm cảnh báo thiếu tồn kho.
     return {
-      data: this.publicApiService.toPublicResource('orders', (result as any).order),
+      data: this.publicApiService.toPublicResource(
+        'orders',
+        (result as any).order,
+      ),
       warnings: (result as any).warnings ?? [],
       timestamp: new Date().toISOString(),
     };
@@ -131,7 +153,11 @@ export class PublicApiWriteService {
    * tiền hay không; không truyền thì tiền đã thu vẫn giữ nguyên.
    */
   async cancelOrder(id: number, dto: CancelOrderDto) {
-    const result = await this.ordersService.cancelOrder(id, dto, this.actingUserId);
+    const result = await this.ordersService.cancelOrder(
+      id,
+      dto,
+      this.actingUserId,
+    );
     return { ...result, timestamp: new Date().toISOString() };
   }
 
@@ -147,7 +173,11 @@ export class PublicApiWriteService {
   }
 
   async updateInvoice(id: number, dto: UpdateInvoiceDto) {
-    const invoice = await this.invoicesService.update(id, dto, this.actingUserId);
+    const invoice = await this.invoicesService.update(
+      id,
+      dto,
+      this.actingUserId,
+    );
     return this.present('invoices', invoice);
   }
 
@@ -176,7 +206,10 @@ export class PublicApiWriteService {
     invoice: Promise.resolve(),
   };
 
-  private async withLock<T>(name: 'order' | 'invoice', operation: () => Promise<T>): Promise<T> {
+  private async withLock<T>(
+    name: 'order' | 'invoice',
+    operation: () => Promise<T>,
+  ): Promise<T> {
     const previous = this.locks[name];
     let release!: () => void;
     this.locks[name] = new Promise<void>((resolve) => (release = resolve));

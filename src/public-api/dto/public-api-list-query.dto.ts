@@ -1,5 +1,14 @@
 import { Transform, Type } from 'class-transformer';
-import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsDateString,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
 
 /**
  * Tham số truy vấn dùng chung cho mọi resource của Public API.
@@ -35,7 +44,15 @@ export class PublicApiListQueryDto {
   currentItem = 0;
 
   @IsOptional()
-  @IsIn(['createdAt', 'updatedAt', 'purchaseDate', 'orderDate', 'id', 'code', 'name'])
+  @IsIn([
+    'createdAt',
+    'updatedAt',
+    'purchaseDate',
+    'orderDate',
+    'id',
+    'code',
+    'name',
+  ])
   orderBy?: string;
 
   @IsOptional()

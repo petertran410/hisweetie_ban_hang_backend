@@ -7,6 +7,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { toVnd } from '../common/currency.util';
 import { normalizeMoqSpec } from '../common/moq.util';
 import {
+  clearProductFactoryColumnIfMatches,
+  syncProductFactoryColumns,
+} from '../common/factory-mapping.util';
+import {
   CreateFactoryProductDto,
   FactoryProductQueryDto,
   PriceHistorySeriesQueryDto,
@@ -195,6 +199,13 @@ export class FactoryProductsService {
           },
         });
       }
+      // Cột `Product.primaryFactoryId`/`backupFactoryId` là nguồn form sản
+      // phẩm đang đọc — đồng bộ để gắn từ trang nhà máy hiện được bên kia.
+      await syncProductFactoryColumns(tx, {
+        productId: dto.productId,
+        factoryId: dto.factoryId,
+        role: created.role === 'backup' ? 'backup' : 'primary',
+      });
       return created;
     });
 
@@ -269,14 +280,57 @@ export class FactoryProductsService {
           },
         });
       }
+
+      // Đổi vai trò / ngừng kích hoạt → cập nhật lại cột trên Product.
+      const nextRole = (dto.role ?? existing.role) === 'backup'
+        ? ('backup' as const)
+        : ('primary' as const);
+      const nextActive = dto.isActive ?? existing.isActive;
+      if (nextActive === false) {
+        await clearProductFactoryColumnIfMatches(tx, {
+          productId: existing.productId,
+          factoryId: existing.factoryId,
+          role: existing.role === 'backup' ? 'backup' : 'primary',
+        });
+      } else {
+        if (dto.role !== undefined && dto.role !== existing.role) {
+          // Vai trò cũ không còn nhà máy này giữ nữa.
+          await clearProductFactoryColumnIfMatches(tx, {
+            productId: existing.productId,
+            factoryId: existing.factoryId,
+            role: existing.role === 'backup' ? 'backup' : 'primary',
+          });
+        }
+        await syncProductFactoryColumns(tx, {
+          productId: existing.productId,
+          factoryId: existing.factoryId,
+          role: nextRole,
+        });
+      }
     });
 
     return this.findOne(id);
   }
 
   async remove(id: number) {
-    await this.findOne(id);
-    return this.prisma.factory_products.delete({ where: { id } });
+    const mapping = await this.prisma.factory_products.findUnique({
+      where: { id },
+      select: { id: true, productId: true, factoryId: true, role: true },
+    });
+    if (!mapping)
+      throw new NotFoundException('Không tìm thấy sản phẩm của nhà máy');
+
+    return this.prisma.$transaction(async (tx) => {
+      const deleted = await tx.factory_products.delete({ where: { id } });
+      // Cột trên Product phải nhả theo, nếu không form sản phẩm vẫn hiện
+      // nhà máy đã bị gỡ khỏi mapping.
+      await clearProductFactoryColumnIfMatches(tx, {
+        productId: mapping.productId,
+        factoryId: mapping.factoryId,
+        role: mapping.role === 'backup' ? 'backup' : 'primary',
+      });
+      return deleted;
+    });
   }
 
   async getPriceHistory(id: number) {
@@ -368,11 +422,7 @@ export class FactoryProductsService {
         history.newPrice == null ? null : Number(history.newPrice);
       const vndPrice =
         history.newPriceVnd == null
-          ? this.toVnd(
-              history.newPrice,
-              history.currency,
-              history.exchangeRate,
-            )
+          ? this.toVnd(history.newPrice, history.currency, history.exchangeRate)
           : Number(history.newPriceVnd);
       return {
         id: history.id,
@@ -394,7 +444,9 @@ export class FactoryProductsService {
     });
     const values = points
       .map((point) => point.value)
-      .filter((value): value is number => value != null && Number.isFinite(value));
+      .filter(
+        (value): value is number => value != null && Number.isFinite(value),
+      );
     const first = values[0] ?? null;
     const latest = values.length ? values[values.length - 1] : null;
 
@@ -405,8 +457,7 @@ export class FactoryProductsService {
         latest,
         min: values.length ? Math.min(...values) : null,
         max: values.length ? Math.max(...values) : null,
-        change:
-          first == null || latest == null ? null : latest - first,
+        change: first == null || latest == null ? null : latest - first,
         changePercent:
           first == null || latest == null || first === 0
             ? null

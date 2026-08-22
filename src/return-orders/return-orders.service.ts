@@ -491,15 +491,46 @@ export class ReturnOrdersService {
         include: { details: true },
       });
 
+      // ── Số đã trả trước đó, gom theo 2 cấp:
+      //    (a) cấp SẢN PHẨM  — gồm TẤT CẢ phiếu cũ (kể cả phiếu chưa có
+      //        invoiceDetailId) → dùng cho ràng buộc tổng, không bao giờ hụt.
+      //    (b) cấp DÒNG HÓA ĐƠN — chỉ những phiếu đã có invoiceDetailId
+      //        → dùng cho ràng buộc chi tiết theo từng dòng.
       const returnedQuantities: Record<string, number> = {};
+      const returnedByDetail: Record<number, number> = {};
       existingReturns.forEach((ro) => {
         ro.details.forEach((d) => {
           const key = `${d.invoiceId}-${d.productId}`;
           returnedQuantities[key] =
             (returnedQuantities[key] || 0) + Number(d.requestQuantity);
+
+          if (d.invoiceDetailId) {
+            returnedByDetail[d.invoiceDetailId] =
+              (returnedByDetail[d.invoiceDetailId] || 0) +
+              Number(d.requestQuantity);
+          }
         });
       });
 
+      // Cộng dồn số lượng yêu cầu trả trong CÙNG payload — hóa đơn có thể có
+      // nhiều dòng cùng sản phẩm (khác lô / giá / hàng tặng), nên phải cộng
+      // dồn ở cả 2 cấp trước khi so sánh.
+      const requestedByKey: Record<string, number> = {};
+      const requestedByDetail: Record<number, number> = {};
+      for (const detail of dto.details) {
+        const key = `${detail.invoiceId}-${detail.productId}`;
+        requestedByKey[key] =
+          (requestedByKey[key] || 0) + Number(detail.requestQuantity);
+
+        if (detail.invoiceDetailId) {
+          requestedByDetail[detail.invoiceDetailId] =
+            (requestedByDetail[detail.invoiceDetailId] || 0) +
+            Number(detail.requestQuantity);
+        }
+      }
+
+      const checkedKeys = new Set<string>();
+      const checkedDetailIds = new Set<number>();
       for (const detail of dto.details) {
         const invoice = invoiceMap.get(detail.invoiceId);
         if (!invoice) {
@@ -508,22 +539,58 @@ export class ReturnOrdersService {
           );
         }
 
-        const invoiceDetail = invoice.details.find(
+        const matchedDetails = invoice.details.filter(
           (d) => d.productId === detail.productId,
         );
-        if (!invoiceDetail) {
+        if (matchedDetails.length === 0) {
           throw new BadRequestException(
             `Sản phẩm ${detail.productCode} không có trong hóa đơn ${detail.invoiceCode}`,
           );
         }
 
-        const key = `${detail.invoiceId}-${detail.productId}`;
-        const alreadyReturned = returnedQuantities[key] || 0;
-        const maxReturnable = Number(invoiceDetail.quantity) - alreadyReturned;
+        // ── (b) Ràng buộc theo ĐÚNG dòng hóa đơn (khi client gửi lên id dòng)
+        if (detail.invoiceDetailId) {
+          const invoiceLine = matchedDetails.find(
+            (d) => d.id === detail.invoiceDetailId,
+          );
+          if (!invoiceLine) {
+            throw new BadRequestException(
+              `Dòng hóa đơn #${detail.invoiceDetailId} không thuộc sản phẩm ${detail.productCode} trong hóa đơn ${detail.invoiceCode}`,
+            );
+          }
 
-        if (detail.requestQuantity > maxReturnable) {
+          if (!checkedDetailIds.has(detail.invoiceDetailId)) {
+            checkedDetailIds.add(detail.invoiceDetailId);
+
+            const lineReturned = returnedByDetail[detail.invoiceDetailId] || 0;
+            const lineMax = Number(invoiceLine.quantity) - lineReturned;
+            const lineRequested =
+              requestedByDetail[detail.invoiceDetailId] || 0;
+
+            if (lineRequested > lineMax) {
+              throw new BadRequestException(
+                `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${lineRequested}) vượt quá còn lại của dòng (${lineMax})`,
+              );
+            }
+          }
+        }
+
+        // ── (a) Ràng buộc TỔNG theo sản phẩm — luôn chạy, phủ cả phiếu cũ
+        const key = `${detail.invoiceId}-${detail.productId}`;
+        if (checkedKeys.has(key)) continue;
+        checkedKeys.add(key);
+
+        const totalQuantity = matchedDetails.reduce(
+          (sum, d) => sum + Number(d.quantity),
+          0,
+        );
+        const alreadyReturned = returnedQuantities[key] || 0;
+        const maxReturnable = totalQuantity - alreadyReturned;
+        const totalRequested = requestedByKey[key] || 0;
+
+        if (totalRequested > maxReturnable) {
           throw new BadRequestException(
-            `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${detail.requestQuantity}) vượt quá còn lại (${maxReturnable})`,
+            `Sản phẩm ${detail.productName} (HĐ ${detail.invoiceCode}): Số lượng trả (${totalRequested}) vượt quá còn lại (${maxReturnable})`,
           );
         }
       }
@@ -545,6 +612,7 @@ export class ReturnOrdersService {
             : d.invoicePrice;
         return {
           invoiceId: d.invoiceId,
+          invoiceDetailId: d.invoiceDetailId ?? null,
           invoiceCode: d.invoiceCode,
           productId: d.productId,
           productCode: d.productCode,

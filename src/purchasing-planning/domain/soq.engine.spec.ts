@@ -66,7 +66,13 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
   it('MOQ 100 thùng → 2000 gói', () => {
     expect(
       moqSpecToPacks(
-        { value: 100, basis: 'QUANTITY', unit: 'CARTON', scope: 'PER_LINE', increment: null },
+        {
+          value: 100,
+          basis: 'QUANTITY',
+          unit: 'CARTON',
+          scope: 'PER_LINE',
+          increment: null,
+        },
         product,
       ),
     ).toBe(2000);
@@ -75,7 +81,13 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
   it('MOQ 2 tấn → 4000 gói', () => {
     expect(
       moqSpecToPacks(
-        { value: 2, basis: 'WEIGHT', unit: 'TON', scope: 'PER_LINE', increment: null },
+        {
+          value: 2,
+          basis: 'WEIGHT',
+          unit: 'TON',
+          scope: 'PER_LINE',
+          increment: null,
+        },
         product,
       ),
     ).toBe(4000);
@@ -84,7 +96,13 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
   it('MOQ 500 kg → 1000 gói', () => {
     expect(
       moqSpecToPacks(
-        { value: 500, basis: 'WEIGHT', unit: 'KG', scope: 'PER_LINE', increment: null },
+        {
+          value: 500,
+          basis: 'WEIGHT',
+          unit: 'KG',
+          scope: 'PER_LINE',
+          increment: null,
+        },
         product,
       ),
     ).toBe(1000);
@@ -97,7 +115,13 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
   it('thiếu khối lượng → null để nơi gọi gắn cờ cảnh báo', () => {
     expect(
       moqSpecToPacks(
-        { value: 2, basis: 'WEIGHT', unit: 'TON', scope: 'PER_LINE', increment: null },
+        {
+          value: 2,
+          basis: 'WEIGHT',
+          unit: 'TON',
+          scope: 'PER_LINE',
+          increment: null,
+        },
         { ...product, weight: null },
       ),
     ).toBeNull();
@@ -105,7 +129,13 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
 
   it('MOQ khối lượng quy đổi xong chạy đúng qua engine SOQ', () => {
     const moq = moqSpecToPacks(
-      { value: 2, basis: 'WEIGHT', unit: 'TON', scope: 'PER_LINE', increment: null },
+      {
+        value: 2,
+        basis: 'WEIGHT',
+        unit: 'TON',
+        scope: 'PER_LINE',
+        increment: null,
+      },
       product,
     )!;
     const result = calculateSoq({

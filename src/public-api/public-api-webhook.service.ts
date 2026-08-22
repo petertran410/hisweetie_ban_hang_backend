@@ -44,7 +44,10 @@ export class PublicApiWebhookService {
         lastError: null,
       },
     });
-    return { data: this.toPublicShape(webhook), timestamp: new Date().toISOString() };
+    return {
+      data: this.toPublicShape(webhook),
+      timestamp: new Date().toISOString(),
+    };
   }
 
   async list(clientId: string) {
@@ -60,28 +63,45 @@ export class PublicApiWebhookService {
   }
 
   async get(clientId: string, id: string) {
-    const webhook = await this.prisma.publicApiWebhook.findFirst({ where: { id, clientId } });
+    const webhook = await this.prisma.publicApiWebhook.findFirst({
+      where: { id, clientId },
+    });
     if (!webhook) throw new NotFoundException('Resource not found');
     const deliveries = await this.prisma.publicApiWebhookDelivery.findMany({
       where: { webhookId: id },
       orderBy: { createdAt: 'desc' },
       take: 20,
-      select: { id: true, attempt: true, statusCode: true, success: true, errorMessage: true, createdAt: true },
+      select: {
+        id: true,
+        attempt: true,
+        statusCode: true,
+        success: true,
+        errorMessage: true,
+        createdAt: true,
+      },
     });
     return {
       data: {
         ...this.toPublicShape(webhook),
-        recentDeliveries: deliveries.map((delivery) => ({ ...delivery, id: delivery.id.toString() })),
+        recentDeliveries: deliveries.map((delivery) => ({
+          ...delivery,
+          id: delivery.id.toString(),
+        })),
       },
       timestamp: new Date().toISOString(),
     };
   }
 
   async unregister(clientId: string, id: string) {
-    const webhook = await this.prisma.publicApiWebhook.findFirst({ where: { id, clientId } });
+    const webhook = await this.prisma.publicApiWebhook.findFirst({
+      where: { id, clientId },
+    });
     if (!webhook) throw new NotFoundException('Resource not found');
     await this.prisma.publicApiWebhook.delete({ where: { id } });
-    return { message: 'Huỷ đăng ký webhook thành công', timestamp: new Date().toISOString() };
+    return {
+      message: 'Huỷ đăng ký webhook thành công',
+      timestamp: new Date().toISOString(),
+    };
   }
 
   /**
@@ -94,19 +114,28 @@ export class PublicApiWebhookService {
   @Cron(CronExpression.EVERY_MINUTE)
   async dispatchPending() {
     const webhooks = await this.prisma.publicApiWebhook.findMany({
-      where: { isActive: true, failureCount: { lt: MAX_FAILURES_BEFORE_PAUSE } },
+      where: {
+        isActive: true,
+        failureCount: { lt: MAX_FAILURES_BEFORE_PAUSE },
+      },
     });
     for (const webhook of webhooks) {
       try {
         await this.dispatchOne(webhook);
       } catch (error) {
-        this.logger.error(`Webhook ${webhook.id} thất bại: ${(error as Error).message}`);
+        this.logger.error(
+          `Webhook ${webhook.id} thất bại: ${(error as Error).message}`,
+        );
       }
     }
   }
 
   private async dispatchOne(webhook: {
-    id: string; resource: string; url: string; secret: string | null; cursorAt: Date | null;
+    id: string;
+    resource: string;
+    url: string;
+    secret: string | null;
+    cursorAt: Date | null;
   }) {
     // Chốt mốc trên theo giờ máy chủ trước khi đọc: bản ghi được sửa trong lúc
     // đang gửi sẽ thuộc về lần quét sau, không bị bỏ sót.
@@ -114,16 +143,22 @@ export class PublicApiWebhookService {
     const since = webhook.cursorAt ?? new Date(0);
     if (since >= until) return;
 
-    const page = await this.publicApiService.list(webhook.resource as never, {
-      lastModifiedFrom: since.toISOString(),
-      lastModifiedTo: until.toISOString(),
-      pageSize: MAX_ITEMS_PER_DELIVERY,
-      currentItem: 0,
-      includeInactive: true,
-    } as never);
+    const page = await this.publicApiService.list(
+      webhook.resource as never,
+      {
+        lastModifiedFrom: since.toISOString(),
+        lastModifiedTo: until.toISOString(),
+        pageSize: MAX_ITEMS_PER_DELIVERY,
+        currentItem: 0,
+        includeInactive: true,
+      } as never,
+    );
 
     if (!page.data.length) {
-      await this.prisma.publicApiWebhook.update({ where: { id: webhook.id }, data: { cursorAt: until } });
+      await this.prisma.publicApiWebhook.update({
+        where: { id: webhook.id },
+        data: { cursorAt: until },
+      });
       return;
     }
 
@@ -152,37 +187,57 @@ export class PublicApiWebhookService {
       // liệu đó mất vĩnh viễn, lần quét sau không lấy lại được.
       await this.prisma.publicApiWebhook.update({
         where: { id: webhook.id },
-        data: { cursorAt: until, failureCount: 0, lastStatus: result.statusCode, lastError: null, lastSuccessAt: new Date() },
+        data: {
+          cursorAt: until,
+          failureCount: 0,
+          lastStatus: result.statusCode,
+          lastError: null,
+          lastSuccessAt: new Date(),
+        },
       });
     } else {
       await this.prisma.publicApiWebhook.update({
         where: { id: webhook.id },
-        data: { failureCount: { increment: 1 }, lastStatus: result.statusCode, lastError: result.error },
+        data: {
+          failureCount: { increment: 1 },
+          lastStatus: result.statusCode,
+          lastError: result.error,
+        },
       });
     }
   }
 
   private async send(url: string, secret: string | null, payload: unknown) {
     const body = JSON.stringify(payload);
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
     if (secret) {
       // Chữ ký để đối tác xác minh tin đến thật sự từ POS.
-      headers['X-Webhook-Signature'] = createHmac('sha256', secret).update(body).digest('hex');
+      headers['X-Webhook-Signature'] = createHmac('sha256', secret)
+        .update(body)
+        .digest('hex');
     }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
     try {
-      const response = await fetch(url, { method: 'POST', headers, body, signal: controller.signal });
+      const response = await fetch(url, {
+        method: 'POST',
+        headers,
+        body,
+        signal: controller.signal,
+      });
       return {
         success: response.ok,
         statusCode: response.status,
         error: response.ok ? undefined : `HTTP ${response.status}`,
       };
     } catch (error) {
-      const message = (error as Error).name === 'AbortError'
-        ? `Không phản hồi trong ${DELIVERY_TIMEOUT_MS}ms`
-        : (error as Error).message;
+      const message =
+        (error as Error).name === 'AbortError'
+          ? `Không phản hồi trong ${DELIVERY_TIMEOUT_MS}ms`
+          : (error as Error).message;
       return { success: false, statusCode: undefined, error: message };
     } finally {
       clearTimeout(timer);

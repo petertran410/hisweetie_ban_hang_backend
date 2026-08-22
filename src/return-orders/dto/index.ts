@@ -13,6 +13,13 @@ export class ReturnOrderDetailDto {
   @IsInt()
   invoiceId: number;
 
+  // ID của dòng invoice_details gốc. Optional để tương thích client cũ;
+  // khi có sẽ được dùng để validate/hoàn tiền theo ĐÚNG dòng hóa đơn
+  // (1 hóa đơn có thể có nhiều dòng cùng productId, khác giá/lô/hàng tặng).
+  @IsInt()
+  @IsOptional()
+  invoiceDetailId?: number;
+
   @IsString()
   invoiceCode: string;
 

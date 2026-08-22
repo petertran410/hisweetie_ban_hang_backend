@@ -17,6 +17,15 @@ export interface ProductChartRow {
   totalCost?: number;
   profit?: number;
   quantity?: number;
+  // InOutStock view
+  openingQuantity?: number;
+  openingValue?: number;
+  inQuantity?: number;
+  inValue?: number;
+  outQuantity?: number;
+  outValue?: number;
+  closingQuantity?: number;
+  closingValue?: number;
 }
 
 @Injectable()
@@ -297,8 +306,11 @@ export class ProductReportsService {
         l."productCode" AS code,
         l."productName" AS name,
         COALESCE(SUM(CASE WHEN l."transactionDate" < ${query.fromDate ? new Date(query.fromDate) : new Date(0)} THEN l.quantity ELSE 0 END), 0)::float8 AS opening,
+        COALESCE(SUM(CASE WHEN l."transactionDate" < ${query.fromDate ? new Date(query.fromDate) : new Date(0)} THEN l.quantity * l."costPrice" ELSE 0 END), 0)::float8 AS opening_value,
         COALESCE(SUM(CASE WHEN l.quantity > 0 ${fromCond} ${toCond} THEN l.quantity ELSE 0 END), 0)::float8 AS stock_in,
-        COALESCE(SUM(CASE WHEN l.quantity < 0 ${fromCond} ${toCond} THEN -l.quantity ELSE 0 END), 0)::float8 AS stock_out
+        COALESCE(SUM(CASE WHEN l.quantity > 0 ${fromCond} ${toCond} THEN l.quantity * l."costPrice" ELSE 0 END), 0)::float8 AS stock_in_value,
+        COALESCE(SUM(CASE WHEN l.quantity < 0 ${fromCond} ${toCond} THEN -l.quantity ELSE 0 END), 0)::float8 AS stock_out,
+        COALESCE(SUM(CASE WHEN l.quantity < 0 ${fromCond} ${toCond} THEN -l.quantity * l."costPrice" ELSE 0 END), 0)::float8 AS stock_out_value
       FROM inventory_logs l
       WHERE 1=1 ${extra}
       GROUP BY l."productCode", l."productName"
@@ -308,19 +320,31 @@ export class ProductReportsService {
     `;
     return rows.map((r) => {
       const opening = Number(r.opening) || 0;
+      const openingValue = Number(r.opening_value) || 0;
       const stockIn = Number(r.stock_in) || 0;
+      const inValue = Number(r.stock_in_value) || 0;
       const stockOut = Number(r.stock_out) || 0;
+      const outValue = Number(r.stock_out_value) || 0;
       const closing = opening + stockIn - stockOut;
+      const closingValue = openingValue + inValue - outValue;
       return {
         subject: r.name,
         value: closing,
         total: closing,
         extra1: r.code || null,
         quantity: stockIn - stockOut,
-        // map các chỉ số vào revenue/totalCost/profit cho FE đọc tạm:
-        revenue: opening, // tồn đầu
-        totalCost: stockIn, // nhập
-        profit: stockOut, // xuất
+        openingQuantity: opening,
+        openingValue,
+        inQuantity: stockIn,
+        inValue,
+        outQuantity: stockOut,
+        outValue,
+        closingQuantity: closing,
+        closingValue,
+        // Giữ các field cũ để tương thích với response/chart đang sử dụng.
+        revenue: opening,
+        totalCost: stockIn,
+        profit: stockOut,
       };
     });
   }
@@ -508,18 +532,26 @@ export class ProductReportsService {
         { header: 'STT', key: 'stt', width: 6 },
         { header: 'Sản phẩm', key: 'subject', width: 36 },
         { header: 'Tồn đầu', key: 'opening', width: 14 },
+        { header: 'Giá trị đầu kỳ', key: 'openingValue', width: 18 },
         { header: 'Nhập', key: 'in', width: 14 },
+        { header: 'Giá trị nhập', key: 'inValue', width: 18 },
         { header: 'Xuất', key: 'out', width: 14 },
+        { header: 'Giá trị xuất', key: 'outValue', width: 18 },
         { header: 'Tồn cuối', key: 'closing', width: 14 },
+        { header: 'Giá trị cuối kỳ', key: 'closingValue', width: 18 },
       ];
       rows.forEach((r, i) =>
         ws.addRow({
           stt: i + 1,
           subject: r.subject,
-          opening: money(r.revenue),
-          in: money(r.totalCost),
-          out: money(r.profit),
-          closing: money(r.value),
+          opening: money(r.openingQuantity),
+          openingValue: money(r.openingValue),
+          in: money(r.inQuantity),
+          inValue: money(r.inValue),
+          out: money(r.outQuantity),
+          outValue: money(r.outValue),
+          closing: money(r.closingQuantity),
+          closingValue: money(r.closingValue),
         }),
       );
     } else {

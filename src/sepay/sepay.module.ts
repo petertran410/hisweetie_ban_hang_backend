@@ -11,6 +11,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { CashFlowsModule } from '../cashflows/cashflows.module';
 import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { DebtTicketsModule } from '../debt-tickets/debt-tickets.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     CashFlowsModule,
     AuthModule,
     NotificationsModule,
+    DebtTicketsModule,
     HttpModule.register({ timeout: 120000, maxRedirects: 5 }),
   ],
   controllers: [SepayController],

@@ -10,12 +10,7 @@ import {
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { PartialType } from '@nestjs/swagger';
-import {
-  MOQ_BASES,
-  MOQ_UNITS,
-  MoqBasis,
-  MoqUnit,
-} from '../common/moq.util';
+import { MOQ_BASES, MOQ_UNITS, MoqBasis, MoqUnit } from '../common/moq.util';
 
 const toInt = ({ value }: { value: unknown }) =>
   value === undefined || value === null || value === ''

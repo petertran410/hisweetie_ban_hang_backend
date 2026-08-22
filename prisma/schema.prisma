@@ -102,6 +102,9 @@ model User {
   branch                                                    Branch?                           @relation(fields: [branchId], references: [id])
   supplier                                                  Supplier?                         @relation("SupplierStaff", fields: [supplierId], references: [id])
   createdVehicleShipments                                   VehicleShipment[]                 @relation("VehicleShipmentCreator")
+  assignedDebtTickets                                       DebtTicket[]                      @relation("DebtTicketAssignee")
+  createdDebtTickets                                        DebtTicket[]                      @relation("DebtTicketCreator")
+  closedDebtTickets                                         DebtTicket[]                      @relation("DebtTicketCloser")
 
   @@map("users")
 }
@@ -453,6 +456,9 @@ model Customer {
   promotionCustomers   PromotionCustomer[]
   returnOrders         ReturnOrder[]         @relation("ReturnOrderCustomer")
   parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
+  debtPolicy           CustomerDebtPolicy?
+  debtNote             CustomerDebtNote?
+  debtTicketLines      DebtTicketCustomer[]
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -1579,6 +1585,11 @@ model Invoice {
   misaSyncStatus         MisaSyncStatus          @default(SKIP)
   misaSyncedAt           DateTime?
   consignmentId          Int?
+  // Mốc GIAO HÀNG ĐẦU TIÊN (báo đơn thành công) — dùng làm gốc tính hạn công nợ.
+  // Là cache của MIN(packing_slips.createdAt) trên các phiếu giao CHƯA HỦY.
+  // Ghi 1 lần khi tạo phiếu giao đầu tiên; tính lại (hoặc về null) khi hủy phiếu.
+  // Nullable: hóa đơn chưa báo đơn thì KHÔNG phát sinh hạn nợ theo ngày/tuần/tháng.
+  deliveredAt            DateTime?               @map("delivered_at")
   delivery               InvoiceDelivery?
   details                InvoiceDetail[]
   paymentNotes           InvoicePaymentNote[]
@@ -1603,35 +1614,37 @@ model Invoice {
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
   @@index([branchId, purchaseDate])
+  @@index([customerId, deliveredAt])
   @@index([misaSyncStatus])
   @@index([updatedAt, id])
   @@map("invoices")
 }
 
 model InvoiceDetail {
-  id              Int        @id @default(autoincrement())
-  invoiceId       Int
-  productId       Int?
-  productCode     String
-  productName     String
-  quantity        Decimal
-  price           Decimal
-  discount        Decimal    @default(0)
-  discountRatio   Decimal    @default(0)
-  totalPrice      Decimal
-  note            String?
-  serialNumbers   String?
-  createdAt       DateTime   @default(now())
-  updatedAt       DateTime   @updatedAt
-  conditionType   String     @default("normal")
-  isGift          Boolean    @default(false)
-  lineType        String     @default("normal")
-  promotionId     Int?
-  manufactureDate DateTime?
-  soldExpiryDate  DateTime?
-  invoice         Invoice    @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
-  product         Product?   @relation(fields: [productId], references: [id])
-  promotion       Promotion? @relation(fields: [promotionId], references: [id])
+  id                 Int                 @id @default(autoincrement())
+  invoiceId          Int
+  productId          Int?
+  productCode        String
+  productName        String
+  quantity           Decimal
+  price              Decimal
+  discount           Decimal             @default(0)
+  discountRatio      Decimal             @default(0)
+  totalPrice         Decimal
+  note               String?
+  serialNumbers      String?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  conditionType      String              @default("normal")
+  isGift             Boolean             @default(false)
+  lineType           String              @default("normal")
+  promotionId        Int?
+  manufactureDate    DateTime?
+  soldExpiryDate     DateTime?
+  invoice            Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product            Product?            @relation(fields: [productId], references: [id])
+  promotion          Promotion?          @relation(fields: [promotionId], references: [id])
+  returnOrderDetails ReturnOrderDetail[]
 
   @@index([invoiceId])
   @@index([promotionId])
@@ -2819,9 +2832,10 @@ model ReturnOrder {
 }
 
 model ReturnOrderDetail {
-  id                     Int         @id @default(autoincrement())
+  id                     Int            @id @default(autoincrement())
   returnOrderId          Int
   invoiceId              Int?
+  invoiceDetailId        Int?
   invoiceCode            String
   productId              Int
   productCode            String
@@ -2829,24 +2843,26 @@ model ReturnOrderDetail {
   invoiceQuantity        Decimal
   invoicePrice           Decimal
   requestQuantity        Decimal
-  confirmedQuantity      Decimal     @default(0)
+  confirmedQuantity      Decimal        @default(0)
   returnPrice            Decimal
   totalAmount            Decimal
   note                   String?
-  createdAt              DateTime    @default(now())
-  updatedAt              DateTime    @updatedAt
-  damagedQuantity        Decimal     @default(0)
-  goodQuantity           Decimal     @default(0)
-  nearExpiryQuantity     Decimal     @default(0)
-  saleDamagedQuantity    Decimal     @default(0)
-  saleGoodQuantity       Decimal     @default(0)
-  saleNearExpiryQuantity Decimal     @default(0)
+  createdAt              DateTime       @default(now())
+  updatedAt              DateTime       @updatedAt
+  damagedQuantity        Decimal        @default(0)
+  goodQuantity           Decimal        @default(0)
+  nearExpiryQuantity     Decimal        @default(0)
+  saleDamagedQuantity    Decimal        @default(0)
+  saleGoodQuantity       Decimal        @default(0)
+  saleNearExpiryQuantity Decimal        @default(0)
   manufactureDate        DateTime?
-  invoice                Invoice?    @relation(fields: [invoiceId], references: [id])
-  product                Product     @relation(fields: [productId], references: [id])
-  returnOrder            ReturnOrder @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
+  invoice                Invoice?       @relation(fields: [invoiceId], references: [id])
+  invoiceDetail          InvoiceDetail? @relation(fields: [invoiceDetailId], references: [id])
+  product                Product        @relation(fields: [productId], references: [id])
+  returnOrder            ReturnOrder    @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
+  @@index([invoiceDetailId])
   @@map("return_order_details")
 }
 
@@ -3806,4 +3822,173 @@ enum MisaSyncStatus {
   SYNCED
   FAILED
   SKIP
+}
+
+// ====================================================================
+// THEO DÕI CÔNG NỢ KHÁCH HÀNG
+//
+// Nguyên tắc: KHÔNG tính lại tổng nợ ở đây. Tổng nợ luôn lấy từ
+// customer.totalDebt (Formula A — common/customer-debt.util.ts).
+// Các bảng dưới chỉ bổ sung CHÍNH SÁCH nợ và công cụ ĐÒI nợ.
+// ====================================================================
+
+/// Chính sách công nợ của từng khách. Khách KHÔNG có bản ghi ở đây
+/// được hiểu là NONE (không công nợ) và không hiện trong danh sách theo dõi.
+model CustomerDebtPolicy {
+  id         Int      @id @default(autoincrement())
+  customerId Int      @unique @map("customer_id")
+
+  // ---- HAI CHIỀU CÔNG NỢ ĐỘC LẬP ----
+  // Dữ liệu thực tế ("Loại Công Nợ" trong file quản lý) là multi-select:
+  //   "Công Nợ 5 Ngày"            → chỉ hạn ngày
+  //   "Hạn Mức"                   → chỉ hạn mức
+  //   "Hạn Mức, Công Nợ 7 Ngày"   → CẢ HAI
+  //   "Không Công Nợ"             → cả hai tắt
+  // Vì vậy KHÔNG dùng một enum policyType; mỗi chiều là một cờ riêng.
+  // Cả hai tắt ⇒ khách không công nợ ⇒ không hiện trong danh sách theo dõi.
+
+  /// Bật chiều HẠN MỨC: khách nợ tới creditLimit thì phải thanh toán.
+  hasCreditLimit Boolean  @default(false) @map("has_credit_limit")
+  creditLimit    Decimal? @map("credit_limit") @db.Decimal(18, 2)
+
+  /// Bật chiều SỐ NGÀY: nợ tối đa termDays kể từ ngày giao hàng đầu tiên.
+  /// Giá trị thực tế: 1, 3, 5, 7, 10, 15, 20, 30, 45, 55 ngày.
+  hasTermDays Boolean @default(false) @map("has_term_days")
+  termDays    Int?    @map("term_days")
+
+  /// Cam kết TẦN SUẤT trả tiền mỗi tháng (ví dụ "1 Tháng 2 Lần" → 2).
+  /// KHÔNG sinh ra hạn thanh toán vì không biết ngày cụ thể — khách có thể
+  /// chuyển 2 lần liền nhau. Chỉ dùng để đếm số lần đã trả trong tháng
+  /// và cảnh báo khi chưa đạt cam kết.
+  paymentFrequency Int? @map("payment_frequency")
+
+  // ---- PHÂN LOẠI (theo file quản lý) ----
+  /// TRUST=Công Nợ Tín Nhiệm | CONTRACT=Hợp Đồng Công Nợ
+  /// COD=Thanh Toán Khi Nhận Hàng | PREPAID=Chuyển Khoản Ngay
+  debtForm String? @map("debt_form")
+
+  /// Người phụ trách (PIC).
+  salePicId       Int? @map("sale_pic_id")
+  accountantPicId Int? @map("accountant_pic_id")
+
+  // ---- ĐÁNH GIÁ LỊCH SỬ THANH TOÁN ----
+  // Hệ thống tự tính theo 6 tháng gần nhất, KHÔNG lưu autoPaymentHistory để
+  // mỗi lần xem luôn phản ánh dữ liệu mới. Người dùng chỉ lưu OVERRIDE khi
+  // cần điều chỉnh nhận định máy, kèm lý do bắt buộc để truy vết.
+  // ON_TIME | SLIGHT_LATE | OFTEN_LATE | HIGH_RISK
+  paymentHistoryOverride       String?   @map("payment_history_override")
+  paymentHistoryOverrideNote   String?   @map("payment_history_override_note")
+  paymentHistoryOverriddenBy   Int?      @map("payment_history_overridden_by")
+  paymentHistoryOverriddenAt   DateTime? @map("payment_history_overridden_at")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdBy Int?     @map("created_by")
+  updatedBy Int?     @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  customer  Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([hasCreditLimit])
+  @@index([hasTermDays])
+  @@index([debtForm])
+  @@map("customer_debt_policies")
+}
+
+/// Ghi chú vận hành trên dòng khách trong trang theo dõi công nợ.
+/// Hai cột TÁCH BIỆT: kế toán và sale ghi độc lập, không đè lên nhau,
+/// và được phân quyền riêng (debt_tracking:note_accountant / note_sale).
+model CustomerDebtNote {
+  id               Int       @id @default(autoincrement())
+  customerId       Int       @unique @map("customer_id")
+  accountantNote   String?   @map("accountant_note")
+  accountantNoteBy Int?      @map("accountant_note_by")
+  accountantNoteAt DateTime? @map("accountant_note_at")
+  saleNote         String?   @map("sale_note")
+  saleNoteBy       Int?      @map("sale_note_by")
+  saleNoteAt       DateTime? @map("sale_note_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@map("customer_debt_notes")
+}
+
+/// Phiếu giao việc đi đòi nợ. Một ticket gồm nhiều khách, một người phụ trách.
+model DebtTicket {
+  id          Int                  @id @default(autoincrement())
+  code        String               @unique
+  title       String?
+  assigneeId  Int                  @map("assignee_id")
+  /// Quá trình thu hồi nợ, theo đúng quy trình đang vận hành:
+  /// REQUESTED   = Yêu Cầu Thu Hồi Nợ
+  /// IN_PROGRESS = Đang Tiến Hành
+  /// WAITING     = Chờ Thanh Toán
+  /// PAID        = Đã Thanh Toán
+  /// DONE        = Done (kết thúc, đã đối soát xong)
+  /// ENDED       = Ended (dừng, không thu được)
+  status      String               @default("REQUESTED")
+  note        String?
+  createdById Int                  @map("created_by_id")
+  createdAt   DateTime             @default(now()) @map("created_at")
+  updatedAt   DateTime             @updatedAt @map("updated_at")
+  closedAt    DateTime?            @map("closed_at")
+  closedById  Int?                 @map("closed_by_id")
+  /// AUTO khi mọi khách đã trả đủ; MANUAL khi nhân viên tự kết thúc.
+  closeMode   String?              @map("close_mode")
+  closeReason String?              @map("close_reason")
+  assignee    User                 @relation("DebtTicketAssignee", fields: [assigneeId], references: [id])
+  creator     User                 @relation("DebtTicketCreator", fields: [createdById], references: [id])
+  closer      User?                @relation("DebtTicketCloser", fields: [closedById], references: [id])
+  customers   DebtTicketCustomer[]
+
+  @@index([status])
+  @@index([assigneeId, status])
+  @@index([createdAt])
+  @@map("debt_tickets")
+}
+
+/// Một dòng khách trong ticket.
+model DebtTicketCustomer {
+  id               Int        @id @default(autoincrement())
+  ticketId         Int        @map("ticket_id")
+  customerId       Int        @map("customer_id")
+  /// NỢ ĐẦU KÌ — ảnh chụp customer.totalDebt tại thời điểm tạo phiếu.
+  /// Cố định, không đổi về sau. "Nợ cuối kì" KHÔNG lưu ở đây: nó luôn là
+  /// nợ hiện tại của khách nên đọc trực tiếp từ customer.totalDebt.
+  debtAtCreate Decimal @default(0) @map("debt_at_create") @db.Decimal(18, 2)
+
+  /// SỐ TIỀN TỐI THIỂU CẦN PHẢI THANH TOÁN.
+  /// Hệ thống GỢI Ý = phần nợ đã đến hạn (engine ageing), nhân viên SỬA được.
+  /// Quy ước vận hành: không nên thấp hơn 30% nợ đầu kì — vi phạm chỉ cảnh
+  /// báo, không chặn (dữ liệu thực tế có ~23% trường hợp thấp hơn).
+  minimumPayment Decimal? @map("minimum_payment") @db.Decimal(18, 2)
+
+  /// SỐ TIỀN KHÁCH XÁC NHẬN THANH TOÁN — khách cam kết trả bao nhiêu.
+  /// Có thể NHỎ HƠN minimumPayment (khách xin trả một phần). Thường trống.
+  /// Khi có giá trị, đây mới là mốc đối chiếu để đóng dòng.
+  confirmedAmount Decimal?  @map("confirmed_amount") @db.Decimal(18, 2)
+  confirmedDate   DateTime? @map("confirmed_date")
+
+  /// PENDING | PARTIAL | PAID
+  status           String     @default("PENDING")
+  paidAt           DateTime?  @map("paid_at")
+  paidAmount       Decimal?   @map("paid_amount") @db.Decimal(18, 2)
+  /// Giao dịch Sepay đã khớp (khi nhân viên gắn khách ở Biến động số dư).
+  matchedSepayTxId Int?       @map("matched_sepay_tx_id")
+
+  /// Phiếu MỚI NHẤT của khách này. Một khách được tạo phiếu nhiều đợt theo
+  /// thời gian; trang theo dõi công nợ chỉ hiển thị phiếu mới nhất.
+  isLatest Boolean @default(true) @map("is_latest")
+
+  note      String?
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+  ticket    DebtTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  customer  Customer   @relation(fields: [customerId], references: [id])
+
+  @@unique([ticketId, customerId])
+  @@index([customerId, status])
+  @@index([customerId, isLatest])
+  @@index([matchedSepayTxId])
+  @@map("debt_ticket_customers")
 }

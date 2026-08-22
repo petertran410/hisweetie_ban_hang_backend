@@ -17,7 +17,10 @@ describe('PublicApiClientAdminService', () => {
   const createService = () => {
     const prisma: any = {
       publicApiClient: {
-        findMany: jest.fn(), findUnique: jest.fn(), create: jest.fn(), update: jest.fn(),
+        findMany: jest.fn(),
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
       },
       publicApiWebhook: { groupBy: jest.fn().mockResolvedValue([]) },
     };
@@ -32,14 +35,18 @@ describe('PublicApiClientAdminService', () => {
 
     expect(result.data[0]).not.toHaveProperty('clientSecret');
     expect(prisma.publicApiClient.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ select: expect.not.objectContaining({ clientSecret: true }) }),
+      expect.objectContaining({
+        select: expect.not.objectContaining({ clientSecret: true }),
+      }),
     );
   });
 
   it('tạo secret ngẫu nhiên, chỉ trả raw secret trong phản hồi tạo', async () => {
     const { service, prisma } = createService();
     prisma.publicApiClient.create.mockImplementation(async ({ data }: any) => ({
-      ...client, name: data.name, clientId: data.clientId,
+      ...client,
+      name: data.name,
+      clientId: data.clientId,
     }));
 
     const result = await service.create({ name: 'Website' });
@@ -48,7 +55,9 @@ describe('PublicApiClientAdminService', () => {
     expect(result.data.clientId).toMatch(/^hpa_/);
     const createData = prisma.publicApiClient.create.mock.calls[0][0].data;
     expect(createData.clientSecret).not.toBe(result.data.clientSecret);
-    await expect(bcrypt.compare(result.data.clientSecret, createData.clientSecret)).resolves.toBe(true);
+    await expect(
+      bcrypt.compare(result.data.clientSecret, createData.clientSecret),
+    ).resolves.toBe(true);
   });
 
   it('rotate sinh secret mới và chỉ trả nó trong phản hồi rotate', async () => {
@@ -61,13 +70,18 @@ describe('PublicApiClientAdminService', () => {
     expect(result.data.clientSecret).toBeTruthy();
     const updateData = prisma.publicApiClient.update.mock.calls[0][0].data;
     expect(updateData.clientSecret).not.toBe(result.data.clientSecret);
-    await expect(bcrypt.compare(result.data.clientSecret, updateData.clientSecret)).resolves.toBe(true);
+    await expect(
+      bcrypt.compare(result.data.clientSecret, updateData.clientSecret),
+    ).resolves.toBe(true);
   });
 
   it('chỉ tắt/bật, không có delete', async () => {
     const { service, prisma } = createService();
     prisma.publicApiClient.findUnique.mockResolvedValue({ id: 'client-1' });
-    prisma.publicApiClient.update.mockResolvedValue({ ...client, isActive: false });
+    prisma.publicApiClient.update.mockResolvedValue({
+      ...client,
+      isActive: false,
+    });
 
     const result = await service.setActive('client-1', false);
 
@@ -82,7 +96,9 @@ describe('PublicApiClientAdminService', () => {
     const { service, prisma } = createService();
     prisma.publicApiClient.findUnique.mockResolvedValue(null);
 
-    await expect(service.setActive('missing', true)).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.setActive('missing', true)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
     expect(prisma.publicApiClient.update).not.toHaveBeenCalled();
   });
 });

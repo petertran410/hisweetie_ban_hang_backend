@@ -81,6 +81,8 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { DebtTrackingModule } from './debt-tracking/debt-tracking.module';
+import { DebtTicketsModule } from './debt-tickets/debt-tickets.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { PaymentNotesModule } from './payment-notes/payment-notes.module';
 import { RecipesModule } from './recipes/recipes.module';
@@ -179,6 +181,8 @@ import { PublicApiModule } from './public-api/public-api.module';
     SepayModule,
     PromotionsModule,
     NotificationsModule,
+    DebtTrackingModule,
+    DebtTicketsModule,
     ExchangeRatesModule,
     PaymentNotesModule,
     RecipesModule,

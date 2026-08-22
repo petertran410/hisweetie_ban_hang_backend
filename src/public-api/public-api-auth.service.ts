@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -32,7 +36,11 @@ export class PublicApiAuthService {
     const client = await this.prisma.publicApiClient.findUnique({
       where: { clientId: input.clientId },
     });
-    if (!client || !client.isActive || !(await bcrypt.compare(input.clientSecret, client.clientSecret))) {
+    if (
+      !client ||
+      !client.isActive ||
+      !(await bcrypt.compare(input.clientSecret, client.clientSecret))
+    ) {
       throw new UnauthorizedException({
         error: 'invalid_client',
         error_description: 'Client authentication failed',
@@ -55,7 +63,8 @@ export class PublicApiAuthService {
 
   private getTokenSecret(): string {
     const secret = process.env.PUBLIC_API_JWT_SECRET || process.env.JWT_SECRET;
-    if (!secret) throw new Error('PUBLIC_API_JWT_SECRET or JWT_SECRET must be configured');
+    if (!secret)
+      throw new Error('PUBLIC_API_JWT_SECRET or JWT_SECRET must be configured');
     return secret;
   }
 }
