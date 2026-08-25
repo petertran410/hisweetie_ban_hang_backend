@@ -243,7 +243,9 @@ export class StockConditionTransfersService {
     // Validate từng dòng.
     //
     // NSX (expiryDate) chỉ BẮT BUỘC với chiều OUT: điều chỉnh giảm phải trừ vào
-    // đúng lô đang có tồn, không có lô thì không biết trừ ở đâu.
+    // đúng lô đang có tồn, không có lô thì không biết trừ ở đâu. NGOẠI LỆ:
+    // unknownLot=true cho phép trừ vào "lô chưa xác định NSX" (expiryDate=null)
+    // — cần thiết để xử lý tồn cận date không rõ NSX (vd: từ trả hàng bán cũ).
     //
     // Chiều IN cho phép để trống NSX → dòng vào "lô chưa xác định NSX"
     // (expiryDate = null). Cần thiết cho trường hợp khai báo tồn cũ chưa biết
@@ -253,7 +255,8 @@ export class StockConditionTransfersService {
       if (
         item.toBucket === BUCKET_NEAR_EXPIRY &&
         direction === 'OUT' &&
-        !item.expiryDate
+        !item.expiryDate &&
+        !item.unknownLot
       ) {
         throw new BadRequestException(
           'Điều chỉnh giảm hàng cận date phải chọn đúng lô (ngày sản xuất)',
@@ -273,6 +276,28 @@ export class StockConditionTransfersService {
       throw new BadRequestException('Một số sản phẩm không tồn tại');
     }
     const productMap = new Map(products.map((p) => [p.id, p]));
+
+    // Chống trùng dòng: 2 dòng giống hệt nhau (cùng SP + chiều + loại tồn + lô)
+    // là vô nghĩa — phải gộp số lượng vào 1 dòng. Cùng SP nhưng KHÁC chiều /
+    // khác lô / khác bucket vẫn hợp lệ (vd: 1 dòng OUT lô chưa xác định + 1 dòng
+    // IN lô đúng để chuyển lô trong cùng 1 phiếu). Không dùng unique constraint
+    // DB vì expiryDate nullable (PostgreSQL coi NULL ≠ NULL trong unique).
+    const seenLineKeys = new Set<string>();
+    for (const item of dto.items) {
+      const direction = item.direction === 'OUT' ? 'OUT' : 'IN';
+      const lot =
+        item.toBucket === BUCKET_NEAR_EXPIRY
+          ? this.lotKey(item.expiryDate)
+          : null;
+      const lineKey = `${item.productId}|${direction}|${item.toBucket}|${lot ?? ''}`;
+      if (seenLineKeys.has(lineKey)) {
+        const p = productMap.get(item.productId);
+        throw new BadRequestException(
+          `${p?.name}: Phiếu có 2 dòng trùng nhau (cùng sản phẩm, chiều, loại tồn và lô). Hãy gộp số lượng vào 1 dòng.`,
+        );
+      }
+      seenLineKeys.add(lineKey);
+    }
 
     const inventories = await this.prisma.inventory.findMany({
       where: { productId: { in: uniqueIds }, branchId: dto.branchId },
@@ -298,6 +323,17 @@ export class StockConditionTransfersService {
         (inByProduct.get(item.productId) ?? 0) + item.quantity,
       );
     }
+    // Chiều OUT trả hàng về hàng tốt, nên được cộng lại vào "hàng tốt khả dụng"
+    // khi validate chiều IN của CÙNG sản phẩm trong CÙNG phiếu (use case chuyển
+    // lô: 1 dòng OUT lô cũ + 1 dòng IN lô mới).
+    const outByProduct = new Map<number, number>();
+    for (const item of dto.items) {
+      if ((item.direction === 'OUT' ? 'OUT' : 'IN') !== 'OUT') continue;
+      outByProduct.set(
+        item.productId,
+        (outByProduct.get(item.productId) ?? 0) + item.quantity,
+      );
+    }
     for (const [productId, totalIn] of inByProduct.entries()) {
       const inv = invMap.get(productId);
       const onHand = inv ? Number(inv.onHand) : 0;
@@ -305,7 +341,8 @@ export class StockConditionTransfersService {
       const usedBuckets = totals
         ? totals.damaged + totals.nearExpiry + totals.promo
         : 0;
-      const available = onHand - usedBuckets;
+      const totalOut = outByProduct.get(productId) ?? 0;
+      const available = onHand - usedBuckets + totalOut;
       if (totalIn > available) {
         const p = productMap.get(productId);
         throw new BadRequestException(
@@ -458,13 +495,13 @@ export class StockConditionTransfersService {
     );
 
     // Chiều IN: tổng cộng thêm vào các bucket không vượt hàng tốt còn lại.
+    // Chiều OUT trong CÙNG phiếu trả hàng về hàng tốt nên được trừ ra khỏi phần
+    // "cần thêm" (use case chuyển lô: OUT lô cũ + IN lô mới cùng sản phẩm).
     const addByProduct = new Map<number, number>();
+    const outByProduct = new Map<number, number>();
     for (const d of transfer.details) {
-      if ((d as any).direction === 'OUT') continue;
-      addByProduct.set(
-        d.productId,
-        (addByProduct.get(d.productId) ?? 0) + Number(d.quantity),
-      );
+      const map = (d as any).direction === 'OUT' ? outByProduct : addByProduct;
+      map.set(d.productId, (map.get(d.productId) ?? 0) + Number(d.quantity));
     }
     for (const [productId, add] of addByProduct.entries()) {
       const inv = invMap.get(productId);
@@ -473,10 +510,11 @@ export class StockConditionTransfersService {
       const usedBuckets = totals
         ? totals.damaged + totals.nearExpiry + totals.promo
         : 0;
-      if (usedBuckets + add > onHand) {
+      const out = outByProduct.get(productId) ?? 0;
+      if (usedBuckets + add - out > onHand) {
         const d = transfer.details.find((x) => x.productId === productId);
         throw new BadRequestException(
-          `${d?.productName}: Không đủ hàng tốt để duyệt. Tồn tổng ${onHand}, đã phân loại ${usedBuckets}, cần thêm ${add}.`,
+          `${d?.productName}: Không đủ hàng tốt để duyệt. Tồn tổng ${onHand}, đã phân loại ${usedBuckets}, cần thêm ${add - out}.`,
         );
       }
     }

@@ -534,9 +534,7 @@ export class DebtTicketsService {
 
     let next = 1;
     if (last) {
-      const m = last.code.match(
-        new RegExp(`${DEBT_TICKET_CODE_PREFIX}(\\d+)`),
-      );
+      const m = last.code.match(new RegExp(`${DEBT_TICKET_CODE_PREFIX}(\\d+)`));
       if (m) next = parseInt(m[1]) + 1;
     }
 

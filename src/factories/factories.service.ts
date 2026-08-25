@@ -599,11 +599,11 @@ export class FactoriesService {
       where: { id },
       include: {
         supplier: { select: { id: true, name: true, code: true } },
-          _count: {
-            select: {
-              orderSupplierItems: true,
-            },
+        _count: {
+          select: {
+            orderSupplierItems: true,
           },
+        },
       },
     });
     if (!factory) throw new NotFoundException('Không tìm thấy nhà máy');
@@ -742,9 +742,13 @@ export class FactoriesService {
     const existing = await this.findOne(id);
     this.assertProductionLeadtimeRange({
       productionLeadtimeMin:
-        dto.productionLeadtimeMin ?? existing.productionLeadtimeMin ?? undefined,
+        dto.productionLeadtimeMin ??
+        existing.productionLeadtimeMin ??
+        undefined,
       productionLeadtimeMax:
-        dto.productionLeadtimeMax ?? existing.productionLeadtimeMax ?? undefined,
+        dto.productionLeadtimeMax ??
+        existing.productionLeadtimeMax ??
+        undefined,
     });
     const data: any = {};
 

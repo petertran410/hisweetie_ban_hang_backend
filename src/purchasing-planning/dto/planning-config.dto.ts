@@ -22,7 +22,6 @@ export class PlanningConfigValuesDto {
   @IsInt()
   @IsPositive()
   coverageDays?: number | null;
-
 }
 
 export class CreatePlanningConfigDto extends PlanningConfigValuesDto {

@@ -667,7 +667,10 @@ export class FactoryProductsService {
     }
 
     return Object.fromEntries(
-      productIds.map((productId) => [productId, byProduct.get(productId) ?? []]),
+      productIds.map((productId) => [
+        productId,
+        byProduct.get(productId) ?? [],
+      ]),
     );
   }
 

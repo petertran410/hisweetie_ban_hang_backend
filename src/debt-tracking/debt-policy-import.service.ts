@@ -1,10 +1,7 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  DEBT_FORM,
-  MIN_PAYMENT_RATIO_WARN,
-} from './debt-tracking.constants';
+import { DEBT_FORM, MIN_PAYMENT_RATIO_WARN } from './debt-tracking.constants';
 
 // ====================================================================
 // IMPORT THIẾT LẬP CÔNG NỢ TỪ EXCEL
@@ -157,9 +154,7 @@ export class DebtPolicyImportService {
 
   // ------------------------------------------------------------ parse
 
-  private async parse(
-    file: Express.Multer.File,
-  ): Promise<ParsedPolicyRow[]> {
+  private async parse(file: Express.Multer.File): Promise<ParsedPolicyRow[]> {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(file.buffer as any);
     const sheet = workbook.worksheets[0];
@@ -251,8 +246,6 @@ export class DebtPolicyImportService {
         );
       }
 
-
-
       rows.push({
         row: rowNumber,
         code,
@@ -287,11 +280,7 @@ export class DebtPolicyImportService {
 
     // Chỉ tra những mã sạch (không chứa dấu phẩy) để tránh query rác.
     const codes = [
-      ...new Set(
-        rows
-          .map((r) => r.code)
-          .filter((c) => c && !/[,;]/.test(c)),
-      ),
+      ...new Set(rows.map((r) => r.code).filter((c) => c && !/[,;]/.test(c))),
     ];
 
     const customers = codes.length

@@ -86,7 +86,8 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
     code: 'MISSING_FACTORY',
     severity: 'HIGH',
     blocksRecommendation: false,
-    message: 'Chưa gán nhà máy chính cho sản phẩm; leadtime sản xuất chưa có cơ sở.',
+    message:
+      'Chưa gán nhà máy chính cho sản phẩm; leadtime sản xuất chưa có cơ sở.',
   },
   MISSING_LEADTIME: {
     code: 'MISSING_LEADTIME',
@@ -629,9 +630,11 @@ export class PurchasingPlanningService {
           (target: any) =>
             target.productId === product.id ||
             (target.categoryName != null &&
-              [product.parentName, product.middleName, product.childName].includes(
-                target.categoryName,
-              )),
+              [
+                product.parentName,
+                product.middleName,
+                product.childName,
+              ].includes(target.categoryName)),
         );
       })
       .map((promotion) => ({
@@ -745,8 +748,8 @@ export class PurchasingPlanningService {
     const logRows = data.inventoryLogs.filter(
       (row: any) => row.productId === product.id,
     );
-    const stockHistory: Map<number, Map<string, boolean>> =
-      data.stockHistory ?? new Map();
+    const stockHistory: Map<number, Map<string, boolean>> = data.stockHistory ??
+    new Map();
     const supplierRows = data.orderSupplierItems
       .filter((row: any) => row.productId === product.id)
       .sort(
@@ -859,9 +862,10 @@ export class PurchasingPlanningService {
     // MA ngắn hạn vẫn được giữ để so sánh/hiển thị, nhưng con số dùng cho quyết
     // định đặt hàng là mức nền đã khử tháng đột biến và đối chiếu khuyến mãi.
     // Không còn nhân một growthFactor nhập tay cho toàn bộ SKU.
-    const forecastDailyDemand = stability.baselineDailyDemand > 0
-      ? stability.baselineDailyDemand
-      : forecast.forecastDailyDemand;
+    const forecastDailyDemand =
+      stability.baselineDailyDemand > 0
+        ? stability.baselineDailyDemand
+        : forecast.forecastDailyDemand;
 
     const purchaseRows = data.purchaseOrderItems.filter(
       (row: any) => row.productId === product.id,
@@ -892,12 +896,7 @@ export class PurchasingPlanningService {
     });
     const shipments = activeOrders
       .map((row: any) =>
-        this.mapShipment(
-          row,
-          receivedByOrder,
-          leadTimeDays,
-          snapshotDate,
-        ),
+        this.mapShipment(row, receivedByOrder, leadTimeDays, snapshotDate),
       )
       .filter((shipment: any) => shipment.quantity > 0);
     const replenishment = calculateReplenishment({

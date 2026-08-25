@@ -133,8 +133,7 @@ export const DEBT_TICKET_STATUS = {
   ENDED: 'ENDED',
 } as const;
 
-export const DEBT_TICKET_STATUSES: string[] =
-  Object.values(DEBT_TICKET_STATUS);
+export const DEBT_TICKET_STATUSES: string[] = Object.values(DEBT_TICKET_STATUS);
 
 export const DEBT_TICKET_STATUS_LABELS: Record<string, string> = {
   REQUESTED: 'Yêu Cầu Thu Hồi Nợ',

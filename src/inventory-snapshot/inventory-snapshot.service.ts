@@ -82,9 +82,7 @@ export class InventorySnapshotService {
         : await this.getPlanningBranchIds();
 
     if (scope.length === 0) {
-      this.logger.warn(
-        'Không có chi nhánh active — bỏ qua chốt snapshot.',
-      );
+      this.logger.warn('Không có chi nhánh active — bỏ qua chốt snapshot.');
       return { date: dateKey, branchIds: [], written: 0, skipped: 0 };
     }
 

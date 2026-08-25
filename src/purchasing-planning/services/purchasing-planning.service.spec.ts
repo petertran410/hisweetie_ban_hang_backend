@@ -182,7 +182,7 @@ describe('PurchasingPlanningService config', () => {
       id: 'SKU:9',
       scope: 'SKU',
       entity: { id: 9, code: 'SKU-9', name: 'Product 9' },
-        overrides: { coverageDays: 7 },
+      overrides: { coverageDays: 7 },
       isActive: true,
     });
   });

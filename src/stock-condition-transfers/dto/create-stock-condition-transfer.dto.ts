@@ -1,5 +1,6 @@
 import {
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -33,6 +34,13 @@ class StockConditionTransferItemDto {
   @IsOptional()
   @IsDateString()
   expiryDate?: string;
+
+  // true = dòng OUT cận date trừ vào "lô chưa xác định NSX" (expiryDate = null).
+  // Dùng để phân biệt "chưa chọn lô" (expiryDate trống, không có flag) với
+  // "chủ đích chọn lô chưa xác định" — bắt buộc vì expiryDate là optional.
+  @IsOptional()
+  @IsBoolean()
+  unknownLot?: boolean;
 
   @IsOptional()
   @IsString()

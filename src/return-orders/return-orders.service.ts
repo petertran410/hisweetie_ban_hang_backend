@@ -53,6 +53,21 @@ export class ReturnOrdersService {
   }
 
   /**
+   * Chuẩn hóa NSX về mốc THÁNG: luôn lấy ngày 01 của tháng đó (giống chuẩn hóa
+   * lô cận date của phiếu chuyển loại tồn). NSX chỉ có ý nghĩa tới tháng/năm,
+   * nên mọi lô đều neo vào ngày 01 để hai lần nhập cùng tháng không tạo ra 2
+   * lô khác nhau trên sổ cái StockConditionLog.
+   */
+  private normalizeExpiry(v?: string | Date | null): Date | null {
+    if (!v) return null;
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return null;
+    return new Date(
+      Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1, 0, 0, 0, 0),
+    );
+  }
+
+  /**
    * Dựng điều kiện `where` cho phiếu trả hàng. Async vì cần tra cứu khách hàng
    * theo từ khóa (searchCustomerIds). Tách riêng để dùng chung giữa findAll
    * (danh sách) và export/export-detail, đảm bảo bộ lọc xuất file khớp hoàn
@@ -449,6 +464,11 @@ export class ReturnOrdersService {
           include: {
             product: {
               select: { id: true, code: true, name: true, images: true },
+            },
+            // Dòng hóa đơn gốc: biết hàng được bán ra là cận date từ lô nào
+            // (soldExpiryDate) để default lô khi nhập hàng trả vào cận date.
+            invoiceDetail: {
+              select: { id: true, conditionType: true, soldExpiryDate: true },
             },
           },
         },
@@ -908,6 +928,9 @@ export class ReturnOrdersService {
             goodQuantity: goodQty,
             damagedQuantity: damagedQty,
             nearExpiryQuantity: nearExpiryQty,
+            // Lưu lô NSX của phần cận date (đã chuẩn hóa về ngày 01 của tháng)
+            // để draft mở lại khôi phục được lô đã chọn, và để ghi sổ cái bên dưới.
+            manufactureDate: this.normalizeExpiry(confirmDetail.nearExpiryDate),
             totalAmount: totalConfirmed * Number(detail.returnPrice),
           },
         });
@@ -1002,7 +1025,9 @@ export class ReturnOrdersService {
             note: 'Nhập hàng trả từ khách',
             damaged: damagedQty,
             nearExpiry: nearExpiryQty,
-            nearExpiryDate: (detail as any).manufactureDate ?? null,
+            // Lô NSX do người nhập hàng chọn (chuẩn hóa về ngày 01 của tháng).
+            // Không chọn → null → vào lô "chưa xác định NSX".
+            nearExpiryDate: this.normalizeExpiry(confirmDetail.nearExpiryDate),
           });
 
           await tx.inventoryLog.create({

@@ -103,9 +103,9 @@ export class PlanningNetworkService {
    * đặt gần nhất: quan hệ SKU ↔ nhà máy là dữ liệu chủ đích do người dùng khai,
    * còn lịch sử đặt hàng chỉ phản ánh quá khứ.
    */
-  async getProductFactoryMap(productIds: number[]): Promise<
-    Map<number, ProductFactoryMapping>
-  > {
+  async getProductFactoryMap(
+    productIds: number[],
+  ): Promise<Map<number, ProductFactoryMapping>> {
     const result = new Map<number, ProductFactoryMapping>();
     if (productIds.length === 0) return result;
 
@@ -146,7 +146,10 @@ export class PlanningNetworkService {
       if (current && current.role === 'primary' && mapping.role !== 'primary') {
         continue;
       }
-      if (!current || (current.role !== 'primary' && mapping.role === 'primary')) {
+      if (
+        !current ||
+        (current.role !== 'primary' && mapping.role === 'primary')
+      ) {
         // MOQ riêng của SKU ưu tiên hơn MOQ chung của nhà máy: dòng mapping là
         // thoả thuận cụ thể cho sản phẩm đó.
         const moq =

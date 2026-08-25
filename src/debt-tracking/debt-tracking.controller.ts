@@ -115,7 +115,11 @@ export class DebtTrackingController {
       { header: 'Sale PIC', key: 'salePic', width: 18 },
       { header: 'Kế Toán Công Nợ PIC', key: 'accountantPic', width: 20 },
       { header: 'Phiếu Thu Hồi', key: 'ticket', width: 16 },
-      { header: 'Ghi Chú Của Kế Toán Công Nợ', key: 'accountantNote', width: 32 },
+      {
+        header: 'Ghi Chú Của Kế Toán Công Nợ',
+        key: 'accountantNote',
+        width: 32,
+      },
       { header: 'Ghi Chú Của Sale', key: 'saleNote', width: 32 },
     ];
     ws.getRow(1).font = { bold: true };
@@ -199,7 +203,9 @@ export class DebtTrackingController {
 
   @Get('import/template')
   @RequirePermissions('debt_tracking:update_policy')
-  @ApiOperation({ summary: 'Tải file Excel mẫu để thiết lập công nợ hàng loạt' })
+  @ApiOperation({
+    summary: 'Tải file Excel mẫu để thiết lập công nợ hàng loạt',
+  })
   async downloadTemplate(@Res() res: Response) {
     const buffer = await this.importService.template();
     res.setHeader(
@@ -268,8 +274,7 @@ export class DebtTrackingController {
   @Patch('payment-history/:customerId')
   @RequirePermissions('debt_tracking:update_policy')
   @ApiOperation({
-    summary:
-      'Ghi đè đánh giá lịch sử thanh toán tự động (bắt buộc nêu lý do)',
+    summary: 'Ghi đè đánh giá lịch sử thanh toán tự động (bắt buộc nêu lý do)',
   })
   updatePaymentHistory(
     @Param('customerId') customerId: string,

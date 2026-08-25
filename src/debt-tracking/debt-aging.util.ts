@@ -220,17 +220,13 @@ export function computeCustomerAging(
   const usesLimit = creditLimit !== null && creditLimit > 0;
 
   const limitReached = usesLimit
-    ? totalDebt >= (creditLimit as number) - MONEY_EPSILON
+    ? totalDebt >= creditLimit - MONEY_EPSILON
     : false;
 
   const overLimitAmount =
-    usesLimit && limitReached
-      ? Math.max(0, totalDebt - (creditLimit as number))
-      : 0;
+    usesLimit && limitReached ? Math.max(0, totalDebt - creditLimit) : 0;
 
-  const creditUsageRatio = usesLimit
-    ? totalDebt / (creditLimit as number)
-    : null;
+  const creditUsageRatio = usesLimit ? totalDebt / creditLimit : null;
 
   const { allocated, unallocated } = allocateDebtFifo(invoices, totalDebt);
 
@@ -311,7 +307,8 @@ export function computeCustomerAging(
 
   const nearestDueDate = upcoming.length > 0 ? upcoming[0] : null;
 
-  const limitGateForDays = usesLimit && policy.hasTermDays ? limitReached : true;
+  const limitGateForDays =
+    usesLimit && policy.hasTermDays ? limitReached : true;
 
   const maxDaysOverdue = outstandingInvoices
     .filter((i) => i.isOverdue && limitGateForDays)

@@ -137,7 +137,8 @@ export function calculateSoq(input: SoqInput): SoqResult {
     steps: [
       {
         code: 'TARGET_STOCK',
-        formula: 'FDD × (chờ hàng + dự phòng + chu kỳ đặt) + nhu cầu khuyến mãi',
+        formula:
+          'FDD × (chờ hàng + dự phòng + chu kỳ đặt) + nhu cầu khuyến mãi',
         value: round(targetStock),
       },
       {

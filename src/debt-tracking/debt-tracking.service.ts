@@ -97,10 +97,7 @@ export class DebtTrackingService {
     if (query.hasTermDays !== undefined) {
       policyWhere.hasTermDays = query.hasTermDays;
     }
-    if (
-      query.hasCreditLimit === undefined &&
-      query.hasTermDays === undefined
-    ) {
+    if (query.hasCreditLimit === undefined && query.hasTermDays === undefined) {
       policyWhere.OR = [{ hasCreditLimit: true }, { hasTermDays: true }];
     }
     if (query.debtForm) policyWhere.debtForm = query.debtForm;
@@ -185,13 +182,16 @@ export class DebtTrackingService {
         now,
       );
 
-      const p = c.debtPolicy as RawDebtPolicy & {
-        paymentHistoryOverride?: string | null;
-        paymentHistoryOverrideNote?: string | null;
-        paymentHistoryOverriddenBy?: number | null;
-        paymentHistoryOverriddenAt?: Date | null;
-      } | null;
-      const autoPaymentHistory = paymentHistoryMap.get(c.id) ??
+      const p = c.debtPolicy as
+        | (RawDebtPolicy & {
+            paymentHistoryOverride?: string | null;
+            paymentHistoryOverrideNote?: string | null;
+            paymentHistoryOverriddenBy?: number | null;
+            paymentHistoryOverriddenAt?: Date | null;
+          })
+        | null;
+      const autoPaymentHistory =
+        paymentHistoryMap.get(c.id) ??
         evaluateAutoPaymentHistory({
           lateCount: 0,
           maxDaysOverdue: 0,
@@ -353,9 +353,8 @@ export class DebtTrackingService {
         DUE: countBy(DEBT_STATUS.DUE),
         NORMAL: countBy(DEBT_STATUS.NORMAL),
       },
-      customersOverLimit: rows.filter(
-        (r) => r.overLimitAmount > MONEY_EPSILON,
-      ).length,
+      customersOverLimit: rows.filter((r) => r.overLimitAmount > MONEY_EPSILON)
+        .length,
       customersWithOpenTicket: rows.filter((r) => r.openTicket).length,
     };
   }

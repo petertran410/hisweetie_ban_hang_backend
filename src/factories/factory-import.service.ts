@@ -521,8 +521,16 @@ export class FactoryImportService {
         width: 34,
       },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'SX nhanh nhất (ngày)', key: 'productionLeadtimeMin', width: 22 },
-      { header: 'SX chậm nhất (ngày)', key: 'productionLeadtimeMax', width: 22 },
+      {
+        header: 'SX nhanh nhất (ngày)',
+        key: 'productionLeadtimeMin',
+        width: 22,
+      },
+      {
+        header: 'SX chậm nhất (ngày)',
+        key: 'productionLeadtimeMax',
+        width: 22,
+      },
       { header: 'Payment Term', key: 'paymentTerm', width: 26 },
       { header: 'Status', key: 'isActive', width: 16 },
       { header: 'Số điện thoại', key: 'contactNumber', width: 18 },

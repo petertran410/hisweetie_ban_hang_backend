@@ -44,8 +44,7 @@ export class BranchesService {
     }
 
     if (isActive !== undefined) where.isActive = isActive;
-    if (isPurchasingHub !== undefined)
-      where.isPurchasingHub = isPurchasingHub;
+    if (isPurchasingHub !== undefined) where.isPurchasingHub = isPurchasingHub;
 
     const [data, total] = await Promise.all([
       this.prisma.branch.findMany({

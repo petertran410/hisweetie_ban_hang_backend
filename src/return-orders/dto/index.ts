@@ -1,6 +1,7 @@
 import { Type, Transform } from 'class-transformer';
 import {
   IsArray,
+  IsDateString,
   IsInt,
   IsNumber,
   IsOptional,
@@ -135,6 +136,12 @@ export class ConfirmDetailDto {
   @Min(0)
   @IsOptional()
   nearExpiryQuantity?: number;
+
+  // NSX của lô cận date nhập về (YYYY-MM-DD). Backend chuẩn hóa về ngày 01 của
+  // tháng. Để trống/null → vào lô "chưa xác định NSX".
+  @IsOptional()
+  @IsDateString()
+  nearExpiryDate?: string;
 }
 
 export class ConfirmRefundDto {
