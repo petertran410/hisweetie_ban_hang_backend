@@ -256,6 +256,26 @@ export class ConsignmentsService {
         updateData.consignStatus = dto.consignStatus;
       }
 
+      // Chỉ động đến priceBook khi DTO chủ động gửi.
+      // dto.priceBookId === undefined / null → giữ nguyên giá trị đã chốt
+      //   (PUT không kèm priceBookId từ các flow patch nhỏ như đổi mô tả,
+      //    đổi trạng thái... không được phép thay đổi bảng giá đã lưu).
+      // dto.priceBookId > 0 → set theo bảng giá user chọn.
+      // dto.priceBookId === 0 → "Bảng giá chung" → null/null.
+      if (dto.priceBookId !== undefined && dto.priceBookId !== null) {
+        if (dto.priceBookId > 0) {
+          const priceBook = await tx.priceBook.findFirst({
+            where: { id: dto.priceBookId, isActive: true },
+          });
+          updateData.priceBookId = priceBook?.id || null;
+          updateData.priceBookName = priceBook?.name || null;
+        } else {
+          // dto.priceBookId === 0 → "Bảng giá chung"
+          updateData.priceBookId = null;
+          updateData.priceBookName = null;
+        }
+      }
+
       if (dto.items) {
         await tx.consignmentItem.deleteMany({ where: { consignmentId: id } });
         const itemsData = await Promise.all(
