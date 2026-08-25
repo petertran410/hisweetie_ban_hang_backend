@@ -362,9 +362,9 @@ export class StockConditionTransfersService {
           item.productId,
           dto.branchId,
         );
-        const key = item.expiryDate
-          ? new Date(item.expiryDate).toISOString().slice(0, 10)
-          : null;
+        // Dùng lotKey() để chuẩn hóa về ngày 01 của tháng — khớp với cách lưu
+        // lô trên sổ cái, tránh so hụt lô khi client gửi ngày chưa neo mốc tháng.
+        const key = item.expiryDate ? this.lotKey(item.expiryDate) : null;
         const lot = lots.find((l) => l.expiryDate === key);
         const lotQty = lot ? lot.quantity : 0;
         if (item.quantity > lotQty) {
