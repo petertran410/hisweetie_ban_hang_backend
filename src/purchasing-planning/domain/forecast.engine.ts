@@ -72,7 +72,6 @@ export function forecastDemand(input: ForecastInput): ForecastResult {
     ...day,
     date: toDateKey(day.date),
   }));
-  const usedHeuristic = normalized.some((day) => day.hadStock === undefined);
   const days = normalized.map((day) => ({
     ...day,
     // PRD §5.6: without stock history, a sales day is an in-stock day proxy.
@@ -97,6 +96,15 @@ export function forecastDemand(input: ForecastInput): ForecastResult {
   const windowStart = new Date(`${asOfDate}T00:00:00.000Z`);
   windowStart.setUTCDate(windowStart.getUTCDate() - windowDays + 1);
   const windowStartKey = toDateKey(windowStart);
+  // Chỉ hạ độ tin cậy khi cửa sổ MA THỰC DÙNG có ngày thiếu lịch sử tồn kho.
+  // Trước đây cờ này bật cho mọi SKU vì hệ thống chưa lưu snapshot tồn kho —
+  // nay có snapshot thì SKU được phủ đủ dữ liệu sẽ giữ nguyên độ tin cậy.
+  const usedHeuristic = normalized.some(
+    (day) =>
+      day.hadStock === undefined &&
+      day.date >= windowStartKey &&
+      day.date <= asOfDate,
+  );
   const totalDemand = days
     .filter((day) => day.date >= windowStartKey && day.date <= asOfDate)
     .reduce((total, day) => total + Math.max(0, day.demand), 0);

@@ -21,10 +21,17 @@ export class BranchesService {
   async findAll(filters?: {
     search?: string;
     isActive?: boolean;
+    isPurchasingHub?: boolean;
     page?: number;
     limit?: number;
   }) {
-    const { search, isActive, page = 1, limit = 20 } = filters || {};
+    const {
+      search,
+      isActive,
+      isPurchasingHub,
+      page = 1,
+      limit = 20,
+    } = filters || {};
 
     const where: any = {};
 
@@ -37,6 +44,8 @@ export class BranchesService {
     }
 
     if (isActive !== undefined) where.isActive = isActive;
+    if (isPurchasingHub !== undefined)
+      where.isPurchasingHub = isPurchasingHub;
 
     const [data, total] = await Promise.all([
       this.prisma.branch.findMany({
@@ -95,6 +104,12 @@ export class BranchesService {
       address?: string;
       locationId?: number;
       wardName?: string;
+      /// Đánh dấu kho đầu mối nhập khẩu — dùng cho engine dự kiến đặt hàng.
+      isPurchasingHub?: boolean;
+      transferLeadtimeColdMin?: number | null;
+      transferLeadtimeColdMax?: number | null;
+      transferLeadtimeNormalMin?: number | null;
+      transferLeadtimeNormalMax?: number | null;
     },
     performedByUserId?: number,
   ) {
@@ -149,6 +164,12 @@ export class BranchesService {
       wardName?: string;
       isActive?: boolean;
       isLock?: boolean;
+      /// Đánh dấu kho đầu mối nhập khẩu — dùng cho engine dự kiến đặt hàng.
+      isPurchasingHub?: boolean;
+      transferLeadtimeColdMin?: number | null;
+      transferLeadtimeColdMax?: number | null;
+      transferLeadtimeNormalMin?: number | null;
+      transferLeadtimeNormalMax?: number | null;
     },
     performedByUserId?: number,
   ) {
@@ -179,7 +200,13 @@ export class BranchesService {
         entityId: id.toString(),
         category: getCategoryFromActionCode('BRANCH_UPDATE'),
         severity: getSeverityFromActionCode('BRANCH_UPDATE'),
-        snapshot: { name: updated.name, code: updated.code },
+        snapshot: {
+          name: updated.name,
+          code: updated.code,
+          ...(data.isPurchasingHub !== undefined && {
+            isPurchasingHub: updated.isPurchasingHub,
+          }),
+        },
         message: renderAuditMessage('BRANCH_UPDATE', {
           branchName: updated.name,
         }),

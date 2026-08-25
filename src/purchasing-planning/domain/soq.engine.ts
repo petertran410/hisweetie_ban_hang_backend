@@ -53,10 +53,14 @@ export interface SoqInput {
   forecastDailyDemand: number;
   leadTimeDays: number;
   safetyDays: number;
-  coverageDays: number;
   availableStock: number;
   usableIncoming?: number;
   committedDemand?: number;
+  /**
+   * Nhu cầu cộng thêm ngoài mức nền — hiện dùng cho các đợt khuyến mãi đang
+   * chạy hoặc sắp chạy trong horizon đặt hàng.
+   */
+  extraDemand?: number;
   daysOfSupply?: number | null;
   packSize: number;
   moq: number;
@@ -65,11 +69,29 @@ export interface SoqInput {
   needsOrder?: boolean;
 }
 
+/**
+ * Số ngày một đợt đặt cần phủ, suy thẳng từ thời gian chờ hàng.
+ *
+ * Lý do không để người dùng khai: nhịp đặt hàng không phải một lựa chọn tùy
+ * thích, nó bị chính leadtime quyết định. Nếu mỗi đợt chỉ đủ dùng đúng bằng
+ * thời gian chờ, thì vừa nhận hàng xong đã phải đặt tiếp — không có khoảng
+ * thở nào để xử lý biến động. Nhân đôi cho ra nhịp đặt hợp lý: hàng đợt này
+ * còn đang bán thì đợt sau đã kịp về.
+ *
+ * Chặn dưới 30 ngày để hàng nội địa (leadtime ngắn) không bị đặt vụn.
+ */
+export function coverageDaysFor(leadTimeDays: number): number {
+  return Math.max(30, Math.round(leadTimeDays * 2));
+}
+
 export function calculateSoq(input: SoqInput): SoqResult {
+  const coverageDays = coverageDaysFor(input.leadTimeDays);
+  // Mức tồn mục tiêu: đủ bán trong lúc chờ hàng + đệm an toàn + một chu kỳ
+  // đặt hàng nữa, cộng phần nhu cầu tăng thêm đã biết trước (khuyến mãi).
   const targetStock =
     Math.max(0, input.forecastDailyDemand) *
-    (input.leadTimeDays + input.safetyDays + input.coverageDays);
-  // PRD §6.5: replenish to lead-time + safety + coverage stock.
+      (input.leadTimeDays + input.safetyDays + coverageDays) +
+    Math.max(0, input.extraDemand ?? 0);
   const rawQuantity = round(
     Math.max(
       0,
@@ -115,7 +137,7 @@ export function calculateSoq(input: SoqInput): SoqResult {
     steps: [
       {
         code: 'TARGET_STOCK',
-        formula: 'FDD × (leadTimeDays + safetyDays + coverageDays)',
+        formula: 'FDD × (chờ hàng + dự phòng + chu kỳ đặt) + nhu cầu khuyến mãi',
         value: round(targetStock),
       },
       {

@@ -107,6 +107,12 @@ export class FactoryProductsController {
     return this.factoryProductsService.getReferencePrices(query);
   }
 
+  @Get('factory-candidates')
+  @RequirePermissions('factories:view')
+  getFactoryCandidates(@Query() query: ReferencePricesQueryDto) {
+    return this.factoryProductsService.getFactoryCandidates(query);
+  }
+
   @Get('price-history/series')
   @RequirePermissions('factories:view')
   getPriceHistorySeries(@Query() query: PriceHistorySeriesQueryDto) {
@@ -148,7 +154,7 @@ export class FactoryProductsController {
 
   @Delete(':id')
   @RequirePermissions('factories:delete')
-  remove(@Param('id', ParseIntPipe) id: number) {
-    return this.factoryProductsService.remove(id);
+  remove(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
+    return this.factoryProductsService.remove(id, req.user.id, req.user.name);
   }
 }

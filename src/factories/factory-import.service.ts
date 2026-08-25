@@ -85,11 +85,16 @@ const HEADER_KEYS: Record<string, keyof ParsedFactoryRow | undefined> = {
   'bội số moq': 'moqIncrement',
   'boi so moq': 'moqIncrement',
   'moq increment': 'moqIncrement',
-  leadtime: 'leadtimeDays',
-  'leadtime (ngày)': 'leadtimeDays',
-  'leadtime (ngay)': 'leadtimeDays',
-  'thời gian giao hàng (ngày)': 'leadtimeDays',
-  'thoi gian giao hang (ngay)': 'leadtimeDays',
+  'sx nhanh nhất (ngày)': 'productionLeadtimeMin',
+  'sx nhanh nhat (ngay)': 'productionLeadtimeMin',
+  'sx chậm nhất (ngày)': 'productionLeadtimeMax',
+  'sx cham nhat (ngay)': 'productionLeadtimeMax',
+  // File cũ chỉ có một cột Leadtime → coi là cận trên để không tính thiếu.
+  leadtime: 'productionLeadtimeMax',
+  'leadtime (ngày)': 'productionLeadtimeMax',
+  'leadtime (ngay)': 'productionLeadtimeMax',
+  'thời gian giao hàng (ngày)': 'productionLeadtimeMax',
+  'thoi gian giao hang (ngay)': 'productionLeadtimeMax',
   'payment term': 'paymentTerm',
   'điều khoản thanh toán': 'paymentTerm',
   'dieu khoan thanh toan': 'paymentTerm',
@@ -127,7 +132,8 @@ export interface ParsedFactoryRow {
   moqUnit?: MoqUnit;
   moqScope?: MoqScope;
   moqIncrement?: number;
-  leadtimeDays?: number;
+  productionLeadtimeMin?: number;
+  productionLeadtimeMax?: number;
   paymentTerm?: string;
   isActive?: boolean;
   contactNumber?: string;
@@ -307,9 +313,14 @@ export class FactoryImportService {
           'Bội số MOQ',
           errors,
         ),
-        leadtimeDays: this.number(
-          cell(excelRow, 'leadtimeDays'),
-          'Leadtime',
+        productionLeadtimeMin: this.number(
+          cell(excelRow, 'productionLeadtimeMin'),
+          'SX nhanh nhất',
+          errors,
+        ),
+        productionLeadtimeMax: this.number(
+          cell(excelRow, 'productionLeadtimeMax'),
+          'SX chậm nhất',
           errors,
         ),
         paymentTerm: cell(excelRow, 'paymentTerm') || undefined,
@@ -440,8 +451,11 @@ export class FactoryImportService {
             ...(row.moqIncrement !== undefined
               ? { moqIncrement: row.moqIncrement }
               : {}),
-            ...(row.leadtimeDays !== undefined
-              ? { leadtimeDays: row.leadtimeDays }
+            ...(row.productionLeadtimeMin !== undefined
+              ? { productionLeadtimeMin: row.productionLeadtimeMin }
+              : {}),
+            ...(row.productionLeadtimeMax !== undefined
+              ? { productionLeadtimeMax: row.productionLeadtimeMax }
               : {}),
             ...(row.paymentTerm !== undefined
               ? { paymentTerm: row.paymentTerm }
@@ -507,7 +521,8 @@ export class FactoryImportService {
         width: 34,
       },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'Leadtime', key: 'leadtimeDays', width: 14 },
+      { header: 'SX nhanh nhất (ngày)', key: 'productionLeadtimeMin', width: 22 },
+      { header: 'SX chậm nhất (ngày)', key: 'productionLeadtimeMax', width: 22 },
       { header: 'Payment Term', key: 'paymentTerm', width: 26 },
       { header: 'Status', key: 'isActive', width: 16 },
       { header: 'Số điện thoại', key: 'contactNumber', width: 18 },
@@ -531,7 +546,8 @@ export class FactoryImportService {
       moq: 5,
       moqUnit: 'tấn',
       moqScope: 'Toàn đơn',
-      leadtimeDays: 14,
+      productionLeadtimeMin: 10,
+      productionLeadtimeMax: 15,
       paymentTerm: 'T/T 30% - 70%',
       isActive: 'Hoạt động',
       currency: 'CNY',

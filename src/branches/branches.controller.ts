@@ -28,6 +28,7 @@ export class BranchesController {
   findAll(
     @Query('search') search?: string,
     @Query('isActive') isActive?: string,
+    @Query('isPurchasingHub') isPurchasingHub?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -35,6 +36,12 @@ export class BranchesController {
       search,
       isActive:
         isActive === 'true' ? true : isActive === 'false' ? false : undefined,
+      isPurchasingHub:
+        isPurchasingHub === 'true'
+          ? true
+          : isPurchasingHub === 'false'
+            ? false
+            : undefined,
       page: page ? +page : 1,
       limit: limit ? +limit : 20,
     });

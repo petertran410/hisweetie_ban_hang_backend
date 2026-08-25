@@ -51,8 +51,6 @@ async function main() {
               id: true,
               code: true,
               name: true,
-              primaryFactoryId: true,
-              backupFactoryId: true,
             },
           },
         },
@@ -144,16 +142,10 @@ async function main() {
       );
       const latestLog = logs.length ? logs[logs.length - 1] : null;
 
-      // 2. Các nguồn suy đoán theo dữ liệu hiện tại.
+      // 2. Các nguồn suy đoán theo dữ liệu hiện tại (mapping SP × nhà máy).
       const currentCandidates = new Set<number>();
       for (const factoryId of mappingsByProduct.get(item.productId) ?? []) {
         currentCandidates.add(factoryId);
-      }
-      if (item.product.primaryFactoryId != null) {
-        currentCandidates.add(item.product.primaryFactoryId);
-      }
-      if (item.product.backupFactoryId != null) {
-        currentCandidates.add(item.product.backupFactoryId);
       }
 
       // 3. Thu hẹp theo NCC của chính PĐN — nhà máy phải thuộc NCC đó.

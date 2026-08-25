@@ -2,16 +2,46 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 
+/**
+ * Tên 2 kho đầu mối theo cấu hình cũ. Chỉ còn dùng làm **phương án dự phòng**
+ * khi chưa có chi nhánh nào được đánh dấu `isPurchasingHub` — lọc theo tên
+ * chuỗi rất mong manh (đổi tên kho là hỏng), nên nguồn chân lý mới là cờ trên
+ * bảng Branch.
+ */
 export const PURCHASING_BRANCH_NAMES = ['Kho Hà Nội', 'Kho Sài Gòn'] as const;
 
 export type PurchasingBranchScope = {
   branches: Array<{
     id: number;
-    name: (typeof PURCHASING_BRANCH_NAMES)[number];
+    name: string;
     code: string | null;
   }>;
 };
 
+/**
+ * Dựng scope từ danh sách chi nhánh đã đánh dấu là kho đầu mối.
+ * Ném lỗi khi rỗng: chạy tính toán mà không có kho nào thì mọi con số đều vô
+ * nghĩa — thà dừng sớm còn hơn sinh ra đề xuất sai.
+ */
+export function resolveHubBranchScope(
+  rows: Array<{ id: number; name: string; code: string | null }>,
+): PurchasingBranchScope {
+  if (rows.length === 0) {
+    throw new Error(
+      'Chưa có chi nhánh nào được đánh dấu là kho đầu mối (isPurchasingHub). ' +
+        'Hãy bật cờ này cho các kho nhập khẩu trong phần cài đặt chi nhánh.',
+    );
+  }
+  return {
+    branches: rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      code: row.code,
+    })),
+  };
+}
+
+/** @deprecated Dùng `resolveHubBranchScope`. Giữ cho phương án dự phòng theo tên. */
 export function resolvePurchasingBranchScope(
   rows: Array<{ id: number; name: string; code: string | null }>,
 ): PurchasingBranchScope {
@@ -22,7 +52,7 @@ export function resolvePurchasingBranchScope(
         `Purchasing branch scope requires exactly one active branch named "${name}"; found ${matches.length}`,
       );
     }
-    return { id: matches[0].id, name, code: matches[0].code };
+    return { id: matches[0].id, name: name as string, code: matches[0].code };
   });
   return { branches };
 }
@@ -31,16 +61,22 @@ export function resolvePurchasingBranchScope(
 export class PurchasingPlanningRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /**
+   * Phạm vi dự báo là TOÀN BỘ chi nhánh active. `isPurchasingHub` không còn
+   * dùng để lọc tồn kho/demand: nó chỉ đánh dấu chi nhánh gốc nhận hàng sau
+   * thông quan. Nếu thiếu hoặc có nhiều hơn một hub, configuration logistics
+   * sẽ báo lỗi rõ ở lúc resolve pipeline.
+   */
   async getPurchasingBranchScope(): Promise<PurchasingBranchScope> {
-    return resolvePurchasingBranchScope(
-      await this.prisma.branch.findMany({
-        where: {
-          isActive: true,
-          name: { in: [...PURCHASING_BRANCH_NAMES] },
-        },
-        select: { id: true, name: true, code: true },
-      }),
-    );
+    const branches = await this.prisma.branch.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true, code: true },
+      orderBy: { id: 'asc' },
+    });
+    if (branches.length === 0) {
+      throw new Error('Không có chi nhánh active để chạy dự kiến đặt hàng.');
+    }
+    return { branches };
   }
 
   findRecommendation(date?: Date) {
@@ -257,6 +293,8 @@ export class PurchasingPlanningRepository {
       orderSupplierItems,
       purchaseOrderItems,
       categories,
+      stockSnapshots,
+      promotions,
     ] = await Promise.all([
       this.prisma.product.findMany({
         where: productWhere,
@@ -291,7 +329,7 @@ export class PurchasingPlanningRepository {
         select: {
           productId: true,
           quantity: true,
-          invoice: { select: { purchaseDate: true } },
+          invoice: { select: { purchaseDate: true, branchId: true } },
         },
       }),
       this.prisma.inventoryLog.findMany({
@@ -335,8 +373,13 @@ export class PurchasingPlanningRepository {
                 },
                 select: {
                   productId: true,
+                  quantity: true,
                   vehicleShipment: {
-                    select: { expectedArrivalDate: true },
+                    select: {
+                      branchId: true,
+                      status: true,
+                      expectedArrivalDate: true,
+                    },
                   },
                 },
               },
@@ -371,6 +414,40 @@ export class PurchasingPlanningRepository {
         where: { type: 'child' },
         select: { id: true, name: true },
       }),
+      // Lịch sử tồn kho theo ngày — cung cấp cờ `hadStock` thật cho forecast
+      // engine thay vì để engine suy đoán từ việc "có bán hay không".
+      // Optional để giữ tương thích với các mock repository cũ trong unit test
+      // và với instance chưa được generate client mới.
+      (this.prisma as any).inventoryDailySnapshot?.findMany?.({
+        where: {
+          product: productWhere,
+          branchId: { in: branchIds },
+          date: { gte: windowStart, lt: snapshotEnd },
+        },
+        select: { productId: true, date: true, hadStock: true },
+      }) ?? Promise.resolve([]),
+      // Lịch khuyến mãi — phục vụ hai việc:
+      //   1. Giải thích các tháng bán đột biến trong quá khứ.
+      //   2. Cộng thêm nhu cầu cho các đợt đang chạy / sắp chạy.
+      // Vì vậy KHÔNG chặn `startDate` theo snapshot: đợt bắt đầu tháng sau vẫn
+      // phải lấy về, nếu không hệ thống sẽ đặt thiếu hàng cho chính đợt đó.
+      (this.prisma as any).promotion?.findMany?.({
+        where: {
+          status: { not: 'draft' },
+          startDate: { not: null },
+          endDate: { not: null, gte: windowStart },
+        },
+        select: {
+          id: true,
+          name: true,
+          startDate: true,
+          endDate: true,
+          forAllBranch: true,
+          products: {
+            select: { productId: true, categoryName: true },
+          },
+        },
+      }) ?? Promise.resolve([]),
     ]);
 
     return {
@@ -382,6 +459,8 @@ export class PurchasingPlanningRepository {
       orderSupplierItems,
       purchaseOrderItems,
       categories,
+      stockSnapshots,
+      promotions,
       branchScope,
     };
   }

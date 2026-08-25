@@ -87,6 +87,7 @@ import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
 import { PaymentNotesModule } from './payment-notes/payment-notes.module';
 import { RecipesModule } from './recipes/recipes.module';
 import { PurchasingPlanningModule } from './purchasing-planning/purchasing-planning.module';
+import { InventorySnapshotModule } from './inventory-snapshot/inventory-snapshot.module';
 import { PublicApiModule } from './public-api/public-api.module';
 
 @Module({
@@ -187,6 +188,7 @@ import { PublicApiModule } from './public-api/public-api.module';
     PaymentNotesModule,
     RecipesModule,
     PurchasingPlanningModule,
+    InventorySnapshotModule,
     PublicApiModule,
   ],
   providers: [

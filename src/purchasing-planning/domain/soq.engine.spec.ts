@@ -1,34 +1,57 @@
-import { calculateSoq, moqSpecToPacks } from './soq.engine';
+import { calculateSoq, coverageDaysFor, moqSpecToPacks } from './soq.engine';
+
+describe('coverageDaysFor', () => {
+  it('nhân đôi thời gian chờ hàng để đợt sau kịp về', () => {
+    expect(coverageDaysFor(40)).toBe(80);
+  });
+
+  it('chặn dưới 30 ngày để hàng leadtime ngắn không bị đặt vụn', () => {
+    expect(coverageDaysFor(5)).toBe(30);
+    expect(coverageDaysFor(0)).toBe(30);
+  });
+});
 
 describe('calculateSoq', () => {
-  it('matches BCRTG SOQ and exposes calculation steps', () => {
+  it('tính đủ nhu cầu chờ hàng + dự phòng + một chu kỳ đặt', () => {
     const result = calculateSoq({
-      forecastDailyDemand: 11.72,
-      leadTimeDays: 45,
-      safetyDays: 21,
-      coverageDays: 30,
-      availableStock: 548,
-      packSize: 40,
-      moq: 400,
-      purchaseMultiple: 1,
+      forecastDailyDemand: 10,
+      leadTimeDays: 40,
+      safetyDays: 8,
+      availableStock: 0,
+      packSize: 20,
+      moq: 0,
       moqTolerance: 0.5,
     });
-    expect(result.rawQuantity).toBe(577.12);
-    expect(result.suggestedQuantity).toBe(600);
-    expect(result.suggestedPackCount).toBe(15);
+    // coverage = max(30, 40×2) = 80 → 10 × (40+8+80) = 1280
+    expect(result.rawQuantity).toBe(1280);
+    expect(result.suggestedQuantity).toBe(1280);
     expect(result.steps).toHaveLength(4);
   });
 
-  it('defers when MOQ overshoot exceeds tolerance', () => {
+  it('trừ tồn kho và hàng đang về khỏi nhu cầu', () => {
     const result = calculateSoq({
       forecastDailyDemand: 10,
+      leadTimeDays: 40,
+      safetyDays: 8,
+      availableStock: 500,
+      usableIncoming: 300,
+      packSize: 20,
+      moq: 0,
+      moqTolerance: 0.5,
+    });
+    // 1280 - 500 - 300 = 480
+    expect(result.rawQuantity).toBe(480);
+  });
+
+  it('hoãn đặt khi nhu cầu quá nhỏ so với MOQ', () => {
+    const result = calculateSoq({
+      forecastDailyDemand: 1,
       leadTimeDays: 10,
       safetyDays: 0,
-      coverageDays: 0,
       availableStock: 0,
-      daysOfSupply: 20,
+      daysOfSupply: 100,
       packSize: 20,
-      moq: 400,
+      moq: 4000,
       moqTolerance: 0.5,
     });
     expect(result.suggestedQuantity).toBe(0);
@@ -36,21 +59,20 @@ describe('calculateSoq', () => {
     expect(result.flags).toEqual(['ORDER_DEFERRED']);
   });
 
-  it('applies MOQ when overshoot is within tolerance', () => {
+  it('đôn lên đúng MOQ khi nhu cầu đã gần chạm ngưỡng', () => {
     const result = calculateSoq({
-      forecastDailyDemand: 30,
+      forecastDailyDemand: 10,
       leadTimeDays: 10,
       safetyDays: 0,
-      coverageDays: 0,
       availableStock: 0,
       daysOfSupply: 20,
       packSize: 40,
       moq: 400,
       moqTolerance: 0.5,
     });
-    expect(result.rawQuantity).toBe(300);
+    // coverage = max(30, 20) = 30 → 10 × (10+0+30) = 400
+    expect(result.rawQuantity).toBe(400);
     expect(result.suggestedQuantity).toBe(400);
-    expect(result.moqApplied).toBe(400);
   });
 });
 
@@ -139,16 +161,17 @@ describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => 
       product,
     )!;
     const result = calculateSoq({
-      forecastDailyDemand: 100,
+      forecastDailyDemand: 50,
       leadTimeDays: 10,
       safetyDays: 5,
-      coverageDays: 15,
       availableStock: 0,
+      daysOfSupply: 20,
       packSize: 1,
       moq,
       moqTolerance: 0.5,
     });
-    // Nhu cầu 3000 gói đã vượt MOQ 4000? Không — bị đôn lên đúng bằng MOQ.
+    // coverage = max(30, 20) = 30 → 50 × 45 = 2250, chưa tới MOQ 4000
+    // nhưng còn trong ngưỡng dung sai nên đôn lên đúng MOQ.
     expect(result.moqApplied).toBe(4000);
     expect(result.suggestedQuantity).toBe(4000);
   });

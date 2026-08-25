@@ -1,13 +1,11 @@
 /**
- * Cầu nối giữa hai nguồn dữ liệu nhà máy × sản phẩm:
+ * Quan hệ sản phẩm × nhà máy — nguồn chân lý duy nhất là `factory_products`.
  *
- *  1. `factory_products` — mapping M:N, nguồn chân lý mới (giá, MOQ, LT).
- *  2. `Product.primaryFactoryId` / `backupFactoryId` — 2 cột cũ, form sản phẩm
- *     và một số filter/báo cáo vẫn đọc.
+ * Một sản phẩm gắn được **nhiều** nhà máy chính và **nhiều** nhà máy backup.
+ * Một nhà máy chỉ giữ đúng một vai trò với một sản phẩm (ràng buộc
+ * `@@unique([factoryId, productId])`).
  *
- * Form sản phẩm chỉ hiển thị 1 nhà máy chính + 1 backup. Khi mapping có nhiều
- * dòng cùng role, lấy dòng `priority` thấp nhất (ưu tiên cao nhất), tie-break
- * theo `id` tăng dần.
+ * Hai cột `Product.primaryFactoryId` / `backupFactoryId` đã bị loại bỏ.
  */
 
 type Tx = {
@@ -18,9 +16,11 @@ type Tx = {
     update: (args: any) => Promise<any>;
     delete: (args: any) => Promise<any>;
   };
-  product: {
+  factoryChangeLog: {
+    createMany: (args: any) => Promise<any>;
+  };
+  user: {
     findUnique: (args: any) => Promise<any>;
-    update: (args: any) => Promise<any>;
   };
 };
 
@@ -34,215 +34,6 @@ export const FACTORY_SELECT = {
 
 const MAPPING_ORDER = [{ priority: 'asc' as const }, { id: 'asc' as const }];
 
-export function pickFactoryByRole(
-  mappings: Array<{
-    role: string;
-    isActive?: boolean;
-    factories?: unknown;
-  }>,
-  role: 'primary' | 'backup',
-) {
-  const row = mappings.find(
-    (item) => item.role === role && item.isActive !== false,
-  );
-  return row?.factories ?? null;
-}
-
-/**
- * Ghi đè `primaryFactoryId` / `backupFactoryId` (và object quan hệ) từ mapping.
- * Cột cũ vẫn thắng nếu mapping chưa có dòng tương ứng — tránh làm mất dữ liệu
- * lịch sử chưa được backfill.
- */
-export function overlayFactoriesFromMappings<T extends Record<string, any>>(
-  product: T,
-): T {
-  const mappings: any[] = Array.isArray(product.factory_products)
-    ? product.factory_products
-    : [];
-  if (!mappings.length) return product;
-
-  const primary = pickFactoryByRole(mappings, 'primary') as {
-    id: number;
-  } | null;
-  const backup = pickFactoryByRole(mappings, 'backup') as { id: number } | null;
-
-  return {
-    ...product,
-    primaryFactoryId: primary?.id ?? product.primaryFactoryId ?? null,
-    backupFactoryId: backup?.id ?? product.backupFactoryId ?? null,
-    primaryFactory: primary ?? product.primaryFactory ?? null,
-    backupFactory: backup ?? product.backupFactory ?? null,
-  };
-}
-
-/**
- * Đảm bảo có đúng 1 dòng mapping `role` cho `factoryId`.
- *
- * - Đã có dòng cùng nhà máy → chỉ cập nhật role (giữ giá/MOQ/LT).
- * - Chưa có → tạo dòng mới, kế thừa currency của nhà máy nếu có.
- * - Dòng khác cùng role (ưu tiên thấp hơn) không bị xóa — trang nhà máy cho
- *   phép nhiều nhà máy cùng role; form sản phẩm chỉ hiện 1 cái.
- */
-export async function upsertMappingRole(
-  tx: Tx,
-  args: {
-    productId: number;
-    factoryId: number;
-    role: 'primary' | 'backup';
-    userId?: number | null;
-  },
-) {
-  const existing = await tx.factory_products.findUnique({
-    where: {
-      factoryId_productId: {
-        factoryId: args.factoryId,
-        productId: args.productId,
-      },
-    },
-  });
-
-  if (existing) {
-    if (existing.role !== args.role || !existing.isActive) {
-      await tx.factory_products.update({
-        where: { id: existing.id },
-        data: { role: args.role, isActive: true },
-      });
-    }
-    return;
-  }
-
-  await tx.factory_products.create({
-    data: {
-      factoryId: args.factoryId,
-      productId: args.productId,
-      role: args.role,
-      priority: 0,
-      currency: 'VND',
-      isActive: true,
-      createdBy: args.userId ?? null,
-      updatedAt: new Date(),
-    },
-  });
-}
-
-/**
- * Gỡ mapping `role` của 1 nhà máy khỏi sản phẩm.
- *
- * Chỉ xóa khi dòng hiện đúng `role` đó — tránh xóa nhầm dòng đã được đổi
- * vai trò thành nhà máy kia (trường hợp swap primary ↔ backup).
- */
-export async function unlinkMappingRole(
-  tx: Tx,
-  args: {
-    productId: number;
-    factoryId: number;
-    role: 'primary' | 'backup';
-  },
-) {
-  const existing = await tx.factory_products.findUnique({
-    where: {
-      factoryId_productId: {
-        factoryId: args.factoryId,
-        productId: args.productId,
-      },
-    },
-  });
-  if (!existing) return;
-  if (existing.role !== args.role) return;
-  await tx.factory_products.delete({ where: { id: existing.id } });
-}
-
-/**
- * Khi gắn/đổi role từ trang nhà máy: đồng bộ cột scalar nếu đang trống
- * hoặc đang trỏ đúng nhà máy này (đổi role → cập nhật cột tương ứng).
- *
- * Không ghi đè cột đang trỏ nhà máy khác — form sản phẩm chỉ hiện 1 nhà máy,
- * ghi đè sẽ làm mất lựa chọn người dùng đã set.
- */
-export async function syncProductFactoryColumns(
-  tx: Tx,
-  args: {
-    productId: number;
-    factoryId: number;
-    role: 'primary' | 'backup';
-  },
-) {
-  const product = await tx.product.findUnique({
-    where: { id: args.productId },
-    select: { primaryFactoryId: true, backupFactoryId: true },
-  });
-  if (!product) return;
-
-  const data: Record<string, number | null> = {};
-  if (args.role === 'primary') {
-    if (
-      product.primaryFactoryId == null ||
-      product.primaryFactoryId === args.factoryId
-    ) {
-      data.primaryFactoryId = args.factoryId;
-    }
-    if (product.backupFactoryId === args.factoryId) {
-      data.backupFactoryId = null;
-    }
-  } else {
-    if (
-      product.backupFactoryId == null ||
-      product.backupFactoryId === args.factoryId
-    ) {
-      data.backupFactoryId = args.factoryId;
-    }
-    if (product.primaryFactoryId === args.factoryId) {
-      data.primaryFactoryId = null;
-    }
-  }
-
-  if (Object.keys(data).length === 0) return;
-  await tx.product.update({
-    where: { id: args.productId },
-    data,
-  });
-}
-
-/**
- * Khi bỏ gắn mapping: xóa cột scalar nếu đang trỏ đúng nhà máy bị gỡ.
- * Nếu còn mapping khác cùng role → chuyển cột sang nhà máy ưu tiên tiếp theo.
- */
-export async function clearProductFactoryColumnIfMatches(
-  tx: Tx,
-  args: {
-    productId: number;
-    factoryId: number;
-    role: 'primary' | 'backup';
-  },
-) {
-  const product = await tx.product.findUnique({
-    where: { id: args.productId },
-    select: { primaryFactoryId: true, backupFactoryId: true },
-  });
-  if (!product) return;
-
-  const field =
-    args.role === 'primary' ? 'primaryFactoryId' : 'backupFactoryId';
-  if (product[field] !== args.factoryId) return;
-
-  const fallback = await tx.factory_products.findMany({
-    where: {
-      productId: args.productId,
-      role: args.role,
-      isActive: true,
-      factoryId: { not: args.factoryId },
-    },
-    orderBy: MAPPING_ORDER,
-    take: 1,
-    select: { factoryId: true },
-  });
-
-  await tx.product.update({
-    where: { id: args.productId },
-    data: { [field]: fallback[0]?.factoryId ?? null },
-  });
-}
-
 export const FACTORY_PRODUCTS_INCLUDE = {
   factory_products: {
     where: { isActive: true },
@@ -250,3 +41,203 @@ export const FACTORY_PRODUCTS_INCLUDE = {
     include: { factories: { select: FACTORY_SELECT } },
   },
 } as const;
+
+export type MappingRole = 'primary' | 'backup';
+
+/** Một dòng mapping do form sản phẩm gửi lên. */
+export interface DesiredMapping {
+  factoryId: number;
+  role: MappingRole;
+  priority?: number;
+}
+
+/**
+ * Chuẩn hoá `factory_products` thành `factoryMappings` cho FE.
+ *
+ * Giữ **toàn bộ** dòng, không cắt bớt — đây là điểm khác biệt so với mô hình
+ * 2 cột cũ vốn chỉ diễn tả được 1 chính + 1 backup.
+ */
+export function overlayFactoriesFromMappings<T extends Record<string, any>>(
+  product: T,
+): T & { factoryMappings: any[] } {
+  const raw: any[] = Array.isArray(product.factory_products)
+    ? product.factory_products
+    : [];
+
+  const factoryMappings = raw.map((row) => ({
+    id: row.id,
+    factoryId: row.factoryId,
+    role: row.role === 'backup' ? 'backup' : 'primary',
+    priority: row.priority ?? 0,
+    isActive: row.isActive !== false,
+    referencePrice:
+      row.referencePrice == null ? null : Number(row.referencePrice),
+    currency: row.currency ?? null,
+    exchangeRate: row.exchangeRate == null ? null : Number(row.exchangeRate),
+    moq: row.moq == null ? null : Number(row.moq),
+    moqValue: row.moqValue == null ? null : Number(row.moqValue),
+    moqBasis: row.moqBasis ?? null,
+    moqUnit: row.moqUnit ?? null,
+    moqIncrement: row.moqIncrement == null ? null : Number(row.moqIncrement),
+    leadtimeDays: row.leadtimeDays ?? null,
+    note: row.note ?? null,
+    factory: row.factories ?? null,
+  }));
+
+  return { ...product, factoryMappings };
+}
+
+/** Một sự kiện thay đổi mapping, ghi vào `factory_change_logs`. */
+export interface MappingChangeEvent {
+  productId: number;
+  factoryId: number;
+  action: 'attach' | 'detach' | 'role_change' | 'priority_change';
+  previousRole: MappingRole | null;
+  role: MappingRole | null;
+  previousPriority: number | null;
+  priority: number | null;
+}
+
+/** Ghi log sự kiện. Bỏ qua khi không xác định được người thao tác. */
+export async function writeMappingChangeLogs(
+  tx: Tx,
+  args: {
+    events: MappingChangeEvent[];
+    userId?: number | null;
+    userName?: string | null;
+    reason?: string | null;
+  },
+) {
+  if (!args.events.length || !args.userId) return;
+
+  // Lưu tên tại thời điểm thao tác để log vẫn đọc được nếu user đổi tên/nghỉ.
+  let changedByName = args.userName ?? null;
+  if (!changedByName) {
+    const user = await tx.user.findUnique({
+      where: { id: args.userId },
+      select: { name: true },
+    });
+    changedByName = user?.name ?? null;
+  }
+
+  await tx.factoryChangeLog.createMany({
+    data: args.events.map((event) => ({
+      productId: event.productId,
+      factoryId: event.factoryId,
+      action: event.action,
+      previousRole: event.previousRole,
+      role: event.role,
+      previousPriority: event.previousPriority,
+      priority: event.priority,
+      changedById: args.userId as number,
+      changedByName,
+      reason: args.reason ?? null,
+    })),
+  });
+}
+
+/**
+ * Đồng bộ toàn bộ danh sách nhà máy của một sản phẩm (replace-set).
+ *
+ * - Nhà máy mới → tạo mapping (`attach`).
+ * - Nhà máy đã có → chỉ đổi `role`/`priority`, **giữ nguyên** giá, MOQ,
+ *   leadtime, ghi chú (thuộc quyền trang nhà máy).
+ * - Nhà máy không còn trong danh sách → xoá (`detach`).
+ *
+ * Trả về danh sách sự kiện để nơi gọi ghi log trong cùng transaction.
+ */
+export async function replaceProductMappings(
+  tx: Tx,
+  args: {
+    productId: number;
+    desired: DesiredMapping[];
+    userId?: number | null;
+    userName?: string | null;
+    reason?: string | null;
+  },
+): Promise<MappingChangeEvent[]> {
+  // Một nhà máy chỉ giữ một vai trò với một sản phẩm.
+  const seen = new Map<number, DesiredMapping>();
+  for (const item of args.desired) {
+    if (seen.has(item.factoryId)) continue;
+    seen.set(item.factoryId, item);
+  }
+
+  const current = await tx.factory_products.findMany({
+    where: { productId: args.productId },
+    select: { id: true, factoryId: true, role: true, priority: true },
+  });
+  const currentByFactory = new Map(current.map((row) => [row.factoryId, row]));
+  const events: MappingChangeEvent[] = [];
+
+  for (const [factoryId, item] of seen) {
+    const existing = currentByFactory.get(factoryId);
+    const priority = item.priority ?? 0;
+
+    if (!existing) {
+      await tx.factory_products.create({
+        data: {
+          factoryId,
+          productId: args.productId,
+          role: item.role,
+          priority,
+          currency: 'VND',
+          isActive: true,
+          createdBy: args.userId ?? null,
+          updatedAt: new Date(),
+        },
+      });
+      events.push({
+        productId: args.productId,
+        factoryId,
+        action: 'attach',
+        previousRole: null,
+        role: item.role,
+        previousPriority: null,
+        priority,
+      });
+      continue;
+    }
+
+    const roleChanged = existing.role !== item.role;
+    const priorityChanged = existing.priority !== priority;
+    if (!roleChanged && !priorityChanged) continue;
+
+    await tx.factory_products.update({
+      where: { id: existing.id },
+      data: { role: item.role, priority, isActive: true },
+    });
+    events.push({
+      productId: args.productId,
+      factoryId,
+      action: roleChanged ? 'role_change' : 'priority_change',
+      previousRole: existing.role === 'backup' ? 'backup' : 'primary',
+      role: item.role,
+      previousPriority: existing.priority ?? null,
+      priority,
+    });
+  }
+
+  for (const row of current) {
+    if (seen.has(row.factoryId)) continue;
+    await tx.factory_products.delete({ where: { id: row.id } });
+    events.push({
+      productId: args.productId,
+      factoryId: row.factoryId,
+      action: 'detach',
+      previousRole: row.role === 'backup' ? 'backup' : 'primary',
+      role: null,
+      previousPriority: row.priority ?? null,
+      priority: null,
+    });
+  }
+
+  await writeMappingChangeLogs(tx, {
+    events,
+    userId: args.userId,
+    userName: args.userName,
+    reason: args.reason,
+  });
+
+  return events;
+}

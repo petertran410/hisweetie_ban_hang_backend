@@ -1585,8 +1585,6 @@ export class PublicApiService {
           larkSyncRetries,
           larkSyncStatus,
           larkSyncedAt,
-          primaryFactoryId,
-          backupFactoryId,
           ...product
         } = base;
         return product;

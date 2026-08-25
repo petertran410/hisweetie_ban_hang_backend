@@ -133,12 +133,17 @@ export interface PriorityResult {
 
 export type ConfigScope = 'GLOBAL' | 'CATEGORY' | 'SUPPLIER' | 'SKU';
 
+/**
+ * Tham số tính toán còn cấu hình được theo cấp GLOBAL/CATEGORY/SUPPLIER/SKU.
+ *
+ * `leadTimeDays` và `moq` đã bị loại khỏi đây: leadtime nay tính từ pipeline
+ * mạng lưới (nhà máy → thông quan → kho gốc → điều chuyển), còn MOQ lấy từ
+ * khai báo ở nhà máy / mapping SKU × nhà máy. Giữ chúng ở hai nơi chỉ tạo ra
+ * dữ liệu mâu thuẫn.
+ */
 export interface PlanningConfig {
-  leadTimeDays: number;
   safetyDays: number;
   coverageDays: number;
-  growthFactor: number;
-  moq: number;
 }
 
 export interface OperationalPlanningDefaults {

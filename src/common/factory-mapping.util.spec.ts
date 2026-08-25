@@ -1,63 +1,80 @@
-import {
-  overlayFactoriesFromMappings,
-  pickFactoryByRole,
-} from './factory-mapping.util';
+import { overlayFactoriesFromMappings } from './factory-mapping.util';
 
 const factoryA = { id: 1, code: 'NM0001', name: 'ABC' };
 const factoryB = { id: 2, code: 'NM0002', name: 'XYZ' };
+const factoryC = { id: 3, code: 'NM0003', name: 'DEF' };
 
-describe('pickFactoryByRole', () => {
-  const mappings = [
-    { role: 'primary', isActive: true, factories: factoryA, priority: 0 },
-    { role: 'backup', isActive: true, factories: factoryB, priority: 0 },
-    { role: 'primary', isActive: true, factories: factoryB, priority: 1 },
-  ];
-
-  it('lấy nhà máy primary ưu tiên nhất (dòng đầu tiên sau khi đã sort)', () => {
-    expect(pickFactoryByRole(mappings, 'primary')).toEqual(factoryA);
-  });
-
-  it('bỏ qua dòng inactive', () => {
-    expect(
-      pickFactoryByRole(
-        [{ role: 'primary', isActive: false, factories: factoryA }],
-        'primary',
-      ),
-    ).toBeNull();
-  });
-});
+const mapping = (
+  id: number,
+  factoryId: number,
+  role: 'primary' | 'backup',
+  priority: number,
+  factories: unknown,
+) => ({ id, factoryId, role, priority, isActive: true, factories });
 
 describe('overlayFactoriesFromMappings', () => {
-  it('ghi đè cột cũ khi mapping có dữ liệu', () => {
+  it('giữ nguyên nhiều nhà máy chính — không cắt còn 1 như mô hình cũ', () => {
     const product = overlayFactoriesFromMappings({
       id: 10,
-      primaryFactoryId: null,
-      backupFactoryId: null,
-      primaryFactory: null,
-      backupFactory: null,
       factory_products: [
-        { role: 'primary', isActive: true, factories: factoryA },
-        { role: 'backup', isActive: true, factories: factoryB },
+        mapping(1, 1, 'primary', 0, factoryA),
+        mapping(2, 2, 'primary', 1, factoryB),
+        mapping(3, 3, 'backup', 0, factoryC),
       ],
     });
 
-    expect(product.primaryFactoryId).toBe(1);
-    expect(product.backupFactoryId).toBe(2);
-    expect(product.primaryFactory).toEqual(factoryA);
-    expect(product.backupFactory).toEqual(factoryB);
+    expect(product.factoryMappings).toHaveLength(3);
+    expect(
+      product.factoryMappings.filter((m: any) => m.role === 'primary'),
+    ).toHaveLength(2);
+    expect(
+      product.factoryMappings.filter((m: any) => m.role === 'backup'),
+    ).toHaveLength(1);
   });
 
-  it('giữ cột cũ khi mapping trống — không làm mất dữ liệu lịch sử', () => {
+  it('giữ thứ tự ưu tiên và gắn kèm object nhà máy', () => {
     const product = overlayFactoriesFromMappings({
       id: 10,
-      primaryFactoryId: 9,
-      backupFactoryId: null,
-      primaryFactory: { id: 9, name: 'Cũ' },
-      backupFactory: null,
-      factory_products: [],
+      factory_products: [
+        mapping(1, 1, 'primary', 0, factoryA),
+        mapping(2, 2, 'primary', 1, factoryB),
+      ],
     });
 
-    expect(product.primaryFactoryId).toBe(9);
-    expect(product.primaryFactory).toEqual({ id: 9, name: 'Cũ' });
+    expect(product.factoryMappings[0]).toMatchObject({
+      factoryId: 1,
+      priority: 0,
+      factory: factoryA,
+    });
+    expect(product.factoryMappings[1]).toMatchObject({
+      factoryId: 2,
+      priority: 1,
+    });
+  });
+
+  it('sản phẩm chưa gắn nhà máy → mảng rỗng, không lỗi', () => {
+    const product = overlayFactoriesFromMappings({
+      id: 10,
+      factory_products: [],
+    });
+    expect(product.factoryMappings).toEqual([]);
+  });
+
+  it('chuyển Decimal sang number để FE dùng thẳng', () => {
+    const product = overlayFactoriesFromMappings({
+      id: 10,
+      factory_products: [
+        {
+          ...mapping(1, 1, 'primary', 0, factoryA),
+          referencePrice: '12.50',
+          moqValue: '2',
+          leadtimeDays: 45,
+        },
+      ],
+    });
+
+    expect(product.factoryMappings[0].referencePrice).toBe(12.5);
+    expect(product.factoryMappings[0].moqValue).toBe(2);
+    expect(product.factoryMappings[0].leadtimeDays).toBe(45);
   });
 });

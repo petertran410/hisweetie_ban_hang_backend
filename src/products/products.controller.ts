@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -12,7 +13,12 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ProductsService } from './products.service';
-import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
+import {
+  CreateProductDto,
+  UpdateProductDto,
+  ProductQueryDto,
+  BulkUpdateCargoTypeDto,
+} from './dto';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { AuthService } from '../auth/auth.service';
 import { PermissionCacheService } from '../permission-cache/permission-cache.service';
@@ -64,16 +70,14 @@ export class ProductsController {
 
   /**
    * Nếu user KHÔNG có quyền `products:assign_factory` mà body có gửi kèm
-   * primaryFactoryId / backupFactoryId → âm thầm loại bỏ 2 field này khỏi dto
-   * (không ghi đè dữ liệu nhà máy thật, không ném lỗi). Super Admin luôn được
-   * phép. Đây là lớp chặn backend bổ trợ cho việc ẩn/disable ở frontend.
+   * `factoryMappings` → âm thầm loại bỏ (không ghi đè dữ liệu nhà máy thật,
+   * không ném lỗi). Super Admin luôn được phép. Đây là lớp chặn backend bổ
+   * trợ cho việc ẩn/disable ở frontend.
    */
   private async stripFactoryFieldsIfNoPermission<
-    T extends { primaryFactoryId?: number; backupFactoryId?: number },
+    T extends { factoryMappings?: unknown },
   >(dto: T, req: any): Promise<T> {
-    const hasFactoryField =
-      dto?.primaryFactoryId !== undefined || dto?.backupFactoryId !== undefined;
-    if (!hasFactoryField) return dto;
+    if (dto?.factoryMappings === undefined) return dto;
 
     const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
     const canAssignFactory =
@@ -81,8 +85,7 @@ export class ProductsController {
     if (canAssignFactory) return dto;
 
     const sanitized = { ...dto };
-    delete sanitized.primaryFactoryId;
-    delete sanitized.backupFactoryId;
+    delete sanitized.factoryMappings;
     return sanitized;
   }
 
@@ -302,6 +305,19 @@ export class ProductsController {
     const userId = req.user?.id;
     const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
     return this.productsService.create(sanitized, userId);
+  }
+
+  /**
+   * Gán loại hàng (COLD/NORMAL) hàng loạt. Đặt TRƯỚC `@Put(':id')` để tránh
+   * route param nuốt path tĩnh.
+   */
+  @Patch('bulk-cargo-type')
+  @RequirePermissions('products:update')
+  async bulkUpdateCargoType(
+    @Body() dto: BulkUpdateCargoTypeDto,
+    @Req() req: any,
+  ) {
+    return this.productsService.bulkUpdateCargoType(dto, req.user?.id);
   }
 
   @Put(':id')

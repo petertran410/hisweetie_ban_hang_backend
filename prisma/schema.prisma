@@ -267,58 +267,69 @@ model UserPermission {
 }
 
 model Branch {
-  id                      Int                      @id @default(autoincrement())
-  name                    String
-  code                    String?                  @unique
-  contactNumber           String?
-  subContactNumber        String?
-  email                   String?
-  address                 String?
-  locationId              Int?
-  wardName                String?
-  isActive                Boolean                  @default(true)
-  isLock                  Boolean                  @default(false)
-  createdAt               DateTime                 @default(now())
-  updatedAt               DateTime                 @updatedAt
-  kiotVietId              Int?                     @unique @map("kiot_viet_id")
-  lastSyncedAt            DateTime?                @map("last_synced_at")
-  auditLogs               AuditLog[]               @relation("AuditLogBranch")
-  location                Location?                @relation(fields: [locationId], references: [id])
-  cashFlows               CashFlow[]
-  consignmentReturns      ConsignmentReturn[]
-  consignments            Consignment[]
-  customers               Customer[]
-  destructions            Destruction[]
-  internalUses            InternalUse[]
-  inventories             Inventory[]
-  inventoryChecks         InventoryCheck[]
-  inventoryLogs           InventoryLog[]
-  inventoryPromoChecks    InventoryPromoCheck[]
-  invoices                Invoice[]
-  orderSuppliers          OrderSupplier[]
-  orders                  Order[]
-  packingHangs            PackingHang[]
-  packingLoadings         PackingLoading[]
-  packingSlips            PackingSlip[]
-  priceBookBranches       PriceBookBranch[]
-  productionsDestination  Production[]             @relation("ProductionDestination")
-  productionsSource       Production[]             @relation("ProductionSource")
-  promotionBranches       PromotionBranch[]
-  purchaseOrders          PurchaseOrder[]
-  returnOrders            ReturnOrder[]
-  roleBranchPermissions   RoleBranchPermission[]
-  stockAudits             StockAudit[]
-  stockConditionLogs      StockConditionLog[]
-  stockConditionTransfers StockConditionTransfer[]
-  supplierReturns         SupplierReturn[]
-  suppliers               Supplier[]
-  transfersFrom           Transfer[]               @relation("TransferFrom")
-  transfersTo             Transfer[]               @relation("TransferTo")
-  userBranchPermissions   UserBranchPermission[]
-  userBranchRoles         UserBranchRole[]
-  userBranches            UserBranch[]
-  users                   User[]
-  vehicleShipments        VehicleShipment[]
+  id                        Int                      @id @default(autoincrement())
+  name                      String
+  code                      String?                  @unique
+  contactNumber             String?
+  subContactNumber          String?
+  email                     String?
+  address                   String?
+  locationId                Int?
+  wardName                  String?
+  isActive                  Boolean                  @default(true)
+  isLock                    Boolean                  @default(false)
+  /// Chi nhánh GỐC nhận hàng sau thông quan. Chỉ duy nhất MỘT chi nhánh active
+  /// được bật cờ này; các chi nhánh còn lại nhận hàng qua điều chuyển nội bộ.
+  isPurchasingHub           Boolean                  @default(false) @map("is_purchasing_hub")
+  /// Khoảng thời gian ĐIỀU CHUYỂN dự kiến (ngày) từ chi nhánh gốc về chi nhánh này.
+  /// Tách theo loại hàng vì hàng lạnh đi nhanh hơn hàng thường.
+  /// Bỏ trống → dùng mặc định hệ thống trong PlanningNetworkConfig.
+  transferLeadtimeColdMin   Int?                     @map("transfer_leadtime_cold_min") @db.SmallInt
+  transferLeadtimeColdMax   Int?                     @map("transfer_leadtime_cold_max") @db.SmallInt
+  transferLeadtimeNormalMin Int?                     @map("transfer_leadtime_normal_min") @db.SmallInt
+  transferLeadtimeNormalMax Int?                     @map("transfer_leadtime_normal_max") @db.SmallInt
+  createdAt                 DateTime                 @default(now())
+  updatedAt                 DateTime                 @updatedAt
+  kiotVietId                Int?                     @unique @map("kiot_viet_id")
+  lastSyncedAt              DateTime?                @map("last_synced_at")
+  auditLogs                 AuditLog[]               @relation("AuditLogBranch")
+  location                  Location?                @relation(fields: [locationId], references: [id])
+  cashFlows                 CashFlow[]
+  consignmentReturns        ConsignmentReturn[]
+  consignments              Consignment[]
+  customers                 Customer[]
+  destructions              Destruction[]
+  internalUses              InternalUse[]
+  inventories               Inventory[]
+  inventoryChecks           InventoryCheck[]
+  inventoryDailySnapshots   InventoryDailySnapshot[]
+  inventoryLogs             InventoryLog[]
+  inventoryPromoChecks      InventoryPromoCheck[]
+  invoices                  Invoice[]
+  orderSuppliers            OrderSupplier[]
+  orders                    Order[]
+  packingHangs              PackingHang[]
+  packingLoadings           PackingLoading[]
+  packingSlips              PackingSlip[]
+  priceBookBranches         PriceBookBranch[]
+  productionsDestination    Production[]             @relation("ProductionDestination")
+  productionsSource         Production[]             @relation("ProductionSource")
+  promotionBranches         PromotionBranch[]
+  purchaseOrders            PurchaseOrder[]
+  returnOrders              ReturnOrder[]
+  roleBranchPermissions     RoleBranchPermission[]
+  stockAudits               StockAudit[]
+  stockConditionLogs        StockConditionLog[]
+  stockConditionTransfers   StockConditionTransfer[]
+  supplierReturns           SupplierReturn[]
+  suppliers                 Supplier[]
+  transfersFrom             Transfer[]               @relation("TransferFrom")
+  transfersTo               Transfer[]               @relation("TransferTo")
+  userBranchPermissions     UserBranchPermission[]
+  userBranchRoles           UserBranchRole[]
+  userBranches              UserBranch[]
+  users                     User[]
+  vehicleShipments          VehicleShipment[]
 
   @@index([updatedAt, id])
   @@map("branches")
@@ -728,9 +739,9 @@ model Product {
   larkSyncRetries                Int                            @default(0)
   larkSyncStatus                 String                         @default("PENDING")
   larkSyncedAt                   DateTime?
-  backupFactoryId                Int?
-  primaryFactoryId               Int?
   is_purchasing_planning_tracked Boolean                        @default(true)
+  /// Phân loại hàng hoá phục vụ leadtime chuyển kho: COLD | NORMAL
+  cargoType                      String?                        @default("NORMAL") @map("cargo_type") @db.VarChar(10)
   consignmentItems               ConsignmentItem[]
   consignmentReturnDetails       ConsignmentReturnDetail[]
   destructionDetails             DestructionDetail[]
@@ -739,6 +750,7 @@ model Product {
   internalUseDetails             InternalUseDetail[]
   inventories                    Inventory[]
   inventoryCheckDetails          InventoryCheckDetail[]
+  inventoryDailySnapshots        InventoryDailySnapshot[]
   inventoryLogs                  InventoryLog[]
   inventoryPromoCheckDetails     InventoryPromoCheckDetail[]
   invoiceDetails                 InvoiceDetail[]
@@ -752,11 +764,9 @@ model Product {
   images                         ProductImage[]
   productionComponents           ProductionComponent[]
   productions                    Production[]
-  backupFactory                  Factory?                       @relation("ProductBackupFactory", fields: [backupFactoryId], references: [id])
   masterProduct                  Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
   productUnits                   Product[]                      @relation("ProductUnits")
   priceBook                      PriceBook?                     @relation(fields: [priceBookId], references: [id])
-  primaryFactory                 Factory?                       @relation("ProductPrimaryFactory", fields: [primaryFactoryId], references: [id])
   tradeMark                      TradeMark?                     @relation(fields: [tradeMarkId], references: [id])
   variant                        ProductVariant?                @relation(fields: [variantId], references: [id])
   promotionProducts              PromotionProduct[]             @relation("PromotionProductRef")
@@ -775,9 +785,8 @@ model Product {
 
   @@index([id, name])
   @@index([larkSyncStatus])
-  @@index([primaryFactoryId])
-  @@index([backupFactoryId])
   @@index([updatedAt, id])
+  @@index([cargoType])
   @@map("products")
 }
 
@@ -979,6 +988,28 @@ model Inventory {
 
   @@unique([productId, branchId])
   @@map("inventories")
+}
+
+/// Ảnh chụp tồn kho cuối mỗi ngày theo (sản phẩm × chi nhánh).
+/// Mục đích: cung cấp cờ `hadStock` thật cho forecast engine, thay cho heuristic
+/// `demand > 0` vốn khiến MỌI SKU bị hạ một bậc confidence.
+model InventoryDailySnapshot {
+  id        BigInt   @id @default(autoincrement())
+  productId Int      @map("product_id")
+  branchId  Int      @map("branch_id")
+  /// Ngày dữ liệu (chốt cuối ngày, theo giờ VN)
+  date      DateTime @db.Date
+  onHand    Decimal  @map("on_hand") @db.Decimal(18, 4)
+  /// onHand > 0 tại thời điểm chốt — mẫu số hợp lệ khi tính moving average
+  hadStock  Boolean  @map("had_stock")
+  createdAt DateTime @default(now()) @map("created_at")
+  branch    Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, branchId, date])
+  @@index([productId, branchId, date(sort: Desc)])
+  @@index([date])
+  @@map("inventory_daily_snapshot")
 }
 
 model InventoryCheck {
@@ -2227,6 +2258,7 @@ model OrderSupplierItem {
   productionStage      PurchaseOrderProductionStage? @relation(fields: [productionStageId], references: [id])
 
   @@unique([orderSupplierId, productId])
+  @@index([factoryId])
   @@map("order_supplier_items")
 }
 
@@ -2384,46 +2416,47 @@ model PurchaseOrderProductionStage {
 }
 
 model Factory {
-  id                 Int                 @id @default(autoincrement())
-  name               String
-  fullName           String?
-  description        String?
-  isActive           Boolean             @default(true)
-  createdBy          Int?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  address            String?
-  code               String?             @unique
-  contactNumber      String?
-  country            String?
-  currency           String?             @default("VND")
-  supplierId         Int?
-  cargoType          String?
-  customsRisk        String?
-  email              String?
-  incoterm           String?
-  leadtimeDays       Int?
-  moq                Decimal?
+  id                    Int                 @id @default(autoincrement())
+  name                  String
+  fullName              String?
+  description           String?
+  isActive              Boolean             @default(true)
+  createdBy             Int?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  address               String?
+  code                  String?             @unique
+  contactNumber         String?
+  country               String?
+  currency              String?             @default("VND")
+  supplierId            Int?
+  cargoType             String?
+  customsRisk           String?
+  email                 String?
+  incoterm              String?
+  moq                   Decimal?
   /// Cấu hình MOQ có đơn vị. Giữ `moq` để tương thích dữ liệu/API cũ.
-  moqValue           Decimal?            @db.Decimal(18, 4)
-  moqBasis           String? // QUANTITY | WEIGHT
-  moqUnit            String? // PACK | CARTON | KG | TON
-  moqScope           String? // PER_ORDER | PER_LINE
-  moqIncrement       Decimal?            @db.Decimal(18, 4)
-  notes              String?
-  paymentTerm        String?
-  port               String?
-  productionLeadtime Int?
-  shippingLeadtime   Int?
-  strategicLevel     String?
-  wechat             String?
-  creator            User?               @relation("FactoryCreator", fields: [createdBy], references: [id])
-  supplier           Supplier?           @relation(fields: [supplierId], references: [id])
-  factoryChangeLogs  FactoryChangeLog[]
-  factory_products   factory_products[]
-  orderSupplierItems OrderSupplierItem[]
-  backupForProducts  Product[]           @relation("ProductBackupFactory")
-  primaryForProducts Product[]           @relation("ProductPrimaryFactory")
+  moqValue              Decimal?            @db.Decimal(18, 4)
+  moqBasis              String? // QUANTITY | WEIGHT
+  moqUnit               String? // PACK | CARTON | KG | TON
+  moqScope              String? // PER_ORDER | PER_LINE
+  moqIncrement          Decimal?            @db.Decimal(18, 4)
+  notes                 String?
+  paymentTerm           String?
+  port                  String?
+  productionLeadtime    Int?
+  shippingLeadtime      Int?
+  /// Khoảng thời gian SẢN XUẤT dự kiến (ngày) — riêng từng nhà máy.
+  /// Chỉ phục vụ DỰ BÁO đặt hàng, không phải mốc thực tế của đơn nào.
+  productionLeadtimeMin Int?                @map("production_leadtime_min") @db.SmallInt
+  productionLeadtimeMax Int?                @map("production_leadtime_max") @db.SmallInt
+  strategicLevel        String?
+  wechat                String?
+  creator               User?               @relation("FactoryCreator", fields: [createdBy], references: [id])
+  supplier              Supplier?           @relation(fields: [supplierId], references: [id])
+  factoryChangeLogs     FactoryChangeLog[]
+  factory_products      factory_products[]
+  orderSupplierItems    OrderSupplierItem[]
 
   @@index([supplierId])
   @@index([isActive])
@@ -2431,11 +2464,24 @@ model Factory {
   @@map("factories")
 }
 
+/// Lịch sử thay đổi quan hệ sản phẩm × nhà máy.
+///
+/// Mỗi dòng là **một sự kiện trên một mapping** (attach / detach / đổi vai trò
+/// / đổi ưu tiên), thay cho mô hình "đổi slot" cũ vốn không diễn tả được khi
+/// một sản phẩm gắn nhiều nhà máy cùng vai trò.
 model FactoryChangeLog {
   id                Int      @id @default(autoincrement())
   productId         Int
   factoryId         Int
-  role              String
+  /// attach | detach | role_change | priority_change
+  action            String   @default("attach")
+  /// Vai trò trước sự kiện (null khi attach lần đầu).
+  previousRole      String?
+  /// Vai trò sau sự kiện (null khi detach).
+  role              String?
+  previousPriority  Int?
+  priority          Int?
+  /// Di sản mô hình slot cũ — chỉ còn ý nghĩa với dữ liệu trước khi đổi.
   previousFactoryId Int?
   changedById       Int
   changedByName     String?
@@ -2448,6 +2494,7 @@ model FactoryChangeLog {
   @@index([productId])
   @@index([factoryId])
   @@index([changedById])
+  @@index([productId, createdAt])
   @@map("factory_change_logs")
 }
 
@@ -3564,6 +3611,25 @@ model RecipeDependency {
 
 /// Cấu hình tham số tính toán theo EAV (TD §4.2).
 /// Độ ưu tiên khi resolve: SKU > SUPPLIER > CATEGORY > GLOBAL.
+model PlanningNetworkConfig {
+  id                 Int      @id @default(autoincrement())
+  /// Thông quan dùng chung toàn hệ thống.
+  customsLeadtimeMin Int      @default(7) @map("customs_leadtime_min") @db.SmallInt
+  customsLeadtimeMax Int      @default(10) @map("customs_leadtime_max") @db.SmallInt
+  /// Từ cửa khẩu về chi nhánh gốc (dùng chung toàn hệ thống).
+  inboundLeadtimeMin Int      @default(7) @map("inbound_leadtime_min") @db.SmallInt
+  inboundLeadtimeMax Int      @default(10) @map("inbound_leadtime_max") @db.SmallInt
+  /// Mặc định từ chi nhánh gốc tới chi nhánh đích khi Branch chưa override.
+  transferColdMin    Int      @default(3) @map("transfer_cold_min") @db.SmallInt
+  transferColdMax    Int      @default(5) @map("transfer_cold_max") @db.SmallInt
+  transferNormalMin  Int      @default(5) @map("transfer_normal_min") @db.SmallInt
+  transferNormalMax  Int      @default(7) @map("transfer_normal_max") @db.SmallInt
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@map("planning_network_config")
+}
+
 model PlanningConfig {
   id         Int      @id @default(autoincrement())
   /// GLOBAL | CATEGORY | SUPPLIER | SKU
@@ -3693,6 +3759,19 @@ model RecommendationItem {
   daysUntilStockout              Int?                   @map("days_until_stockout") @db.SmallInt
   daysOfSupply                   Decimal?               @map("days_of_supply") @db.Decimal(10, 2)
   projectedStockoutDate          DateTime?              @map("projected_stockout_date") @db.Date
+  /// ORDER_NOW | ORDER_THIS_MONTH | ORDER_NEXT_MONTH | ORDER_LATER | NO_ACTION
+  orderUrgency                   String?                @map("order_urgency") @db.VarChar(20)
+  /// Ngày chậm nhất phải đặt để hàng kịp về trước khi chi nhánh cạn kho.
+  latestOrderDate                DateTime?              @map("latest_order_date") @db.Date
+  /// Chi nhánh sẽ hết hàng sớm nhất — nơi tạo sức ép phải đặt.
+  criticalBranchId               Int?                   @map("critical_branch_id")
+  criticalBranchName             String?                @map("critical_branch_name") @db.VarChar(255)
+  /// STABLE | VOLATILE | INSUFFICIENT_DATA — độ ổn định doanh số.
+  demandStability                String?                @map("demand_stability") @db.VarChar(20)
+  /// Hệ số biến thiên doanh số theo tháng; cơ sở tính tồn dự phòng.
+  variationCoefficient           Decimal?               @map("variation_coefficient") @db.Decimal(10, 4)
+  /// Tổng leadtime cận dưới/cận trên (ngày) của chuỗi 4 giai đoạn.
+  leadTimeMinDays                Int?                   @map("lead_time_min_days") @db.SmallInt
   /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
   status                         String                 @default("PENDING") @db.VarChar(15)
   orderSupplierId                Int?                   @map("order_supplier_id")
@@ -3835,8 +3914,8 @@ enum MisaSyncStatus {
 /// Chính sách công nợ của từng khách. Khách KHÔNG có bản ghi ở đây
 /// được hiểu là NONE (không công nợ) và không hiện trong danh sách theo dõi.
 model CustomerDebtPolicy {
-  id         Int      @id @default(autoincrement())
-  customerId Int      @unique @map("customer_id")
+  id         Int @id @default(autoincrement())
+  customerId Int @unique @map("customer_id")
 
   // ---- HAI CHIỀU CÔNG NỢ ĐỘC LẬP ----
   // Dữ liệu thực tế ("Loại Công Nợ" trong file quản lý) là multi-select:
@@ -3876,10 +3955,10 @@ model CustomerDebtPolicy {
   // mỗi lần xem luôn phản ánh dữ liệu mới. Người dùng chỉ lưu OVERRIDE khi
   // cần điều chỉnh nhận định máy, kèm lý do bắt buộc để truy vết.
   // ON_TIME | SLIGHT_LATE | OFTEN_LATE | HIGH_RISK
-  paymentHistoryOverride       String?   @map("payment_history_override")
-  paymentHistoryOverrideNote   String?   @map("payment_history_override_note")
-  paymentHistoryOverriddenBy   Int?      @map("payment_history_overridden_by")
-  paymentHistoryOverriddenAt   DateTime? @map("payment_history_overridden_at")
+  paymentHistoryOverride     String?   @map("payment_history_override")
+  paymentHistoryOverrideNote String?   @map("payment_history_override_note")
+  paymentHistoryOverriddenBy Int?      @map("payment_history_overridden_by")
+  paymentHistoryOverriddenAt DateTime? @map("payment_history_overridden_at")
 
   isActive  Boolean  @default(true) @map("is_active")
   createdBy Int?     @map("created_by")
@@ -3949,9 +4028,9 @@ model DebtTicket {
 
 /// Một dòng khách trong ticket.
 model DebtTicketCustomer {
-  id               Int        @id @default(autoincrement())
-  ticketId         Int        @map("ticket_id")
-  customerId       Int        @map("customer_id")
+  id           Int     @id @default(autoincrement())
+  ticketId     Int     @map("ticket_id")
+  customerId   Int     @map("customer_id")
   /// NỢ ĐẦU KÌ — ảnh chụp customer.totalDebt tại thời điểm tạo phiếu.
   /// Cố định, không đổi về sau. "Nợ cuối kì" KHÔNG lưu ở đây: nó luôn là
   /// nợ hiện tại của khách nên đọc trực tiếp từ customer.totalDebt.
@@ -3970,11 +4049,11 @@ model DebtTicketCustomer {
   confirmedDate   DateTime? @map("confirmed_date")
 
   /// PENDING | PARTIAL | PAID
-  status           String     @default("PENDING")
-  paidAt           DateTime?  @map("paid_at")
-  paidAmount       Decimal?   @map("paid_amount") @db.Decimal(18, 2)
+  status           String    @default("PENDING")
+  paidAt           DateTime? @map("paid_at")
+  paidAmount       Decimal?  @map("paid_amount") @db.Decimal(18, 2)
   /// Giao dịch Sepay đã khớp (khi nhân viên gắn khách ở Biến động số dư).
-  matchedSepayTxId Int?       @map("matched_sepay_tx_id")
+  matchedSepayTxId Int?      @map("matched_sepay_tx_id")
 
   /// Phiếu MỚI NHẤT của khách này. Một khách được tạo phiếu nhiều đợt theo
   /// thời gian; trang theo dõi công nợ chỉ hiển thị phiếu mới nhất.

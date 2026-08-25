@@ -1,7 +1,24 @@
 import {
   PurchasingPlanningRepository,
+  resolveHubBranchScope,
   resolvePurchasingBranchScope,
 } from './purchasing-planning.repository';
+
+describe('resolveHubBranchScope', () => {
+  it('accepts any set of branches flagged as purchasing hubs', () => {
+    expect(
+      resolveHubBranchScope([
+        { id: 11, name: 'Kho Hà Nội', code: 'HN' },
+        { id: 22, name: 'Kho Sài Gòn', code: 'SG' },
+        { id: 33, name: 'Kho Đà Nẵng', code: 'DN' },
+      ]).branches,
+    ).toHaveLength(3);
+  });
+
+  it('fails closed when no branch is flagged as a hub', () => {
+    expect(() => resolveHubBranchScope([])).toThrow('isPurchasingHub');
+  });
+});
 
 describe('resolvePurchasingBranchScope', () => {
   it('resolves the two active warehouse names without relying on IDs or row order', () => {
@@ -104,13 +121,11 @@ describe('PurchasingPlanningRepository calculation scope', () => {
     getScope.mockRestore();
   });
 
-  it('fails resolved config context closed before querying product or supplier', async () => {
-    prisma.branch.findMany.mockResolvedValue([
-      { id: 11, name: 'Kho Hà Nội', code: 'HN' },
-    ]);
+  it('fails resolved config context when no hub and legacy names are incomplete', async () => {
+    prisma.branch.findMany.mockResolvedValue([]);
 
     await expect(repository.findResolvedConfigContext(9)).rejects.toThrow(
-      'Kho Sài Gòn',
+      'Không có chi nhánh active',
     );
     expect(prisma.product.findUnique).not.toHaveBeenCalled();
     expect(prisma.orderSupplierItem.findFirst).not.toHaveBeenCalled();
@@ -177,14 +192,12 @@ describe('PurchasingPlanningRepository calculation scope', () => {
     });
   });
 
-  it('does not launch calculation queries when branch resolution fails', async () => {
-    prisma.branch.findMany.mockResolvedValue([
-      { id: 11, name: 'Kho Hà Nội', code: 'HN' },
-    ]);
+  it('does not launch calculation queries when there is no active branch', async () => {
+    prisma.branch.findMany.mockResolvedValue([]);
 
     await expect(
       repository.loadCalculationData(new Date(), new Date()),
-    ).rejects.toThrow('Kho Sài Gòn');
+    ).rejects.toThrow('Không có chi nhánh active');
     expect(prisma.product.findMany).not.toHaveBeenCalled();
   });
 });

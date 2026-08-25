@@ -5,11 +5,8 @@ import {
 } from './models';
 
 export const DEFAULT_PLANNING_CONFIG: PlanningConfig = Object.freeze({
-  leadTimeDays: 30,
   safetyDays: 14,
   coverageDays: 30,
-  growthFactor: 1,
-  moq: 1,
 });
 
 export const OPERATIONAL_PLANNING_DEFAULTS: OperationalPlanningDefaults =

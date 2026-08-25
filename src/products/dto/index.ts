@@ -8,18 +8,22 @@ import {
   IsInt,
   IsDateString,
   ValidateNested,
+  IsIn,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { PartialType } from '@nestjs/swagger';
+
+/**
+ * Phân loại hàng hoá phục vụ leadtime chuyển kho (Phase 1 — hệ thống leadtime).
+ * COLD = hàng lạnh (thời gian chuyển kho ngắn hơn), NORMAL = hàng thường.
+ */
+export const CARGO_TYPES = ['COLD', 'NORMAL'] as const;
+export type CargoType = (typeof CARGO_TYPES)[number];
 
 export class InitialInventoryDto {
   @IsNumber()
   @Type(() => Number)
   branchId: number;
-
-  @IsOptional()
-  @IsString()
-  branchName?: string;
 
   @IsOptional()
   @IsNumber()
@@ -151,6 +155,28 @@ export class ProductAttributeInputDto {
   value: string;
 }
 
+/**
+ * Một dòng gắn nhà máy cho sản phẩm.
+ *
+ * Chỉ mang thông tin quan hệ (nhà máy nào, vai trò gì, ưu tiên thứ mấy).
+ * Giá / MOQ / leadtime thuộc trang nhà máy, không sửa qua form sản phẩm.
+ */
+export class ProductFactoryMappingDto {
+  @IsInt()
+  @Type(() => Number)
+  factoryId: number;
+
+  @IsIn(['primary', 'backup'])
+  role: 'primary' | 'backup';
+
+  /** 0 = ưu tiên cao nhất. Dùng để chọn nhà máy mặc định khi cần đúng một. */
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
+  priority?: number;
+}
+
 export class CreateProductDto {
   @IsString()
   code: string;
@@ -280,6 +306,10 @@ export class CreateProductDto {
   shippingWeightUnit?: string;
 
   @IsOptional()
+  @IsIn(CARGO_TYPES)
+  cargoType?: CargoType;
+
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ProductAttributeInputDto)
@@ -371,22 +401,17 @@ export class CreateProductDto {
   manualCostOverride?: boolean;
 
   /**
-   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
-   * Có thể null nếu sản phẩm chưa gắn nhà máy.
+   * Danh sách nhà máy của sản phẩm (nguồn chân lý — thay cho 2 field trên).
+   *
+   * Một sản phẩm gắn được **nhiều** nhà máy chính và **nhiều** backup. Một
+   * nhà máy chỉ giữ đúng một vai trò (ràng buộc `@@unique([factoryId, productId])`).
+   * Gửi lên là **toàn bộ** danh sách mong muốn — dòng thiếu sẽ bị gỡ.
    */
   @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  primaryFactoryId?: number;
-
-  /**
-   * ID nhà máy backup (FK Factory). Optional.
-   * Không được trùng với primaryFactoryId.
-   */
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  backupFactoryId?: number;
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductFactoryMappingDto)
+  factoryMappings?: ProductFactoryMappingDto[];
 }
 
 export class UpdateProductDto extends PartialType(CreateProductDto) {
@@ -576,24 +601,6 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {
     return undefined;
   })
   costBranchIds?: number[];
-
-  /**
-   * ID nhà máy chính sản xuất sản phẩm này (FK Factory).
-   * Có thể null nếu sản phẩm chưa gắn nhà máy.
-   */
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  primaryFactoryId?: number;
-
-  /**
-   * ID nhà máy backup (FK Factory). Optional.
-   * Không được trùng với primaryFactoryId.
-   */
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  backupFactoryId?: number;
 }
 
 export class ProductQueryDto {
@@ -671,6 +678,11 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   childName?: string;
+
+  /** Lọc theo phân loại hàng hoá: COLD | NORMAL */
+  @IsOptional()
+  @IsIn(CARGO_TYPES)
+  cargoType?: CargoType;
 
   // ── Multi-select: cho phép lọc nhiều giá trị cùng lúc ──
   @IsOptional()
@@ -812,8 +824,8 @@ export class ProductQueryDto {
 
   /**
    * Quan hệ với factoryId:
-   * - 'primary': chỉ filter sản phẩm có primaryFactoryId = factoryId
-   * - 'backup': chỉ filter sản phẩm có backupFactoryId = factoryId
+   * - 'primary': chỉ lấy sản phẩm gắn nhà máy này với vai trò chính
+   * - 'backup': chỉ lấy sản phẩm gắn nhà máy này với vai trò backup
    * - 'either' (mặc định): filter sản phẩm có primary HOẶC backup match
    */
   @IsOptional()
@@ -835,4 +847,18 @@ export class ProductQueryDto {
   @IsOptional()
   @IsDateString()
   toCreatedDate?: string;
+}
+
+/**
+ * Gán phân loại hàng hoá (COLD/NORMAL) cho nhiều sản phẩm cùng lúc.
+ * Dùng cho việc khởi tạo dữ liệu cargoType trên toàn danh mục.
+ */
+export class BulkUpdateCargoTypeDto {
+  @IsArray()
+  @IsInt({ each: true })
+  @Type(() => Number)
+  productIds!: number[];
+
+  @IsIn(CARGO_TYPES)
+  cargoType!: CargoType;
 }

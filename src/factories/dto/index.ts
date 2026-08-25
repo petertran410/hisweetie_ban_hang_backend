@@ -51,7 +51,9 @@ export class CreateFactoryDto {
   @IsOptional() @IsNumber() @Min(0) @Transform(toNum) moqIncrement?:
     | number
     | null;
-  @IsOptional() @IsInt() @Min(0) leadtimeDays?: number;
+  /** Khoảng thời gian sản xuất dùng cho dự báo đặt hàng (nhanh nhất ≤ chậm nhất). */
+  @IsOptional() @IsInt() @Min(0) productionLeadtimeMin?: number;
+  @IsOptional() @IsInt() @Min(0) productionLeadtimeMax?: number;
   @IsOptional() @IsString() paymentTerm?: string;
   @IsOptional() @IsString() country?: string;
   @IsOptional() @IsString() currency?: string;

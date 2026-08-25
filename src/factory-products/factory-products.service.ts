@@ -6,10 +6,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { toVnd } from '../common/currency.util';
 import { normalizeMoqSpec } from '../common/moq.util';
-import {
-  clearProductFactoryColumnIfMatches,
-  syncProductFactoryColumns,
-} from '../common/factory-mapping.util';
+import { writeMappingChangeLogs } from '../common/factory-mapping.util';
 import {
   CreateFactoryProductDto,
   FactoryProductQueryDto,
@@ -199,12 +196,21 @@ export class FactoryProductsService {
           },
         });
       }
-      // Cột `Product.primaryFactoryId`/`backupFactoryId` là nguồn form sản
-      // phẩm đang đọc — đồng bộ để gắn từ trang nhà máy hiện được bên kia.
-      await syncProductFactoryColumns(tx, {
-        productId: dto.productId,
-        factoryId: dto.factoryId,
-        role: created.role === 'backup' ? 'backup' : 'primary',
+      await writeMappingChangeLogs(tx, {
+        events: [
+          {
+            productId: dto.productId,
+            factoryId: dto.factoryId,
+            action: 'attach',
+            previousRole: null,
+            role: created.role === 'backup' ? 'backup' : 'primary',
+            previousPriority: null,
+            priority: created.priority ?? 0,
+          },
+        ],
+        userId,
+        userName,
+        reason: 'attach_from_factory_page',
       });
       return created;
     });
@@ -281,30 +287,34 @@ export class FactoryProductsService {
         });
       }
 
-      // Đổi vai trò / ngừng kích hoạt → cập nhật lại cột trên Product.
-      const nextRole = (dto.role ?? existing.role) === 'backup'
-        ? ('backup' as const)
-        : ('primary' as const);
-      const nextActive = dto.isActive ?? existing.isActive;
-      if (nextActive === false) {
-        await clearProductFactoryColumnIfMatches(tx, {
-          productId: existing.productId,
-          factoryId: existing.factoryId,
-          role: existing.role === 'backup' ? 'backup' : 'primary',
-        });
-      } else {
-        if (dto.role !== undefined && dto.role !== existing.role) {
-          // Vai trò cũ không còn nhà máy này giữ nữa.
-          await clearProductFactoryColumnIfMatches(tx, {
-            productId: existing.productId,
-            factoryId: existing.factoryId,
-            role: existing.role === 'backup' ? 'backup' : 'primary',
-          });
-        }
-        await syncProductFactoryColumns(tx, {
-          productId: existing.productId,
-          factoryId: existing.factoryId,
-          role: nextRole,
+      // Ghi log khi đổi vai trò / thứ tự ưu tiên. Đổi giá/MOQ đã có bảng
+      // `factory_product_price_histories` riêng nên không log lại ở đây.
+      const previousRole =
+        existing.role === 'backup' ? ('backup' as const) : ('primary' as const);
+      const nextRole =
+        (dto.role ?? existing.role) === 'backup'
+          ? ('backup' as const)
+          : ('primary' as const);
+      const nextPriority = dto.priority ?? existing.priority ?? 0;
+      const roleChanged = nextRole !== previousRole;
+      const priorityChanged = nextPriority !== (existing.priority ?? 0);
+
+      if (roleChanged || priorityChanged) {
+        await writeMappingChangeLogs(tx, {
+          events: [
+            {
+              productId: existing.productId,
+              factoryId: existing.factoryId,
+              action: roleChanged ? 'role_change' : 'priority_change',
+              previousRole,
+              role: nextRole,
+              previousPriority: existing.priority ?? 0,
+              priority: nextPriority,
+            },
+          ],
+          userId,
+          userName,
+          reason: 'update_from_factory_page',
         });
       }
     });
@@ -312,22 +322,37 @@ export class FactoryProductsService {
     return this.findOne(id);
   }
 
-  async remove(id: number) {
+  async remove(id: number, userId?: number, userName?: string | null) {
     const mapping = await this.prisma.factory_products.findUnique({
       where: { id },
-      select: { id: true, productId: true, factoryId: true, role: true },
+      select: {
+        id: true,
+        productId: true,
+        factoryId: true,
+        role: true,
+        priority: true,
+      },
     });
     if (!mapping)
       throw new NotFoundException('Không tìm thấy sản phẩm của nhà máy');
 
     return this.prisma.$transaction(async (tx) => {
       const deleted = await tx.factory_products.delete({ where: { id } });
-      // Cột trên Product phải nhả theo, nếu không form sản phẩm vẫn hiện
-      // nhà máy đã bị gỡ khỏi mapping.
-      await clearProductFactoryColumnIfMatches(tx, {
-        productId: mapping.productId,
-        factoryId: mapping.factoryId,
-        role: mapping.role === 'backup' ? 'backup' : 'primary',
+      await writeMappingChangeLogs(tx, {
+        events: [
+          {
+            productId: mapping.productId,
+            factoryId: mapping.factoryId,
+            action: 'detach',
+            previousRole: mapping.role === 'backup' ? 'backup' : 'primary',
+            role: null,
+            previousPriority: mapping.priority ?? 0,
+            priority: null,
+          },
+        ],
+        userId,
+        userName,
+        reason: 'detach_from_factory_page',
       });
       return deleted;
     });
@@ -529,48 +554,120 @@ export class FactoryProductsService {
       productIds.map((productId) => {
         const mapping = byProduct.get(productId);
         if (!mapping) return [productId, null];
-        const referencePrice =
-          mapping.referencePrice == null
-            ? null
-            : Number(mapping.referencePrice);
-        const exchangeRate =
-          mapping.exchangeRate == null ? null : Number(mapping.exchangeRate);
-        return [
-          productId,
-          {
-            factoryProductId: mapping.id,
-            factoryId: mapping.factoryId,
-            factoryName: mapping.factories.name,
-            referencePrice,
-            currency: mapping.currency,
-            exchangeRate,
-            referencePriceVnd:
-              referencePrice == null
-                ? null
-                : mapping.currency === 'VND'
-                  ? referencePrice
-                  : exchangeRate == null
-                    ? null
-                    : referencePrice * exchangeRate,
-            moq: mapping.moq == null ? null : Number(mapping.moq),
-            /** Cụm MOQ đã chuẩn hoá — FE dùng thẳng để cảnh báo trên PĐN. */
-            moqSpec: normalizeMoqSpec(mapping, 'PER_LINE'),
-            /** MOQ cấp nhà máy (ràng buộc độc lập với MOQ cấp dòng). */
-            factoryMoqSpec: normalizeMoqSpec(mapping.factories, 'PER_ORDER'),
-            /** Dữ liệu để FE quy đổi gói lẻ → thùng / kg / tấn. */
-            conversionValue:
-              mapping.products?.conversionValue == null
-                ? null
-                : Number(mapping.products.conversionValue),
-            weight:
-              mapping.products?.weight == null
-                ? null
-                : Number(mapping.products.weight),
-            weightUnit: mapping.products?.weightUnit ?? null,
-            priceUpdatedAt: mapping.priceUpdatedAt,
-          },
-        ];
+        return [productId, this.serializeMappingReference(mapping)];
       }),
+    );
+  }
+
+  /**
+   * Chuẩn hoá 1 dòng mapping thành thông tin giá + MOQ cho FE.
+   * Dùng chung cho `getReferencePrices` (1 nhà máy) và `getFactoryCandidates`
+   * (nhiều nhà máy) để hai nơi không lệch cách tính.
+   */
+  private serializeMappingReference(mapping: any) {
+    const referencePrice =
+      mapping.referencePrice == null ? null : Number(mapping.referencePrice);
+    const exchangeRate =
+      mapping.exchangeRate == null ? null : Number(mapping.exchangeRate);
+    return {
+      factoryProductId: mapping.id,
+      factoryId: mapping.factoryId,
+      factoryName: mapping.factories.name,
+      priority: mapping.priority ?? 0,
+      role: mapping.role === 'backup' ? 'backup' : 'primary',
+      referencePrice,
+      currency: mapping.currency,
+      exchangeRate,
+      referencePriceVnd:
+        referencePrice == null
+          ? null
+          : mapping.currency === 'VND'
+            ? referencePrice
+            : exchangeRate == null
+              ? null
+              : referencePrice * exchangeRate,
+      moq: mapping.moq == null ? null : Number(mapping.moq),
+      /** Cụm MOQ đã chuẩn hoá — FE dùng thẳng để cảnh báo trên PĐN. */
+      moqSpec: normalizeMoqSpec(mapping, 'PER_LINE'),
+      /** MOQ cấp nhà máy (ràng buộc độc lập với MOQ cấp dòng). */
+      factoryMoqSpec: normalizeMoqSpec(mapping.factories, 'PER_ORDER'),
+      /** Dữ liệu để FE quy đổi gói lẻ → thùng / kg / tấn. */
+      conversionValue:
+        mapping.products?.conversionValue == null
+          ? null
+          : Number(mapping.products.conversionValue),
+      weight:
+        mapping.products?.weight == null
+          ? null
+          : Number(mapping.products.weight),
+      weightUnit: mapping.products?.weightUnit ?? null,
+      priceUpdatedAt: mapping.priceUpdatedAt,
+    };
+  }
+
+  /**
+   * Danh sách **tất cả** nhà máy có thể sản xuất từng sản phẩm, đã lọc theo
+   * NCC của phiếu đặt hàng nhập.
+   *
+   * Khác `getReferencePrices` (gộp còn 1 nhà máy/sản phẩm): ở đây trả đủ để
+   * người dùng tự chọn nhà máy cho từng dòng phiếu — một sản phẩm có thể được
+   * gia công ở nhiều nhà máy của cùng một NCC.
+   */
+  async getFactoryCandidates(query: ReferencePricesQueryDto) {
+    const productIds = [
+      ...new Set(
+        query.productIds
+          .split(',')
+          .map((id) => Number(id.trim()))
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+    if (!productIds.length)
+      throw new BadRequestException('productIds không hợp lệ');
+
+    const where: any = { productId: { in: productIds }, isActive: true };
+    if (query.factoryId != null) where.factoryId = query.factoryId;
+    if (query.supplierId != null)
+      where.factories = { supplierId: query.supplierId };
+
+    const mappings = await this.prisma.factory_products.findMany({
+      where,
+      // priority nhỏ = ưu tiên cao, FE lấy phần tử đầu làm mặc định.
+      orderBy: [{ priority: 'asc' }, { id: 'asc' }],
+      include: {
+        factories: {
+          select: {
+            id: true,
+            name: true,
+            moq: true,
+            moqValue: true,
+            moqBasis: true,
+            moqUnit: true,
+            moqScope: true,
+            moqIncrement: true,
+          },
+        },
+        products: {
+          select: {
+            id: true,
+            name: true,
+            conversionValue: true,
+            weight: true,
+            weightUnit: true,
+          },
+        },
+      },
+    });
+
+    const byProduct = new Map<number, any[]>();
+    for (const mapping of mappings) {
+      const list = byProduct.get(mapping.productId) ?? [];
+      list.push(this.serializeMappingReference(mapping));
+      byProduct.set(mapping.productId, list);
+    }
+
+    return Object.fromEntries(
+      productIds.map((productId) => [productId, byProduct.get(productId) ?? []]),
     );
   }
 

@@ -22,6 +22,8 @@ import {
   UpdatePlanningConfigDto,
 } from '../dto';
 import { PurchasingPlanningService } from '../services/purchasing-planning.service';
+import { PlanningNetworkService } from '../services/planning-network.service';
+import { UpdatePlanningNetworkConfigDto } from '../dto/planning-network-config.dto';
 
 type AuthenticatedUser = {
   id: number;
@@ -34,7 +36,22 @@ type AuthenticatedUser = {
 @UseGuards(JwtAuthGuard)
 @Controller('purchasing-planning')
 export class PurchasingPlanningController {
-  constructor(private readonly service: PurchasingPlanningService) {}
+  constructor(
+    private readonly service: PurchasingPlanningService,
+    private readonly networkService: PlanningNetworkService,
+  ) {}
+
+  @Get('network-config')
+  @RequirePermissions('purchasing_planning:config')
+  async getNetworkConfig() {
+    return this.networkService.getRawConfig();
+  }
+
+  @Patch('network-config')
+  @RequirePermissions('purchasing_planning:config')
+  updateNetworkConfig(@Body() dto: UpdatePlanningNetworkConfigDto) {
+    return this.networkService.updateConfig(dto);
+  }
 
   @Get('configs')
   @RequirePermissions('purchasing_planning:config')

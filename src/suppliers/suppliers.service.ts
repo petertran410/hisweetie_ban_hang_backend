@@ -449,10 +449,9 @@ export class SuppliersService {
 
     const products = await this.prisma.product.findMany({
       where: {
-        OR: [
-          { primaryFactory: { supplierId: id } },
-          { backupFactory: { supplierId: id } },
-        ],
+        factory_products: {
+          some: { isActive: true, factories: { supplierId: id } },
+        },
       },
       select: { id: true },
     });

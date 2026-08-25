@@ -859,6 +859,18 @@ export class OrderSuppliersService {
 
     await this.assertOrderSupplierInScope(orderSupplierId, supplierScope);
 
+    if (dto.factoryId != null) {
+      const order = await this.prisma.orderSupplier.findUnique({
+        where: { id: orderSupplierId },
+        select: { supplierId: true },
+      });
+      await this.assertFactoriesBelongToSupplier(
+        this.prisma,
+        order?.supplierId,
+        [{ factoryId: dto.factoryId }],
+      );
+    }
+
     const data: {
       productionStageId?: number | null;
       factoryId?: number | null;
@@ -926,6 +938,14 @@ export class OrderSuppliersService {
         items: {
           include: {
             product: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+              },
+            },
+            // Form sửa cần tên nhà máy đã gán để hiển thị lại đúng.
+            factory: {
               select: {
                 id: true,
                 code: true,
@@ -1042,8 +1062,61 @@ export class OrderSuppliersService {
     return { ...orderSupplier, items: itemsEnriched };
   }
 
+  /**
+   * Nhà máy gán cho từng dòng PĐN phải thuộc đúng NCC của phiếu.
+   *
+   * Schema không có ràng buộc này (`OrderSupplierItem.factoryId` chỉ FK tới
+   * Factory), nên phải chặn ở tầng service — nếu không sẽ gán được nhà máy
+   * của NCC khác, làm sai cả giá tham chiếu lẫn cảnh báo MOQ.
+   */
+  private async assertFactoriesBelongToSupplier(
+    tx: any,
+    supplierId: number | null | undefined,
+    items: Array<{ factoryId?: number | null }> | undefined,
+  ) {
+    const factoryIds = [
+      ...new Set(
+        (items ?? [])
+          .map((item) => item.factoryId)
+          .filter((id): id is number => Number.isInteger(id as number)),
+      ),
+    ];
+    if (!factoryIds.length) return;
+
+    if (!supplierId) {
+      throw new BadRequestException(
+        'Phiếu chưa có nhà cung cấp nên không thể gán nhà máy cho sản phẩm',
+      );
+    }
+
+    const factories = await tx.factory.findMany({
+      where: { id: { in: factoryIds } },
+      select: { id: true, name: true, supplierId: true },
+    });
+
+    const foundIds = new Set(factories.map((factory) => factory.id));
+    const missing = factoryIds.filter((id) => !foundIds.has(id));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Nhà máy không tồn tại: ${missing.join(', ')}`,
+      );
+    }
+
+    const foreign = factories.filter(
+      (factory) => factory.supplierId !== supplierId,
+    );
+    if (foreign.length) {
+      throw new BadRequestException(
+        `Nhà máy không thuộc nhà cung cấp của phiếu: ${foreign
+          .map((factory) => factory.name)
+          .join(', ')}`,
+      );
+    }
+  }
+
   async create(dto: CreateOrderSupplierDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
+      await this.assertFactoriesBelongToSupplier(tx, dto.supplierId, dto.items);
       // Cho phép user tự điền mã (đối xứng `productions.service.ts:141`).
       // Trim + check duplicate; nếu trống/không hợp lệ thì auto-generate.
       const code = await this.resolveOrderSupplierCode(tx, dto.code);
@@ -1091,6 +1164,7 @@ export class OrderSuppliersService {
             discount: item.discount || 0,
             subTotal,
             factoryId: item.factoryId ?? null,
+            productionStageId: item.productionStageId ?? null,
             factoryPrice,
             factorySubTotal,
             description: item.description,
@@ -1309,6 +1383,12 @@ export class OrderSuppliersService {
         throw new NotFoundException(`OrderSupplier with id ${id} not found`);
       }
 
+      await this.assertFactoriesBelongToSupplier(
+        tx,
+        dto.supplierId ?? existing.supplierId,
+        dto.items,
+      );
+
       let total = Number(existing.total);
       let discountAmount = Number(existing.discount);
       let subTotal = Number(existing.subTotal);
@@ -1398,6 +1478,10 @@ export class OrderSuppliersService {
               factorySubTotal,
               description: item.description,
               orderQuantity: item.quantity,
+              // Phải giữ lại: update() xoá sạch item rồi tạo lại, thiếu 2 field
+              // này là mất nhà máy/công đoạn đã gán trước đó.
+              factoryId: item.factoryId ?? null,
+              productionStageId: item.productionStageId ?? null,
             };
           }),
         );

@@ -7,7 +7,12 @@ import { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateProductDto, UpdateProductDto, ProductQueryDto } from './dto';
+import {
+  CreateProductDto,
+  UpdateProductDto,
+  ProductQueryDto,
+  BulkUpdateCargoTypeDto,
+} from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { OrdersService } from '../orders/orders.service';
 import { OrderSuppliersService } from '../order-suppliers/order-suppliers.service';
@@ -34,8 +39,7 @@ import { StockAuditsService } from '../stock-audits/stock-audits.service';
 import {
   FACTORY_PRODUCTS_INCLUDE,
   overlayFactoriesFromMappings,
-  unlinkMappingRole,
-  upsertMappingRole,
+  replaceProductMappings,
 } from '../common/factory-mapping.util';
 
 @Injectable()
@@ -247,6 +251,7 @@ export class ProductsService {
       factoryRelation,
       fromCreatedDate,
       toCreatedDate,
+      cargoType,
     } = query;
     const skip = limit ? (page - 1) * limit : 0;
     const sortDir: 'asc' | 'desc' = orderDirection === 'asc' ? 'asc' : 'desc';
@@ -298,6 +303,7 @@ export class ProductsService {
       where.tradeMarkId = { in: tradeMarkIds };
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
+    if (cargoType) where.cargoType = cargoType;
 
     if (fromCreatedDate || toCreatedDate) {
       where.createdAt = {};
@@ -311,41 +317,20 @@ export class ProductsService {
       where.inventories = { every: { onHand: { lte: 0 } } };
     }
 
-    // ── Filter theo nhà máy (mới) ────────────────────────────────────────────
-    // supplierId: filter product mà primary HOẶC backup factory thuộc NCC này.
-    // factoryId + factoryRelation: filter product có primary/backup match.
+    // ── Filter theo nhà máy ──────────────────────────────────────────────────
+    // Nguồn duy nhất là mapping `factory_products` (1 SP gắn được nhiều NM).
     if (supplierId) {
-      where.OR = [
-        { primaryFactory: { supplierId } },
-        { backupFactory: { supplierId } },
-        { factory_products: { some: { factories: { supplierId } } } },
-      ];
+      where.factory_products = {
+        some: { isActive: true, factories: { supplierId } },
+      };
     } else if (factoryId) {
-      if (factoryRelation === 'primary') {
-        where.OR = [
-          { primaryFactoryId: factoryId },
-          {
-            factory_products: {
-              some: { factoryId, role: 'primary', isActive: true },
-            },
-          },
-        ];
-      } else if (factoryRelation === 'backup') {
-        where.OR = [
-          { backupFactoryId: factoryId },
-          {
-            factory_products: {
-              some: { factoryId, role: 'backup', isActive: true },
-            },
-          },
-        ];
-      } else {
-        where.OR = [
-          { primaryFactoryId: factoryId },
-          { backupFactoryId: factoryId },
-          { factory_products: { some: { factoryId, isActive: true } } },
-        ];
-      }
+      const roleFilter =
+        factoryRelation === 'primary' || factoryRelation === 'backup'
+          ? { role: factoryRelation }
+          : {};
+      where.factory_products = {
+        some: { factoryId, isActive: true, ...roleFilter },
+      };
     }
 
     let inventoriesInclude: any = { include: { branch: true } };
@@ -376,24 +361,6 @@ export class ProductsService {
           componentProduct: {
             include: { images: true, inventories: true },
           },
-        },
-      },
-      primaryFactory: {
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          country: true,
-          currency: true,
-        },
-      },
-      backupFactory: {
-        select: {
-          id: true,
-          code: true,
-          name: true,
-          country: true,
-          currency: true,
         },
       },
       ...FACTORY_PRODUCTS_INCLUDE,
@@ -492,9 +459,8 @@ export class ProductsService {
 
   /**
    * Chuyển product.attributes (quan hệ) → mảng phẳng {id, name, value} cho FE.
-   * Đồng thời derive nhà máy chính/backup từ mapping `factory_products` — form
-   * sản phẩm đọc `primaryFactoryId`/`backupFactoryId`, còn trang nhà máy ghi
-   * vào bảng mapping, nên phải overlay để hai bên không lệch nhau.
+   * Đồng thời trả `factoryMappings` đầy đủ từ bảng `factory_products` — một
+   * sản phẩm có thể có nhiều nhà máy chính/backup.
    */
   private normalizeProductAttributes<T extends { attributes?: any }>(
     product: T | null | undefined,
@@ -611,6 +577,7 @@ export class ProductsService {
       fromCreatedDate,
       toCreatedDate,
       asOfDate,
+      cargoType,
     } = query;
 
     // ── Build where (mirror findAll) ─────────────────────────────────────────
@@ -656,6 +623,7 @@ export class ProductsService {
       where.tradeMarkId = { in: tradeMarkIds };
     else if (tradeMarkId) where.tradeMarkId = tradeMarkId;
     if (isDirectSale !== undefined) where.isDirectSale = isDirectSale;
+    if (cargoType) where.cargoType = cargoType;
 
     if (fromCreatedDate || toCreatedDate) {
       where.createdAt = {};
@@ -983,8 +951,6 @@ export class ProductsService {
           include: { value: { include: { definition: true } } },
           orderBy: { id: 'asc' },
         },
-        primaryFactory: true,
-        backupFactory: true,
         ...FACTORY_PRODUCTS_INCLUDE,
       },
     });
@@ -1013,6 +979,42 @@ export class ProductsService {
     );
 
     return this.normalizeProductAttributes({ ...product, inventories });
+  }
+
+  /**
+   * Kiểm tra danh sách nhà máy gửi từ form sản phẩm.
+   *
+   * Một nhà máy chỉ được giữ đúng một vai trò với một sản phẩm — nếu không
+   * `@@unique([factoryId, productId])` sẽ ném lỗi Prisma khó hiểu cho người dùng.
+   */
+  private async validateFactoryMappings(
+    mappings:
+      | Array<{ factoryId: number; role: 'primary' | 'backup' }>
+      | undefined,
+  ) {
+    if (!mappings?.length) return;
+
+    const seen = new Set<number>();
+    for (const item of mappings) {
+      if (seen.has(item.factoryId)) {
+        throw new BadRequestException(
+          'Một nhà máy chỉ được gắn một vai trò cho cùng sản phẩm',
+        );
+      }
+      seen.add(item.factoryId);
+    }
+
+    const found = await this.prisma.factory.findMany({
+      where: { id: { in: [...seen] } },
+      select: { id: true },
+    });
+    const foundIds = new Set(found.map((factory) => factory.id));
+    const missing = [...seen].filter((id) => !foundIds.has(id));
+    if (missing.length > 0) {
+      throw new BadRequestException(
+        `Nhà máy không tồn tại: ${missing.join(', ')}`,
+      );
+    }
   }
 
   async checkCodeExists(code: string, excludeId?: number): Promise<boolean> {
@@ -1051,40 +1053,12 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
-      primaryFactoryId,
-      backupFactoryId,
+      factoryMappings,
       attributes,
       ...productData
     } = dto;
 
-    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
-    if (
-      primaryFactoryId != null &&
-      backupFactoryId != null &&
-      primaryFactoryId === backupFactoryId
-    ) {
-      throw new BadRequestException(
-        'Nhà máy chính và nhà máy backup không được trùng nhau',
-      );
-    }
-
-    // Validate factory tồn tại
-    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
-      (id) => id != null,
-    );
-    if (factoryIdsToCheck.length > 0) {
-      const foundFactories = await this.prisma.factory.findMany({
-        where: { id: { in: factoryIdsToCheck } },
-        select: { id: true },
-      });
-      const foundIds = new Set(foundFactories.map((f) => f.id));
-      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new BadRequestException(
-          `Nhà máy không tồn tại: ${missing.join(', ')}`,
-        );
-      }
-    }
+    await this.validateFactoryMappings(factoryMappings);
 
     // Phòng vệ NaN (xem update()): loại số không hợp lệ trước khi đưa vào Prisma.
     const sanitizeNumber = (v: any): number | undefined =>
@@ -1137,6 +1111,7 @@ export class ProductsService {
           vat: productData.vat ?? 8,
           shippingWeight: productData.shippingWeight,
           shippingWeightUnit: productData.shippingWeightUnit ?? 'g',
+          cargoType: productData.cargoType ?? 'NORMAL',
           isRewardPoint: productData.isRewardPoint,
           isActive: productData.isActive ?? true,
           isDirectSale: productData.isDirectSale ?? false,
@@ -1159,12 +1134,6 @@ export class ProductsService {
           ...(masterProductId && {
             masterProduct: { connect: { id: masterProductId } },
           }),
-          ...(primaryFactoryId != null && {
-            primaryFactory: { connect: { id: primaryFactoryId } },
-          }),
-          ...(backupFactoryId != null && {
-            backupFactory: { connect: { id: backupFactoryId } },
-          }),
         },
       });
 
@@ -1185,66 +1154,14 @@ export class ProductsService {
         }
       }
 
-      // Ghi audit log cho lần gắn nhà máy đầu tiên (nếu có)
-      if (factoryIdsToCheck.length > 0 && userId) {
-        const user = await tx.user.findUnique({
-          where: { id: userId },
-          select: { name: true },
-        });
-        const logs: Array<{
-          productId: number;
-          factoryId: number;
-          role: string;
-          previousFactoryId: number | null;
-          changedById: number;
-          changedByName: string | null;
-          reason: string;
-        }> = [];
-        if (primaryFactoryId != null) {
-          logs.push({
-            productId: product.id,
-            factoryId: primaryFactoryId,
-            role: 'primary',
-            previousFactoryId: null,
-            changedById: userId,
-            changedByName: user?.name ?? null,
-            reason: 'set_primary',
-          });
-        }
-        if (backupFactoryId != null) {
-          logs.push({
-            productId: product.id,
-            factoryId: backupFactoryId,
-            role: 'backup',
-            previousFactoryId: null,
-            changedById: userId,
-            changedByName: user?.name ?? null,
-            reason: 'set_backup',
-          });
-        }
-        if (logs.length > 0) {
-          await tx.factoryChangeLog.createMany({ data: logs });
-        }
-      }
-
-      // Đồng bộ bảng mapping — nguồn chân lý mới. Form sản phẩm chỉ hiện 1
-      // nhà máy/role nên tạo đúng 1 dòng primary + 1 dòng backup (nếu có).
-      if (primaryFactoryId != null) {
-        await upsertMappingRole(tx, {
-          productId: product.id,
-          factoryId: primaryFactoryId,
-          role: 'primary',
-          userId,
-        });
-      }
-      if (backupFactoryId != null) {
-        await upsertMappingRole(tx, {
-          productId: product.id,
-          factoryId: backupFactoryId,
-          role: 'backup',
-          userId,
-        });
-      }
+      // Nguồn chân lý duy nhất: bảng mapping nhiều-nhiều. Ghi log `attach`
+      // cho từng dòng trong cùng transaction với lúc tạo sản phẩm.
+      await replaceProductMappings(tx, {
+        productId: product.id,
+        desired: factoryMappings ?? [],
+        userId,
+        reason: 'create_product',
+      });
 
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
@@ -1513,85 +1430,12 @@ export class ProductsService {
       masterProductId,
       masterUnitId,
       manualCostOverride,
-      primaryFactoryId,
-      backupFactoryId,
+      factoryMappings,
       attributes,
       ...productData
     } = dto;
 
-    // Validate factory: nếu cả 2 đều có thì không được trùng nhau
-    if (
-      primaryFactoryId != null &&
-      backupFactoryId != null &&
-      primaryFactoryId === backupFactoryId
-    ) {
-      throw new BadRequestException(
-        'Nhà máy chính và nhà máy backup không được trùng nhau',
-      );
-    }
-
-    // Validate factory tồn tại nếu được truyền (không null)
-    const factoryIdsToCheck = [primaryFactoryId, backupFactoryId].filter(
-      (id) => id != null,
-    );
-    if (factoryIdsToCheck.length > 0) {
-      const foundFactories = await this.prisma.factory.findMany({
-        where: { id: { in: factoryIdsToCheck } },
-        select: { id: true },
-      });
-      const foundIds = new Set(foundFactories.map((f) => f.id));
-      const missing = factoryIdsToCheck.filter((id) => !foundIds.has(id));
-      if (missing.length > 0) {
-        throw new BadRequestException(
-          `Nhà máy không tồn tại: ${missing.join(', ')}`,
-        );
-      }
-    }
-
-    // Detect thay đổi primary/backup factory để ghi audit log sau
-    const factoryChanges: Array<{
-      role: 'primary' | 'backup';
-      factoryId: number;
-      previousFactoryId: number | null;
-      reason: string;
-    }> = [];
-
-    if (primaryFactoryId !== undefined) {
-      const newId = primaryFactoryId ?? null;
-      const oldId = currentProduct.primaryFactoryId ?? null;
-      if (newId !== oldId) {
-        factoryChanges.push({
-          role: 'primary',
-          factoryId: newId ?? 0,
-          previousFactoryId: oldId,
-          reason:
-            newId === null
-              ? 'unlink'
-              : oldId === backupFactoryId && oldId != null
-                ? 'swap'
-                : 'set_primary',
-        });
-        (productData as any).primaryFactoryId = newId;
-      }
-    }
-    if (backupFactoryId !== undefined) {
-      const newId = backupFactoryId ?? null;
-      const oldId = currentProduct.backupFactoryId ?? null;
-      if (newId !== oldId) {
-        factoryChanges.push({
-          role: 'backup',
-          factoryId: newId ?? 0,
-          previousFactoryId: oldId,
-          reason:
-            newId === null
-              ? 'unlink'
-              : oldId === primaryFactoryId && oldId != null
-                ? 'swap'
-                : 'set_backup',
-        });
-        (productData as any).backupFactoryId = newId;
-      }
-    }
+    await this.validateFactoryMappings(factoryMappings);
 
     // Phòng vệ NaN: client có thể gửi NaN khi giá trị số được derive từ dữ liệu
     // đã bị strip (vd giá vốn bị ẩn theo quyền → Number(undefined) = NaN). Prisma
@@ -1679,54 +1523,15 @@ export class ProductsService {
         }
       }
 
-      // Ghi audit log nếu có thay đổi primary/backup factory
-      if (factoryChanges.length > 0 && userId) {
-        const user = await tx.user.findUnique({
-          where: { id: userId },
-          select: { name: true },
+      // Full mapping list là nguồn duy nhất; diff + log attach/detach/đổi role/
+      // priority đều thực hiện nguyên tử trong transaction này.
+      if (factoryMappings !== undefined) {
+        await replaceProductMappings(tx, {
+          productId: id,
+          desired: factoryMappings,
+          userId,
+          reason: 'update_product',
         });
-        await tx.factoryChangeLog.createMany({
-          data: factoryChanges.map((change) => ({
-            productId: id,
-            factoryId: change.factoryId,
-            role: change.role,
-            previousFactoryId: change.previousFactoryId,
-            changedById: userId,
-            changedByName: user?.name ?? null,
-            reason: change.reason,
-          })),
-        });
-      }
-
-      // Đồng bộ mapping: gắn nhà máy mới / gỡ nhà máy cũ theo từng thay đổi.
-      for (const change of factoryChanges) {
-        if (change.reason === 'unlink' && change.previousFactoryId != null) {
-          await unlinkMappingRole(tx, {
-            productId: id,
-            factoryId: change.previousFactoryId,
-            role: change.role,
-          });
-          continue;
-        }
-        if (change.factoryId) {
-          await upsertMappingRole(tx, {
-            productId: id,
-            factoryId: change.factoryId,
-            role: change.role,
-            userId,
-          });
-        }
-        // Swap / đổi nhà máy: gỡ mapping của nhà máy cũ cùng role.
-        if (
-          change.previousFactoryId != null &&
-          change.previousFactoryId !== change.factoryId
-        ) {
-          await unlinkMappingRole(tx, {
-            productId: id,
-            factoryId: change.previousFactoryId,
-            role: change.role,
-          });
-        }
       }
 
       if (dto.code || dto.name) {
@@ -2249,6 +2054,53 @@ export class ProductsService {
     }
 
     return { message: 'Xóa sản phẩm thành công' };
+  }
+
+  /**
+   * Gán phân loại hàng hoá (COLD/NORMAL) cho nhiều sản phẩm cùng lúc.
+   * Phục vụ khởi tạo dữ liệu `cargoType` trên toàn danh mục — đầu vào cho
+   * leadtime giai đoạn chuyển kho.
+   */
+  async bulkUpdateCargoType(
+    dto: BulkUpdateCargoTypeDto,
+    userId?: number,
+  ): Promise<{ message: string; updated: number }> {
+    const productIds = [...new Set(dto.productIds)].filter(
+      (id) => Number.isInteger(id) && id > 0,
+    );
+    if (productIds.length === 0) {
+      throw new BadRequestException('Danh sách sản phẩm không hợp lệ');
+    }
+
+    const result = await this.prisma.product.updateMany({
+      where: { id: { in: productIds } },
+      data: { cargoType: dto.cargoType },
+    });
+
+    if (userId && result.count > 0) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'UPDATE',
+        actionCode: 'PRODUCT_UPDATE',
+        entityType: 'products',
+        entityId: productIds.join(','),
+        category: getCategoryFromActionCode('PRODUCT_UPDATE'),
+        severity: getSeverityFromActionCode('PRODUCT_UPDATE'),
+        snapshot: { cargoType: dto.cargoType, productIds },
+        message: `Gán loại hàng "${dto.cargoType}" cho ${result.count} sản phẩm`,
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
+    return {
+      message: `Đã cập nhật loại hàng cho ${result.count} sản phẩm`,
+      updated: result.count,
+    };
   }
 
   async findInventoryLogs(

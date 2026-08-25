@@ -18,6 +18,7 @@ describe('PurchasingPlanningService config', () => {
   const service = new PurchasingPlanningService(
     repository as any,
     auditLogs as any,
+    {} as any,
   );
 
   beforeEach(() => {
@@ -52,7 +53,7 @@ describe('PurchasingPlanningService config', () => {
 
   it('returns groups with batch-loaded entity metadata', async () => {
     repository.findActiveConfigs.mockResolvedValue([
-      row('GLOBAL', null, 'leadTimeDays', 30),
+      row('GLOBAL', null, 'safetyDays', 30),
       row('CATEGORY', 7, 'safetyDays', 10),
       row('SUPPLIER', 8, 'coverageDays', 45),
       row('SKU', 9, 'moq', 24),
@@ -68,7 +69,7 @@ describe('PurchasingPlanningService config', () => {
           id: 'GLOBAL',
           scope: 'GLOBAL',
           entity: null,
-          overrides: { leadTimeDays: 30 },
+          overrides: { safetyDays: 30 },
           isActive: true,
         }),
         expect.objectContaining({
@@ -83,25 +84,25 @@ describe('PurchasingPlanningService config', () => {
 
   it('returns hierarchy provenance and Product conversion packSize', async () => {
     repository.findActiveConfigs.mockResolvedValue([
-      row('GLOBAL', null, 'leadTimeDays', 30),
-      row('CATEGORY', 7, 'leadTimeDays', 25),
+      row('GLOBAL', null, 'safetyDays', 30),
+      row('CATEGORY', 7, 'safetyDays', 25),
       row('SUPPLIER', 8, 'coverageDays', 45),
-      row('SKU', 9, 'leadTimeDays', 15),
+      row('SKU', 9, 'safetyDays', 15),
     ]);
     repository.findCategory.mockResolvedValue({ name: 'Tea', type: 'child' });
     repository.findSupplierEntity.mockResolvedValue({ id: 8 });
     const result = await service.getResolvedConfig({ skuId: 9 });
 
-    expect(result.effective.leadTimeDays).toBe(15);
-    expect(result.source.leadTimeDays).toMatchObject({
+    expect(result.effective.safetyDays).toBe(15);
+    expect(result.source.safetyDays).toMatchObject({
       scopeType: 'SKU',
       scopeId: 9,
       code: 'SKU-9',
       name: 'Product 9',
       label: 'Cấu hình riêng SKU: Product 9',
     });
-    expect(result.raw.current).toEqual({ leadTimeDays: 15 });
-    expect(result.raw.inherited.leadTimeDays).toBe(25);
+    expect(result.raw.current).toEqual({ safetyDays: 15 });
+    expect(result.raw.inherited.safetyDays).toBe(25);
     expect(result.productParameters).toMatchObject({
       packSize: 24,
       source: 'PRODUCT',
@@ -111,9 +112,9 @@ describe('PurchasingPlanningService config', () => {
       scope: 'SKU',
       entity: { id: 9, code: 'SKU-9', name: 'Product 9' },
       configId: 'SKU:9',
-      overrides: { leadTimeDays: 15 },
+      overrides: { safetyDays: 15 },
     });
-    expect(result.fields.leadTimeDays).toMatchObject({
+    expect(result.fields.safetyDays).toMatchObject({
       effective: 15,
       current: 15,
       inherited: 25,
@@ -139,7 +140,6 @@ describe('PurchasingPlanningService config', () => {
 
   it('returns null configId when the current SKU has no override', async () => {
     repository.findActiveConfigs.mockResolvedValue([
-      row('GLOBAL', null, 'leadTimeDays', 30),
       row('CATEGORY', 7, 'safetyDays', 10),
       row('SUPPLIER', 8, 'coverageDays', 45),
     ]);
@@ -149,7 +149,6 @@ describe('PurchasingPlanningService config', () => {
     expect(result.configId).toBeNull();
     expect(result.overrides).toEqual({});
     expect(result.effective).toMatchObject({
-      leadTimeDays: 30,
       safetyDays: 10,
       coverageDays: 45,
     });
@@ -162,28 +161,28 @@ describe('PurchasingPlanningService config', () => {
 
   it('resets a field with null while preserving the group', async () => {
     repository.findActiveConfigGroup.mockResolvedValue([
-      row('SKU', 9, 'leadTimeDays', 15),
-      row('SKU', 9, 'safetyDays', 7),
+      row('SKU', 9, 'safetyDays', 15),
+      row('SKU', 9, 'coverageDays', 7),
     ]);
     repository.upsertConfigGroup.mockResolvedValue([
-      row('SKU', 9, 'safetyDays', 7),
+      row('SKU', 9, 'coverageDays', 7),
     ]);
 
     const result = await service.updateConfig('SKU:9', {
-      leadTimeDays: null,
+      safetyDays: null,
     });
 
     expect(repository.upsertConfigGroup).toHaveBeenCalledWith(
       'SKU',
       9,
-      expect.objectContaining({ leadTimeDays: null }),
+      expect.objectContaining({ safetyDays: null }),
       undefined,
     );
     expect(result).toMatchObject({
       id: 'SKU:9',
       scope: 'SKU',
       entity: { id: 9, code: 'SKU-9', name: 'Product 9' },
-      overrides: { safetyDays: 7 },
+        overrides: { coverageDays: 7 },
       isActive: true,
     });
   });
@@ -192,11 +191,8 @@ describe('PurchasingPlanningService config', () => {
     await expect(
       service.createConfig({
         scopeType: 'GLOBAL',
-        leadTimeDays: null,
         safetyDays: null,
         coverageDays: null,
-        growthFactor: null,
-        moq: null,
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(repository.upsertConfigGroup).not.toHaveBeenCalled();
@@ -212,13 +208,13 @@ describe('PurchasingPlanningService config', () => {
         }),
       );
       repository.findActiveConfigGroup.mockResolvedValue([
-        row('SKU', 9, 'leadTimeDays', 15),
+        row('SKU', 9, 'safetyDays', 15),
       ]);
 
       const action =
         operation === 'create'
-          ? service.createConfig({ scopeType: 'GLOBAL', leadTimeDays: 30 })
-          : service.updateConfig('SKU:9', { leadTimeDays: 20 });
+          ? service.createConfig({ scopeType: 'GLOBAL', safetyDays: 30 })
+          : service.updateConfig('SKU:9', { safetyDays: 20 });
 
       await expect(action).rejects.toMatchObject({
         constructor: ConflictException,
@@ -230,16 +226,16 @@ describe('PurchasingPlanningService config', () => {
 
   it('writes reset audit after a successful null-field update', async () => {
     repository.findActiveConfigGroup.mockResolvedValue([
-      row('SKU', 9, 'leadTimeDays', 15),
-      row('SKU', 9, 'safetyDays', 7),
+      row('SKU', 9, 'safetyDays', 15),
+      row('SKU', 9, 'coverageDays', 7),
     ]);
     repository.upsertConfigGroup.mockResolvedValue([
-      row('SKU', 9, 'safetyDays', 7),
+      row('SKU', 9, 'coverageDays', 7),
     ]);
 
     await service.updateConfig(
       'SKU:9',
-      { leadTimeDays: null },
+      { safetyDays: null },
       { id: 3, name: 'Nguyễn An' },
     );
 
@@ -252,18 +248,18 @@ describe('PurchasingPlanningService config', () => {
         category: 'Mua hàng',
         userId: 3,
         userName: 'Nguyễn An',
-        changes: expect.objectContaining({ resetFields: ['leadTimeDays'] }),
+        changes: expect.objectContaining({ resetFields: ['safetyDays'] }),
       }),
     );
   });
 
   it('writes create audit with the created group snapshot', async () => {
     repository.upsertConfigGroup.mockResolvedValue([
-      row('GLOBAL', null, 'leadTimeDays', 30),
+      row('GLOBAL', null, 'safetyDays', 30),
     ]);
 
     await service.createConfig(
-      { scopeType: 'GLOBAL', leadTimeDays: 30 },
+      { scopeType: 'GLOBAL', safetyDays: 30 },
       { id: 3, name: 'Nguyễn An' },
     );
 
@@ -283,7 +279,7 @@ describe('PurchasingPlanningService config', () => {
 
   it('writes delete audit with the group snapshot', async () => {
     repository.findActiveConfigGroup.mockResolvedValue([
-      row('SKU', 9, 'leadTimeDays', 15),
+      row('SKU', 9, 'safetyDays', 15),
     ]);
     repository.deactivateConfigGroup.mockResolvedValue({ count: 1 });
 
@@ -300,7 +296,7 @@ describe('PurchasingPlanningService config', () => {
         userName: 'Nguyễn An',
         snapshot: expect.objectContaining({
           id: 'SKU:9',
-          overrides: { leadTimeDays: 15 },
+          overrides: { safetyDays: 15 },
         }),
       }),
     );
@@ -320,10 +316,37 @@ describe('PurchasingPlanningService calculation branch metadata', () => {
     completeRun: jest.fn(),
     failRun: jest.fn(),
   };
-  const service = new PurchasingPlanningService(repository as any, {} as any);
+  const networkService = {
+    getNetworkConfig: jest.fn(),
+    getBranchTransferConfigs: jest.fn(),
+    getFactoryLeadtimes: jest.fn(),
+    getProductFactoryMap: jest.fn(),
+    getImportHub: jest.fn(),
+  };
+  const service = new PurchasingPlanningService(
+    repository as any,
+    {} as any,
+    networkService as any,
+  );
 
   beforeEach(() => {
     jest.clearAllMocks();
+    networkService.getNetworkConfig.mockResolvedValue({
+      customs: { min: 7, typical: 8, max: 10 },
+      inbound: { min: 7, typical: 8, max: 10 },
+      transferDefault: {
+        COLD: { min: 3, typical: 4, max: 5 },
+        NORMAL: { min: 5, typical: 6, max: 7 },
+      },
+    });
+    networkService.getBranchTransferConfigs.mockResolvedValue(new Map());
+    networkService.getFactoryLeadtimes.mockResolvedValue(new Map());
+    networkService.getProductFactoryMap.mockResolvedValue(new Map());
+    networkService.getImportHub.mockResolvedValue({
+      id: 11,
+      name: 'Kho Hà Nội',
+      code: 'HN',
+    });
   });
 
   it('persists branch scope in CalculationRun.configVersion', async () => {
@@ -354,14 +377,9 @@ describe('PurchasingPlanningService calculation branch metadata', () => {
     const trace = (service as any).buildTrace(
       new Date('2026-08-09T00:00:00.000Z'),
       {
-        leadTimeDays: 1,
         safetyDays: 1,
-        coverageDays: 1,
-        growthFactor: 1,
         packSize: 1,
-        moq: 0,
       },
-      {},
       [],
       [],
       { used: 0 },
@@ -442,3 +460,120 @@ function row(
     updatedAt: new Date('2026-08-09T00:00:00.000Z'),
   };
 }
+
+describe('PurchasingPlanningService incoming shipments', () => {
+  const service = new PurchasingPlanningService(
+    {} as any,
+    {} as any,
+    {} as any,
+  );
+
+  /** Dựng một dòng đơn NCC kèm các chuyến ghép xe gắn với nó. */
+  const orderRow = (
+    shipments: Array<{
+      productId: number;
+      quantity: number;
+      branchId: number | null;
+      status: number;
+    }>,
+  ) => ({
+    orderSupplier: {
+      vehicleShipmentItems: shipments.map((shipment) => ({
+        productId: shipment.productId,
+        quantity: shipment.quantity,
+        vehicleShipment: {
+          branchId: shipment.branchId,
+          status: shipment.status,
+          expectedArrivalDate: new Date('2026-09-01T00:00:00.000Z'),
+        },
+      })),
+    },
+  });
+
+  it('cộng hàng đang về vào đúng chi nhánh đích của từng chuyến', () => {
+    const result = (service as any).incomingByBranch(
+      [
+        orderRow([
+          { productId: 9, quantity: 300, branchId: 6, status: 1 },
+          { productId: 9, quantity: 150, branchId: 7, status: 1 },
+        ]),
+      ],
+      9,
+    );
+
+    expect(result.get(6)).toBe(300);
+    expect(result.get(7)).toBe(150);
+  });
+
+  it('gộp nhiều chuyến cùng về một chi nhánh', () => {
+    const result = (service as any).incomingByBranch(
+      [
+        orderRow([{ productId: 9, quantity: 300, branchId: 6, status: 1 }]),
+        orderRow([{ productId: 9, quantity: 200, branchId: 6, status: 1 }]),
+      ],
+      9,
+    );
+
+    expect(result.get(6)).toBe(500);
+  });
+
+  it('bỏ qua phiếu tạm và chuyến đã nhập kho để không đếm hai lần', () => {
+    const result = (service as any).incomingByBranch(
+      [
+        orderRow([
+          { productId: 9, quantity: 100, branchId: 6, status: 0 },
+          { productId: 9, quantity: 300, branchId: 6, status: 1 },
+          { productId: 9, quantity: 500, branchId: 6, status: 2 },
+        ]),
+      ],
+      9,
+    );
+
+    expect(result.get(6)).toBe(300);
+  });
+
+  it('chỉ lấy đúng sản phẩm đang xét', () => {
+    const result = (service as any).incomingByBranch(
+      [
+        orderRow([
+          { productId: 9, quantity: 300, branchId: 6, status: 1 },
+          { productId: 10, quantity: 999, branchId: 6, status: 1 },
+        ]),
+      ],
+      9,
+    );
+
+    expect(result.get(6)).toBe(300);
+  });
+
+  it('bỏ qua chuyến chưa gắn chi nhánh nhận', () => {
+    const result = (service as any).incomingByBranch(
+      [orderRow([{ productId: 9, quantity: 300, branchId: null, status: 1 }])],
+      9,
+    );
+
+    expect(result.size).toBe(0);
+  });
+
+  it('gộp tồn và hàng đang về của mọi chi nhánh thành một vị thế công ty', () => {
+    const inventoryRows = [
+      { branchId: 6, branch: { name: 'Kho Hà Nội' }, onHand: 50 },
+      { branchId: 7, branch: { name: 'Kho Sài Gòn' }, onHand: 50 },
+    ];
+    // Chỉ Hà Nội có xe đang về, nhưng vị thế tính cho cả công ty.
+    const orders = [
+      orderRow([{ productId: 9, quantity: 300, branchId: 6, status: 1 }]),
+    ];
+
+    const position = (service as any).companyPosition(
+      inventoryRows,
+      orders,
+      9,
+      20,
+    );
+
+    expect(position.onHand).toBe(100);
+    expect(position.incoming).toBe(300);
+    expect(position.dailyDemand).toBe(20);
+  });
+});

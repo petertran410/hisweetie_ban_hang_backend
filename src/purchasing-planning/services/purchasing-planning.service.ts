@@ -7,19 +7,28 @@ import {
 import { Prisma } from '@prisma/client';
 import { AuditLogsService } from '../../audit-logs/audit-logs.service';
 import {
+  analyzeDemandStability,
+  calculateOrderTiming,
   calculatePriority,
+  calculatePromotionUplift,
   calculateReplenishment,
   calculateSoq,
+  coverageDaysFor,
   ConfigScope,
   ConfigValue,
   DEFAULT_PLANNING_CONFIG,
   forecastDemand,
+  MonthlySales,
+  moqSpecToPacks,
   OPERATIONAL_PLANNING_DEFAULTS,
   PlanningConfigKey,
   projectInventory,
+  PromotionWindow,
   resolveDemand,
   resolveIncoming,
+  resolveLeadtimePipeline,
   resolvePlanningConfig,
+  safetyDaysFromStability,
 } from '../domain';
 import {
   CreatePlanningConfigDto,
@@ -32,6 +41,7 @@ import {
   PurchasingBranchScope,
   PurchasingPlanningRepository,
 } from '../repositories/purchasing-planning.repository';
+import { PlanningNetworkService } from './planning-network.service';
 
 type Flag = {
   code: string;
@@ -71,6 +81,25 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
     severity: 'MEDIUM',
     blocksRecommendation: false,
     message: 'Sản phẩm có lịch sử đặt từ nhiều nhà cung cấp.',
+  },
+  MISSING_FACTORY: {
+    code: 'MISSING_FACTORY',
+    severity: 'HIGH',
+    blocksRecommendation: false,
+    message: 'Chưa gán nhà máy chính cho sản phẩm; leadtime sản xuất chưa có cơ sở.',
+  },
+  MISSING_LEADTIME: {
+    code: 'MISSING_LEADTIME',
+    severity: 'HIGH',
+    blocksRecommendation: false,
+    message: 'Nhà máy chưa khai báo thời gian sản xuất dự kiến.',
+  },
+  MOQ_NOT_CONVERTIBLE: {
+    code: 'MOQ_NOT_CONVERTIBLE',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Không quy đổi được MOQ của nhà máy sang số lượng đặt — sản phẩm thiếu quy cách đóng gói hoặc khối lượng.',
   },
   MISSING_FORECAST: {
     code: 'MISSING_FORECAST',
@@ -140,6 +169,7 @@ export class PurchasingPlanningService {
   constructor(
     private readonly repository: PurchasingPlanningRepository,
     private readonly auditLogs: AuditLogsService,
+    private readonly networkService: PlanningNetworkService,
   ) {}
 
   async getConfigs() {
@@ -464,13 +494,41 @@ export class PurchasingPlanningService {
       const categoryByName = new Map(
         data.categories.map((item) => [item.name, item.id]),
       );
+      // Gộp snapshot tồn kho thành map (sản phẩm → ngày → có hàng).
+      // Một SKU coi là "có hàng" trong ngày nếu BẤT KỲ kho đầu mối nào còn
+      // hàng — khớp cách engine cộng gộp tồn kho các kho khi tính vị thế tồn.
+      const stockHistory = new Map<number, Map<string, boolean>>();
+      for (const row of data.stockSnapshots ?? []) {
+        let byDate = stockHistory.get(row.productId);
+        if (!byDate) {
+          byDate = new Map<string, boolean>();
+          stockHistory.set(row.productId, byDate);
+        }
+        const key = row.date.toISOString().slice(0, 10);
+        byDate.set(key, (byDate.get(key) ?? false) || row.hadStock);
+      }
+      const dataWithStock = { ...data, stockHistory };
+      const [networkConfig, factoryLeadtimes, productFactories] =
+        await Promise.all([
+          this.networkService.getNetworkConfig(),
+          this.networkService.getFactoryLeadtimes(),
+          this.networkService.getProductFactoryMap(
+            data.products.map((product) => product.id),
+          ),
+        ]);
+      const networkContext = {
+        networkConfig,
+        factoryLeadtimes,
+        productFactories,
+      };
       const items = data.products.map((product) =>
         this.calculateProduct(
           product,
-          data,
+          dataWithStock,
           configValues,
           categoryByName,
           snapshotDate,
+          networkContext,
         ),
       );
       const globalConfig = resolvePlanningConfig(configValues, {}).config;
@@ -495,12 +553,188 @@ export class PurchasingPlanningService {
     }
   }
 
+  /**
+   * Dựng leadtime pipeline cho một SKU.
+   *
+   * Pipeline dừng ở mốc **hàng về công ty**: Sản xuất → Thông quan → Về công
+   * ty. Không còn cộng chặng điều chuyển tới từng chi nhánh, vì quyết định mua
+   * hàng là quyết định của cả công ty chứ không của riêng kho nào.
+   */
+  private resolveNetworkLeadtime(product: any, networkContext: any) {
+    if (!networkContext) return null;
+
+    const { networkConfig, factoryLeadtimes, productFactories } =
+      networkContext;
+
+    const mapping = productFactories.get(product.id) ?? null;
+    const factory = mapping
+      ? (factoryLeadtimes.get(mapping.factoryId) ?? null)
+      : null;
+
+    const cargoType = product.cargoType === 'COLD' ? 'COLD' : 'NORMAL';
+    const pipeline = resolveLeadtimePipeline({
+      network: networkConfig,
+      factory,
+      skuProductionOverrideDays: mapping?.leadtimeDays ?? null,
+    });
+
+    return {
+      pipeline,
+      cargoType,
+      factoryId: mapping?.factoryId ?? null,
+      factoryName: factory?.factoryName ?? null,
+      factoryRole: mapping?.role ?? null,
+      moq: mapping?.moq ?? null,
+      hasFactory: Boolean(mapping),
+    };
+  }
+
+  /** Gom doanh số thành từng tháng để phân tích độ ổn định. */
+  private monthlySales(invoiceRows: any[], snapshotDate: Date): MonthlySales[] {
+    const buckets = new Map<string, number>();
+    for (const row of invoiceRows) {
+      const date: Date = row.invoice?.purchaseDate;
+      if (!date) continue;
+      const key = date.toISOString().slice(0, 7);
+      buckets.set(key, (buckets.get(key) ?? 0) + Number(row.quantity));
+    }
+
+    const currentMonth = snapshotDate.toISOString().slice(0, 7);
+    return [...buckets.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, quantity]) => ({
+        month,
+        quantity,
+        // Tháng đang chạy dở chỉ tính tới hôm nay, nếu không mức bán/ngày sẽ
+        // bị chia cho số ngày chưa xảy ra và tụt xuống giả tạo.
+        days:
+          month === currentMonth
+            ? snapshotDate.getUTCDate()
+            : daysInMonth(month),
+      }));
+  }
+
+  /** Các đợt khuyến mãi có áp dụng cho sản phẩm này. */
+  private promotionsForProduct(
+    product: any,
+    promotions: any[],
+  ): PromotionWindow[] {
+    return promotions
+      .filter((promotion) => {
+        if (!promotion.startDate || !promotion.endDate) return false;
+        const targets = promotion.products ?? [];
+        // Không khai sản phẩm nào = áp cho toàn bộ danh mục.
+        if (targets.length === 0) return true;
+        return targets.some(
+          (target: any) =>
+            target.productId === product.id ||
+            (target.categoryName != null &&
+              [product.parentName, product.middleName, product.childName].includes(
+                target.categoryName,
+              )),
+        );
+      })
+      .map((promotion) => ({
+        startDate: promotion.startDate,
+        endDate: promotion.endDate,
+        name: promotion.name,
+      }));
+  }
+
+  /**
+   * Vị thế tồn của toàn công ty: tồn hiện có, tốc độ bán gộp và hàng đang về.
+   *
+   * Gộp mọi chi nhánh lại thành một con số duy nhất. Hàng nằm ở kho nào không
+   * đổi kết luận mua hàng — nếu một kho thiếu trong khi kho khác dư thì đó là
+   * việc điều chuyển nội bộ, không phải lý do đặt thêm hàng nhà máy.
+   */
+  private companyPosition(
+    inventoryRows: any[],
+    orderRows: any[],
+    productId: number,
+    forecastDailyDemand: number,
+  ) {
+    const onHand = inventoryRows.reduce(
+      (sum: number, row: any) => sum + Number(row.onHand),
+      0,
+    );
+    const incomingByBranch = this.incomingByBranch(orderRows, productId);
+    let incoming = 0;
+    for (const quantity of incomingByBranch.values()) incoming += quantity;
+
+    return { onHand, dailyDemand: forecastDailyDemand, incoming };
+  }
+
+  /**
+   * Số lượng đang trên đường về từng chi nhánh, gom từ các chuyến ghép xe.
+   *
+   * Chỉ tính chuyến đã xác nhận giao (status = 1): phiếu tạm (0) chưa chắc
+   * chạy, còn đã nhập kho (2) thì hàng đã nằm trong tồn — cộng thêm sẽ đếm
+   * hai lần.
+   */
+  private incomingByBranch(
+    orderRows: any[],
+    productId: number,
+  ): Map<number, number> {
+    const result = new Map<number, number>();
+
+    for (const row of orderRows) {
+      const shipmentItems = row.orderSupplier?.vehicleShipmentItems ?? [];
+      for (const item of shipmentItems) {
+        if (item.productId !== productId) continue;
+        const shipment = item.vehicleShipment;
+        if (!shipment?.branchId || shipment.status !== 1) continue;
+        result.set(
+          shipment.branchId,
+          (result.get(shipment.branchId) ?? 0) + Number(item.quantity ?? 0),
+        );
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Câu kết luận hiển thị cho người mua hàng.
+   *
+   * Ghép 3 phần: khi nào phải đặt → đặt bao nhiêu → cảnh báo nếu con số này
+   * chưa đáng tin.
+   */
+  private buildSummary(
+    timing: any,
+    stability: any,
+    soq: any,
+    flags: Flag[],
+  ): string {
+    const parts: string[] = [timing.recommendation];
+
+    if (soq.suggestedQuantity > 0) {
+      parts.push(
+        `Đề xuất nhập ${Math.round(soq.suggestedQuantity).toLocaleString('vi-VN')}.`,
+      );
+    }
+
+    if (stability.trendMonths?.length > 0) {
+      parts.push(
+        `Doanh số tháng ${stability.trendMonths.join(', ')} tăng bất thường không do khuyến mãi — cân nhắc đặt thêm.`,
+      );
+    } else if (stability.stability === 'VOLATILE') {
+      parts.push('Doanh số dao động mạnh, số liệu dự báo kém chắc chắn.');
+    }
+
+    const blocking = flags.find((flag) => flag.blocksRecommendation);
+    if (blocking) parts.push(blocking.message);
+
+    return parts.join(' ');
+  }
+
   private calculateProduct(
     product: any,
     data: any,
     configValues: ConfigValue[],
     categoryByName: Map<string, number>,
     snapshotDate: Date,
+    networkContext?: any,
   ) {
     const inventoryRows = data.inventories.filter(
       (row: any) => row.productId === product.id,
@@ -511,6 +745,8 @@ export class PurchasingPlanningService {
     const logRows = data.inventoryLogs.filter(
       (row: any) => row.productId === product.id,
     );
+    const stockHistory: Map<number, Map<string, boolean>> =
+      data.stockHistory ?? new Map();
     const supplierRows = data.orderSupplierItems
       .filter((row: any) => row.productId === product.id)
       .sort(
@@ -525,20 +761,44 @@ export class PurchasingPlanningService {
     const childCategoryId = product.childName
       ? categoryByName.get(product.childName)
       : undefined;
-    const resolved = resolvePlanningConfig(configValues, {
-      skuId: product.id,
-      supplierId: latestSupplier?.supplierId,
-      categoryId: childCategoryId,
-    });
     const packSize = this.productPackSize(product.conversionValue);
+    // Leadtime áp vào SKU lấy từ pipeline mạng lưới: Sản xuất → Thông quan →
+    // Về công ty. Không phân biệt chi nhánh nhận.
+    const leadtimeInfo = this.resolveNetworkLeadtime(product, networkContext);
+    const leadTimeDays = leadtimeInfo?.pipeline.max ?? 0;
+    // Phân tích độ ổn định doanh số: 3 tháng gần nhất, nới ra 6 tháng nếu đều
+    // bình thường. Tháng bán đột biến được đối chiếu lịch khuyến mãi để biết
+    // là "giải thích được" hay "nghi trend".
+    const productPromotions = this.promotionsForProduct(
+      product,
+      data.promotions ?? [],
+    );
+    const stability = analyzeDemandStability(
+      this.monthlySales(invoiceRows, snapshotDate),
+      productPromotions,
+    );
+    // Tồn dự phòng suy từ chính mức dao động đó thay vì một hằng số: SKU bán
+    // đều cần đệm mỏng, SKU tháng cao tháng thấp cần đệm dày.
+    const safetyDays = safetyDaysFromStability(stability, leadTimeDays);
+    // MOQ lấy từ khai báo ở nhà máy / mapping SKU × nhà máy, quy về gói lẻ để
+    // engine SOQ dùng được. `null` = có khai MOQ nhưng thiếu dữ liệu quy đổi
+    // (sản phẩm chưa có quy cách đóng gói hoặc khối lượng) → cảnh báo thay vì
+    // âm thầm bỏ qua ràng buộc.
+    const moqPacks = moqSpecToPacks(leadtimeInfo?.moq ?? null, {
+      productId: product.id,
+      productName: product.name,
+      conversionValue: product.conversionValue,
+      weight: product.weight,
+      weightUnit: product.weightUnit,
+    });
+    const moqUnits = moqPacks ?? 0;
+    // Mọi tham số tính toán đều được suy ra từ dữ liệu thật, không còn ô nào
+    // để người dùng khai tay: leadtime từ pipeline mạng lưới, tồn dự phòng từ
+    // độ dao động doanh số, MOQ từ nhà máy, chu kỳ đặt từ chính leadtime.
     const config = {
-      ...resolved.config,
       ...OPERATIONAL_PLANNING_DEFAULTS,
       packSize,
-    };
-    const configSources = {
-      ...resolved.sources,
-      packSize: 'PRODUCT',
+      safetyDays,
     };
     const rawPhysical = inventoryRows.reduce(
       (sum: number, row: any) => sum + Number(row.onHand),
@@ -580,13 +840,28 @@ export class PurchasingPlanningService {
         })),
       dates,
     });
+    // Gắn cờ "ngày đó SKU có hàng hay không" từ snapshot tồn kho thật.
+    // Ngày nào chưa có snapshot thì để `undefined` — forecast engine sẽ tự
+    // lùi về heuristic và hạ độ tin cậy cho riêng trường hợp đó.
+    const stockByDate = stockHistory.get(product.id);
+    const demandWithStock = stockByDate
+      ? demand.map((day) => ({
+          ...day,
+          hadStock: stockByDate.get(day.date),
+        }))
+      : demand;
     const forecast = forecastDemand({
-      days: demand,
+      days: demandWithStock,
       asOfDate: snapshotDate,
       firstActivityDate: firstActivity,
-      growthFactor: config.growthFactor,
       minDays: config.minDays,
     });
+    // MA ngắn hạn vẫn được giữ để so sánh/hiển thị, nhưng con số dùng cho quyết
+    // định đặt hàng là mức nền đã khử tháng đột biến và đối chiếu khuyến mãi.
+    // Không còn nhân một growthFactor nhập tay cho toàn bộ SKU.
+    const forecastDailyDemand = stability.baselineDailyDemand > 0
+      ? stability.baselineDailyDemand
+      : forecast.forecastDailyDemand;
 
     const purchaseRows = data.purchaseOrderItems.filter(
       (row: any) => row.productId === product.id,
@@ -605,7 +880,7 @@ export class PurchasingPlanningService {
     );
     const incoming = resolveIncoming({
       snapshotDate,
-      leadTimeDays: config.leadTimeDays,
+      leadTimeDays,
       lines: activeOrders.map((row: any) => ({
         id: row.orderSupplier.id,
         status: row.orderSupplier.status,
@@ -620,14 +895,14 @@ export class PurchasingPlanningService {
         this.mapShipment(
           row,
           receivedByOrder,
-          config.leadTimeDays,
+          leadTimeDays,
           snapshotDate,
         ),
       )
       .filter((shipment: any) => shipment.quantity > 0);
     const replenishment = calculateReplenishment({
-      forecastDailyDemand: forecast.forecastDailyDemand,
-      leadTimeDays: config.leadTimeDays,
+      forecastDailyDemand: forecastDailyDemand,
+      leadTimeDays,
       safetyDays: config.safetyDays,
       availableStock: available,
       incomingTotal: incoming.total,
@@ -635,13 +910,13 @@ export class PurchasingPlanningService {
     const projection = projectInventory({
       snapshotDate,
       availableStock: available,
-      forecastDailyDemand: forecast.forecastDailyDemand,
+      forecastDailyDemand: forecastDailyDemand,
       incoming: incoming.receipts,
       horizonDays: config.projectionDays,
     });
     const usableIncomingCutoff = this.addDays(
       snapshotDate,
-      config.leadTimeDays + config.safetyDays + config.coverageDays,
+      leadTimeDays + safetyDays + coverageDaysFor(leadTimeDays),
     );
     const usableIncoming = incoming.receipts
       .filter(
@@ -649,28 +924,52 @@ export class PurchasingPlanningService {
           new Date(`${receipt.date}T00:00:00.000Z`) <= usableIncomingCutoff,
       )
       .reduce((sum, receipt) => sum + receipt.quantity, 0);
+    // Trả lời "tháng sau có phải đặt không": chiếu tồn gộp toàn công ty với
+    // tốc độ bán nền, rồi lùi lại đúng bằng leadtime để ra hạn đặt.
+    const timing = calculateOrderTiming({
+      today: snapshotDate,
+      leadTimeMaxDays: leadTimeDays,
+      safetyDays: config.safetyDays,
+      position: this.companyPosition(
+        inventoryRows,
+        supplierRows,
+        product.id,
+        forecastDailyDemand,
+      ),
+    });
     const priority = calculatePriority({
       confidence: forecast.confidence,
-      forecastDailyDemand: forecast.forecastDailyDemand,
+      forecastDailyDemand: forecastDailyDemand,
       availableStock: available,
       inventoryPosition: replenishment.inventoryPosition,
       reorderPoint: replenishment.reorderPoint,
-      leadTimeDays: config.leadTimeDays,
+      leadTimeDays,
       safetyDays: config.safetyDays,
       overstockDays: config.overstockDays,
       needsOrder: replenishment.needsOrder,
       daysUntilStockout: projection.daysUntilStockout,
     });
+    // Khuyến mãi đang chạy / sắp chạy trong horizon đặt hàng sẽ kéo nhu cầu
+    // lên trên mức nền. Không cộng phần này thì đợt KM tháng sau chắc chắn
+    // thiếu hàng, vì lịch sử bán ba tháng qua không hề biết tới nó.
+    const promotionUplift = calculatePromotionUplift({
+      today: snapshotDate,
+      horizonDays:
+        leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays),
+      baselineDailyDemand: forecastDailyDemand,
+      promotions: productPromotions,
+      months: stability.months,
+    });
     const soq = calculateSoq({
-      forecastDailyDemand: forecast.forecastDailyDemand,
-      leadTimeDays: config.leadTimeDays,
+      forecastDailyDemand: forecastDailyDemand,
+      leadTimeDays,
       safetyDays: config.safetyDays,
-      coverageDays: config.coverageDays,
       availableStock: available,
       usableIncoming,
+      extraDemand: promotionUplift.extraDemand,
       daysOfSupply: priority.daysOfSupply,
       packSize: config.packSize,
-      moq: config.moq,
+      moq: moqUnits,
       purchaseMultiple: config.purchaseMultiple,
       moqTolerance: config.moqTolerance,
       needsOrder: replenishment.needsOrder,
@@ -689,6 +988,8 @@ export class PurchasingPlanningService {
       soq,
       shipments,
       incomingFlags: incoming.flags,
+      leadtimeInfo,
+      moqNotConvertible: leadtimeInfo?.moq != null && moqPacks == null,
     });
     const reliability = this.reliability(forecast.confidence, flags);
     const status = flags.some((flag) => flag.blocksRecommendation)
@@ -707,7 +1008,7 @@ export class PurchasingPlanningService {
         ? 'HYBRID'
         : (demandSources.values().next().value ?? 'INVOICE_DETAIL');
     const forecastComparison = {
-      used: forecast.forecastDailyDemand,
+      used: forecastDailyDemand,
       windowUsed: forecast.windowDays,
       ma30: forecast.ma30,
       ma60: forecast.ma60,
@@ -720,13 +1021,23 @@ export class PurchasingPlanningService {
         0,
         forecast.windowDays - forecast.validStockDays,
       ),
-      growthFactor: forecast.growthFactor,
+      baselineDailyDemand: stability.baselineDailyDemand,
+      demandStability: stability.stability,
+      variationCoefficient: stability.variationCoefficient,
+      monthsAnalyzed: stability.monthsUsed,
+      monthBreakdown: stability.months,
+      trendMonths: stability.trendMonths,
+      promotionMonths: stability.promotionMonths,
+      // Khuyến mãi đang/sắp chạy đã được cộng vào số lượng đề xuất.
+      upcomingPromotions: promotionUplift.windows,
+      promotionExtraDemand: promotionUplift.extraDemand,
+      promotionDays: promotionUplift.promotionDays,
+      promotionUpliftFactor: promotionUplift.upliftFactor,
       demandSource,
     };
     const trace = this.buildTrace(
       snapshotDate,
       config,
-      configSources,
       branches,
       shipments,
       forecastComparison,
@@ -736,15 +1047,12 @@ export class PurchasingPlanningService {
       flags,
       incoming.total,
       data.branchScope,
+      leadtimeInfo,
     );
     if (status === 'BLOCKED') trace.result.suggestedQuantity = 0;
-    const summaryText = this.summary(
-      priority.priority,
-      projection.daysUntilStockout,
-      config.leadTimeDays,
-      soq.suggestedQuantity,
-      flags,
-    );
+    // Câu tóm tắt lấy thẳng khuyến nghị thời điểm đặt — đó là thứ người mua
+    // hàng cần đọc, không phải mô tả kỹ thuật về mức tồn.
+    const summaryText = this.buildSummary(timing, stability, soq, flags);
 
     return {
       productId: product.id,
@@ -758,17 +1066,21 @@ export class PurchasingPlanningService {
       tradeMarkName: product.tradeMark?.name ?? null,
       supplierId: latestSupplier?.supplierId ?? null,
       supplierName: latestSupplier?.supplier?.name ?? null,
-      forecastDailyDemand: forecast.forecastDailyDemand,
+      forecastDailyDemand: forecastDailyDemand,
       confidence: forecast.confidence,
       demandSource,
       ma30: forecast.ma30,
       ma60: forecast.ma60,
       ma90: forecast.ma90,
       trendRatio,
-      leadTimeDays: Math.round(config.leadTimeDays),
-      leadTimeSource: this.contractSource(resolved.sources.leadTimeDays),
+      leadTimeDays: Math.round(leadTimeDays),
+      // Cột `lead_time_source` là VarChar(15) và FE chỉ hiểu tập giá trị
+      // ConfigSource. 'NETWORK_PIPELINE' (16 ký tự) vừa tràn cột vừa nằm ngoài
+      // contract → dùng 'DERIVED': leadtime được suy ra từ pipeline mạng lưới
+      // (nhà máy + thông quan + về công ty) chứ không do ai khai tay.
+      leadTimeSource: leadtimeInfo ? 'DERIVED' : 'GLOBAL',
       safetyDays: Math.round(config.safetyDays),
-      coverageDays: Math.round(config.coverageDays),
+      coverageDays: coverageDaysFor(leadTimeDays),
       leadTimeDemand: replenishment.leadTimeDemand,
       safetyBuffer: replenishment.safetyBuffer,
       reorderPoint: replenishment.reorderPoint,
@@ -798,6 +1110,16 @@ export class PurchasingPlanningService {
       projectedStockoutDate: projection.projectedStockoutDate
         ? new Date(`${projection.projectedStockoutDate}T00:00:00.000Z`)
         : null,
+      // ── Kết quả trả lời "khi nào phải đặt" ──
+      orderUrgency: timing.urgency,
+      latestOrderDate: timing.latestOrderDate,
+      // Đã gộp toàn công ty — không còn khái niệm chi nhánh thiếu trước. Giữ
+      // cột để đọc được snapshot cũ, nhưng lần chạy mới luôn ghi null.
+      criticalBranchId: null,
+      criticalBranchName: null,
+      demandStability: stability.stability,
+      variationCoefficient: stability.variationCoefficient,
+      leadTimeMinDays: leadtimeInfo?.pipeline.min ?? null,
       status,
       summaryText,
       calculationTrace: trace,
@@ -807,7 +1129,6 @@ export class PurchasingPlanningService {
   private buildTrace(
     snapshotDate: Date,
     config: any,
-    sources: any,
     branches: any[],
     shipments: any[],
     forecast: any,
@@ -817,24 +1138,43 @@ export class PurchasingPlanningService {
     flags: Flag[],
     incomingTotal: number,
     branchScope: PurchasingBranchScope,
+    leadtimeInfo?: any,
   ) {
-    const configValue = (key: string) => ({
-      value: config[key],
-      source: this.contractSource(sources[key]),
-      label: SOURCE_LABEL[sources[key]] ?? SOURCE_LABEL.DEFAULT,
-    });
     return {
       version: '1.0',
       computedAt: new Date().toISOString(),
       inputs: {
         branchScope,
+        // Chi tiết từng chặng leadtime — để UI giải thích được vì sao ra con
+        // số tổng, thay vì chỉ hiện một số ngày không rõ nguồn gốc.
+        leadtime: leadtimeInfo
+          ? {
+              cargoType: leadtimeInfo.cargoType,
+              factoryId: leadtimeInfo.factoryId,
+              factoryName: leadtimeInfo.factoryName,
+              factoryRole: leadtimeInfo.factoryRole,
+              min: leadtimeInfo.pipeline.min,
+              max: leadtimeInfo.pipeline.max,
+              stages: leadtimeInfo.pipeline.stages,
+            }
+          : null,
+        // Tham số đã dùng — tất cả đều do hệ thống suy ra, không phải khai tay.
         config: {
-          leadTimeDays: configValue('leadTimeDays'),
-          safetyDays: configValue('safetyDays'),
-          coverageDays: configValue('coverageDays'),
-          growthFactor: configValue('growthFactor'),
-          packSize: configValue('packSize'),
-          moq: configValue('moq'),
+          safetyDays: {
+            value: config.safetyDays,
+            source: 'DERIVED',
+            label: 'Suy từ độ dao động doanh số',
+          },
+          coverageDays: {
+            value: coverageDaysFor(leadtimeInfo?.pipeline.max ?? 0),
+            source: 'DERIVED',
+            label: 'Suy từ thời gian chờ hàng',
+          },
+          packSize: {
+            value: config.packSize,
+            source: 'PRODUCT',
+            label: 'Quy cách đóng gói sản phẩm',
+          },
         },
         inventory: {
           physical: branches.reduce((sum, row) => sum + row.onHand, 0),
@@ -853,7 +1193,10 @@ export class PurchasingPlanningService {
           step: 1,
           name: 'Nhu cầu trong lead time',
           formula: 'FDD × leadTimeDays',
-          values: { FDD: forecast.used, leadTimeDays: config.leadTimeDays },
+          values: {
+            FDD: forecast.used,
+            leadTimeDays: leadtimeInfo?.pipeline.max ?? 0,
+          },
           result: replenishment.leadTimeDemand,
         },
         {
@@ -909,11 +1252,22 @@ export class PurchasingPlanningService {
     const codes: Array<{ code: string; context?: Record<string, unknown> }> =
       [];
     if (!input.latestSupplier) codes.push({ code: 'MISSING_SUPPLIER' });
+    if (input.leadtimeInfo && !input.leadtimeInfo.hasFactory)
+      codes.push({ code: 'MISSING_FACTORY' });
+    if (
+      input.leadtimeInfo?.hasFactory &&
+      input.leadtimeInfo.pipeline.stages[0]?.max === 0
+    )
+      codes.push({
+        code: 'MISSING_LEADTIME',
+        context: { factoryName: input.leadtimeInfo.factoryName },
+      });
     if (input.supplierIds.size > 1)
       codes.push({
         code: 'MULTI_SUPPLIER',
         context: { supplierCount: input.supplierIds.size },
       });
+    if (input.moqNotConvertible) codes.push({ code: 'MOQ_NOT_CONVERTIBLE' });
     if (input.forecast.confidence === 'NO_DATA')
       codes.push({ code: 'MISSING_FORECAST' });
     else if (
@@ -1011,26 +1365,6 @@ export class PurchasingPlanningService {
     return dates;
   }
 
-  private summary(
-    priority: string,
-    stockout: number | null,
-    leadTime: number,
-    quantity: number,
-    flags: Flag[],
-  ) {
-    if (flags.some((flag) => flag.blocksRecommendation))
-      return 'Thiếu dữ liệu dự báo · Cần bổ sung dữ liệu trước khi đặt hàng';
-    if (priority === 'NO_DATA')
-      return 'Chưa có đủ nhu cầu lịch sử để lập đề xuất';
-    if (stockout === 0)
-      return `Đã hết hàng · Đề xuất đặt ${quantity} đơn vị ngay`;
-    if (stockout != null && stockout < leadTime)
-      return `Hết sau ${stockout} ngày · Hàng dự kiến về sau ${leadTime} ngày → nguy cơ đứt ${leadTime - stockout} ngày`;
-    if (quantity > 0)
-      return `Còn hàng khoảng ${stockout ?? 'chưa xác định'} ngày · Đề xuất đặt ${quantity} đơn vị`;
-    return 'Tồn kho hiện tại đáp ứng nhu cầu dự kiến';
-  }
-
   private mapListItem(item: any) {
     const trace = item.calculationTrace;
     return {
@@ -1047,8 +1381,21 @@ export class PurchasingPlanningService {
       tradeMarkName: item.tradeMarkName,
       supplierId: item.supplierId,
       supplierName: item.supplierName,
+      /** Tổng leadtime cận trên dùng làm deadline đặt hàng. */
       leadTimeDays: item.leadTimeDays,
+      leadTimeMinDays: item.leadTimeMinDays,
       leadTimeSource: item.leadTimeSource,
+      orderUrgency: item.orderUrgency,
+      latestOrderDate: item.latestOrderDate
+        ? this.dateOnly(item.latestOrderDate)
+        : null,
+      criticalBranchId: item.criticalBranchId,
+      criticalBranchName: item.criticalBranchName,
+      demandStability: item.demandStability,
+      variationCoefficient:
+        item.variationCoefficient == null
+          ? null
+          : Number(item.variationCoefficient),
       priority: item.priority,
       priorityRank: item.priorityRank,
       reliability: item.reliability,
@@ -1489,4 +1836,10 @@ export class PurchasingPlanningService {
   private parseDate(value?: string) {
     return value ? new Date(`${value.slice(0, 10)}T00:00:00.000Z`) : undefined;
   }
+}
+
+/** Số ngày của tháng `YYYY-MM`. */
+function daysInMonth(month: string): number {
+  const [year, m] = month.split('-').map(Number);
+  return new Date(Date.UTC(year, m, 0)).getUTCDate();
 }

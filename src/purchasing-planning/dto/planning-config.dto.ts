@@ -16,11 +16,6 @@ export class PlanningConfigValuesDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  leadTimeDays?: number | null;
-
-  @IsOptional()
-  @IsInt()
-  @Min(0)
   safetyDays?: number | null;
 
   @IsOptional()
@@ -28,15 +23,6 @@ export class PlanningConfigValuesDto {
   @IsPositive()
   coverageDays?: number | null;
 
-  @IsOptional()
-  @IsNumber({ maxDecimalPlaces: 4 })
-  @Min(0)
-  growthFactor?: number | null;
-
-  @IsOptional()
-  @IsInt()
-  @IsPositive()
-  moq?: number | null;
 }
 
 export class CreatePlanningConfigDto extends PlanningConfigValuesDto {

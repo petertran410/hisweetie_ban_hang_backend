@@ -20,6 +20,21 @@ import {
 } from '../common/moq.util';
 
 /**
+ * Hiển thị khoảng thời gian sản xuất của nhà máy dưới dạng chuỗi cho file
+ * Excel: `10-15` khi có khoảng, `12` khi hai đầu bằng nhau, rỗng khi chưa khai.
+ */
+function formatProductionLeadtime(factory: {
+  productionLeadtimeMin?: number | null;
+  productionLeadtimeMax?: number | null;
+}): string {
+  const min = factory.productionLeadtimeMin;
+  const max = factory.productionLeadtimeMax;
+  if (min == null && max == null) return '';
+  if (min != null && max != null && min !== max) return `${min}-${max}`;
+  return String(min ?? max);
+}
+
+/**
  * Các ô MOQ dùng chung cho mọi sheet export.
  *
  * Cột `moq` giữ nguyên tên/ý nghĩa cũ (con số) để file cũ vẫn đọc được;
@@ -82,6 +97,20 @@ export class FactoriesService {
     );
   }
 
+  private assertProductionLeadtimeRange(input: {
+    productionLeadtimeMin?: number;
+    productionLeadtimeMax?: number;
+  }) {
+    const { productionLeadtimeMin: min, productionLeadtimeMax: max } = input;
+    // Chỉ validate khi đã khai đủ hai đầu; cho phép khai dần từng ô.
+    if (min == null || max == null) return;
+    if (min > max) {
+      throw new BadRequestException(
+        'Thời gian sản xuất: số ngày nhanh nhất không thể lớn hơn chậm nhất.',
+      );
+    }
+  }
+
   /**
    * List nhà máy với filter:
    * - supplierId: lọc theo NCC quản lý
@@ -121,18 +150,48 @@ export class FactoriesService {
         take: limit,
         include: {
           supplier: { select: { id: true, name: true, code: true } },
-          _count: {
-            select: {
-              primaryForProducts: true,
-              backupForProducts: true,
-            },
-          },
         },
       }),
       this.prisma.factory.count({ where }),
     ]);
 
-    return { data, total, page, limit };
+    return {
+      data: await this.attachMappingCounts(data),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Bổ sung `mappingCounts` (số SP chính/backup theo bảng `factory_products`).
+   *
+   * Prisma 4 chưa cho lọc trong `_count`, nên đếm riêng bằng groupBy rồi map
+   * lại.
+   */
+  private async attachMappingCounts<T extends { id: number }>(factories: T[]) {
+    if (!factories.length) return factories;
+    const grouped = await this.prisma.factory_products.groupBy({
+      by: ['factoryId', 'role'],
+      where: {
+        factoryId: { in: factories.map((factory) => factory.id) },
+        isActive: true,
+      },
+      _count: { _all: true },
+    });
+
+    const counts = new Map<number, { primary: number; backup: number }>();
+    for (const row of grouped) {
+      const entry = counts.get(row.factoryId) ?? { primary: 0, backup: 0 };
+      if (row.role === 'backup') entry.backup += row._count._all;
+      else entry.primary += row._count._all;
+      counts.set(row.factoryId, entry);
+    }
+
+    return factories.map((factory) => ({
+      ...factory,
+      mappingCounts: counts.get(factory.id) ?? { primary: 0, backup: 0 },
+    }));
   }
 
   /**
@@ -182,7 +241,7 @@ export class FactoriesService {
       { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
       { header: 'Phạm vi MOQ', key: 'moqScope', width: 16 },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
+      { header: 'Sản xuất (ngày)', key: 'productionLeadtime', width: 18 },
       { header: 'Điều khoản thanh toán', key: 'paymentTerm', width: 30 },
       { header: 'Sản phẩm chính', key: 'primaryCount', width: 18 },
       { header: 'Sản phẩm backup', key: 'backupCount', width: 18 },
@@ -213,7 +272,7 @@ export class FactoriesService {
         email: factory.email || '',
         wechat: factory.wechat || '',
         ...moqCells(factory, 'PER_ORDER'),
-        leadtimeDays: factory.leadtimeDays ?? '',
+        productionLeadtime: formatProductionLeadtime(factory),
         paymentTerm: factory.paymentTerm || '',
         primaryCount,
         backupCount,
@@ -262,7 +321,7 @@ export class FactoriesService {
       { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
       { header: 'Phạm vi MOQ', key: 'moqScope', width: 16 },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
+      { header: 'Sản xuất (ngày)', key: 'productionLeadtime', width: 18 },
       { header: 'Điều khoản thanh toán', key: 'paymentTerm', width: 30 },
       { header: 'Sản phẩm chính', key: 'primaryCount', width: 18 },
       { header: 'DS sản phẩm chính', key: 'primaryProducts', width: 50 },
@@ -292,7 +351,7 @@ export class FactoriesService {
       { header: 'MOQ', key: 'moq', width: 14 },
       { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
+      { header: 'SX riêng (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Đang hoạt động', key: 'isActive', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 36 },
     ];
@@ -330,7 +389,7 @@ export class FactoriesService {
         email: factory.email || '',
         wechat: factory.wechat || '',
         ...moqCells(factory, 'PER_ORDER'),
-        leadtimeDays: factory.leadtimeDays ?? '',
+        productionLeadtime: formatProductionLeadtime(factory),
         paymentTerm: factory.paymentTerm || '',
         primaryCount: primaryItems.length,
         primaryProducts: productList(primaryItems),
@@ -426,7 +485,7 @@ export class FactoriesService {
         'MOQ mặc định',
         formatMoqSpec(normalizeMoqSpec(factory, 'PER_ORDER'), true),
       ],
-      ['Leadtime (ngày)', factory.leadtimeDays ?? ''],
+      ['Sản xuất (ngày)', formatProductionLeadtime(factory)],
       ['Điều khoản thanh toán', factory.paymentTerm || ''],
       ['Trạng thái', factory.isActive ? 'Hoạt động' : 'Ngừng hoạt động'],
       ['Địa chỉ', factory.address || ''],
@@ -446,7 +505,7 @@ export class FactoriesService {
       { header: 'MOQ', key: 'moq', width: 14 },
       { header: 'Đơn vị MOQ', key: 'moqUnit', width: 14 },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
-      { header: 'Leadtime (ngày)', key: 'leadtimeDays', width: 18 },
+      { header: 'SX riêng (ngày)', key: 'leadtimeDays', width: 18 },
       { header: 'Đang hoạt động', key: 'isActive', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 36 },
     ];
@@ -518,8 +577,7 @@ export class FactoriesService {
         select: { image: true },
       },
     };
-    // Đọc từ bảng mapping — nguồn chân lý mới. Cột primaryFactoryId/backupFactoryId
-    // trên Product là cache cũ, không phản ánh gắn từ trang nhà máy.
+    // Đọc từ bảng mapping — nguồn chân lý duy nhất.
     const mappings = await this.prisma.factory_products.findMany({
       where: { factoryId, isActive: true },
       orderBy: [{ priority: 'asc' }, { id: 'asc' }],
@@ -541,17 +599,16 @@ export class FactoriesService {
       where: { id },
       include: {
         supplier: { select: { id: true, name: true, code: true } },
-        _count: {
-          select: {
-            primaryForProducts: true,
-            backupForProducts: true,
-            orderSupplierItems: true,
+          _count: {
+            select: {
+              orderSupplierItems: true,
+            },
           },
-        },
       },
     });
     if (!factory) throw new NotFoundException('Không tìm thấy nhà máy');
-    return factory;
+    const [withCounts] = await this.attachMappingCounts([factory]);
+    return withCounts;
   }
 
   async create(
@@ -569,7 +626,8 @@ export class FactoriesService {
       moqUnit?: string | null;
       moqScope?: string | null;
       moqIncrement?: number | null;
-      leadtimeDays?: number;
+      productionLeadtimeMin?: number;
+      productionLeadtimeMax?: number;
       paymentTerm?: string;
       country?: string;
       currency?: string;
@@ -580,6 +638,10 @@ export class FactoriesService {
     },
     userId: number,
   ) {
+    // Leadtime sản xuất là dải dự báo: không cho phép nhập đảo thứ tự vì
+    // pipeline cần min ≤ dự kiến ≤ max để ra ngày đặt hàng có ý nghĩa.
+    this.assertProductionLeadtimeRange(dto);
+
     const name = (dto.name || '').trim();
     if (!name) throw new BadRequestException('Tên nhà máy không được để trống');
 
@@ -629,7 +691,8 @@ export class FactoriesService {
         moqUnit: dto.moqUnit ?? null,
         moqScope: dto.moqScope ?? null,
         moqIncrement: dto.moqIncrement ?? null,
-        leadtimeDays: dto.leadtimeDays,
+        productionLeadtimeMin: dto.productionLeadtimeMin ?? null,
+        productionLeadtimeMax: dto.productionLeadtimeMax ?? null,
         paymentTerm: dto.paymentTerm,
         country: dto.country,
         currency: dto.currency || 'VND',
@@ -665,7 +728,8 @@ export class FactoriesService {
       moqUnit?: string | null;
       moqScope?: string | null;
       moqIncrement?: number | null;
-      leadtimeDays?: number;
+      productionLeadtimeMin?: number;
+      productionLeadtimeMax?: number;
       paymentTerm?: string;
       country?: string;
       currency?: string;
@@ -676,6 +740,12 @@ export class FactoriesService {
     },
   ) {
     const existing = await this.findOne(id);
+    this.assertProductionLeadtimeRange({
+      productionLeadtimeMin:
+        dto.productionLeadtimeMin ?? existing.productionLeadtimeMin ?? undefined,
+      productionLeadtimeMax:
+        dto.productionLeadtimeMax ?? existing.productionLeadtimeMax ?? undefined,
+    });
     const data: any = {};
 
     // Form cũ gửi code rỗng khi không có mã. Thay vì ghi null, tự sinh mã để
@@ -720,7 +790,10 @@ export class FactoriesService {
     if (dto.moqUnit !== undefined) data.moqUnit = dto.moqUnit;
     if (dto.moqScope !== undefined) data.moqScope = dto.moqScope;
     if (dto.moqIncrement !== undefined) data.moqIncrement = dto.moqIncrement;
-    if (dto.leadtimeDays !== undefined) data.leadtimeDays = dto.leadtimeDays;
+    if (dto.productionLeadtimeMin !== undefined)
+      data.productionLeadtimeMin = dto.productionLeadtimeMin;
+    if (dto.productionLeadtimeMax !== undefined)
+      data.productionLeadtimeMax = dto.productionLeadtimeMax;
     if (dto.paymentTerm !== undefined) data.paymentTerm = dto.paymentTerm;
     if (dto.country !== undefined) data.country = dto.country;
     if (dto.currency !== undefined) data.currency = dto.currency;
@@ -753,16 +826,12 @@ export class FactoriesService {
   async remove(id: number) {
     await this.findOne(id);
     // Soft delete: chặn xóa cứng nếu đang được dùng; chỉ ẩn đi.
-    // Kiểm tra cả Product (primary/backup) + OrderSupplierItem (factoryId).
-    const [usedInProductPrimary, usedInProductBackup, usedInMapping, usedInItem] =
-      await Promise.all([
-        this.prisma.product.count({ where: { primaryFactoryId: id } }),
-        this.prisma.product.count({ where: { backupFactoryId: id } }),
-        this.prisma.factory_products.count({ where: { factoryId: id } }),
-        this.prisma.orderSupplierItem.count({ where: { factoryId: id } }),
-      ]);
-    const totalUsage =
-      usedInProductPrimary + usedInProductBackup + usedInMapping + usedInItem;
+    // Kiểm tra mapping sản phẩm × nhà máy + OrderSupplierItem (factoryId).
+    const [usedInMapping, usedInItem] = await Promise.all([
+      this.prisma.factory_products.count({ where: { factoryId: id } }),
+      this.prisma.orderSupplierItem.count({ where: { factoryId: id } }),
+    ]);
+    const totalUsage = usedInMapping + usedInItem;
     if (totalUsage > 0) {
       // Đang được sử dụng → soft-delete
       return this.prisma.factory.update({
