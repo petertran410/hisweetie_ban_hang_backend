@@ -52,7 +52,14 @@ const CONTENT_INCLUDE = {
         },
       },
       recipeReference: {
-        select: { id: true, code: true, name: true, type: true, status: true },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          type: true,
+          status: true,
+          costPerOutputUnit: true,
+        },
       },
       ingredient: true,
     },
@@ -145,6 +152,7 @@ export class RecipesService {
               includeInCost: true,
               unitCostSnapshot: true,
               product: { select: { weight: true, weightUnit: true } },
+              recipeReference: { select: { costPerOutputUnit: true } },
             },
           },
           _count: { select: { referencedByIngredients: true } },
@@ -192,7 +200,10 @@ export class RecipesService {
             return total + Number(ingredient.customPrice || 0) * quantity;
           }
           if (ingredient.sourceType === 'SEMI_FINISHED') {
-            return total + Number(ingredient.unitCostSnapshot || 0) * quantity;
+            const unitCost =
+              ingredient.unitCostSnapshot ??
+              ingredient.recipeReference?.costPerOutputUnit;
+            return total + Number(unitCost || 0) * quantity;
           }
           const retailPrice = ingredient.productId
             ? priceMap.get(ingredient.productId)
@@ -399,6 +410,7 @@ export class RecipesService {
     });
 
     await this.rebuildDependencies(result.id);
+    await this.calculateCost(result.id, {}, userId);
     await this.writeAudit('CREATE', result, userId);
     return this.findOne(result.id);
   }
@@ -436,23 +448,44 @@ export class RecipesService {
         });
         await tx.recipeIngredient.deleteMany({ where: { recipeId: id } });
         if (dto.ingredients.length) {
-          const ingredientRows = this.mapIngredients(dto.ingredients).map(
-            (row) => {
-              const previous = existingIngredients.find((item) =>
-                this.isSameIngredientSource(item, row),
-              );
-              const unitCost = previous?.unitCostSnapshot;
-              const quantity = Number(row.quantity);
-              return {
-                ...row,
-                recipeId: id,
-                unitCostSnapshot: unitCost ?? undefined,
-                costSnapshot:
-                  unitCost == null ? undefined : Number(unitCost) * quantity,
-                priceSourceSnapshot: previous?.priceSourceSnapshot ?? undefined,
-              };
-            },
+          const mappedRows = this.mapIngredients(dto.ingredients);
+          const referenceIds = mappedRows
+            .filter((row) => row.sourceType === 'SEMI_FINISHED')
+            .map((row) => row.recipeReferenceId)
+            .filter((value): value is number => !!value);
+          const references = referenceIds.length
+            ? await tx.recipe.findMany({
+                where: { id: { in: referenceIds } },
+                select: { id: true, costPerOutputUnit: true },
+              })
+            : [];
+          const referenceCostMap = new Map(
+            references.map((row) => [
+              row.id,
+              row.costPerOutputUnit == null
+                ? null
+                : Number(row.costPerOutputUnit),
+            ]),
           );
+          const ingredientRows = mappedRows.map((row) => {
+            const previous = existingIngredients.find((item) =>
+              this.isSameIngredientSource(item, row),
+            );
+            const fallbackCost =
+              row.sourceType === 'SEMI_FINISHED' && row.recipeReferenceId
+                ? referenceCostMap.get(row.recipeReferenceId)
+                : undefined;
+            const unitCost = previous?.unitCostSnapshot ?? fallbackCost;
+            const quantity = Number(row.quantity);
+            return {
+              ...row,
+              recipeId: id,
+              unitCostSnapshot: unitCost ?? undefined,
+              costSnapshot:
+                unitCost == null ? undefined : Number(unitCost) * quantity,
+              priceSourceSnapshot: previous?.priceSourceSnapshot ?? undefined,
+            };
+          });
           await tx.recipeIngredient.createMany({ data: ingredientRows });
         }
       }
@@ -850,16 +883,28 @@ export class RecipesService {
     };
 
     if (persist) {
-      await this.prisma.recipe.update({
-        where: { id: recipe.id },
-        data: {
-          materialCost,
-          semiFinishedCost,
-          customCost,
-          totalCost,
-          costPerOutputUnit,
-          costStatus: 'FRESH',
-        },
+      await this.prisma.$transaction(async (tx) => {
+        await tx.recipe.update({
+          where: { id: recipe.id },
+          data: {
+            materialCost,
+            semiFinishedCost,
+            customCost,
+            totalCost,
+            costPerOutputUnit,
+            costStatus: 'FRESH',
+          },
+        });
+        for (const item of breakdown) {
+          await tx.recipeIngredient.update({
+            where: { id: item.ingredientId },
+            data: {
+              unitCostSnapshot: item.unitCost,
+              costSnapshot: item.lineCost,
+              priceSourceSnapshot: item.priceSource,
+            },
+          });
+        }
       });
       await this.writeAudit('RECALCULATE', recipe, userId, { totalCost });
     }
@@ -1029,14 +1074,15 @@ export class RecipesService {
     const productIds = recipe.ingredients
       .filter((row) => row.sourceType === 'PRODUCT' && row.productId)
       .map((row) => row.productId as number);
-    if (!productIds.length) return recipe;
-    const priceBook = await this.prisma.priceBook.findFirst({
-      where: {
-        name: { equals: 'Bảng Giá Lẻ HCM', mode: 'insensitive' },
-        isActive: true,
-      },
-      select: { id: true },
-    });
+    const priceBook = productIds.length
+      ? await this.prisma.priceBook.findFirst({
+          where: {
+            name: { equals: 'Bảng Giá Lẻ HCM', mode: 'insensitive' },
+            isActive: true,
+          },
+          select: { id: true },
+        })
+      : null;
     const details = priceBook
       ? await this.prisma.priceBookDetail.findMany({
           where: {
@@ -1091,6 +1137,10 @@ export class RecipesService {
         delete row.costSnapshot;
         delete row.unitCostSnapshot;
         delete row.priceSourceSnapshot;
+        if (row.recipeReference) {
+          row.recipeReference = { ...row.recipeReference };
+          delete row.recipeReference.costPerOutputUnit;
+        }
         if (row.product) {
           row.product = { ...row.product };
           delete row.product.basePrice;

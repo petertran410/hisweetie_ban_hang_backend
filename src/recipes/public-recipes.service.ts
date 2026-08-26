@@ -37,7 +37,7 @@ const PUBLIC_RECIPE_SELECT = {
       note: true,
       sortOrder: true,
       product: { select: { name: true, weight: true, weightUnit: true } },
-      recipeReference: { select: { name: true } },
+      recipeReference: { select: { name: true, costPerOutputUnit: true } },
     },
   },
   steps: {
@@ -305,9 +305,10 @@ export class PublicRecipesService {
       return ingredient.customPrice == null ? null : Number(ingredient.customPrice) * quantity;
     }
     if (ingredient.sourceType === 'SEMI_FINISHED') {
-      return ingredient.unitCostSnapshot == null
-        ? null
-        : Number(ingredient.unitCostSnapshot) * quantity;
+      const unitCost =
+        ingredient.unitCostSnapshot ??
+        ingredient.recipeReference?.costPerOutputUnit;
+      return unitCost == null ? null : Number(unitCost) * quantity;
     }
     const price = ingredient.productId ? priceMap.get(ingredient.productId) : undefined;
     const weightGram = this.toGram(ingredient.product?.weight, ingredient.product?.weightUnit);

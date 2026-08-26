@@ -108,8 +108,9 @@ function makePrismaMock(initial: {
     images: initial.images ?? [],
   });
 
-  return {
+  const mock = {
     calls: [] as { method: string; payload?: any }[],
+    $transaction: async (fn: any) => fn(mock),
     recipe: {
       findFirst: async (args: any) => {
         const row = store.recipe;
@@ -119,6 +120,7 @@ function makePrismaMock(initial: {
         return args?.include ? hydrate() : { ...row };
       },
       findUnique: async () => ({ ...store.recipe }),
+      findMany: async () => [],
       update: async (args: any) => {
         Object.assign(store.recipe, args.data);
         return { ...store.recipe };
@@ -127,12 +129,14 @@ function makePrismaMock(initial: {
     recipeIngredient: {
       count: async () => 0,
       findMany: async () => ingredients,
+      update: async (args: any) => ({ id: args?.where?.id }),
     },
     priceBook: { findFirst: async () => null },
     priceBookDetail: { findMany: async () => [] },
     user: { findUnique: async () => ({ name: 'Test User' }) },
     __store: store,
   } as any;
+  return mock;
 }
 
 const auditLogsMock = { create: jest.fn().mockResolvedValue(undefined) };
