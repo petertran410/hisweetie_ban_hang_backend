@@ -5,6 +5,7 @@ import {
   evaluatePaymentFrequency,
   hasAnyDebtPolicy,
   resolveInvoiceDueDate,
+  resolveInvoiceOverdueDate,
   startOfDay,
   type AgingInvoiceInput,
   type DebtPolicyInput,
@@ -89,27 +90,33 @@ describe('resolveInvoiceDueDate', () => {
     ).toBeNull();
   });
 
-  it('cộng termDays + ân hạn', () => {
-    // 01/03 + 30 + 5 = 05/04
+  it('tính ngày bắt đầu phải thanh toán, chưa cộng ân hạn', () => {
+    // 01/03 + 30 = 31/03
     expect(
       resolveInvoiceDueDate({ deliveredAt: d('2026-03-01') }, days(30)),
+    ).toEqual(d('2026-03-31'));
+  });
+
+  it('tính ngày chuyển quá hạn sau ân hạn', () => {
+    expect(
+      resolveInvoiceOverdueDate({ deliveredAt: d('2026-03-01') }, days(30)),
     ).toEqual(d('2026-04-05'));
   });
 
   it('hỗ trợ mọi kỳ hạn đang dùng thực tế', () => {
     const base = { deliveredAt: d('2026-03-01') };
-    expect(resolveInvoiceDueDate(base, days(1))).toEqual(d('2026-03-07'));
-    expect(resolveInvoiceDueDate(base, days(3))).toEqual(d('2026-03-09'));
-    expect(resolveInvoiceDueDate(base, days(7))).toEqual(d('2026-03-13'));
-    expect(resolveInvoiceDueDate(base, days(15))).toEqual(d('2026-03-21'));
-    // 01/03 + 55 + 5 = 30/04 (tháng 3 có 31 ngày)
-    expect(resolveInvoiceDueDate(base, days(55))).toEqual(d('2026-04-30'));
+    expect(resolveInvoiceDueDate(base, days(1))).toEqual(d('2026-03-02'));
+    expect(resolveInvoiceDueDate(base, days(3))).toEqual(d('2026-03-04'));
+    expect(resolveInvoiceDueDate(base, days(7))).toEqual(d('2026-03-08'));
+    expect(resolveInvoiceDueDate(base, days(15))).toEqual(d('2026-03-16'));
+    // 01/03 + 55 = 25/04 (tháng 3 có 31 ngày)
+    expect(resolveInvoiceDueDate(base, days(55))).toEqual(d('2026-04-25'));
   });
 
   it('bật cả hai chiều vẫn tính được hạn ngày', () => {
     expect(
       resolveInvoiceDueDate({ deliveredAt: d('2026-03-01') }, both(30, 100)),
-    ).toEqual(d('2026-04-05'));
+    ).toEqual(d('2026-03-31'));
   });
 
   it('thiếu termDays → null, không crash', () => {
@@ -168,8 +175,9 @@ describe('allocateDebtFifo', () => {
 });
 
 describe('computeCustomerAging — chỉ SỐ NGÀY', () => {
-  it('quá hạn khi vượt termDays + ân hạn', () => {
-    // giao 01/03, hạn = 05/04. Hôm nay 10/04 → quá 5 ngày.
+  it('quá hạn sau ngày hạn và 5 ngày ân hạn', () => {
+    // giao 01/03, ngày hạn = 31/03, hết ân hạn = 05/04.
+    // Hôm nay 10/04 → quá 5 ngày.
     const r = computeCustomerAging(
       100,
       [inv(1, 100, '2026-03-01')],
@@ -177,11 +185,12 @@ describe('computeCustomerAging — chỉ SỐ NGÀY', () => {
       d('2026-04-10'),
     );
     expect(r.overdueAmount).toBe(100);
+    expect(r.requiredPaymentAmount).toBe(100);
     expect(r.maxDaysOverdue).toBe(5);
     expect(r.debtStatus).toBe(DEBT_STATUS.OVERDUE);
   });
 
-  it('ĐÚNG ngày ân hạn cuối vẫn CHƯA quá hạn', () => {
+  it('ĐÚNG ngày hết ân hạn vẫn CHƯA quá hạn', () => {
     const r = computeCustomerAging(
       100,
       [inv(1, 100, '2026-03-01')],
@@ -192,14 +201,44 @@ describe('computeCustomerAging — chỉ SỐ NGÀY', () => {
     expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
   });
 
-  it('ĐẾN HẠN khi còn <= 7 ngày', () => {
+  it('ĐẾN HẠN ngay khi chạm ngày phải thanh toán', () => {
     const r = computeCustomerAging(
       100,
       [inv(1, 100, '2026-03-01')],
       days(30),
-      d('2026-03-30'),
+      d('2026-03-31'),
     );
     expect(r.dueAmount).toBe(100);
+    expect(r.requiredPaymentAmount).toBe(100);
+    expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
+  });
+
+  it('báo đơn hôm qua với hạn 1 ngày thì hôm nay phải cần thu', () => {
+    const r = computeCustomerAging(
+      100,
+      [inv(1, 100, '2026-03-01')],
+      both(1, 1_000),
+      d('2026-03-02'),
+    );
+    expect(r.undeliveredAmount).toBe(0);
+    expect(r.dueAmount).toBe(100);
+    expect(r.invoiceRequiredAmount).toBe(100);
+    expect(r.requiredPaymentAmount).toBe(100);
+    expect(r.requiredPaymentSource).toBe('INVOICE');
+    expect(r.nearestDueDate).toEqual(d('2026-03-02'));
+    expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
+  });
+
+  it('trong 7 ngày trước hạn chỉ cảnh báo sớm, chưa cần thu', () => {
+    const r = computeCustomerAging(
+      100,
+      [inv(1, 100, '2026-03-01')],
+      days(30),
+      d('2026-03-25'),
+    );
+    expect(r.dueAmount).toBe(0);
+    expect(r.dueSoonAmount).toBe(100);
+    expect(r.requiredPaymentAmount).toBe(0);
     expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
   });
 
@@ -234,14 +273,15 @@ describe('computeCustomerAging — chỉ SỐ NGÀY', () => {
       d('2026-03-01'),
     );
     // FIFO: HĐ2 nhận 100, HĐ1 nhận 50.
-    // HĐ1 hạn 05/02 < 01/03 → quá hạn 50. HĐ2 hạn 06/05 → chưa tới hạn.
+    // HĐ1 ngày hạn 31/01, hết ân hạn 05/02 → quá hạn 50.
+    // HĐ2 ngày hạn 01/05 → chưa tới hạn.
     expect(r.overdueAmount).toBe(50);
     expect(r.notDueAmount).toBe(100);
   });
 });
 
 describe('computeCustomerAging — chỉ HẠN MỨC', () => {
-  it('cán hạn mức → toàn bộ dư nợ tới hạn', () => {
+  it('chạm đúng hạn mức → chỉ cảnh báo, chưa có số tiền phải thu', () => {
     const r = computeCustomerAging(
       100_000_000,
       [inv(1, 100_000_000, '2026-03-01')],
@@ -249,11 +289,12 @@ describe('computeCustomerAging — chỉ HẠN MỨC', () => {
       d('2026-03-02'),
     );
     expect(r.limitReached).toBe(true);
-    expect(r.overdueAmount).toBe(100_000_000);
-    expect(r.debtStatus).toBe(DEBT_STATUS.OVERDUE);
+    expect(r.overdueAmount).toBe(0);
+    expect(r.requiredPaymentAmount).toBe(0);
+    expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
   });
 
-  it('tính đúng số tiền VƯỢT hạn mức', () => {
+  it('chỉ phần VƯỢT hạn mức là khoản cần thu', () => {
     const r = computeCustomerAging(
       1_183_310_468,
       [inv(1, 1_183_310_468, '2026-03-01')],
@@ -261,6 +302,11 @@ describe('computeCustomerAging — chỉ HẠN MỨC', () => {
       d('2026-03-02'),
     );
     expect(r.overLimitAmount).toBe(683_310_468);
+    expect(r.limitOverdueAmount).toBe(683_310_468);
+    expect(r.overdueAmount).toBe(0);
+    expect(r.notDueAmount).toBe(1_183_310_468);
+    expect(r.requiredPaymentAmount).toBe(683_310_468);
+    expect(r.debtStatus).toBe(DEBT_STATUS.OVERDUE);
     expect(Math.round((r.creditUsageRatio as number) * 100)).toBe(237);
   });
 
@@ -274,6 +320,7 @@ describe('computeCustomerAging — chỉ HẠN MỨC', () => {
     expect(r.limitReached).toBe(false);
     expect(r.overdueAmount).toBe(0);
     expect(r.overLimitAmount).toBe(0);
+    expect(r.requiredPaymentAmount).toBe(0);
     expect(r.notDueAmount).toBe(50_000_000);
   });
 
@@ -289,10 +336,10 @@ describe('computeCustomerAging — chỉ HẠN MỨC', () => {
   });
 });
 
-describe('computeCustomerAging — CẢ HAI chiều dùng AND', () => {
+describe('computeCustomerAging — CẢ HAI chiều tính độc lập', () => {
   const p = both(30, 100_000_000);
 
-  it('hết hạn ngày NHƯNG chưa cán hạn mức → CHƯA quá hạn', () => {
+  it('hóa đơn quá hạn vẫn được tính khi chưa vượt hạn mức', () => {
     const r = computeCustomerAging(
       50_000_000,
       [inv(1, 50_000_000, '2026-01-01')],
@@ -300,11 +347,14 @@ describe('computeCustomerAging — CẢ HAI chiều dùng AND', () => {
       d('2026-06-01'),
     );
     expect(r.limitReached).toBe(false);
-    expect(r.overdueAmount).toBe(0);
-    expect(r.maxDaysOverdue).toBe(0);
+    expect(r.overdueAmount).toBe(50_000_000);
+    expect(r.invoiceRequiredAmount).toBe(50_000_000);
+    expect(r.requiredPaymentAmount).toBe(50_000_000);
+    expect(r.requiredPaymentSource).toBe('INVOICE');
+    expect(r.maxDaysOverdue).toBeGreaterThan(0);
   });
 
-  it('cán hạn mức NHƯNG còn hạn ngày → CHƯA quá hạn', () => {
+  it('chạm hạn mức NHƯNG còn hạn ngày → chỉ cảnh báo ĐẾN HẠN', () => {
     const r = computeCustomerAging(
       100_000_000,
       [inv(1, 100_000_000, '2026-03-01')],
@@ -313,20 +363,64 @@ describe('computeCustomerAging — CẢ HAI chiều dùng AND', () => {
     );
     expect(r.limitReached).toBe(true);
     expect(r.overdueAmount).toBe(0);
-    // vẫn cảnh báo đỏ vì đã chạm hạn mức
+    expect(r.requiredPaymentAmount).toBe(0);
+    expect(r.debtStatus).toBe(DEBT_STATUS.DUE);
+  });
+
+  it('vượt hạn mức NHƯNG hóa đơn chưa đến hạn → lấy phần vượt', () => {
+    const r = computeCustomerAging(
+      120_000_000,
+      [inv(1, 120_000_000, '2026-03-01')],
+      p,
+      d('2026-03-02'),
+    );
+    expect(r.overLimitAmount).toBe(20_000_000);
+    expect(r.overdueAmount).toBe(0);
+    expect(r.requiredPaymentAmount).toBe(20_000_000);
+    expect(r.requiredPaymentSource).toBe('CREDIT_LIMIT');
     expect(r.debtStatus).toBe(DEBT_STATUS.OVERDUE);
   });
 
-  it('thỏa CẢ HAI → quá hạn', () => {
+  it('cả hai cùng phát sinh → lấy khoản lớn hơn', () => {
     const r = computeCustomerAging(
-      100_000_000,
-      [inv(1, 100_000_000, '2026-01-01')],
+      120_000_000,
+      [inv(1, 120_000_000, '2026-01-01')],
       p,
       d('2026-06-01'),
     );
     expect(r.limitReached).toBe(true);
-    expect(r.overdueAmount).toBe(100_000_000);
+    expect(r.overdueAmount).toBe(120_000_000);
+    expect(r.overLimitAmount).toBe(20_000_000);
+    expect(r.invoiceRequiredAmount).toBe(120_000_000);
+    expect(r.requiredPaymentAmount).toBe(120_000_000);
+    expect(r.requiredPaymentSource).toBe('INVOICE');
     expect(r.maxDaysOverdue).toBeGreaterThan(0);
+  });
+
+  it('cả hai cùng phát sinh → hạn mức thắng khi lớn hơn', () => {
+    const r = computeCustomerAging(
+      300_000_000,
+      [inv(1, 150_000_000, '2026-01-01')],
+      p,
+      d('2026-03-01'),
+    );
+    expect(r.limitOverdueAmount).toBe(200_000_000);
+    expect(r.invoiceRequiredAmount).toBe(150_000_000);
+    expect(r.requiredPaymentAmount).toBe(200_000_000);
+    expect(r.requiredPaymentSource).toBe('CREDIT_LIMIT');
+  });
+
+  it('cả hai cùng phát sinh bằng nhau → giữ nguồn TIE', () => {
+    const r = computeCustomerAging(
+      200_000_000,
+      [inv(1, 100_000_000, '2026-01-01')],
+      p,
+      d('2026-03-01'),
+    );
+    expect(r.limitOverdueAmount).toBe(100_000_000);
+    expect(r.invoiceRequiredAmount).toBe(100_000_000);
+    expect(r.requiredPaymentAmount).toBe(100_000_000);
+    expect(r.requiredPaymentSource).toBe('TIE');
   });
 });
 
@@ -359,6 +453,7 @@ describe('computeCustomerAging — nợ KHÔNG gắn được hóa đơn', () =>
     );
     expect(r.limitReached).toBe(true);
     expect(r.debtStatus).toBe(DEBT_STATUS.OVERDUE);
+    expect(r.requiredPaymentAmount).toBe(112_902_560);
   });
 });
 

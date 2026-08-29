@@ -92,7 +92,7 @@ export class DebtPolicyImportService {
     const cleaned = raw.replace(/[^\d.-]/g, '');
     if (!cleaned || cleaned === '-') return null;
     const n = Number(cleaned);
-    return Number.isFinite(n) ? n : null;
+    return Number.isFinite(n) && n > 0 ? n : null;
   }
 
   /**
@@ -224,14 +224,9 @@ export class DebtPolicyImportService {
       const creditLimitRaw = cellOf(excelRow, 'creditLimit');
       const creditLimitValue = this.money(creditLimitRaw);
 
-      // Bật hạn mức mà không có giá trị: cho qua nhưng cảnh báo, vì chiều
-      // hạn mức sẽ không cảnh báo được gì cho tới khi bổ sung số.
-      if (
-        parsed.hasCreditLimit &&
-        (creditLimitValue === null || creditLimitValue <= 0)
-      ) {
-        warnings.push(
-          'Có "Hạn Mức" nhưng chưa nhập giá trị — cần bổ sung sau để chiều hạn mức hoạt động',
+      if (parsed.hasCreditLimit && creditLimitValue === null) {
+        errors.push(
+          'Có "Hạn Mức" thì Hạn Mức Công Nợ phải là số tiền lớn hơn 0',
         );
       }
 
@@ -470,7 +465,7 @@ export class DebtPolicyImportService {
       {
         col: 'Hình Thức Công Nợ',
         req: 'Không',
-        val: 'Công Nợ Tín Nhiệm | Hợp Đồng Công Nợ | Thanh Toán Khi Nhận Hàng | Chuyển Khoản Ngay',
+        val: 'Công Nợ Tín Nhiệm | Hợp Đồng Công Nợ | Thanh Toán Khi Nhận Hàng | Chuyển khoản ngay',
       },
       {
         col: 'Loại Công Nợ',
@@ -480,13 +475,13 @@ export class DebtPolicyImportService {
       {
         col: 'Hạn Mức Công Nợ',
         req: 'Không',
-        val: 'Số tiền (VND). Bắt buộc điền nếu Loại Công Nợ có "Hạn Mức", nếu không sẽ bị cảnh báo.',
+        val: 'Số tiền VND lớn hơn 0. Bắt buộc điền nếu Loại Công Nợ có "Hạn Mức".',
       },
       { col: '', req: '', val: '' },
       {
         col: 'GHI CHÚ',
         req: '',
-        val: 'Bật cả "Hạn Mức" và "Công Nợ N Ngày" thì khách chỉ bị tính quá hạn khi thỏa ĐỒNG THỜI cả hai điều kiện.',
+        val: 'Bật cả "Hạn Mức" và "Công Nợ N Ngày" thì hệ thống tính riêng phần vượt hạn mức và nợ hóa đơn đến hạn, sau đó lấy khoản cần thu lớn hơn.',
       },
       {
         col: '',

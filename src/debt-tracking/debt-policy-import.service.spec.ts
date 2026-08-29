@@ -71,8 +71,8 @@ describe('DebtPolicyImportService.parseDebtType', () => {
   });
 
   it('không nhận diện được giá trị lạ', () => {
-    // "Chuyển Khoản Ngay" là hình thức công nợ, bị ghi nhầm vào cột Loại.
-    expect(p('Chuyển Khoản Ngay').recognized).toBe(false);
+    // "Chuyển khoản ngay" là hình thức công nợ, bị ghi nhầm vào cột Loại.
+    expect(p('Chuyển khoản ngay').recognized).toBe(false);
     expect(p('abcxyz').recognized).toBe(false);
   });
 

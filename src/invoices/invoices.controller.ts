@@ -260,6 +260,17 @@ export class InvoicesController {
     return this.invoicesService.create(dto, user.id);
   }
 
+  /**
+   * Tuyến tạo hóa đơn dành riêng cho POS. Chỉ tuyến này áp quy tắc khách
+   * Chuyển khoản ngay + Không công nợ phải thanh toán đủ trước khi tạo.
+   * Public API/tích hợp tiếp tục dùng POST /invoices không bị thay đổi.
+   */
+  @Post('pos')
+  @RequirePermissions('invoices:create')
+  createFromPos(@Body() dto: CreateInvoiceDto, @CurrentUser() user: any) {
+    return this.invoicesService.create(dto, user.id, true);
+  }
+
   @Put(':id')
   @RequirePermissions('invoices:update')
   update(
@@ -278,6 +289,17 @@ export class InvoicesController {
     @CurrentUser() user: any,
   ) {
     return this.invoicesService.createFromOrder(+orderId, dto, user.id);
+  }
+
+  /** Xem ghi chú ở POST /invoices/pos. */
+  @Post('pos/from-order/:orderId')
+  @RequirePermissions('invoices:create')
+  createFromOrderFromPos(
+    @Param('orderId') orderId: string,
+    @Body() dto: CreateInvoiceFromOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.invoicesService.createFromOrder(+orderId, dto, user.id, true);
   }
 
   @Post('from-consignment/:consignmentId')

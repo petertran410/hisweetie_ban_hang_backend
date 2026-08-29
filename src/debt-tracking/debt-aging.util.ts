@@ -17,9 +17,16 @@
 //
 // HAI CHIỀU CÔNG NỢ ĐỘC LẬP (bám đúng dữ liệu vận hành):
 //   - hasTermDays   : nợ tối đa N ngày kể từ ngày GIAO HÀNG ĐẦU TIÊN
-//   - hasCreditLimit: nợ tới hạn mức thì phải thanh toán
-//   Bật cả hai ⇒ chỉ tính quá hạn khi thỏa CẢ HAI (AND).
+//   - hasCreditLimit: nợ vượt hạn mức thì phải thanh toán phần vượt
+//   Bật cả hai ⇒ tính hai khoản độc lập, sau đó ưu tiên khoản lớn hơn.
 //   Tắt cả hai ⇒ khách không công nợ.
+//
+// SỐ TIỀN CẦN THU (`requiredPaymentAmount`) — quy ước vận hành:
+//   - Đang VƯỢT hạn mức ⇒ chỉ cần thu PHẦN VƯỢT (totalDebt − creditLimit),
+//     KHÔNG phải toàn bộ dư nợ. Áp dụng cả khi khách bật thêm hạn ngày.
+//   - Chỉ hạn mức mà mới CHẠM đúng mốc (chưa vượt) ⇒ chưa có gì phải thu,
+//     chỉ cảnh báo "Đến hạn".
+//   - Thuần hạn ngày ⇒ thu phần hóa đơn đã đến ngày thanh toán hoặc quá hạn.
 // ====================================================================
 
 import {
@@ -62,8 +69,10 @@ export interface OutstandingInvoice {
   outstanding: number;
   deliveredAt: Date | null;
   purchaseDate: Date;
-  /** null khi chưa báo đơn hoặc khách không áp hạn theo ngày. */
+  /** Ngày bắt đầu cần thanh toán: ngày báo đơn + kỳ hạn. */
   dueDate: Date | null;
+  /** Ngày chuyển thành quá hạn: dueDate + ân hạn. */
+  overdueDate: Date | null;
   daysOverdue: number;
   daysUntilDue: number | null;
   isOverdue: boolean;
@@ -72,10 +81,12 @@ export interface OutstandingInvoice {
 export interface AgingResult {
   totalDebt: number;
   outstandingInvoices: OutstandingInvoice[];
-  /** Nợ đã quá hạn (đã tính ân hạn, đã áp quy tắc AND nếu bật cả hai chiều). */
+  /** Tổng nợ hóa đơn đã hết ân hạn. */
   overdueAmount: number;
-  /** Nợ tới hạn hoặc sắp tới hạn trong DUE_THRESHOLD_DAYS ngày. */
+  /** Nợ hóa đơn đến đúng ngày bắt đầu phải thanh toán. */
   dueAmount: number;
+  /** Nợ hóa đơn sắp đến hạn trong DUE_THRESHOLD_DAYS ngày. */
+  dueSoonAmount: number;
   /** Nợ chưa tới hạn. */
   notDueAmount: number;
   /** Nợ thuộc hóa đơn CHƯA báo đơn → chưa khởi tạo hạn. */
@@ -95,6 +106,14 @@ export interface AgingResult {
   limitReached: boolean;
   /** Số tiền vượt hạn mức. 0 nếu chưa vượt hoặc không áp hạn mức. */
   overLimitAmount: number;
+  /** Khoản phải thu do vượt hạn mức. */
+  limitOverdueAmount: number;
+  /** Khoản phải thu do các hóa đơn đã đến hạn/ngày quá hạn. */
+  invoiceRequiredAmount: number;
+  /** Số tiền hệ thống đề xuất cần thu ngay theo chính sách đang áp. */
+  requiredPaymentAmount: number;
+  /** Nguồn tạo ra số tiền cần thu lớn nhất. */
+  requiredPaymentSource: 'CREDIT_LIMIT' | 'INVOICE' | 'TIE' | 'NONE';
   debtStatus: DebtStatus;
 }
 
@@ -122,13 +141,12 @@ export function diffDays(a: Date, b: Date): number {
 // ------------------------------------------------------------ due date
 
 /**
- * Hạn thanh toán của MỘT hóa đơn, đã cộng ân hạn.
+ * Ngày bắt đầu phải thanh toán của MỘT hóa đơn.
  * Trả null khi hóa đơn chưa báo đơn hoặc khách không áp hạn theo ngày.
  */
 export function resolveInvoiceDueDate(
   invoice: Pick<AgingInvoiceInput, 'deliveredAt'>,
   policy: DebtPolicyInput,
-  graceDays: number = DEBT_GRACE_DAYS,
 ): Date | null {
   // Không áp hạn theo ngày ⇒ không có hạn theo từng hóa đơn.
   if (!policy.hasTermDays) return null;
@@ -139,7 +157,17 @@ export function resolveInvoiceDueDate(
   const term = policy.termDays;
   if (term === null || term === undefined || term < 0) return null;
 
-  return addDays(startOfDay(invoice.deliveredAt), term + graceDays);
+  return addDays(startOfDay(invoice.deliveredAt), term);
+}
+
+/** Ngày hóa đơn chuyển thành quá hạn sau khi hết thời gian ân hạn. */
+export function resolveInvoiceOverdueDate(
+  invoice: Pick<AgingInvoiceInput, 'deliveredAt'>,
+  policy: DebtPolicyInput,
+  graceDays: number = DEBT_GRACE_DAYS,
+): Date | null {
+  const dueDate = resolveInvoiceDueDate(invoice, policy);
+  return dueDate ? addDays(dueDate, graceDays) : null;
 }
 
 // ------------------------------------------------------------ FIFO
@@ -220,31 +248,33 @@ export function computeCustomerAging(
   const usesLimit = creditLimit !== null && creditLimit > 0;
 
   const limitReached = usesLimit
-    ? totalDebt >= creditLimit - MONEY_EPSILON
+    ? totalDebt >= (creditLimit as number) - MONEY_EPSILON
     : false;
 
-  const overLimitAmount =
-    usesLimit && limitReached ? Math.max(0, totalDebt - creditLimit) : 0;
+  const overLimitAmount = usesLimit
+    ? Math.max(0, totalDebt - (creditLimit as number))
+    : 0;
 
   const creditUsageRatio = usesLimit ? totalDebt / creditLimit : null;
 
   const { allocated, unallocated } = allocateDebtFifo(invoices, totalDebt);
 
   const outstandingInvoices: OutstandingInvoice[] = allocated.map((inv) => {
-    const dueDate = resolveInvoiceDueDate(inv, policy, graceDays);
+    const dueDate = resolveInvoiceDueDate(inv, policy);
+    const overdueDate = resolveInvoiceOverdueDate(inv, policy, graceDays);
 
     let isOverdue = false;
     let daysOverdue = 0;
     let daysUntilDue: number | null = null;
 
-    if (dueDate) {
-      const delta = diffDays(today, dueDate); // > 0: còn hạn, < 0: đã quá
+    if (overdueDate) {
+      const delta = diffDays(today, overdueDate); // > 0: còn ân hạn, < 0: đã quá
       if (delta < 0) {
         isOverdue = true;
         daysOverdue = -delta;
-      } else {
-        daysUntilDue = delta;
       }
+      // Đếm tới ngày bắt đầu phải trả, không phải tới ngày hết ân hạn.
+      daysUntilDue = diffDays(today, dueDate as Date);
     }
 
     return {
@@ -255,6 +285,7 @@ export function computeCustomerAging(
       deliveredAt: inv.deliveredAt,
       purchaseDate: inv.purchaseDate,
       dueDate,
+      overdueDate,
       daysOverdue,
       daysUntilDue,
       isOverdue,
@@ -265,6 +296,7 @@ export function computeCustomerAging(
 
   let overdueAmount = 0;
   let dueAmount = 0;
+  let dueSoonAmount = 0;
   let notDueAmount = 0;
   let undeliveredAmount = 0;
 
@@ -272,27 +304,34 @@ export function computeCustomerAging(
     // Không công nợ — về nguyên tắc không hiện trong danh sách theo dõi.
     notDueAmount = totalDebt - unallocated;
   } else if (!policy.hasTermDays && usesLimit) {
-    // CHỈ hạn mức: không xét hạn theo từng hóa đơn.
-    // Cán mốc ⇒ toàn bộ dư nợ tới hạn.
-    if (limitReached) overdueAmount = totalDebt - unallocated;
-    else notDueAmount = totalDebt - unallocated;
+    // CHỈ hạn mức: không xét hạn theo từng hóa đơn. Phần vượt được giữ
+    // riêng ở `limitOverdueAmount`, không trộn vào bucket quá hạn hóa đơn.
+    const allocatedDebt = Math.max(0, totalDebt - unallocated);
+    notDueAmount = allocatedDebt;
   } else {
-    // Có chiều SỐ NGÀY. Nếu bật thêm hạn mức thì áp quy tắc AND:
-    // chỉ coi là quá hạn khi ĐỒNG THỜI cán hạn mức VÀ hóa đơn hết hạn ngày.
-    const limitGate = usesLimit ? limitReached : true;
-
+    // Chiều theo ngày được tính độc lập với hạn mức. Hóa đơn bắt đầu là
+    // khoản cần thu từ dueDate; sau overdueDate mới chuyển sang quá hạn đỏ.
     for (const inv of outstandingInvoices) {
       if (!inv.dueDate) {
         undeliveredAmount += inv.outstanding;
         continue;
       }
-      if (inv.isOverdue && limitGate) {
+      if (inv.isOverdue) {
         overdueAmount += inv.outstanding;
+      } else if (
+        inv.daysUntilDue !== null &&
+        inv.daysUntilDue <= 0
+      ) {
+        dueAmount += inv.outstanding;
       } else if (
         inv.daysUntilDue !== null &&
         inv.daysUntilDue <= DUE_THRESHOLD_DAYS
       ) {
-        dueAmount += inv.outstanding;
+        // `dueSoonAmount` là một lát cắt thông tin của `notDueAmount`, không
+        // phải một bucket cộng thêm. Giữ notDue đủ để tổng các nhóm luôn khớp
+        // với totalDebt.
+        dueSoonAmount += inv.outstanding;
+        notDueAmount += inv.outstanding;
       } else {
         notDueAmount += inv.outstanding;
       }
@@ -307,27 +346,44 @@ export function computeCustomerAging(
 
   const nearestDueDate = upcoming.length > 0 ? upcoming[0] : null;
 
-  const limitGateForDays =
-    usesLimit && policy.hasTermDays ? limitReached : true;
-
   const maxDaysOverdue = outstandingInvoices
-    .filter((i) => i.isOverdue && limitGateForDays)
+    .filter((i) => i.isOverdue)
     .reduce((m, i) => Math.max(m, i.daysOverdue), 0);
+
+  const limitOverdueAmount = policy.hasCreditLimit ? overLimitAmount : 0;
+  const invoiceRequiredAmount = policy.hasTermDays
+    ? overdueAmount + dueAmount
+    : 0;
 
   const debtStatus = resolveDebtStatus({
     overdueAmount,
     dueAmount,
+    dueSoonAmount,
     nearestDueDate,
     today,
     creditUsageRatio,
-    limitReached,
+    limitOverdueAmount,
   });
+
+  const requiredPaymentAmount = Math.max(
+    limitOverdueAmount,
+    invoiceRequiredAmount,
+  );
+  const requiredPaymentSource =
+    requiredPaymentAmount <= MONEY_EPSILON
+      ? 'NONE'
+      : Math.abs(limitOverdueAmount - invoiceRequiredAmount) <= MONEY_EPSILON
+        ? 'TIE'
+        : limitOverdueAmount > invoiceRequiredAmount
+          ? 'CREDIT_LIMIT'
+          : 'INVOICE';
 
   return {
     totalDebt,
     outstandingInvoices,
     overdueAmount,
     dueAmount,
+    dueSoonAmount,
     notDueAmount,
     undeliveredAmount,
     unallocatedAmount: unallocated,
@@ -337,6 +393,10 @@ export function computeCustomerAging(
     creditUsageRatio,
     limitReached,
     overLimitAmount,
+    limitOverdueAmount,
+    invoiceRequiredAmount,
+    requiredPaymentAmount,
+    requiredPaymentSource,
     debtStatus,
   };
 }
@@ -344,25 +404,32 @@ export function computeCustomerAging(
 export function resolveDebtStatus(input: {
   overdueAmount: number;
   dueAmount: number;
+  dueSoonAmount: number;
   nearestDueDate: Date | null;
   today: Date;
   creditUsageRatio: number | null;
-  limitReached: boolean;
+  limitOverdueAmount: number;
 }): DebtStatus {
   const {
     overdueAmount,
     dueAmount,
+    dueSoonAmount,
     nearestDueDate,
     today,
     creditUsageRatio,
-    limitReached,
+    limitOverdueAmount,
   } = input;
 
-  if (overdueAmount > MONEY_EPSILON || limitReached) {
+  if (
+    overdueAmount > MONEY_EPSILON ||
+    limitOverdueAmount > MONEY_EPSILON
+  ) {
     return DEBT_STATUS.OVERDUE;
   }
 
-  if (dueAmount > MONEY_EPSILON) return DEBT_STATUS.DUE;
+  if (dueAmount > MONEY_EPSILON || dueSoonAmount > MONEY_EPSILON) {
+    return DEBT_STATUS.DUE;
+  }
 
   if (nearestDueDate && diffDays(today, nearestDueDate) <= DUE_THRESHOLD_DAYS) {
     return DEBT_STATUS.DUE;

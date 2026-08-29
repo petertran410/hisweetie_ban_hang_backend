@@ -1,7 +1,9 @@
 // prisma/seeds/backfill-invoice-delivered-at.ts
 //
-// Điền `invoices.delivered_at` cho dữ liệu cũ = thời điểm phiếu GIAO HÀNG
-// SỚM NHẤT còn hiệu lực (cancelled_at IS NULL) gắn với hóa đơn đó.
+// Điền `invoices.delivered_at` cho dữ liệu cũ từ nguồn đáng tin cậy nhất:
+//   1. Thời điểm phiếu GIAO HÀNG sớm nhất còn hiệu lực (cancelled_at IS NULL).
+//   2. Với luồng cũ bấm "Đã Báo Đơn" trực tiếp trên hóa đơn (không có phiếu
+//      giao), thời điểm audit INVOICE_UPDATE đầu tiên ghi trạng thái DELIVERED.
 //
 // AN TOÀN:
 //   - CHỈ ghi đúng một cột `delivered_at`. Không đụng cột nào khác.
@@ -16,6 +18,9 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 const DRY_RUN = process.env.DRY_RUN === '1';
+// PostgreSQL giới hạn 32.767 bind variables mỗi prepared statement. Giữ batch
+// nhỏ để các mệnh đề `IN (...)` của dữ liệu/audit không chạm giới hạn này.
+const READ_BATCH_SIZE = 1_000;
 
 async function main() {
   console.log(
@@ -37,23 +42,101 @@ async function main() {
 
   console.log(`   Tìm thấy ${rows.length} hóa đơn có phiếu giao còn hiệu lực`);
 
-  if (rows.length === 0) {
+  // Các hóa đơn được báo đơn trực tiếp trước khi có `deliveredAt` không có
+  // PackingSlip để xuất hiện trong query trên. Trạng thái COMPLETED được giữ
+  // lại vì hóa đơn có thể đã báo đơn rồi mới được kết thúc; audit bên dưới vẫn
+  // chỉ chấp nhận lần chuyển sang GIAO THÀNH CÔNG làm mốc giao hàng.
+  const directReportedCandidates = await prisma.invoice.findMany({
+    where: {
+      deliveredAt: null,
+      status: { in: [1, 7] },
+    },
+    select: { id: true, code: true, status: true, deliveredAt: true },
+  });
+  const invoiceIds = [
+    ...new Set([
+      ...rows.map((r) => r.invoiceId),
+      ...directReportedCandidates.map((inv) => inv.id),
+    ]),
+  ];
+
+  if (invoiceIds.length === 0) {
     console.log('   Không có gì để làm.');
     return;
   }
 
-  const invoiceIds = rows.map((r) => r.invoiceId);
-  const current = await prisma.invoice.findMany({
-    where: { id: { in: invoiceIds } },
-    select: { id: true, code: true, status: true, deliveredAt: true },
-  });
-  const currentMap = new Map(current.map((c) => [c.id, c]));
+  // Candidate báo đơn trực tiếp đã có đủ dữ liệu hiện tại. Chỉ cần đọc thêm
+  // các invoice đi từ phiếu giao, đồng thời chia batch để không vượt bind limit.
+  const currentMap = new Map(
+    directReportedCandidates.map((invoice) => [invoice.id, invoice]),
+  );
+  const packingInvoiceIds = [...new Set(rows.map((row) => row.invoiceId))];
+  for (
+    let offset = 0;
+    offset < packingInvoiceIds.length;
+    offset += READ_BATCH_SIZE
+  ) {
+    const invoices = await prisma.invoice.findMany({
+      where: {
+        id: {
+          in: packingInvoiceIds.slice(offset, offset + READ_BATCH_SIZE),
+        },
+      },
+      select: { id: true, code: true, status: true, deliveredAt: true },
+    });
+    for (const invoice of invoices) currentMap.set(invoice.id, invoice);
+  }
+
+  const packingDeliveredAt = new Map(
+    rows.map((row) => [row.invoiceId, row.firstDelivered]),
+  );
+  const directReportedAt = new Map<number, Date>();
+  const directReportedIds = directReportedCandidates.map((invoice) => invoice.id);
+  if (directReportedIds.length > 0) {
+    console.log(
+      `   Kiểm tra audit báo đơn trực tiếp cho ${directReportedIds.length} hóa đơn...`,
+    );
+  }
+  for (
+    let offset = 0;
+    offset < directReportedIds.length;
+    offset += READ_BATCH_SIZE
+  ) {
+    const directReportAuditLogs = await prisma.auditLog.findMany({
+      where: {
+        entityType: 'invoices',
+        entityId: {
+          in: directReportedIds
+            .slice(offset, offset + READ_BATCH_SIZE)
+            .map(String),
+        },
+        actionCode: 'INVOICE_UPDATE',
+      },
+      select: { entityId: true, createdAt: true, snapshot: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    for (const log of directReportAuditLogs) {
+      const invoiceId = Number(log.entityId);
+      const snapshot = log.snapshot as
+        | { status?: unknown; statusValue?: unknown }
+        | null;
+      const wasReportedDelivered =
+        snapshot?.status === 7 || snapshot?.statusValue === 'Giao thành công';
+      if (
+        Number.isInteger(invoiceId) &&
+        wasReportedDelivered &&
+        !directReportedAt.has(invoiceId)
+      ) {
+        directReportedAt.set(invoiceId, log.createdAt);
+      }
+    }
+  }
 
   let updated = 0;
   let skipped = 0;
 
-  for (const row of rows) {
-    const inv = currentMap.get(row.invoiceId);
+  for (const invoiceId of invoiceIds) {
+    const inv = currentMap.get(invoiceId);
     if (!inv) continue;
 
     // Hóa đơn đã hủy thì không can thiệp.
@@ -62,7 +145,12 @@ async function main() {
       continue;
     }
 
-    const target = row.firstDelivered;
+    const target =
+      packingDeliveredAt.get(invoiceId) ?? directReportedAt.get(invoiceId);
+    if (!target) {
+      skipped++;
+      continue;
+    }
     if (inv.deliveredAt && inv.deliveredAt.getTime() === target.getTime()) {
       skipped++;
       continue;

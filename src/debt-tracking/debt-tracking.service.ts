@@ -239,6 +239,7 @@ export class DebtTrackingService {
 
         overdueAmount: aging.overdueAmount,
         dueAmount: aging.dueAmount,
+        dueSoonAmount: aging.dueSoonAmount,
         notDueAmount: aging.notDueAmount,
         undeliveredAmount: aging.undeliveredAmount,
         unallocatedAmount: aging.unallocatedAmount,
@@ -248,6 +249,10 @@ export class DebtTrackingService {
         creditUsageRatio: aging.creditUsageRatio,
         limitReached: aging.limitReached,
         overLimitAmount: aging.overLimitAmount,
+        limitOverdueAmount: aging.limitOverdueAmount,
+        invoiceRequiredAmount: aging.invoiceRequiredAmount,
+        requiredPaymentAmount: aging.requiredPaymentAmount,
+        requiredPaymentSource: aging.requiredPaymentSource,
         debtStatus: aging.debtStatus,
         outstandingCount: aging.outstandingInvoices.length,
 
@@ -287,6 +292,8 @@ export class DebtTrackingService {
           return (a.totalDebt - b.totalDebt) * dir;
         case 'overdueAmount':
           return (a.overdueAmount - b.overdueAmount) * dir;
+        case 'requiredPaymentAmount':
+          return (a.requiredPaymentAmount - b.requiredPaymentAmount) * dir;
         case 'daysOverdue':
           return (a.maxDaysOverdue - b.maxDaysOverdue) * dir;
         case 'overLimit':
@@ -344,10 +351,14 @@ export class DebtTrackingService {
       totalDebt: sum((r) => r.totalDebt),
       overdueAmount: sum((r) => r.overdueAmount),
       dueAmount: sum((r) => r.dueAmount),
+      dueSoonAmount: sum((r) => r.dueSoonAmount),
       notDueAmount: sum((r) => r.notDueAmount),
       undeliveredAmount: sum((r) => r.undeliveredAmount),
       unallocatedAmount: sum((r) => r.unallocatedAmount),
       overLimitAmount: sum((r) => r.overLimitAmount),
+      limitOverdueAmount: sum((r) => r.limitOverdueAmount),
+      invoiceRequiredAmount: sum((r) => r.invoiceRequiredAmount),
+      requiredPaymentAmount: sum((r) => r.requiredPaymentAmount),
       byDebtStatus: {
         OVERDUE: countBy(DEBT_STATUS.OVERDUE),
         DUE: countBy(DEBT_STATUS.DUE),
@@ -609,6 +620,7 @@ export class DebtTrackingService {
       // Không có hạn theo ngày thì chưa đủ dữ liệu để chấm đúng/trễ.
       if (!policy?.hasTermDays || policy.termDays === null) continue;
 
+      // Lịch sử thanh toán vẫn dùng ngày hết ân hạn làm mốc đánh giá đúng/trễ.
       const due = new Date(invoice.deliveredAt);
       due.setHours(0, 0, 0, 0);
       due.setDate(due.getDate() + policy.termDays + 5);
@@ -917,9 +929,6 @@ export class DebtTrackingService {
       policy,
     );
 
-    // Phần đã đến hạn = quá hạn + tới hạn. Nếu chưa có gì đến hạn thì gợi ý
-    // toàn bộ dư nợ để kế toán tự điều chỉnh xuống.
-    const due = aging.overdueAmount + aging.dueAmount;
-    return due > MONEY_EPSILON ? due : Number(customer.totalDebt);
+    return aging.requiredPaymentAmount;
   }
 }

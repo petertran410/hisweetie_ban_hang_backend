@@ -1081,7 +1081,20 @@ export class ImportService {
     for (const customer of customers) {
       try {
         const created = await this.prisma.customer.create({
-          data: customer,
+          data: {
+            ...customer,
+            debtPolicy: {
+              create: {
+                debtForm: 'PREPAID',
+                hasCreditLimit: false,
+                hasTermDays: false,
+                creditLimit: null,
+                termDays: null,
+                paymentFrequency: null,
+                isActive: true,
+              },
+            },
+          },
         });
         imported.push(created);
       } catch (error) {

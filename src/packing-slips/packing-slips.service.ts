@@ -314,15 +314,18 @@ export class PackingSlipsService {
         // làm nhiều đợt (nhiều phiếu giao chưa hủy). Nếu ghi đè mỗi lần tạo
         // phiếu thì lần giao sau sẽ đẩy lùi hạn nợ, khách được nợ lâu hơn
         // thực tế. Luôn giữ lần giao sớm nhất.
+        //
+        // CHỈ loại CANCELLED (khác với updateMany status ở trên còn loại
+        // COMPLETED). Hóa đơn ở trạng thái COMPLETED vẫn phải mang mốc báo
+        // đơn: trạng thái xử lý hóa đơn không thay đổi sự thật là hàng đã được
+        // giao. Thiếu mốc này thì ageing coi là "chưa báo đơn" và không đếm hạn.
         // Khi hủy phiếu, giá trị này được tính lại ở
         // recalcInvoiceStatusAfterPackingCancel (common/packing-status.util.ts).
         await tx.invoice.updateMany({
           where: {
             id: { in: dto.invoiceIds },
             deliveredAt: null,
-            status: {
-              notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
-            },
+            status: { notIn: [INVOICE_STATUS.CANCELLED] },
           },
           data: { deliveredAt: created.createdAt },
         });
@@ -433,6 +436,17 @@ export class PackingSlipsService {
       }
 
       if (dto.invoiceIds || dto.consignmentIds) {
+        // Hóa đơn bị BỎ khỏi phiếu (có trước, không còn trong payload).
+        const previousInvoiceIds = (packingSlip.invoices || [])
+          .map((row: any) => row.invoiceId)
+          .filter(
+            (invoiceId: number | null): invoiceId is number => !!invoiceId,
+          );
+        const nextInvoiceIds = new Set(dto.invoiceIds ?? []);
+        const removedInvoiceIds = previousInvoiceIds.filter(
+          (invoiceId) => !nextInvoiceIds.has(invoiceId),
+        );
+
         await tx.packingSlipInvoice.deleteMany({
           where: { packingSlipId: id },
         });
@@ -441,6 +455,41 @@ export class PackingSlipsService {
             ? dto.consignmentIds.map((consignmentId) => ({ consignmentId }))
             : (dto.invoiceIds || []).map((invoiceId) => ({ invoiceId })),
         };
+
+        // Hóa đơn mới được THÊM vào phiếu giao hàng qua bước sửa cũng là "báo
+        // đơn thành công" → phải set DELIVERED và stamp mốc công nợ giống lúc
+        // tạo phiếu, nếu không thì hạn nợ không bao giờ khởi động cho các hóa
+        // đơn này. Chỉ áp dụng cho phiếu giao hàng (không phải ký gửi).
+        if (dto.invoiceIds && dto.invoiceIds.length > 0) {
+          await tx.invoice.updateMany({
+            where: {
+              id: { in: dto.invoiceIds },
+              status: {
+                notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
+              },
+            },
+            data: {
+              status: INVOICE_STATUS.DELIVERED,
+              statusValue: getStatusLabel(INVOICE_STATUS.DELIVERED),
+            },
+          });
+          await tx.invoice.updateMany({
+            where: {
+              id: { in: dto.invoiceIds },
+              deliveredAt: null,
+              status: { notIn: [INVOICE_STATUS.CANCELLED] },
+            },
+            data: { deliveredAt: packingSlip.createdAt },
+          });
+        }
+
+        // Hóa đơn bị bỏ khỏi phiếu: tính lại trạng thái + mốc công nợ theo các
+        // phiếu còn hiệu lực (dùng chung helper với luồng hủy phiếu). Không làm
+        // bước này thì hóa đơn vẫn mang mốc giao hàng của phiếu đã rời ⇒ bị
+        // tính hạn nợ oan.
+        if (removedInvoiceIds.length > 0) {
+          await recalcInvoiceStatusAfterPackingCancel(tx, removedInvoiceIds);
+        }
       }
 
       if (dto.imageUrls) {

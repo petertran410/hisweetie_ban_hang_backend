@@ -175,7 +175,21 @@ export class SyncCustomerService extends BaseSyncService {
     }
 
     const created = await this.prisma.customer.create({
-      data: { code: record.code, ...kiotOwnedData },
+      data: {
+        code: record.code,
+        ...kiotOwnedData,
+        debtPolicy: {
+          create: {
+            debtForm: 'PREPAID',
+            hasCreditLimit: false,
+            hasTermDays: false,
+            creditLimit: null,
+            termDays: null,
+            paymentFrequency: null,
+            isActive: true,
+          },
+        },
+      },
     });
 
     if (record.address || record.locationName) {

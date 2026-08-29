@@ -15,7 +15,7 @@ export const DEBT_FORM = {
   CONTRACT: 'CONTRACT',
   /** Thanh Toán Khi Nhận Hàng. */
   COD: 'COD',
-  /** Chuyển Khoản Ngay. */
+  /** Chuyển khoản ngay. */
   PREPAID: 'PREPAID',
 } as const;
 
@@ -25,7 +25,7 @@ export const DEBT_FORM_LABELS: Record<string, string> = {
   TRUST: 'Công Nợ Tín Nhiệm',
   CONTRACT: 'Hợp Đồng Công Nợ',
   COD: 'Thanh Toán Khi Nhận Hàng',
-  PREPAID: 'Chuyển Khoản Ngay',
+  PREPAID: 'Chuyển khoản ngay',
 };
 
 // -------------------------------------------------- Đánh giá lịch sử thanh toán

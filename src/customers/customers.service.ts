@@ -708,6 +708,14 @@ export class CustomersService {
         phone: true,
         email: true,
         totalDebt: true,
+        debtPolicy: {
+          select: {
+            debtForm: true,
+            hasCreditLimit: true,
+            hasTermDays: true,
+            isActive: true,
+          },
+        },
         parentId: true,
         parent: {
           select: { code: true, name: true },
@@ -780,11 +788,25 @@ export class CustomersService {
           addresses: {
             create: normalizedAddresses.map(({ id: _, ...a }) => a),
           },
+          debtPolicy: {
+            create: {
+              debtForm: 'PREPAID',
+              hasCreditLimit: false,
+              hasTermDays: false,
+              creditLimit: null,
+              termDays: null,
+              paymentFrequency: null,
+              isActive: true,
+              createdBy: userId ?? null,
+              updatedBy: userId ?? null,
+            },
+          },
         },
         include: {
           customerType: true,
           branch: true,
           addresses: true,
+          debtPolicy: true,
         },
       });
 
@@ -1722,6 +1744,17 @@ export class CustomersService {
                 isDefault: true,
               },
             ],
+          },
+          debtPolicy: {
+            create: {
+              debtForm: 'PREPAID',
+              hasCreditLimit: false,
+              hasTermDays: false,
+              creditLimit: null,
+              termDays: null,
+              paymentFrequency: null,
+              isActive: true,
+            },
           },
         },
       });

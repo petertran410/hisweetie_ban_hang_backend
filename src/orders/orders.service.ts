@@ -1536,6 +1536,14 @@ export class OrdersService {
             addresses: {
               orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
+            debtPolicy: {
+              select: {
+                debtForm: true,
+                hasCreditLimit: true,
+                hasTermDays: true,
+                isActive: true,
+              },
+            },
           },
         },
         branch: true,

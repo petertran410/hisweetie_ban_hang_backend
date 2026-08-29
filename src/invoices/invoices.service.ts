@@ -53,6 +53,12 @@ import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 
+const POS_PAYMENT_EPSILON = 1;
+const POS_PREPAID_ORDER_MESSAGE =
+  'Khách hàng thuộc hình thức Chuyển khoản ngay và loại Không công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng ghi nhận đủ tiền trên đơn hàng trước khi tạo hóa đơn.';
+const POS_PREPAID_INVOICE_MESSAGE =
+  'Khách hàng thuộc hình thức Chuyển khoản ngay và loại Không công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thu đủ tiền trước khi tạo hóa đơn.';
+
 @Injectable()
 export class InvoicesService {
   constructor(
@@ -1317,7 +1323,7 @@ export class InvoicesService {
     return { effectiveItems: baseItems, extraInvoiceDiscount, logs };
   }
 
-  async create(dto: CreateInvoiceDto, userId: number) {
+  async create(dto: CreateInvoiceDto, userId: number, fromPos = false) {
     const touchedProductIds = new Set<number>();
     const result = await this.prisma.$transaction(
       async (tx) => {
@@ -1342,7 +1348,13 @@ export class InvoicesService {
               promo.extraInvoiceDiscount
             : (dto.discountAmount || 0) + promo.extraInvoiceDiscount;
         const grandTotal = totalAmount - discountAmount;
-        const paidAmount = dto.paidAmount || 0;
+        const requestedPaymentAmount = this.getPosPaymentAmount(
+          dto,
+          Number(dto.paidAmount || 0),
+        );
+        const paidAmount = fromPos
+          ? requestedPaymentAmount
+          : Number(dto.paidAmount || 0);
         const debtAmount = grandTotal - paidAmount;
 
         const status: number = INVOICE_STATUS.PROCESSING;
@@ -1352,11 +1364,39 @@ export class InvoicesService {
         const customer = dto.customerId
           ? await tx.customer.findUnique({
               where: { id: dto.customerId },
-              select: { id: true, totalDebt: true, name: true },
+              select: {
+                id: true,
+                totalDebt: true,
+                name: true,
+                debtPolicy: {
+                  select: {
+                    debtForm: true,
+                    hasCreditLimit: true,
+                    hasTermDays: true,
+                    isActive: true,
+                  },
+                },
+              },
             })
           : null;
 
         const parentCustomerId = customer ? customer.id : null;
+
+        if (fromPos) {
+          if (
+            Math.abs(Number(dto.paidAmount || 0) - requestedPaymentAmount) >
+            POS_PAYMENT_EPSILON
+          ) {
+            throw new BadRequestException(
+              'Tổng các khoản thanh toán không khớp số tiền khách đã thanh toán.',
+            );
+          }
+          this.assertPosPrepaidInvoiceCanBeCreated({
+            policy: customer?.debtPolicy,
+            paidAmount,
+            grandTotal,
+          });
+        }
 
         const currentCustomerDebt = Number(customer?.totalDebt || 0);
         const customerDebtSnapshot = currentCustomerDebt + debtAmount;
@@ -1964,6 +2004,11 @@ export class InvoicesService {
             // (frontend luôn gửi thời điểm lưu hiện tại). createdAt vẫn là thời
             // điểm tạo thật của hóa đơn con (cột "Thời gian tạo").
             purchaseDate: currentInvoice.purchaseDate,
+            // Mốc BÁO ĐƠN GIAO HÀNG phải theo hóa đơn sang bản .xx: các phiếu
+            // báo đơn được repoint sang hóa đơn mới ngay bên dưới, nên nếu
+            // không kế thừa mốc thì hóa đơn mới trở thành "chưa báo đơn" và
+            // hạn công nợ theo ngày không bao giờ khởi động.
+            deliveredAt: currentInvoice.deliveredAt,
             totalAmount,
             discount: discountAmount,
             discountRatio: dto.discountRatio || 0,
@@ -2410,6 +2455,22 @@ export class InvoicesService {
 
         updateData.status = dto.status;
         updateData.statusValue = getStatusLabel(dto.status);
+
+        // "Đã Báo Đơn" trên màn hình hóa đơn đổi trạng thái trực tiếp sang
+        // DELIVERED, không đi qua PackingSlip. Ghi mốc này để hạn công nợ theo
+        // ngày bắt đầu tính; phiếu giao thật (nếu có) vẫn luôn giữ mốc sớm hơn.
+        if (
+          dto.status === INVOICE_STATUS.DELIVERED &&
+          !currentInvoice.deliveredAt
+        ) {
+          const firstPackingSlip = await tx.packingSlipInvoice.findFirst({
+            where: { invoiceId: id, packingSlip: { cancelledAt: null } },
+            orderBy: { packingSlip: { createdAt: 'asc' } },
+            select: { packingSlip: { select: { createdAt: true } } },
+          });
+          updateData.deliveredAt =
+            firstPackingSlip?.packingSlip?.createdAt ?? new Date();
+        }
       }
 
       // Xử lý items khi chỉ thay đổi giá (cùng sản phẩm, cùng số lượng)
@@ -2760,10 +2821,80 @@ export class InvoicesService {
     await recalcCustomerDebt(tx, customerId);
   }
 
+  private isPosPrepaidNoDebt(policy: {
+    debtForm: string | null;
+    hasCreditLimit: boolean;
+    hasTermDays: boolean;
+    isActive: boolean;
+  } | null | undefined) {
+    return !!(
+      policy?.isActive !== false &&
+      policy?.debtForm === 'PREPAID' &&
+      !policy.hasCreditLimit &&
+      !policy.hasTermDays
+    );
+  }
+
+  private getPosPaymentAmount(
+    dto: Pick<CreateInvoiceDto, 'paidAmount' | 'payments'>,
+    fallback: number,
+  ) {
+    if (!dto.payments?.length) return fallback;
+    return dto.payments.reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0,
+    );
+  }
+
+  private assertPosPrepaidInvoiceCanBeCreated(input: {
+    policy: {
+      debtForm: string | null;
+      hasCreditLimit: boolean;
+      hasTermDays: boolean;
+      isActive: boolean;
+    } | null | undefined;
+    paidAmount: number;
+    grandTotal: number;
+  }) {
+    if (!this.isPosPrepaidNoDebt(input.policy)) return;
+    if (input.paidAmount + POS_PAYMENT_EPSILON < input.grandTotal) {
+      throw new BadRequestException(
+        `${POS_PREPAID_INVOICE_MESSAGE} Đã thanh toán: ${Math.round(
+          input.paidAmount,
+        ).toLocaleString('vi-VN')} đ / Cần thanh toán: ${Math.round(
+          input.grandTotal,
+        ).toLocaleString('vi-VN')} đ.`,
+      );
+    }
+  }
+
+  private assertPosPrepaidOrderCanBeInvoiced(input: {
+    policy: {
+      debtForm: string | null;
+      hasCreditLimit: boolean;
+      hasTermDays: boolean;
+      isActive: boolean;
+    } | null | undefined;
+    paidAmount: number;
+    grandTotal: number;
+  }) {
+    if (!this.isPosPrepaidNoDebt(input.policy)) return;
+    if (input.paidAmount + POS_PAYMENT_EPSILON < input.grandTotal) {
+      throw new BadRequestException(
+        `${POS_PREPAID_ORDER_MESSAGE} Đã thanh toán: ${Math.round(
+          input.paidAmount,
+        ).toLocaleString('vi-VN')} đ / Cần thanh toán: ${Math.round(
+          input.grandTotal,
+        ).toLocaleString('vi-VN')} đ.`,
+      );
+    }
+  }
+
   async createFromOrder(
     orderId: number,
     dto: CreateInvoiceFromOrderDto,
     userId: number,
+    fromPos = false,
   ) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
@@ -2782,6 +2913,14 @@ export class InvoicesService {
               name: true,
               contactNumber: true,
               totalDebt: true,
+              debtPolicy: {
+                select: {
+                  debtForm: true,
+                  hasCreditLimit: true,
+                  hasTermDays: true,
+                  isActive: true,
+                },
+              },
               addresses: {
                 where: { isDefault: true },
                 take: 1,
@@ -2803,6 +2942,20 @@ export class InvoicesService {
       }
       if (!order.branchId) {
         throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
+      }
+
+      // POS-only: khách chuyển khoản ngay và không công nợ phải có đủ tiền
+      // đã ghi nhận TRÊN ĐƠN trước khi được tạo hóa đơn. Không dùng tiền nhập
+      // thêm ở màn tạo hóa đơn để vượt qua kiểm tra này.
+      const activeOrderPaid = order.payments
+        .filter((payment) => payment.status !== 2)
+        .reduce((sum, payment) => sum + Number(payment.amount), 0);
+      if (fromPos) {
+        this.assertPosPrepaidOrderCanBeInvoiced({
+          policy: order.customer?.debtPolicy,
+          paidAmount: activeOrderPaid,
+          grandTotal: Number(order.grandTotal),
+        });
       }
 
       const invoicedQuantities: Record<number, number> = {};
@@ -2858,8 +3011,11 @@ export class InvoicesService {
 
       const isFirstInvoice = order.invoices.length === 0;
 
+      const activeOrderPayments = order.payments.filter(
+        (payment) => payment.status !== 2,
+      );
       const totalPaidFromOrder = isFirstInvoice
-        ? order.payments.reduce((sum, p) => sum + Number(p.amount), 0)
+        ? activeOrderPayments.reduce((sum, p) => sum + Number(p.amount), 0)
         : 0;
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
@@ -3128,7 +3284,7 @@ export class InvoicesService {
       const cashFlowIdsToUpdate: number[] = [];
 
       if (isFirstInvoice && totalPaidFromOrder > 0) {
-        for (const orderPayment of order.payments) {
+        for (const orderPayment of activeOrderPayments) {
           const seq = await tx.invoicePayment.count({
             where: { invoiceId: invoice.id },
           });
@@ -4510,7 +4666,9 @@ export class InvoicesService {
     return {
       code: invoice.code,
       purchaseDate: invoice.purchaseDate,
+      status: invoice.status,
       statusValue: invoice.statusValue,
+      deliveredAt: invoice.deliveredAt ?? null,
       grandTotal: Number(invoice.grandTotal),
       totalAmount: Number(invoice.totalAmount || 0),
       discount: Number(invoice.discount || 0),

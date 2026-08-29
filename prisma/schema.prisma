@@ -1617,8 +1617,8 @@ model Invoice {
   misaSyncedAt           DateTime?
   consignmentId          Int?
   // Mốc GIAO HÀNG ĐẦU TIÊN (báo đơn thành công) — dùng làm gốc tính hạn công nợ.
-  // Là cache của MIN(packing_slips.createdAt) trên các phiếu giao CHƯA HỦY.
-  // Ghi 1 lần khi tạo phiếu giao đầu tiên; tính lại (hoặc về null) khi hủy phiếu.
+  // Luồng phiếu giao dùng MIN(packing_slips.createdAt) trên các phiếu chưa hủy;
+  // thao tác "Đã Báo Đơn" trực tiếp trên hóa đơn ghi thời điểm xác nhận đó.
   // Nullable: hóa đơn chưa báo đơn thì KHÔNG phát sinh hạn nợ theo ngày/tuần/tháng.
   deliveredAt            DateTime?               @map("delivered_at")
   delivery               InvoiceDelivery?

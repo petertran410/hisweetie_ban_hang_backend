@@ -105,8 +105,12 @@ export class DebtTrackingController {
       { header: 'Hạn Mức Công Nợ', key: 'creditLimit', width: 18 },
       { header: 'Nợ Hiện Tại', key: 'totalDebt', width: 18 },
       { header: 'Vượt Hạn Mức', key: 'overLimit', width: 18 },
+      { header: 'Cần Thu Theo Hạn Mức', key: 'limitRequired', width: 22 },
+      { header: 'Cần Thu Theo Hóa Đơn', key: 'invoiceRequired', width: 22 },
+      { header: 'Số Tiền Cần Thu', key: 'requiredPayment', width: 18 },
+      { header: 'Nguồn Cần Thu', key: 'requiredSource', width: 18 },
       { header: '% Vượt Hạn Mức', key: 'overLimitPct', width: 15 },
-      { header: 'Nợ Quá Hạn', key: 'overdue', width: 18 },
+      { header: 'Quá Hạn Theo Hóa Đơn', key: 'overdue', width: 22 },
       { header: 'Số Ngày Quá Hạn', key: 'daysOverdue', width: 15 },
       { header: 'Hạn Gần Nhất', key: 'dueDate', width: 14 },
       { header: 'Ngày Thanh Toán Gần Nhất', key: 'lastPayDate', width: 20 },
@@ -150,6 +154,17 @@ export class DebtTrackingController {
         creditLimit: r.creditLimit ?? '',
         totalDebt: r.totalDebt,
         overLimit: r.overLimitAmount || '',
+        limitRequired: r.limitOverdueAmount || '',
+        invoiceRequired: r.invoiceRequiredAmount || '',
+        requiredPayment: r.requiredPaymentAmount || '',
+        requiredSource:
+          r.requiredPaymentSource === 'CREDIT_LIMIT'
+            ? 'Hạn mức'
+            : r.requiredPaymentSource === 'INVOICE'
+              ? 'Hóa đơn'
+              : r.requiredPaymentSource === 'TIE'
+                ? 'Bằng nhau'
+                : '',
         overLimitPct: r.creditUsageRatio
           ? `${Math.round(r.creditUsageRatio * 100)}%`
           : '',
@@ -173,6 +188,9 @@ export class DebtTrackingController {
       'creditLimit',
       'lastPayAmount',
       'overLimit',
+      'requiredPayment',
+      'limitRequired',
+      'invoiceRequired',
     ].forEach((k) => {
       ws.getColumn(k).numFmt = '#,##0';
     });

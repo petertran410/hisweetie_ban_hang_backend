@@ -101,6 +101,7 @@ export class DebtTrackingQueryDto {
     'debtStatus',
     'totalDebt',
     'overdueAmount',
+    'requiredPaymentAmount',
     'daysOverdue',
     'overLimit',
     'name',
@@ -124,7 +125,7 @@ export class UpsertDebtPolicyDto {
 
   @ValidateIf((o: UpsertDebtPolicyDto) => o.hasCreditLimit === true)
   @IsNumber()
-  @Min(0)
+  @Min(1)
   @Type(() => Number)
   creditLimit?: number;
 
