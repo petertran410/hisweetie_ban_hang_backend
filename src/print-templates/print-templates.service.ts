@@ -4,6 +4,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { createDocumentQrPayload } from '../common/document-qr.util';
+import * as QRCode from 'qrcode';
 
 @Injectable()
 export class PrintTemplatesService {
@@ -240,11 +242,11 @@ export class PrintTemplatesService {
   ): Promise<any> {
     switch (templateFor) {
       case 'invoice':
-        return this.mapInvoice(await this.loadInvoice(entityId));
+        return await this.mapInvoice(await this.loadInvoice(entityId));
       case 'order':
         return this.mapOrder(await this.loadOrder(entityId));
       case 'consignment':
-        return this.mapConsignment(await this.loadConsignment(entityId));
+        return await this.mapConsignment(await this.loadConsignment(entityId));
       case 'consignment_return':
         return this.mapConsignmentReturn(
           await this.loadConsignmentReturn(entityId),
@@ -269,7 +271,7 @@ export class PrintTemplatesService {
       case 'invoice_delivery': {
         const inv = await this.loadInvoice(entityId);
         return {
-          ...this.mapInvoice(inv),
+          ...(await this.mapInvoice(inv)),
           Ma_Don_Hang: inv.code || '',
         };
       }
@@ -641,6 +643,21 @@ export class PrintTemplatesService {
     };
   }
 
+  private async documentQrVars(
+    kind: 'invoice' | 'consignment',
+    code: string,
+  ) {
+    if (!code) return { Ma_QR_Chung_Tu: '' };
+    const dataUrl = await QRCode.toDataURL(createDocumentQrPayload(kind, code), {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 180,
+    });
+    return {
+      Ma_QR_Chung_Tu: `<img src="${dataUrl}" alt="QR chung tu" style="width:120px;height:120px;" />`,
+    };
+  }
+
   private supplierVars(supplier: any) {
     return {
       Ma_Nha_Cung_Cap: supplier?.code || '',
@@ -654,7 +671,7 @@ export class PrintTemplatesService {
     return new Intl.NumberFormat('en-US').format(Number(value || 0));
   }
 
-  private mapInvoice(inv: any) {
+  private async mapInvoice(inv: any) {
     return {
       ...this.storeVars(inv.branch),
       ...this.dateVars(inv.purchaseDate),
@@ -662,6 +679,7 @@ export class PrintTemplatesService {
       ...this.staffVars(inv.soldBy, inv.creator),
       ...this.deliveryVars(inv.delivery, inv.customer),
       ...this.qrVars(inv.soldBy, inv.grandTotal, inv.code),
+      ...(await this.documentQrVars('invoice', inv.code)),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
       Tong_Tien_Hang: this.money(inv.totalAmount),
@@ -698,7 +716,7 @@ export class PrintTemplatesService {
     };
   }
 
-  private mapConsignment(c: any) {
+  private async mapConsignment(c: any) {
     return {
       ...this.storeVars(c.branch),
       ...this.dateVars(c.consignDate),
@@ -706,6 +724,7 @@ export class PrintTemplatesService {
       ...this.staffVars(c.soldBy, c.creator),
       ...this.deliveryVars(c.delivery, c.customer),
       ...this.qrVars(c.soldBy, c.grandTotal, c.code),
+      ...(await this.documentQrVars('consignment', c.code)),
       Ma_Ky_Gui: c.code || '',
       Ma_Don_Hang: c.code || '',
       Ghi_Chu: c.description || '',

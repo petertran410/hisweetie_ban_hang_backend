@@ -70,12 +70,14 @@ export class RecipesController {
   semiFinishedOptions(
     @Query('search') search: string | undefined,
     @Query('excludeId') excludeId: string | undefined,
+    @Req() req: any,
   ) {
     const excluded = excludeId ? Number(excludeId) : undefined;
-    return this.recipes.getSemiFinishedOptions(
+    return this.withCostPermission(req, (includeCost) => this.recipes.getSemiFinishedOptions(
       search,
       excluded && Number.isInteger(excluded) ? excluded : undefined,
-    );
+      includeCost,
+    ));
   }
 
   private async getIngredientProducts(search: string | undefined, req: any) {

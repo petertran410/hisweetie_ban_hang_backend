@@ -18,6 +18,7 @@ import {
   InvoiceQueryDto,
   CreateInvoiceFromOrderDto,
 } from './dto';
+import { ResolveScanDto } from './dto/resolve-scan.dto';
 import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -64,6 +65,17 @@ export class InvoicesController {
       branchId: branchId ? +branchId : undefined,
       limit: limit ? +limit : 20,
     });
+  }
+
+  @Post('scan-resolve')
+  @RequireAnyPermission(
+    'packing_slips:create',
+    'packing_hangs:create',
+    'packing_loadings:create',
+  )
+  @ApiOperation({ summary: 'Tra cứu hóa đơn hoặc phiếu ký gửi từ QR' })
+  resolveScan(@Body() dto: ResolveScanDto, @CurrentUser() user: any) {
+    return this.invoicesService.resolveScan(dto.payload, dto.packingType, user);
   }
 
   @Get('for-packing')

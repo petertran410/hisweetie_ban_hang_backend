@@ -1,6 +1,20 @@
 import { PrintTemplatesService } from './print-templates.service';
 
 describe('PrintTemplatesService', () => {
+  const previousSecret = process.env.DOCUMENT_QR_SECRET;
+
+  beforeAll(() => {
+    process.env.DOCUMENT_QR_SECRET = 'test-document-qr-secret';
+  });
+
+  afterAll(() => {
+    if (previousSecret === undefined) {
+      delete process.env.DOCUMENT_QR_SECRET;
+    } else {
+      process.env.DOCUMENT_QR_SECRET = previousSecret;
+    }
+  });
+
   const createService = (itemKeys: string[] = []) => {
     const prisma = {
       printTemplateVariable: {
