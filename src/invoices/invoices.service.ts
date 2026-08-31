@@ -1391,11 +1391,6 @@ export class InvoicesService {
               'Tổng các khoản thanh toán không khớp số tiền khách đã thanh toán.',
             );
           }
-          this.assertPosPrepaidInvoiceCanBeCreated({
-            policy: customer?.debtPolicy,
-            paidAmount,
-            grandTotal,
-          });
         }
 
         const currentCustomerDebt = Number(customer?.totalDebt || 0);
@@ -2950,13 +2945,6 @@ export class InvoicesService {
       const activeOrderPaid = order.payments
         .filter((payment) => payment.status !== 2)
         .reduce((sum, payment) => sum + Number(payment.amount), 0);
-      if (fromPos) {
-        this.assertPosPrepaidOrderCanBeInvoiced({
-          policy: order.customer?.debtPolicy,
-          paidAmount: activeOrderPaid,
-          grandTotal: Number(order.grandTotal),
-        });
-      }
 
       const invoicedQuantities: Record<number, number> = {};
       order.invoices.forEach((inv) => {
