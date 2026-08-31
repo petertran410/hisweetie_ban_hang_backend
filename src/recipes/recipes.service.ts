@@ -335,7 +335,7 @@ export class RecipesService {
     });
   }
 
-  async getSemiFinishedOptions(search?: string, excludeId?: number) {
+  async getSemiFinishedOptions(search?: string, excludeId?: number, includeCost = false) {
     const matchedIds = search?.trim()
       ? await searchRecipeIds(this.prisma, search.trim())
       : undefined;
@@ -355,6 +355,8 @@ export class RecipesService {
         id: true,
         code: true,
         name: true,
+        quantityUnit: true,
+        ...(includeCost ? { costPerOutputUnit: true } : {}),
       },
     });
   }
