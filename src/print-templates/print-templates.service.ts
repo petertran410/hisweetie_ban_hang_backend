@@ -227,21 +227,11 @@ export class PrintTemplatesService {
 
     // ← Dùng template.templateFor (ví dụ 'delivery') thay vì resolvedType ('invoice_delivery')
     // để getItemVariableKeys query đúng bảng variables
-    let content = await this.replaceVariables(
+    const content = await this.replaceVariables(
       template.content,
       data,
       template.templateFor,
     );
-
-    if (
-      data.Ma_QR_Chung_Tu &&
-      !template.content.includes('{Ma_QR_Chung_Tu}')
-    ) {
-      const qrBlock = `<div style="margin-top:12px;text-align:center;page-break-inside:avoid;">${data.Ma_QR_Chung_Tu}<div style="font-size:9px;margin-top:2px;">Quét để chọn chứng từ</div></div>`;
-      content = content.includes('</body>')
-        ? content.replace('</body>', `${qrBlock}</body>`)
-        : `${content}${qrBlock}`;
-    }
 
     return { content, data };
   }
