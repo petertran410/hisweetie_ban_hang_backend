@@ -43,6 +43,7 @@ import {
   recalcConditionBucketsForPairs,
 } from 'src/common/stock-condition-onhand.util';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { parseDocumentQrPayload } from '../common/document-qr.util';
 import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import {
   buildInventoryLogActor,
@@ -74,6 +75,79 @@ export class InvoicesService {
     private promotionsService: PromotionsService,
     private larkProductSync: LarkProductSyncService,
   ) {}
+
+  async resolveScan(
+    payload: string,
+    packingType: 'packing-slip' | 'packing-hang' | 'packing-loading',
+    user: any,
+  ) {
+    const parsed = parseDocumentQrPayload(payload);
+    const select = {
+      id: true,
+      code: true,
+      branchId: true,
+      grandTotal: true,
+      status: true,
+      customer: { select: { id: true, name: true } },
+    };
+
+    const document =
+      parsed.kind === 'invoice'
+        ? await this.prisma.invoice.findUnique({
+            where: { code: parsed.code },
+            select: { ...select, purchaseDate: true },
+          })
+        : await this.prisma.consignment.findUnique({
+            where: { code: parsed.code },
+            select: { ...select, consignDate: true },
+          });
+
+    if (!document) throw new NotFoundException('Không tìm thấy chứng từ');
+
+    if (
+      parsed.kind === 'invoice' &&
+      packingType !== 'packing-slip' &&
+      ([INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED] as number[]).includes(
+        document.status,
+      )
+    ) {
+      throw new BadRequestException('Hóa đơn đã giao hoặc đã hoàn thành');
+    }
+    if (
+      parsed.kind === 'consignment' &&
+      ![
+        CONSIGNMENT_STATUS.CONFIRMED,
+        CONSIGNMENT_STATUS.PACKED,
+        CONSIGNMENT_STATUS.LOADING,
+        CONSIGNMENT_STATUS.DELIVERED,
+      ].includes(document.status as 2 | 3 | 4 | 5)
+    ) {
+      throw new BadRequestException('Phiếu ký gửi không khả dụng cho báo đơn');
+    }
+
+    const allowedBranchIds: number[] = user?.branchIds || [];
+    const canAccessAllBranches =
+      user?.roles?.includes('Super Admin') || allowedBranchIds.length === 0;
+    if (
+      document.branchId == null ||
+      (!canAccessAllBranches && !allowedBranchIds.includes(document.branchId))
+    ) {
+      throw new ForbiddenException('Bạn không có quyền truy cập chi nhánh này');
+    }
+
+    return {
+      kind: parsed.kind,
+      id: document.id,
+      code: document.code,
+      branchId: document.branchId,
+      grandTotal: Number(document.grandTotal),
+      purchaseDate:
+        parsed.kind === 'invoice'
+          ? (document as any).purchaseDate
+          : (document as any).consignDate,
+      customer: document.customer,
+    };
+  }
 
   /**
    * Tách logic build `where` để dùng chung giữa findAll và getTotals.
