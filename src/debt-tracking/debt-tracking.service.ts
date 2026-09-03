@@ -42,6 +42,7 @@ export interface RawDebtPolicy {
   debtForm: string | null;
   salePicId: number | null;
   accountantPicId: number | null;
+  requireFullPaymentForInvoice?: boolean;
 }
 
 export interface LastPaymentInfo {
@@ -66,6 +67,9 @@ export interface OpenTicketInfo {
   debtAtCreate: number;
   lineStatus: string;
   isPaid: boolean;
+  ticketType: string;
+  requiredPaymentAmount: number;
+  note: string | null;
 }
 
 @Injectable()
@@ -235,6 +239,10 @@ export class DebtTrackingService {
           accountantPic: p?.accountantPicId
             ? (picMap.get(p.accountantPicId) ?? null)
             : null,
+          salePicId: p?.salePicId ?? null,
+          accountantPicId: p?.accountantPicId ?? null,
+          requireFullPaymentForInvoice:
+            p?.requireFullPaymentForInvoice ?? false,
         },
 
         overdueAmount: aging.overdueAmount,
@@ -257,7 +265,8 @@ export class DebtTrackingService {
         outstandingCount: aging.outstandingInvoices.length,
 
         // Ghi chú — 2 cột tách biệt
-        accountantNote: c.debtNote?.accountantNote ?? null,
+         accountantNote:
+           ticketMap.get(c.id)?.note ?? c.debtNote?.accountantNote ?? null,
         accountantNoteAt: c.debtNote?.accountantNoteAt ?? null,
         saleNote: c.debtNote?.saleNote ?? null,
         saleNoteAt: c.debtNote?.saleNoteAt ?? null,
@@ -416,6 +425,7 @@ export class DebtTrackingService {
               id: true,
               code: true,
               status: true,
+              ticketType: true,
               createdAt: true,
               closedAt: true,
               assignee: { select: { id: true, name: true } },
@@ -450,6 +460,8 @@ export class DebtTrackingService {
         ticketCode: l.ticket.code,
         ticketStatus: l.ticket.status,
         assignee: l.ticket.assignee,
+        ticketType: l.ticket.ticketType,
+        requiredPaymentAmount: Number(l.requiredPaymentAmount),
         debtAtCreate: Number(l.debtAtCreate),
         minimumPayment:
           l.minimumPayment !== null ? Number(l.minimumPayment) : null,
@@ -508,10 +520,28 @@ export class DebtTrackingService {
       isActive: dto.isActive ?? true,
     };
 
+    const createData = {
+      ...data,
+      requireFullPaymentForInvoice:
+        dto.requireFullPaymentForInvoice ?? false,
+    };
+    const updateData =
+      dto.requireFullPaymentForInvoice === undefined
+        ? data
+        : {
+            ...data,
+            requireFullPaymentForInvoice: dto.requireFullPaymentForInvoice,
+          };
+
     return this.prisma.customerDebtPolicy.upsert({
       where: { customerId },
-      create: { customerId, ...data, createdBy: userId, updatedBy: userId },
-      update: { ...data, updatedBy: userId },
+      create: {
+        customerId,
+        ...createData,
+        createdBy: userId,
+        updatedBy: userId,
+      },
+      update: { ...updateData, updatedBy: userId },
     });
   }
 
@@ -846,6 +876,7 @@ export class DebtTrackingService {
             code: true,
             status: true,
             assigneeId: true,
+            ticketType: true,
             assignee: { select: { id: true, name: true } },
           },
         },
@@ -871,6 +902,9 @@ export class DebtTrackingService {
         debtAtCreate: Number(l.debtAtCreate),
         lineStatus: l.status,
         isPaid: l.status === DEBT_TICKET_LINE_STATUS.PAID,
+        ticketType: l.ticket.ticketType,
+        requiredPaymentAmount: Number(l.requiredPaymentAmount),
+        note: l.note ?? null,
       });
     }
     return map;

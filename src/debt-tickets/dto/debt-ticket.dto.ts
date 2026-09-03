@@ -16,6 +16,7 @@ import { Type } from 'class-transformer';
 import {
   DEBT_TICKET_STATUSES,
   DEBT_TICKET_LINE_STATUSES,
+  DEBT_TICKET_TYPES,
 } from '../../debt-tracking/debt-tracking.constants';
 
 export class DebtTicketCustomerInputDto {
@@ -71,6 +72,12 @@ export class CreateDebtTicketDto {
   @IsString()
   @MaxLength(2000)
   note?: string;
+
+  /** DEBT_COLLECTION hoặc STOP_DELIVERY. Mặc định là thu hồi công nợ. */
+  @IsOptional()
+  @IsString()
+  @IsIn(DEBT_TICKET_TYPES)
+  ticketType?: string;
 
   @IsArray()
   @ArrayMinSize(1)
@@ -162,6 +169,11 @@ export class DebtTicketQueryDto {
   @IsString()
   @IsIn(DEBT_TICKET_STATUSES)
   status?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(DEBT_TICKET_TYPES)
+  ticketType?: string;
 
   /** true = chỉ phiếu còn hoạt động (REQUESTED/IN_PROGRESS/WAITING). */
   @IsOptional()

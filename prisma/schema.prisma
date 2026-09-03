@@ -3935,6 +3935,10 @@ model CustomerDebtPolicy {
   hasTermDays Boolean @default(false) @map("has_term_days")
   termDays    Int?    @map("term_days")
 
+  /// Khách mới mặc định phải thanh toán đủ trước khi tạo hóa đơn trên POS.
+  /// Khách cũ không có policy hoặc policy cũ giữ false sẽ không bị áp dụng.
+  requireFullPaymentForInvoice Boolean @default(false) @map("require_full_payment_for_invoice")
+
   /// Cam kết TẦN SUẤT trả tiền mỗi tháng (ví dụ "1 Tháng 2 Lần" → 2).
   /// KHÔNG sinh ra hạn thanh toán vì không biết ngày cụ thể — khách có thể
   /// chuyển 2 lần liền nhau. Chỉ dùng để đếm số lần đã trả trong tháng
@@ -3992,12 +3996,14 @@ model CustomerDebtNote {
   @@map("customer_debt_notes")
 }
 
-/// Phiếu giao việc đi đòi nợ. Một ticket gồm nhiều khách, một người phụ trách.
+/// Phiếu công nợ. Một ticket gồm nhiều khách, một người phụ trách.
 model DebtTicket {
   id          Int                  @id @default(autoincrement())
   code        String               @unique
   title       String?
   assigneeId  Int                  @map("assignee_id")
+  /// DEBT_COLLECTION = phiếu thu hồi nợ | STOP_DELIVERY = phiếu ngừng đi hàng.
+  ticketType  String               @default("DEBT_COLLECTION") @map("ticket_type")
   /// Quá trình thu hồi nợ, theo đúng quy trình đang vận hành:
   /// REQUESTED   = Yêu Cầu Thu Hồi Nợ
   /// IN_PROGRESS = Đang Tiến Hành
@@ -4036,6 +4042,16 @@ model DebtTicketCustomer {
   /// nợ hiện tại của khách nên đọc trực tiếp từ customer.totalDebt.
   debtAtCreate Decimal @default(0) @map("debt_at_create") @db.Decimal(18, 2)
 
+  /// Số tiền cần thanh toán để mở lại quyền tạo hóa đơn/đi hàng.
+  /// Chỉ dùng cho dòng STOP_DELIVERY, được snapshot từ requiredPaymentAmount.
+  requiredPaymentAmount Decimal @default(0) @map("required_payment_amount") @db.Decimal(18, 2)
+
+  /// Số tiền tạm xác nhận từ giao dịch Sepay chỉ có đúng khách này.
+  /// Không phải thanh toán kế toán; chỉ dùng để mở tạm quyền đi hàng trong
+  /// lúc chờ kế toán lập phiếu thu.
+  provisionalPaymentAmount Decimal? @map("provisional_payment_amount") @db.Decimal(18, 2)
+  provisionalSepayTxId Int? @map("provisional_sepay_tx_id")
+
   /// SỐ TIỀN TỐI THIỂU CẦN PHẢI THANH TOÁN.
   /// Hệ thống GỢI Ý = phần nợ đã đến hạn (engine ageing), nhân viên SỬA được.
   /// Quy ước vận hành: không nên thấp hơn 30% nợ đầu kì — vi phạm chỉ cảnh
@@ -4069,5 +4085,6 @@ model DebtTicketCustomer {
   @@index([customerId, status])
   @@index([customerId, isLatest])
   @@index([matchedSepayTxId])
+  @@index([provisionalSepayTxId])
   @@map("debt_ticket_customers")
 }

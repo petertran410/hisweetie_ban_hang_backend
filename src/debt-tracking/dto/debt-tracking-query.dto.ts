@@ -168,6 +168,11 @@ export class UpsertDebtPolicyDto {
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
+
+  /** Khách mới có thể bị yêu cầu trả đủ trước khi tạo hóa đơn POS. */
+  @IsOptional()
+  @IsBoolean()
+  requireFullPaymentForInvoice?: boolean;
 }
 
 export class UpdatePaymentHistoryOverrideDto {

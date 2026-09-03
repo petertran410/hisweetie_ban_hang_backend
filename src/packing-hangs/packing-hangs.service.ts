@@ -29,6 +29,7 @@ import {
   buildInventoryLogActor,
   InventoryLogActor,
 } from '../common/inventory-log.util';
+import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -244,12 +245,18 @@ export class PackingHangsService {
           code: true,
           status: true,
           branchId: true,
+          customerId: true,
         },
       });
 
       if (invoices.length === 0) {
         throw new BadRequestException('Không tìm thấy hóa đơn');
       }
+
+      await assertCanDeliverForCustomers(
+        tx,
+        invoices.map((invoice) => invoice.customerId),
+      );
 
       // Chặn đóng hàng cho hóa đơn đã giao hàng thành công (DELIVERED)
       // hoặc đã hoàn thành (COMPLETED).
@@ -365,8 +372,13 @@ export class PackingHangsService {
       if (dto.invoiceIds) {
         const invoices = await tx.invoice.findMany({
           where: { id: { in: dto.invoiceIds } },
-          select: { id: true, branchId: true },
+          select: { id: true, branchId: true, customerId: true },
         });
+
+        await assertCanDeliverForCustomers(
+          tx,
+          invoices.map((invoice) => invoice.customerId),
+        );
 
         const firstBranchId = invoices[0].branchId;
         const hasDifferentBranch = invoices.some(

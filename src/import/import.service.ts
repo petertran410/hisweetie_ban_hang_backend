@@ -1088,6 +1088,7 @@ export class ImportService {
                 debtForm: 'PREPAID',
                 hasCreditLimit: false,
                 hasTermDays: false,
+                requireFullPaymentForInvoice: true,
                 creditLimit: null,
                 termDays: null,
                 paymentFrequency: null,

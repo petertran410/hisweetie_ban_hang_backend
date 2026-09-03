@@ -133,6 +133,22 @@ export const DEBT_TICKET_STATUS = {
   ENDED: 'ENDED',
 } as const;
 
+/** Loại phiếu công nợ. */
+export const DEBT_TICKET_TYPE = {
+  DEBT_COLLECTION: 'DEBT_COLLECTION',
+  STOP_DELIVERY: 'STOP_DELIVERY',
+} as const;
+
+export type DebtTicketType =
+  (typeof DEBT_TICKET_TYPE)[keyof typeof DEBT_TICKET_TYPE];
+
+export const DEBT_TICKET_TYPES: string[] = Object.values(DEBT_TICKET_TYPE);
+
+export const DEBT_TICKET_TYPE_LABELS: Record<string, string> = {
+  DEBT_COLLECTION: 'Thu hồi công nợ',
+  STOP_DELIVERY: 'Ngừng đi hàng',
+};
+
 export const DEBT_TICKET_STATUSES: string[] = Object.values(DEBT_TICKET_STATUS);
 
 export const DEBT_TICKET_STATUS_LABELS: Record<string, string> = {

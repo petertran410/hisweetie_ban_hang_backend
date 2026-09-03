@@ -52,6 +52,10 @@ import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  assertCanCreateInvoiceForCustomer,
+  assertCanDeliverForCustomer,
+} from '../common/debt-delivery.util';
 
 const POS_PAYMENT_EPSILON = 1;
 const POS_PREPAID_ORDER_MESSAGE =
@@ -1374,6 +1378,7 @@ export class InvoicesService {
                     hasCreditLimit: true,
                     hasTermDays: true,
                     isActive: true,
+                    requireFullPaymentForInvoice: true,
                   },
                 },
               },
@@ -1381,6 +1386,8 @@ export class InvoicesService {
           : null;
 
         const parentCustomerId = customer ? customer.id : null;
+
+        await assertCanCreateInvoiceForCustomer(tx, customer?.id);
 
         if (fromPos) {
           if (
@@ -1391,6 +1398,11 @@ export class InvoicesService {
               'Tổng các khoản thanh toán không khớp số tiền khách đã thanh toán.',
             );
           }
+          this.assertPosPrepaidInvoiceCanBeCreated({
+            policy: customer?.debtPolicy,
+            paidAmount,
+            grandTotal,
+          });
         }
 
         const currentCustomerDebt = Number(customer?.totalDebt || 0);
@@ -2454,6 +2466,9 @@ export class InvoicesService {
         // "Đã Báo Đơn" trên màn hình hóa đơn đổi trạng thái trực tiếp sang
         // DELIVERED, không đi qua PackingSlip. Ghi mốc này để hạn công nợ theo
         // ngày bắt đầu tính; phiếu giao thật (nếu có) vẫn luôn giữ mốc sớm hơn.
+        if (dto.status === INVOICE_STATUS.DELIVERED) {
+          await assertCanDeliverForCustomer(tx, currentInvoice.customerId);
+        }
         if (
           dto.status === INVOICE_STATUS.DELIVERED &&
           !currentInvoice.deliveredAt
@@ -2821,12 +2836,11 @@ export class InvoicesService {
     hasCreditLimit: boolean;
     hasTermDays: boolean;
     isActive: boolean;
+    requireFullPaymentForInvoice?: boolean;
   } | null | undefined) {
     return !!(
       policy?.isActive !== false &&
-      policy?.debtForm === 'PREPAID' &&
-      !policy.hasCreditLimit &&
-      !policy.hasTermDays
+      policy?.requireFullPaymentForInvoice === true
     );
   }
 
@@ -2847,6 +2861,7 @@ export class InvoicesService {
       hasCreditLimit: boolean;
       hasTermDays: boolean;
       isActive: boolean;
+      requireFullPaymentForInvoice?: boolean;
     } | null | undefined;
     paidAmount: number;
     grandTotal: number;
@@ -2869,6 +2884,7 @@ export class InvoicesService {
       hasCreditLimit: boolean;
       hasTermDays: boolean;
       isActive: boolean;
+      requireFullPaymentForInvoice?: boolean;
     } | null | undefined;
     paidAmount: number;
     grandTotal: number;
@@ -2912,8 +2928,9 @@ export class InvoicesService {
                 select: {
                   debtForm: true,
                   hasCreditLimit: true,
-                  hasTermDays: true,
-                  isActive: true,
+                    hasTermDays: true,
+                    isActive: true,
+                    requireFullPaymentForInvoice: true,
                 },
               },
               addresses: {
@@ -2939,12 +2956,22 @@ export class InvoicesService {
         throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
       }
 
+      await assertCanCreateInvoiceForCustomer(tx, order.customerId);
+
       // POS-only: khách chuyển khoản ngay và không công nợ phải có đủ tiền
       // đã ghi nhận TRÊN ĐƠN trước khi được tạo hóa đơn. Không dùng tiền nhập
       // thêm ở màn tạo hóa đơn để vượt qua kiểm tra này.
       const activeOrderPaid = order.payments
         .filter((payment) => payment.status !== 2)
         .reduce((sum, payment) => sum + Number(payment.amount), 0);
+
+      if (fromPos) {
+        this.assertPosPrepaidOrderCanBeInvoiced({
+          policy: order.customer?.debtPolicy,
+          paidAmount: activeOrderPaid,
+          grandTotal: Number(order.grandTotal),
+        });
+      }
 
       const invoicedQuantities: Record<number, number> = {};
       order.invoices.forEach((inv) => {
@@ -3635,6 +3662,8 @@ export class InvoicesService {
       if (!consignment.branchId) {
         throw new BadRequestException('Phiếu không có thông tin chi nhánh');
       }
+
+      await assertCanCreateInvoiceForCustomer(tx, consignment.customerId);
 
       // Số đã xuất hóa đơn theo product (derive từ các hóa đơn con).
       const invoicedQuantities: Record<number, number> = {};

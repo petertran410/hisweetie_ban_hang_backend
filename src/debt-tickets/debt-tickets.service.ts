@@ -20,9 +20,11 @@ import {
   DEBT_TICKET_LINE_STATUS,
   DEBT_TICKET_CLOSE_MODE,
   DEBT_TICKET_CODE_PREFIX,
+  DEBT_TICKET_TYPE,
   MIN_PAYMENT_RATIO_WARN,
   MONEY_EPSILON,
 } from '../debt-tracking/debt-tracking.constants';
+import { LarkDebtNotificationService } from '../lark-sync/services/lark-debt-notification.service';
 
 @Injectable()
 export class DebtTicketsService {
@@ -31,6 +33,7 @@ export class DebtTicketsService {
   constructor(
     private prisma: PrismaService,
     private debtTracking: DebtTrackingService,
+    private larkDebtNotification: LarkDebtNotificationService,
   ) {}
 
   // ================================================================
@@ -42,6 +45,7 @@ export class DebtTicketsService {
 
     const where: any = {};
     if (query.status) where.status = query.status;
+    if (query.ticketType) where.ticketType = query.ticketType;
     else if (query.openOnly === 'true') {
       where.status = { in: DEBT_TICKET_OPEN_STATUSES };
     }
@@ -112,7 +116,11 @@ export class DebtTicketsService {
   // ================================================================
   // TẠO PHIẾU
   // ================================================================
-  async create(dto: CreateDebtTicketDto, userId: number) {
+  async create(
+    dto: CreateDebtTicketDto,
+    userId: number,
+    requiredPaymentOverride?: number,
+  ) {
     const assignee = await this.prisma.user.findUnique({
       where: { id: dto.assigneeId },
       select: { id: true },
@@ -131,6 +139,7 @@ export class DebtTicketsService {
     }
 
     const debtMap = new Map(customers.map((c) => [c.id, Number(c.totalDebt)]));
+    const ticketType = dto.ticketType ?? DEBT_TICKET_TYPE.DEBT_COLLECTION;
 
     // Số tiền tối thiểu: hệ thống GỢI Ý phần nợ đã đến hạn, nhân viên có thể
     // gửi lên giá trị khác. Cảnh báo (không chặn) khi dưới 30% nợ đầu kì.
@@ -138,6 +147,7 @@ export class DebtTicketsService {
     const lines: Array<{
       customerId: number;
       debtAtCreate: number;
+      requiredPaymentAmount: number;
       minimumPayment: number;
       confirmedAmount: number | null;
       confirmedDate: Date | null;
@@ -146,6 +156,11 @@ export class DebtTicketsService {
 
     for (const c of dto.customers) {
       const debt = debtMap.get(c.customerId) ?? 0;
+      const requiredPaymentAmount =
+        ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY
+          ? (requiredPaymentOverride ??
+            (await this.debtTracking.getSuggestedMinimumPayment(c.customerId)))
+          : 0;
       const minimum =
         c.minimumPayment !== undefined
           ? c.minimumPayment
@@ -164,6 +179,7 @@ export class DebtTicketsService {
       lines.push({
         customerId: c.customerId,
         debtAtCreate: debt,
+        requiredPaymentAmount,
         minimumPayment: minimum,
         confirmedAmount: c.confirmedAmount ?? null,
         confirmedDate: c.confirmedDate ? new Date(c.confirmedDate) : null,
@@ -190,10 +206,12 @@ export class DebtTicketsService {
           note: dto.note ?? null,
           createdById: userId,
           status: dto.status ?? DEBT_TICKET_STATUS.REQUESTED,
+          ticketType,
           customers: {
             create: lines.map((l) => ({
               customerId: l.customerId,
               debtAtCreate: l.debtAtCreate,
+              requiredPaymentAmount: l.requiredPaymentAmount,
               minimumPayment: l.minimumPayment,
               confirmedAmount: l.confirmedAmount,
               confirmedDate: l.confirmedDate,
@@ -207,7 +225,27 @@ export class DebtTicketsService {
       });
     });
 
-    return { ...this.serializeTicket(ticket), warnings };
+    // Ticket có thể được tạo sau khi sale đã gắn khách vào các giao dịch
+    // Sepay. Đối chiếu lại ngay để không phải chờ một thao tác gắn mới.
+    for (const customerId of customerIds) {
+      await this.reconcileCustomerPayments(customerId);
+    }
+
+    const refreshedTicket = await this.prisma.debtTicket.findUnique({
+      where: { id: ticket.id },
+      include: this.ticketInclude(),
+    });
+
+    if (ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY) {
+      for (const customerId of customerIds) {
+        this.larkDebtNotification.notifyStopDeliveryCreatedAsync(customerId);
+      }
+    }
+
+    return {
+      ...this.serializeTicket(refreshedTicket ?? ticket),
+      warnings,
+    };
   }
 
   // ================================================================
@@ -218,6 +256,15 @@ export class DebtTicketsService {
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu thu hồi nợ');
     if (!DEBT_TICKET_OPEN_STATUSES.includes(ticket.status)) {
       throw new BadRequestException('Phiếu đã kết thúc, không thể sửa');
+    }
+    if (
+      ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY &&
+      dto.status &&
+      !DEBT_TICKET_OPEN_STATUSES.includes(dto.status)
+    ) {
+      throw new BadRequestException(
+        'Phiếu ngừng đi hàng chỉ được kết thúc bằng nút Kết thúc hoặc khi tự động thu đủ tiền',
+      );
     }
 
     if (dto.assigneeId) {
@@ -248,13 +295,22 @@ export class DebtTicketsService {
   ) {
     const line = await this.prisma.debtTicketCustomer.findUnique({
       where: { ticketId_customerId: { ticketId, customerId } },
-      include: { ticket: { select: { status: true } } },
+      include: { ticket: { select: { status: true, ticketType: true } } },
     });
     if (!line) {
       throw new NotFoundException('Không tìm thấy dòng khách trong phiếu');
     }
     if (!DEBT_TICKET_OPEN_STATUSES.includes(line.ticket.status)) {
       throw new BadRequestException('Phiếu đã kết thúc, không thể sửa');
+    }
+
+    if (
+      line.ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY &&
+      dto.status === DEBT_TICKET_LINE_STATUS.PAID
+    ) {
+      throw new BadRequestException(
+        'Dòng phiếu ngừng đi hàng chỉ được tự động đánh dấu đã thu khi đủ số tiền cần thanh toán',
+      );
     }
 
     const warnings: string[] = [];
@@ -295,7 +351,7 @@ export class DebtTicketsService {
   async addCustomers(ticketId: number, dto: AddTicketCustomersDto) {
     const ticket = await this.prisma.debtTicket.findUnique({
       where: { id: ticketId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, ticketType: true },
     });
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu thu hồi nợ');
     if (!DEBT_TICKET_OPEN_STATUSES.includes(ticket.status)) {
@@ -326,6 +382,10 @@ export class DebtTicketsService {
         ticketId,
         customerId: c.customerId,
         debtAtCreate: debtMap.get(c.customerId) ?? 0,
+      requiredPaymentAmount:
+        ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY
+          ? await this.debtTracking.getSuggestedMinimumPayment(c.customerId)
+          : 0,
         minimumPayment:
           c.minimumPayment !== undefined
             ? c.minimumPayment
@@ -414,6 +474,205 @@ export class DebtTicketsService {
     });
   }
 
+  /**
+   * Đối chiếu tiền đã thu sau thời điểm mở hold. Dùng cho mọi nguồn thanh
+   * toán (phiếu thu, thanh toán hóa đơn, Sepay), không phụ thuộc UI nào.
+   */
+  async reconcileStopDeliveryForCustomer(
+    customerId: number,
+    db: any = this.prisma,
+  ): Promise<number> {
+    const openLines = await db.debtTicketCustomer.findMany({
+      where: {
+        customerId,
+        status: { not: DEBT_TICKET_LINE_STATUS.PAID },
+        ticket: {
+          ticketType: DEBT_TICKET_TYPE.STOP_DELIVERY,
+          status: { in: DEBT_TICKET_OPEN_STATUSES },
+        },
+      },
+      include: {
+        ticket: { select: { id: true, code: true, createdAt: true, status: true } },
+      },
+      orderBy: [{ isLatest: 'desc' }, { createdAt: 'desc' }],
+    });
+
+    if (openLines.length === 0) return 0;
+
+    let closed = 0;
+    for (const line of openLines) {
+      const receipts = await db.cashFlow.findMany({
+        where: {
+          partnerType: 'C',
+          partnerId: customerId,
+          isReceipt: true,
+          status: { not: 2 },
+          transDate: { gte: line.ticket.createdAt },
+          NOT: [{ code: { startsWith: 'TTTUHD' } }],
+        },
+        select: { amount: true },
+      });
+      const received = receipts.reduce(
+        (sum: number, receipt: any) => sum + Number(receipt.amount),
+        0,
+      );
+      const required = Number(line.requiredPaymentAmount);
+
+      if (required > MONEY_EPSILON && received < required - MONEY_EPSILON) {
+        continue;
+      }
+
+      await db.debtTicketCustomer.update({
+        where: { id: line.id },
+        data: {
+          status: DEBT_TICKET_LINE_STATUS.PAID,
+          paidAt: new Date(),
+          paidAmount: received,
+        },
+      });
+      const closedTicket = await this.tryAutoCloseTicket(db, line.ticketId);
+      if (closedTicket) closed++;
+    }
+
+    return closed;
+  }
+
+  /**
+   * Đối chiếu mọi nguồn tiền của khách với ticket:
+   * - CashFlow đã hạch toán kể từ lúc tạo ticket.
+   * - Sepay chưa lập phiếu thu chỉ khi giao dịch có đúng một khách.
+   * Giao dịch nhiều khách không được suy đoán tiền trước khi kế toán phân bổ.
+   */
+  async reconcileCustomerPayments(customerId: number): Promise<void> {
+    const pending = await this.getPendingSingleCustomerSepay(customerId);
+    const lines = await this.prisma.debtTicketCustomer.findMany({
+      where: {
+        customerId,
+        ticket: { status: { in: DEBT_TICKET_OPEN_STATUSES } },
+      },
+      include: {
+        ticket: {
+          select: { id: true, ticketType: true, createdAt: true },
+        },
+      },
+    });
+
+    for (const line of lines) {
+      if (line.ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY) {
+        await this.prisma.debtTicketCustomer.update({
+          where: { id: line.id },
+          data:
+            pending.amount > MONEY_EPSILON
+              ? {
+                  provisionalPaymentAmount: pending.amount,
+                  provisionalSepayTxId:
+                    pending.transactionIds[pending.transactionIds.length - 1],
+                }
+              : {
+                  provisionalPaymentAmount: null,
+                  provisionalSepayTxId: null,
+                },
+        });
+        continue;
+      }
+
+      if (line.status === DEBT_TICKET_LINE_STATUS.PAID) continue;
+      const receipts = await this.prisma.cashFlow.findMany({
+        where: {
+          partnerType: 'C',
+          partnerId: customerId,
+          isReceipt: true,
+          status: { not: 2 },
+          createdAt: { gte: line.ticket.createdAt },
+        },
+        select: { amount: true },
+      });
+      const officialAmount = receipts.reduce(
+        (sum, receipt) => sum + Number(receipt.amount),
+        0,
+      );
+      const received = officialAmount + pending.amount;
+      const required = Number(
+        line.confirmedAmount ?? line.minimumPayment ?? line.debtAtCreate,
+      );
+      const paid = required > MONEY_EPSILON && received >= required - MONEY_EPSILON;
+
+      await this.prisma.debtTicketCustomer.update({
+        where: { id: line.id },
+        data: {
+          status: paid
+            ? DEBT_TICKET_LINE_STATUS.PAID
+            : received > MONEY_EPSILON
+              ? DEBT_TICKET_LINE_STATUS.PARTIAL
+              : DEBT_TICKET_LINE_STATUS.PENDING,
+          paidAt: paid ? new Date() : null,
+          paidAmount: received > MONEY_EPSILON ? received : null,
+          matchedSepayTxId:
+            pending.transactionIds[pending.transactionIds.length - 1] ?? null,
+        },
+      });
+
+      if (paid) {
+        await this.tryAutoCloseTicket(this.prisma, line.ticketId);
+      }
+    }
+
+    await this.reconcileStopDeliveryForCustomer(customerId);
+  }
+
+  private async getPendingSingleCustomerSepay(customerId: number): Promise<{
+    amount: number;
+    transactionIds: number[];
+  }> {
+    const candidates = await this.prisma.sepayAllocation.findMany({
+      where: { customerId, cashFlowId: null },
+      select: { sepayTransactionId: true },
+    });
+    const transactionIds = [
+      ...new Set(candidates.map((row) => row.sepayTransactionId)),
+    ];
+    if (transactionIds.length === 0) {
+      return { amount: 0, transactionIds: [] };
+    }
+
+    const allocations = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: { in: transactionIds } },
+      select: { sepayTransactionId: true, customerId: true, cashFlowId: true },
+    });
+    const transactions = await this.prisma.sepayTransaction.findMany({
+      where: {
+        id: { in: transactionIds },
+        amountIn: { gt: 0 },
+        hiddenAt: null,
+      },
+      select: { id: true, amountIn: true },
+    });
+
+    const byTransaction = new Map<number, typeof allocations>();
+    for (const allocation of allocations) {
+      const rows = byTransaction.get(allocation.sepayTransactionId) ?? [];
+      rows.push(allocation);
+      byTransaction.set(allocation.sepayTransactionId, rows);
+    }
+
+    const valid = transactions.filter((transaction) => {
+      const rows = byTransaction.get(transaction.id) ?? [];
+      return (
+        rows.length === 1 &&
+        rows[0].customerId === customerId &&
+        rows[0].cashFlowId === null
+      );
+    });
+
+    return {
+      amount: valid.reduce(
+        (sum, transaction) => sum + Number(transaction.amountIn),
+        0,
+      ),
+      transactionIds: valid.map((transaction) => transaction.id),
+    };
+  }
+
   async cancel(id: number, dto: CloseDebtTicketDto, userId: number) {
     const ticket = await this.prisma.debtTicket.findUnique({ where: { id } });
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu thu hồi nợ');
@@ -444,14 +703,60 @@ export class DebtTicketsService {
   async tryAutoCloseTicket(db: any, ticketId: number): Promise<boolean> {
     const ticket = await db.debtTicket.findUnique({
       where: { id: ticketId },
-      include: { customers: { select: { status: true } } },
+      include: {
+        customers: {
+          select: {
+            id: true,
+            customerId: true,
+            status: true,
+            requiredPaymentAmount: true,
+            paidAmount: true,
+          },
+        },
+      },
     });
 
     if (!ticket) return false;
     if (!DEBT_TICKET_OPEN_STATUSES.includes(ticket.status)) return false;
     if (ticket.customers.length === 0) return false;
 
-    const allPaid = ticket.customers.every(
+    if (ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY) {
+      for (const line of ticket.customers as any[]) {
+        if (line.status === DEBT_TICKET_LINE_STATUS.PAID) continue;
+        const receipts = await db.cashFlow.findMany({
+          where: {
+            partnerType: 'C',
+            partnerId: line.customerId,
+            isReceipt: true,
+            status: { not: 2 },
+            transDate: { gte: ticket.createdAt },
+            NOT: [{ code: { startsWith: 'TTTUHD' } }],
+          },
+          select: { amount: true },
+        });
+        const received = receipts.reduce(
+          (sum: number, receipt: any) => sum + Number(receipt.amount),
+          0,
+        );
+        const required = Number(line.requiredPaymentAmount);
+        if (received < required - MONEY_EPSILON) return false;
+
+        await db.debtTicketCustomer.update({
+          where: { id: line.id },
+          data: {
+            status: DEBT_TICKET_LINE_STATUS.PAID,
+            paidAt: new Date(),
+            paidAmount: received,
+          },
+        });
+      }
+    }
+
+    const currentCustomers = await db.debtTicketCustomer.findMany({
+      where: { ticketId },
+      select: { status: true },
+    });
+    const allPaid = currentCustomers.every(
       (c: any) => c.status === DEBT_TICKET_LINE_STATUS.PAID,
     );
     if (!allPaid) return false;
@@ -572,6 +877,7 @@ export class DebtTicketsService {
         l.minimumPayment !== null &&
         Number(l.minimumPayment) <
           Number(l.debtAtCreate) * MIN_PAYMENT_RATIO_WARN,
+      requiredPaymentAmount: Number(l.requiredPaymentAmount),
     }));
 
     const totalMinimum = lines.reduce(
@@ -595,6 +901,7 @@ export class DebtTicketsService {
       code: t.code,
       title: t.title,
       status: t.status,
+      ticketType: t.ticketType,
       isOpen: DEBT_TICKET_OPEN_STATUSES.includes(t.status),
       note: t.note,
       assignee: t.assignee,
