@@ -38,6 +38,7 @@
     "seed:customers-import-export": "ts-node prisma/seeds/add-customers-import-permission.ts",
     "seed:suppliers-export": "ts-node prisma/seeds/add-suppliers-export-permission.ts",
     "seed:transfers-export": "ts-node prisma/seeds/add-transfers-export-permission.ts",
+    "seed:transfer-planning-permissions": "ts-node prisma/seeds/add-transfer-planning-permissions.ts",
     "seed:orders-export": "ts-node prisma/seeds/add-orders-export-permission.ts",
     "seed:price-books-export": "ts-node prisma/seeds/add-price-books-export-permission.ts",
     "seed:purchase-orders-export": "ts-node prisma/seeds/add-purchase-orders-export-permission.ts",

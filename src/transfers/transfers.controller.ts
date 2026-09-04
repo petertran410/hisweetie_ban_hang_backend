@@ -24,7 +24,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { RequirePermissions, RequireAnyPermission } from '../auth/decorators/permissions.decorator';
 
 @ApiTags('Transfers')
 @ApiBearerAuth()
@@ -78,19 +78,19 @@ export class TransfersController {
   }
 
   @Get('planning-summary')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
   getPlanningSummary(@Query() query: TransferPlanningQueryDto) {
     return this.transfersService.getPlanningSummary(query);
   }
 
   @Get('draft-candidates')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
   getDraftCandidates() {
     return this.transfersService.getDraftCandidates();
   }
 
   @Get('in-transit-by-product')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
   getInTransitByProduct(@Query() query: ProductTransferQueryDto) {
     return this.transfersService.getTransfersByProductForPlanning(
       query.productId,
@@ -99,7 +99,7 @@ export class TransfersController {
   }
 
   @Get('pending-by-product')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
   getPendingByProduct(@Query() query: ProductTransferQueryDto) {
     return this.transfersService.getTransfersByProductForPlanning(
       query.productId,
