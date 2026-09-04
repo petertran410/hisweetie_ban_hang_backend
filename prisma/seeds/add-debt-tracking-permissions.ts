@@ -73,10 +73,10 @@ const NEW_PERMISSIONS = [
     category: CATEGORY,
   },
   {
-    name: 'debt_tickets:close',
+    name: 'debt_tickets:cancel',
     resource: 'debt_tickets',
-    action: 'close',
-    description: 'Kết thúc / dừng phiếu thu hồi nợ',
+    action: 'cancel',
+    description: 'Hủy / kết thúc phiếu thu hồi nợ',
     category: CATEGORY,
   },
 ];
@@ -91,7 +91,7 @@ const ADMIN_PERMISSIONS = [
   'debt_tickets:view',
   'debt_tickets:create',
   'debt_tickets:update',
-  'debt_tickets:close',
+  'debt_tickets:cancel',
 ];
 
 async function main() {
