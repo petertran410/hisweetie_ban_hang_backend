@@ -2034,7 +2034,7 @@ export class TransfersService {
       childNames,
       cargoType,
       tradeMarkIds,
-      quickFilter,
+      excludeTradeMarkIds,
       alertFilter,
       page = 1,
       limit = 25,
@@ -2085,6 +2085,13 @@ export class TransfersService {
 
     if (tradeMarkIds && tradeMarkIds.length > 0) {
       productWhere.tradeMarkId = { in: tradeMarkIds };
+    }
+
+    if (excludeTradeMarkIds && excludeTradeMarkIds.length > 0) {
+      productWhere.tradeMarkId = {
+        ...(productWhere.tradeMarkId || {}),
+        notIn: excludeTradeMarkIds,
+      };
     }
 
     // 3. Query toàn bộ sản phẩm thỏa mãn điều kiện
@@ -2139,17 +2146,14 @@ export class TransfersService {
 
     const stockHNMap = new Map<number, number>();
     const stockSGMap = new Map<number, number>();
-    const committedMap = new Map<number, number>();
 
     for (const inv of inventories) {
       const onHand = Number(inv.onHand || 0);
-      const reserved = Number(inv.reserved || 0);
 
       if (inv.branchId === branchHNId) {
         stockHNMap.set(inv.productId, onHand);
       } else if (inv.branchId === branchSGId) {
         stockSGMap.set(inv.productId, onHand);
-        committedMap.set(inv.productId, reserved);
       }
     }
 
@@ -2215,14 +2219,31 @@ export class TransfersService {
       );
     }
 
-    // 7. Lấy Đơn hàng khách đã xác nhận tại SG (Order status = PENDING (1) hoặc CONFIRMED (5))
+    // 7. Lấy Đơn tạm (PENDING status=1) và Đơn xác nhận (CONFIRMED status=5) tại SG
+    const pendingOrderItems = await this.prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: productIds },
+        order: {
+          branchId: branchSGId,
+          status: 1,
+        },
+      },
+      _sum: { quantity: true },
+    });
+
+    const pendingOrdersMap = new Map<number, number>();
+    for (const item of pendingOrderItems) {
+      pendingOrdersMap.set(item.productId, Number(item._sum.quantity || 0));
+    }
+
     const confirmedOrderItems = await this.prisma.orderItem.groupBy({
       by: ['productId'],
       where: {
         productId: { in: productIds },
         order: {
           branchId: branchSGId,
-          status: { in: [1, 5] },
+          status: 5,
         },
       },
       _sum: { quantity: true },
@@ -2284,10 +2305,10 @@ export class TransfersService {
     const allCalculatedItems = activeProducts.map((p) => {
       const stockHN = stockHNMap.get(p.id) || 0;
       const stockSG = stockSGMap.get(p.id) || 0;
-      const committed = committedMap.get(p.id) || 0;
+      const committed = pendingOrdersMap.get(p.id) || 0; // Đơn tạm = PENDING(1) tại SG
       const inTransit = inTransitMap.get(p.id) || 0;
       const pendingTransfer = pendingTransferMap.get(p.id) || 0;
-      const confirmedOrders = confirmedOrdersMap.get(p.id) || 0;
+      const confirmedOrders = confirmedOrdersMap.get(p.id) || 0; // Đơn xác nhận = CONFIRMED(5) tại SG
 
       const sales5 = sales5Map.get(p.id) || 0;
       const sales30 = sales30Map.get(p.id) || 0;
@@ -2300,21 +2321,30 @@ export class TransfersService {
       const demandPerDay =
         0.6 * avg5PerDay + 0.3 * avg30PerDay + 0.1 * avg90PerDay;
       const safetyStock = demandPerDay * 2;
-      const transferPoint = safetyStock + demandPerDay * 5;
-      const availableStockSG = stockSG + inTransit - committed;
-      const targetStockSG = safetyStock + demandPerDay * 7;
-      const suggestedQuantity = Math.round(
-        Math.max(0, targetStockSG - availableStockSG),
-      );
+
+      const isCold = p.cargoType === 'COLD';
+      const leadtimeDays = isCold ? 3 : 5;
+      const cycleDays = isCold ? 5 : 7;
+
+      const transferPoint = safetyStock + demandPerDay * leadtimeDays;
+      const availableStockSG = stockSG + inTransit - committed - confirmedOrders;
+      const targetStockSG = safetyStock + demandPerDay * cycleDays;
+
+      const ps = (() => {
+        const cv = Number(p.conversionValue);
+        return Number.isInteger(cv) && cv > 0 ? cv : 1;
+      })();
+      const rawSuggested = Math.max(0, targetStockSG - availableStockSG);
+      const suggestedQuantity = Math.round(rawSuggested / ps) * ps;
 
       let alert: 'DARK_RED' | 'RED' | 'YELLOW' | 'GREEN' = 'GREEN';
       let alertLabel = 'Đủ hàng';
       let alertReason = 'Đủ hàng';
 
-      if (confirmedOrders > availableStockSG) {
+      if (committed + confirmedOrders > availableStockSG) {
         alert = 'DARK_RED';
         alertLabel = 'CHUYỂN GẤP';
-        alertReason = 'Đơn hàng xác nhận > tồn khả dụng';
+        alertReason = 'Đơn tạm + Đơn xác nhận > tồn khả dụng';
       } else if (availableStockSG <= transferPoint && suggestedQuantity > 0) {
         alert = 'RED';
         alertLabel = 'Cần điều chuyển';
@@ -2359,8 +2389,11 @@ export class TransfersService {
           avg90PerDay,
           demandPerDay,
           safetyStock,
+          leadtimeDays,
+          cycleDays,
           transferPoint,
           availableStockSG,
+          availableDays: demandPerDay > 0 ? Math.round(availableStockSG / demandPerDay) : 0,
           targetStockSG,
           suggestedQuantity,
           alert,
@@ -2370,24 +2403,8 @@ export class TransfersService {
       };
     });
 
-    // 10. Lọc Client/Filter bổ sung (quickFilter & alertFilter)
+    // 10. Lọc Client/Filter bổ sung (alertFilter)
     let filtered = allCalculatedItems;
-
-    if (quickFilter && quickFilter !== 'ALL') {
-      switch (quickFilter) {
-        case 'NEED_TRANSFER':
-          filtered = filtered.filter((i) => i.computed.suggestedQuantity > 0);
-          break;
-        case 'NO_TRANSFER':
-          filtered = filtered.filter(
-            (i) => i.computed.suggestedQuantity === 0,
-          );
-          break;
-        case 'HAS_CONFIRMED_ORDERS':
-          filtered = filtered.filter((i) => i.confirmedOrders > 0);
-          break;
-      }
-    }
 
     if (alertFilter && alertFilter !== 'ALL') {
       filtered = filtered.filter((i) => i.computed.alert === alertFilter);

@@ -64,8 +64,16 @@ export class TransferPlanningQueryDto {
   tradeMarkIds?: number[];
 
   @IsOptional()
-  @IsIn(['ALL', 'NEED_TRANSFER', 'NO_TRANSFER', 'HAS_CONFIRMED_ORDERS'])
-  quickFilter?: 'ALL' | 'NEED_TRANSFER' | 'NO_TRANSFER' | 'HAS_CONFIRMED_ORDERS';
+  @IsArray()
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Transform(({ value }) => {
+    if (typeof value === 'string') {
+      return value.split(',').map(Number).filter((n) => !isNaN(n));
+    }
+    return Array.isArray(value) ? value.map(Number) : [Number(value)];
+  })
+  excludeTradeMarkIds?: number[];
 
   @IsOptional()
   @IsIn(['ALL', 'DARK_RED', 'RED', 'YELLOW', 'GREEN'])
