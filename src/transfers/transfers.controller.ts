@@ -19,10 +19,12 @@ import {
   TransferQueryDto,
   CancelTransferDto,
   ConfirmShortageDto,
+  TransferPlanningQueryDto,
+  ProductTransferQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 
 @ApiTags('Transfers')
 @ApiBearerAuth()
@@ -73,6 +75,36 @@ export class TransfersController {
     );
 
     await this.transfersService.exportTransfersDetail(query, res);
+  }
+
+  @Get('planning-summary')
+  @RequirePermissions('transfers:view')
+  getPlanningSummary(@Query() query: TransferPlanningQueryDto) {
+    return this.transfersService.getPlanningSummary(query);
+  }
+
+  @Get('draft-candidates')
+  @RequirePermissions('transfers:view')
+  getDraftCandidates() {
+    return this.transfersService.getDraftCandidates();
+  }
+
+  @Get('in-transit-by-product')
+  @RequirePermissions('transfers:view')
+  getInTransitByProduct(@Query() query: ProductTransferQueryDto) {
+    return this.transfersService.getTransfersByProductForPlanning(
+      query.productId,
+      2,
+    );
+  }
+
+  @Get('pending-by-product')
+  @RequirePermissions('transfers:view')
+  getPendingByProduct(@Query() query: ProductTransferQueryDto) {
+    return this.transfersService.getTransfersByProductForPlanning(
+      query.productId,
+      1,
+    );
   }
 
   @Get(':id')

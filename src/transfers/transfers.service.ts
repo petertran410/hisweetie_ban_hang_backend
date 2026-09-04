@@ -12,7 +12,9 @@ import {
   TransferQueryDto,
   CancelTransferDto,
   ConfirmShortageDto,
+  TransferPlanningQueryDto,
 } from './dto';
+import { searchProductIds } from '../common/product-search.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   renderAuditMessage,
@@ -946,6 +948,47 @@ export class TransfersService {
     }
 
     return { message: 'Xóa dữ liệu thành công' };
+  }
+
+  async getDraftCandidates() {
+    const branches = await this.prisma.branch.findMany({
+      where: {
+        isActive: true,
+        name: { in: ['Kho Hà Nội', 'Kho Sài Gòn'] },
+      },
+      select: { id: true, name: true },
+    });
+
+    const hnBranch = branches.find((b) => b.name === 'Kho Hà Nội') || { id: 6 };
+    const sgBranch = branches.find((b) => b.name === 'Kho Sài Gòn') || { id: 1 };
+
+    const transfers = await this.prisma.transfer.findMany({
+      where: {
+        fromBranchId: hnBranch.id,
+        toBranchId: sgBranch.id,
+        status: 1,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        code: true,
+        createdAt: true,
+        noteBySource: true,
+        _count: { select: { details: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    return {
+      data: transfers.map((t) => ({
+        id: t.id,
+        code: t.code,
+        createdAt: t.createdAt,
+        noteBySource: t.noteBySource,
+        itemCount: t._count.details,
+      })),
+    };
   }
 
   private async generateTransferCode(): Promise<string> {
@@ -1981,5 +2024,500 @@ export class TransfersService {
         sendPrice: Number(d.sendPrice),
       })),
     };
+  }
+
+  async getPlanningSummary(query: TransferPlanningQueryDto) {
+    const {
+      search,
+      parentNames,
+      middleNames,
+      childNames,
+      cargoType,
+      tradeMarkIds,
+      quickFilter,
+      alertFilter,
+      page = 1,
+      limit = 25,
+      sortBy = 'suggestedQuantity',
+      sortDirection = 'desc',
+    } = query;
+
+    // 1. Resolve Branch ID cho Hà Nội và Sài Gòn
+    const branches = await this.prisma.branch.findMany({
+      where: {
+        isActive: true,
+        name: { in: ['Kho Hà Nội', 'Kho Sài Gòn'] },
+      },
+      select: { id: true, name: true },
+    });
+
+    const hnBranch = branches.find((b) => b.name === 'Kho Hà Nội') || { id: 6 };
+    const sgBranch = branches.find((b) => b.name === 'Kho Sài Gòn') || { id: 1 };
+
+    const branchHNId = hnBranch.id;
+    const branchSGId = sgBranch.id;
+
+    // 2. Build Prisma Filter cho Product (CHỈ SẢN PHẨM ĐANG HOẠT ĐỘNG)
+    const productWhere: any = {
+      isActive: true,
+    };
+
+    if (search && search.trim()) {
+      const matchedIds = await searchProductIds(this.prisma, search.trim());
+      productWhere.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
+    }
+
+    if (parentNames && parentNames.length > 0) {
+      productWhere.parentName = { in: parentNames };
+    }
+
+    if (middleNames && middleNames.length > 0) {
+      productWhere.middleName = { in: middleNames };
+    }
+
+    if (childNames && childNames.length > 0) {
+      productWhere.childName = { in: childNames };
+    }
+
+    if (cargoType) {
+      productWhere.cargoType = cargoType;
+    }
+
+    if (tradeMarkIds && tradeMarkIds.length > 0) {
+      productWhere.tradeMarkId = { in: tradeMarkIds };
+    }
+
+    // 3. Query toàn bộ sản phẩm thỏa mãn điều kiện
+    const activeProducts = await this.prisma.product.findMany({
+      where: productWhere,
+      select: {
+        id: true,
+        code: true,
+        name: true,
+        unit: true,
+        conversionValue: true,
+        parentName: true,
+        middleName: true,
+        childName: true,
+        cargoType: true,
+        tradeMarkId: true,
+        tradeMark: { select: { id: true, name: true } },
+      },
+      orderBy: { id: 'asc' },
+    });
+
+    if (activeProducts.length === 0) {
+      return {
+        data: [],
+        total: 0,
+        page,
+        limit,
+        summary: {
+          totalSku: 0,
+          needTransferSku: 0,
+          warningSku: 0,
+          totalSuggestedQuantity: 0,
+        },
+      };
+    }
+
+    const productIds = activeProducts.map((p) => p.id);
+
+    // 4. Lấy Tồn kho HN và SG
+    const inventories = await this.prisma.inventory.findMany({
+      where: {
+        productId: { in: productIds },
+        branchId: { in: [branchHNId, branchSGId] },
+      },
+      select: {
+        productId: true,
+        branchId: true,
+        onHand: true,
+        reserved: true,
+      },
+    });
+
+    const stockHNMap = new Map<number, number>();
+    const stockSGMap = new Map<number, number>();
+    const committedMap = new Map<number, number>();
+
+    for (const inv of inventories) {
+      const onHand = Number(inv.onHand || 0);
+      const reserved = Number(inv.reserved || 0);
+
+      if (inv.branchId === branchHNId) {
+        stockHNMap.set(inv.productId, onHand);
+      } else if (inv.branchId === branchSGId) {
+        stockSGMap.set(inv.productId, onHand);
+        committedMap.set(inv.productId, reserved);
+      }
+    }
+
+    // 5. Lấy Hàng đang chuyển nội bộ HN → SG (Transfer status = 2 & 3)
+    const inTransitDetails = await this.prisma.transferDetail.findMany({
+      where: {
+        productId: { in: productIds },
+        transfer: {
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+          status: { in: [2, 3] },
+        },
+      },
+      select: {
+        productId: true,
+        sendQuantity: true,
+        receivedQuantity: true,
+        transfer: { select: { status: true } },
+      },
+    });
+
+    const inTransitMap = new Map<number, number>();
+    for (const d of inTransitDetails) {
+      const current = inTransitMap.get(d.productId) || 0;
+      const sendQty = Number(d.sendQuantity || 0);
+      const recvQty = Number(d.receivedQuantity || 0);
+      // TH1 — Status = 2 (Đang chuyển): toàn bộ SL gửi đang trên đường.
+      //      KHÔNG trừ receivedQuantity vì bên gửi có thể lưu
+      //      receivedQuantity = sendQuantity (dữ liệu bẩn) — chỉ có ý nghĩa
+      //      nghiệp vụ ở status = 3 (bug TRF002449).
+      // TH2 — Status = 3 (Đã nhận): phần còn thiếu chưa nhận
+      //      (send − received) vẫn được tính là đang chuyển; clamp 0 khi
+      //      nhận dư (received > send).
+      const netInTransit =
+        d.transfer.status === 3
+          ? Math.max(0, sendQty - recvQty)
+          : Math.max(0, sendQty);
+      inTransitMap.set(d.productId, current + netInTransit);
+    }
+
+    // 6. Lấy Phiếu tạm nội bộ HN → SG (Transfer status = 1 Phiếu tạm)
+    const pendingTransferDetails = await this.prisma.transferDetail.findMany({
+      where: {
+        productId: { in: productIds },
+        transfer: {
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+          status: 1,
+        },
+      },
+      select: {
+        productId: true,
+        sendQuantity: true,
+      },
+    });
+
+    const pendingTransferMap = new Map<number, number>();
+    for (const d of pendingTransferDetails) {
+      const current = pendingTransferMap.get(d.productId) || 0;
+      pendingTransferMap.set(
+        d.productId,
+        current + Number(d.sendQuantity || 0),
+      );
+    }
+
+    // 7. Lấy Đơn hàng khách đã xác nhận tại SG (Order status = PENDING (1) hoặc CONFIRMED (5))
+    const confirmedOrderItems = await this.prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: productIds },
+        order: {
+          branchId: branchSGId,
+          status: { in: [1, 5] },
+        },
+      },
+      _sum: { quantity: true },
+    });
+
+    const confirmedOrdersMap = new Map<number, number>();
+    for (const item of confirmedOrderItems) {
+      confirmedOrdersMap.set(
+        item.productId,
+        Number(item._sum.quantity || 0),
+      );
+    }
+
+    // 8. Lấy Lịch sử bán 5 ngày, 30 ngày, 90 ngày tại Sài Gòn (InvoiceDetail trong 90 ngày)
+    const now = new Date();
+    const windowStart = new Date(now.getTime() - 90 * 86400000);
+    const day5Start = new Date(now.getTime() - 5 * 86400000);
+    const day30Start = new Date(now.getTime() - 30 * 86400000);
+
+    const invoiceDetails = await this.prisma.invoiceDetail.findMany({
+      where: {
+        productId: { in: productIds },
+        isGift: false,
+        invoice: {
+          branchId: branchSGId,
+          status: { not: 2 }, // Không lấy hóa đơn đã hủy
+          purchaseDate: { gte: windowStart },
+        },
+      },
+      select: {
+        productId: true,
+        quantity: true,
+        invoice: { select: { purchaseDate: true } },
+      },
+    });
+
+    const sales5Map = new Map<number, number>();
+    const sales30Map = new Map<number, number>();
+    const sales90Map = new Map<number, number>();
+
+    for (const d of invoiceDetails) {
+      const pid = d.productId;
+      const qty = Number(d.quantity || 0);
+      const pDate = d.invoice?.purchaseDate;
+      if (pid === null) continue;
+
+      sales90Map.set(pid, (sales90Map.get(pid) || 0) + qty);
+
+      if (pDate && pDate >= day30Start) {
+        sales30Map.set(pid, (sales30Map.get(pid) || 0) + qty);
+      }
+
+      if (pDate && pDate >= day5Start) {
+        sales5Map.set(pid, (sales5Map.get(pid) || 0) + qty);
+      }
+    }
+
+    // 9. Tính toán các chỉ số cho từng sản phẩm
+    const allCalculatedItems = activeProducts.map((p) => {
+      const stockHN = stockHNMap.get(p.id) || 0;
+      const stockSG = stockSGMap.get(p.id) || 0;
+      const committed = committedMap.get(p.id) || 0;
+      const inTransit = inTransitMap.get(p.id) || 0;
+      const pendingTransfer = pendingTransferMap.get(p.id) || 0;
+      const confirmedOrders = confirmedOrdersMap.get(p.id) || 0;
+
+      const sales5 = sales5Map.get(p.id) || 0;
+      const sales30 = sales30Map.get(p.id) || 0;
+      const sales90 = sales90Map.get(p.id) || 0;
+
+      const avg5PerDay = sales5 / 5;
+      const avg30PerDay = sales30 / 30;
+      const avg90PerDay = sales90 / 90;
+
+      const demandPerDay =
+        0.6 * avg5PerDay + 0.3 * avg30PerDay + 0.1 * avg90PerDay;
+      const safetyStock = demandPerDay * 2;
+      const transferPoint = safetyStock + demandPerDay * 5;
+      const availableStockSG = stockSG + inTransit - committed;
+      const targetStockSG = safetyStock + demandPerDay * 7;
+      const suggestedQuantity = Math.round(
+        Math.max(0, targetStockSG - availableStockSG),
+      );
+
+      let alert: 'DARK_RED' | 'RED' | 'YELLOW' | 'GREEN' = 'GREEN';
+      let alertLabel = 'Đủ hàng';
+      let alertReason = 'Đủ hàng';
+
+      if (confirmedOrders > availableStockSG) {
+        alert = 'DARK_RED';
+        alertLabel = 'CHUYỂN GẤP';
+        alertReason = 'Đơn hàng xác nhận > tồn khả dụng';
+      } else if (availableStockSG <= transferPoint && suggestedQuantity > 0) {
+        alert = 'RED';
+        alertLabel = 'Cần điều chuyển';
+        alertReason = 'Tồn khả dụng ≤ điểm điều chuyển';
+      } else if (availableStockSG <= targetStockSG && suggestedQuantity > 0) {
+        alert = 'YELLOW';
+        alertLabel = 'Cần xem xét';
+        alertReason = 'Cần xem xét';
+      } else {
+        alert = 'GREEN';
+        alertLabel = 'Đủ hàng';
+        alertReason = 'Đủ hàng';
+      }
+
+      return {
+        id: p.id,
+        sku: p.code,
+        name: p.name,
+        unit: p.unit || 'Cái',
+        packSize: (() => {
+          const cv = Number(p.conversionValue);
+          return Number.isInteger(cv) && cv > 0 ? cv : 1;
+        })(),
+        parentName: p.parentName,
+        middleName: p.middleName,
+        childName: p.childName,
+        cargoType: p.cargoType,
+        trademarkId: p.tradeMarkId,
+        trademarkName: p.tradeMark?.name,
+        stockHN,
+        stockSG,
+        inTransit,
+        pendingTransfer,
+        committed,
+        confirmedOrders,
+        sales5,
+        sales30,
+        sales90,
+        computed: {
+          avg5PerDay,
+          avg30PerDay,
+          avg90PerDay,
+          demandPerDay,
+          safetyStock,
+          transferPoint,
+          availableStockSG,
+          targetStockSG,
+          suggestedQuantity,
+          alert,
+          alertLabel,
+          alertReason,
+        },
+      };
+    });
+
+    // 10. Lọc Client/Filter bổ sung (quickFilter & alertFilter)
+    let filtered = allCalculatedItems;
+
+    if (quickFilter && quickFilter !== 'ALL') {
+      switch (quickFilter) {
+        case 'NEED_TRANSFER':
+          filtered = filtered.filter((i) => i.computed.suggestedQuantity > 0);
+          break;
+        case 'NO_TRANSFER':
+          filtered = filtered.filter(
+            (i) => i.computed.suggestedQuantity === 0,
+          );
+          break;
+        case 'HAS_CONFIRMED_ORDERS':
+          filtered = filtered.filter((i) => i.confirmedOrders > 0);
+          break;
+      }
+    }
+
+    if (alertFilter && alertFilter !== 'ALL') {
+      filtered = filtered.filter((i) => i.computed.alert === alertFilter);
+    }
+
+    // 11. Sắp xếp (Sorting)
+    const dir = sortDirection === 'desc' ? -1 : 1;
+    filtered.sort((a, b) => {
+      let valA: any = (a as any)[sortBy];
+      let valB: any = (b as any)[sortBy];
+
+      if (valA === undefined) valA = (a.computed as any)[sortBy];
+      if (valB === undefined) valB = (b.computed as any)[sortBy];
+
+      if (typeof valA === 'string') {
+        return dir * valA.localeCompare(valB ?? '', 'vi');
+      }
+      return dir * ((Number(valA) || 0) - (Number(valB) || 0));
+    });
+
+    // 12. Tính Summary
+    const totalSku = allCalculatedItems.length;
+    const needTransferSku = allCalculatedItems.filter(
+      (i) => i.computed.suggestedQuantity > 0,
+    ).length;
+    const warningSku = allCalculatedItems.filter(
+      (i) => i.computed.alert === 'RED' || i.computed.alert === 'DARK_RED',
+    ).length;
+    const totalSuggestedQuantity = allCalculatedItems.reduce(
+      (sum, i) => sum + i.computed.suggestedQuantity,
+      0,
+    );
+
+    // 13. Phân trang (Pagination)
+    const startIndex = (page - 1) * limit;
+    const paginatedData = filtered.slice(startIndex, startIndex + limit);
+
+    return {
+      data: paginatedData,
+      total: filtered.length,
+      page,
+      limit,
+      summary: {
+        totalSku,
+        needTransferSku,
+        warningSku,
+        totalSuggestedQuantity,
+      },
+    };
+  }
+
+  /**
+   * Trả về danh sách các phiếu chuyển kho nội bộ HN → SG cho một sản phẩm,
+   * phân loại theo trạng thái. Reuse cùng business rule với getPlanningSummary
+   * để đảm bảo SUM(quantity) khớp chính xác item.inTransit / item.pendingTransfer.
+   *
+   * @param productId id sản phẩm
+   * @param status 1 = Phiếu tạm, 2 = Đang chuyển (gồm cả Đã nhận một phần)
+   */
+  async getTransfersByProductForPlanning(productId: number, status: number) {
+    const branchHNId = 6;
+    const branchSGId = 1;
+
+    const STATUS_LABEL: Record<number, string> = {
+      1: 'Phiếu tạm',
+      2: 'Đang chuyển',
+      3: 'Đã nhận',
+      4: 'Đã hủy',
+    };
+
+    // status = 2 (Đang chuyển) bao gồm cả phiếu status = 3 (Đã nhận) còn thiếu
+    // hàng (partial receiving) — khớp logic getPlanningSummary.
+    const statuses = status === 2 ? [2, 3] : [status];
+
+    const details = await this.prisma.transferDetail.findMany({
+      where: {
+        productId,
+        transfer: {
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+          status: { in: statuses },
+        },
+      },
+      select: {
+        sendQuantity: true,
+        receivedQuantity: true,
+        transfer: {
+          select: {
+            id: true,
+            code: true,
+            fromBranchName: true,
+            toBranchName: true,
+            transferredDate: true,
+            createdAt: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: {
+        transfer: { createdAt: 'desc' },
+      },
+    });
+
+    const data = details.map((d) => {
+      const sendQty = Number(d.sendQuantity || 0);
+      const recvQty = Number(d.receivedQuantity || 0);
+      // Cùng logic getPlanningSummary:
+      //   status = 3 (Đã nhận) → phần còn thiếu = max(0, send − received)
+      //   status = 1/2        → toàn bộ SL gửi (chưa nhận / đang trên đường)
+      const quantity =
+        d.transfer.status === 3
+          ? Math.max(0, sendQty - recvQty)
+          : Math.max(0, sendQty);
+      return {
+        transferId: d.transfer.id,
+        code: d.transfer.code,
+        fromBranchName: d.transfer.fromBranchName,
+        toBranchName: d.transfer.toBranchName,
+        transferredDate: d.transfer.transferredDate?.toISOString() ?? null,
+        createdAt: d.transfer.createdAt.toISOString(),
+        sendQuantity: sendQty,
+        receivedQuantity: recvQty,
+        quantity,
+        status: d.transfer.status,
+        statusLabel: STATUS_LABEL[d.transfer.status] || 'Không xác định',
+      };
+    });
+
+    const sumQuantity = data.reduce((sum, r) => sum + r.quantity, 0);
+
+    return { data, total: data.length, sumQuantity };
   }
 }

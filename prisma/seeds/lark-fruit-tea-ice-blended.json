@@ -1,0 +1,4791 @@
+{
+  "recipes": [
+    {
+      "code": "FTC-LARK-001",
+      "name": "Bạch Ngọc Hồng Châu",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 4.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cà chua bi",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 35.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-002",
+      "name": "Chanh Dây Phú Bà",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Xoài Tươi",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-003",
+      "name": "Cung Hỷ Phát Tài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-004",
+      "name": "Cung Hỷ Phát Tài V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh nước hoa",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-005",
+      "name": "Cung Hỷ Phát Tài V3",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh nước hoa",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-006",
+      "name": "Dâu Tằm Chanh Thơm",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000594",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-007",
+      "name": "Dâu Tằm Dâu Tây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Dâu tằm dầm",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000594",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-008",
+      "name": "Dâu tây Nhiệt Đới",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000643",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 120.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-009",
+      "name": "Dương Chi Cam Lộ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 160.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Tép Bưởi Tươi",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Xoài Tươi",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-010",
+      "name": "Hoa Hồng Dâu Tằm",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000594",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-011",
+      "name": "Hoa Hồng Lục Bảo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000780",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-012",
+      "name": "Hoa Hồng Quả Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000744",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-013",
+      "name": "Hoàng Kim Kumquat",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-014",
+      "name": "Hà Hoa Mận",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-015",
+      "name": "Hòa Dâu Mận",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 15.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 30.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-016",
+      "name": "Hương Chi Côn Minh",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 100.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-017",
+      "name": "Hương Chi Côn Minh (không trà)",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 100.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-018",
+      "name": "Hồng Bì Cam Quế",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-019",
+      "name": "Hồng Bì Nhiệt Đới",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000643",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-020",
+      "name": "Hồng Bì Si Mơ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000742",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Xí muội",
+          "quantity": 2.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-021",
+      "name": "Hồng Lựu Vương Vấn",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000744",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-022",
+      "name": "Hồng Nho Thanh Lương",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000785",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nho Xanh",
+          "quantity": 2.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-023",
+      "name": "Kim Ngọc Kỳ Duyên",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-024",
+      "name": "Kumquat Đá xay",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000703",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-025",
+      "name": "Long Nhãn Tuyết Sơn",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007382",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 60.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-026",
+      "name": "Long Nhãn Tuyết Sơn V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007382",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-027",
+      "name": "Long Tỉnh Lê",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000592",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007416",
+          "quantity": 130.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-028",
+      "name": "Long Tỉnh Quýt",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007416",
+          "quantity": 130.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-029",
+      "name": "Lê Dứa Hương Sắc",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000592",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-030",
+      "name": "Lệ Chi Hồng Thanh",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-031",
+      "name": "Lệ Chi Mộc Tê",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-032",
+      "name": "Lục Ngọc Thiên Hương",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000740",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000643",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-033",
+      "name": "Lựu Đỏ Mận Thơm",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-034",
+      "name": "Matcha Dâu Tây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007346",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 180.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-035",
+      "name": "Matcha Latte Lermao",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007346",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007382",
+          "quantity": 20.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-036",
+      "name": "Matcha Latte Xoài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000780",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-037",
+      "name": "Matcha Mochi Nóng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007346",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007382",
+          "quantity": 20.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-038",
+      "name": "Mờ e me",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000702",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 30.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000501",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-039",
+      "name": "Nho Nhỏ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000785",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nho Xanh",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-040",
+      "name": "Nho Nhỏ V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000785",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007316",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Thạch nho xanh",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-041",
+      "name": "Nho Đào Cam Vàng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007316",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-042",
+      "name": "Nhài Chanh Đón Hạ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000703",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-043",
+      "name": "Nhài Thanh Vũ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000785",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-044",
+      "name": "Nhãn Dừa Nhiệt Đới",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 20.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-045",
+      "name": "Nhãn Hồng Nhan",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-046",
+      "name": "Nước Dừa Nhãn Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nhãn Tươi",
+          "quantity": 3.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước Dừa",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Thạch quế hoa",
+          "quantity": 40.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-047",
+      "name": "Quýt Ẩn Nhài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 130.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-048",
+      "name": "Quýt Ẩn Nhài V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-049",
+      "name": "Shan Dứa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-050",
+      "name": "Shan Tuyết Mơ Màng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000742",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000741",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-051",
+      "name": "Shan Tuyết Mơ Mận",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000742",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-052",
+      "name": "Sữa Chua Việt Quất",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000346",
+          "quantity": 90.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000704",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 60.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 40.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-053",
+      "name": "Thanh Mai Bạch Nguyệt Quang",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000591",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Yakult",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-054",
+      "name": "Thanh Môn Phỉ Thuý",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000780",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000736",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 20.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-055",
+      "name": "Thác Nước Táo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Soda",
+          "quantity": 220.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 80.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-056",
+      "name": "Thạch Quế Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000368",
+          "quantity": 100.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 100.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 600.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-057",
+      "name": "Thất Lý Hương",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Sầu Riêng Tươi",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 70.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-058",
+      "name": "Tinh Hoa Dạ Ngọc",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cà chua bi",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-059",
+      "name": "Trà Chanh Dây Dứa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 200.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-060",
+      "name": "Trà Chanh Dây Xoài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 180.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Xoài Tươi",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 35.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-061",
+      "name": "Trà Chanh Kumquat",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000703",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-062",
+      "name": "Trà Chanh Leo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-063",
+      "name": "Trà Chanh Leo 7 Up",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "7 up",
+          "quantity": 200.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước cốt tắc",
+          "quantity": 1.0,
+          "unit": "quả"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-064",
+      "name": "Trà Chanh Lá Dứa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000500",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Sả Tươi",
+          "quantity": 1.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-065",
+      "name": "Trà Chanh Việt Quất",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000704",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-066",
+      "name": "Trà Chanh Việt Quất V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000704",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-067",
+      "name": "Trà Chanh Đại Hồng Bào",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007355",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-068",
+      "name": "Trà Cúc Quýt",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Mật ong",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 200.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-069",
+      "name": "Trà Dâu Tây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-070",
+      "name": "Trà Dứa Chanh Dây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-071",
+      "name": "Trà Hoa Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-072",
+      "name": "Trà Hoa Hồng Nóng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 45.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 300.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-073",
+      "name": "Trà Hoa Quả Nhiệt Đới",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Dưa hấu",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000643",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 130.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-074",
+      "name": "Trà Lê Hoa Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000592",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-075",
+      "name": "Trà Lê Quế Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000592",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-076",
+      "name": "Trà Lựu",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-077",
+      "name": "Trà Muội Thơm",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-078",
+      "name": "Trà Mơ Má Đào",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000742",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-079",
+      "name": "Trà Mận",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-080",
+      "name": "Trà Mận Hồng Bì",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 110.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-081",
+      "name": "Trà Mận Đào Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000345",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 110.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-082",
+      "name": "Trà Nho Ruby",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000785",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-083",
+      "name": "Trà Nho Vải",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nho Đen",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-084",
+      "name": "Trà Nhãn Chanh Leo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-085",
+      "name": "Trà Oolong Shan tuyết Dứa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-086",
+      "name": "Trà Quýt Hoa Mộc",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000703",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-087",
+      "name": "Trà Quýt Quế Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 130.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-088",
+      "name": "Trà Quýt Vàng Đào Nhài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 45.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 170.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-089",
+      "name": "Trà Quýt Yuzu",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000741",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-090",
+      "name": "Trà Quả Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000744",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-091",
+      "name": "Trà Quất Hồng Bì",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-092",
+      "name": "Trà Quế Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-093",
+      "name": "Trà Sen Kem lá Dứa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "FOAM",
+          "code": "KF-LARK-002",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000510",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 150.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-094",
+      "name": "Trà Sen Kem lá Dứa V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "FOAM",
+          "code": "KF-LARK-002",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000367",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000510",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-095",
+      "name": "Trà Shan Hồng Bì",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-096",
+      "name": "Trà Việt Quất",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000722",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-097",
+      "name": "Trà Vải Hoa Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 45.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Vải lon dầm",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-098",
+      "name": "Trà Vải Hoa Hồng 2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-099",
+      "name": "Trà Vải Quế Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000593",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000514",
+          "quantity": 130.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-100",
+      "name": "Trà Vải Thanh Mai",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000591",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007492",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-101",
+      "name": "Trà Xoài Chanh Leo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-102",
+      "name": "Trà Xoài Dừa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 40.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-103",
+      "name": "Trà Xoài Nhiệt Đới",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 2.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Dứa Tươi",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-104",
+      "name": "Trà Xoài Quýt",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh nước hoa",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000595",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-105",
+      "name": "Trà vải",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 120.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-106",
+      "name": "Trà Đào Cam Sả",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cốt sả",
+          "quantity": 5.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-107",
+      "name": "Trà Đào Cam Sả Nóng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cốt sả",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-108",
+      "name": "Trà Đào Chanh Sả",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cốt chanh xanh",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cốt sả",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-109",
+      "name": "Trà Đào Chanh Sả Nóng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh Không Hạt",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Cốt sả",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-110",
+      "name": "Trà Đào Nho",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cam vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007316",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-111",
+      "name": "Trà Đào Xí Muội",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Xí muội",
+          "quantity": 2.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-112",
+      "name": "Trà Ổi",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-113",
+      "name": "Trà Ổi Dâu",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 4.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 130.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-114",
+      "name": "Trà Ổi Dâu Tây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 4.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 130.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 45.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-115",
+      "name": "Trà Ổi Hoa Hồng",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000597",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000424",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-116",
+      "name": "Tuý Lựu Đào Hoa",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 3.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-117",
+      "name": "Tuý Lựu Đào Hoa V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000553",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000489",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-118",
+      "name": "Tằm Mai Mei Mei",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000594",
+          "quantity": 25.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000591",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 130.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-119",
+      "name": "Việt Quất Yakult",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000704",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Yakult",
+          "quantity": 65.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-120",
+      "name": "Vải Chanh Leo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000617",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-121",
+      "name": "Vải Đong Hương Táo",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-122",
+      "name": "Yakult Sữa Ổi",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh thơm",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 250.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Yakult",
+          "quantity": 20.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-123",
+      "name": "Yuzu Chanh Quất",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000741",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000703",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-124",
+      "name": "Yuzu Shan",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000741",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước cốt tắc",
+          "quantity": 2.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-125",
+      "name": "Yuzu Shan V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000741",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000673",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-126",
+      "name": "Áp Pồ",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 200.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Táo Tươi",
+          "quantity": 30.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-127",
+      "name": "Ô Long Lựu Tứ Quý",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "LDD",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000185",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-128",
+      "name": "Đào Vàng Hoa Nhài",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007339",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 130.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-129",
+      "name": "Đào Vàng Đá Xay",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007405",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-130",
+      "name": "Ổi Hồng Dâu Tây",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-131",
+      "name": "Ổi Hồng Xí Muội",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Chanh vàng",
+          "quantity": 1.0,
+          "unit": "lát"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007237",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-132",
+      "name": "Lê Dứa Hương Sắc V2",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000602",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000592",
+          "quantity": 35.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "FTC-LARK-133",
+      "name": "Trà dâu Đà Lạt",
+      "category": "TRA-TRAI-CAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Cozy Dâu",
+          "quantity": 1.0,
+          "unit": "tép"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước cam",
+          "quantity": 30.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SRBDAU",
+          "quantity": 10.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "MBD",
+          "quantity": 10.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 200.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-001",
+      "name": "Dâu Tây Thanh Mai Đá Xay",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "BMB",
+          "quantity": 5.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000591",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-002",
+      "name": "Hồng Bì Kem Tuyết",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000344",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000349",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 15.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-003",
+      "name": "Nhãn Dừa Đá Xay",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nhãn Tươi",
+          "quantity": 3.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 100.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000181",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-004",
+      "name": "Nhãn Dừa Đá Xay V2",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "BMB",
+          "quantity": 3.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000670",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nhãn Tươi",
+          "quantity": 3.0,
+          "unit": "quả"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-005",
+      "name": "Sinh Dã Dừa",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000500",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Thạch lá dứa",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-006",
+      "name": "Sữa Chua Dâu Tằm",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000346",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000594",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Sữa đặc",
+          "quantity": 15.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 200.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-007",
+      "name": "Sữa Chua Việt Quất Đá Xay",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000346",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000704",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 120.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 25.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-008",
+      "name": "Sữa Dừa Khoai Môn",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000736",
+          "quantity": 50.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước nóng",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 80.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 70.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-009",
+      "name": "Xoài Sữa Dừa",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "PRODUCT",
+          "code": "SP000552",
+          "quantity": 30.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 20.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 5.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-010",
+      "name": "Dâu Tây Sữa Chua Hạt Dẻ",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "CUSTOM",
+          "name": "Dâu tươi",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "FOAM",
+          "code": "KF-LARK-001",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000346",
+          "quantity": 20.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP007357",
+          "quantity": 60.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Nước",
+          "quantity": 120.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 100.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đá Viên",
+          "quantity": 250.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "gram"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-011",
+      "name": "Sữa Dừa Dẻ Cười",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "FOAM",
+          "code": "KF-LARK-001",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "SP000640",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "PRODUCT",
+          "code": "STTTW01",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP000179",
+          "quantity": 50.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 10.0,
+          "unit": "ml"
+        }
+      ]
+    },
+    {
+      "code": "IB-LARK-012",
+      "name": "Long Tỉnh Dẻ Cười",
+      "category": "TRA-DA-XAY",
+      "ingredients": [
+        {
+          "kind": "FOAM",
+          "code": "KF-LARK-001",
+          "quantity": 40.0,
+          "unit": "gram"
+        },
+        {
+          "kind": "TEA",
+          "code": "SP007416",
+          "quantity": 150.0,
+          "unit": "ml"
+        },
+        {
+          "kind": "CUSTOM",
+          "name": "Đường",
+          "quantity": 20.0,
+          "unit": "gram"
+        }
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "name": "Trà Xoài Dừa Đá Xay",
+      "reason": "incomplete-recipe"
+    },
+    {
+      "name": "Blend Dâu Oreo",
+      "reason": "incomplete-recipe"
+    }
+  ]
+}
