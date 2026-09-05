@@ -29,20 +29,6 @@ const NEW_PERMISSIONS = [
     category: CATEGORY,
   },
   {
-    name: 'debt_tracking:note_accountant',
-    resource: 'debt_tracking',
-    action: 'note_accountant',
-    description: 'Ghi chú của kế toán công nợ',
-    category: CATEGORY,
-  },
-  {
-    name: 'debt_tracking:note_sale',
-    resource: 'debt_tracking',
-    action: 'note_sale',
-    description: 'Ghi chú của sale',
-    category: CATEGORY,
-  },
-  {
     name: 'debt_tracking:export',
     resource: 'debt_tracking',
     action: 'export',
@@ -85,8 +71,6 @@ const NEW_PERMISSIONS = [
 const ADMIN_PERMISSIONS = [
   'debt_tracking:view',
   'debt_tracking:update_policy',
-  'debt_tracking:note_accountant',
-  'debt_tracking:note_sale',
   'debt_tracking:export',
   'debt_tickets:view',
   'debt_tickets:create',

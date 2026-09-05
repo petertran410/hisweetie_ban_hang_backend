@@ -20,6 +20,7 @@ import {
   DEBT_STATUS,
   DEBT_STATUS_WEIGHT,
   DEBT_TICKET_OPEN_STATUSES,
+  DEBT_TICKET_TYPE,
   DEBT_TICKET_LINE_STATUS,
   INVOICE_STATUS_CANCELLED,
   MONEY_EPSILON,
@@ -205,6 +206,10 @@ export class DebtTrackingService {
       const appliedPaymentHistory = p?.paymentHistoryOverride
         ? p.paymentHistoryOverride
         : autoPaymentHistory.history;
+      const debtNote = c.debtNote as {
+        note?: string | null;
+        noteAt?: Date | null;
+      } | null;
 
       return {
         customerId: c.id,
@@ -265,14 +270,12 @@ export class DebtTrackingService {
         outstandingCount: aging.outstandingInvoices.length,
 
         // Ghi chú — 2 cột tách biệt
-         accountantNote:
-           ticketMap.get(c.id)?.note ?? c.debtNote?.accountantNote ?? null,
-        accountantNoteAt: c.debtNote?.accountantNoteAt ?? null,
-        saleNote: c.debtNote?.saleNote ?? null,
-        saleNoteAt: c.debtNote?.saleNoteAt ?? null,
+         note: debtNote?.note ?? null,
+         noteAt: debtNote?.noteAt ?? null,
 
         // Phiếu thu hồi nợ
-        openTicket: ticketMap.get(c.id) ?? null,
+        openTicket: ticketMap.get(c.id)?.openTicket ?? null,
+        latestStopTicket: ticketMap.get(c.id)?.latestStopTicket ?? null,
       };
     });
 
@@ -546,13 +549,12 @@ export class DebtTrackingService {
   }
 
   // ================================================================
-  // GHI CHÚ — hai cột độc lập, phân quyền riêng
+  // GHI CHÚ — một nguồn dùng chung
   // ================================================================
   async updateNote(
     customerId: number,
     dto: UpdateDebtNoteDto,
     userId: number,
-    allowed: { accountant: boolean; sale: boolean },
   ) {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
@@ -563,17 +565,10 @@ export class DebtTrackingService {
     const now = new Date();
     const data: Record<string, unknown> = {};
 
-    // Chỉ ghi cột mà người dùng có quyền VÀ thực sự gửi lên. Nhờ vậy kế toán
-    // và sale sửa đồng thời cũng không đè ghi chú của nhau.
-    if (allowed.accountant && dto.accountantNote !== undefined) {
-      data.accountantNote = dto.accountantNote || null;
-      data.accountantNoteBy = userId;
-      data.accountantNoteAt = dto.accountantNote ? now : null;
-    }
-    if (allowed.sale && dto.saleNote !== undefined) {
-      data.saleNote = dto.saleNote || null;
-      data.saleNoteBy = userId;
-      data.saleNoteAt = dto.saleNote ? now : null;
+    if (dto.note !== undefined) {
+      data.note = dto.note || null;
+      data.noteBy = userId;
+      data.noteAt = dto.note ? now : null;
     }
 
     if (Object.keys(data).length === 0) {
@@ -860,14 +855,13 @@ export class DebtTrackingService {
   }
 
   /**
-   * Dòng phiếu thu hồi nợ MỚI NHẤT đang mở của từng khách.
-   * Một khách có thể được tạo phiếu nhiều đợt, nên chỉ lấy phiếu mới nhất.
+   * Lấy phiếu STOP_DELIVERY mới nhất và phiếu STOP_DELIVERY đang mở của từng khách.
    */
   private async getOpenTicketLines(customerIds: number[]) {
     const lines = await this.prisma.debtTicketCustomer.findMany({
       where: {
         customerId: { in: customerIds },
-        ticket: { status: { in: DEBT_TICKET_OPEN_STATUSES } },
+        ticket: { ticketType: DEBT_TICKET_TYPE.STOP_DELIVERY },
       },
       include: {
         ticket: {
@@ -884,10 +878,9 @@ export class DebtTrackingService {
       orderBy: [{ isLatest: 'desc' }, { createdAt: 'desc' }],
     });
 
-    const map = new Map<number, OpenTicketInfo>();
+    const map = new Map<number, { openTicket: OpenTicketInfo | null; latestStopTicket: OpenTicketInfo | null }>();
     for (const l of lines) {
-      if (map.has(l.customerId)) continue;
-      map.set(l.customerId, {
+      const ticket = {
         ticketId: l.ticketId,
         ticketCode: l.ticket.code,
         ticketStatus: l.ticket.status,
@@ -905,7 +898,11 @@ export class DebtTrackingService {
         ticketType: l.ticket.ticketType,
         requiredPaymentAmount: Number(l.requiredPaymentAmount),
         note: l.note ?? null,
-      });
+      };
+      const current = map.get(l.customerId) ?? { openTicket: null, latestStopTicket: null };
+      if (!current.latestStopTicket) current.latestStopTicket = ticket;
+      if (!current.openTicket && DEBT_TICKET_OPEN_STATUSES.includes(l.ticket.status)) current.openTicket = ticket;
+      map.set(l.customerId, current);
     }
     return map;
   }

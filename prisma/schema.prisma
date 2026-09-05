@@ -3978,20 +3978,16 @@ model CustomerDebtPolicy {
 }
 
 /// Ghi chú vận hành trên dòng khách trong trang theo dõi công nợ.
-/// Hai cột TÁCH BIỆT: kế toán và sale ghi độc lập, không đè lên nhau,
-/// và được phân quyền riêng (debt_tracking:note_accountant / note_sale).
+/// Ghi chú dùng chung trên dòng khách trong trang theo dõi công nợ.
 model CustomerDebtNote {
-  id               Int       @id @default(autoincrement())
-  customerId       Int       @unique @map("customer_id")
-  accountantNote   String?   @map("accountant_note")
-  accountantNoteBy Int?      @map("accountant_note_by")
-  accountantNoteAt DateTime? @map("accountant_note_at")
-  saleNote         String?   @map("sale_note")
-  saleNoteBy       Int?      @map("sale_note_by")
-  saleNoteAt       DateTime? @map("sale_note_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
-  customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  id         Int       @id @default(autoincrement())
+  customerId Int       @unique @map("customer_id")
+  note       String?
+  noteBy     Int?      @map("note_by")
+  noteAt     DateTime? @map("note_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_debt_notes")
 }

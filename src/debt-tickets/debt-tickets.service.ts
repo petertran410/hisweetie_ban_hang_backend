@@ -121,6 +121,110 @@ export class DebtTicketsService {
     userId: number,
     requiredPaymentOverride?: number,
   ) {
+    if (dto.ticketType !== DEBT_TICKET_TYPE.STOP_DELIVERY) {
+      throw new BadRequestException(
+        'Phiếu thu hồi công nợ đã ngừng tạo mới. Hãy dùng POST /debt-tickets/stop-delivery.',
+      );
+    }
+    throw new BadRequestException(
+      'Phiếu ngừng đi hàng phải được tạo bằng POST /debt-tickets/stop-delivery.',
+    );
+  }
+
+  async createStopDelivery(customerId: number, userId: number) {
+    if (!Number.isInteger(customerId) || customerId < 1) {
+      throw new BadRequestException('customerId không hợp lệ');
+    }
+
+    const ticket = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
+
+      const customer = await tx.customer.findUnique({
+        where: { id: customerId },
+        select: {
+          id: true,
+          name: true,
+          totalDebt: true,
+          debtPolicy: { select: { accountantPicId: true, salePicId: true } },
+        },
+      });
+      if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
+
+      const active = await tx.debtTicketCustomer.findFirst({
+        where: {
+          customerId,
+          ticket: {
+            ticketType: DEBT_TICKET_TYPE.STOP_DELIVERY,
+            status: { in: DEBT_TICKET_OPEN_STATUSES },
+          },
+        },
+        select: { ticketId: true },
+      });
+      if (active) {
+        throw new BadRequestException(
+          'Khách hàng đã có phiếu ngừng đi hàng đang mở',
+        );
+      }
+
+      const assigneeId =
+        customer.debtPolicy?.accountantPicId ??
+        customer.debtPolicy?.salePicId ??
+        userId;
+      const assignee = await tx.user.findUnique({
+        where: { id: assigneeId },
+        select: { id: true },
+      });
+      if (!assignee)
+        throw new NotFoundException('Không tìm thấy nhân viên phụ trách');
+
+      // Serialize code generation with concurrent ticket creators; the unique
+      // constraint remains the final safety net if an older writer races us.
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(2147483647)`;
+      const code = await this.generateCode(tx);
+      const requiredPaymentAmount =
+        await this.debtTracking.getSuggestedMinimumPayment(customerId);
+
+      return tx.debtTicket.create({
+        data: {
+          code,
+          title: `Ngừng đi hàng - ${customer.name}`,
+          assigneeId,
+          createdById: userId,
+          status: DEBT_TICKET_STATUS.REQUESTED,
+          ticketType: DEBT_TICKET_TYPE.STOP_DELIVERY,
+          customers: {
+            create: {
+              customerId,
+              debtAtCreate: customer.totalDebt,
+              requiredPaymentAmount,
+              minimumPayment: requiredPaymentAmount,
+              status: DEBT_TICKET_LINE_STATUS.PENDING,
+              isLatest: true,
+            },
+          },
+        },
+        include: this.ticketInclude(),
+      });
+    });
+
+    await this.reconcileCustomerPayments(customerId);
+    const refreshedTicket = await this.prisma.debtTicket.findUnique({
+      where: { id: ticket.id },
+      include: this.ticketInclude(),
+    });
+    this.larkDebtNotification.notifyStopDeliveryCreatedAsync(customerId);
+    return this.serializeTicket(refreshedTicket ?? ticket);
+  }
+
+  /*
+   * Legacy collection creation is intentionally retired. Read/update/history
+   * paths remain available for existing tickets.
+   */
+  private async createLegacyDisabled(
+    dto: CreateDebtTicketDto,
+    userId: number,
+    requiredPaymentOverride?: number,
+  ) {
     const assignee = await this.prisma.user.findUnique({
       where: { id: dto.assigneeId },
       select: { id: true },
@@ -382,10 +486,10 @@ export class DebtTicketsService {
         ticketId,
         customerId: c.customerId,
         debtAtCreate: debtMap.get(c.customerId) ?? 0,
-      requiredPaymentAmount:
-        ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY
-          ? await this.debtTracking.getSuggestedMinimumPayment(c.customerId)
-          : 0,
+        requiredPaymentAmount:
+          ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY
+            ? await this.debtTracking.getSuggestedMinimumPayment(c.customerId)
+            : 0,
         minimumPayment:
           c.minimumPayment !== undefined
             ? c.minimumPayment
@@ -453,6 +557,9 @@ export class DebtTicketsService {
   // KẾT THÚC / HỦY
   // ================================================================
   async close(id: number, dto: CloseDebtTicketDto, userId: number) {
+    if (!dto.reason?.trim()) {
+      throw new BadRequestException('Lý do kết thúc không được để trống');
+    }
     const ticket = await this.prisma.debtTicket.findUnique({
       where: { id },
       include: { customers: true },
@@ -492,7 +599,9 @@ export class DebtTicketsService {
         },
       },
       include: {
-        ticket: { select: { id: true, code: true, createdAt: true, status: true } },
+        ticket: {
+          select: { id: true, code: true, createdAt: true, status: true },
+        },
       },
       orderBy: [{ isLatest: 'desc' }, { createdAt: 'desc' }],
     });
@@ -501,24 +610,12 @@ export class DebtTicketsService {
 
     let closed = 0;
     for (const line of openLines) {
-      const receipts = await db.cashFlow.findMany({
-        where: {
-          partnerType: 'C',
-          partnerId: customerId,
-          isReceipt: true,
-          status: { not: 2 },
-          transDate: { gte: line.ticket.createdAt },
-          NOT: [{ code: { startsWith: 'TTTUHD' } }],
-        },
-        select: { amount: true },
-      });
-      const received = receipts.reduce(
-        (sum: number, receipt: any) => sum + Number(receipt.amount),
-        0,
+      const received = await this.getQualifyingStopPayment(
+        db,
+        customerId,
+        line.ticket.createdAt,
       );
-      const required = Number(line.requiredPaymentAmount);
-
-      if (required > MONEY_EPSILON && received < required - MONEY_EPSILON) {
+      if (received <= MONEY_EPSILON) {
         continue;
       }
 
@@ -595,7 +692,8 @@ export class DebtTicketsService {
       const required = Number(
         line.confirmedAmount ?? line.minimumPayment ?? line.debtAtCreate,
       );
-      const paid = required > MONEY_EPSILON && received >= required - MONEY_EPSILON;
+      const paid =
+        required > MONEY_EPSILON && received >= required - MONEY_EPSILON;
 
       await this.prisma.debtTicketCustomer.update({
         where: { id: line.id },
@@ -674,6 +772,9 @@ export class DebtTicketsService {
   }
 
   async cancel(id: number, dto: CloseDebtTicketDto, userId: number) {
+    if (!dto.reason?.trim()) {
+      throw new BadRequestException('Lý do kết thúc không được để trống');
+    }
     const ticket = await this.prisma.debtTicket.findUnique({ where: { id } });
     if (!ticket) throw new NotFoundException('Không tìm thấy phiếu thu hồi nợ');
     if (!DEBT_TICKET_OPEN_STATUSES.includes(ticket.status)) {
@@ -723,24 +824,12 @@ export class DebtTicketsService {
     if (ticket.ticketType === DEBT_TICKET_TYPE.STOP_DELIVERY) {
       for (const line of ticket.customers as any[]) {
         if (line.status === DEBT_TICKET_LINE_STATUS.PAID) continue;
-        const receipts = await db.cashFlow.findMany({
-          where: {
-            partnerType: 'C',
-            partnerId: line.customerId,
-            isReceipt: true,
-            status: { not: 2 },
-            transDate: { gte: ticket.createdAt },
-            NOT: [{ code: { startsWith: 'TTTUHD' } }],
-          },
-          select: { amount: true },
-        });
-        const received = receipts.reduce(
-          (sum: number, receipt: any) => sum + Number(receipt.amount),
-          0,
+        const received = await this.getQualifyingStopPayment(
+          db,
+          line.customerId,
+          ticket.createdAt,
         );
-        const required = Number(line.requiredPaymentAmount);
-        if (received < required - MONEY_EPSILON) return false;
-
+        if (received <= MONEY_EPSILON) return false;
         await db.debtTicketCustomer.update({
           where: { id: line.id },
           data: {
@@ -808,6 +897,81 @@ export class DebtTicketsService {
   // ================================================================
   // HELPERS
   // ================================================================
+
+  private async getQualifyingStopPayment(
+    db: any,
+    customerId: number,
+    holdCreatedAt: Date,
+  ): Promise<number> {
+    const directReceipts = await db.cashFlow.findMany({
+      where: {
+        partnerType: 'C',
+        partnerId: customerId,
+        isReceipt: true,
+        status: { not: 2 },
+        createdAt: { gte: holdCreatedAt },
+        NOT: [{ code: { startsWith: 'TTTUHD' } }],
+      },
+      select: { id: true, amount: true },
+    });
+    const countedCashFlowIds = new Set(
+      directReceipts.map((receipt: any) => receipt.id),
+    );
+    let amount = directReceipts.reduce(
+      (sum: number, receipt: any) => sum + Number(receipt.amount),
+      0,
+    );
+
+    const allocations = await db.sepayAllocation.findMany({
+      where: { customerId, createdAt: { gte: holdCreatedAt } },
+      select: { cashFlowId: true, amount: true, sepayTransactionId: true },
+    });
+    const cashFlowIds = allocations
+      .map((allocation: any) => allocation.cashFlowId)
+      .filter(
+        (id: number | null): id is number =>
+          id != null && !countedCashFlowIds.has(id),
+      );
+    if (cashFlowIds.length) {
+      const cashFlows = await db.cashFlow.findMany({
+        where: { id: { in: cashFlowIds }, isReceipt: true, status: { not: 2 } },
+        select: { id: true, amount: true },
+      });
+      amount += cashFlows.reduce(
+        (sum: number, cashFlow: any) => sum + Number(cashFlow.amount),
+        0,
+      );
+      for (const cashFlow of cashFlows) countedCashFlowIds.add(cashFlow.id);
+    }
+
+    const unconfirmedTxIds = allocations
+      .filter((allocation: any) => allocation.cashFlowId == null)
+      .map((allocation: any) => allocation.sepayTransactionId);
+    for (const transactionId of [...new Set(unconfirmedTxIds)]) {
+      const [transaction, transactionAllocations] = await Promise.all([
+        db.sepayTransaction.findUnique({
+          where: { id: transactionId },
+          select: { amountIn: true, hiddenAt: true, assignedAt: true },
+        }),
+        db.sepayAllocation.findMany({
+          where: { sepayTransactionId: transactionId },
+          select: { customerId: true, cashFlowId: true },
+        }),
+      ]);
+      if (
+        transaction &&
+        !transaction.hiddenAt &&
+        new Date(transaction.assignedAt ?? 0) >= holdCreatedAt &&
+        transaction.amountIn > 0 &&
+        transactionAllocations.length === 1 &&
+        transactionAllocations[0].customerId === customerId &&
+        transactionAllocations[0].cashFlowId == null
+      ) {
+        amount += Number(transaction.amountIn);
+      }
+    }
+    return amount;
+  }
 
   private ticketInclude() {
     return {

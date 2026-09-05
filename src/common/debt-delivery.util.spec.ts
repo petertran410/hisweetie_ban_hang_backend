@@ -3,15 +3,12 @@ import {
   hasOpenStopDeliveryHold,
 } from './debt-delivery.util';
 
-describe('debt delivery provisional payment guard', () => {
-  it('keeps the hold when one customer payment is insufficient', async () => {
+describe('debt delivery lifecycle guard', () => {
+  it('keeps every active stop hold blocked regardless of provisional amount', async () => {
     const db = {
       debtTicketCustomer: {
         findFirst: jest.fn().mockResolvedValue({
           id: 10,
-          requiredPaymentAmount: 100,
-          provisionalPaymentAmount: 50,
-          provisionalSepayTxId: 21,
         }),
       },
     };
@@ -19,30 +16,16 @@ describe('debt delivery provisional payment guard', () => {
     await expect(hasOpenStopDeliveryHold(db, 3)).resolves.toBe(true);
   });
 
-  it('releases the hold for one unconfirmed customer when amount is enough', async () => {
+  it('does not release an active hold for a qualifying payment', async () => {
     const db = {
       debtTicketCustomer: {
         findFirst: jest.fn().mockResolvedValue({
           id: 10,
-          requiredPaymentAmount: 100,
-          provisionalPaymentAmount: 100,
-          provisionalSepayTxId: 21,
         }),
-      },
-      sepayTransaction: {
-        findUnique: jest.fn().mockResolvedValue({
-          amountIn: 100,
-          hiddenAt: null,
-        }),
-      },
-      sepayAllocation: {
-        findMany: jest.fn().mockResolvedValue([
-          { customerId: 3, cashFlowId: null },
-        ]),
       },
     };
 
-    await expect(hasOpenStopDeliveryHold(db, 3)).resolves.toBe(false);
+    await expect(hasOpenStopDeliveryHold(db, 3)).resolves.toBe(true);
   });
 
   it('keeps a multi-customer transaction blocked until accounting allocates it', async () => {

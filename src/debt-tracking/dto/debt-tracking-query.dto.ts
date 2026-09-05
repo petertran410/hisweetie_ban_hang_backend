@@ -188,13 +188,8 @@ export class UpdatePaymentHistoryOverrideDto {
 }
 
 export class UpdateDebtNoteDto {
-  /** Ghi chú của kế toán công nợ. Gửi null/chuỗi rỗng để xóa. */
+  /** Ghi chú dùng chung của khách. Gửi null/chuỗi rỗng để xóa. */
   @IsOptional()
   @IsString()
-  accountantNote?: string | null;
-
-  /** Ghi chú của sale. Gửi null/chuỗi rỗng để xóa. */
-  @IsOptional()
-  @IsString()
-  saleNote?: string | null;
+  note?: string | null;
 }

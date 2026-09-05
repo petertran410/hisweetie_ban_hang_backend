@@ -12,7 +12,6 @@ import {
   UploadedFile,
   Req,
   Res,
-  ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -29,18 +28,13 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
   RequirePermissions,
-  RequireAnyPermission,
 } from '../auth/decorators/permissions.decorator';
-import { AuthService } from '../auth/auth.service';
 import {
   DEBT_STATUS_LABELS,
   DEBT_FORM_LABELS,
 } from './debt-tracking.constants';
 import * as ExcelJS from 'exceljs';
 
-const PERM_NOTE_ACCOUNTANT = 'debt_tracking:note_accountant';
-const PERM_NOTE_SALE = 'debt_tracking:note_sale';
-const SUPER_ADMIN_ROLE = 'Super Admin';
 
 @ApiTags('DebtTracking')
 @ApiBearerAuth()
@@ -55,7 +49,6 @@ export class DebtTrackingController {
   constructor(
     private debtTrackingService: DebtTrackingService,
     private importService: DebtPolicyImportService,
-    private authService: AuthService,
   ) {}
 
   private assertExcel(file?: Express.Multer.File) {
@@ -119,12 +112,7 @@ export class DebtTrackingController {
       { header: 'Sale PIC', key: 'salePic', width: 18 },
       { header: 'Kế Toán Công Nợ PIC', key: 'accountantPic', width: 20 },
       { header: 'Phiếu Thu Hồi', key: 'ticket', width: 16 },
-      {
-        header: 'Ghi Chú Của Kế Toán Công Nợ',
-        key: 'accountantNote',
-        width: 32,
-      },
-      { header: 'Ghi Chú Của Sale', key: 'saleNote', width: 32 },
+       { header: 'Ghi Chú', key: 'note', width: 32 },
     ];
     ws.getRow(1).font = { bold: true };
 
@@ -177,8 +165,7 @@ export class DebtTrackingController {
         salePic: r.policy?.salePic?.name ?? '',
         accountantPic: r.policy?.accountantPic?.name ?? '',
         ticket: r.openTicket?.ticketCode ?? '',
-        accountantNote: r.accountantNote ?? '',
-        saleNote: r.saleNote ?? '',
+        note: r.note ?? '',
       });
     }
 
@@ -283,12 +270,7 @@ export class DebtTrackingController {
     );
   }
 
-  /**
-   * Ghi chú kế toán và ghi chú sale là HAI cột độc lập với hai quyền riêng.
-   * Guard chỉ kiểm tra "có ít nhất một trong hai quyền"; việc cột nào được
-   * phép ghi do service quyết định dựa trên `allowed` bên dưới. Nhờ vậy một
-   * người chỉ có quyền sale không thể ghi đè ghi chú của kế toán.
-   */
+  /** Cập nhật ghi chú dùng chung của khách hàng. */
   @Patch('payment-history/:customerId')
   @RequirePermissions('debt_tracking:update_policy')
   @ApiOperation({
@@ -308,28 +290,14 @@ export class DebtTrackingController {
   }
 
   @Patch('note/:customerId')
-  @RequireAnyPermission(PERM_NOTE_ACCOUNTANT, PERM_NOTE_SALE)
-  @ApiOperation({ summary: 'Cập nhật ghi chú kế toán / sale' })
-  async updateNote(
+  @RequirePermissions('debt_tracking:view')
+  @ApiOperation({ summary: 'Cập nhật ghi chú khách hàng' })
+  updateNote(
     @Param('customerId') customerId: string,
     @Body() dto: UpdateDebtNoteDto,
     @Req() req: any,
   ) {
-    const allowed = await this.resolveNotePermissions(req);
-
-    if (dto.accountantNote !== undefined && !allowed.accountant) {
-      throw new ForbiddenException('Bạn không có quyền ghi chú kế toán');
-    }
-    if (dto.saleNote !== undefined && !allowed.sale) {
-      throw new ForbiddenException('Bạn không có quyền ghi chú sale');
-    }
-
-    return this.debtTrackingService.updateNote(
-      +customerId,
-      dto,
-      req.user?.id,
-      allowed,
-    );
+    return this.debtTrackingService.updateNote(+customerId, dto, req.user?.id);
   }
 
   @Get(':customerId/detail')
@@ -351,30 +319,4 @@ export class DebtTrackingController {
     return { customerId: +customerId, suggestedMinimumPayment: amount };
   }
 
-  /**
-   * Resolve quyền ghi chú theo đúng cách PermissionsGuard làm: ưu tiên quyền
-   * theo chi nhánh (header X-Branch-Id) rồi mới tới quyền toàn cục.
-   */
-  private async resolveNotePermissions(req: any) {
-    if (req.user?.roles?.includes(SUPER_ADMIN_ROLE)) {
-      return { accountant: true, sale: true };
-    }
-
-    const raw =
-      req.headers['x-branch-id'] || req.body?.branchId || req.query?.branchId;
-    const branchId = raw ? parseInt(String(raw)) : undefined;
-
-    let permissions: string[] = req.user?.permissions || [];
-    if (branchId && !isNaN(branchId)) {
-      permissions = await this.authService.getPermissionsForBranch(
-        req.user.id,
-        branchId,
-      );
-    }
-
-    return {
-      accountant: permissions.includes(PERM_NOTE_ACCOUNTANT),
-      sale: permissions.includes(PERM_NOTE_SALE),
-    };
-  }
 }

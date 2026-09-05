@@ -1,6 +1,7 @@
 import {
   IsOptional,
   IsString,
+  MinLength,
   IsInt,
   IsIn,
   IsArray,
@@ -86,6 +87,13 @@ export class CreateDebtTicketDto {
   customers!: DebtTicketCustomerInputDto[];
 }
 
+export class StopDeliveryTicketDto {
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  customerId!: number;
+}
+
 export class UpdateDebtTicketDto {
   @IsOptional()
   @IsString()
@@ -142,6 +150,7 @@ export class CloseDebtTicketDto {
    * thu đủ; còn khách chưa đủ thì người kết thúc phải nêu lý do để truy vết.
    */
   @IsString()
+  @MinLength(1)
   @MaxLength(1000)
   reason!: string;
 
