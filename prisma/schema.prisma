@@ -28,6 +28,7 @@ model User {
   canViewOnlyOwnLoadingInvoices                             Boolean                           @default(false) @map("can_view_only_own_loading_invoices")
   supplierId                                                Int?                              @map("supplier_id")
   auditLogs                                                 AuditLog[]                        @relation("AuditLogUser")
+  recordedCustomerDebtCollectionAttempts                    CustomerDebtCollectionAttempt[]  @relation("DebtCollectionAttemptRecorder")
   cashFlowsCollected                                        CashFlow[]                        @relation("CashFlowCollector")
   cashFlowsCreated                                          CashFlow[]                        @relation("CashFlowCreator")
   createdConsignments                                       Consignment[]                     @relation("ConsignmentCreator")
@@ -470,6 +471,7 @@ model Customer {
   debtPolicy           CustomerDebtPolicy?
   debtNote             CustomerDebtNote?
   debtTicketLines      DebtTicketCustomer[]
+  debtCollectionAttempts CustomerDebtCollectionAttempt[]
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -3990,6 +3992,29 @@ model CustomerDebtNote {
   customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_debt_notes")
+}
+
+model CustomerDebtCollectionAttempt {
+  id           Int       @id @default(autoincrement())
+  customerId   Int       @map("customer_id")
+  role         String
+  attemptDate  DateTime  @map("attempt_date") @db.Date
+  recordedById Int       @map("recorded_by_id")
+  recordedAt   DateTime  @default(now()) @map("recorded_at")
+  supersedesId Int?      @map("supersedes_id")
+  isActive     Boolean   @default(true) @map("is_active")
+  actionType   String    @default("CREATE") @map("action_type")
+  reason       String?
+
+  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  recordedBy   User      @relation("DebtCollectionAttemptRecorder", fields: [recordedById], references: [id])
+  supersedes   CustomerDebtCollectionAttempt? @relation("DebtCollectionAttemptRevision", fields: [supersedesId], references: [id])
+  revisions    CustomerDebtCollectionAttempt[] @relation("DebtCollectionAttemptRevision")
+
+  @@index([customerId, role, attemptDate])
+  @@index([customerId, role, isActive])
+  @@index([recordedById, recordedAt])
+  @@map("customer_debt_collection_attempts")
 }
 
 /// Phiếu công nợ. Một ticket gồm nhiều khách, một người phụ trách.

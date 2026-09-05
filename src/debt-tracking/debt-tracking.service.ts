@@ -1,10 +1,18 @@
-import { Injectable, NotFoundException, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+  Logger,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   DebtTrackingQueryDto,
   UpsertDebtPolicyDto,
   UpdateDebtNoteDto,
+  CreateCollectionAttemptDto,
+  EditCollectionAttemptDto,
 } from './dto';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   computeCustomerAging,
   evaluatePaymentFrequency,
@@ -73,11 +81,25 @@ export interface OpenTicketInfo {
   note: string | null;
 }
 
+export interface CollectionAttemptView {
+  id: number;
+  role: 'ACCOUNTANT' | 'SALES';
+  attemptDate: string;
+  recordedAt: Date;
+  recordedBy: { id: number; name: string };
+  isActive: boolean;
+  actionType: string;
+  supersedesId: number | null;
+}
+
 @Injectable()
 export class DebtTrackingService {
   private readonly logger = new Logger(DebtTrackingService.name);
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private auditLogs: AuditLogsService,
+  ) {}
 
   // ================================================================
   // DANH SÁCH THEO DÕI CÔNG NỢ
@@ -169,6 +191,8 @@ export class DebtTrackingService {
 
     // ---- Người phụ trách ----
     const picMap = await this.getPicUsers(customers);
+    const collectionAttemptMap =
+      await this.getCollectionAttemptMap(customerIds);
 
     // ---- Tính toán ----
     const now = new Date();
@@ -269,9 +293,12 @@ export class DebtTrackingService {
         debtStatus: aging.debtStatus,
         outstandingCount: aging.outstandingInvoices.length,
 
-        // Ghi chú — 2 cột tách biệt
+        // Ghi chú dùng chung và lịch sử các lần đòi nợ
          note: debtNote?.note ?? null,
          noteAt: debtNote?.noteAt ?? null,
+         accountantCollectionAttempts:
+           collectionAttemptMap.get(c.id)?.ACCOUNTANT ?? [],
+         salesCollectionAttempts: collectionAttemptMap.get(c.id)?.SALES ?? [],
 
         // Phiếu thu hồi nợ
         openTicket: ticketMap.get(c.id)?.openTicket ?? null,
@@ -579,6 +606,281 @@ export class DebtTrackingService {
       where: { customerId },
       create: { customerId, ...data },
       update: data,
+    });
+  }
+
+  async getCollectionAttempts(customerId: number) {
+    const rows = await this.prisma.customerDebtCollectionAttempt.findMany({
+      where: { customerId },
+      orderBy: [{ role: 'asc' }, { attemptDate: 'asc' }, { recordedAt: 'asc' }],
+      include: { recordedBy: { select: { id: true, name: true } } },
+    });
+    return {
+      customerId,
+      accountant: rows
+        .filter((row) => row.role === 'ACCOUNTANT')
+        .map((row) => this.serializeCollectionAttempt(row)),
+      sales: rows
+        .filter((row) => row.role === 'SALES')
+        .map((row) => this.serializeCollectionAttempt(row)),
+    };
+  }
+
+  async createCollectionAttempt(
+    customerId: number,
+    dto: CreateCollectionAttemptDto,
+    userId: number,
+  ) {
+    const attemptDate = this.parseCollectionAttemptDate(dto.attemptDate);
+    const created = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
+      const customer = await tx.customer.findUnique({
+        where: { id: customerId },
+        select: { id: true, code: true, name: true, branchId: true },
+      });
+      if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
+
+      const latest = await tx.customerDebtCollectionAttempt.findFirst({
+        where: { customerId, role: dto.role, isActive: true },
+        orderBy: [{ attemptDate: 'desc' }, { recordedAt: 'desc' }],
+        select: { attemptDate: true },
+      });
+      if (latest && attemptDate <= latest.attemptDate) {
+        throw new BadRequestException(
+          `Ngày đòi nợ ${dto.role === 'ACCOUNTANT' ? 'kế toán' : 'sale'} phải sau ngày ${this.formatDateOnly(latest.attemptDate)}.`,
+        );
+      }
+
+      const created = await tx.customerDebtCollectionAttempt.create({
+        data: {
+          customerId,
+          role: dto.role,
+          attemptDate,
+          recordedById: userId,
+        },
+        include: { recordedBy: { select: { id: true, name: true } } },
+      });
+      return created;
+    });
+
+    await this.writeCollectionAttemptAudit('CREATE', created, null, userId);
+    return this.serializeCollectionAttempt(created);
+  }
+
+  async editCollectionAttempt(
+    customerId: number,
+    attemptId: number,
+    dto: EditCollectionAttemptDto,
+    userId: number,
+  ) {
+    if (!dto.reason?.trim()) {
+      throw new BadRequestException('Lý do chỉnh sửa không được để trống');
+    }
+    const attemptDate = this.parseCollectionAttemptDate(dto.attemptDate);
+    const { created, previousDate } = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
+      const current = await tx.customerDebtCollectionAttempt.findFirst({
+        where: { id: attemptId, customerId, isActive: true },
+        include: { recordedBy: { select: { id: true, name: true } } },
+      });
+      if (!current) throw new NotFoundException('Không tìm thấy lần đòi nợ');
+
+      const [previous, next] = await Promise.all([
+        tx.customerDebtCollectionAttempt.findFirst({
+          where: {
+            customerId,
+            role: current.role,
+            isActive: true,
+            id: { not: current.id },
+            attemptDate: { lt: current.attemptDate },
+          },
+          orderBy: { attemptDate: 'desc' },
+          select: { attemptDate: true },
+        }),
+        tx.customerDebtCollectionAttempt.findFirst({
+          where: {
+            customerId,
+            role: current.role,
+            isActive: true,
+            id: { not: current.id },
+            attemptDate: { gt: current.attemptDate },
+          },
+          orderBy: { attemptDate: 'asc' },
+          select: { attemptDate: true },
+        }),
+      ]);
+      if (previous && attemptDate <= previous.attemptDate) {
+        throw new BadRequestException(
+          `Ngày mới phải sau ngày ${this.formatDateOnly(previous.attemptDate)}.`,
+        );
+      }
+      if (next && attemptDate >= next.attemptDate) {
+        throw new BadRequestException(
+          `Ngày mới phải trước ngày ${this.formatDateOnly(next.attemptDate)}.`,
+        );
+      }
+
+      await tx.customerDebtCollectionAttempt.update({
+        where: { id: current.id },
+        data: { isActive: false },
+      });
+      const created = await tx.customerDebtCollectionAttempt.create({
+        data: {
+          customerId,
+          role: current.role,
+          attemptDate,
+          recordedById: userId,
+          supersedesId: current.id,
+          actionType: 'EDIT',
+          reason: dto.reason.trim(),
+        },
+        include: { recordedBy: { select: { id: true, name: true } } },
+      });
+      return {
+        created,
+        previousDate: current.attemptDate,
+      };
+    });
+
+    await this.writeCollectionAttemptAudit(
+      'EDIT',
+      created,
+      attemptId,
+      userId,
+      dto.reason,
+      previousDate,
+    );
+    return this.serializeCollectionAttempt(created);
+  }
+
+  private async getCollectionAttemptMap(customerIds: number[]) {
+    const rows = await this.prisma.customerDebtCollectionAttempt.findMany({
+      where: { customerId: { in: customerIds }, isActive: true },
+      orderBy: [{ customerId: 'asc' }, { role: 'asc' }, { attemptDate: 'asc' }],
+      include: { recordedBy: { select: { id: true, name: true } } },
+    });
+    const map = new Map<
+      number,
+      { ACCOUNTANT: CollectionAttemptView[]; SALES: CollectionAttemptView[] }
+    >();
+    for (const row of rows) {
+      const current =
+        map.get(row.customerId) ?? { ACCOUNTANT: [], SALES: [] };
+      if (row.role === 'ACCOUNTANT' || row.role === 'SALES') {
+        current[row.role].push(this.serializeCollectionAttempt(row));
+      }
+      map.set(row.customerId, current);
+    }
+    return map;
+  }
+
+  private parseCollectionAttemptDate(value: string): Date {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    const today = new Date();
+    const todayKey = this.formatDateOnly(
+      new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())),
+    );
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(month) ||
+      !Number.isInteger(day) ||
+      date.getUTCFullYear() !== year ||
+      date.getUTCMonth() !== month - 1 ||
+      date.getUTCDate() !== day
+    ) {
+      throw new BadRequestException('Ngày đòi nợ không hợp lệ.');
+    }
+    if (value > todayKey) {
+      throw new BadRequestException('Không thể chọn ngày đòi nợ trong tương lai.');
+    }
+    return date;
+  }
+
+  private formatDateOnly(value: Date): string {
+    return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  private serializeCollectionAttempt(row: any): CollectionAttemptView {
+    return {
+      id: row.id,
+      role: row.role,
+      attemptDate: this.formatDateOnly(row.attemptDate),
+      recordedAt: row.recordedAt,
+      recordedBy: row.recordedBy,
+      isActive: row.isActive,
+      actionType: row.actionType,
+      supersedesId: row.supersedesId ?? null,
+    };
+  }
+
+  private async writeCollectionAttemptAudit(
+    action: 'CREATE' | 'EDIT',
+    row: any,
+    supersedesId: number | null,
+    userId: number,
+    reason?: string,
+    previousDate?: Date,
+  ) {
+    const [user, customer] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, name: true, branchId: true },
+      }),
+      this.prisma.customer.findUnique({
+        where: { id: row.customerId },
+        select: { id: true, code: true, name: true },
+      }),
+    ]);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode:
+        action === 'CREATE'
+          ? 'CUSTOMER_DEBT_COLLECTION_ATTEMPT_CREATE'
+          : 'CUSTOMER_DEBT_COLLECTION_ATTEMPT_EDIT',
+      entityType: 'customer_debt_collection_attempts',
+      entityId: String(row.id),
+      entityCode: customer?.code ?? undefined,
+      category: 'customer_debt',
+      severity: 'info',
+      snapshot: {
+        id: row.id,
+        customerId: row.customerId,
+        customerCode: customer?.code,
+        customerName: customer?.name,
+        role: row.role,
+        attemptDate: this.formatDateOnly(row.attemptDate),
+        supersedesId,
+      },
+      changes: supersedesId
+        ? [
+            {
+              field: 'attemptDate',
+              label: 'Ngày đòi nợ',
+              from: previousDate
+                ? this.formatDateOnly(previousDate)
+                : null,
+              to: this.formatDateOnly(row.attemptDate),
+            },
+            ...(reason
+              ? [{ field: 'reason', label: 'Lý do chỉnh sửa', to: reason }]
+              : []),
+          ]
+        : undefined,
+      message:
+        action === 'CREATE'
+          ? `Thêm lần đòi nợ cho khách ${customer?.name ?? row.customerId}`
+          : `Chỉnh sửa lần đòi nợ của khách ${customer?.name ?? row.customerId}${reason ? `: ${reason}` : ''}`,
+      messageTemplate: `CUSTOMER_DEBT_COLLECTION_ATTEMPT_${action}`,
+      userId,
+      userName: user?.name ?? `User#${userId}`,
+      branchId: user?.branchId ?? undefined,
+      metadata: {
+        customerId: row.customerId,
+        role: row.role,
+        supersedesId,
+        reason,
+      },
     });
   }
 

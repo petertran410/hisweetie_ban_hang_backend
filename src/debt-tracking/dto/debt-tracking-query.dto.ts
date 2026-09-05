@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   ValidateIf,
+  Matches,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import {
@@ -192,4 +193,27 @@ export class UpdateDebtNoteDto {
   @IsOptional()
   @IsString()
   note?: string | null;
+}
+
+export const COLLECTION_ATTEMPT_ROLES = ['ACCOUNTANT', 'SALES'] as const;
+export type CollectionAttemptRole = (typeof COLLECTION_ATTEMPT_ROLES)[number];
+
+export class CreateCollectionAttemptDto {
+  @IsString()
+  @IsIn(COLLECTION_ATTEMPT_ROLES)
+  role!: CollectionAttemptRole;
+
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  attemptDate!: string;
+}
+
+export class EditCollectionAttemptDto {
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  attemptDate!: string;
+
+  @IsString()
+  @MaxLength(1000)
+  reason!: string;
 }

@@ -24,6 +24,8 @@ import {
   UpsertDebtPolicyDto,
   UpdateDebtNoteDto,
   UpdatePaymentHistoryOverrideDto,
+  CreateCollectionAttemptDto,
+  EditCollectionAttemptDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
@@ -106,9 +108,11 @@ export class DebtTrackingController {
       { header: 'Quá Hạn Theo Hóa Đơn', key: 'overdue', width: 22 },
       { header: 'Số Ngày Quá Hạn', key: 'daysOverdue', width: 15 },
       { header: 'Hạn Gần Nhất', key: 'dueDate', width: 14 },
-      { header: 'Ngày Thanh Toán Gần Nhất', key: 'lastPayDate', width: 20 },
-      { header: 'Số Tiền TT Gần Nhất', key: 'lastPayAmount', width: 18 },
-      { header: 'Trạng Thái Nợ', key: 'debtStatus', width: 14 },
+       { header: 'Ngày Thanh Toán Gần Nhất', key: 'lastPayDate', width: 20 },
+       { header: 'Số Tiền TT Gần Nhất', key: 'lastPayAmount', width: 18 },
+       { header: 'Ngày Đòi Nợ Kế Toán', key: 'accountantCollectionAttempts', width: 28 },
+       { header: 'Ngày Đòi Nợ Sale', key: 'salesCollectionAttempts', width: 28 },
+       { header: 'Trạng Thái Nợ', key: 'debtStatus', width: 14 },
       { header: 'Sale PIC', key: 'salePic', width: 18 },
       { header: 'Kế Toán Công Nợ PIC', key: 'accountantPic', width: 20 },
       { header: 'Phiếu Thu Hồi', key: 'ticket', width: 16 },
@@ -159,9 +163,15 @@ export class DebtTrackingController {
         overdue: r.overdueAmount || '',
         daysOverdue: r.maxDaysOverdue || '',
         dueDate: fmtDate(r.nearestDueDate),
-        lastPayDate: fmtDate(r.lastPayment?.transDate),
-        lastPayAmount: r.lastPayment?.amount ?? '',
-        debtStatus: DEBT_STATUS_LABELS[r.debtStatus] ?? r.debtStatus,
+         lastPayDate: fmtDate(r.lastPayment?.transDate),
+         lastPayAmount: r.lastPayment?.amount ?? '',
+         accountantCollectionAttempts: (r.accountantCollectionAttempts ?? [])
+           .map((a: any, index: number) => `Lần ${index + 1}: ${fmtDate(a.attemptDate)}`)
+           .join('\n'),
+         salesCollectionAttempts: (r.salesCollectionAttempts ?? [])
+           .map((a: any, index: number) => `Lần ${index + 1}: ${fmtDate(a.attemptDate)}`)
+           .join('\n'),
+         debtStatus: DEBT_STATUS_LABELS[r.debtStatus] ?? r.debtStatus,
         salePic: r.policy?.salePic?.name ?? '',
         accountantPic: r.policy?.accountantPic?.name ?? '',
         ticket: r.openTicket?.ticketCode ?? '',
@@ -298,6 +308,42 @@ export class DebtTrackingController {
     @Req() req: any,
   ) {
     return this.debtTrackingService.updateNote(+customerId, dto, req.user?.id);
+  }
+
+  @Get(':customerId/collection-attempts')
+  @RequirePermissions('debt_tracking:view')
+  getCollectionAttempts(@Param('customerId') customerId: string) {
+    return this.debtTrackingService.getCollectionAttempts(+customerId);
+  }
+
+  @Post(':customerId/collection-attempts')
+  @RequirePermissions('debt_tracking:view')
+  createCollectionAttempt(
+    @Param('customerId') customerId: string,
+    @Body() dto: CreateCollectionAttemptDto,
+    @Req() req: any,
+  ) {
+    return this.debtTrackingService.createCollectionAttempt(
+      +customerId,
+      dto,
+      req.user?.id,
+    );
+  }
+
+  @Patch(':customerId/collection-attempts/:attemptId')
+  @RequirePermissions('debt_tracking:view')
+  editCollectionAttempt(
+    @Param('customerId') customerId: string,
+    @Param('attemptId') attemptId: string,
+    @Body() dto: EditCollectionAttemptDto,
+    @Req() req: any,
+  ) {
+    return this.debtTrackingService.editCollectionAttempt(
+      +customerId,
+      +attemptId,
+      dto,
+      req.user?.id,
+    );
   }
 
   @Get(':customerId/detail')
