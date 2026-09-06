@@ -16,6 +16,7 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   computeCustomerAging,
+  evaluateFixedPaymentSchedule,
   evaluatePaymentFrequency,
   hasAnyDebtPolicy,
   type AgingInvoiceInput,
@@ -218,11 +219,16 @@ export class DebtTrackingService {
         now,
       );
 
-      const frequency = evaluatePaymentFrequency(
-        monthPaymentDates.get(c.id) ?? [],
-        policy.paymentFrequency,
-        now,
-      );
+      const paymentDates = monthPaymentDates.get(c.id) ?? [];
+      const frequency =
+        policy.paymentScheduleType && policy.paymentScheduleDays?.length
+          ? evaluateFixedPaymentSchedule(
+              paymentDates,
+              policy.paymentScheduleType,
+              policy.paymentScheduleDays,
+              now,
+            )
+          : evaluatePaymentFrequency(paymentDates, policy.paymentFrequency, now);
 
     const p = c.debtPolicy as
         | (RawDebtPolicy & {
@@ -467,7 +473,8 @@ export class DebtTrackingService {
       now,
     );
 
-    const [recentPayments, ticketLines] = await Promise.all([
+    const [{ monthPaymentDates }, recentPayments, ticketLines] = await Promise.all([
+      this.getPaymentInfo([customerId]),
       this.getRecentPayments(customerId, 20),
       this.prisma.debtTicketCustomer.findMany({
         where: { customerId },
@@ -489,11 +496,16 @@ export class DebtTrackingService {
       }),
     ]);
 
-    const frequency = evaluatePaymentFrequency(
-      recentPayments.map((p) => p.transDate),
-      policy.paymentFrequency,
-      now,
-    );
+    const paymentDates = monthPaymentDates.get(customerId) ?? [];
+    const frequency =
+      policy.paymentScheduleType && policy.paymentScheduleDays?.length
+        ? evaluateFixedPaymentSchedule(
+            paymentDates,
+            policy.paymentScheduleType,
+            policy.paymentScheduleDays,
+            now,
+          )
+        : evaluatePaymentFrequency(paymentDates, policy.paymentFrequency, now);
 
     return {
       customer: {
@@ -631,17 +643,25 @@ export class DebtTrackingService {
       isActive: dto.isActive ?? true,
     };
 
+    // Khi FE gửi debtRuleType thì đây là lưu theo contract mới: NONE luôn
+    // yêu cầu thanh toán đủ, các quy tắc công nợ khác thì không. Nếu request
+    // cũ không gửi debtRuleType, giữ nguyên cờ legacy để không đổi hành vi
+    // khách hàng cũ ngoài ý muốn.
+    const normalizedRequireFullPayment =
+      dto.debtRuleType !== undefined
+        ? debtRuleType === 'NONE'
+        : dto.requireFullPaymentForInvoice;
+
     const createData = {
       ...data,
-      requireFullPaymentForInvoice:
-        dto.requireFullPaymentForInvoice ?? false,
+      requireFullPaymentForInvoice: normalizedRequireFullPayment ?? false,
     };
     const updateData =
-      dto.requireFullPaymentForInvoice === undefined
+      normalizedRequireFullPayment === undefined
         ? data
         : {
             ...data,
-            requireFullPaymentForInvoice: dto.requireFullPaymentForInvoice,
+            requireFullPaymentForInvoice: normalizedRequireFullPayment,
           };
 
     return this.prisma.customerDebtPolicy.upsert({
@@ -1179,9 +1199,6 @@ export class DebtTrackingService {
    * hiển thị khoản không thực sự làm giảm công nợ.
    */
   private async getPaymentInfo(customerIds: number[]) {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-
     const payments = await this.prisma.cashFlow.findMany({
       where: {
         partnerType: 'C',
@@ -1220,11 +1237,11 @@ export class DebtTrackingService {
         });
       }
 
-      if (p.transDate >= monthStart) {
-        const arr = monthPaymentDates.get(p.partnerId) ?? [];
-        arr.push(p.transDate);
-        monthPaymentDates.set(p.partnerId, arr);
-      }
+      // Giữ toàn bộ ngày thu để lịch tuần có thể bắt đầu từ thứ 2 của
+      // tháng trước và lịch tháng vẫn tự lọc theo tháng hiện tại.
+      const arr = monthPaymentDates.get(p.partnerId) ?? [];
+      arr.push(p.transDate);
+      monthPaymentDates.set(p.partnerId, arr);
     }
 
     return { lastPaymentMap, monthPaymentDates };
