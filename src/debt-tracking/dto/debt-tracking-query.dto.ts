@@ -3,12 +3,14 @@ import {
   IsString,
   IsIn,
   IsBoolean,
+  IsArray,
   IsInt,
   IsNumber,
   Min,
   Max,
   MaxLength,
   ValidateIf,
+  Matches,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import {
@@ -18,6 +20,10 @@ import {
 } from '../debt-tracking.constants';
 
 export class DebtTrackingQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['NONE', 'CREDIT_LIMIT', 'TERM_DAYS', 'MONTHLY_SCHEDULE', 'WEEKLY_SCHEDULE'])
+  debtRuleType?: string;
   /** Tìm theo mã hoặc tên khách hàng. */
   @IsOptional()
   @IsString()
@@ -120,6 +126,20 @@ export class DebtTrackingQueryDto {
  * bắt buộc có `creditLimit`. Tắt cả hai = khách không công nợ.
  */
 export class UpsertDebtPolicyDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['NONE', 'CREDIT_LIMIT', 'TERM_DAYS', 'MONTHLY_SCHEDULE', 'WEEKLY_SCHEDULE'])
+  debtRuleType?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['MONTHLY', 'WEEKLY'])
+  paymentScheduleType?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  paymentScheduleDays?: number[] | null;
   @IsBoolean()
   hasCreditLimit!: boolean;
 
@@ -188,13 +208,31 @@ export class UpdatePaymentHistoryOverrideDto {
 }
 
 export class UpdateDebtNoteDto {
-  /** Ghi chú của kế toán công nợ. Gửi null/chuỗi rỗng để xóa. */
+  /** Ghi chú dùng chung của khách. Gửi null/chuỗi rỗng để xóa. */
   @IsOptional()
   @IsString()
-  accountantNote?: string | null;
+  note?: string | null;
+}
 
-  /** Ghi chú của sale. Gửi null/chuỗi rỗng để xóa. */
-  @IsOptional()
+export const COLLECTION_ATTEMPT_ROLES = ['ACCOUNTANT', 'SALES'] as const;
+export type CollectionAttemptRole = (typeof COLLECTION_ATTEMPT_ROLES)[number];
+
+export class CreateCollectionAttemptDto {
   @IsString()
-  saleNote?: string | null;
+  @IsIn(COLLECTION_ATTEMPT_ROLES)
+  role!: CollectionAttemptRole;
+
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  attemptDate!: string;
+}
+
+export class EditCollectionAttemptDto {
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  attemptDate!: string;
+
+  @IsString()
+  @MaxLength(1000)
+  reason!: string;
 }

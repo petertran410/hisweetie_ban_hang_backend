@@ -12,7 +12,6 @@ import {
   UploadedFile,
   Req,
   Res,
-  ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -25,22 +24,19 @@ import {
   UpsertDebtPolicyDto,
   UpdateDebtNoteDto,
   UpdatePaymentHistoryOverrideDto,
+  CreateCollectionAttemptDto,
+  EditCollectionAttemptDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
   RequirePermissions,
-  RequireAnyPermission,
 } from '../auth/decorators/permissions.decorator';
-import { AuthService } from '../auth/auth.service';
 import {
   DEBT_STATUS_LABELS,
   DEBT_FORM_LABELS,
 } from './debt-tracking.constants';
 import * as ExcelJS from 'exceljs';
 
-const PERM_NOTE_ACCOUNTANT = 'debt_tracking:note_accountant';
-const PERM_NOTE_SALE = 'debt_tracking:note_sale';
-const SUPER_ADMIN_ROLE = 'Super Admin';
 
 @ApiTags('DebtTracking')
 @ApiBearerAuth()
@@ -55,7 +51,6 @@ export class DebtTrackingController {
   constructor(
     private debtTrackingService: DebtTrackingService,
     private importService: DebtPolicyImportService,
-    private authService: AuthService,
   ) {}
 
   private assertExcel(file?: Express.Multer.File) {
@@ -113,18 +108,15 @@ export class DebtTrackingController {
       { header: 'Quá Hạn Theo Hóa Đơn', key: 'overdue', width: 22 },
       { header: 'Số Ngày Quá Hạn', key: 'daysOverdue', width: 15 },
       { header: 'Hạn Gần Nhất', key: 'dueDate', width: 14 },
-      { header: 'Ngày Thanh Toán Gần Nhất', key: 'lastPayDate', width: 20 },
-      { header: 'Số Tiền TT Gần Nhất', key: 'lastPayAmount', width: 18 },
-      { header: 'Trạng Thái Nợ', key: 'debtStatus', width: 14 },
+       { header: 'Ngày Thanh Toán Gần Nhất', key: 'lastPayDate', width: 20 },
+       { header: 'Số Tiền TT Gần Nhất', key: 'lastPayAmount', width: 18 },
+       { header: 'Ngày Đòi Nợ Kế Toán', key: 'accountantCollectionAttempts', width: 28 },
+       { header: 'Ngày Đòi Nợ Sale', key: 'salesCollectionAttempts', width: 28 },
+       { header: 'Trạng Thái Nợ', key: 'debtStatus', width: 14 },
       { header: 'Sale PIC', key: 'salePic', width: 18 },
       { header: 'Kế Toán Công Nợ PIC', key: 'accountantPic', width: 20 },
       { header: 'Phiếu Thu Hồi', key: 'ticket', width: 16 },
-      {
-        header: 'Ghi Chú Của Kế Toán Công Nợ',
-        key: 'accountantNote',
-        width: 32,
-      },
-      { header: 'Ghi Chú Của Sale', key: 'saleNote', width: 32 },
+       { header: 'Ghi Chú', key: 'note', width: 32 },
     ];
     ws.getRow(1).font = { bold: true };
 
@@ -134,6 +126,16 @@ export class DebtTrackingController {
     // Mô tả loại công nợ theo hai chiều đang bật.
     const describePolicy = (p: any): string => {
       if (!p) return '';
+      if (p.debtRuleType === 'MONTHLY_SCHEDULE') {
+        return `Thanh toán cố định tháng (ngày ${(p.paymentScheduleDays ?? []).join(', ')})`;
+      }
+      if (p.debtRuleType === 'WEEKLY_SCHEDULE') {
+        const labels = ['', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+        return `Thanh toán cố định tuần (${(p.paymentScheduleDays ?? [])
+          .map((day: number) => labels[day] ?? day)
+          .join(', ')})`;
+      }
+      if (p.debtRuleType === 'NONE') return 'Không Công Nợ';
       const parts: string[] = [];
       if (p.hasCreditLimit) parts.push('Hạn Mức');
       if (p.hasTermDays && p.termDays != null) {
@@ -171,14 +173,19 @@ export class DebtTrackingController {
         overdue: r.overdueAmount || '',
         daysOverdue: r.maxDaysOverdue || '',
         dueDate: fmtDate(r.nearestDueDate),
-        lastPayDate: fmtDate(r.lastPayment?.transDate),
-        lastPayAmount: r.lastPayment?.amount ?? '',
-        debtStatus: DEBT_STATUS_LABELS[r.debtStatus] ?? r.debtStatus,
+         lastPayDate: fmtDate(r.lastPayment?.transDate),
+         lastPayAmount: r.lastPayment?.amount ?? '',
+         accountantCollectionAttempts: (r.accountantCollectionAttempts ?? [])
+           .map((a: any, index: number) => `Lần ${index + 1}: ${fmtDate(a.attemptDate)}`)
+           .join('\n'),
+         salesCollectionAttempts: (r.salesCollectionAttempts ?? [])
+           .map((a: any, index: number) => `Lần ${index + 1}: ${fmtDate(a.attemptDate)}`)
+           .join('\n'),
+         debtStatus: DEBT_STATUS_LABELS[r.debtStatus] ?? r.debtStatus,
         salePic: r.policy?.salePic?.name ?? '',
         accountantPic: r.policy?.accountantPic?.name ?? '',
         ticket: r.openTicket?.ticketCode ?? '',
-        accountantNote: r.accountantNote ?? '',
-        saleNote: r.saleNote ?? '',
+        note: r.note ?? '',
       });
     }
 
@@ -283,12 +290,7 @@ export class DebtTrackingController {
     );
   }
 
-  /**
-   * Ghi chú kế toán và ghi chú sale là HAI cột độc lập với hai quyền riêng.
-   * Guard chỉ kiểm tra "có ít nhất một trong hai quyền"; việc cột nào được
-   * phép ghi do service quyết định dựa trên `allowed` bên dưới. Nhờ vậy một
-   * người chỉ có quyền sale không thể ghi đè ghi chú của kế toán.
-   */
+  /** Cập nhật ghi chú dùng chung của khách hàng. */
   @Patch('payment-history/:customerId')
   @RequirePermissions('debt_tracking:update_policy')
   @ApiOperation({
@@ -308,27 +310,49 @@ export class DebtTrackingController {
   }
 
   @Patch('note/:customerId')
-  @RequireAnyPermission(PERM_NOTE_ACCOUNTANT, PERM_NOTE_SALE)
-  @ApiOperation({ summary: 'Cập nhật ghi chú kế toán / sale' })
-  async updateNote(
+  @RequirePermissions('debt_tracking:view')
+  @ApiOperation({ summary: 'Cập nhật ghi chú khách hàng' })
+  updateNote(
     @Param('customerId') customerId: string,
     @Body() dto: UpdateDebtNoteDto,
     @Req() req: any,
   ) {
-    const allowed = await this.resolveNotePermissions(req);
+    return this.debtTrackingService.updateNote(+customerId, dto, req.user?.id);
+  }
 
-    if (dto.accountantNote !== undefined && !allowed.accountant) {
-      throw new ForbiddenException('Bạn không có quyền ghi chú kế toán');
-    }
-    if (dto.saleNote !== undefined && !allowed.sale) {
-      throw new ForbiddenException('Bạn không có quyền ghi chú sale');
-    }
+  @Get(':customerId/collection-attempts')
+  @RequirePermissions('debt_tracking:view')
+  getCollectionAttempts(@Param('customerId') customerId: string) {
+    return this.debtTrackingService.getCollectionAttempts(+customerId);
+  }
 
-    return this.debtTrackingService.updateNote(
+  @Post(':customerId/collection-attempts')
+  @RequirePermissions('debt_tracking:view')
+  createCollectionAttempt(
+    @Param('customerId') customerId: string,
+    @Body() dto: CreateCollectionAttemptDto,
+    @Req() req: any,
+  ) {
+    return this.debtTrackingService.createCollectionAttempt(
       +customerId,
       dto,
       req.user?.id,
-      allowed,
+    );
+  }
+
+  @Patch(':customerId/collection-attempts/:attemptId')
+  @RequirePermissions('debt_tracking:view')
+  editCollectionAttempt(
+    @Param('customerId') customerId: string,
+    @Param('attemptId') attemptId: string,
+    @Body() dto: EditCollectionAttemptDto,
+    @Req() req: any,
+  ) {
+    return this.debtTrackingService.editCollectionAttempt(
+      +customerId,
+      +attemptId,
+      dto,
+      req.user?.id,
     );
   }
 
@@ -351,30 +375,4 @@ export class DebtTrackingController {
     return { customerId: +customerId, suggestedMinimumPayment: amount };
   }
 
-  /**
-   * Resolve quyền ghi chú theo đúng cách PermissionsGuard làm: ưu tiên quyền
-   * theo chi nhánh (header X-Branch-Id) rồi mới tới quyền toàn cục.
-   */
-  private async resolveNotePermissions(req: any) {
-    if (req.user?.roles?.includes(SUPER_ADMIN_ROLE)) {
-      return { accountant: true, sale: true };
-    }
-
-    const raw =
-      req.headers['x-branch-id'] || req.body?.branchId || req.query?.branchId;
-    const branchId = raw ? parseInt(String(raw)) : undefined;
-
-    let permissions: string[] = req.user?.permissions || [];
-    if (branchId && !isNaN(branchId)) {
-      permissions = await this.authService.getPermissionsForBranch(
-        req.user.id,
-        branchId,
-      );
-    }
-
-    return {
-      accountant: permissions.includes(PERM_NOTE_ACCOUNTANT),
-      sale: permissions.includes(PERM_NOTE_SALE),
-    };
-  }
 }

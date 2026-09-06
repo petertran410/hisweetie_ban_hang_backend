@@ -30,43 +30,10 @@ export async function hasOpenStopDeliveryHold(
         status: { in: DEBT_TICKET_OPEN_STATUSES },
       },
     },
-    select: {
-      id: true,
-      requiredPaymentAmount: true,
-      provisionalPaymentAmount: true,
-      provisionalSepayTxId: true,
-    },
+    select: { id: true },
   });
 
-  if (!line) return false;
-
-  const provisionalAmount = Number(line.provisionalPaymentAmount ?? 0);
-  if (
-    !line.provisionalSepayTxId ||
-    provisionalAmount < Number(line.requiredPaymentAmount) - 1
-  ) {
-    return true;
-  }
-
-  const transaction = await db.sepayTransaction.findUnique({
-    where: { id: line.provisionalSepayTxId },
-    select: { amountIn: true, hiddenAt: true },
-  });
-  if (!transaction || transaction.hiddenAt) return true;
-
-  const allocations = await db.sepayAllocation.findMany({
-    where: { sepayTransactionId: line.provisionalSepayTxId },
-    select: { customerId: true, cashFlowId: true },
-  });
-  const isSingleUnconfirmedCustomer =
-    allocations.length === 1 &&
-    allocations[0].customerId === customerId &&
-    allocations[0].cashFlowId === null;
-
-  return !(
-    isSingleUnconfirmedCustomer &&
-    Number(transaction.amountIn) >= Number(line.requiredPaymentAmount) - 1
-  );
+  return Boolean(line);
 }
 
 export async function assertCanCreateInvoiceForCustomer(

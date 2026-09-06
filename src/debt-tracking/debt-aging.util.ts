@@ -53,12 +53,79 @@ export interface AgingInvoiceInput {
 }
 
 export interface DebtPolicyInput {
+  debtRuleType?: string | null;
   hasCreditLimit: boolean;
   creditLimit?: number | null;
   hasTermDays: boolean;
   termDays?: number | null;
   /** Cam kết số lần trả tiền mỗi tháng. Không sinh hạn thanh toán. */
   paymentFrequency?: number | null;
+  paymentScheduleType?: 'MONTHLY' | 'WEEKLY' | null;
+  paymentScheduleDays?: number[] | null;
+}
+
+export interface FixedScheduleInfo {
+  dueDate: Date | null;
+  overdueDate: Date | null;
+  daysUntilDue: number | null;
+  isOverdue: boolean;
+}
+
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function scheduleDateForMonth(year: number, month: number, day: number): Date {
+  return new Date(year, month, Math.min(day, lastDayOfMonth(year, month)));
+}
+
+/** Tìm kỳ thanh toán gần nhất (đã qua hoặc sắp tới) của lịch cố định. */
+export function resolveFixedSchedule(
+  policy: Pick<DebtPolicyInput, 'paymentScheduleType' | 'paymentScheduleDays'>,
+  now: Date,
+  graceDays: number = DEBT_GRACE_DAYS,
+): FixedScheduleInfo {
+  const days = [...new Set(policy.paymentScheduleDays ?? [])].sort((a, b) => a - b);
+  if (!policy.paymentScheduleType || days.length === 0) {
+    return { dueDate: null, overdueDate: null, daysUntilDue: null, isOverdue: false };
+  }
+
+  const today = startOfDay(now);
+  const candidates: Date[] = [];
+  if (policy.paymentScheduleType === 'MONTHLY') {
+    for (const offset of [-1, 0, 1]) {
+      const monthDate = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      for (const day of days) {
+        candidates.push(scheduleDateForMonth(monthDate.getFullYear(), monthDate.getMonth(), day));
+      }
+    }
+  } else {
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    for (let offset = -1; offset <= 1; offset++) {
+      const weekStart = new Date(monday);
+      weekStart.setDate(monday.getDate() + offset * 7);
+      for (const day of days) {
+        const date = new Date(weekStart);
+        date.setDate(weekStart.getDate() + day - 1);
+        candidates.push(date);
+      }
+    }
+  }
+
+  candidates.sort((a, b) => a.getTime() - b.getTime());
+  const nextDue = candidates.find((date) => date >= today) ?? candidates[candidates.length - 1];
+  const previousDue = [...candidates].reverse().find((date) => date <= today) ?? nextDue;
+  const previousOverdue = previousDue ? addDays(previousDue, graceDays) : null;
+  const hasPreviousSchedule = !!previousDue && previousDue <= today;
+  const isOverdue = !!previousOverdue && today > previousOverdue;
+  const dueDate = hasPreviousSchedule ? previousDue : nextDue;
+  return {
+    dueDate: dueDate ?? null,
+    overdueDate: previousOverdue,
+    daysUntilDue: dueDate ? diffDays(today, dueDate) : null,
+    isOverdue,
+  };
 }
 
 export interface OutstandingInvoice {
@@ -259,6 +326,12 @@ export function computeCustomerAging(
 
   const { allocated, unallocated } = allocateDebtFifo(invoices, totalDebt);
 
+  const fixedSchedule =
+    policy.debtRuleType === 'MONTHLY_SCHEDULE' ||
+    policy.debtRuleType === 'WEEKLY_SCHEDULE'
+      ? resolveFixedSchedule(policy, now, graceDays)
+      : null;
+
   const outstandingInvoices: OutstandingInvoice[] = allocated.map((inv) => {
     const dueDate = resolveInvoiceDueDate(inv, policy);
     const overdueDate = resolveInvoiceOverdueDate(inv, policy, graceDays);
@@ -300,7 +373,15 @@ export function computeCustomerAging(
   let notDueAmount = 0;
   let undeliveredAmount = 0;
 
-  if (!policy.hasTermDays && !policy.hasCreditLimit) {
+  if (fixedSchedule) {
+    const scheduledDebt = Math.max(0, totalDebt);
+    if (fixedSchedule.isOverdue) overdueAmount = scheduledDebt;
+    else if ((fixedSchedule.daysUntilDue ?? 0) <= 0) dueAmount = scheduledDebt;
+    else if ((fixedSchedule.daysUntilDue ?? Infinity) <= DUE_THRESHOLD_DAYS) {
+      dueSoonAmount = scheduledDebt;
+      notDueAmount = scheduledDebt;
+    } else notDueAmount = scheduledDebt;
+  } else if (!policy.hasTermDays && !policy.hasCreditLimit) {
     // Không công nợ — về nguyên tắc không hiện trong danh sách theo dõi.
     notDueAmount = totalDebt - unallocated;
   } else if (!policy.hasTermDays && usesLimit) {
@@ -344,7 +425,7 @@ export function computeCustomerAging(
     .map((i) => i.dueDate as Date)
     .sort((a, b) => a.getTime() - b.getTime());
 
-  const nearestDueDate = upcoming.length > 0 ? upcoming[0] : null;
+  const nearestDueDate = fixedSchedule?.dueDate ?? (upcoming.length > 0 ? upcoming[0] : null);
 
   const maxDaysOverdue = outstandingInvoices
     .filter((i) => i.isOverdue)
@@ -354,6 +435,13 @@ export function computeCustomerAging(
   const invoiceRequiredAmount = policy.hasTermDays
     ? overdueAmount + dueAmount
     : 0;
+  const scheduleRequiredAmount = fixedSchedule
+    ? overdueAmount + dueAmount
+    : 0;
+  const effectiveInvoiceRequiredAmount = Math.max(
+    invoiceRequiredAmount,
+    scheduleRequiredAmount,
+  );
 
   const debtStatus = resolveDebtStatus({
     overdueAmount,
@@ -367,14 +455,14 @@ export function computeCustomerAging(
 
   const requiredPaymentAmount = Math.max(
     limitOverdueAmount,
-    invoiceRequiredAmount,
+    effectiveInvoiceRequiredAmount,
   );
   const requiredPaymentSource =
     requiredPaymentAmount <= MONEY_EPSILON
       ? 'NONE'
-      : Math.abs(limitOverdueAmount - invoiceRequiredAmount) <= MONEY_EPSILON
+      : Math.abs(limitOverdueAmount - effectiveInvoiceRequiredAmount) <= MONEY_EPSILON
         ? 'TIE'
-        : limitOverdueAmount > invoiceRequiredAmount
+        : limitOverdueAmount > effectiveInvoiceRequiredAmount
           ? 'CREDIT_LIMIT'
           : 'INVOICE';
 
@@ -394,7 +482,7 @@ export function computeCustomerAging(
     limitReached,
     overLimitAmount,
     limitOverdueAmount,
-    invoiceRequiredAmount,
+    invoiceRequiredAmount: effectiveInvoiceRequiredAmount,
     requiredPaymentAmount,
     requiredPaymentSource,
     debtStatus,
@@ -493,5 +581,10 @@ export function evaluatePaymentFrequency(
 
 /** Khách có bật công nợ hay không (một trong hai chiều). */
 export function hasAnyDebtPolicy(policy: DebtPolicyInput): boolean {
-  return !!policy.hasTermDays || !!policy.hasCreditLimit;
+  return (
+    !!policy.hasTermDays ||
+    !!policy.hasCreditLimit ||
+    policy.debtRuleType === 'MONTHLY_SCHEDULE' ||
+    policy.debtRuleType === 'WEEKLY_SCHEDULE'
+  );
 }

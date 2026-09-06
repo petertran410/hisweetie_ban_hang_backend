@@ -19,6 +19,7 @@ import {
   CloseDebtTicketDto,
   AddTicketCustomersDto,
   DebtTicketQueryDto,
+  StopDeliveryTicketDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -42,6 +43,16 @@ export class DebtTicketsController {
   @ApiOperation({ summary: 'Tạo phiếu thu hồi nợ' })
   create(@Body() dto: CreateDebtTicketDto, @Req() req: any) {
     return this.debtTicketsService.create(dto, req.user?.id);
+  }
+
+  @Post('stop-delivery')
+  @RequirePermissions('debt_tickets:create')
+  @ApiOperation({ summary: 'Tạo nhanh phiếu ngừng đi hàng cho một khách' })
+  createStopDelivery(@Body() dto: StopDeliveryTicketDto, @Req() req: any) {
+    return this.debtTicketsService.createStopDelivery(
+      dto.customerId,
+      req.user?.id,
+    );
   }
 
   @Get(':id')
