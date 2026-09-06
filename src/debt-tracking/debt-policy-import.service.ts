@@ -1,7 +1,14 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
-import { DEBT_FORM, MIN_PAYMENT_RATIO_WARN } from './debt-tracking.constants';
+import {
+  DEBT_FORM,
+  DEBT_RULE_TYPE,
+  MIN_PAYMENT_RATIO_WARN,
+  PAYMENT_SCHEDULE_TYPE,
+  type DebtRuleType,
+  type PaymentScheduleType,
+} from './debt-tracking.constants';
 
 // ====================================================================
 // IMPORT THIẾT LẬP CÔNG NỢ TỪ EXCEL
@@ -27,9 +34,11 @@ const HEADER_ALIASES: Record<string, keyof ParsedPolicyRow> = {
   'hình thức công nợ': 'debtForm',
   'loại công nợ': 'debtType',
   'hạn mức công nợ': 'creditLimit',
+  'ngày thanh toán': 'paymentSchedule',
+  'lịch thanh toán': 'paymentSchedule',
 };
 
-const REQUIRED_HEADERS = ['mã khách hàng', 'loại công nợ'];
+const REQUIRED_COLUMNS: Array<keyof ParsedPolicyRow> = ['code', 'debtType'];
 
 /** Chuỗi trong Excel → enum hình thức công nợ. */
 const DEBT_FORM_MAP: Record<string, string> = {
@@ -45,11 +54,15 @@ export interface ParsedPolicyRow {
   debtForm: string;
   debtType: string;
   creditLimit: string;
+  paymentSchedule: string;
 
   // Kết quả sau khi phân tích
+  debtRuleType: DebtRuleType | null;
   hasCreditLimit: boolean;
   hasTermDays: boolean;
   termDays: number | null;
+  paymentScheduleType: PaymentScheduleType | null;
+  paymentScheduleDays: number[] | null;
   paymentFrequency: number | null;
   creditLimitValue: number | null;
   debtFormValue: string | null;
@@ -62,6 +75,21 @@ export interface PolicyImportPreviewRow extends ParsedPolicyRow {
   customerId: number | null;
   customerName: string | null;
   action: 'create' | 'update' | 'error';
+}
+
+interface ParsedDebtType {
+  debtRuleType: DebtRuleType | null;
+  hasCreditLimit: boolean;
+  hasTermDays: boolean;
+  termDays: number | null;
+  paymentScheduleType: PaymentScheduleType | null;
+  paymentFrequency: number | null;
+  recognized: boolean;
+}
+
+interface ParsedSchedule {
+  days: number[] | null;
+  error: string | null;
 }
 
 @Injectable()
@@ -96,50 +124,144 @@ export class DebtPolicyImportService {
   }
 
   /**
-   * Phân tích cột "Loại Công Nợ" thành HAI CHIỀU độc lập.
-   * Đây là multi-select trong file gốc, ví dụ "Hạn Mức, Công Nợ 7 Ngày".
+   * Phân tích cột "Loại Công Nợ". Từ contract mới, một dòng chỉ được có
+   * đúng một quy tắc; các giá trị multi-select cũ như "Hạn Mức, Công Nợ 7
+   * Ngày" phải bị từ chối.
    */
-  parseDebtType(raw: string): {
-    hasCreditLimit: boolean;
-    hasTermDays: boolean;
-    termDays: number | null;
-    paymentFrequency: number | null;
-    recognized: boolean;
-  } {
-    const s = (raw || '').toLowerCase().trim();
+  parseDebtType(raw: string): ParsedDebtType {
+    const s = this.normalizeText(raw);
 
     const empty = {
+      debtRuleType: null,
       hasCreditLimit: false,
       hasTermDays: false,
       termDays: null,
+      paymentScheduleType: null,
       paymentFrequency: null,
     };
 
     if (!s) return { ...empty, recognized: false };
 
-    // "Không Công Nợ" là giá trị hợp lệ: tắt cả hai chiều.
-    if (s.includes('không công nợ')) return { ...empty, recognized: true };
+    if (s === 'không công nợ') {
+      return {
+        ...empty,
+        debtRuleType: DEBT_RULE_TYPE.NONE,
+        recognized: true,
+      };
+    }
 
-    const hasCreditLimit = s.includes('hạn mức');
+    if (s === 'hạn mức') {
+      return {
+        ...empty,
+        debtRuleType: DEBT_RULE_TYPE.CREDIT_LIMIT,
+        hasCreditLimit: true,
+        recognized: true,
+      };
+    }
 
-    // "Công Nợ 55 Ngày" → 55
-    const mDays = s.match(/(\d+)\s*ngày/);
-    const termDays = mDays ? parseInt(mDays[1], 10) : null;
+    const mDays = s.match(/^công nợ\s+(\d+)\s+ngày$/);
+    if (mDays) {
+      const termDays = parseInt(mDays[1], 10);
+      return {
+        ...empty,
+        debtRuleType: DEBT_RULE_TYPE.TERM_DAYS,
+        hasTermDays: true,
+        termDays,
+        recognized: true,
+      };
+    }
 
-    // "1 Tháng 2 Lần" → 2 lần/tháng
-    const mFreq = s.match(/(\d+)\s*lần/);
-    const paymentFrequency = mFreq ? parseInt(mFreq[1], 10) : null;
+    if (s === 'thanh toán cố định tháng') {
+      return {
+        ...empty,
+        debtRuleType: DEBT_RULE_TYPE.MONTHLY_SCHEDULE,
+        paymentScheduleType: PAYMENT_SCHEDULE_TYPE.MONTHLY,
+        recognized: true,
+      };
+    }
 
-    const recognized =
-      hasCreditLimit || termDays !== null || paymentFrequency !== null;
+    if (s === 'thanh toán cố định tuần') {
+      return {
+        ...empty,
+        debtRuleType: DEBT_RULE_TYPE.WEEKLY_SCHEDULE,
+        paymentScheduleType: PAYMENT_SCHEDULE_TYPE.WEEKLY,
+        recognized: true,
+      };
+    }
 
-    return {
-      hasCreditLimit,
-      hasTermDays: termDays !== null,
-      termDays,
-      paymentFrequency,
-      recognized,
-    };
+    return { ...empty, recognized: false };
+  }
+
+  /** Phân tích và kiểm tra ngày thanh toán theo đúng miền của lịch. */
+  parsePaymentSchedule(
+    raw: string,
+    scheduleType: PaymentScheduleType,
+  ): ParsedSchedule {
+    const input = this.normalizeText(raw);
+    if (!input) {
+      return { days: null, error: 'Thiếu ngày thanh toán cho lịch cố định' };
+    }
+
+    const tokens = input
+      .split(/[,;|/\n]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const days: number[] = [];
+
+    for (const token of tokens) {
+      let day: number | null = null;
+
+      if (scheduleType === PAYMENT_SCHEDULE_TYPE.MONTHLY) {
+        if (/^\d+$/.test(token)) day = Number(token);
+      } else {
+        const weekday = token.replace(/\s+/g, ' ');
+        const match = weekday.match(/^thứ\s*([2-7])$/);
+        // ISO weekday numbering: Monday=1 ... Sunday=7.
+        if (match) day = Number(match[1]) - 1;
+        else if (weekday === 'chủ nhật') day = 7;
+      }
+
+      if (day === null) {
+        return {
+          days: null,
+          error: `Ngày thanh toán không hợp lệ: "${token}"`,
+        };
+      }
+
+      const max = scheduleType === PAYMENT_SCHEDULE_TYPE.MONTHLY ? 31 : 7;
+      if (day < 1 || day > max) {
+        return {
+          days: null,
+          error:
+            scheduleType === PAYMENT_SCHEDULE_TYPE.MONTHLY
+              ? `Ngày thanh toán tháng phải trong khoảng 1-31: ${day}`
+              : `Ngày thanh toán tuần phải trong khoảng 1-7: ${day}`,
+        };
+      }
+
+      if (days.includes(day)) {
+        return {
+          days: null,
+          error: `Ngày thanh toán bị lặp: ${day}`,
+        };
+      }
+
+      days.push(day);
+    }
+
+    const sorted = [...days].sort((a, b) => a - b);
+    if (days.some((day, index) => day !== sorted[index])) {
+      return {
+        days: null,
+        error: 'Ngày thanh toán phải được sắp xếp tăng dần và không trùng nhau',
+      };
+    }
+
+    return { days: sorted, error: null };
+  }
+
+  private normalizeText(raw: string): string {
+    return (raw || '').replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
   private mapEnum(
@@ -164,7 +286,7 @@ export class DebtPolicyImportService {
     const columns: Partial<Record<keyof ParsedPolicyRow, number>> = {};
     const seenHeaders = new Set<string>();
     sheet.getRow(1).eachCell((cell, index) => {
-      const header = this.value(cell.value).toLowerCase();
+      const header = this.normalizeText(this.value(cell.value));
       seenHeaders.add(header);
       const key = HEADER_ALIASES[header];
       // Giữ cột đầu tiên khớp — file gốc có cả "Mã Khách Hàng" và
@@ -172,10 +294,13 @@ export class DebtPolicyImportService {
       if (key && !columns[key]) columns[key] = index;
     });
 
-    const missing = REQUIRED_HEADERS.filter((h) => !seenHeaders.has(h));
+    const missing = REQUIRED_COLUMNS.filter((key) => !columns[key]);
     if (missing.length) {
+      const labels = missing.map((key) =>
+        key === 'code' ? 'mã khách hàng' : 'loại công nợ',
+      );
       throw new BadRequestException(
-        `Thiếu cột bắt buộc: ${missing.join(', ')}`,
+        `Thiếu cột bắt buộc: ${labels.join(', ')}`,
       );
     }
 
@@ -191,6 +316,7 @@ export class DebtPolicyImportService {
 
       const code = cellOf(excelRow, 'code');
       const debtType = cellOf(excelRow, 'debtType');
+      const paymentSchedule = cellOf(excelRow, 'paymentSchedule');
       // Dòng trống hoàn toàn → bỏ qua, không tính là lỗi.
       if (!code && !debtType) return;
 
@@ -216,9 +342,20 @@ export class DebtPolicyImportService {
       if (!parsed.recognized) {
         errors.push(
           `Không hiểu "Loại Công Nợ": "${debtType}". ` +
-            `Chấp nhận: "Không Công Nợ", "Hạn Mức", "Công Nợ N Ngày", ` +
-            `"1 Tháng N Lần" hoặc kết hợp.`,
+            `Chỉ chọn đúng một: "Không Công Nợ", "Hạn Mức", "Công Nợ N Ngày", ` +
+            `"Thanh Toán Cố Định Tháng" hoặc "Thanh Toán Cố Định Tuần". ` +
+            `Không được kết hợp nhiều quy tắc.`,
         );
+      }
+
+      let paymentScheduleDays: number[] | null = null;
+      if (parsed.paymentScheduleType) {
+        const schedule = this.parsePaymentSchedule(
+          paymentSchedule,
+          parsed.paymentScheduleType,
+        );
+        if (schedule.error) errors.push(schedule.error);
+        else paymentScheduleDays = schedule.days;
       }
 
       const creditLimitRaw = cellOf(excelRow, 'creditLimit');
@@ -230,7 +367,10 @@ export class DebtPolicyImportService {
         );
       }
 
-      if (parsed.termDays !== null && parsed.termDays > 3650) {
+      if (
+        parsed.termDays !== null &&
+        (parsed.termDays < 1 || parsed.termDays > 3650)
+      ) {
         errors.push(`Số ngày công nợ không hợp lệ: ${parsed.termDays}`);
       }
 
@@ -247,10 +387,14 @@ export class DebtPolicyImportService {
         debtForm: cellOf(excelRow, 'debtForm'),
         debtType,
         creditLimit: creditLimitRaw,
+        paymentSchedule,
 
+        debtRuleType: parsed.debtRuleType,
         hasCreditLimit: parsed.hasCreditLimit,
         hasTermDays: parsed.hasTermDays,
         termDays: parsed.termDays,
+        paymentScheduleType: parsed.paymentScheduleType,
+        paymentScheduleDays,
         paymentFrequency: parsed.paymentFrequency,
         creditLimitValue: parsed.hasCreditLimit ? creditLimitValue : null,
         debtFormValue: df.value,
@@ -372,6 +516,11 @@ export class DebtPolicyImportService {
           if (!row.customerId) continue;
 
           const data = {
+            // Legacy flags remain populated for the current readers. The main
+            // debt service is responsible for normalizing them to the rule.
+            debtRuleType: row.debtRuleType,
+            paymentScheduleType: row.paymentScheduleType,
+            paymentScheduleDays: row.paymentScheduleDays,
             hasCreditLimit: row.hasCreditLimit,
             creditLimit: row.hasCreditLimit ? row.creditLimitValue : null,
             hasTermDays: row.hasTermDays,
@@ -384,7 +533,12 @@ export class DebtPolicyImportService {
           if (row.action === 'update') updated++;
           else created++;
 
-          await tx.customerDebtPolicy.upsert({
+          // The deployed Prisma client may predate the new policy columns.
+          // Keep this import boundary compatible until the schema is updated.
+          const policyModel = tx.customerDebtPolicy as unknown as {
+            upsert(args: unknown): Promise<unknown>;
+          };
+          await policyModel.upsert({
             where: { customerId: row.customerId },
             create: {
               customerId: row.customerId,
@@ -423,6 +577,7 @@ export class DebtPolicyImportService {
       { header: 'Hình Thức Công Nợ', key: 'debtForm', width: 24 },
       { header: 'Loại Công Nợ', key: 'debtType', width: 26 },
       { header: 'Hạn Mức Công Nợ', key: 'creditLimit', width: 18 },
+      { header: 'Ngày Thanh Toán', key: 'paymentSchedule', width: 24 },
     ];
     ws.getRow(1).font = { bold: true };
     ws.getColumn('creditLimit').numFmt = '#,##0';
@@ -433,18 +588,28 @@ export class DebtPolicyImportService {
         debtForm: 'Công Nợ Tín Nhiệm',
         debtType: 'Công Nợ 30 Ngày',
         creditLimit: '',
+        paymentSchedule: '',
       },
       {
         code: 'KH000002',
         debtForm: 'Hợp Đồng Công Nợ',
-        debtType: 'Hạn Mức, Công Nợ 7 Ngày',
+        debtType: 'Hạn Mức',
         creditLimit: 500000000,
+        paymentSchedule: '',
       },
       {
         code: 'KH000003',
         debtForm: 'Thanh Toán Khi Nhận Hàng',
         debtType: 'Không Công Nợ',
         creditLimit: '',
+        paymentSchedule: '',
+      },
+      {
+        code: 'KH000004',
+        debtForm: 'Công Nợ Tín Nhiệm',
+        debtType: 'Thanh Toán Cố Định Tuần',
+        creditLimit: '',
+        paymentSchedule: 'Thứ 2, Thứ 5, Chủ nhật',
       },
     ]);
 
@@ -470,23 +635,28 @@ export class DebtPolicyImportService {
       {
         col: 'Loại Công Nợ',
         req: 'Có',
-        val: 'Không Công Nợ | Hạn Mức | Công Nợ N Ngày | 1 Tháng N Lần. Kết hợp bằng dấu phẩy, VD: "Hạn Mức, Công Nợ 7 Ngày"',
+        val: 'Chỉ một giá trị: Không Công Nợ | Hạn Mức | Công Nợ N Ngày | Thanh Toán Cố Định Tháng | Thanh Toán Cố Định Tuần. Không được kết hợp bằng dấu phẩy.',
       },
       {
         col: 'Hạn Mức Công Nợ',
         req: 'Không',
         val: 'Số tiền VND lớn hơn 0. Bắt buộc điền nếu Loại Công Nợ có "Hạn Mức".',
       },
+      {
+        col: 'Ngày Thanh Toán / Lịch Thanh Toán',
+        req: 'Không',
+        val: 'Chỉ bắt buộc với lịch cố định. Tháng: số ngày 1-31, VD: "15,30". Tuần: Thứ 2 đến Thứ 7 hoặc Chủ nhật (lưu theo ISO 1-7: Thứ 2=1, Chủ nhật=7), VD: "Thứ 2, Thứ 5, Chủ nhật". Giá trị phải tăng dần, không trùng nhau.',
+      },
       { col: '', req: '', val: '' },
       {
         col: 'GHI CHÚ',
         req: '',
-        val: 'Bật cả "Hạn Mức" và "Công Nợ N Ngày" thì hệ thống tính riêng phần vượt hạn mức và nợ hóa đơn đến hạn, sau đó lấy khoản cần thu lớn hơn.',
+        val: 'Mỗi dòng chỉ có một debtRuleType. Giá trị cũ dạng kết hợp như "Hạn Mức, Công Nợ 7 Ngày" sẽ bị từ chối để tránh hiểu sai chính sách.',
       },
       {
         col: '',
         req: '',
-        val: '"1 Tháng N Lần" chỉ dùng để đếm số lần đã trả trong tháng, KHÔNG sinh hạn thanh toán.',
+        val: 'Các cột lịch thanh toán là tùy chọn và nhận cả tiêu đề "Ngày Thanh Toán" lẫn "Lịch Thanh Toán".',
       },
       {
         col: '',

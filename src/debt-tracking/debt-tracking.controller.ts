@@ -126,6 +126,16 @@ export class DebtTrackingController {
     // Mô tả loại công nợ theo hai chiều đang bật.
     const describePolicy = (p: any): string => {
       if (!p) return '';
+      if (p.debtRuleType === 'MONTHLY_SCHEDULE') {
+        return `Thanh toán cố định tháng (ngày ${(p.paymentScheduleDays ?? []).join(', ')})`;
+      }
+      if (p.debtRuleType === 'WEEKLY_SCHEDULE') {
+        const labels = ['', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+        return `Thanh toán cố định tuần (${(p.paymentScheduleDays ?? [])
+          .map((day: number) => labels[day] ?? day)
+          .join(', ')})`;
+      }
+      if (p.debtRuleType === 'NONE') return 'Không Công Nợ';
       const parts: string[] = [];
       if (p.hasCreditLimit) parts.push('Hạn Mức');
       if (p.hasTermDays && p.termDays != null) {

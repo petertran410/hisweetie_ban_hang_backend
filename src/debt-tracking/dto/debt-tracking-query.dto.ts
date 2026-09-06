@@ -3,6 +3,7 @@ import {
   IsString,
   IsIn,
   IsBoolean,
+  IsArray,
   IsInt,
   IsNumber,
   Min,
@@ -19,6 +20,10 @@ import {
 } from '../debt-tracking.constants';
 
 export class DebtTrackingQueryDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['NONE', 'CREDIT_LIMIT', 'TERM_DAYS', 'MONTHLY_SCHEDULE', 'WEEKLY_SCHEDULE'])
+  debtRuleType?: string;
   /** Tìm theo mã hoặc tên khách hàng. */
   @IsOptional()
   @IsString()
@@ -121,6 +126,20 @@ export class DebtTrackingQueryDto {
  * bắt buộc có `creditLimit`. Tắt cả hai = khách không công nợ.
  */
 export class UpsertDebtPolicyDto {
+  @IsOptional()
+  @IsString()
+  @IsIn(['NONE', 'CREDIT_LIMIT', 'TERM_DAYS', 'MONTHLY_SCHEDULE', 'WEEKLY_SCHEDULE'])
+  debtRuleType?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['MONTHLY', 'WEEKLY'])
+  paymentScheduleType?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  paymentScheduleDays?: number[] | null;
   @IsBoolean()
   hasCreditLimit!: boolean;
 

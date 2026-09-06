@@ -3937,6 +3937,12 @@ model CustomerDebtPolicy {
   hasTermDays Boolean @default(false) @map("has_term_days")
   termDays    Int?    @map("term_days")
 
+  /// Chỉ một loại quy tắc công nợ: NONE, CREDIT_LIMIT, TERM_DAYS,
+  /// MONTHLY_SCHEDULE hoặc WEEKLY_SCHEDULE.
+  debtRuleType String @default("NONE") @map("debt_rule_type")
+  paymentScheduleType String? @map("payment_schedule_type")
+  paymentScheduleDays Json? @map("payment_schedule_days")
+
   /// Khách mới mặc định phải thanh toán đủ trước khi tạo hóa đơn trên POS.
   /// Khách cũ không có policy hoặc policy cũ giữ false sẽ không bị áp dụng.
   requireFullPaymentForInvoice Boolean @default(false) @map("require_full_payment_for_invoice")
@@ -3976,6 +3982,7 @@ model CustomerDebtPolicy {
   @@index([hasCreditLimit])
   @@index([hasTermDays])
   @@index([debtForm])
+  @@index([debtRuleType])
   @@map("customer_debt_policies")
 }
 

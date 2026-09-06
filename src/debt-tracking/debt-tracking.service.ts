@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import {
   DebtTrackingQueryDto,
   UpsertDebtPolicyDto,
@@ -43,6 +44,9 @@ const MAX_CUSTOMERS_SCAN = 5000;
 
 /** Bản ghi chính sách công nợ đọc từ DB. */
 export interface RawDebtPolicy {
+  debtRuleType?: string | null;
+  paymentScheduleType?: 'MONTHLY' | 'WEEKLY' | null;
+  paymentScheduleDays?: unknown;
   hasCreditLimit: boolean;
   creditLimit: unknown;
   hasTermDays: boolean;
@@ -117,6 +121,7 @@ export class DebtTrackingService {
     // Chỉ lấy khách CÓ chính sách công nợ (ít nhất một chiều bật) và ĐANG
     // có dư nợ. Khách tắt cả hai chiều = không công nợ ⇒ loại khỏi theo dõi.
     const policyWhere: Record<string, unknown> = { isActive: true };
+    if (query.debtRuleType) policyWhere.debtRuleType = query.debtRuleType;
 
     if (query.hasCreditLimit !== undefined) {
       policyWhere.hasCreditLimit = query.hasCreditLimit;
@@ -124,8 +129,16 @@ export class DebtTrackingService {
     if (query.hasTermDays !== undefined) {
       policyWhere.hasTermDays = query.hasTermDays;
     }
-    if (query.hasCreditLimit === undefined && query.hasTermDays === undefined) {
-      policyWhere.OR = [{ hasCreditLimit: true }, { hasTermDays: true }];
+    if (
+      query.debtRuleType === undefined &&
+      query.hasCreditLimit === undefined &&
+      query.hasTermDays === undefined
+    ) {
+      policyWhere.OR = [
+        { debtRuleType: { not: 'NONE' } },
+        { hasCreditLimit: true },
+        { hasTermDays: true },
+      ];
     }
     if (query.debtForm) policyWhere.debtForm = query.debtForm;
     if (query.salePicId) policyWhere.salePicId = query.salePicId;
@@ -211,7 +224,7 @@ export class DebtTrackingService {
         now,
       );
 
-      const p = c.debtPolicy as
+    const p = c.debtPolicy as
         | (RawDebtPolicy & {
             paymentHistoryOverride?: string | null;
             paymentHistoryOverrideNote?: string | null;
@@ -219,6 +232,12 @@ export class DebtTrackingService {
             paymentHistoryOverriddenAt?: Date | null;
           })
         | null;
+      const ruleType = p?.debtRuleType ??
+        (policy.hasCreditLimit
+          ? 'CREDIT_LIMIT'
+          : policy.hasTermDays
+            ? 'TERM_DAYS'
+            : 'NONE');
       const autoPaymentHistory =
         paymentHistoryMap.get(c.id) ??
         evaluateAutoPaymentHistory({
@@ -251,6 +270,7 @@ export class DebtTrackingService {
 
         // 3. Hạn nợ tính từ mốc báo đơn
         policy: {
+          debtRuleType: ruleType,
           hasCreditLimit: policy.hasCreditLimit,
           creditLimit: policy.creditLimit ?? null,
           hasTermDays: policy.hasTermDays,
@@ -272,6 +292,10 @@ export class DebtTrackingService {
           accountantPicId: p?.accountantPicId ?? null,
           requireFullPaymentForInvoice:
             p?.requireFullPaymentForInvoice ?? false,
+          paymentScheduleType: p?.paymentScheduleType ?? null,
+          paymentScheduleDays: Array.isArray(p?.paymentScheduleDays)
+            ? p.paymentScheduleDays
+            : null,
         },
 
         overdueAmount: aging.overdueAmount,
@@ -538,12 +562,69 @@ export class DebtTrackingService {
 
     // Chỉ giữ tham số thuộc chiều đang BẬT, tránh dữ liệu rác gây hiểu nhầm
     // khi tắt một chiều (ví dụ tắt hạn mức mà creditLimit còn sót lại).
+    if (
+      dto.debtRuleType === undefined &&
+      dto.hasCreditLimit &&
+      dto.hasTermDays
+    ) {
+      throw new BadRequestException(
+        'Mỗi khách hàng chỉ được chọn một loại quy tắc công nợ',
+      );
+    }
+
+    const debtRuleType =
+      dto.debtRuleType ??
+      (dto.hasCreditLimit
+        ? 'CREDIT_LIMIT'
+        : dto.hasTermDays
+          ? 'TERM_DAYS'
+          : 'NONE');
+    const isLimit = debtRuleType === 'CREDIT_LIMIT';
+    const isTerm = debtRuleType === 'TERM_DAYS';
+    const isSchedule =
+      debtRuleType === 'MONTHLY_SCHEDULE' ||
+      debtRuleType === 'WEEKLY_SCHEDULE';
+    const scheduleDays = isSchedule
+      ? [...new Set((dto.paymentScheduleDays ?? []).map(Number))].sort(
+          (a, b) => a - b,
+        )
+      : null;
+
+    if (isSchedule && (!scheduleDays || scheduleDays.length === 0)) {
+      throw new BadRequestException(
+        'Vui lòng chọn ít nhất một ngày/thứ thanh toán cố định',
+      );
+    }
+    if (debtRuleType === 'MONTHLY_SCHEDULE' && scheduleDays!.some((d) => d < 1 || d > 31)) {
+      throw new BadRequestException('Ngày thanh toán tháng phải từ 1 đến 31');
+    }
+    if (debtRuleType === 'WEEKLY_SCHEDULE' && scheduleDays!.some((d) => d < 1 || d > 7)) {
+      throw new BadRequestException('Thứ thanh toán tuần phải từ 1 đến 7');
+    }
+
     const data = {
-      hasCreditLimit: dto.hasCreditLimit,
-      creditLimit: dto.hasCreditLimit ? (dto.creditLimit ?? null) : null,
-      hasTermDays: dto.hasTermDays,
-      termDays: dto.hasTermDays ? (dto.termDays ?? null) : null,
-      paymentFrequency: dto.paymentFrequency ?? null,
+      debtRuleType,
+      hasCreditLimit: isLimit,
+      creditLimit:
+        isLimit ? (dto.creditLimit ?? null) : null,
+      hasTermDays: isTerm,
+      termDays:
+        isTerm ? (dto.termDays ?? null) : null,
+      paymentFrequency:
+        isSchedule
+          ? scheduleDays!.length
+          : dto.paymentFrequency ?? null,
+      paymentScheduleType:
+        dto.paymentScheduleType ??
+        (debtRuleType === 'MONTHLY_SCHEDULE'
+          ? 'MONTHLY'
+          : debtRuleType === 'WEEKLY_SCHEDULE'
+            ? 'WEEKLY'
+            : null),
+      paymentScheduleDays:
+        isSchedule
+          ? scheduleDays ?? []
+          : Prisma.JsonNull,
       debtForm: dto.debtForm ?? null,
       salePicId: dto.salePicId ?? null,
       accountantPicId: dto.accountantPicId ?? null,
@@ -890,15 +971,31 @@ export class DebtTrackingService {
 
   private toPolicyInput(policy: RawDebtPolicy | null): DebtPolicyInput {
     if (!policy) return { hasCreditLimit: false, hasTermDays: false };
+    const rule = policy.debtRuleType;
+    const hasCreditLimit = rule
+      ? rule === 'CREDIT_LIMIT'
+      : !!policy.hasCreditLimit;
+    const hasTermDays = rule ? rule === 'TERM_DAYS' : !!policy.hasTermDays;
     return {
-      hasCreditLimit: !!policy.hasCreditLimit,
+      debtRuleType: rule,
+      hasCreditLimit,
       creditLimit:
         policy.creditLimit !== null && policy.creditLimit !== undefined
           ? Number(policy.creditLimit)
           : null,
-      hasTermDays: !!policy.hasTermDays,
-      termDays: policy.termDays,
+      hasTermDays,
+      termDays: hasTermDays ? policy.termDays : null,
       paymentFrequency: policy.paymentFrequency,
+      paymentScheduleType:
+        rule === 'MONTHLY_SCHEDULE' || rule === 'WEEKLY_SCHEDULE'
+          ? policy.paymentScheduleType
+          : null,
+      paymentScheduleDays:
+        rule === 'MONTHLY_SCHEDULE' || rule === 'WEEKLY_SCHEDULE'
+          ? Array.isArray(policy.paymentScheduleDays)
+            ? policy.paymentScheduleDays.map(Number)
+            : null
+          : null,
     };
   }
 
