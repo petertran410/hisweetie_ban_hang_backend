@@ -534,25 +534,34 @@ export function resolveDebtStatus(input: {
   return DEBT_STATUS.NORMAL;
 }
 
-// ------------------------------------------- tần suất thanh toán / tháng
+// ------------------------------------------- tần suất thanh toán theo kỳ
 
 export interface PaymentFrequencyResult {
-  /** Số lần khách đã thanh toán trong tháng đang xét. */
+  /** Số lần khách đã thanh toán trong kỳ đang xét (tháng hoặc tuần). */
+  paymentsThisPeriod: number;
+  /** @deprecated Dùng paymentsThisPeriod; giữ để tương thích API cũ. */
   paymentsThisMonth: number;
-  /** Số lần cam kết mỗi tháng. */
+  /** Số lần cam kết trong kỳ. */
   required: number;
   /** Đã đạt cam kết chưa. */
   met: boolean;
   /** Còn thiếu bao nhiêu lần. */
   remaining: number;
+  /** Đơn vị kỳ của lịch cố định; bỏ trống với kiểu cũ theo tháng. */
+  periodType?: 'MONTH' | 'WEEK';
+  /** Số kỳ đã quá hạn ân hạn mà chưa ghi nhận thanh toán. */
+  overdueCount?: number;
+  /** Kỳ thanh toán kế tiếp trong tháng/tuần hiện tại. */
+  nextScheduledDate?: Date | null;
 }
 
 /**
- * Đánh giá cam kết TẦN SUẤT trả tiền (ví dụ "1 tháng 2 lần").
+ * Đánh giá cam kết tần suất kiểu cũ (ví dụ "1 tháng 2 lần").
  *
  * Cố ý KHÔNG sinh hạn thanh toán: thực tế khách không báo ngày cụ thể, có
  * thể chuyển hai lần liền nhau trong cùng tuần. Vì vậy chỉ đếm số lần đã
- * trả trong tháng để nhắc khi chưa đạt, không dùng để tính quá hạn.
+ * trả trong tháng để nhắc khi chưa đạt, không dùng để tính quá hạn. Lịch
+ * cố định tháng/tuần dùng evaluateFixedPaymentSchedule bên dưới.
  *
  * @param paymentDates Ngày các lần thanh toán (CashFlow thu) của khách.
  */
@@ -572,10 +581,118 @@ export function evaluatePaymentFrequency(
   }).length;
 
   return {
+    paymentsThisPeriod: count,
     paymentsThisMonth: count,
     required: paymentFrequency,
     met: count >= paymentFrequency,
     remaining: Math.max(0, paymentFrequency - count),
+  };
+}
+
+/**
+ * Đánh giá lịch thanh toán cố định theo từng kỳ, thay vì đếm mọi khoản thu
+ * trong tháng. Mỗi ngày/thứ đã cấu hình là một kỳ; một kỳ được ghi nhận khi
+ * có khoản thu trong khoảng [ngày đến hạn, ngày đến hạn + ân hạn].
+ */
+export function evaluateFixedPaymentSchedule(
+  paymentDates: Date[],
+  scheduleType: 'MONTHLY' | 'WEEKLY' | null | undefined,
+  scheduleDays: number[] | null | undefined,
+  now: Date = new Date(),
+  graceDays: number = DEBT_GRACE_DAYS,
+): PaymentFrequencyResult | null {
+  const days = [...new Set((scheduleDays ?? []).map(Number))]
+    .filter((d) => Number.isInteger(d))
+    .sort((a, b) => a - b);
+  if (!scheduleType || days.length === 0) return null;
+
+  const today = startOfDay(now);
+  const dates: Date[] = [];
+
+  if (scheduleType === 'MONTHLY') {
+    const year = today.getFullYear();
+    const month = today.getMonth();
+    for (const offset of [-1, 0]) {
+      for (const day of days) {
+        dates.push(scheduleDateForMonth(year, month + offset, day));
+      }
+    }
+  } else {
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    for (const offset of [-1, 0]) {
+      for (const day of days) {
+        const date = new Date(weekStart);
+        date.setDate(weekStart.getDate() + offset * 7 + day - 1);
+        dates.push(date);
+      }
+    }
+  }
+
+  const uniqueDates = [
+    ...new Map(dates.map((date) => [startOfDay(date).getTime(), startOfDay(date)])).values(),
+  ].sort((a, b) => a.getTime() - b.getTime());
+  const sortedPayments = paymentDates.map(startOfDay).sort((a, b) => a.getTime() - b.getTime());
+  const usedPayments = new Set<number>();
+  const currentMonth = `${today.getFullYear()}-${today.getMonth()}`;
+  const currentWeekStart = new Date(today);
+  currentWeekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  const elapsedDates = uniqueDates.filter((date) => {
+    if (date > today) return false;
+    const isCurrentPeriod =
+      scheduleType === 'MONTHLY'
+        ? `${date.getFullYear()}-${date.getMonth()}` === currentMonth
+        : diffDays(currentWeekStart, date) >= 0 &&
+          diffDays(currentWeekStart, date) < 7;
+    // Chỉ giữ kỳ trước nếu vẫn đang trong 5 ngày ân hạn, để không biến
+    // bộ đếm hiện tại thành báo cáo vô hạn các kỳ cũ.
+    return isCurrentPeriod || today <= addDays(date, graceDays);
+  });
+  let paidCount = 0;
+  let overdueCount = 0;
+
+  for (const dueDate of elapsedDates) {
+    const graceEnd = addDays(dueDate, graceDays);
+    const matchIndex = sortedPayments.findIndex(
+      (payment, index) =>
+        !usedPayments.has(index) &&
+        payment >= dueDate &&
+        payment <= graceEnd,
+    );
+    if (matchIndex >= 0) {
+      usedPayments.add(matchIndex);
+      paidCount++;
+    } else if (today > graceEnd) {
+      overdueCount++;
+    }
+  }
+
+  let nextScheduledDate = uniqueDates.find((date) => date >= today) ?? null;
+  if (!nextScheduledDate) {
+    if (scheduleType === 'MONTHLY') {
+      const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      nextScheduledDate = scheduleDateForMonth(
+        nextMonth.getFullYear(),
+        nextMonth.getMonth(),
+        days[0],
+      );
+    } else {
+      const nextWeek = new Date(today);
+      nextWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7) + 7);
+      nextWeek.setDate(nextWeek.getDate() + days[0] - 1);
+      nextScheduledDate = nextWeek;
+    }
+  }
+
+  return {
+    paymentsThisPeriod: paidCount,
+    paymentsThisMonth: paidCount,
+    required: elapsedDates.length,
+    met: paidCount >= elapsedDates.length,
+    remaining: Math.max(0, elapsedDates.length - paidCount),
+    periodType: scheduleType === 'WEEKLY' ? 'WEEK' : 'MONTH',
+    overdueCount,
+    nextScheduledDate,
   };
 }
 

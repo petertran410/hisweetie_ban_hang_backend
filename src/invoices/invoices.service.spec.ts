@@ -143,3 +143,63 @@ describe('InvoicesService delivery reporting', () => {
     expect(tx.packingSlipInvoice.findFirst).not.toHaveBeenCalled();
   });
 });
+
+describe('InvoicesService customer invoice debt guard', () => {
+  const createService = () =>
+    new InvoicesService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+  const policy = (requireFullPaymentForInvoice: boolean) => ({
+    debtForm: 'TRUST',
+    hasCreditLimit: false,
+    hasTermDays: false,
+    isActive: true,
+    requireFullPaymentForInvoice,
+  });
+
+  it('chặn thanh toán thiếu khi chính sách yêu cầu trả đủ', () => {
+    const service = createService() as any;
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(true),
+        paidAmount: 98,
+        grandTotal: 100,
+        mode: 'invoice',
+      }),
+    ).toThrow('Khách hàng không được phép phát sinh công nợ');
+  });
+
+  it('cho phép thanh toán thiếu khi cờ cũ đang tắt', () => {
+    const service = createService() as any;
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(false),
+        paidAmount: 0,
+        grandTotal: 100,
+        mode: 'invoice',
+      }),
+    ).not.toThrow();
+  });
+
+  it('cho phép đúng đủ tiền khi chính sách yêu cầu trả đủ', () => {
+    const service = createService() as any;
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(true),
+        paidAmount: 100,
+        grandTotal: 100,
+        mode: 'order',
+      }),
+    ).not.toThrow();
+  });
+});

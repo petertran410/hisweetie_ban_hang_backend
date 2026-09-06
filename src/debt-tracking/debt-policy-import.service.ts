@@ -527,6 +527,9 @@ export class DebtPolicyImportService {
             termDays: row.hasTermDays ? row.termDays : null,
             paymentFrequency: row.paymentFrequency,
             debtForm: row.debtFormValue,
+            // Import là một hình thức lưu policy theo contract mới: NONE
+            // cũng phải yêu cầu thanh toán đủ trước khi xuất hóa đơn.
+            requireFullPaymentForInvoice: row.debtRuleType === 'NONE',
             isActive: true,
           };
 

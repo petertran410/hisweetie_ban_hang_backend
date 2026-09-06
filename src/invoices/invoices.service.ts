@@ -60,9 +60,9 @@ import {
 
 const POS_PAYMENT_EPSILON = 1;
 const POS_PREPAID_ORDER_MESSAGE =
-  'Khách hàng thuộc hình thức Chuyển khoản ngay và loại Không công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng ghi nhận đủ tiền trên đơn hàng trước khi tạo hóa đơn.';
+  'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
-  'Khách hàng thuộc hình thức Chuyển khoản ngay và loại Không công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thu đủ tiền trước khi tạo hóa đơn.';
+  'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 
 @Injectable()
 export class InvoicesService {
@@ -1472,12 +1472,14 @@ export class InvoicesService {
               'Tổng các khoản thanh toán không khớp số tiền khách đã thanh toán.',
             );
           }
-          this.assertPosPrepaidInvoiceCanBeCreated({
-            policy: customer?.debtPolicy,
-            paidAmount,
-            grandTotal,
-          });
         }
+
+        this.assertCustomerInvoiceCanBeCreated({
+          policy: customer?.debtPolicy,
+          paidAmount,
+          grandTotal,
+          mode: 'invoice',
+        });
 
         const currentCustomerDebt = Number(customer?.totalDebt || 0);
         const customerDebtSnapshot = currentCustomerDebt + debtAmount;
@@ -2905,7 +2907,13 @@ export class InvoicesService {
     await recalcCustomerDebt(tx, customerId);
   }
 
-  private isPosPrepaidNoDebt(policy: {
+  /**
+   * Giữ tương thích với chính sách cũ: cờ này chỉ được dùng để thực thi
+   * quy tắc thanh toán đủ, không suy diễn lại từ debtForm/debtRuleType.
+   * Khách mới mặc định PREPAID + NONE và được tạo với cờ = true; khách cũ
+   * vẫn giữ nguyên giá trị đã lưu.
+   */
+  private requiresFullPaymentForInvoice(policy: {
     debtForm: string | null;
     hasCreditLimit: boolean;
     hasTermDays: boolean;
@@ -2929,7 +2937,7 @@ export class InvoicesService {
     );
   }
 
-  private assertPosPrepaidInvoiceCanBeCreated(input: {
+  private assertCustomerInvoiceCanBeCreated(input: {
     policy: {
       debtForm: string | null;
       hasCreditLimit: boolean;
@@ -2939,38 +2947,20 @@ export class InvoicesService {
     } | null | undefined;
     paidAmount: number;
     grandTotal: number;
+    mode: 'invoice' | 'order';
   }) {
-    if (!this.isPosPrepaidNoDebt(input.policy)) return;
+    if (!this.requiresFullPaymentForInvoice(input.policy)) return;
     if (input.paidAmount + POS_PAYMENT_EPSILON < input.grandTotal) {
       throw new BadRequestException(
-        `${POS_PREPAID_INVOICE_MESSAGE} Đã thanh toán: ${Math.round(
-          input.paidAmount,
-        ).toLocaleString('vi-VN')} đ / Cần thanh toán: ${Math.round(
-          input.grandTotal,
-        ).toLocaleString('vi-VN')} đ.`,
-      );
-    }
-  }
-
-  private assertPosPrepaidOrderCanBeInvoiced(input: {
-    policy: {
-      debtForm: string | null;
-      hasCreditLimit: boolean;
-      hasTermDays: boolean;
-      isActive: boolean;
-      requireFullPaymentForInvoice?: boolean;
-    } | null | undefined;
-    paidAmount: number;
-    grandTotal: number;
-  }) {
-    if (!this.isPosPrepaidNoDebt(input.policy)) return;
-    if (input.paidAmount + POS_PAYMENT_EPSILON < input.grandTotal) {
-      throw new BadRequestException(
-        `${POS_PREPAID_ORDER_MESSAGE} Đã thanh toán: ${Math.round(
-          input.paidAmount,
-        ).toLocaleString('vi-VN')} đ / Cần thanh toán: ${Math.round(
-          input.grandTotal,
-        ).toLocaleString('vi-VN')} đ.`,
+        `${
+          input.mode === 'order'
+            ? POS_PREPAID_ORDER_MESSAGE
+            : POS_PREPAID_INVOICE_MESSAGE
+        } Đã thanh toán: ${Math.round(input.paidAmount).toLocaleString(
+          'vi-VN',
+        )} đ / Cần thanh toán: ${Math.round(input.grandTotal).toLocaleString(
+          'vi-VN',
+        )} đ.`,
       );
     }
   }
@@ -3032,20 +3022,19 @@ export class InvoicesService {
 
       await assertCanCreateInvoiceForCustomer(tx, order.customerId);
 
-      // POS-only: khách chuyển khoản ngay và không công nợ phải có đủ tiền
-      // đã ghi nhận TRÊN ĐƠN trước khi được tạo hóa đơn. Không dùng tiền nhập
-      // thêm ở màn tạo hóa đơn để vượt qua kiểm tra này.
+      // Khách có chính sách không công nợ phải có đủ tiền đã ghi nhận TRÊN
+      // ĐƠN trước khi được tạo hóa đơn. Không dùng tiền nhập thêm ở màn tạo
+      // hóa đơn để vượt qua kiểm tra này.
       const activeOrderPaid = order.payments
         .filter((payment) => payment.status !== 2)
         .reduce((sum, payment) => sum + Number(payment.amount), 0);
 
-      if (fromPos) {
-        this.assertPosPrepaidOrderCanBeInvoiced({
-          policy: order.customer?.debtPolicy,
-          paidAmount: activeOrderPaid,
-          grandTotal: Number(order.grandTotal),
-        });
-      }
+      this.assertCustomerInvoiceCanBeCreated({
+        policy: order.customer?.debtPolicy,
+        paidAmount: activeOrderPaid,
+        grandTotal: Number(order.grandTotal),
+        mode: 'order',
+      });
 
       const invoicedQuantities: Record<number, number> = {};
       order.invoices.forEach((inv) => {
@@ -3707,6 +3696,15 @@ export class InvoicesService {
               name: true,
               contactNumber: true,
               totalDebt: true,
+              debtPolicy: {
+                select: {
+                  debtForm: true,
+                  hasCreditLimit: true,
+                  hasTermDays: true,
+                  isActive: true,
+                  requireFullPaymentForInvoice: true,
+                },
+              },
               addresses: {
                 where: { isDefault: true },
                 take: 1,
@@ -3836,6 +3834,13 @@ export class InvoicesService {
       );
       const grandTotal = totalAmount - discountForThisInvoice;
       const debtAmount = grandTotal - totalPaid;
+
+      this.assertCustomerInvoiceCanBeCreated({
+        policy: consignment.customer?.debtPolicy,
+        paidAmount: totalPaid,
+        grandTotal,
+        mode: 'invoice',
+      });
 
       // Hàng đã giao ở B2 → hóa đơn ký gửi tạo ở DELIVERED (đã giao).
       const status = INVOICE_STATUS.DELIVERED;
