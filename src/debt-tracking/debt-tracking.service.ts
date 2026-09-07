@@ -143,9 +143,6 @@ export class DebtTrackingService {
     }
     if (query.debtForm) policyWhere.debtForm = query.debtForm;
     if (query.salePicId) policyWhere.salePicId = query.salePicId;
-    if (query.accountantPicId) {
-      policyWhere.accountantPicId = query.accountantPicId;
-    }
 
     const customerWhere: Record<string, unknown> = {
       totalDebt: { gt: 0 },
@@ -173,6 +170,7 @@ export class DebtTrackingService {
         name: true,
         contactNumber: true,
         phone: true,
+        misaEmployeeName: true,
         totalDebt: true,
         branchId: true,
         branch: { select: { id: true, name: true } },
@@ -265,6 +263,7 @@ export class DebtTrackingService {
         code: c.code,
         name: c.name,
         contactNumber: c.contactNumber ?? c.phone ?? null,
+        misaEmployeeName: c.misaEmployeeName ?? null,
         branch: c.branch,
 
         // 1. Nợ hiện tại
@@ -291,11 +290,7 @@ export class DebtTrackingService {
             overriddenAt: p?.paymentHistoryOverriddenAt ?? null,
           },
           salePic: p?.salePicId ? (picMap.get(p.salePicId) ?? null) : null,
-          accountantPic: p?.accountantPicId
-            ? (picMap.get(p.accountantPicId) ?? null)
-            : null,
           salePicId: p?.salePicId ?? null,
-          accountantPicId: p?.accountantPicId ?? null,
           requireFullPaymentForInvoice:
             p?.requireFullPaymentForInvoice ?? false,
           paymentScheduleType: p?.paymentScheduleType ?? null,
@@ -451,6 +446,7 @@ export class DebtTrackingService {
         name: true,
         contactNumber: true,
         phone: true,
+        misaEmployeeName: true,
         totalDebt: true,
         branch: { select: { id: true, name: true } },
         debtPolicy: true,
@@ -513,6 +509,7 @@ export class DebtTrackingService {
         code: customer.code,
         name: customer.name,
         contactNumber: customer.contactNumber ?? customer.phone ?? null,
+        misaEmployeeName: customer.misaEmployeeName ?? null,
         branch: customer.branch,
         totalDebt: Number(customer.totalDebt),
       },
@@ -639,7 +636,6 @@ export class DebtTrackingService {
           : Prisma.JsonNull,
       debtForm: dto.debtForm ?? null,
       salePicId: dto.salePicId ?? null,
-      accountantPicId: dto.accountantPicId ?? null,
       isActive: dto.isActive ?? true,
     };
 
@@ -1323,7 +1319,7 @@ export class DebtTrackingService {
     return map;
   }
 
-  /** Nạp thông tin người phụ trách (Sale PIC / Kế toán PIC). */
+  /** Nạp thông tin Sale PIC từ chính sách công nợ. */
   private async getPicUsers(
     customers: Array<{ debtPolicy: unknown }>,
   ): Promise<Map<number, { id: number; name: string }>> {
@@ -1331,7 +1327,6 @@ export class DebtTrackingService {
     for (const c of customers) {
       const p = c.debtPolicy as RawDebtPolicy | null;
       if (p?.salePicId) ids.add(p.salePicId);
-      if (p?.accountantPicId) ids.add(p.accountantPicId);
     }
     if (ids.size === 0) return new Map();
 

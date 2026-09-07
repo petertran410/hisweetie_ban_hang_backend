@@ -36,6 +36,9 @@ const HEADER_ALIASES: Record<string, keyof ParsedPolicyRow> = {
   'hạn mức công nợ': 'creditLimit',
   'ngày thanh toán': 'paymentSchedule',
   'lịch thanh toán': 'paymentSchedule',
+  'sale pic': 'salePic',
+  'nhân viên sale': 'salePic',
+  'người phụ trách sale': 'salePic',
 };
 
 const REQUIRED_COLUMNS: Array<keyof ParsedPolicyRow> = ['code', 'debtType'];
@@ -55,6 +58,7 @@ export interface ParsedPolicyRow {
   debtType: string;
   creditLimit: string;
   paymentSchedule: string;
+  salePic: string;
 
   // Kết quả sau khi phân tích
   debtRuleType: DebtRuleType | null;
@@ -74,6 +78,7 @@ export interface ParsedPolicyRow {
 export interface PolicyImportPreviewRow extends ParsedPolicyRow {
   customerId: number | null;
   customerName: string | null;
+  salePicId: number | null;
   action: 'create' | 'update' | 'error';
 }
 
@@ -317,6 +322,7 @@ export class DebtPolicyImportService {
       const code = cellOf(excelRow, 'code');
       const debtType = cellOf(excelRow, 'debtType');
       const paymentSchedule = cellOf(excelRow, 'paymentSchedule');
+      const salePic = cellOf(excelRow, 'salePic');
       // Dòng trống hoàn toàn → bỏ qua, không tính là lỗi.
       if (!code && !debtType) return;
 
@@ -388,6 +394,7 @@ export class DebtPolicyImportService {
         debtType,
         creditLimit: creditLimitRaw,
         paymentSchedule,
+        salePic,
 
         debtRuleType: parsed.debtRuleType,
         hasCreditLimit: parsed.hasCreditLimit,
@@ -429,6 +436,27 @@ export class DebtPolicyImportService {
         })
       : [];
 
+    const salePicNames = [
+      ...new Set(
+        rows
+          .map((row) => this.normalizeText(row.salePic))
+          .filter(Boolean),
+      ),
+    ];
+    const saleUsers = salePicNames.length
+      ? await this.prisma.user.findMany({
+          where: { isActive: true },
+          select: { id: true, name: true },
+        })
+      : [];
+    const saleUsersByName = new Map<string, Array<{ id: number; name: string }>>();
+    for (const user of saleUsers) {
+      const key = this.normalizeText(user.name);
+      const matches = saleUsersByName.get(key) ?? [];
+      matches.push(user);
+      saleUsersByName.set(key, matches);
+    }
+
     const byCode = new Map(
       customers.filter((c) => c.code).map((c) => [c.code as string, c]),
     );
@@ -445,6 +473,20 @@ export class DebtPolicyImportService {
 
     const result: PolicyImportPreviewRow[] = rows.map((row) => {
       const customer = row.code ? byCode.get(row.code) : undefined;
+      const salePicRaw = this.normalizeText(row.salePic);
+      const salePicMatches = salePicRaw
+        ? saleUsersByName.get(salePicRaw) ?? []
+        : [];
+
+      if (salePicRaw && salePicMatches.length === 0) {
+        row.errors.push(
+          `Không tìm thấy Sale PIC đang hoạt động có tên "${row.salePic}"`,
+        );
+      } else if (salePicMatches.length > 1) {
+        row.errors.push(
+          `Tên Sale PIC "${row.salePic}" trùng với nhiều người dùng — cần đổi tên hoặc xử lý thủ công`,
+        );
+      }
 
       if (row.code && !/[,;]/.test(row.code) && !customer) {
         row.errors.push(`Mã khách "${row.code}" không tồn tại trong hệ thống`);
@@ -466,6 +508,7 @@ export class DebtPolicyImportService {
         ...row,
         customerId: customer?.id ?? null,
         customerName: customer?.name ?? null,
+        salePicId: salePicMatches[0]?.id ?? null,
         action: row.errors.length
           ? 'error'
           : customer && hasPolicy.has(customer.id)
@@ -527,6 +570,7 @@ export class DebtPolicyImportService {
             termDays: row.hasTermDays ? row.termDays : null,
             paymentFrequency: row.paymentFrequency,
             debtForm: row.debtFormValue,
+            salePicId: row.salePicId,
             // Import là một hình thức lưu policy theo contract mới: NONE
             // cũng phải yêu cầu thanh toán đủ trước khi xuất hóa đơn.
             requireFullPaymentForInvoice: row.debtRuleType === 'NONE',
@@ -581,6 +625,7 @@ export class DebtPolicyImportService {
       { header: 'Loại Công Nợ', key: 'debtType', width: 26 },
       { header: 'Hạn Mức Công Nợ', key: 'creditLimit', width: 18 },
       { header: 'Ngày Thanh Toán', key: 'paymentSchedule', width: 24 },
+      { header: 'Sale PIC', key: 'salePic', width: 24 },
     ];
     ws.getRow(1).font = { bold: true };
     ws.getColumn('creditLimit').numFmt = '#,##0';
@@ -592,6 +637,7 @@ export class DebtPolicyImportService {
         debtType: 'Công Nợ 30 Ngày',
         creditLimit: '',
         paymentSchedule: '',
+        salePic: '',
       },
       {
         code: 'KH000002',
@@ -599,6 +645,7 @@ export class DebtPolicyImportService {
         debtType: 'Hạn Mức',
         creditLimit: 500000000,
         paymentSchedule: '',
+        salePic: '',
       },
       {
         code: 'KH000003',
@@ -606,6 +653,7 @@ export class DebtPolicyImportService {
         debtType: 'Không Công Nợ',
         creditLimit: '',
         paymentSchedule: '',
+        salePic: '',
       },
       {
         code: 'KH000004',
@@ -613,6 +661,7 @@ export class DebtPolicyImportService {
         debtType: 'Thanh Toán Cố Định Tuần',
         creditLimit: '',
         paymentSchedule: 'Thứ 2, Thứ 5, Chủ nhật',
+        salePic: '',
       },
     ]);
 
@@ -649,6 +698,11 @@ export class DebtPolicyImportService {
         col: 'Ngày Thanh Toán / Lịch Thanh Toán',
         req: 'Không',
         val: 'Chỉ bắt buộc với lịch cố định. Tháng: số ngày 1-31, VD: "15,30". Tuần: Thứ 2 đến Thứ 7 hoặc Chủ nhật (lưu theo ISO 1-7: Thứ 2=1, Chủ nhật=7), VD: "Thứ 2, Thứ 5, Chủ nhật". Giá trị phải tăng dần, không trùng nhau.',
+      },
+      {
+        col: 'Sale PIC',
+        req: 'Không',
+        val: 'Tên đầy đủ của một người dùng đang hoạt động. Đối chiếu chính xác theo tên; nếu có nhiều người trùng tên hoặc không tìm thấy sẽ báo lỗi.',
       },
       { col: '', req: '', val: '' },
       {

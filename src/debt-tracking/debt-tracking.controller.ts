@@ -114,7 +114,7 @@ export class DebtTrackingController {
        { header: 'Ngày Đòi Nợ Sale', key: 'salesCollectionAttempts', width: 28 },
        { header: 'Trạng Thái Nợ', key: 'debtStatus', width: 14 },
       { header: 'Sale PIC', key: 'salePic', width: 18 },
-      { header: 'Kế Toán Công Nợ PIC', key: 'accountantPic', width: 20 },
+      { header: 'Kế Toán PIC (Misa)', key: 'accountantPic', width: 24 },
       { header: 'Phiếu Thu Hồi', key: 'ticket', width: 16 },
        { header: 'Ghi Chú', key: 'note', width: 32 },
     ];
@@ -183,7 +183,7 @@ export class DebtTrackingController {
            .join('\n'),
          debtStatus: DEBT_STATUS_LABELS[r.debtStatus] ?? r.debtStatus,
         salePic: r.policy?.salePic?.name ?? '',
-        accountantPic: r.policy?.accountantPic?.name ?? '',
+        accountantPic: r.misaEmployeeName ?? '',
         ticket: r.openTicket?.ticketCode ?? '',
         note: r.note ?? '',
       });
