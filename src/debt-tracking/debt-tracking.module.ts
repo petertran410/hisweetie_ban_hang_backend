@@ -5,9 +5,10 @@ import { DebtPolicyImportService } from './debt-policy-import.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
+import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 
 @Module({
-  imports: [PrismaModule, AuthModule, AuditLogsModule],
+  imports: [PrismaModule, AuthModule, AuditLogsModule, LarkSyncModule],
   controllers: [DebtTrackingController],
   providers: [DebtTrackingService, DebtPolicyImportService],
   exports: [DebtTrackingService, DebtPolicyImportService],

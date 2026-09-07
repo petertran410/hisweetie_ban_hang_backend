@@ -28,15 +28,18 @@ model User {
   canViewOnlyOwnLoadingInvoices                             Boolean                           @default(false) @map("can_view_only_own_loading_invoices")
   supplierId                                                Int?                              @map("supplier_id")
   auditLogs                                                 AuditLog[]                        @relation("AuditLogUser")
-  recordedCustomerDebtCollectionAttempts                    CustomerDebtCollectionAttempt[]  @relation("DebtCollectionAttemptRecorder")
   cashFlowsCollected                                        CashFlow[]                        @relation("CashFlowCollector")
   cashFlowsCreated                                          CashFlow[]                        @relation("CashFlowCreator")
   createdConsignments                                       Consignment[]                     @relation("ConsignmentCreator")
   soldConsignments                                          Consignment[]                     @relation("ConsignmentSeller")
   createdContracts                                          Contract[]                        @relation("ContractCreator")
+  recordedCustomerDebtCollectionAttempts                    CustomerDebtCollectionAttempt[]   @relation("DebtCollectionAttemptRecorder")
   createdCustomerGroups                                     CustomerGroup[]                   @relation("CustomerGroupCreator")
   createdCustomers                                          Customer[]                        @relation("CustomerCreator")
   updatedCustomers                                          Customer[]                        @relation("CustomerUpdater")
+  assignedDebtTickets                                       DebtTicket[]                      @relation("DebtTicketAssignee")
+  closedDebtTickets                                         DebtTicket[]                      @relation("DebtTicketCloser")
+  createdDebtTickets                                        DebtTicket[]                      @relation("DebtTicketCreator")
   createdDestructions                                       Destruction[]                     @relation("DestructionCreator")
   createdFactories                                          Factory[]                         @relation("FactoryCreator")
   factoryChangeLogs                                         FactoryChangeLog[]                @relation("FactoryChangeLogChanger")
@@ -103,9 +106,6 @@ model User {
   branch                                                    Branch?                           @relation(fields: [branchId], references: [id])
   supplier                                                  Supplier?                         @relation("SupplierStaff", fields: [supplierId], references: [id])
   createdVehicleShipments                                   VehicleShipment[]                 @relation("VehicleShipmentCreator")
-  assignedDebtTickets                                       DebtTicket[]                      @relation("DebtTicketAssignee")
-  createdDebtTickets                                        DebtTicket[]                      @relation("DebtTicketCreator")
-  closedDebtTickets                                         DebtTicket[]                      @relation("DebtTicketCloser")
 
   @@map("users")
 }
@@ -154,12 +154,12 @@ model Permission {
   name                  String                 @unique
   resource              String
   action                String
-  scope                 String                 @default("all")
-  field                 String?
   description           String?
-  category              String?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
+  category              String?
+  field                 String?
+  scope                 String                 @default("all")
   roleBranchPermissions RoleBranchPermission[]
   rolePermissions       RolePermission[]
   userBranchPermissions UserBranchPermission[]
@@ -231,8 +231,8 @@ model UserRole {
 model RolePermission {
   roleId       Int
   permissionId Int
-  conditions   Json?
   createdAt    DateTime   @default(now())
+  conditions   Json?
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
@@ -257,9 +257,9 @@ model RoleBranchPermission {
 model UserPermission {
   userId       Int
   permissionId Int
-  type         String     @default("grant")
   conditions   Json?
   createdAt    DateTime   @default(now())
+  type         String     @default("grant")
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
   user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -279,20 +279,20 @@ model Branch {
   wardName                  String?
   isActive                  Boolean                  @default(true)
   isLock                    Boolean                  @default(false)
-  /// Chi nhánh GỐC nhận hàng sau thông quan. Chỉ duy nhất MỘT chi nhánh active
-  /// được bật cờ này; các chi nhánh còn lại nhận hàng qua điều chuyển nội bộ.
-  isPurchasingHub           Boolean                  @default(false) @map("is_purchasing_hub")
-  /// Khoảng thời gian ĐIỀU CHUYỂN dự kiến (ngày) từ chi nhánh gốc về chi nhánh này.
-  /// Tách theo loại hàng vì hàng lạnh đi nhanh hơn hàng thường.
-  /// Bỏ trống → dùng mặc định hệ thống trong PlanningNetworkConfig.
-  transferLeadtimeColdMin   Int?                     @map("transfer_leadtime_cold_min") @db.SmallInt
-  transferLeadtimeColdMax   Int?                     @map("transfer_leadtime_cold_max") @db.SmallInt
-  transferLeadtimeNormalMin Int?                     @map("transfer_leadtime_normal_min") @db.SmallInt
-  transferLeadtimeNormalMax Int?                     @map("transfer_leadtime_normal_max") @db.SmallInt
   createdAt                 DateTime                 @default(now())
   updatedAt                 DateTime                 @updatedAt
   kiotVietId                Int?                     @unique @map("kiot_viet_id")
   lastSyncedAt              DateTime?                @map("last_synced_at")
+  /// Chi nhánh GỐC nhận hàng sau thông quan. Chỉ duy nhất MỘT chi nhánh active
+  /// được bật cờ này; các chi nhánh còn lại nhận hàng qua điều chuyển nội bộ.
+  isPurchasingHub           Boolean                  @default(false) @map("is_purchasing_hub")
+  transferLeadtimeColdMax   Int?                     @map("transfer_leadtime_cold_max") @db.SmallInt
+  /// Khoảng thời gian ĐIỀU CHUYỂN dự kiến (ngày) từ chi nhánh gốc về chi nhánh này.
+  /// Tách theo loại hàng vì hàng lạnh đi nhanh hơn hàng thường.
+  /// Bỏ trống → dùng mặc định hệ thống trong PlanningNetworkConfig.
+  transferLeadtimeColdMin   Int?                     @map("transfer_leadtime_cold_min") @db.SmallInt
+  transferLeadtimeNormalMax Int?                     @map("transfer_leadtime_normal_max") @db.SmallInt
+  transferLeadtimeNormalMin Int?                     @map("transfer_leadtime_normal_min") @db.SmallInt
   auditLogs                 AuditLog[]               @relation("AuditLogBranch")
   location                  Location?                @relation(fields: [locationId], references: [id])
   cashFlows                 CashFlow[]
@@ -379,19 +379,16 @@ model CustomerGroup {
   id                      Int                      @id @default(autoincrement())
   name                    String
   description             String?
-  discount                Decimal?
   createdBy               Int?
   createdAt               DateTime                 @default(now())
-  // Nullable + @updatedAt: cột cho phép NULL nên thêm được vào bảng đã có dữ liệu mà
-  // KHÔNG cần default và KHÔNG mất dữ liệu. Cần trường này để Public API hỗ trợ
-  // `lastModifiedFrom` (delta sync) cho nhóm khách hàng.
-  updatedAt               DateTime?                @updatedAt @map("updated_at")
   allowedUserIds          Int[]                    @default([])
   autoAddConditions       Json?
-  autoUpdateMode          String?
   autoExecute             Boolean                  @default(false)
+  autoUpdateMode          String?
+  discount                Decimal?
   kiotVietId              Int?                     @unique @map("kiot_viet_id")
   lastSyncedAt            DateTime?                @map("last_synced_at")
+  updatedAt               DateTime?                @updatedAt @map("updated_at")
   customerGroupDetails    CustomerGroupDetail[]
   creator                 User?                    @relation("CustomerGroupCreator", fields: [createdBy], references: [id])
   priceBookCustomerGroups PriceBookCustomerGroup[]
@@ -402,76 +399,76 @@ model CustomerGroup {
 }
 
 model Customer {
-  id                   Int                   @id @default(autoincrement())
-  code                 String?               @unique
-  name                 String
-  gender               Boolean?
-  birthDate            DateTime?
-  contactNumber        String?
-  phone                String?
-  email                String?
-  type                 Int                   @default(0)
-  organization         String?
-  taxCode              String?
-  groups               String?
-  invoiceBuyerName     String?
-  invoiceCityCode      String?
-  invoiceCityName      String?
-  invoiceWardCode      String?
-  invoiceWardName      String?
-  invoiceAddress       String?
-  invoiceCccdCmnd      String?
-  invoiceBankAccount   String?
-  invoiceEmail         String?
-  invoicePhone         String?
-  invoiceDvqhnsCode    String?
-  comments             String?
-  customerTypeId       Int?
-  branchId             Int?
-  totalPurchased       Decimal               @default(0)
-  totalDebt            Decimal               @default(0)
-  totalInvoiced        Decimal               @default(0)
-  totalPoint           Decimal               @default(0)
-  totalRevenue         Decimal               @default(0)
-  rewardPoint          Int                   @default(0)
-  isActive             Boolean               @default(true)
-  createdAt            DateTime              @default(now())
-  updatedAt            DateTime              @updatedAt
-  parentId             Int?
-  kiotVietId           BigInt?               @unique @map("kiot_viet_id")
-  lastSyncedAt         DateTime?             @map("last_synced_at")
-  createdBy            Int?
-  updatedBy            Int?
-  identificationNumber String?
-  misaEmployeeCode     String?               @db.VarChar(50)
-  misaEmployeeId       String?               @db.VarChar(36)
-  misaEmployeeName     String?               @db.VarChar(255)
-  larkRecordId         String?
-  larkSyncRetries      Int                   @default(0)
-  larkSyncStatus       String                @default("PENDING")
-  larkSyncedAt         DateTime?
-  consignmentReturns   ConsignmentReturn[]   @relation("ConsignmentReturnCustomer")
-  consignments         Consignment[]
-  contracts            Contract[]
-  addresses            CustomerAddress[]
-  customerGroupDetails CustomerGroupDetail[]
-  branch               Branch?               @relation(fields: [branchId], references: [id])
-  creator              User?                 @relation("CustomerCreator", fields: [createdBy], references: [id])
-  customerType         CustomerType?         @relation(fields: [customerTypeId], references: [id])
-  parent               Customer?             @relation("CustomerHierarchy", fields: [parentId], references: [id])
-  children             Customer[]            @relation("CustomerHierarchy")
-  updater              User?                 @relation("CustomerUpdater", fields: [updatedBy], references: [id])
-  invoices             Invoice[]             @relation("InvoiceCustomer")
-  parentInvoices       Invoice[]             @relation("InvoiceParentCustomer")
-  orders               Order[]
-  priceBookCustomers   PriceBookCustomer[]
-  promotionCustomers   PromotionCustomer[]
-  returnOrders         ReturnOrder[]         @relation("ReturnOrderCustomer")
-  parentReturnOrders   ReturnOrder[]         @relation("ReturnOrderParentCustomer")
-  debtPolicy           CustomerDebtPolicy?
-  debtNote             CustomerDebtNote?
-  debtTicketLines      DebtTicketCustomer[]
+  id                     Int                             @id @default(autoincrement())
+  code                   String?                         @unique
+  name                   String
+  gender                 Boolean?
+  birthDate              DateTime?
+  contactNumber          String?
+  phone                  String?
+  email                  String?
+  type                   Int                             @default(0)
+  organization           String?
+  taxCode                String?
+  groups                 String?
+  comments               String?
+  customerTypeId         Int?
+  branchId               Int?
+  totalPurchased         Decimal                         @default(0)
+  totalDebt              Decimal                         @default(0)
+  totalInvoiced          Decimal                         @default(0)
+  totalPoint             Decimal                         @default(0)
+  totalRevenue           Decimal                         @default(0)
+  rewardPoint            Int                             @default(0)
+  isActive               Boolean                         @default(true)
+  createdAt              DateTime                        @default(now())
+  updatedAt              DateTime                        @updatedAt
+  invoiceAddress         String?
+  invoiceBankAccount     String?
+  invoiceBuyerName       String?
+  invoiceCccdCmnd        String?
+  invoiceCityCode        String?
+  invoiceCityName        String?
+  invoiceDvqhnsCode      String?
+  invoiceEmail           String?
+  invoicePhone           String?
+  invoiceWardCode        String?
+  invoiceWardName        String?
+  parentId               Int?
+  kiotVietId             BigInt?                         @unique @map("kiot_viet_id")
+  lastSyncedAt           DateTime?                       @map("last_synced_at")
+  createdBy              Int?
+  updatedBy              Int?
+  identificationNumber   String?
+  misaEmployeeCode       String?                         @db.VarChar(50)
+  misaEmployeeId         String?                         @db.VarChar(36)
+  misaEmployeeName       String?                         @db.VarChar(255)
+  larkRecordId           String?
+  larkSyncRetries        Int                             @default(0)
+  larkSyncStatus         String                          @default("PENDING")
+  larkSyncedAt           DateTime?
+  consignmentReturns     ConsignmentReturn[]             @relation("ConsignmentReturnCustomer")
+  consignments           Consignment[]
+  contracts              Contract[]
+  addresses              CustomerAddress[]
   debtCollectionAttempts CustomerDebtCollectionAttempt[]
+  debtNote               CustomerDebtNote?
+  debtPolicy             CustomerDebtPolicy?
+  customerGroupDetails   CustomerGroupDetail[]
+  branch                 Branch?                         @relation(fields: [branchId], references: [id])
+  creator                User?                           @relation("CustomerCreator", fields: [createdBy], references: [id])
+  customerType           CustomerType?                   @relation(fields: [customerTypeId], references: [id])
+  parent                 Customer?                       @relation("CustomerHierarchy", fields: [parentId], references: [id])
+  children               Customer[]                      @relation("CustomerHierarchy")
+  updater                User?                           @relation("CustomerUpdater", fields: [updatedBy], references: [id])
+  debtTicketLines        DebtTicketCustomer[]
+  invoices               Invoice[]                       @relation("InvoiceCustomer")
+  parentInvoices         Invoice[]                       @relation("InvoiceParentCustomer")
+  orders                 Order[]
+  priceBookCustomers     PriceBookCustomer[]
+  promotionCustomers     PromotionCustomer[]
+  returnOrders           ReturnOrder[]                   @relation("ReturnOrderCustomer")
+  parentReturnOrders     ReturnOrder[]                   @relation("ReturnOrderParentCustomer")
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -499,12 +496,12 @@ model CustomerAddress {
   isDefault        Boolean   @default(false)
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
+  formattedAddress String?   @map("formatted_address")
+  geocodePrecision String?   @map("geocode_precision")
+  geocodeProvider  String?   @map("geocode_provider")
+  geocodedAt       DateTime? @map("geocoded_at")
   latitude         Float?
   longitude        Float?
-  formattedAddress String?   @map("formatted_address")
-  geocodeProvider  String?   @map("geocode_provider")
-  geocodePrecision String?   @map("geocode_precision")
-  geocodedAt       DateTime? @map("geocoded_at")
   customer         Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_addresses")
@@ -732,8 +729,8 @@ model Product {
   misa_name                      String                         @default("")
   misa_unit                      String                         @default("")
   shippingWeight                 Decimal?
-  shippingWeightUnit             String?                        @default("g") @map("shipping_weight_unit")
   vat                            Decimal                        @default(8)
+  shippingWeightUnit             String?                        @default("g") @map("shipping_weight_unit")
   publicationDate                DateTime?                      @map("publication_date")
   publicationLink                String?                        @map("publication_link")
   publicationLocation            Json?                          @map("publication_location")
@@ -1343,14 +1340,14 @@ model Surcharge {
 
 model BankAccount {
   id                    Int                    @id @default(autoincrement())
-  accountNumber         String
-  bankCode              String
   bankName              String
+  accountNumber         String
+  createdAt             DateTime               @default(now())
   accountHolder         String
+  bankCode              String
+  branchIds             Json?
   note                  String?
   scope                 String
-  branchIds             Json?
-  createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   kiotVietId            Int?                   @unique @map("kiot_viet_id")
   lastSyncedAt          DateTime?              @map("last_synced_at")
@@ -1399,8 +1396,6 @@ model Order {
   branchId        Int?
   soldById        Int?
   saleChannelId   Int?
-  priceBookId     Int?
-  priceBookName   String?
   orderDate       DateTime              @default(now())
   totalAmount     Decimal               @default(0)
   discount        Decimal               @default(0)
@@ -1418,12 +1413,14 @@ model Order {
   createdBy       Int
   createdAt       DateTime              @default(now())
   updatedAt       DateTime              @updatedAt
+  priceBookId     Int?
+  priceBookName   String?
   kiotVietId      BigInt?               @unique @map("kiot_viet_id")
   lastSyncedAt    DateTime?             @map("last_synced_at")
   larkRecordId    String?
-  larkSyncRetries Int                   @default(0)
   larkSyncStatus  String                @default("PENDING")
   larkSyncedAt    DateTime?
+  larkSyncRetries Int                   @default(0)
   promotionLogs   InvoicePromotionLog[]
   invoices        Invoice[]
   delivery        OrderDelivery?
@@ -1589,8 +1586,6 @@ model Invoice {
   branchId               Int?
   soldById               Int?
   saleChannelId          Int?
-  priceBookId            Int?
-  priceBookName          String?
   purchaseDate           DateTime                @default(now())
   totalAmount            Decimal                 @default(0)
   discount               Decimal                 @default(0)
@@ -1606,6 +1601,8 @@ model Invoice {
   createdBy              Int
   createdAt              DateTime                @default(now())
   updatedAt              DateTime                @updatedAt
+  priceBookId            Int?
+  priceBookName          String?
   parentCustomerId       Int?
   kiotVietId             BigInt?                 @unique @map("kiot_viet_id")
   lastSyncedAt           DateTime?               @map("last_synced_at")
@@ -1618,10 +1615,6 @@ model Invoice {
   misaSyncStatus         MisaSyncStatus          @default(SKIP)
   misaSyncedAt           DateTime?
   consignmentId          Int?
-  // Mốc GIAO HÀNG ĐẦU TIÊN (báo đơn thành công) — dùng làm gốc tính hạn công nợ.
-  // Luồng phiếu giao dùng MIN(packing_slips.createdAt) trên các phiếu chưa hủy;
-  // thao tác "Đã Báo Đơn" trực tiếp trên hóa đơn ghi thời điểm xác nhận đó.
-  // Nullable: hóa đơn chưa báo đơn thì KHÔNG phát sinh hạn nợ theo ngày/tuần/tháng.
   deliveredAt            DateTime?               @map("delivered_at")
   delivery               InvoiceDelivery?
   details                InvoiceDetail[]
@@ -1691,13 +1684,13 @@ model InvoicePayment {
   paymentDate        DateTime     @default(now())
   amount             Decimal
   status             Int
-  statusValue        String?
   paymentMethod      String?
   accountId          Int?
   description        String?
   cashFlowId         Int?
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
+  statusValue        String?
   sepayTransactionId String?      @unique @map("sepay_transaction_id")
   kiotVietId         BigInt?      @unique @map("kiot_viet_id")
   sepayReferenceCode String?      @map("sepay_reference_code")
@@ -2420,7 +2413,6 @@ model PurchaseOrderProductionStage {
 model Factory {
   id                    Int                 @id @default(autoincrement())
   name                  String
-  fullName              String?
   description           String?
   isActive              Boolean             @default(true)
   createdBy             Int?
@@ -2437,23 +2429,24 @@ model Factory {
   email                 String?
   incoterm              String?
   moq                   Decimal?
-  /// Cấu hình MOQ có đơn vị. Giữ `moq` để tương thích dữ liệu/API cũ.
-  moqValue              Decimal?            @db.Decimal(18, 4)
-  moqBasis              String? // QUANTITY | WEIGHT
-  moqUnit               String? // PACK | CARTON | KG | TON
-  moqScope              String? // PER_ORDER | PER_LINE
-  moqIncrement          Decimal?            @db.Decimal(18, 4)
   notes                 String?
   paymentTerm           String?
   port                  String?
   productionLeadtime    Int?
   shippingLeadtime      Int?
+  strategicLevel        String?
+  wechat                String?
+  fullName              String?
+  moqBasis              String?
+  moqIncrement          Decimal?            @db.Decimal(18, 4)
+  moqScope              String?
+  moqUnit               String?
+  /// Cấu hình MOQ có đơn vị. Giữ `moq` để tương thích dữ liệu/API cũ.
+  moqValue              Decimal?            @db.Decimal(18, 4)
+  productionLeadtimeMax Int?                @map("production_leadtime_max") @db.SmallInt
   /// Khoảng thời gian SẢN XUẤT dự kiến (ngày) — riêng từng nhà máy.
   /// Chỉ phục vụ DỰ BÁO đặt hàng, không phải mốc thực tế của đơn nào.
   productionLeadtimeMin Int?                @map("production_leadtime_min") @db.SmallInt
-  productionLeadtimeMax Int?                @map("production_leadtime_max") @db.SmallInt
-  strategicLevel        String?
-  wechat                String?
   creator               User?               @relation("FactoryCreator", fields: [createdBy], references: [id])
   supplier              Supplier?           @relation(fields: [supplierId], references: [id])
   factoryChangeLogs     FactoryChangeLog[]
@@ -2475,20 +2468,20 @@ model FactoryChangeLog {
   id                Int      @id @default(autoincrement())
   productId         Int
   factoryId         Int
-  /// attach | detach | role_change | priority_change
-  action            String   @default("attach")
-  /// Vai trò trước sự kiện (null khi attach lần đầu).
-  previousRole      String?
   /// Vai trò sau sự kiện (null khi detach).
   role              String?
-  previousPriority  Int?
-  priority          Int?
   /// Di sản mô hình slot cũ — chỉ còn ý nghĩa với dữ liệu trước khi đổi.
   previousFactoryId Int?
   changedById       Int
   changedByName     String?
   reason            String?
   createdAt         DateTime @default(now())
+  /// attach | detach | role_change | priority_change
+  action            String   @default("attach")
+  previousPriority  Int?
+  /// Vai trò trước sự kiện (null khi attach lần đầu).
+  previousRole      String?
+  priority          Int?
   changer           User     @relation("FactoryChangeLogChanger", fields: [changedById], references: [id])
   factory           Factory  @relation(fields: [factoryId], references: [id])
   product           Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -2545,9 +2538,9 @@ model VehicleShipmentItem {
   productCode       String
   productName       String
   quantity          Decimal
-  postImportStatus  String          @default("pending")
   createdAt         DateTime        @default(now())
   updatedAt         DateTime        @updatedAt
+  postImportStatus  String          @default("pending")
   contractNo        String?
   orderSupplier     OrderSupplier   @relation(fields: [orderSupplierId], references: [id])
   product           Product         @relation(fields: [productId], references: [id])
@@ -2782,10 +2775,10 @@ model PrintTemplateVariable {
   dataType       String   @default("string")
   description    String?
   isActive       Boolean  @default(true)
-  isItemVariable Boolean  @default(false)
   sortOrder      Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  isItemVariable Boolean  @default(false)
 
   @@unique([templateFor, key])
   @@index([templateFor])
@@ -2794,28 +2787,28 @@ model PrintTemplateVariable {
 
 model AuditLog {
   id              Int      @id @default(autoincrement())
-  actionType      String   @map("action_type")
+  metadata        Json?
   actionCode      String   @map("action_code")
-  entityType      String   @map("entity_type")
-  entityId        String?  @map("entity_id")
-  entityCode      String?  @map("entity_code")
-  category        String?  @map("category")
-  severity        String   @default("info") @map("severity")
-  snapshot        Json?    @map("snapshot")
-  changes         Json?    @map("changes")
-  message         String
-  messageTemplate String?  @map("message_template")
-  messageParams   Json?    @map("message_params")
-  userId          Int      @map("user_id")
-  userName        String   @map("user_name")
+  actionType      String   @map("action_type")
   branchId        Int?     @map("branch_id")
   branchName      String?  @map("branch_name")
-  ipAddress       String?  @map("ip_address")
-  userAgent       String?  @map("user_agent")
-  requestId       String?  @map("request_id")
-  deviceInfo      Json?    @map("device_info")
-  metadata        Json?
   createdAt       DateTime @default(now()) @map("created_at")
+  deviceInfo      Json?    @map("device_info")
+  entityCode      String?  @map("entity_code")
+  entityId        String?  @map("entity_id")
+  entityType      String   @map("entity_type")
+  ipAddress       String?  @map("ip_address")
+  message         String
+  messageParams   Json?    @map("message_params")
+  messageTemplate String?  @map("message_template")
+  requestId       String?  @map("request_id")
+  userAgent       String?  @map("user_agent")
+  userId          Int      @map("user_id")
+  userName        String   @map("user_name")
+  category        String?  @map("category")
+  changes         Json?    @map("changes")
+  severity        String   @default("info") @map("severity")
+  snapshot        Json?    @map("snapshot")
   branch          Branch?  @relation("AuditLogBranch", fields: [branchId], references: [id])
   user            User     @relation("AuditLogUser", fields: [userId], references: [id])
 
@@ -2840,7 +2833,6 @@ model ReturnOrder {
   statusValue           String?
   totalReturnAmount     Decimal             @default(0)
   refundAmount          Decimal             @default(0)
-  refundType            String?
   refundedAmount        Decimal             @default(0)
   note                  String?
   receivedById          Int?
@@ -2856,6 +2848,7 @@ model ReturnOrder {
   customerDebtSnapshot  Decimal?            @db.Decimal(15, 2)
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
+  refundType            String?
   cashFlowId            Int?
   images                String?
   stockImages           String?
@@ -2883,9 +2876,6 @@ model ReturnOrder {
 model ReturnOrderDetail {
   id                     Int            @id @default(autoincrement())
   returnOrderId          Int
-  invoiceId              Int?
-  invoiceDetailId        Int?
-  invoiceCode            String
   productId              Int
   productCode            String
   productName            String
@@ -2898,6 +2888,8 @@ model ReturnOrderDetail {
   note                   String?
   createdAt              DateTime       @default(now())
   updatedAt              DateTime       @updatedAt
+  invoiceCode            String
+  invoiceId              Int?
   damagedQuantity        Decimal        @default(0)
   goodQuantity           Decimal        @default(0)
   nearExpiryQuantity     Decimal        @default(0)
@@ -2905,8 +2897,9 @@ model ReturnOrderDetail {
   saleGoodQuantity       Decimal        @default(0)
   saleNearExpiryQuantity Decimal        @default(0)
   manufactureDate        DateTime?
-  invoice                Invoice?       @relation(fields: [invoiceId], references: [id])
+  invoiceDetailId        Int?
   invoiceDetail          InvoiceDetail? @relation(fields: [invoiceDetailId], references: [id])
+  invoice                Invoice?       @relation(fields: [invoiceId], references: [id])
   product                Product        @relation(fields: [productId], references: [id])
   returnOrder            ReturnOrder    @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
 
@@ -3060,15 +3053,15 @@ model SepayTransaction {
   bankAccountId        String?   @map("bank_account_id")
   rawPayload           Json?     @map("raw_payload")
   syncedAt             DateTime  @default(now()) @map("synced_at")
-  assignedCustomerId   Int?      @map("assigned_customer_id")
-  assignedCustomerName String?   @map("assigned_customer_name")
-  assignedById         Int?      @map("assigned_by_id")
-  assignedAt           DateTime? @map("assigned_at")
-  cashFlowId           Int?      @map("cash_flow_id")
-  confirmedById        Int?      @map("confirmed_by_id")
-  confirmedAt          DateTime? @map("confirmed_at")
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt @map("updated_at")
+  assignedAt           DateTime? @map("assigned_at")
+  assignedById         Int?      @map("assigned_by_id")
+  assignedCustomerId   Int?      @map("assigned_customer_id")
+  assignedCustomerName String?   @map("assigned_customer_name")
+  cashFlowId           Int?      @map("cash_flow_id")
+  confirmedAt          DateTime? @map("confirmed_at")
+  confirmedById        Int?      @map("confirmed_by_id")
   hiddenAt             DateTime? @map("hidden_at")
   hiddenById           Int?      @map("hidden_by_id")
 
@@ -3285,14 +3278,8 @@ model Contract {
   title              String
   /// Nguồn tạo: "template" (từ template Documenso) | "upload" (PDF tải lên)
   source             String    @default("template")
-  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
-  templateId         Int?      @map("template_id")
-  templateTitle      String?   @map("template_title")
   /// Envelope id bên Documenso (vd "envelope_abc123"). Unique để webhook map ngược.
   documensoId        String?   @unique @map("documenso_id")
-  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
-  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
-  externalId         String?   @unique @map("external_id")
   recipientEmail     String?   @map("recipient_email")
   /// Trạng thái: DRAFT | SENT | PARTIALLY_SIGNED | SIGNED | REJECTED | EXPIRED | CANCELLED
   /// - SENT: đã gửi bản ký (Documenso) cho khách hoặc NV (tuỳ thứ tự).
@@ -3310,11 +3297,17 @@ model Contract {
   createdBy          Int?      @map("created_by")
   createdAt          DateTime  @default(now()) @map("created_at")
   updatedAt          DateTime  @updatedAt @map("updated_at")
-  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
-  companySignerEmail String?   @map("company_signer_email")
+  /// externalId mình tự sinh khi tạo document (vd "contract-cus12-169..."). Webhook
+  /// Documenso trả lại externalId → dùng làm khóa map chính (ổn định nhất).
+  externalId         String?   @unique @map("external_id")
+  /// Template Documenso đã dùng (loại hợp đồng). Null nếu upload PDF.
+  templateId         Int?      @map("template_id")
+  templateTitle      String?   @map("template_title")
   /// Loại HĐ: SINGLE (1 bên ký) | DOUBLE (2 bên ký tuần tự). Phát hiện theo
   /// số recipient SIGNER trong template Documenso.
   contractType       String    @default("SINGLE") @map("contract_type")
+  /// Email Documenso user cho "BÊN A" (NV công ty). Mặc định env CONTRACT_SIGNER_EMAIL.
+  companySignerEmail String?   @map("company_signer_email")
   creator            User?     @relation("ContractCreator", fields: [createdBy], references: [id])
   customer           Customer  @relation(fields: [customerId], references: [id])
 
@@ -3366,16 +3359,16 @@ model factory_product_price_histories {
   factoryProductId Int
   oldPrice         Decimal?
   newPrice         Decimal?
-  oldPriceVnd      Decimal?
-  newPriceVnd      Decimal?
   currency         String           @default("VND")
   exchangeRate     Decimal?
-  eventType        String           @default("reference")
-  refCode          String?
   reason           String?
   changedById      Int?
   changedByName    String?
   createdAt        DateTime         @default(now())
+  eventType        String           @default("reference")
+  newPriceVnd      Decimal?
+  oldPriceVnd      Decimal?
+  refCode          String?
   users            User?            @relation(fields: [changedById], references: [id])
   factory_products factory_products @relation(fields: [factoryProductId], references: [id], onDelete: Cascade)
 
@@ -3396,11 +3389,6 @@ model factory_products {
   exchangeRate                                   Decimal?
   isManualRate                                   Boolean                           @default(false)
   moq                                            Decimal?
-  /// MOQ có đơn vị, luôn ở phạm vi PER_LINE. Giữ `moq` cho tương thích cũ.
-  moqValue                                       Decimal?                          @db.Decimal(18, 4)
-  moqBasis                                       String?
-  moqUnit                                        String?
-  moqIncrement                                   Decimal?                          @db.Decimal(18, 4)
   leadtimeDays                                   Int?
   note                                           String?
   isActive                                       Boolean                           @default(true)
@@ -3409,6 +3397,11 @@ model factory_products {
   createdBy                                      Int?
   createdAt                                      DateTime                          @default(now())
   updatedAt                                      DateTime
+  moqBasis                                       String?
+  moqIncrement                                   Decimal?                          @db.Decimal(18, 4)
+  moqUnit                                        String?
+  /// MOQ có đơn vị, luôn ở phạm vi PER_LINE. Giữ `moq` cho tương thích cũ.
+  moqValue                                       Decimal?                          @db.Decimal(18, 4)
   factory_product_price_histories                factory_product_price_histories[]
   users_factory_products_createdByTousers        User?                             @relation("factory_products_createdByTousers", fields: [createdBy], references: [id])
   factories                                      Factory                           @relation(fields: [factoryId], references: [id], onDelete: Cascade)
@@ -3710,8 +3703,6 @@ model RecommendationItem {
   productCode                    String                 @map("product_code") @db.VarChar(50)
   productName                    String                 @map("product_name") @db.VarChar(500)
   unit                           String?                @db.VarChar(50)
-  /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
-  is_purchasing_planning_tracked Boolean                @default(true)
   parentName                     String?                @map("parent_name") @db.VarChar(255)
   middleName                     String?                @map("middle_name") @db.VarChar(255)
   childName                      String?                @map("child_name") @db.VarChar(255)
@@ -3761,19 +3752,6 @@ model RecommendationItem {
   daysUntilStockout              Int?                   @map("days_until_stockout") @db.SmallInt
   daysOfSupply                   Decimal?               @map("days_of_supply") @db.Decimal(10, 2)
   projectedStockoutDate          DateTime?              @map("projected_stockout_date") @db.Date
-  /// ORDER_NOW | ORDER_THIS_MONTH | ORDER_NEXT_MONTH | ORDER_LATER | NO_ACTION
-  orderUrgency                   String?                @map("order_urgency") @db.VarChar(20)
-  /// Ngày chậm nhất phải đặt để hàng kịp về trước khi chi nhánh cạn kho.
-  latestOrderDate                DateTime?              @map("latest_order_date") @db.Date
-  /// Chi nhánh sẽ hết hàng sớm nhất — nơi tạo sức ép phải đặt.
-  criticalBranchId               Int?                   @map("critical_branch_id")
-  criticalBranchName             String?                @map("critical_branch_name") @db.VarChar(255)
-  /// STABLE | VOLATILE | INSUFFICIENT_DATA — độ ổn định doanh số.
-  demandStability                String?                @map("demand_stability") @db.VarChar(20)
-  /// Hệ số biến thiên doanh số theo tháng; cơ sở tính tồn dự phòng.
-  variationCoefficient           Decimal?               @map("variation_coefficient") @db.Decimal(10, 4)
-  /// Tổng leadtime cận dưới/cận trên (ngày) của chuỗi 4 giai đoạn.
-  leadTimeMinDays                Int?                   @map("lead_time_min_days") @db.SmallInt
   /// PENDING | APPROVED | ADJUSTED | REJECTED | ORDERED | SUPERSEDED | BLOCKED
   status                         String                 @default("PENDING") @db.VarChar(15)
   orderSupplierId                Int?                   @map("order_supplier_id")
@@ -3782,6 +3760,21 @@ model RecommendationItem {
   /// Toàn bộ input + từng bước tính + flags
   calculationTrace               Json                   @map("calculation_trace")
   createdAt                      DateTime               @default(now()) @map("created_at")
+  /// Phân loại hàng hoá — denormalize để lọc nhanh, khớp contract FE
+  is_purchasing_planning_tracked Boolean                @default(true)
+  /// Chi nhánh sẽ hết hàng sớm nhất — nơi tạo sức ép phải đặt.
+  criticalBranchId               Int?                   @map("critical_branch_id")
+  criticalBranchName             String?                @map("critical_branch_name") @db.VarChar(255)
+  /// STABLE | VOLATILE | INSUFFICIENT_DATA — độ ổn định doanh số.
+  demandStability                String?                @map("demand_stability") @db.VarChar(20)
+  /// Ngày chậm nhất phải đặt để hàng kịp về trước khi chi nhánh cạn kho.
+  latestOrderDate                DateTime?              @map("latest_order_date") @db.Date
+  /// Tổng leadtime cận dưới/cận trên (ngày) của chuỗi 4 giai đoạn.
+  leadTimeMinDays                Int?                   @map("lead_time_min_days") @db.SmallInt
+  /// ORDER_NOW | ORDER_THIS_MONTH | ORDER_NEXT_MONTH | ORDER_LATER | NO_ACTION
+  orderUrgency                   String?                @map("order_urgency") @db.VarChar(20)
+  /// Hệ số biến thiên doanh số theo tháng; cơ sở tính tồn dự phòng.
+  variationCoefficient           Decimal?               @map("variation_coefficient") @db.Decimal(10, 4)
   recommendation                 PurchaseRecommendation @relation(fields: [recommendationId], references: [id], onDelete: Cascade)
 
   @@unique([recommendationId, productId])
@@ -3803,8 +3796,8 @@ model PublicApiClient {
   createdAt       DateTime                  @default(now()) @map("created_at")
   updatedAt       DateTime                  @updatedAt @map("updated_at")
   auditLogs       PublicApiAuditLog[]
-  webhooks        PublicApiWebhook[]
   idempotencyKeys PublicApiIdempotencyKey[]
+  webhooks        PublicApiWebhook[]
 
   @@index([isActive])
   @@map("public_api_clients")
@@ -3844,8 +3837,8 @@ model PublicApiWebhook {
   failureCount  Int                        @default(0) @map("failure_count")
   createdAt     DateTime                   @default(now()) @map("created_at")
   updatedAt     DateTime                   @updatedAt @map("updated_at")
-  client        PublicApiClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
   deliveries    PublicApiWebhookDelivery[]
+  client        PublicApiClient            @relation(fields: [clientId], references: [id], onDelete: Cascade)
 
   @@unique([clientId, resource, url])
   @@index([isActive, resource])
@@ -3898,86 +3891,47 @@ model PublicApiIdempotencyKey {
   @@map("public_api_idempotency_keys")
 }
 
-enum MisaSyncStatus {
-  PENDING
-  SYNCED
-  FAILED
-  SKIP
-}
-
-// ====================================================================
-// THEO DÕI CÔNG NỢ KHÁCH HÀNG
-//
-// Nguyên tắc: KHÔNG tính lại tổng nợ ở đây. Tổng nợ luôn lấy từ
-// customer.totalDebt (Formula A — common/customer-debt.util.ts).
-// Các bảng dưới chỉ bổ sung CHÍNH SÁCH nợ và công cụ ĐÒI nợ.
-// ====================================================================
-
 /// Chính sách công nợ của từng khách. Khách KHÔNG có bản ghi ở đây
 /// được hiểu là NONE (không công nợ) và không hiện trong danh sách theo dõi.
 model CustomerDebtPolicy {
-  id         Int @id @default(autoincrement())
-  customerId Int @unique @map("customer_id")
-
-  // ---- HAI CHIỀU CÔNG NỢ ĐỘC LẬP ----
-  // Dữ liệu thực tế ("Loại Công Nợ" trong file quản lý) là multi-select:
-  //   "Công Nợ 5 Ngày"            → chỉ hạn ngày
-  //   "Hạn Mức"                   → chỉ hạn mức
-  //   "Hạn Mức, Công Nợ 7 Ngày"   → CẢ HAI
-  //   "Không Công Nợ"             → cả hai tắt
-  // Vì vậy KHÔNG dùng một enum policyType; mỗi chiều là một cờ riêng.
-  // Cả hai tắt ⇒ khách không công nợ ⇒ không hiện trong danh sách theo dõi.
-
+  id                           Int       @id @default(autoincrement())
+  customerId                   Int       @unique @map("customer_id")
+  termDays                     Int?      @map("term_days")
+  creditLimit                  Decimal?  @map("credit_limit") @db.Decimal(18, 2)
+  isActive                     Boolean   @default(true) @map("is_active")
+  createdBy                    Int?      @map("created_by")
+  updatedBy                    Int?      @map("updated_by")
+  createdAt                    DateTime  @default(now()) @map("created_at")
+  updatedAt                    DateTime  @updatedAt @map("updated_at")
+  accountantPicId              Int?      @map("accountant_pic_id")
+  /// TRUST=Công Nợ Tín Nhiệm | CONTRACT=Hợp Đồng Công Nợ
+  /// COD=Thanh Toán Khi Nhận Hàng | PREPAID=Chuyển Khoản Ngay
+  debtForm                     String?   @map("debt_form")
   /// Bật chiều HẠN MỨC: khách nợ tới creditLimit thì phải thanh toán.
-  hasCreditLimit Boolean  @default(false) @map("has_credit_limit")
-  creditLimit    Decimal? @map("credit_limit") @db.Decimal(18, 2)
-
+  hasCreditLimit               Boolean   @default(false) @map("has_credit_limit")
   /// Bật chiều SỐ NGÀY: nợ tối đa termDays kể từ ngày giao hàng đầu tiên.
   /// Giá trị thực tế: 1, 3, 5, 7, 10, 15, 20, 30, 45, 55 ngày.
-  hasTermDays Boolean @default(false) @map("has_term_days")
-  termDays    Int?    @map("term_days")
-
-  /// Chỉ một loại quy tắc công nợ: NONE, CREDIT_LIMIT, TERM_DAYS,
-  /// MONTHLY_SCHEDULE hoặc WEEKLY_SCHEDULE.
-  debtRuleType String @default("NONE") @map("debt_rule_type")
-  paymentScheduleType String? @map("payment_schedule_type")
-  paymentScheduleDays Json? @map("payment_schedule_days")
-
-  /// Khách mới mặc định phải thanh toán đủ trước khi tạo hóa đơn trên POS.
-  /// Khách cũ không có policy hoặc policy cũ giữ false sẽ không bị áp dụng.
-  requireFullPaymentForInvoice Boolean @default(false) @map("require_full_payment_for_invoice")
-
+  hasTermDays                  Boolean   @default(false) @map("has_term_days")
   /// Cam kết TẦN SUẤT trả tiền mỗi tháng (ví dụ "1 Tháng 2 Lần" → 2).
   /// KHÔNG sinh ra hạn thanh toán vì không biết ngày cụ thể — khách có thể
   /// chuyển 2 lần liền nhau. Chỉ dùng để đếm số lần đã trả trong tháng
   /// và cảnh báo khi chưa đạt cam kết.
-  paymentFrequency Int? @map("payment_frequency")
-
-  // ---- PHÂN LOẠI (theo file quản lý) ----
-  /// TRUST=Công Nợ Tín Nhiệm | CONTRACT=Hợp Đồng Công Nợ
-  /// COD=Thanh Toán Khi Nhận Hàng | PREPAID=Chuyển Khoản Ngay
-  debtForm String? @map("debt_form")
-
+  paymentFrequency             Int?      @map("payment_frequency")
   /// Người phụ trách (PIC).
-  salePicId       Int? @map("sale_pic_id")
-  accountantPicId Int? @map("accountant_pic_id")
-
-  // ---- ĐÁNH GIÁ LỊCH SỬ THANH TOÁN ----
-  // Hệ thống tự tính theo 6 tháng gần nhất, KHÔNG lưu autoPaymentHistory để
-  // mỗi lần xem luôn phản ánh dữ liệu mới. Người dùng chỉ lưu OVERRIDE khi
-  // cần điều chỉnh nhận định máy, kèm lý do bắt buộc để truy vết.
-  // ON_TIME | SLIGHT_LATE | OFTEN_LATE | HIGH_RISK
-  paymentHistoryOverride     String?   @map("payment_history_override")
-  paymentHistoryOverrideNote String?   @map("payment_history_override_note")
-  paymentHistoryOverriddenBy Int?      @map("payment_history_overridden_by")
-  paymentHistoryOverriddenAt DateTime? @map("payment_history_overridden_at")
-
-  isActive  Boolean  @default(true) @map("is_active")
-  createdBy Int?     @map("created_by")
-  updatedBy Int?     @map("updated_by")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  customer  Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  salePicId                    Int?      @map("sale_pic_id")
+  paymentHistoryOverriddenAt   DateTime? @map("payment_history_overridden_at")
+  paymentHistoryOverriddenBy   Int?      @map("payment_history_overridden_by")
+  paymentHistoryOverride       String?   @map("payment_history_override")
+  paymentHistoryOverrideNote   String?   @map("payment_history_override_note")
+  /// Khách mới mặc định phải thanh toán đủ trước khi tạo hóa đơn trên POS.
+  /// Khách cũ không có policy hoặc policy cũ giữ false sẽ không bị áp dụng.
+  requireFullPaymentForInvoice Boolean   @default(false) @map("require_full_payment_for_invoice")
+  /// Chỉ một loại quy tắc công nợ: NONE, CREDIT_LIMIT, TERM_DAYS,
+  /// MONTHLY_SCHEDULE hoặc WEEKLY_SCHEDULE.
+  debtRuleType                 String    @default("NONE") @map("debt_rule_type")
+  paymentScheduleDays          Json?     @map("payment_schedule_days")
+  paymentScheduleType          String?   @map("payment_schedule_type")
+  customer                     Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([hasCreditLimit])
   @@index([hasTermDays])
@@ -3991,31 +3945,30 @@ model CustomerDebtPolicy {
 model CustomerDebtNote {
   id         Int       @id @default(autoincrement())
   customerId Int       @unique @map("customer_id")
-  note       String?
-  noteBy     Int?      @map("note_by")
-  noteAt     DateTime? @map("note_at")
   createdAt  DateTime  @default(now()) @map("created_at")
   updatedAt  DateTime  @updatedAt @map("updated_at")
+  note       String?
+  noteAt     DateTime? @map("note_at")
+  noteBy     Int?      @map("note_by")
   customer   Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@map("customer_debt_notes")
 }
 
 model CustomerDebtCollectionAttempt {
-  id           Int       @id @default(autoincrement())
-  customerId   Int       @map("customer_id")
+  id           Int                             @id @default(autoincrement())
+  customerId   Int                             @map("customer_id")
   role         String
-  attemptDate  DateTime  @map("attempt_date") @db.Date
-  recordedById Int       @map("recorded_by_id")
-  recordedAt   DateTime  @default(now()) @map("recorded_at")
-  supersedesId Int?      @map("supersedes_id")
-  isActive     Boolean   @default(true) @map("is_active")
-  actionType   String    @default("CREATE") @map("action_type")
+  attemptDate  DateTime                        @map("attempt_date") @db.Date
+  recordedById Int                             @map("recorded_by_id")
+  recordedAt   DateTime                        @default(now()) @map("recorded_at")
+  supersedesId Int?                            @map("supersedes_id")
+  isActive     Boolean                         @default(true) @map("is_active")
+  actionType   String                          @default("CREATE") @map("action_type")
   reason       String?
-
-  customer     Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
-  recordedBy   User      @relation("DebtCollectionAttemptRecorder", fields: [recordedById], references: [id])
-  supersedes   CustomerDebtCollectionAttempt? @relation("DebtCollectionAttemptRevision", fields: [supersedesId], references: [id])
+  customer     Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  recordedBy   User                            @relation("DebtCollectionAttemptRecorder", fields: [recordedById], references: [id])
+  supersedes   CustomerDebtCollectionAttempt?  @relation("DebtCollectionAttemptRevision", fields: [supersedesId], references: [id])
   revisions    CustomerDebtCollectionAttempt[] @relation("DebtCollectionAttemptRevision")
 
   @@index([customerId, role, attemptDate])
@@ -4030,8 +3983,6 @@ model DebtTicket {
   code        String               @unique
   title       String?
   assigneeId  Int                  @map("assignee_id")
-  /// DEBT_COLLECTION = phiếu thu hồi nợ | STOP_DELIVERY = phiếu ngừng đi hàng.
-  ticketType  String               @default("DEBT_COLLECTION") @map("ticket_type")
   /// Quá trình thu hồi nợ, theo đúng quy trình đang vận hành:
   /// REQUESTED   = Yêu Cầu Thu Hồi Nợ
   /// IN_PROGRESS = Đang Tiến Hành
@@ -4049,10 +4000,12 @@ model DebtTicket {
   /// AUTO khi mọi khách đã trả đủ; MANUAL khi nhân viên tự kết thúc.
   closeMode   String?              @map("close_mode")
   closeReason String?              @map("close_reason")
-  assignee    User                 @relation("DebtTicketAssignee", fields: [assigneeId], references: [id])
-  creator     User                 @relation("DebtTicketCreator", fields: [createdById], references: [id])
-  closer      User?                @relation("DebtTicketCloser", fields: [closedById], references: [id])
+  /// DEBT_COLLECTION = phiếu thu hồi nợ | STOP_DELIVERY = phiếu ngừng đi hàng.
+  ticketType  String               @default("DEBT_COLLECTION") @map("ticket_type")
   customers   DebtTicketCustomer[]
+  assignee    User                 @relation("DebtTicketAssignee", fields: [assigneeId], references: [id])
+  closer      User?                @relation("DebtTicketCloser", fields: [closedById], references: [id])
+  creator     User                 @relation("DebtTicketCreator", fields: [createdById], references: [id])
 
   @@index([status])
   @@index([assigneeId, status])
@@ -4062,52 +4015,45 @@ model DebtTicket {
 
 /// Một dòng khách trong ticket.
 model DebtTicketCustomer {
-  id           Int     @id @default(autoincrement())
-  ticketId     Int     @map("ticket_id")
-  customerId   Int     @map("customer_id")
+  id                       Int        @id @default(autoincrement())
+  ticketId                 Int        @map("ticket_id")
+  customerId               Int        @map("customer_id")
   /// NỢ ĐẦU KÌ — ảnh chụp customer.totalDebt tại thời điểm tạo phiếu.
   /// Cố định, không đổi về sau. "Nợ cuối kì" KHÔNG lưu ở đây: nó luôn là
   /// nợ hiện tại của khách nên đọc trực tiếp từ customer.totalDebt.
-  debtAtCreate Decimal @default(0) @map("debt_at_create") @db.Decimal(18, 2)
-
-  /// Số tiền cần thanh toán để mở lại quyền tạo hóa đơn/đi hàng.
-  /// Chỉ dùng cho dòng STOP_DELIVERY, được snapshot từ requiredPaymentAmount.
-  requiredPaymentAmount Decimal @default(0) @map("required_payment_amount") @db.Decimal(18, 2)
-
-  /// Số tiền tạm xác nhận từ giao dịch Sepay chỉ có đúng khách này.
-  /// Không phải thanh toán kế toán; chỉ dùng để mở tạm quyền đi hàng trong
-  /// lúc chờ kế toán lập phiếu thu.
-  provisionalPaymentAmount Decimal? @map("provisional_payment_amount") @db.Decimal(18, 2)
-  provisionalSepayTxId Int? @map("provisional_sepay_tx_id")
-
+  debtAtCreate             Decimal    @default(0) @map("debt_at_create") @db.Decimal(18, 2)
+  /// PENDING | PARTIAL | PAID
+  status                   String     @default("PENDING")
+  paidAt                   DateTime?  @map("paid_at")
+  paidAmount               Decimal?   @map("paid_amount") @db.Decimal(18, 2)
+  /// Giao dịch Sepay đã khớp (khi nhân viên gắn khách ở Biến động số dư).
+  matchedSepayTxId         Int?       @map("matched_sepay_tx_id")
+  note                     String?
+  createdAt                DateTime   @default(now()) @map("created_at")
+  updatedAt                DateTime   @updatedAt @map("updated_at")
+  /// SỐ TIỀN KHÁCH XÁC NHẬN THANH TOÁN — khách cam kết trả bao nhiêu.
+  /// Có thể NHỎ HƠN minimumPayment (khách xin trả một phần). Thường trống.
+  /// Khi có giá trị, đây mới là mốc đối chiếu để đóng dòng.
+  confirmedAmount          Decimal?   @map("confirmed_amount") @db.Decimal(18, 2)
+  confirmedDate            DateTime?  @map("confirmed_date")
+  /// Phiếu MỚI NHẤT của khách này. Một khách được tạo phiếu nhiều đợt theo
+  /// thời gian; trang theo dõi công nợ chỉ hiển thị phiếu mới nhất.
+  isLatest                 Boolean    @default(true) @map("is_latest")
   /// SỐ TIỀN TỐI THIỂU CẦN PHẢI THANH TOÁN.
   /// Hệ thống GỢI Ý = phần nợ đã đến hạn (engine ageing), nhân viên SỬA được.
   /// Quy ước vận hành: không nên thấp hơn 30% nợ đầu kì — vi phạm chỉ cảnh
   /// báo, không chặn (dữ liệu thực tế có ~23% trường hợp thấp hơn).
-  minimumPayment Decimal? @map("minimum_payment") @db.Decimal(18, 2)
-
-  /// SỐ TIỀN KHÁCH XÁC NHẬN THANH TOÁN — khách cam kết trả bao nhiêu.
-  /// Có thể NHỎ HƠN minimumPayment (khách xin trả một phần). Thường trống.
-  /// Khi có giá trị, đây mới là mốc đối chiếu để đóng dòng.
-  confirmedAmount Decimal?  @map("confirmed_amount") @db.Decimal(18, 2)
-  confirmedDate   DateTime? @map("confirmed_date")
-
-  /// PENDING | PARTIAL | PAID
-  status           String    @default("PENDING")
-  paidAt           DateTime? @map("paid_at")
-  paidAmount       Decimal?  @map("paid_amount") @db.Decimal(18, 2)
-  /// Giao dịch Sepay đã khớp (khi nhân viên gắn khách ở Biến động số dư).
-  matchedSepayTxId Int?      @map("matched_sepay_tx_id")
-
-  /// Phiếu MỚI NHẤT của khách này. Một khách được tạo phiếu nhiều đợt theo
-  /// thời gian; trang theo dõi công nợ chỉ hiển thị phiếu mới nhất.
-  isLatest Boolean @default(true) @map("is_latest")
-
-  note      String?
-  createdAt DateTime   @default(now()) @map("created_at")
-  updatedAt DateTime   @updatedAt @map("updated_at")
-  ticket    DebtTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
-  customer  Customer   @relation(fields: [customerId], references: [id])
+  minimumPayment           Decimal?   @map("minimum_payment") @db.Decimal(18, 2)
+  /// Số tiền cần thanh toán để mở lại quyền tạo hóa đơn/đi hàng.
+  /// Chỉ dùng cho dòng STOP_DELIVERY, được snapshot từ requiredPaymentAmount.
+  requiredPaymentAmount    Decimal    @default(0) @map("required_payment_amount") @db.Decimal(18, 2)
+  /// Số tiền tạm xác nhận từ giao dịch Sepay chỉ có đúng khách này.
+  /// Không phải thanh toán kế toán; chỉ dùng để mở tạm quyền đi hàng trong
+  /// lúc chờ kế toán lập phiếu thu.
+  provisionalPaymentAmount Decimal?   @map("provisional_payment_amount") @db.Decimal(18, 2)
+  provisionalSepayTxId     Int?       @map("provisional_sepay_tx_id")
+  customer                 Customer   @relation(fields: [customerId], references: [id])
+  ticket                   DebtTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
 
   @@unique([ticketId, customerId])
   @@index([customerId, status])
@@ -4115,4 +4061,11 @@ model DebtTicketCustomer {
   @@index([matchedSepayTxId])
   @@index([provisionalSepayTxId])
   @@map("debt_ticket_customers")
+}
+
+enum MisaSyncStatus {
+  PENDING
+  SYNCED
+  FAILED
+  SKIP
 }

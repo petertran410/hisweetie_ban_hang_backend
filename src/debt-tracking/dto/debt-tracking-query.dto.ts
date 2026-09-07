@@ -4,6 +4,8 @@ import {
   IsIn,
   IsBoolean,
   IsArray,
+  ArrayNotEmpty,
+  ArrayMaxSize,
   IsInt,
   IsNumber,
   Min,
@@ -113,6 +115,15 @@ export class DebtTrackingQueryDto {
   @IsString()
   @IsIn(['asc', 'desc'])
   orderDirection?: 'asc' | 'desc';
+}
+
+export class NotifySaleDebtDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(50)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  customerIds!: number[];
 }
 
 /**

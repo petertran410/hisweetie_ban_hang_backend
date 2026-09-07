@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
@@ -14,6 +15,7 @@ import {
   EditCollectionAttemptDto,
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
+import { LarkDebtNotificationService } from '../lark-sync/services/lark-debt-notification.service';
 import {
   computeCustomerAging,
   evaluateFixedPaymentSchedule,
@@ -104,6 +106,7 @@ export class DebtTrackingService {
   constructor(
     private prisma: PrismaService,
     private auditLogs: AuditLogsService,
+    @Optional() private larkDebtNotification?: LarkDebtNotificationService,
   ) {}
 
   // ================================================================
@@ -289,7 +292,18 @@ export class DebtTrackingService {
             overrideNote: p?.paymentHistoryOverrideNote ?? null,
             overriddenAt: p?.paymentHistoryOverriddenAt ?? null,
           },
-          salePic: p?.salePicId ? (picMap.get(p.salePicId) ?? null) : null,
+          salePic: p?.salePicId
+            ? (() => {
+                const salePic = picMap.get(p.salePicId);
+                return salePic
+                  ? {
+                      id: salePic.id,
+                      name: salePic.name,
+                      canNotify: Boolean(salePic.larkUserId),
+                    }
+                  : null;
+              })()
+            : null,
           salePicId: p?.salePicId ?? null,
           requireFullPaymentForInvoice:
             p?.requireFullPaymentForInvoice ?? false,
@@ -389,6 +403,134 @@ export class DebtTrackingService {
         totalPages: Math.ceil(total / pageSize),
       },
     };
+  }
+
+  async notifySaleDebt(customerIds: number[]) {
+    const ids = [...new Set(customerIds.filter((id) => Number.isInteger(id) && id > 0))];
+    if (ids.length === 0) {
+      throw new BadRequestException('Chưa chọn khách hàng để gửi nhắc công nợ');
+    }
+    if (ids.length > 50) {
+      throw new BadRequestException('Mỗi lần chỉ được gửi tối đa 50 khách hàng');
+    }
+    if (!this.larkDebtNotification) {
+      throw new BadRequestException('Chưa cấu hình dịch vụ gửi tin nhắn Lark');
+    }
+
+    const rows = await this.findAll({ page: 1, pageSize: MAX_CUSTOMERS_SCAN });
+    const rowsById = new Map(rows.data.map((row) => [row.customerId, row]));
+    const salePicIds = ids
+      .map((id) => rowsById.get(id)?.policy.salePicId)
+      .filter((id): id is number => Number.isInteger(id));
+    const saleUsers = salePicIds.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: [...new Set(salePicIds)] }, isActive: true },
+          select: { id: true, name: true, larkUserId: true },
+        })
+      : [];
+    const saleUsersById = new Map(saleUsers.map((user) => [user.id, user]));
+
+    type NotificationResult = {
+      customerId: number;
+      customerName: string;
+      salePicName: string | null;
+      status: 'SENT' | 'MISSING_SALE_PIC' | 'MISSING_LARK_USER' | 'ERROR';
+      message?: string;
+    };
+    const results: NotificationResult[] = [];
+    for (const customerId of ids) {
+      const row = rowsById.get(customerId);
+      if (!row) {
+        results.push({
+          customerId,
+          customerName: '—',
+          salePicName: null,
+          status: 'ERROR' as const,
+          message: 'Không tìm thấy khách trong danh sách theo dõi công nợ',
+        });
+        continue;
+      }
+
+      const salePicId = row.policy.salePicId;
+      const salePic = salePicId ? saleUsersById.get(salePicId) : null;
+      if (!salePicId || !salePic) {
+        results.push({
+          customerId,
+          customerName: row.name,
+          salePicName: null,
+          status: 'MISSING_SALE_PIC' as const,
+          message: 'Khách hàng chưa được gán Sale PIC',
+        });
+        continue;
+      }
+      if (!salePic.larkUserId?.trim()) {
+        results.push({
+          customerId,
+          customerName: row.name,
+          salePicName: salePic.name,
+          status: 'MISSING_LARK_USER' as const,
+          message: 'Sale PIC chưa được liên kết tài khoản Lark',
+        });
+        continue;
+      }
+
+      try {
+        await this.larkDebtNotification.notifySaleDebtReminder({
+          larkUserId: salePic.larkUserId.trim(),
+          customerName: row.name,
+          customerCode: row.code,
+          totalDebt: row.totalDebt,
+          requiredPaymentAmount: row.requiredPaymentAmount,
+          debtStatus: row.debtStatus,
+          nearestDueDate: row.nearestDueDate
+            ? new Date(row.nearestDueDate).toLocaleDateString('vi-VN')
+            : null,
+          policyDescription: this.describePolicyForNotification(row.policy),
+        });
+        results.push({
+          customerId,
+          customerName: row.name,
+          salePicName: salePic.name,
+          status: 'SENT' as const,
+        });
+      } catch (error: any) {
+        this.logger.warn(
+          `Gửi nhắc công nợ cho Sale PIC của KH#${customerId} thất bại: ${error?.message || error}`,
+        );
+        results.push({
+          customerId,
+          customerName: row.name,
+          salePicName: salePic.name,
+          status: 'ERROR' as const,
+          message: error?.message || 'Gửi tin nhắn Lark thất bại',
+        });
+      }
+    }
+
+    return {
+      total: ids.length,
+      sent: results.filter((result) => result.status === 'SENT').length,
+      failed: results.filter((result) => result.status !== 'SENT').length,
+      results,
+    };
+  }
+
+  private describePolicyForNotification(policy: any): string {
+    if (!policy) return '—';
+    if (policy.debtRuleType === 'MONTHLY_SCHEDULE') {
+      return `Thanh toán cố định tháng (ngày ${(policy.paymentScheduleDays ?? []).join(', ')})`;
+    }
+    if (policy.debtRuleType === 'WEEKLY_SCHEDULE') {
+      const labels = ['', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+      return `Thanh toán cố định tuần (${(policy.paymentScheduleDays ?? [])
+        .map((day: number) => labels[day] ?? day)
+        .join(', ')})`;
+    }
+    if (policy.debtRuleType === 'TERM_DAYS') {
+      return `Công nợ ${policy.termDays ?? '—'} ngày`;
+    }
+    if (policy.debtRuleType === 'CREDIT_LIMIT') return 'Hạn mức công nợ';
+    return 'Không công nợ';
   }
 
   // ================================================================
@@ -1322,7 +1464,9 @@ export class DebtTrackingService {
   /** Nạp thông tin Sale PIC từ chính sách công nợ. */
   private async getPicUsers(
     customers: Array<{ debtPolicy: unknown }>,
-  ): Promise<Map<number, { id: number; name: string }>> {
+  ): Promise<
+    Map<number, { id: number; name: string; larkUserId: string | null }>
+  > {
     const ids = new Set<number>();
     for (const c of customers) {
       const p = c.debtPolicy as RawDebtPolicy | null;
@@ -1332,7 +1476,7 @@ export class DebtTrackingService {
 
     const users = await this.prisma.user.findMany({
       where: { id: { in: [...ids] } },
-      select: { id: true, name: true },
+      select: { id: true, name: true, larkUserId: true },
     });
     return new Map(users.map((u) => [u.id, u]));
   }

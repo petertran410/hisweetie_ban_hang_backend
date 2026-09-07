@@ -26,6 +26,7 @@ import {
   UpdatePaymentHistoryOverrideDto,
   CreateCollectionAttemptDto,
   EditCollectionAttemptDto,
+  NotifySaleDebtDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
@@ -76,6 +77,13 @@ export class DebtTrackingController {
   @ApiOperation({ summary: 'Số liệu tổng hợp công nợ' })
   getSummary(@Query() query: DebtTrackingQueryDto) {
     return this.debtTrackingService.getSummary(query);
+  }
+
+  @Post('notify-sale')
+  @RequirePermissions('debt_tracking:update_policy')
+  @ApiOperation({ summary: 'Gửi nhắc công nợ riêng cho Sale PIC qua Lark' })
+  notifySale(@Body() dto: NotifySaleDebtDto) {
+    return this.debtTrackingService.notifySaleDebt(dto.customerIds);
   }
 
   @Get('export')

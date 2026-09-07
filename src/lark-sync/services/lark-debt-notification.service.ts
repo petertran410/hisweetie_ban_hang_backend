@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { LARK_CLIENT } from '../lark-client.provider';
 import { PrismaService } from '../../prisma/prisma.service';
+import { DEBT_STATUS_LABELS } from '../../debt-tracking/debt-tracking.constants';
 
 @Injectable()
 export class LarkDebtNotificationService {
@@ -69,6 +70,41 @@ export class LarkDebtNotificationService {
       params: { receive_id_type: 'chat_id' },
       data: {
         receive_id: chatId,
+        msg_type: 'text',
+        content: JSON.stringify({ text: content }),
+      },
+    });
+    if (response?.code && response.code !== 0) {
+      throw new Error(`Lark ${response.code}: ${response.msg || 'unknown error'}`);
+    }
+  }
+
+  async notifySaleDebtReminder(input: {
+    larkUserId: string;
+    customerName: string;
+    customerCode: string | null;
+    totalDebt: number;
+    requiredPaymentAmount: number;
+    debtStatus: keyof typeof DEBT_STATUS_LABELS;
+    nearestDueDate: string | null;
+    policyDescription: string;
+  }): Promise<void> {
+    const content = [
+      '🔔 Nhắc xử lý công nợ',
+      '',
+      `Khách hàng: ${input.customerName}`,
+      `Mã khách hàng: ${input.customerCode || '—'}`,
+      `Tổng dư nợ: ${Math.round(input.totalDebt).toLocaleString('vi-VN')} đ`,
+      `Số tiền cần thu: ${Math.round(input.requiredPaymentAmount).toLocaleString('vi-VN')} đ`,
+      `Trạng thái: ${DEBT_STATUS_LABELS[input.debtStatus] ?? input.debtStatus}`,
+      `Hạn gần nhất: ${input.nearestDueDate || '—'}`,
+      `Loại quy tắc: ${input.policyDescription || '—'}`,
+    ].join('\n');
+
+    const response = await this.client.im.message.create({
+      params: { receive_id_type: 'open_id' },
+      data: {
+        receive_id: input.larkUserId,
         msg_type: 'text',
         content: JSON.stringify({ text: content }),
       },
