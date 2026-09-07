@@ -3891,6 +3891,45 @@ model PublicApiIdempotencyKey {
   @@map("public_api_idempotency_keys")
 }
 
+// ============================================================
+// META CONVERSIONS API — OUTBOX CHO SỰ KIỆN PURCHASE
+// ============================================================
+model MetaPurchaseOutbox {
+  id             BigInt    @id @default(autoincrement())
+  invoiceId      Int       @map("invoice_id")
+  invoiceCode    String    @map("invoice_code")
+  eventId        String    @unique @map("event_id") @db.VarChar(120)
+  eventTime      DateTime  @map("event_time")
+  payload        Json
+
+  status         String    @default("PENDING") @db.VarChar(20)
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
+  lockedAt       DateTime? @map("locked_at")
+  lockedBy       String?   @map("locked_by") @db.VarChar(100)
+
+  lastHttpStatus Int?      @map("last_http_status")
+  lastErrorCode  Int?      @map("last_error_code")
+  lastError      String?   @map("last_error")
+  sentAt         DateTime? @map("sent_at")
+
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt, id])
+  @@index([status, lockedAt, id])
+  @@index([invoiceId])
+  @@map("meta_purchase_outbox")
+}
+
+// ====================================================================
+// THEO DÕI CÔNG NỢ KHÁCH HÀNG
+//
+// Nguyên tắc: KHÔNG tính lại tổng nợ ở đây. Tổng nợ luôn lấy từ
+// customer.totalDebt (Formula A — common/customer-debt.util.ts).
+// Các bảng dưới chỉ bổ sung CHÍNH SÁCH nợ và công cụ ĐÒI nợ.
+// ====================================================================
+
 /// Chính sách công nợ của từng khách. Khách KHÔNG có bản ghi ở đây
 /// được hiểu là NONE (không công nợ) và không hiện trong danh sách theo dõi.
 model CustomerDebtPolicy {

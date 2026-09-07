@@ -53,6 +53,7 @@ import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { MetaPurchaseOutboxService } from '../meta-purchase/meta-purchase-outbox.service';
 import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
@@ -74,6 +75,7 @@ export class InvoicesService {
     private packingSlipsService: PackingSlipsService,
     private promotionsService: PromotionsService,
     private larkProductSync: LarkProductSyncService,
+    private metaPurchaseOutbox: MetaPurchaseOutboxService,
   ) {}
 
   async resolveScan(
@@ -1821,6 +1823,34 @@ export class InvoicesService {
           userId,
           userName: user?.name || user?.email || 'System',
           branchId: invoice.branchId || undefined,
+        });
+
+        await this.metaPurchaseOutbox.enqueuePurchase(tx, {
+          id: invoice.id,
+          code: invoice.code,
+          createdAt: invoice.createdAt,
+          grandTotal: Number(invoice.grandTotal),
+          customer: invoice.customerId
+            ? await tx.customer.findUnique({
+                where: { id: invoice.customerId },
+                select: {
+                  id: true,
+                  email: true,
+                  phone: true,
+                  contactNumber: true,
+                },
+              })
+            : null,
+          details: invoice.details.map((d: any) => ({
+            productId: (d as any).productId,
+            productCode: (d as any).productCode,
+            productName: (d as any).productName,
+            quantity: Number((d as any).quantity),
+            price: Number((d as any).price),
+            totalPrice: Number((d as any).totalPrice),
+            isGift: (d as any).isGift,
+            lineType: (d as any).lineType,
+          })),
         });
 
         return tx.invoice.findUnique({
@@ -3652,6 +3682,34 @@ export class InvoicesService {
         branchId: invoice.branchId || undefined,
       });
 
+      await this.metaPurchaseOutbox.enqueuePurchase(tx, {
+        id: invoice.id,
+        code: invoice.code,
+        createdAt: invoice.createdAt,
+        grandTotal: Number(invoice.grandTotal),
+        customer: invoice.customerId
+          ? await tx.customer.findUnique({
+              where: { id: invoice.customerId },
+              select: {
+                id: true,
+                email: true,
+                phone: true,
+                contactNumber: true,
+              },
+            })
+          : null,
+        details: invoice.details.map((d: any) => ({
+          productId: (d as any).productId,
+          productCode: (d as any).productCode,
+          productName: (d as any).productName,
+          quantity: Number((d as any).quantity),
+          price: Number((d as any).price),
+          totalPrice: Number((d as any).totalPrice),
+          isGift: (d as any).isGift,
+          lineType: (d as any).lineType,
+        })),
+      });
+
       return tx.invoice.findUnique({
         where: { id: invoice.id },
         include: {
@@ -4010,6 +4068,34 @@ export class InvoicesService {
         userId,
         userName: user?.name || user?.email || 'System',
         branchId: invoice.branchId || undefined,
+      });
+
+      await this.metaPurchaseOutbox.enqueuePurchase(tx, {
+        id: invoice.id,
+        code: invoice.code,
+        createdAt: invoice.createdAt,
+        grandTotal: Number(invoice.grandTotal),
+        customer: invoice.customerId
+          ? await tx.customer.findUnique({
+              where: { id: invoice.customerId },
+              select: {
+                id: true,
+                email: true,
+                phone: true,
+                contactNumber: true,
+              },
+            })
+          : null,
+        details: invoice.details.map((d: any) => ({
+          productId: (d as any).productId,
+          productCode: (d as any).productCode,
+          productName: (d as any).productName,
+          quantity: Number((d as any).quantity),
+          price: Number((d as any).price),
+          totalPrice: Number((d as any).totalPrice),
+          isGift: (d as any).isGift,
+          lineType: (d as any).lineType,
+        })),
       });
 
       return tx.invoice.findUnique({
