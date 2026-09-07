@@ -179,7 +179,15 @@ export class DebtTicketsService {
 
       // Serialize code generation with concurrent ticket creators; the unique
       // constraint remains the final safety net if an older writer races us.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(2147483647)`;
+      // pg_advisory_xact_lock trả về void. Dùng DO/PERFORM để PostgreSQL
+      // không trả cột void về cho Prisma deserialize.
+      await tx.$executeRaw`
+        DO $$
+        BEGIN
+          PERFORM pg_advisory_xact_lock(2147483647);
+        END
+        $$;
+      `;
       const code = await this.generateCode(tx);
       const requiredPaymentAmount =
         await this.debtTracking.getSuggestedMinimumPayment(customerId);

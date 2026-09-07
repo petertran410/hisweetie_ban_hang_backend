@@ -16,6 +16,7 @@ describe('DebtTicketsService STOP quick workflow', () => {
   it('rejects a duplicate active STOP under the customer lock', async () => {
     const tx = {
       $queryRaw: jest.fn(),
+      $executeRaw: jest.fn(),
       customer: {
         findUnique: jest
           .fn()
@@ -35,6 +36,7 @@ describe('DebtTicketsService STOP quick workflow', () => {
       'đang mở',
     );
     expect(tx.$queryRaw).toHaveBeenCalled();
+    expect(tx.$executeRaw).not.toHaveBeenCalled();
   });
 
   it('quick creates one STOP ticket with accountant, then sale, then actor assignee', async () => {
@@ -46,6 +48,7 @@ describe('DebtTicketsService STOP quick workflow', () => {
     };
     const tx = {
       $queryRaw: jest.fn(),
+      $executeRaw: jest.fn(),
       customer: {
         findUnique: jest.fn().mockResolvedValue({
           id: 3,
@@ -73,6 +76,7 @@ describe('DebtTicketsService STOP quick workflow', () => {
       .spyOn(service, 'reconcileCustomerPayments')
       .mockResolvedValue(undefined);
     const result = await service.createStopDelivery(3, 8);
+    expect(tx.$executeRaw).toHaveBeenCalled();
     expect(tx.debtTicket.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ assigneeId: 7 }),
