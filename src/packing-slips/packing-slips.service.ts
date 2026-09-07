@@ -32,6 +32,7 @@ import {
   assertCanCancelPacking,
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
+import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -202,6 +203,26 @@ export class PackingSlipsService {
 
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
+
+      if (isConsignment) {
+        const consignments = await tx.consignment.findMany({
+          where: { id: { in: dto.consignmentIds } },
+          select: { customerId: true },
+        });
+        await assertCanDeliverForCustomers(
+          tx,
+          consignments.map((consignment) => consignment.customerId),
+        );
+      } else {
+        const invoices = await tx.invoice.findMany({
+          where: { id: { in: dto.invoiceIds } },
+          select: { customerId: true },
+        });
+        await assertCanDeliverForCustomers(
+          tx,
+          invoices.map((invoice) => invoice.customerId),
+        );
+      }
 
       const created = await tx.packingSlip.create({
         data: {
@@ -446,6 +467,27 @@ export class PackingSlipsService {
         const removedInvoiceIds = previousInvoiceIds.filter(
           (invoiceId) => !nextInvoiceIds.has(invoiceId),
         );
+
+        if (dto.invoiceIds && dto.invoiceIds.length > 0) {
+          const invoices = await tx.invoice.findMany({
+            where: { id: { in: dto.invoiceIds } },
+            select: { customerId: true },
+          });
+          await assertCanDeliverForCustomers(
+            tx,
+            invoices.map((invoice) => invoice.customerId),
+          );
+        }
+        if (dto.consignmentIds && dto.consignmentIds.length > 0) {
+          const consignments = await tx.consignment.findMany({
+            where: { id: { in: dto.consignmentIds } },
+            select: { customerId: true },
+          });
+          await assertCanDeliverForCustomers(
+            tx,
+            consignments.map((consignment) => consignment.customerId),
+          );
+        }
 
         await tx.packingSlipInvoice.deleteMany({
           where: { packingSlipId: id },

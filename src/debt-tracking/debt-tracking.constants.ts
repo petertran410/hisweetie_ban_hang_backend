@@ -28,6 +28,35 @@ export const DEBT_FORM_LABELS: Record<string, string> = {
   PREPAID: 'Chuyển khoản ngay',
 };
 
+// -------------------------------------------------- Quy tắc công nợ mới
+
+/** Một dòng import chỉ được chọn đúng một quy tắc công nợ. */
+export const DEBT_RULE_TYPE = {
+  NONE: 'NONE',
+  CREDIT_LIMIT: 'CREDIT_LIMIT',
+  TERM_DAYS: 'TERM_DAYS',
+  MONTHLY_SCHEDULE: 'MONTHLY_SCHEDULE',
+  WEEKLY_SCHEDULE: 'WEEKLY_SCHEDULE',
+} as const;
+
+export type DebtRuleType =
+  (typeof DEBT_RULE_TYPE)[keyof typeof DEBT_RULE_TYPE];
+
+export const DEBT_RULE_TYPES: string[] = Object.values(DEBT_RULE_TYPE);
+
+/** Đơn vị của các ngày thanh toán cố định. */
+export const PAYMENT_SCHEDULE_TYPE = {
+  MONTHLY: 'MONTHLY',
+  WEEKLY: 'WEEKLY',
+} as const;
+
+export type PaymentScheduleType =
+  (typeof PAYMENT_SCHEDULE_TYPE)[keyof typeof PAYMENT_SCHEDULE_TYPE];
+
+export const PAYMENT_SCHEDULE_TYPES: string[] = Object.values(
+  PAYMENT_SCHEDULE_TYPE,
+);
+
 // -------------------------------------------------- Đánh giá lịch sử thanh toán
 
 /**
@@ -132,6 +161,22 @@ export const DEBT_TICKET_STATUS = {
   DONE: 'DONE',
   ENDED: 'ENDED',
 } as const;
+
+/** Loại phiếu công nợ. */
+export const DEBT_TICKET_TYPE = {
+  DEBT_COLLECTION: 'DEBT_COLLECTION',
+  STOP_DELIVERY: 'STOP_DELIVERY',
+} as const;
+
+export type DebtTicketType =
+  (typeof DEBT_TICKET_TYPE)[keyof typeof DEBT_TICKET_TYPE];
+
+export const DEBT_TICKET_TYPES: string[] = Object.values(DEBT_TICKET_TYPE);
+
+export const DEBT_TICKET_TYPE_LABELS: Record<string, string> = {
+  DEBT_COLLECTION: 'Thu hồi công nợ',
+  STOP_DELIVERY: 'Ngừng đi hàng',
+};
 
 export const DEBT_TICKET_STATUSES: string[] = Object.values(DEBT_TICKET_STATUS);
 

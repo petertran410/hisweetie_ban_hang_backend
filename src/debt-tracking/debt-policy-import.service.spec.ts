@@ -1,89 +1,66 @@
 import { DebtPolicyImportService } from './debt-policy-import.service';
+import {
+  DEBT_RULE_TYPE,
+  PAYMENT_SCHEDULE_TYPE,
+} from './debt-tracking.constants';
 
-/**
- * Test cho phần phân tích cột "Loại Công Nợ" — nơi dễ sai nhất khi import.
- * Các chuỗi dưới đây lấy nguyên văn từ file quản lý công nợ thực tế.
- */
-describe('DebtPolicyImportService.parseDebtType', () => {
-  const svc = new DebtPolicyImportService(null as any);
-  const p = (s: string) => svc.parseDebtType(s);
+describe('DebtPolicyImportService parser', () => {
+  const service = new DebtPolicyImportService({} as never);
 
-  it('nhận diện "Không Công Nợ" — tắt cả hai chiều', () => {
-    const r = p('Không Công Nợ');
-    expect(r.recognized).toBe(true);
-    expect(r.hasCreditLimit).toBe(false);
-    expect(r.hasTermDays).toBe(false);
-    expect(r.termDays).toBeNull();
+  describe('parseDebtType', () => {
+    it.each([
+      ['Không Công Nợ', DEBT_RULE_TYPE.NONE],
+      ['Hạn Mức', DEBT_RULE_TYPE.CREDIT_LIMIT],
+      ['Công Nợ 7 Ngày', DEBT_RULE_TYPE.TERM_DAYS],
+      ['Thanh Toán Cố Định Tháng', DEBT_RULE_TYPE.MONTHLY_SCHEDULE],
+      ['Thanh Toán Cố Định Tuần', DEBT_RULE_TYPE.WEEKLY_SCHEDULE],
+    ])('maps %s to %s', (raw, debtRuleType) => {
+      expect(service.parseDebtType(raw)).toMatchObject({
+        debtRuleType,
+        recognized: true,
+      });
+    });
+
+    it('rejects combined legacy rules', () => {
+      expect(
+        service.parseDebtType('Hạn Mức, Công Nợ 7 Ngày').recognized,
+      ).toBe(false);
+    });
   });
 
-  it('chỉ số ngày', () => {
-    const r = p('Công Nợ 5 Ngày');
-    expect(r.hasTermDays).toBe(true);
-    expect(r.termDays).toBe(5);
-    expect(r.hasCreditLimit).toBe(false);
-  });
+  describe('parsePaymentSchedule', () => {
+    it('parses sorted unique monthly days', () => {
+      expect(
+        service.parsePaymentSchedule('15,30', PAYMENT_SCHEDULE_TYPE.MONTHLY),
+      ).toEqual({ days: [15, 30], error: null });
+    });
 
-  it('đọc đúng mọi kỳ hạn đang dùng thực tế', () => {
-    const cases: Array<[string, number]> = [
-      ['Công Nợ 1 Ngày', 1],
-      ['Công Nợ 3 Ngày', 3],
-      ['Công Nợ 7 Ngày', 7],
-      ['Công Nợ 10 Ngày', 10],
-      ['Công Nợ 15 Ngày', 15],
-      ['Công Nợ 20 Ngày', 20],
-      ['Công Nợ 30 Ngày', 30],
-      ['Công Nợ 45 Ngày', 45],
-      ['Công Nợ 55 Ngày', 55],
-    ];
-    for (const [raw, expected] of cases) {
-      expect(p(raw).termDays).toBe(expected);
-    }
-  });
+    it('parses Vietnamese weekdays to 1-7', () => {
+      expect(
+        service.parsePaymentSchedule(
+          'Thứ 2, Thứ 5, Chủ nhật',
+          PAYMENT_SCHEDULE_TYPE.WEEKLY,
+        ),
+      ).toEqual({ days: [1, 4, 7], error: null });
+    });
 
-  it('chỉ hạn mức', () => {
-    const r = p('Hạn Mức');
-    expect(r.hasCreditLimit).toBe(true);
-    expect(r.hasTermDays).toBe(false);
-    expect(r.recognized).toBe(true);
-  });
+    it.each([
+      ['30,15', PAYMENT_SCHEDULE_TYPE.MONTHLY],
+      ['15,15', PAYMENT_SCHEDULE_TYPE.MONTHLY],
+      ['0', PAYMENT_SCHEDULE_TYPE.MONTHLY],
+      ['32', PAYMENT_SCHEDULE_TYPE.MONTHLY],
+      ['Thứ 8', PAYMENT_SCHEDULE_TYPE.WEEKLY],
+      ['Thứ 5, Thứ 2', PAYMENT_SCHEDULE_TYPE.WEEKLY],
+    ])('rejects invalid schedule %s', (raw, scheduleType) => {
+      expect(
+        service.parsePaymentSchedule(raw, scheduleType).error,
+      ).toBeTruthy();
+    });
 
-  it('kết hợp hạn mức + số ngày', () => {
-    const r = p('Hạn Mức, Công Nợ 7 Ngày');
-    expect(r.hasCreditLimit).toBe(true);
-    expect(r.hasTermDays).toBe(true);
-    expect(r.termDays).toBe(7);
-  });
-
-  it('bỏ qua khác biệt hoa thường và khoảng trắng thừa', () => {
-    // Cả ba biến thể này đều xuất hiện trong file thật.
-    expect(p('Hạn Mức, Công nợ 5 Ngày').termDays).toBe(5);
-    expect(p('Hạn Mức,  Công Nợ 5 Ngày').termDays).toBe(5);
-    expect(p('  công nợ 3 ngày  ').termDays).toBe(3);
-    expect(p('Hạn Mức, Công nợ 7 Ngày').hasCreditLimit).toBe(true);
-  });
-
-  it('"1 Tháng 2 Lần" → tần suất, KHÔNG phải hạn ngày', () => {
-    const r = p('1 Tháng 2 Lần');
-    expect(r.paymentFrequency).toBe(2);
-    expect(r.hasTermDays).toBe(false);
-    expect(r.termDays).toBeNull();
-    expect(r.recognized).toBe(true);
-  });
-
-  it('không nhận diện được giá trị lạ', () => {
-    // "Chuyển khoản ngay" là hình thức công nợ, bị ghi nhầm vào cột Loại.
-    expect(p('Chuyển khoản ngay').recognized).toBe(false);
-    expect(p('abcxyz').recognized).toBe(false);
-  });
-
-  it('ô trống không được coi là hợp lệ', () => {
-    expect(p('').recognized).toBe(false);
-    expect(p('   ').recognized).toBe(false);
-  });
-
-  it('không nhầm số trong tên khác thành số ngày', () => {
-    const r = p('Hạn Mức');
-    expect(r.termDays).toBeNull();
-    expect(r.paymentFrequency).toBeNull();
+    it('requires values for a fixed schedule', () => {
+      expect(
+        service.parsePaymentSchedule('', PAYMENT_SCHEDULE_TYPE.MONTHLY),
+      ).toEqual({ days: null, error: 'Thiếu ngày thanh toán cho lịch cố định' });
+    });
   });
 });

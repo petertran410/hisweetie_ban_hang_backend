@@ -13,9 +13,16 @@ interface RecalcDebtOptions {
  */
 type CustomerChangedHook = (customerId: number) => void;
 let onCustomerChanged: CustomerChangedHook | null = null;
+const additionalCustomerChangedHooks = new Set<CustomerChangedHook>();
 
 export function setCustomerChangedHook(fn: CustomerChangedHook | null): void {
   onCustomerChanged = fn;
+}
+
+/** Đăng ký thêm consumer mà không ghi đè hook đồng bộ Lark hiện có. */
+export function addCustomerChangedHook(fn: CustomerChangedHook): () => void {
+  additionalCustomerChangedHooks.add(fn);
+  return () => additionalCustomerChangedHooks.delete(fn);
 }
 
 // Formula A — NGUỒN CHÂN LÝ DUY NHẤT. Tính nợ RIÊNG của 1 khách, ghi + trả về totalDebt.
@@ -101,6 +108,7 @@ export async function recalcCustomerDebt(
   // transaction nghiệp vụ nếu hook lỗi.
   try {
     onCustomerChanged?.(customerId);
+    for (const hook of additionalCustomerChangedHooks) hook(customerId);
   } catch {
     /* noop — sync Lark không được phép làm hỏng luồng công nợ */
   }

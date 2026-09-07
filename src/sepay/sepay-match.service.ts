@@ -247,10 +247,17 @@ export class SepayMatchService {
 
       // completed: có phiếu thu hiệu lực VÀ không còn tiền chưa gắn.
       // assigned : còn tiền chưa gắn (vd 1 phiếu bị hủy) hoặc chưa tạo phiếu.
+      // processing: toàn bộ allocation trước đó đều thuộc phiếu đã hủy,
+      // không còn khách đang chờ và cũng không còn phiếu thu hiệu lực.
       const isCompleted = hasActiveCf && unassignedAmount <= 0;
+      const isProcessing = !hasActiveCf && visibleAllocs.length === 0;
 
       result.set(tx.sepayId, {
-        status: isCompleted ? 'completed' : 'assigned',
+        status: isProcessing
+          ? 'processing'
+          : isCompleted
+            ? 'completed'
+            : 'assigned',
         completedSource: isCompleted ? 'manual' : null,
         customers: matchCustomers,
         refCode: null,
@@ -356,9 +363,15 @@ export class SepayMatchService {
     // Đối chiếu ticket đòi nợ: gắn khách = ghi nhận khách đã thanh toán.
     // Chạy NGOÀI transaction và tự nuốt lỗi bên trong service — việc đối chiếu
     // ticket không được phép làm hỏng thao tác gắn khách của kế toán.
-    void this.debtTicketAutoClose.onSepayCustomersAssigned(
+    const affectedCustomerIds = [
+      ...new Set([
+        ...existingAllocs.map((allocation) => allocation.customerId),
+        ...customers.map((customer) => customer.id),
+      ]),
+    ];
+    await this.debtTicketAutoClose.onSepayCustomersAssigned(
       tx.id,
-      customers.map((c) => c.id),
+      affectedCustomerIds,
     );
 
     return { success: true, customers };
@@ -430,7 +443,7 @@ export class SepayMatchService {
       .filter((a) => removableIds.includes(a.id))
       .map((a) => a.customerId);
     if (unassignedCustomerIds.length > 0) {
-      void this.debtTicketAutoClose.onSepayCustomersUnassigned(
+      await this.debtTicketAutoClose.onSepayCustomersUnassigned(
         tx.id,
         unassignedCustomerIds,
       );
@@ -673,6 +686,11 @@ export class SepayMatchService {
         },
       });
     });
+
+    void this.debtTicketAutoClose.onSepayReceiptConfirmed(
+      tx.id,
+      allocations.map((a) => a.customerId),
+    );
 
     return {
       success: true,

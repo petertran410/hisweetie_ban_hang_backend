@@ -1,6 +1,7 @@
 import {
   IsOptional,
   IsString,
+  MinLength,
   IsInt,
   IsIn,
   IsArray,
@@ -16,6 +17,7 @@ import { Type } from 'class-transformer';
 import {
   DEBT_TICKET_STATUSES,
   DEBT_TICKET_LINE_STATUSES,
+  DEBT_TICKET_TYPES,
 } from '../../debt-tracking/debt-tracking.constants';
 
 export class DebtTicketCustomerInputDto {
@@ -72,11 +74,24 @@ export class CreateDebtTicketDto {
   @MaxLength(2000)
   note?: string;
 
+  /** DEBT_COLLECTION hoặc STOP_DELIVERY. Mặc định là thu hồi công nợ. */
+  @IsOptional()
+  @IsString()
+  @IsIn(DEBT_TICKET_TYPES)
+  ticketType?: string;
+
   @IsArray()
   @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => DebtTicketCustomerInputDto)
   customers!: DebtTicketCustomerInputDto[];
+}
+
+export class StopDeliveryTicketDto {
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  customerId!: number;
 }
 
 export class UpdateDebtTicketDto {
@@ -135,6 +150,7 @@ export class CloseDebtTicketDto {
    * thu đủ; còn khách chưa đủ thì người kết thúc phải nêu lý do để truy vết.
    */
   @IsString()
+  @MinLength(1)
   @MaxLength(1000)
   reason!: string;
 
@@ -162,6 +178,11 @@ export class DebtTicketQueryDto {
   @IsString()
   @IsIn(DEBT_TICKET_STATUSES)
   status?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsIn(DEBT_TICKET_TYPES)
+  ticketType?: string;
 
   /** true = chỉ phiếu còn hoạt động (REQUESTED/IN_PROGRESS/WAITING). */
   @IsOptional()

@@ -274,7 +274,7 @@ export class InvoicesController {
 
   /**
    * Tuyến tạo hóa đơn dành riêng cho POS. Chỉ tuyến này áp quy tắc khách
-   * Chuyển khoản ngay + Không công nợ phải thanh toán đủ trước khi tạo.
+   * Chính sách yêu cầu thanh toán đủ phải thanh toán đủ trước khi tạo.
    * Public API/tích hợp tiếp tục dùng POST /invoices không bị thay đổi.
    */
   @Post('pos')

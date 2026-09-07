@@ -19,6 +19,7 @@ import {
   CloseDebtTicketDto,
   AddTicketCustomersDto,
   DebtTicketQueryDto,
+  StopDeliveryTicketDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -42,6 +43,16 @@ export class DebtTicketsController {
   @ApiOperation({ summary: 'Tạo phiếu thu hồi nợ' })
   create(@Body() dto: CreateDebtTicketDto, @Req() req: any) {
     return this.debtTicketsService.create(dto, req.user?.id);
+  }
+
+  @Post('stop-delivery')
+  @RequirePermissions('debt_tickets:create')
+  @ApiOperation({ summary: 'Tạo nhanh phiếu ngừng đi hàng cho một khách' })
+  createStopDelivery(@Body() dto: StopDeliveryTicketDto, @Req() req: any) {
+    return this.debtTicketsService.createStopDelivery(
+      dto.customerId,
+      req.user?.id,
+    );
   }
 
   @Get(':id')
@@ -90,7 +101,7 @@ export class DebtTicketsController {
   }
 
   @Post(':id/close')
-  @RequirePermissions('debt_tickets:close')
+  @RequirePermissions('debt_tickets:cancel')
   @ApiOperation({
     summary:
       'Kết thúc phiếu thủ công — DONE (đã xong) hoặc ENDED (dừng). Bắt buộc nêu lý do.',
@@ -104,7 +115,7 @@ export class DebtTicketsController {
   }
 
   @Post(':id/cancel')
-  @RequirePermissions('debt_tickets:close')
+  @RequirePermissions('debt_tickets:cancel')
   @ApiOperation({ summary: 'Dừng phiếu (ENDED) — không thu được' })
   cancel(
     @Param('id') id: string,

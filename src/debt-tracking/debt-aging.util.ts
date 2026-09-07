@@ -53,12 +53,79 @@ export interface AgingInvoiceInput {
 }
 
 export interface DebtPolicyInput {
+  debtRuleType?: string | null;
   hasCreditLimit: boolean;
   creditLimit?: number | null;
   hasTermDays: boolean;
   termDays?: number | null;
   /** Cam kết số lần trả tiền mỗi tháng. Không sinh hạn thanh toán. */
   paymentFrequency?: number | null;
+  paymentScheduleType?: 'MONTHLY' | 'WEEKLY' | null;
+  paymentScheduleDays?: number[] | null;
+}
+
+export interface FixedScheduleInfo {
+  dueDate: Date | null;
+  overdueDate: Date | null;
+  daysUntilDue: number | null;
+  isOverdue: boolean;
+}
+
+function lastDayOfMonth(year: number, month: number): number {
+  return new Date(year, month + 1, 0).getDate();
+}
+
+function scheduleDateForMonth(year: number, month: number, day: number): Date {
+  return new Date(year, month, Math.min(day, lastDayOfMonth(year, month)));
+}
+
+/** Tìm kỳ thanh toán gần nhất (đã qua hoặc sắp tới) của lịch cố định. */
+export function resolveFixedSchedule(
+  policy: Pick<DebtPolicyInput, 'paymentScheduleType' | 'paymentScheduleDays'>,
+  now: Date,
+  graceDays: number = DEBT_GRACE_DAYS,
+): FixedScheduleInfo {
+  const days = [...new Set(policy.paymentScheduleDays ?? [])].sort((a, b) => a - b);
+  if (!policy.paymentScheduleType || days.length === 0) {
+    return { dueDate: null, overdueDate: null, daysUntilDue: null, isOverdue: false };
+  }
+
+  const today = startOfDay(now);
+  const candidates: Date[] = [];
+  if (policy.paymentScheduleType === 'MONTHLY') {
+    for (const offset of [-1, 0, 1]) {
+      const monthDate = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      for (const day of days) {
+        candidates.push(scheduleDateForMonth(monthDate.getFullYear(), monthDate.getMonth(), day));
+      }
+    }
+  } else {
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    for (let offset = -1; offset <= 1; offset++) {
+      const weekStart = new Date(monday);
+      weekStart.setDate(monday.getDate() + offset * 7);
+      for (const day of days) {
+        const date = new Date(weekStart);
+        date.setDate(weekStart.getDate() + day - 1);
+        candidates.push(date);
+      }
+    }
+  }
+
+  candidates.sort((a, b) => a.getTime() - b.getTime());
+  const nextDue = candidates.find((date) => date >= today) ?? candidates[candidates.length - 1];
+  const previousDue = [...candidates].reverse().find((date) => date <= today) ?? nextDue;
+  const previousOverdue = previousDue ? addDays(previousDue, graceDays) : null;
+  const hasPreviousSchedule = !!previousDue && previousDue <= today;
+  const isOverdue = !!previousOverdue && today > previousOverdue;
+  const dueDate = hasPreviousSchedule ? previousDue : nextDue;
+  return {
+    dueDate: dueDate ?? null,
+    overdueDate: previousOverdue,
+    daysUntilDue: dueDate ? diffDays(today, dueDate) : null,
+    isOverdue,
+  };
 }
 
 export interface OutstandingInvoice {
@@ -259,6 +326,12 @@ export function computeCustomerAging(
 
   const { allocated, unallocated } = allocateDebtFifo(invoices, totalDebt);
 
+  const fixedSchedule =
+    policy.debtRuleType === 'MONTHLY_SCHEDULE' ||
+    policy.debtRuleType === 'WEEKLY_SCHEDULE'
+      ? resolveFixedSchedule(policy, now, graceDays)
+      : null;
+
   const outstandingInvoices: OutstandingInvoice[] = allocated.map((inv) => {
     const dueDate = resolveInvoiceDueDate(inv, policy);
     const overdueDate = resolveInvoiceOverdueDate(inv, policy, graceDays);
@@ -300,7 +373,15 @@ export function computeCustomerAging(
   let notDueAmount = 0;
   let undeliveredAmount = 0;
 
-  if (!policy.hasTermDays && !policy.hasCreditLimit) {
+  if (fixedSchedule) {
+    const scheduledDebt = Math.max(0, totalDebt);
+    if (fixedSchedule.isOverdue) overdueAmount = scheduledDebt;
+    else if ((fixedSchedule.daysUntilDue ?? 0) <= 0) dueAmount = scheduledDebt;
+    else if ((fixedSchedule.daysUntilDue ?? Infinity) <= DUE_THRESHOLD_DAYS) {
+      dueSoonAmount = scheduledDebt;
+      notDueAmount = scheduledDebt;
+    } else notDueAmount = scheduledDebt;
+  } else if (!policy.hasTermDays && !policy.hasCreditLimit) {
     // Không công nợ — về nguyên tắc không hiện trong danh sách theo dõi.
     notDueAmount = totalDebt - unallocated;
   } else if (!policy.hasTermDays && usesLimit) {
@@ -344,7 +425,7 @@ export function computeCustomerAging(
     .map((i) => i.dueDate as Date)
     .sort((a, b) => a.getTime() - b.getTime());
 
-  const nearestDueDate = upcoming.length > 0 ? upcoming[0] : null;
+  const nearestDueDate = fixedSchedule?.dueDate ?? (upcoming.length > 0 ? upcoming[0] : null);
 
   const maxDaysOverdue = outstandingInvoices
     .filter((i) => i.isOverdue)
@@ -354,6 +435,13 @@ export function computeCustomerAging(
   const invoiceRequiredAmount = policy.hasTermDays
     ? overdueAmount + dueAmount
     : 0;
+  const scheduleRequiredAmount = fixedSchedule
+    ? overdueAmount + dueAmount
+    : 0;
+  const effectiveInvoiceRequiredAmount = Math.max(
+    invoiceRequiredAmount,
+    scheduleRequiredAmount,
+  );
 
   const debtStatus = resolveDebtStatus({
     overdueAmount,
@@ -367,14 +455,14 @@ export function computeCustomerAging(
 
   const requiredPaymentAmount = Math.max(
     limitOverdueAmount,
-    invoiceRequiredAmount,
+    effectiveInvoiceRequiredAmount,
   );
   const requiredPaymentSource =
     requiredPaymentAmount <= MONEY_EPSILON
       ? 'NONE'
-      : Math.abs(limitOverdueAmount - invoiceRequiredAmount) <= MONEY_EPSILON
+      : Math.abs(limitOverdueAmount - effectiveInvoiceRequiredAmount) <= MONEY_EPSILON
         ? 'TIE'
-        : limitOverdueAmount > invoiceRequiredAmount
+        : limitOverdueAmount > effectiveInvoiceRequiredAmount
           ? 'CREDIT_LIMIT'
           : 'INVOICE';
 
@@ -394,7 +482,7 @@ export function computeCustomerAging(
     limitReached,
     overLimitAmount,
     limitOverdueAmount,
-    invoiceRequiredAmount,
+    invoiceRequiredAmount: effectiveInvoiceRequiredAmount,
     requiredPaymentAmount,
     requiredPaymentSource,
     debtStatus,
@@ -446,25 +534,34 @@ export function resolveDebtStatus(input: {
   return DEBT_STATUS.NORMAL;
 }
 
-// ------------------------------------------- tần suất thanh toán / tháng
+// ------------------------------------------- tần suất thanh toán theo kỳ
 
 export interface PaymentFrequencyResult {
-  /** Số lần khách đã thanh toán trong tháng đang xét. */
+  /** Số lần khách đã thanh toán trong kỳ đang xét (tháng hoặc tuần). */
+  paymentsThisPeriod: number;
+  /** @deprecated Dùng paymentsThisPeriod; giữ để tương thích API cũ. */
   paymentsThisMonth: number;
-  /** Số lần cam kết mỗi tháng. */
+  /** Số lần cam kết trong kỳ. */
   required: number;
   /** Đã đạt cam kết chưa. */
   met: boolean;
   /** Còn thiếu bao nhiêu lần. */
   remaining: number;
+  /** Đơn vị kỳ của lịch cố định; bỏ trống với kiểu cũ theo tháng. */
+  periodType?: 'MONTH' | 'WEEK';
+  /** Số kỳ đã quá hạn ân hạn mà chưa ghi nhận thanh toán. */
+  overdueCount?: number;
+  /** Kỳ thanh toán kế tiếp trong tháng/tuần hiện tại. */
+  nextScheduledDate?: Date | null;
 }
 
 /**
- * Đánh giá cam kết TẦN SUẤT trả tiền (ví dụ "1 tháng 2 lần").
+ * Đánh giá cam kết tần suất kiểu cũ (ví dụ "1 tháng 2 lần").
  *
  * Cố ý KHÔNG sinh hạn thanh toán: thực tế khách không báo ngày cụ thể, có
  * thể chuyển hai lần liền nhau trong cùng tuần. Vì vậy chỉ đếm số lần đã
- * trả trong tháng để nhắc khi chưa đạt, không dùng để tính quá hạn.
+ * trả trong tháng để nhắc khi chưa đạt, không dùng để tính quá hạn. Lịch
+ * cố định tháng/tuần dùng evaluateFixedPaymentSchedule bên dưới.
  *
  * @param paymentDates Ngày các lần thanh toán (CashFlow thu) của khách.
  */
@@ -484,6 +581,7 @@ export function evaluatePaymentFrequency(
   }).length;
 
   return {
+    paymentsThisPeriod: count,
     paymentsThisMonth: count,
     required: paymentFrequency,
     met: count >= paymentFrequency,
@@ -491,7 +589,119 @@ export function evaluatePaymentFrequency(
   };
 }
 
+/**
+ * Đánh giá lịch thanh toán cố định theo từng kỳ, thay vì đếm mọi khoản thu
+ * trong tháng. Mỗi ngày/thứ đã cấu hình là một kỳ; một kỳ được ghi nhận khi
+ * có khoản thu trong khoảng [ngày đến hạn, ngày đến hạn + ân hạn].
+ */
+export function evaluateFixedPaymentSchedule(
+  paymentDates: Date[],
+  scheduleType: 'MONTHLY' | 'WEEKLY' | null | undefined,
+  scheduleDays: number[] | null | undefined,
+  now: Date = new Date(),
+  graceDays: number = DEBT_GRACE_DAYS,
+): PaymentFrequencyResult | null {
+  const days = [...new Set((scheduleDays ?? []).map(Number))]
+    .filter((d) => Number.isInteger(d))
+    .sort((a, b) => a - b);
+  if (!scheduleType || days.length === 0) return null;
+
+  const today = startOfDay(now);
+  const dates: Date[] = [];
+
+  if (scheduleType === 'MONTHLY') {
+    const year = today.getFullYear();
+    const month = today.getMonth();
+    for (const offset of [-1, 0]) {
+      for (const day of days) {
+        dates.push(scheduleDateForMonth(year, month + offset, day));
+      }
+    }
+  } else {
+    const weekStart = new Date(today);
+    weekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+    for (const offset of [-1, 0]) {
+      for (const day of days) {
+        const date = new Date(weekStart);
+        date.setDate(weekStart.getDate() + offset * 7 + day - 1);
+        dates.push(date);
+      }
+    }
+  }
+
+  const uniqueDates = [
+    ...new Map(dates.map((date) => [startOfDay(date).getTime(), startOfDay(date)])).values(),
+  ].sort((a, b) => a.getTime() - b.getTime());
+  const sortedPayments = paymentDates.map(startOfDay).sort((a, b) => a.getTime() - b.getTime());
+  const usedPayments = new Set<number>();
+  const currentMonth = `${today.getFullYear()}-${today.getMonth()}`;
+  const currentWeekStart = new Date(today);
+  currentWeekStart.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  const elapsedDates = uniqueDates.filter((date) => {
+    if (date > today) return false;
+    const isCurrentPeriod =
+      scheduleType === 'MONTHLY'
+        ? `${date.getFullYear()}-${date.getMonth()}` === currentMonth
+        : diffDays(currentWeekStart, date) >= 0 &&
+          diffDays(currentWeekStart, date) < 7;
+    // Chỉ giữ kỳ trước nếu vẫn đang trong 5 ngày ân hạn, để không biến
+    // bộ đếm hiện tại thành báo cáo vô hạn các kỳ cũ.
+    return isCurrentPeriod || today <= addDays(date, graceDays);
+  });
+  let paidCount = 0;
+  let overdueCount = 0;
+
+  for (const dueDate of elapsedDates) {
+    const graceEnd = addDays(dueDate, graceDays);
+    const matchIndex = sortedPayments.findIndex(
+      (payment, index) =>
+        !usedPayments.has(index) &&
+        payment >= dueDate &&
+        payment <= graceEnd,
+    );
+    if (matchIndex >= 0) {
+      usedPayments.add(matchIndex);
+      paidCount++;
+    } else if (today > graceEnd) {
+      overdueCount++;
+    }
+  }
+
+  let nextScheduledDate = uniqueDates.find((date) => date >= today) ?? null;
+  if (!nextScheduledDate) {
+    if (scheduleType === 'MONTHLY') {
+      const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
+      nextScheduledDate = scheduleDateForMonth(
+        nextMonth.getFullYear(),
+        nextMonth.getMonth(),
+        days[0],
+      );
+    } else {
+      const nextWeek = new Date(today);
+      nextWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7) + 7);
+      nextWeek.setDate(nextWeek.getDate() + days[0] - 1);
+      nextScheduledDate = nextWeek;
+    }
+  }
+
+  return {
+    paymentsThisPeriod: paidCount,
+    paymentsThisMonth: paidCount,
+    required: elapsedDates.length,
+    met: paidCount >= elapsedDates.length,
+    remaining: Math.max(0, elapsedDates.length - paidCount),
+    periodType: scheduleType === 'WEEKLY' ? 'WEEK' : 'MONTH',
+    overdueCount,
+    nextScheduledDate,
+  };
+}
+
 /** Khách có bật công nợ hay không (một trong hai chiều). */
 export function hasAnyDebtPolicy(policy: DebtPolicyInput): boolean {
-  return !!policy.hasTermDays || !!policy.hasCreditLimit;
+  return (
+    !!policy.hasTermDays ||
+    !!policy.hasCreditLimit ||
+    policy.debtRuleType === 'MONTHLY_SCHEDULE' ||
+    policy.debtRuleType === 'WEEKLY_SCHEDULE'
+  );
 }

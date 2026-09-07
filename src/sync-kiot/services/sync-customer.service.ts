@@ -183,6 +183,7 @@ export class SyncCustomerService extends BaseSyncService {
             debtForm: 'PREPAID',
             hasCreditLimit: false,
             hasTermDays: false,
+            requireFullPaymentForInvoice: true,
             creditLimit: null,
             termDays: null,
             paymentFrequency: null,
