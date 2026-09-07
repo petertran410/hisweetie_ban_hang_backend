@@ -70,6 +70,7 @@ describe('InvoicesService delivery reporting', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     jest.spyOn(service, 'findOne').mockResolvedValue(currentInvoice as any);
 
