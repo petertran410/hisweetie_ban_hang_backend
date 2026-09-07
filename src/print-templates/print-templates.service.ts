@@ -643,16 +643,16 @@ export class PrintTemplatesService {
     };
   }
 
-  private async documentQrVars(
-    kind: 'invoice' | 'consignment',
-    code: string,
-  ) {
+  private async documentQrVars(kind: 'invoice' | 'consignment', code: string) {
     if (!code) return { Ma_QR_Chung_Tu: '' };
-    const dataUrl = await QRCode.toDataURL(createDocumentQrPayload(kind, code), {
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      width: 180,
-    });
+    const dataUrl = await QRCode.toDataURL(
+      createDocumentQrPayload(kind, code),
+      {
+        errorCorrectionLevel: 'M',
+        margin: 1,
+        width: 180,
+      },
+    );
     return {
       Ma_QR_Chung_Tu: `<img src="${dataUrl}" alt="QR chung tu" style="width:120px;height:120px;" />`,
     };
@@ -671,6 +671,19 @@ export class PrintTemplatesService {
     return new Intl.NumberFormat('en-US').format(Number(value || 0));
   }
 
+  private shippingFeeVars(shippingFeeValue: any) {
+    const shippingFee = Number(shippingFeeValue ?? 0);
+
+    return {
+      Phi_Giao_Hang: this.money(shippingFee),
+      Dong_Phi_Giao_Hang:
+        shippingFee > 0
+          ? `<div>Phí giao hàng: ${this.money(shippingFee)}</div>`
+          : '',
+      Style_Dong_Phi_Giao_Hang: shippingFee > 0 ? '' : 'display:none;',
+    };
+  }
+
   private async mapInvoice(inv: any) {
     return {
       ...this.storeVars(inv.branch),
@@ -678,6 +691,7 @@ export class PrintTemplatesService {
       ...this.customerVars(inv.customer, inv.delivery),
       ...this.staffVars(inv.soldBy, inv.creator),
       ...this.deliveryVars(inv.delivery, inv.customer),
+      ...this.shippingFeeVars(inv.shippingFee),
       ...this.qrVars(inv.soldBy, inv.grandTotal, inv.code),
       ...(await this.documentQrVars('invoice', inv.code)),
       Ma_Hoa_Don: inv.code || '',
@@ -701,6 +715,7 @@ export class PrintTemplatesService {
       ...this.customerVars(o.customer, o.delivery),
       ...this.staffVars(o.soldBy, o.creator),
       ...this.deliveryVars(o.delivery, o.customer),
+      ...this.shippingFeeVars(o.shippingFee),
       ...this.qrVars(o.soldBy, o.grandTotal, o.code),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
@@ -723,6 +738,7 @@ export class PrintTemplatesService {
       ...this.customerVars(c.customer, c.delivery),
       ...this.staffVars(c.soldBy, c.creator),
       ...this.deliveryVars(c.delivery, c.customer),
+      ...this.shippingFeeVars(c.shippingFee),
       ...this.qrVars(c.soldBy, c.grandTotal, c.code),
       ...(await this.documentQrVars('consignment', c.code)),
       Ma_Ky_Gui: c.code || '',

@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Response } from 'express';
@@ -13,6 +14,8 @@ import {
   CancelTransferDto,
   ConfirmShortageDto,
   TransferPlanningQueryDto,
+  SaveTempQuantityDto,
+  QuickCreateTransferDto,
 } from './dto';
 import { searchProductIds } from '../common/product-search.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -32,6 +35,8 @@ import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.
 
 @Injectable()
 export class TransfersService {
+  private readonly logger = new Logger(TransfersService.name);
+
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
@@ -983,6 +988,320 @@ export class TransfersService {
     };
   }
 
+  async saveTempQuantity(dto: SaveTempQuantityDto, userId: number) {
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
+    const product = await this.prisma.product.findFirst({
+      where: { id: dto.productId, isActive: true },
+      select: { id: true },
+    });
+    if (!product) {
+      throw new NotFoundException(
+        'Sản phẩm không tồn tại hoặc đã ngừng hoạt động',
+      );
+    }
+
+    if (dto.quantity === 0) {
+      await this.prisma.transferTempQuantity.deleteMany({
+        where: {
+          userId,
+          productId: dto.productId,
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+        },
+      });
+    } else {
+      await this.prisma.transferTempQuantity.upsert({
+        where: {
+          userId_productId_fromBranchId_toBranchId: {
+            userId,
+            productId: dto.productId,
+            fromBranchId: branchHNId,
+            toBranchId: branchSGId,
+          },
+        },
+        create: {
+          userId,
+          productId: dto.productId,
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+          quantity: dto.quantity,
+        },
+        update: { quantity: dto.quantity },
+      });
+    }
+
+    return { productId: dto.productId, quantity: dto.quantity };
+  }
+
+  async getTempQuantities(userId: number) {
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
+    const drafts = await this.prisma.transferTempQuantity.findMany({
+      where: {
+        userId,
+        fromBranchId: branchHNId,
+        toBranchId: branchSGId,
+        quantity: { gt: 0 },
+        product: { isActive: true },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (drafts.length === 0) return { data: [] };
+
+    const planning = await this.getPlanningSummary(
+      {
+        page: 1,
+        limit: 10000,
+        sortBy: 'suggestedQuantity',
+        sortDirection: 'desc',
+      },
+      userId,
+    );
+    const draftProductIds = new Set(drafts.map((draft) => draft.productId));
+    return {
+      data: planning.data.filter((item) => draftProductIds.has(item.id)),
+    };
+  }
+
+  async resetTempQuantities(userId: number) {
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
+    const result = await this.prisma.transferTempQuantity.deleteMany({
+      where: {
+        userId,
+        fromBranchId: branchHNId,
+        toBranchId: branchSGId,
+      },
+    });
+
+    return { resetCount: result.count };
+  }
+
+  async quickCreateTransfer(dto: QuickCreateTransferDto, userId: number) {
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
+    const productIds = [...new Set(dto.productIds)];
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user)
+      throw new NotFoundException(`Người dùng với ID ${userId} không tồn tại`);
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const drafts = await tx.transferTempQuantity.findMany({
+        where: {
+          userId,
+          productId: { in: productIds },
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+          quantity: { gt: 0 },
+        },
+      });
+      if (drafts.length === 0) {
+        throw new BadRequestException(
+          'Không còn SKU nào có Tạm chuyển lớn hơn 0',
+        );
+      }
+
+      const products = await tx.product.findMany({
+        where: {
+          id: { in: drafts.map((draft) => draft.productId) },
+          isActive: true,
+        },
+        select: { id: true, code: true, name: true },
+      });
+      if (products.length !== drafts.length) {
+        throw new BadRequestException(
+          'Một hoặc nhiều sản phẩm không còn hoạt động',
+        );
+      }
+      const productMap = new Map(
+        products.map((product) => [product.id, product]),
+      );
+      const inventories = await tx.inventory.findMany({
+        where: {
+          productId: { in: drafts.map((draft) => draft.productId) },
+          branchId: branchHNId,
+        },
+        select: { productId: true, cost: true },
+      });
+      const costMap = new Map(
+        inventories.map((inventory) => [
+          inventory.productId,
+          Number(inventory.cost),
+        ]),
+      );
+
+      const resetDrafts = async () => {
+        const deleted = await tx.transferTempQuantity.deleteMany({
+          where: {
+            OR: drafts.map((draft) => ({
+              id: draft.id,
+              quantity: draft.quantity,
+              updatedAt: draft.updatedAt,
+            })),
+          },
+        });
+        if (deleted.count !== drafts.length) {
+          throw new BadRequestException(
+            'Dữ liệu Tạm chuyển vừa thay đổi, vui lòng thử lại',
+          );
+        }
+      };
+
+      if (!dto.transferId) {
+        const [fromBranch, toBranch] = await Promise.all([
+          tx.branch.findUnique({ where: { id: branchHNId } }),
+          tx.branch.findUnique({ where: { id: branchSGId } }),
+        ]);
+        if (!fromBranch || !toBranch)
+          throw new NotFoundException('Không tìm thấy tuyến kho HN → SG');
+        const code = await this.generateTransferCode(tx);
+        const details = drafts.map((draft) => {
+          const product = productMap.get(draft.productId)!;
+          const price = costMap.get(draft.productId) || 0;
+          return {
+            productId: product.id,
+            productCode: product.code,
+            productName: product.name,
+            sendQuantity: draft.quantity,
+            receivedQuantity: 0,
+            sendPrice: price,
+            receivePrice: price,
+            totalTransfer: draft.quantity * price,
+            totalReceive: 0,
+          };
+        });
+        const transfer = await tx.transfer.create({
+          data: {
+            code,
+            fromBranchId: branchHNId,
+            toBranchId: branchSGId,
+            fromBranchName: fromBranch.name,
+            toBranchName: toBranch.name,
+            createdById: userId,
+            createdByName: user.name,
+            status: 1,
+            totalTransfer: details.reduce(
+              (sum, detail) => sum + detail.totalTransfer,
+              0,
+            ),
+            details: { create: details },
+          },
+          include: {
+            details: true,
+            fromBranch: true,
+            toBranch: true,
+            creator: true,
+          },
+        });
+        await resetDrafts();
+        return { transfer, createdNew: true, itemCount: drafts.length };
+      }
+
+      const existing = await tx.transfer.findUnique({
+        where: { id: dto.transferId },
+        include: { details: true, fromBranch: true, toBranch: true },
+      });
+      if (!existing || !existing.isActive)
+        throw new NotFoundException('Phiếu chuyển không tồn tại');
+      if (existing.status !== 1)
+        throw new BadRequestException('Chỉ có thể thêm vào phiếu tạm');
+      if (
+        existing.fromBranchId !== branchHNId ||
+        existing.toBranchId !== branchSGId
+      ) {
+        throw new BadRequestException(
+          'Phiếu chuyển không thuộc tuyến Kho Hà Nội → Kho Sài Gòn',
+        );
+      }
+
+      const existingDetailMap = new Map(
+        existing.details.map((detail) => [detail.productId, detail]),
+      );
+      for (const draft of drafts) {
+        const product = productMap.get(draft.productId)!;
+        const existingDetail = existingDetailMap.get(draft.productId);
+        const price = existingDetail
+          ? Number(existingDetail.sendPrice)
+          : costMap.get(draft.productId) || 0;
+        await tx.transferDetail.upsert({
+          where: {
+            transferId_productId: {
+              transferId: existing.id,
+              productId: draft.productId,
+            },
+          },
+          create: {
+            transferId: existing.id,
+            productId: draft.productId,
+            productCode: product.code,
+            productName: product.name,
+            sendQuantity: draft.quantity,
+            receivedQuantity: 0,
+            sendPrice: price,
+            receivePrice: price,
+            totalTransfer: draft.quantity * price,
+            totalReceive: 0,
+          },
+          update: {
+            sendQuantity: { increment: draft.quantity },
+            totalTransfer: { increment: draft.quantity * price },
+          },
+        });
+      }
+      const aggregate = await tx.transferDetail.aggregate({
+        where: { transferId: existing.id },
+        _sum: { totalTransfer: true },
+      });
+      const transfer = await tx.transfer.update({
+        where: { id: existing.id },
+        data: { totalTransfer: aggregate._sum.totalTransfer || 0 },
+        include: { details: true, fromBranch: true, toBranch: true },
+      });
+      await resetDrafts();
+      return { transfer, createdNew: false, itemCount: drafts.length };
+    });
+
+    try {
+      await this.auditLogsService.create({
+        actionType: result.createdNew ? 'POST' : 'PUT',
+        actionCode: result.createdNew ? 'TRANSFER_CREATE' : 'TRANSFER_UPDATE',
+        entityType: 'transfers',
+        entityId: result.transfer.id.toString(),
+        entityCode: result.transfer.code,
+        category: getCategoryFromActionCode(
+          result.createdNew ? 'TRANSFER_CREATE' : 'TRANSFER_UPDATE',
+        ),
+        severity: getSeverityFromActionCode(
+          result.createdNew ? 'TRANSFER_CREATE' : 'TRANSFER_UPDATE',
+        ),
+        snapshot: this.buildTransferSnapshot(result.transfer),
+        message: renderAuditMessage(
+          result.createdNew ? 'TRANSFER_CREATE' : 'TRANSFER_UPDATE',
+          {
+            transferCode: result.transfer.code,
+            fromBranch: result.transfer.fromBranchName,
+            toBranch: result.transfer.toBranchName,
+          },
+        ),
+        messageTemplate: result.createdNew
+          ? 'TRANSFER_CREATE'
+          : 'TRANSFER_UPDATE',
+        userId,
+        userName: user.name || 'System',
+        branchId: branchHNId,
+      });
+    } catch (error) {
+      // Phiếu và draft đã commit atomically; không báo thất bại giả khiến user tạo lại.
+      this.logger.error(
+        `Không thể ghi audit cho phiếu ${result.transfer.code}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+
+    return {
+      transfer: { id: result.transfer.id, code: result.transfer.code },
+      createdNew: result.createdNew,
+      itemCount: result.itemCount,
+    };
+  }
+
   async getDraftCandidates() {
     const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
 
@@ -1015,10 +1334,10 @@ export class TransfersService {
     };
   }
 
-  private async generateTransferCode(): Promise<string> {
+  private async generateTransferCode(db: any = this.prisma): Promise<string> {
     const prefix = 'TRF';
 
-    const last = await this.prisma.transfer.findFirst({
+    const last = await db.transfer.findFirst({
       where: { code: { startsWith: prefix } },
       orderBy: { code: 'desc' },
       select: { code: true },
@@ -1030,7 +1349,7 @@ export class TransfersService {
     let code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
 
     // Đảm bảo không trùng trong trường hợp edge case
-    while (await this.prisma.transfer.findUnique({ where: { code } })) {
+    while (await db.transfer.findUnique({ where: { code } })) {
       nextNumber++;
       code = `${prefix}${String(nextNumber).padStart(6, '0')}`;
     }
@@ -2050,7 +2369,7 @@ export class TransfersService {
     };
   }
 
-  async getPlanningSummary(query: TransferPlanningQueryDto) {
+  async getPlanningSummary(query: TransferPlanningQueryDto, userId?: number) {
     const {
       search,
       parentNames,
@@ -2068,6 +2387,17 @@ export class TransfersService {
 
     // 1. Resolve Branch ID cho Hà Nội và Sài Gòn
     const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
+    const tempDraftCount = userId
+      ? await this.prisma.transferTempQuantity.count({
+          where: {
+            userId,
+            fromBranchId: branchHNId,
+            toBranchId: branchSGId,
+            quantity: { gt: 0 },
+            product: { isActive: true },
+          },
+        })
+      : 0;
 
     // 2. Build Prisma Filter cho Product (CHỈ SẢN PHẨM ĐANG HOẠT ĐỘNG)
     const productWhere: any = {
@@ -2136,11 +2466,28 @@ export class TransfersService {
           needTransferSku: 0,
           warningSku: 0,
           totalSuggestedQuantity: 0,
+          tempDraftCount,
         },
       };
     }
 
     const productIds = activeProducts.map((p) => p.id);
+
+    const tempQuantityMap = new Map<number, number>();
+    if (userId) {
+      const tempQuantities = await this.prisma.transferTempQuantity.findMany({
+        where: {
+          userId,
+          productId: { in: productIds },
+          fromBranchId: branchHNId,
+          toBranchId: branchSGId,
+        },
+        select: { productId: true, quantity: true },
+      });
+      for (const draft of tempQuantities) {
+        tempQuantityMap.set(draft.productId, draft.quantity);
+      }
+    }
 
     // 4. Lấy Tồn kho HN và SG
     const inventories = await this.prisma.inventory.findMany({
@@ -2199,7 +2546,10 @@ export class TransfersService {
       // có thể lưu receivedQuantity = sendQuantity trên phiếu vẫn ở trạng
       // thái "Đang chuyển" (dữ liệu bẩn — TRF002449, TRF002448, TRF002157),
       // trừ đi sẽ cho ra 0 sai.
-      inTransitMap.set(d.productId, current + Math.max(0, Number(d.sendQuantity || 0)));
+      inTransitMap.set(
+        d.productId,
+        current + Math.max(0, Number(d.sendQuantity || 0)),
+      );
     }
 
     // 6. Lấy Phiếu tạm nội bộ HN → SG (Transfer status = 1 Phiếu tạm)
@@ -2259,10 +2609,7 @@ export class TransfersService {
 
     const confirmedOrdersMap = new Map<number, number>();
     for (const item of confirmedOrderItems) {
-      confirmedOrdersMap.set(
-        item.productId,
-        Number(item._sum.quantity || 0),
-      );
+      confirmedOrdersMap.set(item.productId, Number(item._sum.quantity || 0));
     }
 
     // 8. Lấy Lịch sử bán 5 ngày, 30 ngày, 90 ngày tại Sài Gòn (InvoiceDetail trong 90 ngày)
@@ -2335,7 +2682,8 @@ export class TransfersService {
       const cycleDays = isCold ? 5 : 7;
 
       const transferPoint = safetyStock + demandPerDay * leadtimeDays;
-      const availableStockSG = stockSG + inTransit - committed - confirmedOrders;
+      const availableStockSG =
+        stockSG + inTransit - committed - confirmedOrders;
       const targetStockSG = safetyStock + demandPerDay * cycleDays;
 
       const ps = (() => {
@@ -2386,6 +2734,7 @@ export class TransfersService {
         stockSG,
         inTransit,
         pendingTransfer,
+        tempQty: tempQuantityMap.get(p.id) || 0,
         committed,
         confirmedOrders,
         sales5,
@@ -2401,7 +2750,8 @@ export class TransfersService {
           cycleDays,
           transferPoint,
           availableStockSG,
-          availableDays: demandPerDay > 0 ? Math.round(availableStockSG / demandPerDay) : 0,
+          availableDays:
+            demandPerDay > 0 ? Math.round(availableStockSG / demandPerDay) : 0,
           targetStockSG,
           suggestedQuantity,
           alert,
@@ -2460,6 +2810,7 @@ export class TransfersService {
         needTransferSku,
         warningSku,
         totalSuggestedQuantity,
+        tempDraftCount,
       },
     };
   }

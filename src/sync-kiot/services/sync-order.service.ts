@@ -289,12 +289,16 @@ export class SyncOrderService extends BaseSyncService {
     const totalAmount = Number(record.total ?? 0);
     const discount = Number(record.discount ?? 0);
     const discountRatio = Number(record.discountRatio ?? 0);
+    const shippingFee = Number(existing?.shippingFee ?? 0);
     const grandTotal =
       discountRatio > 0
         ? totalAmount - (totalAmount * discountRatio) / 100
         : totalAmount - discount;
+    const grandTotalWithShipping = grandTotal + shippingFee;
     const paidAmount = Number(record.totalPayment ?? 0);
-    const debtAmount = Math.max(grandTotal - paidAmount, 0);
+    const debtAmount = Math.max(grandTotalWithShipping - paidAmount, 0);
+    const paymentStatus =
+      debtAmount <= 0 ? 'paid' : paidAmount > 0 ? 'partial' : 'Draft';
 
     const mapped = mapKiotStatusToHisweetie(record.status);
 
@@ -311,9 +315,10 @@ export class SyncOrderService extends BaseSyncService {
           totalAmount,
           discount,
           discountRatio: Number(record.discountRatio || 0),
-          grandTotal,
+          grandTotal: grandTotalWithShipping,
           paidAmount,
           debtAmount: Math.max(debtAmount, 0),
+          paymentStatus,
           status: mapped.status,
           statusValue: mapped.statusValue,
           orderStatus: mapped.orderStatus,
@@ -339,9 +344,10 @@ export class SyncOrderService extends BaseSyncService {
           totalAmount,
           discount,
           discountRatio: record.discountRatio || 0,
-          grandTotal,
+          grandTotal: grandTotalWithShipping,
           paidAmount,
-          debtAmount: Math.max(grandTotal - paidAmount, 0),
+          debtAmount: Math.max(grandTotalWithShipping - paidAmount, 0),
+          paymentStatus,
           status: mapped.status,
           statusValue: mapped.statusValue,
           orderStatus: mapped.orderStatus,
@@ -457,7 +463,6 @@ export class SyncOrderService extends BaseSyncService {
         deliveryCode: delivery.deliveryCode || null,
         type: delivery.type || null,
         status: delivery.status || 1,
-        price: delivery.price || null,
         receiver: delivery.receiver || '',
         contactNumber: delivery.contactNumber || '',
         address: delivery.address || '',

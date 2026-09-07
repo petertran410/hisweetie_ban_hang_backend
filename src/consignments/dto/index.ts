@@ -7,6 +7,7 @@ import {
   ValidateNested,
   IsNumber,
   IsIn,
+  Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -108,6 +109,11 @@ export class CreateConsignmentDto {
   @IsOptional()
   discountRatio?: number;
 
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  shippingFee?: number;
+
   @IsNumber()
   @IsOptional()
   saleChannelId?: number;
@@ -159,6 +165,11 @@ export class UpdateConsignmentDto {
   @IsNumber()
   @IsOptional()
   discountRatio?: number;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  shippingFee?: number;
 
   @IsNumber()
   @IsOptional()
@@ -307,6 +318,11 @@ export class CreateInvoiceFromConsignmentDto {
   @IsOptional()
   @IsNumber()
   soldById?: number;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  shippingFee?: number;
 
   @IsArray()
   @IsOptional()

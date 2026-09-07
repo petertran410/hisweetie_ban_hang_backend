@@ -21,10 +21,15 @@ import {
   ConfirmShortageDto,
   TransferPlanningQueryDto,
   ProductTransferQueryDto,
+  SaveTempQuantityDto,
+  QuickCreateTransferDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { RequirePermissions, RequireAnyPermission } from '../auth/decorators/permissions.decorator';
+import {
+  RequirePermissions,
+  RequireAnyPermission,
+} from '../auth/decorators/permissions.decorator';
 
 @ApiTags('Transfers')
 @ApiBearerAuth()
@@ -79,8 +84,35 @@ export class TransfersController {
 
   @Get('planning-summary')
   @RequireAnyPermission('transfer_planning:view', 'transfers:view')
-  getPlanningSummary(@Query() query: TransferPlanningQueryDto) {
-    return this.transfersService.getPlanningSummary(query);
+  getPlanningSummary(
+    @Query() query: TransferPlanningQueryDto,
+    @Req() req: any,
+  ) {
+    return this.transfersService.getPlanningSummary(query, req.user?.id || 1);
+  }
+
+  @Put('temp-quantity')
+  @RequirePermissions('transfers:create')
+  saveTempQuantity(@Body() dto: SaveTempQuantityDto, @Req() req: any) {
+    return this.transfersService.saveTempQuantity(dto, req.user?.id || 1);
+  }
+
+  @Get('temp-quantities')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
+  getTempQuantities(@Req() req: any) {
+    return this.transfersService.getTempQuantities(req.user?.id || 1);
+  }
+
+  @Delete('temp-quantities')
+  @RequirePermissions('transfers:create')
+  resetTempQuantities(@Req() req: any) {
+    return this.transfersService.resetTempQuantities(req.user?.id || 1);
+  }
+
+  @Post('quick-create')
+  @RequirePermissions('transfers:create')
+  quickCreate(@Body() dto: QuickCreateTransferDto, @Req() req: any) {
+    return this.transfersService.quickCreateTransfer(dto, req.user?.id || 1);
   }
 
   @Get('draft-candidates')

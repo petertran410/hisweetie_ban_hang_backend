@@ -109,9 +109,9 @@ export class InvoicesService {
     if (
       parsed.kind === 'invoice' &&
       packingType !== 'packing-slip' &&
-      ([INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED] as number[]).includes(
-        document.status,
-      )
+      (
+        [INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED] as number[]
+      ).includes(document.status)
     ) {
       throw new BadRequestException('Hóa đơn đã giao hoặc đã hoàn thành');
     }
@@ -1427,7 +1427,8 @@ export class InvoicesService {
             ? (totalAmount * dto.discountRatio) / 100 +
               promo.extraInvoiceDiscount
             : (dto.discountAmount || 0) + promo.extraInvoiceDiscount;
-        const grandTotal = totalAmount - discountAmount;
+        const shippingFee = dto.shippingFee ?? 0;
+        const grandTotal = totalAmount - discountAmount + shippingFee;
         const requestedPaymentAmount = this.getPosPaymentAmount(
           dto,
           Number(dto.paidAmount || 0),
@@ -1546,6 +1547,7 @@ export class InvoicesService {
             totalAmount,
             discount: discountAmount,
             discountRatio: dto.discountRatio || 0,
+            shippingFee,
             grandTotal,
             paidAmount,
             debtAmount,
@@ -1885,6 +1887,7 @@ export class InvoicesService {
     const touchedProductIds = new Set<number>();
 
     const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR UPDATE`;
       const currentInvoice = await tx.invoice.findUnique({
         where: { id },
         include: {
@@ -2038,7 +2041,9 @@ export class InvoicesService {
           dto.discountRatio && dto.discountRatio > 0
             ? (totalAmount * dto.discountRatio) / 100 + extraInvoiceDiscount
             : (dto.discountAmount || 0) + extraInvoiceDiscount;
-        const grandTotal = totalAmount - discountAmount;
+        const shippingFee =
+          dto.shippingFee ?? Number(currentInvoice.shippingFee || 0);
+        const grandTotal = totalAmount - discountAmount + shippingFee;
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
           (p: any) => p.status !== 2,
@@ -2105,6 +2110,7 @@ export class InvoicesService {
           data: {
             code: newCode,
             orderId: currentInvoice.orderId,
+            consignmentId: currentInvoice.consignmentId,
             customerId: dto.customerId ?? currentInvoice.customerId,
             parentCustomerId: cancelParentCustomerId,
             branchId: dto.branchId ?? currentInvoice.branchId,
@@ -2125,6 +2131,7 @@ export class InvoicesService {
             totalAmount,
             discount: discountAmount,
             discountRatio: dto.discountRatio || 0,
+            shippingFee,
             grandTotal,
             paidAmount,
             debtAmount,
@@ -2412,6 +2419,28 @@ export class InvoicesService {
       if (dto.soldById !== undefined) updateData.soldById = dto.soldById;
       if (dto.description !== undefined)
         updateData.description = dto.description;
+      if (dto.shippingFee !== undefined) {
+        updateData.shippingFee = dto.shippingFee;
+        updateData.grandTotal =
+          Number(currentInvoice.totalAmount) -
+          Number(currentInvoice.discount) +
+          dto.shippingFee;
+        updateData.debtAmount =
+          updateData.grandTotal - Number(currentInvoice.paidAmount);
+        if (currentInvoice.status === INVOICE_STATUS.COMPLETED) {
+          updateData.status =
+            updateData.debtAmount <= 0
+              ? INVOICE_STATUS.COMPLETED
+              : INVOICE_STATUS.DELIVERED;
+          updateData.statusValue = getStatusLabel(updateData.status);
+        } else if (
+          currentInvoice.status === INVOICE_STATUS.DELIVERED &&
+          updateData.debtAmount <= 0
+        ) {
+          updateData.status = INVOICE_STATUS.COMPLETED;
+          updateData.statusValue = getStatusLabel(updateData.status);
+        }
+      }
 
       let shouldUpdateCustomerDebt = false;
 
@@ -2635,7 +2664,9 @@ export class InvoicesService {
           dto.discountRatio && dto.discountRatio > 0
             ? (totalAmount * dto.discountRatio) / 100 + inPlaceExtraDiscount
             : (dto.discountAmount || 0) + inPlaceExtraDiscount;
-        const grandTotal = totalAmount - discountAmount;
+        const shippingFee =
+          dto.shippingFee ?? Number(currentInvoice.shippingFee || 0);
+        const grandTotal = totalAmount - discountAmount + shippingFee;
 
         // Tổng invoicePayment còn active (loại đã hủy)
         const payments = await tx.invoicePayment.findMany({
@@ -2680,6 +2711,7 @@ export class InvoicesService {
         updateData.totalAmount = totalAmount;
         updateData.discount = discountAmount;
         updateData.discountRatio = dto.discountRatio || 0;
+        updateData.shippingFee = shippingFee;
         updateData.grandTotal = grandTotal;
         updateData.debtAmount = debtAmount;
         updateData.paidAmount = paidAmount;
@@ -2811,7 +2843,11 @@ export class InvoicesService {
       }
 
       // Cập nhật lại công nợ khách hàng khi items thay đổi giá
-      if (dto.items && !shouldUpdateCustomerDebt && currentInvoice.customerId) {
+      if (
+        (dto.items || dto.shippingFee !== undefined) &&
+        !shouldUpdateCustomerDebt &&
+        currentInvoice.customerId
+      ) {
         await this.updateCustomerTotals(currentInvoice.customerId, tx);
       }
 
@@ -2943,13 +2979,18 @@ export class InvoicesService {
    * Khách mới mặc định PREPAID + NONE và được tạo với cờ = true; khách cũ
    * vẫn giữ nguyên giá trị đã lưu.
    */
-  private requiresFullPaymentForInvoice(policy: {
-    debtForm: string | null;
-    hasCreditLimit: boolean;
-    hasTermDays: boolean;
-    isActive: boolean;
-    requireFullPaymentForInvoice?: boolean;
-  } | null | undefined) {
+  private requiresFullPaymentForInvoice(
+    policy:
+      | {
+          debtForm: string | null;
+          hasCreditLimit: boolean;
+          hasTermDays: boolean;
+          isActive: boolean;
+          requireFullPaymentForInvoice?: boolean;
+        }
+      | null
+      | undefined,
+  ) {
     return !!(
       policy?.isActive !== false &&
       policy?.requireFullPaymentForInvoice === true
@@ -2968,13 +3009,16 @@ export class InvoicesService {
   }
 
   private assertCustomerInvoiceCanBeCreated(input: {
-    policy: {
-      debtForm: string | null;
-      hasCreditLimit: boolean;
-      hasTermDays: boolean;
-      isActive: boolean;
-      requireFullPaymentForInvoice?: boolean;
-    } | null | undefined;
+    policy:
+      | {
+          debtForm: string | null;
+          hasCreditLimit: boolean;
+          hasTermDays: boolean;
+          isActive: boolean;
+          requireFullPaymentForInvoice?: boolean;
+        }
+      | null
+      | undefined;
     paidAmount: number;
     grandTotal: number;
     mode: 'invoice' | 'order';
@@ -3002,6 +3046,7 @@ export class InvoicesService {
     fromPos = false,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`;
       const order = await tx.order.findUnique({
         where: { id: orderId },
         include: {
@@ -3022,9 +3067,9 @@ export class InvoicesService {
                 select: {
                   debtForm: true,
                   hasCreditLimit: true,
-                    hasTermDays: true,
-                    isActive: true,
-                    requireFullPaymentForInvoice: true,
+                  hasTermDays: true,
+                  isActive: true,
+                  requireFullPaymentForInvoice: true,
                 },
               },
               addresses: {
@@ -3272,8 +3317,16 @@ export class InvoicesService {
           ? (totalAmount * dtoDiscountRatio) / 100
           : discountForThisInvoice;
 
+      const shippingFee = this.allocateSourceShippingFee(
+        order.shippingFee,
+        order.invoices,
+        dto.shippingFee,
+      );
       const grandTotal =
-        totalAmount - effectiveManualDiscount - extraInvoiceDiscount;
+        totalAmount -
+        effectiveManualDiscount -
+        extraInvoiceDiscount +
+        shippingFee;
       const debtAmount = grandTotal - totalPaid;
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
@@ -3303,6 +3356,7 @@ export class InvoicesService {
           totalAmount,
           discount: effectiveManualDiscount + extraInvoiceDiscount,
           discountRatio: dtoDiscountRatio ?? 0,
+          shippingFee,
           grandTotal,
           paidAmount: totalPaid,
           debtAmount,
@@ -3740,6 +3794,7 @@ export class InvoicesService {
     userId: number,
   ) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM consignments WHERE id = ${consignmentId} FOR UPDATE`;
       const consignment = await tx.consignment.findUnique({
         where: { id: consignmentId },
         include: {
@@ -3890,7 +3945,12 @@ export class InvoicesService {
         (sum, item) => sum + item.totalPrice,
         0,
       );
-      const grandTotal = totalAmount - discountForThisInvoice;
+      const shippingFee = this.allocateSourceShippingFee(
+        consignment.shippingFee,
+        consignment.invoices,
+        dto.shippingFee,
+      );
+      const grandTotal = totalAmount - discountForThisInvoice + shippingFee;
       const debtAmount = grandTotal - totalPaid;
 
       this.assertCustomerInvoiceCanBeCreated({
@@ -3918,6 +3978,7 @@ export class InvoicesService {
           totalAmount,
           discount: discountForThisInvoice,
           discountRatio: 0,
+          shippingFee,
           grandTotal,
           paidAmount: totalPaid,
           debtAmount,
@@ -4180,6 +4241,25 @@ export class InvoicesService {
     }
 
     return false;
+  }
+
+  private allocateSourceShippingFee(
+    sourceShippingFee: unknown,
+    priorInvoices: Array<{ shippingFee?: unknown; status?: number }>,
+    requestedShippingFee?: number,
+  ): number {
+    const allocated = priorInvoices
+      .filter((invoice) => invoice.status !== INVOICE_STATUS.CANCELLED)
+      .reduce((sum, invoice) => sum + Number(invoice.shippingFee || 0), 0);
+    const remaining = Math.max(Number(sourceShippingFee || 0) - allocated, 0);
+
+    if (requestedShippingFee === undefined) return remaining;
+    if (requestedShippingFee > remaining + POS_PAYMENT_EPSILON) {
+      throw new BadRequestException(
+        `Phí giao hàng phân bổ không được vượt quá ${remaining}`,
+      );
+    }
+    return Math.min(requestedShippingFee, remaining);
   }
 
   private async generateInvoiceCodeWithSuffix(

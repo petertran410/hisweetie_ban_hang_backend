@@ -33,6 +33,8 @@
     "seed:debt-tracking-permissions": "ts-node prisma/seeds/add-debt-tracking-permissions.ts",
     "audit:order-supplier-factory": "ts-node prisma/seeds/audit-order-supplier-factory.ts",
     "seed:print-promotion-vars": "ts-node prisma/seeds/add-print-promotion-vars.ts",
+    "seed:print-shipping-fee-vars": "ts-node prisma/seeds/add-shipping-fee-print-variables.ts",
+    "patch:print-shipping-fee": "ts-node prisma/seeds/patch-shipping-fee-print-templates.ts",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
     "seed:upsert-permissions": "ts-node prisma/seeds/upsert-permissions.ts",
     "seed:customers-import-export": "ts-node prisma/seeds/add-customers-import-permission.ts",

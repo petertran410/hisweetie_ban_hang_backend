@@ -9,36 +9,154 @@ const prisma = new PrismaClient();
 
 const VARIABLES = [
   // Cửa hàng
-  { key: 'Ten_Cua_Hang', label: 'Tên cửa hàng', group: 'Cửa hàng', sortOrder: 1 },
-  { key: 'Dia_Chi_Cua_Hang', label: 'Địa chỉ cửa hàng', group: 'Cửa hàng', sortOrder: 2 },
-  { key: 'Dien_Thoai_Cua_Hang', label: 'Điện thoại cửa hàng', group: 'Cửa hàng', sortOrder: 3 },
+  {
+    key: 'Ten_Cua_Hang',
+    label: 'Tên cửa hàng',
+    group: 'Cửa hàng',
+    sortOrder: 1,
+  },
+  {
+    key: 'Dia_Chi_Cua_Hang',
+    label: 'Địa chỉ cửa hàng',
+    group: 'Cửa hàng',
+    sortOrder: 2,
+  },
+  {
+    key: 'Dien_Thoai_Cua_Hang',
+    label: 'Điện thoại cửa hàng',
+    group: 'Cửa hàng',
+    sortOrder: 3,
+  },
   // Phiếu
   { key: 'Ma_Ky_Gui', label: 'Mã ký gửi', group: 'Phiếu', sortOrder: 1 },
-  { key: 'Ngay_Thang_Nam', label: 'Ngày tháng năm', group: 'Phiếu', sortOrder: 2 },
+  {
+    key: 'Ngay_Thang_Nam',
+    label: 'Ngày tháng năm',
+    group: 'Phiếu',
+    sortOrder: 2,
+  },
   { key: 'Ghi_Chu', label: 'Ghi chú', group: 'Phiếu', sortOrder: 3 },
   // Khách hàng
-  { key: 'Khach_Hang', label: 'Tên khách hàng', group: 'Khách hàng', sortOrder: 1 },
-  { key: 'Dien_Thoai_Khach', label: 'Điện thoại khách', group: 'Khách hàng', sortOrder: 2 },
-  { key: 'Dia_Chi_Khach', label: 'Địa chỉ khách', group: 'Khách hàng', sortOrder: 3 },
+  {
+    key: 'Khach_Hang',
+    label: 'Tên khách hàng',
+    group: 'Khách hàng',
+    sortOrder: 1,
+  },
+  {
+    key: 'Dien_Thoai_Khach',
+    label: 'Điện thoại khách',
+    group: 'Khách hàng',
+    sortOrder: 2,
+  },
+  {
+    key: 'Dia_Chi_Khach',
+    label: 'Địa chỉ khách',
+    group: 'Khách hàng',
+    sortOrder: 3,
+  },
   // Giao hàng
   { key: 'Nguoi_Nhan', label: 'Người nhận', group: 'Giao hàng', sortOrder: 1 },
-  { key: 'Dien_Thoai_Nhan', label: 'SĐT người nhận', group: 'Giao hàng', sortOrder: 2 },
-  { key: 'Dia_Chi_Giao_Hang', label: 'Địa chỉ giao hàng', group: 'Giao hàng', sortOrder: 3 },
-  { key: 'Ghi_Chu_Giao_Hang', label: 'Ghi chú giao hàng', group: 'Giao hàng', sortOrder: 4 },
+  {
+    key: 'Dien_Thoai_Nhan',
+    label: 'SĐT người nhận',
+    group: 'Giao hàng',
+    sortOrder: 2,
+  },
+  {
+    key: 'Dia_Chi_Giao_Hang',
+    label: 'Địa chỉ giao hàng',
+    group: 'Giao hàng',
+    sortOrder: 3,
+  },
+  {
+    key: 'Ghi_Chu_Giao_Hang',
+    label: 'Ghi chú giao hàng',
+    group: 'Giao hàng',
+    sortOrder: 4,
+  },
   // Nhân viên
-  { key: 'Nhan_Vien_Ban_Hang', label: 'Nhân viên bán hàng', group: 'Nhân viên', sortOrder: 1 },
+  {
+    key: 'Nhan_Vien_Ban_Hang',
+    label: 'Nhân viên bán hàng',
+    group: 'Nhân viên',
+    sortOrder: 1,
+  },
   { key: 'Nguoi_Lap', label: 'Người lập', group: 'Nhân viên', sortOrder: 2 },
   // Tổng tiền
-  { key: 'Tong_Tien_Hang', label: 'Tổng tiền hàng', group: 'Tổng tiền', sortOrder: 1 },
+  {
+    key: 'Tong_Tien_Hang',
+    label: 'Tổng tiền hàng',
+    group: 'Tổng tiền',
+    sortOrder: 1,
+  },
   { key: 'Giam_Gia', label: 'Giảm giá', group: 'Tổng tiền', sortOrder: 2 },
-  { key: 'Tong_Can_Thanh_Toan', label: 'Tổng cộng', group: 'Tổng tiền', sortOrder: 3 },
-  { key: 'Tong_Can_Thanh_Toan_Bang_Chu', label: 'Tổng cộng bằng chữ', group: 'Tổng tiền', sortOrder: 4 },
+  {
+    key: 'Phi_Giao_Hang',
+    label: 'Phí giao hàng',
+    group: 'Tổng tiền',
+    sortOrder: 3,
+  },
+  {
+    key: 'Dong_Phi_Giao_Hang',
+    label: 'Dòng phí giao hàng (tự ẩn khi bằng 0)',
+    group: 'Tổng tiền',
+    sortOrder: 4,
+  },
+  {
+    key: 'Style_Dong_Phi_Giao_Hang',
+    label: 'Ẩn dòng phí giao hàng khi bằng 0',
+    group: 'Tổng tiền',
+    sortOrder: 5,
+  },
+  {
+    key: 'Tong_Can_Thanh_Toan',
+    label: 'Tổng cộng',
+    group: 'Tổng tiền',
+    sortOrder: 5,
+  },
+  {
+    key: 'Tong_Can_Thanh_Toan_Bang_Chu',
+    label: 'Tổng cộng bằng chữ',
+    group: 'Tổng tiền',
+    sortOrder: 6,
+  },
   // Hàng hóa (item)
-  { key: 'Ma_Hang', label: 'Mã hàng', group: 'Hàng hóa', sortOrder: 1, isItemVariable: true },
-  { key: 'Ten_Hang_Hoa', label: 'Tên hàng hóa', group: 'Hàng hóa', sortOrder: 2, isItemVariable: true },
-  { key: 'So_Luong', label: 'Số lượng', group: 'Hàng hóa', sortOrder: 3, isItemVariable: true },
-  { key: 'Don_Gia', label: 'Đơn giá', group: 'Hàng hóa', sortOrder: 4, isItemVariable: true },
-  { key: 'Thanh_Tien', label: 'Thành tiền', group: 'Hàng hóa', sortOrder: 5, isItemVariable: true },
+  {
+    key: 'Ma_Hang',
+    label: 'Mã hàng',
+    group: 'Hàng hóa',
+    sortOrder: 1,
+    isItemVariable: true,
+  },
+  {
+    key: 'Ten_Hang_Hoa',
+    label: 'Tên hàng hóa',
+    group: 'Hàng hóa',
+    sortOrder: 2,
+    isItemVariable: true,
+  },
+  {
+    key: 'So_Luong',
+    label: 'Số lượng',
+    group: 'Hàng hóa',
+    sortOrder: 3,
+    isItemVariable: true,
+  },
+  {
+    key: 'Don_Gia',
+    label: 'Đơn giá',
+    group: 'Hàng hóa',
+    sortOrder: 4,
+    isItemVariable: true,
+  },
+  {
+    key: 'Thanh_Tien',
+    label: 'Thành tiền',
+    group: 'Hàng hóa',
+    sortOrder: 5,
+    isItemVariable: true,
+  },
 ];
 
 const DEFAULT_TEMPLATE = `
@@ -70,6 +188,7 @@ const DEFAULT_TEMPLATE = `
   <div style="text-align:right; margin-top:8px;">
     <div>Tổng tiền hàng: {Tong_Tien_Hang}</div>
     <div>Giảm giá: {Giam_Gia}</div>
+    <div style="{Style_Dong_Phi_Giao_Hang}">Phí ship: {Phi_Giao_Hang}</div>
     <div><b>Tổng cộng: {Tong_Can_Thanh_Toan}</b></div>
     <div><i>Bằng chữ: {Tong_Can_Thanh_Toan_Bang_Chu}</i></div>
   </div>
@@ -116,15 +235,20 @@ async function main() {
 
   // Cần 1 user để gán createdBy.
   const admin =
-    (await prisma.user.findFirst({ where: { email: { contains: 'admin' } } })) ||
-    (await prisma.user.findFirst());
+    (await prisma.user.findFirst({
+      where: { email: { contains: 'admin' } },
+    })) || (await prisma.user.findFirst());
   if (!admin) {
-    console.log('⚠️  Không tìm thấy user nào để gán createdBy — bỏ qua template.');
+    console.log(
+      '⚠️  Không tìm thấy user nào để gán createdBy — bỏ qua template.',
+    );
     return;
   }
 
   await prisma.printTemplate.upsert({
-    where: { templateFor_code: { templateFor: 'consignment', code: 'KG_DEFAULT' } },
+    where: {
+      templateFor_code: { templateFor: 'consignment', code: 'KG_DEFAULT' },
+    },
     update: {},
     create: {
       name: 'Phiếu ký gửi mặc định',

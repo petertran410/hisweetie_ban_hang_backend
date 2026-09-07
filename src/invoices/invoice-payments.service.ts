@@ -19,6 +19,7 @@ export class InvoicePaymentsService {
 
   async create(dto: CreateInvoicePaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${dto.invoiceId} FOR UPDATE`;
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },
         include: {
@@ -177,6 +178,13 @@ export class InvoicePaymentsService {
 
   async remove(id: number) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`
+        SELECT i.id
+        FROM invoices i
+        JOIN invoice_payments p ON p."invoiceId" = i.id
+        WHERE p.id = ${id}
+        FOR UPDATE OF i
+      `;
       const payment = await tx.invoicePayment.findUnique({
         where: { id },
         select: {

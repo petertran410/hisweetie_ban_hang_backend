@@ -565,6 +565,7 @@ export class OrdersService {
           depositAmount: dto.depositAmount || 0,
           discount: orderDiscountAmount + promo.extraDiscount,
           discountRatio: orderDiscountRatio,
+          shippingFee: dto.shippingFee ?? 0,
           description: dto.description,
           createdBy: userId,
           items: {
@@ -808,6 +809,7 @@ export class OrdersService {
               ? promoExtraDiscount
               : undefined,
         discountRatio: dto.discountRatio,
+        shippingFee: dto.shippingFee,
         depositAmount: dto.depositAmount,
         description: dto.description,
       };
@@ -1559,7 +1561,7 @@ export class OrdersService {
         paymentNotes: { orderBy: { createdAt: 'desc' } },
         delivery: true,
         invoices: {
-          where: { status: { not: 5 } },
+          where: { status: { not: INVOICE_STATUS.CANCELLED } },
           include: {
             details: true,
           },
@@ -1589,7 +1591,8 @@ export class OrdersService {
     const ratio = Number(order.discountRatio) || 0;
     const discountAmount =
       ratio > 0 ? (totalAmount * ratio) / 100 : Number(order.discount) || 0;
-    const grandTotal = totalAmount - discountAmount;
+    const grandTotal =
+      totalAmount - discountAmount + Number(order.shippingFee || 0);
 
     const paidAmount = payments.reduce(
       (sum: number, p: any) => sum + Number(p.amount),

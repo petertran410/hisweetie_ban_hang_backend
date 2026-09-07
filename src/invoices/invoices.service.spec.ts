@@ -23,6 +23,7 @@ describe('InvoicesService delivery reporting', () => {
     totalAmount: 100_000,
     discount: 0,
     discountRatio: 0,
+    shippingFee: 0,
     paidAmount: 0,
     debtAmount: 100_000,
     description: null,
@@ -50,17 +51,20 @@ describe('InvoicesService delivery reporting', () => {
         findUnique: jest.fn().mockResolvedValue({ name: 'Người báo đơn' }),
       },
       packingSlipInvoice: {
-        findFirst: jest.fn().mockResolvedValue(
-          firstPackingSlipAt
-            ? { packingSlip: { createdAt: firstPackingSlipAt } }
-            : null,
-        ),
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(
+            firstPackingSlipAt
+              ? { packingSlip: { createdAt: firstPackingSlipAt } }
+              : null,
+          ),
       },
     };
     const prisma = {
       invoice: { findUnique: jest.fn().mockResolvedValue(currentInvoice) },
       $transaction: jest.fn((callback) => callback(tx)),
     };
+    (tx as any).$queryRaw = jest.fn().mockResolvedValue([{ id: 1 }]);
     const auditLogs = { create: jest.fn().mockResolvedValue(undefined) };
     const service = new InvoicesService(
       prisma as any,
@@ -86,11 +90,7 @@ describe('InvoicesService delivery reporting', () => {
     jest.useFakeTimers().setSystemTime(reportedAt);
     const { service, tx } = createService(createInvoice(null));
 
-    await service.update(
-      1,
-      { status: INVOICE_STATUS.DELIVERED } as any,
-      9,
-    );
+    await service.update(1, { status: INVOICE_STATUS.DELIVERED } as any, 9);
 
     expect(tx.invoice.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -107,11 +107,7 @@ describe('InvoicesService delivery reporting', () => {
     const firstDeliveredAt = new Date('2026-08-26T09:30:00.000Z');
     const { service, tx } = createService(createInvoice(firstDeliveredAt));
 
-    await service.update(
-      1,
-      { status: INVOICE_STATUS.DELIVERED } as any,
-      9,
-    );
+    await service.update(1, { status: INVOICE_STATUS.DELIVERED } as any, 9);
 
     const updateInput = tx.invoice.update.mock.calls[0][0];
     expect(updateInput.data.deliveredAt).toBeUndefined();
@@ -124,11 +120,7 @@ describe('InvoicesService delivery reporting', () => {
       firstPackingSlipAt,
     );
 
-    await service.update(
-      1,
-      { status: INVOICE_STATUS.DELIVERED } as any,
-      9,
-    );
+    await service.update(1, { status: INVOICE_STATUS.DELIVERED } as any, 9);
 
     const updateInput = tx.invoice.update.mock.calls[0][0];
     expect(updateInput.data.deliveredAt).toEqual(firstPackingSlipAt);
@@ -142,6 +134,50 @@ describe('InvoicesService delivery reporting', () => {
     const updateInput = tx.invoice.update.mock.calls[0][0];
     expect(updateInput.data.deliveredAt).toBeUndefined();
     expect(tx.packingSlipInvoice.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('tính lại tổng và công nợ khi cập nhật phí giao hàng', async () => {
+    const { service, tx } = createService(createInvoice(null));
+
+    await service.update(1, { shippingFee: 15_000 } as any, 9);
+
+    expect(tx.invoice.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          shippingFee: 15_000,
+          grandTotal: 115_000,
+          debtAmount: 115_000,
+        }),
+      }),
+    );
+  });
+
+  it('giữ nguyên phí giao hàng khi patch không gửi field', async () => {
+    const invoice = { ...createInvoice(null), shippingFee: 15_000 };
+    const { service, tx } = createService(invoice);
+
+    await service.update(1, { description: 'Ghi chú mới' } as any, 9);
+
+    const updateInput = tx.invoice.update.mock.calls[0][0];
+    expect(updateInput.data.shippingFee).toBeUndefined();
+    expect(updateInput.data.grandTotal).toBeUndefined();
+  });
+
+  it('khóa invoice trước khi đọc trong update transaction', async () => {
+    const { service, tx } = createService(createInvoice(null));
+    const calls: string[] = [];
+    (tx as any).$queryRaw.mockImplementation(() => {
+      calls.push('lock');
+      return Promise.resolve([{ id: 1 }]);
+    });
+    tx.invoice.findUnique.mockImplementation(() => {
+      calls.push('read');
+      return Promise.resolve(createInvoice(null));
+    });
+
+    await service.update(1, { description: 'Ghi chú mới' } as any, 9);
+
+    expect(calls.slice(0, 2)).toEqual(['lock', 'read']);
   });
 });
 
@@ -203,5 +239,58 @@ describe('InvoicesService customer invoice debt guard', () => {
         mode: 'order',
       }),
     ).not.toThrow();
+  });
+});
+
+describe('InvoicesService source shipping fee allocation', () => {
+  const service = new InvoicesService(
+    {} as any,
+    {} as any,
+    {} as any,
+    {} as any,
+    {} as any,
+    {} as any,
+    {} as any,
+    {} as any,
+  ) as any;
+
+  it('phân bổ toàn bộ phần phí còn lại khi DTO không gửi shippingFee', () => {
+    expect(
+      service.allocateSourceShippingFee(
+        30_000,
+        [{ shippingFee: 10_000, status: INVOICE_STATUS.PROCESSING }],
+        undefined,
+      ),
+    ).toBe(20_000);
+  });
+
+  it('từ chối override vượt phần phí còn lại và cho phép explicit 0', () => {
+    const priorInvoices = [
+      { shippingFee: 20_000, status: INVOICE_STATUS.DELIVERED },
+    ];
+
+    expect(() =>
+      service.allocateSourceShippingFee(30_000, priorInvoices, 50_000),
+    ).toThrow('Phí giao hàng phân bổ không được vượt quá 10000');
+    expect(service.allocateSourceShippingFee(30_000, priorInvoices, 0)).toBe(0);
+  });
+
+  it('chấp nhận sai số nhỏ khi override sát phần phí còn lại', () => {
+    expect(service.allocateSourceShippingFee(30_000, [], 30_000.5)).toBe(
+      30_000,
+    );
+  });
+
+  it('không tính phí của invoice đã hủy/superseded', () => {
+    expect(
+      service.allocateSourceShippingFee(
+        30_000,
+        [
+          { shippingFee: 30_000, status: INVOICE_STATUS.CANCELLED },
+          { shippingFee: 5_000, status: INVOICE_STATUS.PROCESSING },
+        ],
+        undefined,
+      ),
+    ).toBe(25_000);
   });
 });

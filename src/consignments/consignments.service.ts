@@ -123,6 +123,7 @@ export class ConsignmentsService {
           consignStatus: consignStatusString,
           discount: dto.discountAmount || 0,
           discountRatio: dto.discountRatio || 0,
+          shippingFee: dto.shippingFee ?? 0,
           description: dto.description,
           createdBy: userId,
           items: { createMany: { data: itemsData } },
@@ -232,6 +233,8 @@ export class ConsignmentsService {
         updateData.discount = dto.discountAmount;
       if (dto.discountRatio !== undefined)
         updateData.discountRatio = dto.discountRatio;
+      if (dto.shippingFee !== undefined)
+        updateData.shippingFee = dto.shippingFee;
       if (dto.description !== undefined)
         updateData.description = dto.description;
 
@@ -649,7 +652,8 @@ export class ConsignmentsService {
       ratio > 0
         ? (totalAmount * ratio) / 100
         : Number(consignment.discount) || 0;
-    const grandTotal = totalAmount - discountAmount;
+    const grandTotal =
+      totalAmount - discountAmount + Number(consignment.shippingFee || 0);
 
     await tx.consignment.update({
       where: { id: consignmentId },

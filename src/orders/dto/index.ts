@@ -9,6 +9,7 @@ import {
   IsDecimal,
   IsIn,
   IsBoolean,
+  Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
@@ -185,6 +186,11 @@ export class CreateOrderDto {
   @IsOptional()
   discountRatio?: number;
 
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  shippingFee?: number;
+
   @IsNumber()
   @IsOptional()
   paidAmount?: number;
@@ -267,6 +273,11 @@ export class UpdateOrderDto {
   @IsNumber()
   @IsOptional()
   discountRatio?: number;
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(0)
+  shippingFee?: number;
 
   @IsNumber()
   @IsOptional()

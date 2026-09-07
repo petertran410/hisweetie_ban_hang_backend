@@ -53,6 +53,16 @@ export class CashFlowsService {
       const createdInvoicePaymentIds: number[] = [];
 
       if (dto.affectDebt && dto.partnerId && dto.partnerType === 'C') {
+        const invoiceIds = [
+          ...new Set([
+            ...(dto.invoiceAllocations || []).map((item) => item.invoiceId),
+            ...(dto.debtOffsets || []).map((item) => item.invoiceId),
+          ]),
+        ].sort((a, b) => a - b);
+        for (const invoiceId of invoiceIds) {
+          await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${invoiceId} FOR UPDATE`;
+        }
+
         const customer = await tx.customer.findUnique({
           where: { id: dto.partnerId },
           select: { id: true, totalDebt: true },
@@ -854,6 +864,22 @@ export class CashFlowsService {
         throw new Error('Không tìm thấy phiếu thu/chi');
       }
 
+      await tx.$queryRaw`
+        SELECT i.id
+        FROM invoices i
+        WHERE i.id IN (
+          SELECT p."invoiceId"
+          FROM invoice_payments p
+          WHERE p."cashFlowId" = ${id} OR p.code LIKE ${cashFlow.code + '%'}
+          UNION
+          SELECT r."invoiceId"
+          FROM return_orders r
+          WHERE r."cashFlowId" = ${id} AND r."invoiceId" IS NOT NULL
+        )
+        ORDER BY i.id
+        FOR UPDATE OF i
+      `;
+
       // ── 1. Tìm các entity liên quan TRƯỚC khi hủy
       const linkedInvoicePayments = await tx.invoicePayment.findMany({
         where: {
@@ -1203,6 +1229,7 @@ export class CashFlowsService {
     userId: number,
   ): Promise<any> {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${dto.invoiceId} FOR UPDATE`;
       const invoice = await tx.invoice.findUnique({
         where: { id: dto.invoiceId },
         include: {
@@ -1686,6 +1713,16 @@ export class CashFlowsService {
       const amountPerCustomer = new Map<number, number>();
       const paymentIdsByCustomer = new Map<number, number[]>();
       const ctnIdsByCustomer = new Map<number, number[]>();
+
+      const invoiceIds = [
+        ...new Set([
+          ...(dto.invoices || []).map((item) => item.invoiceId),
+          ...(dto.debtOffsets || []).map((item) => item.invoiceId),
+        ]),
+      ].sort((a, b) => a - b);
+      for (const invoiceId of invoiceIds) {
+        await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${invoiceId} FOR UPDATE`;
+      }
 
       if (dto.allocateToInvoices && dto.invoices && dto.invoices.length > 0) {
         for (const invoice of dto.invoices) {

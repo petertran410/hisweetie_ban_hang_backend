@@ -3,6 +3,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
 import { resolveDeliveryAddress } from '../../common/address-resolver.util';
+import {
+  getStatusLabel,
+  INVOICE_STATUS,
+} from '../../invoices/dto/invoice-status.constants';
 
 interface InvoiceLookupContext {
   customerByCode: Map<string, number>;
@@ -285,9 +289,18 @@ export class SyncInvoiceService extends BaseSyncService {
         ? Number(record.total ?? 0) +
           (Number(record.total ?? 0) * Number(record.discountRatio ?? 0)) / 100
         : Number(record.total ?? 0) + Number(record.discount ?? 0);
-    const grandTotal = Number(record.total ?? 0);
+    const shippingFee = Number(existing?.shippingFee ?? 0);
+    const grandTotal = Number(record.total ?? 0) + shippingFee;
     const paidAmount = Number(record.totalPayment ?? 0);
     const debtAmount = Math.max(grandTotal - paidAmount, 0);
+    const status =
+      record.status === INVOICE_STATUS.COMPLETED && debtAmount > 0
+        ? INVOICE_STATUS.DELIVERED
+        : record.status;
+    const statusValue =
+      status === record.status
+        ? record.statusValue || null
+        : getStatusLabel(status);
 
     let invoiceId: number;
 
@@ -306,8 +319,8 @@ export class SyncInvoiceService extends BaseSyncService {
           grandTotal,
           paidAmount,
           debtAmount: Math.max(debtAmount, 0),
-          status: record.status,
-          statusValue: record.statusValue || null,
+          status,
+          statusValue,
           description: record.description || null,
           purchaseDate: record.purchaseDate
             ? new Date(record.purchaseDate)
@@ -370,8 +383,8 @@ export class SyncInvoiceService extends BaseSyncService {
         grandTotal,
         paidAmount,
         debtAmount: Math.max(debtAmount, 0),
-        status: record.status,
-        statusValue: record.statusValue || null,
+        status,
+        statusValue,
         usingCod: record.usingCod ?? false,
         description: record.description || null,
         createdBy: createdById,
@@ -475,7 +488,6 @@ export class SyncInvoiceService extends BaseSyncService {
         deliveryCode: delivery.deliveryCode || null,
         type: delivery.type || null,
         status: delivery.status || 1,
-        price: delivery.price || null,
         receiver: delivery.receiver || '',
         contactNumber: delivery.contactNumber || '',
         address: delivery.address || '',

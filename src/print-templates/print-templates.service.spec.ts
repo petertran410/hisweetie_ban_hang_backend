@@ -134,4 +134,57 @@ describe('PrintTemplatesService', () => {
       );
     });
   });
+
+  describe('shipping fee print variables', () => {
+    const baseEntity = {
+      code: '',
+      branch: null,
+      customer: null,
+      soldBy: null,
+      creator: null,
+      delivery: null,
+      totalAmount: 0,
+      discount: 0,
+      grandTotal: 0,
+      paidAmount: 0,
+      debtAmount: 0,
+      items: [],
+      details: [],
+    };
+
+    it.each([
+      ['invoice', 'mapInvoice'],
+      ['order', 'mapOrder'],
+      ['consignment', 'mapConsignment'],
+    ])('hides the conditional row for a zero-fee %s', async (_type, mapper) => {
+      const data = await (createService() as any)[mapper]({
+        ...baseEntity,
+        shippingFee: null,
+      });
+
+      expect(data.Phi_Giao_Hang).toBe('0');
+      expect(data.Dong_Phi_Giao_Hang).toBe('');
+      expect(data.Style_Dong_Phi_Giao_Hang).toBe('display:none;');
+    });
+
+    it.each([
+      ['invoice', 'mapInvoice'],
+      ['order', 'mapOrder'],
+      ['consignment', 'mapConsignment'],
+    ])(
+      'shows a formatted conditional row for a positive-fee %s',
+      async (_type, mapper) => {
+        const data = await (createService() as any)[mapper]({
+          ...baseEntity,
+          shippingFee: 25000,
+        });
+
+        expect(data.Phi_Giao_Hang).toBe('25,000');
+        expect(data.Dong_Phi_Giao_Hang).toBe(
+          '<div>Phí giao hàng: 25,000</div>',
+        );
+        expect(data.Style_Dong_Phi_Giao_Hang).toBe('');
+      },
+    );
+  });
 });

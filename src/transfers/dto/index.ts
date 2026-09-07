@@ -5,3 +5,5 @@ export * from './cancel-transfer.dto';
 export * from './confirm-shortage.dto';
 export * from './transfer-planning-query.dto';
 export * from './product-transfer-query.dto';
+export * from './save-temp-quantity.dto';
+export * from './quick-create-transfer.dto';
