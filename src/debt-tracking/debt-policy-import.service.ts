@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   DEBT_FORM,
@@ -563,7 +564,13 @@ export class DebtPolicyImportService {
             // debt service is responsible for normalizing them to the rule.
             debtRuleType: row.debtRuleType,
             paymentScheduleType: row.paymentScheduleType,
-            paymentScheduleDays: row.paymentScheduleDays,
+            // Đây là trường JSON nullable. Prisma yêu cầu sentinel riêng khi
+            // muốn ghi JSON null; null trực tiếp sẽ làm cả transaction import
+            // thất bại ở create/update.
+            paymentScheduleDays:
+              row.paymentScheduleDays === null
+                ? Prisma.JsonNull
+                : row.paymentScheduleDays,
             hasCreditLimit: row.hasCreditLimit,
             creditLimit: row.hasCreditLimit ? row.creditLimitValue : null,
             hasTermDays: row.hasTermDays,
