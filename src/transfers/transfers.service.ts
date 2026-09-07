@@ -950,7 +950,22 @@ export class TransfersService {
     return { message: 'Xóa dữ liệu thành công' };
   }
 
-  async getDraftCandidates() {
+  /**
+   * Resolve branch id của Kho Hà Nội (kho chuyển) và Kho Sài Gòn (kho nhận)
+   * cho toàn bộ nghiệp vụ "Dự kiến chuyển kho HN → SG".
+   *
+   * Dùng chung cho getDraftCandidates / getPlanningSummary /
+   * getTransfersByProductForPlanning để 3 hàm không thể trôi khỏi nhau —
+   * trước đây drill-down hard-code 6/1 còn planning-summary resolve theo tên.
+   *
+   * Chỉ khớp branch `isActive: true` và đúng tên. DB còn branch id = 2
+   * ("Kho Hà Nội 2", isActive = false) là record trùng lặp lịch sử, vẫn giữ
+   * vài phiếu treo ở trạng thái "Đang chuyển" từ 2025 — cố ý loại trừ.
+   */
+  private async resolvePlanningBranchIds(): Promise<{
+    branchHNId: number;
+    branchSGId: number;
+  }> {
     const branches = await this.prisma.branch.findMany({
       where: {
         isActive: true,
@@ -959,13 +974,22 @@ export class TransfersService {
       select: { id: true, name: true },
     });
 
-    const hnBranch = branches.find((b) => b.name === 'Kho Hà Nội') || { id: 6 };
-    const sgBranch = branches.find((b) => b.name === 'Kho Sài Gòn') || { id: 1 };
+    const hnBranch = branches.find((b) => b.name === 'Kho Hà Nội');
+    const sgBranch = branches.find((b) => b.name === 'Kho Sài Gòn');
+
+    return {
+      branchHNId: hnBranch?.id ?? 6,
+      branchSGId: sgBranch?.id ?? 1,
+    };
+  }
+
+  async getDraftCandidates() {
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
 
     const transfers = await this.prisma.transfer.findMany({
       where: {
-        fromBranchId: hnBranch.id,
-        toBranchId: sgBranch.id,
+        fromBranchId: branchHNId,
+        toBranchId: branchSGId,
         status: 1,
         isActive: true,
       },
@@ -2043,19 +2067,7 @@ export class TransfersService {
     } = query;
 
     // 1. Resolve Branch ID cho Hà Nội và Sài Gòn
-    const branches = await this.prisma.branch.findMany({
-      where: {
-        isActive: true,
-        name: { in: ['Kho Hà Nội', 'Kho Sài Gòn'] },
-      },
-      select: { id: true, name: true },
-    });
-
-    const hnBranch = branches.find((b) => b.name === 'Kho Hà Nội') || { id: 6 };
-    const sgBranch = branches.find((b) => b.name === 'Kho Sài Gòn') || { id: 1 };
-
-    const branchHNId = hnBranch.id;
-    const branchSGId = sgBranch.id;
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
 
     // 2. Build Prisma Filter cho Product (CHỈ SẢN PHẨM ĐANG HOẠT ĐỘNG)
     const productWhere: any = {
@@ -2157,41 +2169,37 @@ export class TransfersService {
       }
     }
 
-    // 5. Lấy Hàng đang chuyển nội bộ HN → SG (Transfer status = 2 & 3)
+    // 5. Lấy Hàng đang chuyển nội bộ HN → SG (CHỈ Transfer status = 2)
+    //
+    // KHÔNG gộp status = 3 (Đã nhận) vào đây. Khi kho nhận xác nhận nhận
+    // thiếu, `returnShortageToFromBranch()` đã cộng phần thiếu trở lại
+    // onHand của kho HN (InventoryLog: TRANSFER_OUT quantity > 0, note
+    // "Hoàn shortage"). Số hàng đó nằm trong tồn HN, không còn trên đường —
+    // đếm lại là double-count, đồng thời thổi phồng availableStockSG và
+    // làm SL đề xuất thấp hơn thực tế.
     const inTransitDetails = await this.prisma.transferDetail.findMany({
       where: {
         productId: { in: productIds },
         transfer: {
           fromBranchId: branchHNId,
           toBranchId: branchSGId,
-          status: { in: [2, 3] },
+          status: 2,
         },
       },
       select: {
         productId: true,
         sendQuantity: true,
-        receivedQuantity: true,
-        transfer: { select: { status: true } },
       },
     });
 
     const inTransitMap = new Map<number, number>();
     for (const d of inTransitDetails) {
       const current = inTransitMap.get(d.productId) || 0;
-      const sendQty = Number(d.sendQuantity || 0);
-      const recvQty = Number(d.receivedQuantity || 0);
-      // TH1 — Status = 2 (Đang chuyển): toàn bộ SL gửi đang trên đường.
-      //      KHÔNG trừ receivedQuantity vì bên gửi có thể lưu
-      //      receivedQuantity = sendQuantity (dữ liệu bẩn) — chỉ có ý nghĩa
-      //      nghiệp vụ ở status = 3 (bug TRF002449).
-      // TH2 — Status = 3 (Đã nhận): phần còn thiếu chưa nhận
-      //      (send − received) vẫn được tính là đang chuyển; clamp 0 khi
-      //      nhận dư (received > send).
-      const netInTransit =
-        d.transfer.status === 3
-          ? Math.max(0, sendQty - recvQty)
-          : Math.max(0, sendQty);
-      inTransitMap.set(d.productId, current + netInTransit);
+      // Toàn bộ SL gửi đang trên đường. KHÔNG trừ receivedQuantity: bên gửi
+      // có thể lưu receivedQuantity = sendQuantity trên phiếu vẫn ở trạng
+      // thái "Đang chuyển" (dữ liệu bẩn — TRF002449, TRF002448, TRF002157),
+      // trừ đi sẽ cho ra 0 sai.
+      inTransitMap.set(d.productId, current + Math.max(0, Number(d.sendQuantity || 0)));
     }
 
     // 6. Lấy Phiếu tạm nội bộ HN → SG (Transfer status = 1 Phiếu tạm)
@@ -2458,15 +2466,15 @@ export class TransfersService {
 
   /**
    * Trả về danh sách các phiếu chuyển kho nội bộ HN → SG cho một sản phẩm,
-   * phân loại theo trạng thái. Reuse cùng business rule với getPlanningSummary
-   * để đảm bảo SUM(quantity) khớp chính xác item.inTransit / item.pendingTransfer.
+   * lọc theo đúng một trạng thái. Reuse cùng business rule với
+   * getPlanningSummary để SUM(quantity) khớp chính xác item.inTransit /
+   * item.pendingTransfer.
    *
    * @param productId id sản phẩm
-   * @param status 1 = Phiếu tạm, 2 = Đang chuyển (gồm cả Đã nhận một phần)
+   * @param status 1 = Phiếu tạm, 2 = Đang chuyển
    */
   async getTransfersByProductForPlanning(productId: number, status: number) {
-    const branchHNId = 6;
-    const branchSGId = 1;
+    const { branchHNId, branchSGId } = await this.resolvePlanningBranchIds();
 
     const STATUS_LABEL: Record<number, string> = {
       1: 'Phiếu tạm',
@@ -2475,17 +2483,13 @@ export class TransfersService {
       4: 'Đã hủy',
     };
 
-    // status = 2 (Đang chuyển) bao gồm cả phiếu status = 3 (Đã nhận) còn thiếu
-    // hàng (partial receiving) — khớp logic getPlanningSummary.
-    const statuses = status === 2 ? [2, 3] : [status];
-
     const details = await this.prisma.transferDetail.findMany({
       where: {
         productId,
         transfer: {
           fromBranchId: branchHNId,
           toBranchId: branchSGId,
-          status: { in: statuses },
+          status,
         },
       },
       select: {
@@ -2511,13 +2515,6 @@ export class TransfersService {
     const data = details.map((d) => {
       const sendQty = Number(d.sendQuantity || 0);
       const recvQty = Number(d.receivedQuantity || 0);
-      // Cùng logic getPlanningSummary:
-      //   status = 3 (Đã nhận) → phần còn thiếu = max(0, send − received)
-      //   status = 1/2        → toàn bộ SL gửi (chưa nhận / đang trên đường)
-      const quantity =
-        d.transfer.status === 3
-          ? Math.max(0, sendQty - recvQty)
-          : Math.max(0, sendQty);
       return {
         transferId: d.transfer.id,
         code: d.transfer.code,
@@ -2527,7 +2524,10 @@ export class TransfersService {
         createdAt: d.transfer.createdAt.toISOString(),
         sendQuantity: sendQty,
         receivedQuantity: recvQty,
-        quantity,
+        // Cùng logic getPlanningSummary: toàn bộ SL gửi. Phiếu status = 3
+        // (Đã nhận) không thuộc phạm vi hàm này — phần nhận thiếu đã được
+        // hoàn về tồn kho HN nên không còn là "đang chuyển".
+        quantity: Math.max(0, sendQty),
         status: d.transfer.status,
         statusLabel: STATUS_LABEL[d.transfer.status] || 'Không xác định',
       };

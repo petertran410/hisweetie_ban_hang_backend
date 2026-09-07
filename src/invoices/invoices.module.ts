@@ -10,6 +10,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { PackingSlipsModule } from '../packing-slips/packing-slips.module';
 import { PromotionsModule } from '../promotions/promotions.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
+import { MetaPurchaseModule } from '../meta-purchase/meta-purchase.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { LarkSyncModule } from '../lark-sync/lark-sync.module';
     PackingSlipsModule,
     PromotionsModule,
     LarkSyncModule,
+    MetaPurchaseModule,
   ],
   controllers: [InvoicesController, InvoicePaymentsController],
   providers: [InvoicesService, InvoicePaymentsService],
