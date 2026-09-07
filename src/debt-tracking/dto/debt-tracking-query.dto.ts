@@ -70,11 +70,6 @@ export class DebtTrackingQueryDto {
   @Type(() => Number)
   salePicId?: number;
 
-  /** Lọc theo Kế toán công nợ phụ trách. */
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  accountantPicId?: number;
 
   /** Lọc theo hình thức công nợ. */
   @IsOptional()
@@ -180,10 +175,6 @@ export class UpsertDebtPolicyDto {
   @Type(() => Number)
   salePicId?: number | null;
 
-  @IsOptional()
-  @IsInt()
-  @Type(() => Number)
-  accountantPicId?: number | null;
 
   @IsOptional()
   @IsBoolean()
