@@ -1481,6 +1481,7 @@ export class InvoicesService {
           policy: customer?.debtPolicy,
           paidAmount,
           grandTotal,
+          currentCustomerDebt: Number(customer?.totalDebt || 0),
           mode: 'invoice',
         });
 
@@ -3021,10 +3022,15 @@ export class InvoicesService {
       | undefined;
     paidAmount: number;
     grandTotal: number;
+    currentCustomerDebt?: number;
     mode: 'invoice' | 'order';
   }) {
     if (!this.requiresFullPaymentForInvoice(input.policy)) return;
-    if (input.paidAmount + POS_PAYMENT_EPSILON < input.grandTotal) {
+    // Công nợ âm là tiền khách đã trả trước nhưng chưa phân bổ. Chỉ dùng
+    // giá trị này để so sánh điều kiện; tuyệt đối không ghi vào đơn/hóa đơn.
+    const advanceCredit = Math.max(0, -(input.currentCustomerDebt ?? 0));
+    const effectivePaid = input.paidAmount + advanceCredit;
+    if (effectivePaid + POS_PAYMENT_EPSILON < input.grandTotal) {
       throw new BadRequestException(
         `${
           input.mode === 'order'
@@ -3032,7 +3038,7 @@ export class InvoicesService {
             : POS_PREPAID_INVOICE_MESSAGE
         } Đã thanh toán: ${Math.round(input.paidAmount).toLocaleString(
           'vi-VN',
-        )} đ / Cần thanh toán: ${Math.round(input.grandTotal).toLocaleString(
+        )} đ (gồm trả trước chưa phân bổ: ${Math.round(advanceCredit).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(input.grandTotal).toLocaleString(
           'vi-VN',
         )} đ.`,
       );
@@ -3108,6 +3114,7 @@ export class InvoicesService {
         policy: order.customer?.debtPolicy,
         paidAmount: activeOrderPaid,
         grandTotal: Number(order.grandTotal),
+        currentCustomerDebt: Number(order.customer?.totalDebt || 0),
         mode: 'order',
       });
 
@@ -3957,6 +3964,7 @@ export class InvoicesService {
         policy: consignment.customer?.debtPolicy,
         paidAmount: totalPaid,
         grandTotal,
+        currentCustomerDebt: Number(consignment.customer?.totalDebt || 0),
         mode: 'invoice',
       });
 
