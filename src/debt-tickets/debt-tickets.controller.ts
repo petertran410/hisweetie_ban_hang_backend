@@ -62,7 +62,10 @@ export class DebtTicketsController {
   }
 
   @Get(':id')
-  @RequirePermissions('debt_tickets:view')
+  // Phiếu được xem trực tiếp trong trang theo dõi công nợ. Giữ quyền cũ
+  // để tương thích, đồng thời cho phép người chỉ được cấp quyền theo dõi
+  // công nợ mở chi tiết phiếu từ bảng này.
+  @RequireAnyPermission('debt_tracking:view', 'debt_tickets:view')
   @ApiOperation({ summary: 'Chi tiết phiếu thu hồi nợ' })
   findOne(@Param('id') id: string) {
     return this.debtTicketsService.findOne(+id);
@@ -118,6 +121,20 @@ export class DebtTicketsController {
     @Req() req: any,
   ) {
     return this.debtTicketsService.close(+id, dto, req.user?.id);
+  }
+
+  @Post(':id/stop-delivery/close')
+  @RequireAnyPermission(
+    'debt_tracking:close_stop_delivery',
+    'debt_tickets:cancel',
+  )
+  @ApiOperation({ summary: 'Kết thúc phiếu ngừng đi hàng' })
+  closeStopDelivery(
+    @Param('id') id: string,
+    @Body() dto: CloseDebtTicketDto,
+    @Req() req: any,
+  ) {
+    return this.debtTicketsService.closeStopDelivery(+id, dto, req.user?.id);
   }
 
   @Post(':id/cancel')

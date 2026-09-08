@@ -42,6 +42,13 @@ const NEW_PERMISSIONS = [
     description: 'Tạo nhanh phiếu ngừng đi hàng từ trang theo dõi công nợ',
     category: CATEGORY,
   },
+  {
+    name: 'debt_tracking:close_stop_delivery',
+    resource: 'debt_tracking',
+    action: 'close_stop_delivery',
+    description: 'Kết thúc phiếu ngừng đi hàng từ trang theo dõi công nợ',
+    category: CATEGORY,
+  },
 
   // ---- Ticket đòi nợ ----
   {
@@ -80,6 +87,7 @@ const ADMIN_PERMISSIONS = [
   'debt_tracking:update_policy',
   'debt_tracking:export',
   'debt_tracking:stop_delivery',
+  'debt_tracking:close_stop_delivery',
   'debt_tickets:view',
   'debt_tickets:create',
   'debt_tickets:update',

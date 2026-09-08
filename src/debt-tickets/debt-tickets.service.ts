@@ -589,6 +589,22 @@ export class DebtTicketsService {
     });
   }
 
+  async closeStopDelivery(
+    id: number,
+    dto: CloseDebtTicketDto,
+    userId: number,
+  ) {
+    const ticket = await this.prisma.debtTicket.findUnique({
+      where: { id },
+      select: { ticketType: true },
+    });
+    if (!ticket) throw new NotFoundException('Không tìm thấy phiếu ngừng đi hàng');
+    if (ticket.ticketType !== DEBT_TICKET_TYPE.STOP_DELIVERY) {
+      throw new BadRequestException('Chỉ phiếu ngừng đi hàng mới dùng được thao tác này');
+    }
+    return this.close(id, dto, userId);
+  }
+
   /**
    * Đối chiếu tiền đã thu sau thời điểm mở hold. Dùng cho mọi nguồn thanh
    * toán (phiếu thu, thanh toán hóa đơn, Sepay), không phụ thuộc UI nào.
