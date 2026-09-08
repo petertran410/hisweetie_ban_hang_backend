@@ -1510,7 +1510,11 @@ export class DebtTrackingService {
     for (const l of lines) {
       const lastClosedAt = lastClosedAtMap.get(l.customerId);
       const ticketCreatedAt = l.ticket.createdAt ?? l.createdAt;
+      const isOpen = DEBT_TICKET_OPEN_STATUSES.includes(l.ticket.status);
+      // Phiếu đã kết thúc thuộc chu kỳ cũ thì ẩn đi; phiếu đang mở luôn hiện
+      // để người dùng kết thúc trước khi làm mới chu kỳ / tạo phiếu mới.
       if (
+        !isOpen &&
         lastClosedAt &&
         ticketCreatedAt &&
         ticketCreatedAt.getTime() <= lastClosedAt.getTime()

@@ -21,6 +21,7 @@ describe('DebtTrackingCycleService', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       debtTicketCustomer: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
       },
     };
@@ -84,6 +85,7 @@ describe('DebtTrackingCycleService', () => {
         updateMany: jest.fn(),
       },
       debtTicketCustomer: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
       },
       customerDebtNote: {
@@ -110,6 +112,29 @@ describe('DebtTrackingCycleService', () => {
       where: { customerId: 1 },
       data: { note: null, noteAt: null, noteBy: null },
     });
+  });
+
+  it('rejects a manual close while a stop-delivery ticket is still open', async () => {
+    const tx = {
+      $queryRaw: jest.fn(),
+      customer: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 1,
+          name: 'A',
+          debtNote: null,
+        }),
+      },
+      debtTicketCustomer: {
+        findFirst: jest.fn().mockResolvedValue({ ticketId: 9 }),
+      },
+    };
+    const prisma = { $transaction: jest.fn((callback: any) => callback(tx)) };
+    const service = makeService(prisma);
+
+    await expect(
+      service.closeCurrentCycle(1, { mode: 'MANUAL', userId: 9 }),
+    ).rejects.toThrow('kết thúc phiếu ngừng đi hàng trước khi làm mới chu kỳ');
+    expect(tx.debtTicketCustomer.findFirst).toHaveBeenCalled();
   });
 
   it('does not auto-close when the cycle never had a required payment', async () => {

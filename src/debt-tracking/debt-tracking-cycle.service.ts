@@ -20,6 +20,10 @@ import {
   INVOICE_STATUS_CANCELLED,
   MONEY_EPSILON,
 } from './debt-tracking.constants';
+import {
+  OPEN_STOP_DELIVERY_BLOCKS_CYCLE_MESSAGE,
+  findOpenStopDeliveryTicket,
+} from './debt-cycle-ticket.util';
 
 type DbClient = PrismaService | Prisma.TransactionClient;
 
@@ -228,6 +232,11 @@ export class DebtTrackingCycleService
         },
       });
       if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
+
+      const openStop = await findOpenStopDeliveryTicket(tx, customerId);
+      if (openStop) {
+        throw new BadRequestException(OPEN_STOP_DELIVERY_BLOCKS_CYCLE_MESSAGE);
+      }
 
       const openCycle = await tx.customerDebtTrackingCycle.findFirst({
         where: {
