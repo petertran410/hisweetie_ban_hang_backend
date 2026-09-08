@@ -14,3 +14,4 @@ export * from './soq.engine';
 export * from './stability.engine';
 export * from './trend.engine';
 export * from './supply.engine';
+export * from './decision-timeline.engine';

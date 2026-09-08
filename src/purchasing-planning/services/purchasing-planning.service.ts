@@ -18,6 +18,8 @@ import {
   coverageDaysFor,
   ConfigScope,
   ConfigValue,
+  buildDecisionTimeline,
+  DecisionTimeline,
   DEFAULT_PLANNING_CONFIG,
   forecastDemand,
   MonthlySales,
@@ -480,6 +482,7 @@ export class PurchasingPlanningService {
       branchBreakdown: trace.inputs.inventory.branches,
       shipments: trace.inputs.shipments,
       forecastComparison: trace.inputs.forecast,
+      decisionTimeline: trace.decisionTimeline ?? null,
       calculationTrace: trace,
       snapshotDate: this.dateOnly((item as any).recommendation?.snapshotDate),
     };
@@ -506,7 +509,9 @@ export class PurchasingPlanningService {
       const end = new Date(snapshotDate);
       end.setUTCDate(end.getUTCDate() + 1);
       const start = new Date(snapshotDate);
-      start.setUTCDate(start.getUTCDate() - 89);
+      // Cần đủ lịch sử cho biểu đồ 5 tháng: 3 tháng gần nhất và 2 tháng
+      // đối chiếu trước đó. Lấy dư khoảng 180 ngày để không hụt tháng biên.
+      start.setUTCDate(start.getUTCDate() - 180);
       const data = await this.repository.loadCalculationData(start, end);
       const configValues = data.configs
         .filter((row) => CONFIG_KEYS.has(row.paramKey))
@@ -837,8 +842,9 @@ export class PurchasingPlanningService {
       product,
       data.trends ?? [],
     );
+    const monthlySales = this.monthlySales(invoiceRows, snapshotDate);
     const stability = analyzeDemandStability(
-      this.monthlySales(invoiceRows, snapshotDate),
+      monthlySales,
       productPromotions,
       productTrends,
     );
@@ -1027,6 +1033,10 @@ export class PurchasingPlanningService {
     ];
     const confirmedIncoming =
       vehicleSupply.vehicleConfirmed + vehicleSupply.remainingNotOnVehicle;
+    const firmReceipts = this.firmIncomingReceipts(
+      incoming.receipts,
+      vehicleSupply.vehicleLines,
+    );
     const replenishment = calculateReplenishment({
       forecastDailyDemand: forecastDailyDemand,
       leadTimeDays,
@@ -1100,6 +1110,24 @@ export class PurchasingPlanningService {
       purchaseMultiple: config.purchaseMultiple,
       moqTolerance: config.moqTolerance,
       needsOrder: replenishment.needsOrder,
+    });
+    const decisionTimeline = this.buildDecisionTimelineData({
+      snapshotDate,
+      monthlySales,
+      stability,
+      firmReceipts,
+      vehicleLines: vehicleSupply.vehicleLines,
+      promotions: productPromotions,
+      trends: productTrends,
+      shipments,
+      forecastDailyDemand,
+      available,
+      reorderPoint: replenishment.reorderPoint,
+      safetyBuffer: replenishment.safetyBuffer,
+      latestOrderDate: timing.latestOrderDate,
+      leadTimeDays,
+      suggestedQuantity: soq.suggestedQuantity,
+      scenarioQuantity: soq.scenarioQuantity,
     });
     const latestPriceRow = purchaseRows.find(
       (row: any) => Number(row.price) > 0,
@@ -1200,6 +1228,7 @@ export class PurchasingPlanningService {
       confirmedIncoming,
       data.branchScope,
       leadtimeInfo,
+      decisionTimeline,
     );
     if (status === 'BLOCKED') trace.result.suggestedQuantity = 0;
     // Câu tóm tắt lấy thẳng khuyến nghị thời điểm đặt — đó là thứ người mua
@@ -1278,6 +1307,161 @@ export class PurchasingPlanningService {
     };
   }
 
+  /**
+   * Chuẩn bị dữ liệu cho biểu đồ quyết định nhập hàng.
+   * Business logic vẫn ở backend; frontend chỉ vẽ các giá trị đã được tính.
+   */
+  private buildDecisionTimelineData(input: {
+    snapshotDate: Date;
+    monthlySales: MonthlySales[];
+    stability: any;
+    firmReceipts: any[];
+    vehicleLines: any[];
+    promotions: PromotionWindow[];
+    trends: PlanningTrendWindow[];
+    shipments: any[];
+    forecastDailyDemand: number;
+    available: number;
+    reorderPoint: number;
+    safetyBuffer: number;
+    latestOrderDate: Date | null;
+    leadTimeDays: number;
+    suggestedQuantity: number;
+    scenarioQuantity: number;
+  }): DecisionTimeline {
+    const today = this.dateOnly(input.snapshotDate);
+    const projectionDays = 90;
+    const riskReceipts = input.vehicleLines
+      .filter((line) => line.classifiedAs === 'RISK' && line.eta)
+      .map((line) => ({
+        id: line.id,
+        date: line.eta,
+        quantity: line.quantity,
+        overdue: false,
+      }));
+    const firmProjection = projectInventory({
+      snapshotDate: input.snapshotDate,
+      availableStock: input.available,
+      forecastDailyDemand: input.forecastDailyDemand,
+      incoming: input.firmReceipts,
+      horizonDays: projectionDays,
+    });
+    const scenarioProjection = projectInventory({
+      snapshotDate: input.snapshotDate,
+      availableStock: input.available,
+      forecastDailyDemand: input.forecastDailyDemand,
+      incoming: [...input.firmReceipts, ...riskReceipts],
+      horizonDays: projectionDays,
+    });
+    const monthlyByKey = new Map(
+      input.monthlySales.map((month) => [month.month, month]),
+    );
+    const history = (input.stability.historyMonths ?? []).map((month: any) => ({
+      month: month.month,
+      quantity: Number(monthlyByKey.get(month.month)?.quantity ?? 0),
+      dailyRate: Number(month.dailyRate ?? 0),
+      // Baseline cùng đơn vị với quantity (theo tháng) để vẽ cùng trục.
+      baseline: Number(input.stability.baselineDailyDemand ?? 0) *
+        Number(monthlyByKey.get(month.month)?.days ?? 30),
+      anomaly: month.anomaly,
+      hasPromotion: Boolean(month.hasPromotion),
+      hasTrend: Boolean(month.hasTrend),
+      promotionNames: month.promotionNames ?? [],
+      trendNames: month.trendNames ?? [],
+    }));
+    const confirmedIncomingByDate = this.sumReceiptsByDate(input.firmReceipts);
+    const vehicleIncomingByDate = new Map<string, number>();
+    for (const line of input.vehicleLines) {
+      if (!line.eta) continue;
+      vehicleIncomingByDate.set(
+        line.eta,
+        (vehicleIncomingByDate.get(line.eta) ?? 0) + Number(line.quantity ?? 0),
+      );
+    }
+    const events = [
+      ...input.promotions.map((promotion) => ({
+        type: 'PROMOTION' as const,
+        name: promotion.name ?? null,
+        startDate: this.dateOnly(promotion.startDate),
+        endDate: this.dateOnly(promotion.endDate),
+        quantity: null,
+        etaType: null,
+      })),
+      ...input.trends.map((trend) => ({
+        type: 'TREND' as const,
+        name: trend.name ?? trend.note ?? null,
+        startDate: this.dateOnly(trend.startDate),
+        endDate: this.dateOnly(trend.endDate),
+        quantity:
+          trend.extraQuantity == null ? null : Number(trend.extraQuantity),
+        etaType: null,
+      })),
+      ...input.shipments.map((shipment) => ({
+        type: shipment.classifiedAs
+          ? ('VEHICLE_SHIPMENT' as const)
+          : ('INCOMING' as const),
+        name: shipment.orderCode ?? null,
+        startDate: shipment.eta
+          ? this.dateOnly(new Date(shipment.eta))
+          : today,
+        endDate: null,
+        quantity: Number(shipment.quantity ?? 0),
+        etaType: shipment.etaType ?? null,
+      })),
+    ];
+    const orderArrivalDate = input.leadTimeDays > 0
+      ? this.dateOnly(this.addDays(input.snapshotDate, input.leadTimeDays))
+      : null;
+
+    return buildDecisionTimeline({
+      history,
+      firmProjection,
+      scenarioProjection,
+      demandDaily: input.forecastDailyDemand,
+      todayStock: input.available,
+      confirmedIncomingByDate,
+      vehicleIncomingByDate,
+      today,
+      latestOrderDate: input.latestOrderDate
+        ? this.dateOnly(input.latestOrderDate)
+        : null,
+      orderArrivalDate,
+      reorderPoint: input.reorderPoint,
+      safetyStock: input.safetyBuffer,
+      events,
+      firmSuggestedQuantity: input.suggestedQuantity,
+      vehicleScenarioQuantity: input.scenarioQuantity,
+    });
+  }
+
+  private firmIncomingReceipts(receipts: any[], vehicleLines: any[]) {
+    const riskByOrder = new Map<number, number>();
+    for (const line of vehicleLines) {
+      if (line.classifiedAs !== 'RISK' || line.orderSupplierId == null) continue;
+      const id = Number(line.orderSupplierId);
+      riskByOrder.set(id, (riskByOrder.get(id) ?? 0) + Number(line.quantity ?? 0));
+    }
+    return receipts
+      .map((receipt) => {
+        const orderId = Number(receipt.id);
+        const risk = riskByOrder.get(orderId) ?? 0;
+        const quantity = Math.max(0, Number(receipt.quantity ?? 0) - risk);
+        const consumed = Math.min(risk, Number(receipt.quantity ?? 0));
+        if (consumed > 0) riskByOrder.set(orderId, risk - consumed);
+        return { ...receipt, quantity };
+      })
+      .filter((receipt) => receipt.quantity > 0);
+  }
+
+  private sumReceiptsByDate(receipts: any[]): Map<string, number> {
+    const result = new Map<string, number>();
+    for (const receipt of receipts) {
+      const date = String(receipt.date).slice(0, 10);
+      result.set(date, (result.get(date) ?? 0) + Number(receipt.quantity ?? 0));
+    }
+    return result;
+  }
+
   private buildTrace(
     snapshotDate: Date,
     config: any,
@@ -1291,10 +1475,12 @@ export class PurchasingPlanningService {
     incomingTotal: number,
     branchScope: PurchasingBranchScope,
     leadtimeInfo?: any,
+    decisionTimeline?: DecisionTimeline,
   ) {
     return {
-      version: '1.0',
+      version: '1.1',
       computedAt: new Date().toISOString(),
+      decisionTimeline: decisionTimeline ?? null,
       inputs: {
         branchScope,
         // Chi tiết từng chặng leadtime — để UI giải thích được vì sao ra con

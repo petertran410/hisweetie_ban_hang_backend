@@ -51,6 +51,8 @@ export interface StabilityResult {
   variationCoefficient: number;
   monthsUsed: number;
   months: MonthAssessment[];
+  /** Tối đa 5 tháng gần nhất, dùng cho biểu đồ quyết định nhập hàng. */
+  historyMonths: MonthAssessment[];
   lookbackMonths: MonthAssessment[];
   lookbackRepeatsAnomaly: boolean;
   unexplainedAnomaly: boolean;
@@ -76,6 +78,7 @@ export function analyzeDemandStability(
       variationCoefficient: 0,
       monthsUsed: usable.length,
       months: usable.map((month) => emptyAssessment(month)),
+      historyMonths: usable.map((month) => emptyAssessment(month)),
       lookbackMonths: [],
       lookbackRepeatsAnomaly: false,
       unexplainedAnomaly: false,
@@ -103,6 +106,7 @@ export function analyzeDemandStability(
   );
 
   const assessments = recentAssessment;
+  const historyMonths = assess(usable.slice(-5), promotions, trends);
   const unexplainedAnomaly = assessments.some(
     (month) => month.anomaly === 'SPIKE' && month.suspectedTrend,
   );
@@ -127,6 +131,7 @@ export function analyzeDemandStability(
     variationCoefficient: round(cv),
     monthsUsed: recent.length,
     months: assessments,
+    historyMonths,
     lookbackMonths,
     lookbackRepeatsAnomaly,
     unexplainedAnomaly,
