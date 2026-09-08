@@ -145,7 +145,13 @@ export class DebtTrackingService {
       ];
     }
     if (query.debtForm) policyWhere.debtForm = query.debtForm;
-    if (query.salePicId) policyWhere.salePicId = query.salePicId;
+    const salePicIds = [
+      ...(query.salePicIds ?? []),
+      ...(query.salePicId ? [query.salePicId] : []),
+    ];
+    if (salePicIds.length) {
+      policyWhere.salePicId = { in: [...new Set(salePicIds)] };
+    }
 
     const customerWhere: Record<string, unknown> = {
       totalDebt: { gt: 0 },

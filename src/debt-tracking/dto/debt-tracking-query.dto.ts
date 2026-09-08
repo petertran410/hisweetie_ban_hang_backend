@@ -72,6 +72,24 @@ export class DebtTrackingQueryDto {
   @Type(() => Number)
   salePicId?: number;
 
+  /** Lọc theo nhiều Sale phụ trách. */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value == null || value === '') return undefined;
+    const arr = Array.isArray(value)
+      ? value
+      : typeof value === 'number'
+        ? [value]
+        : String(value).split(',');
+    const ids = arr
+      .map((item) => Number(item))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    return ids.length ? ids : undefined;
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  salePicIds?: number[];
+
 
   /** Lọc theo hình thức công nợ. */
   @IsOptional()
