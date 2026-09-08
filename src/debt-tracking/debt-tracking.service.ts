@@ -16,6 +16,7 @@ import {
 } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LarkDebtNotificationService } from '../lark-sync/services/lark-debt-notification.service';
+import { DebtTrackingCycleService } from './debt-tracking-cycle.service';
 import {
   computeCustomerAging,
   evaluateFixedPaymentSchedule,
@@ -107,6 +108,7 @@ export class DebtTrackingService {
     private prisma: PrismaService,
     private auditLogs: AuditLogsService,
     @Optional() private larkDebtNotification?: LarkDebtNotificationService,
+    @Optional() private cycles?: DebtTrackingCycleService,
   ) {}
 
   // ================================================================
@@ -170,6 +172,16 @@ export class DebtTrackingService {
       ];
     }
 
+    const customerGroupIds = [
+      ...(query.customerGroupIds ?? []),
+      ...(query.customerGroupId ? [query.customerGroupId] : []),
+    ];
+    if (customerGroupIds.length) {
+      customerWhere.customerGroupDetails = {
+        some: { customerGroupId: { in: [...new Set(customerGroupIds)] } },
+      };
+    }
+
     const customers = await this.prisma.customer.findMany({
       where: customerWhere,
       take: MAX_CUSTOMERS_SCAN,
@@ -214,6 +226,9 @@ export class DebtTrackingService {
     const picMap = await this.getPicUsers(customers);
     const collectionAttemptMap =
       await this.getCollectionAttemptMap(customerIds);
+    const cycleSummaryMap = this.cycles
+      ? await this.cycles.getSummaries(customerIds)
+      : new Map();
 
     // ---- Tính toán ----
     const now = new Date();
@@ -344,6 +359,15 @@ export class DebtTrackingService {
          accountantCollectionAttempts:
            collectionAttemptMap.get(c.id)?.ACCOUNTANT ?? [],
          salesCollectionAttempts: collectionAttemptMap.get(c.id)?.SALES ?? [],
+        currentCycle: cycleSummaryMap.get(c.id)?.currentCycle
+          ? {
+              id: cycleSummaryMap.get(c.id)!.currentCycle!.id,
+              startedAt: cycleSummaryMap.get(c.id)!.currentCycle!.startedAt,
+              requiredPaymentAtStart:
+                cycleSummaryMap.get(c.id)!.currentCycle!.requiredPaymentAtStart,
+            }
+          : null,
+        closedCycleCount: cycleSummaryMap.get(c.id)?.closedCycleCount ?? 0,
 
         // Phiếu thu hồi nợ
         openTicket: ticketMap.get(c.id)?.openTicket ?? null,
@@ -847,16 +871,27 @@ export class DebtTrackingService {
       return this.prisma.customerDebtNote.findUnique({ where: { customerId } });
     }
 
-    return this.prisma.customerDebtNote.upsert({
+    const saved = await this.prisma.customerDebtNote.upsert({
       where: { customerId },
       create: { customerId, ...data },
       update: data,
     });
+    if (dto.note && this.cycles) {
+      await this.cycles.ensureOpenCycle(customerId);
+    }
+    return saved;
   }
 
   async getCollectionAttempts(customerId: number) {
+    const lastClosedAt = this.cycles
+      ? (await this.cycles.getLastClosedAtMap([customerId])).get(customerId)
+      : undefined;
     const rows = await this.prisma.customerDebtCollectionAttempt.findMany({
-      where: { customerId },
+      where: {
+        customerId,
+        isActive: true,
+        ...(lastClosedAt ? { recordedAt: { gt: lastClosedAt } } : {}),
+      },
       orderBy: [{ role: 'asc' }, { attemptDate: 'asc' }, { recordedAt: 'asc' }],
       include: { recordedBy: { select: { id: true, name: true } } },
     });
@@ -885,8 +920,19 @@ export class DebtTrackingService {
       });
       if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
 
+      const openCycle = this.cycles
+        ? await this.cycles.ensureOpenCycle(customerId, tx)
+        : null;
+      const lastClosedAt = this.cycles
+        ? (await this.cycles.getLastClosedAtMap([customerId])).get(customerId)
+        : undefined;
       const latest = await tx.customerDebtCollectionAttempt.findFirst({
-        where: { customerId, role: dto.role, isActive: true },
+        where: {
+          customerId,
+          role: dto.role,
+          isActive: true,
+          ...(lastClosedAt ? { recordedAt: { gt: lastClosedAt } } : {}),
+        },
         orderBy: [{ attemptDate: 'desc' }, { recordedAt: 'desc' }],
         select: { attemptDate: true },
       });
@@ -902,6 +948,7 @@ export class DebtTrackingService {
           role: dto.role,
           attemptDate,
           recordedById: userId,
+          cycleId: openCycle?.id ?? null,
         },
         include: { recordedBy: { select: { id: true, name: true } } },
       });
@@ -930,6 +977,10 @@ export class DebtTrackingService {
       });
       if (!current) throw new NotFoundException('Không tìm thấy lần đòi nợ');
 
+      const lastClosedAt = this.cycles
+        ? (await this.cycles.getLastClosedAtMap([customerId])).get(customerId)
+        : undefined;
+      const cycleFilter = lastClosedAt ? { recordedAt: { gt: lastClosedAt } } : {};
       const [previous, next] = await Promise.all([
         tx.customerDebtCollectionAttempt.findFirst({
           where: {
@@ -938,6 +989,7 @@ export class DebtTrackingService {
             isActive: true,
             id: { not: current.id },
             attemptDate: { lt: current.attemptDate },
+            ...cycleFilter,
           },
           orderBy: { attemptDate: 'desc' },
           select: { attemptDate: true },
@@ -949,6 +1001,7 @@ export class DebtTrackingService {
             isActive: true,
             id: { not: current.id },
             attemptDate: { gt: current.attemptDate },
+            ...cycleFilter,
           },
           orderBy: { attemptDate: 'asc' },
           select: { attemptDate: true },
@@ -978,6 +1031,7 @@ export class DebtTrackingService {
           supersedesId: current.id,
           actionType: 'EDIT',
           reason: dto.reason.trim(),
+          cycleId: current.cycleId ?? null,
         },
         include: { recordedBy: { select: { id: true, name: true } } },
       });
@@ -999,8 +1053,14 @@ export class DebtTrackingService {
   }
 
   private async getCollectionAttemptMap(customerIds: number[]) {
+    const lastClosedAtMap = this.cycles
+      ? await this.cycles.getLastClosedAtMap(customerIds)
+      : new Map<number, Date>();
     const rows = await this.prisma.customerDebtCollectionAttempt.findMany({
-      where: { customerId: { in: customerIds }, isActive: true },
+      where: {
+        customerId: { in: customerIds },
+        isActive: true,
+      },
       orderBy: [{ customerId: 'asc' }, { role: 'asc' }, { attemptDate: 'asc' }],
       include: { recordedBy: { select: { id: true, name: true } } },
     });
@@ -1009,6 +1069,10 @@ export class DebtTrackingService {
       { ACCOUNTANT: CollectionAttemptView[]; SALES: CollectionAttemptView[] }
     >();
     for (const row of rows) {
+      const lastClosedAt = lastClosedAtMap.get(row.customerId);
+      if (lastClosedAt && row.recordedAt.getTime() <= lastClosedAt.getTime()) {
+        continue;
+      }
       const current =
         map.get(row.customerId) ?? { ACCOUNTANT: [], SALES: [] };
       if (row.role === 'ACCOUNTANT' || row.role === 'SALES') {
@@ -1431,6 +1495,7 @@ export class DebtTrackingService {
             status: true,
             assigneeId: true,
             ticketType: true,
+            createdAt: true,
             assignee: { select: { id: true, name: true } },
           },
         },
@@ -1438,8 +1503,20 @@ export class DebtTrackingService {
       orderBy: [{ isLatest: 'desc' }, { createdAt: 'desc' }],
     });
 
+    const lastClosedAtMap = this.cycles
+      ? await this.cycles.getLastClosedAtMap(customerIds)
+      : new Map<number, Date>();
     const map = new Map<number, { openTicket: OpenTicketInfo | null; latestStopTicket: OpenTicketInfo | null }>();
     for (const l of lines) {
+      const lastClosedAt = lastClosedAtMap.get(l.customerId);
+      const ticketCreatedAt = l.ticket.createdAt ?? l.createdAt;
+      if (
+        lastClosedAt &&
+        ticketCreatedAt &&
+        ticketCreatedAt.getTime() <= lastClosedAt.getTime()
+      ) {
+        continue;
+      }
       const ticket = {
         ticketId: l.ticketId,
         ticketCode: l.ticket.code,

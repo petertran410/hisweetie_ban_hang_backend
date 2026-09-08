@@ -34,6 +34,7 @@ model User {
   soldConsignments                                          Consignment[]                     @relation("ConsignmentSeller")
   createdContracts                                          Contract[]                        @relation("ContractCreator")
   recordedCustomerDebtCollectionAttempts                    CustomerDebtCollectionAttempt[]   @relation("DebtCollectionAttemptRecorder")
+  closedCustomerDebtTrackingCycles                          CustomerDebtTrackingCycle[]       @relation("DebtTrackingCycleCloser")
   createdCustomerGroups                                     CustomerGroup[]                   @relation("CustomerGroupCreator")
   createdCustomers                                          Customer[]                        @relation("CustomerCreator")
   updatedCustomers                                          Customer[]                        @relation("CustomerUpdater")
@@ -455,6 +456,7 @@ model Customer {
   debtCollectionAttempts CustomerDebtCollectionAttempt[]
   debtNote               CustomerDebtNote?
   debtPolicy             CustomerDebtPolicy?
+  debtTrackingCycles     CustomerDebtTrackingCycle[]
   customerGroupDetails   CustomerGroupDetail[]
   branch                 Branch?                         @relation(fields: [branchId], references: [id])
   creator                User?                           @relation("CustomerCreator", fields: [createdBy], references: [id])
@@ -4028,15 +4030,50 @@ model CustomerDebtCollectionAttempt {
   isActive     Boolean                         @default(true) @map("is_active")
   actionType   String                          @default("CREATE") @map("action_type")
   reason       String?
+  cycleId      Int?                            @map("cycle_id")
   customer     Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
   recordedBy   User                            @relation("DebtCollectionAttemptRecorder", fields: [recordedById], references: [id])
   supersedes   CustomerDebtCollectionAttempt?  @relation("DebtCollectionAttemptRevision", fields: [supersedesId], references: [id])
   revisions    CustomerDebtCollectionAttempt[] @relation("DebtCollectionAttemptRevision")
+  cycle        CustomerDebtTrackingCycle?      @relation(fields: [cycleId], references: [id], onDelete: SetNull)
 
   @@index([customerId, role, attemptDate])
   @@index([customerId, role, isActive])
   @@index([recordedById, recordedAt])
+  @@index([cycleId])
   @@map("customer_debt_collection_attempts")
+}
+
+/// Một chu kỳ theo dõi công nợ của khách.
+/// Dòng hiện tại trên trang theo dõi là chu kỳ OPEN; khi tick/refresh
+/// (thủ công hoặc tự động sau khi thanh toán đủ số tiền cần thu) chu kỳ
+/// được đóng, snapshot đòi nợ + ghi chú để xem lại, rồi bắt đầu chu kỳ mới.
+model CustomerDebtTrackingCycle {
+  id                     Int                             @id @default(autoincrement())
+  customerId             Int                             @map("customer_id")
+  status                 String                          @default("OPEN")
+  startedAt              DateTime                        @default(now()) @map("started_at")
+  closedAt               DateTime?                       @map("closed_at")
+  closedById             Int?                            @map("closed_by_id")
+  /// MANUAL | AUTO_PAYMENT
+  closeMode              String?                         @map("close_mode")
+  requiredPaymentAtStart Decimal                         @default(0) @map("required_payment_at_start") @db.Decimal(18, 2)
+  requiredPaymentAtClose Decimal?                        @map("required_payment_at_close") @db.Decimal(18, 2)
+  totalDebtAtStart       Decimal                         @default(0) @map("total_debt_at_start") @db.Decimal(18, 2)
+  totalDebtAtClose       Decimal?                        @map("total_debt_at_close") @db.Decimal(18, 2)
+  note                   String?
+  noteAt                 DateTime?                       @map("note_at")
+  noteBy                 Int?                            @map("note_by")
+  snapshot               Json?
+  createdAt              DateTime                        @default(now()) @map("created_at")
+  updatedAt              DateTime                        @updatedAt @map("updated_at")
+  customer               Customer                        @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  closedBy               User?                           @relation("DebtTrackingCycleCloser", fields: [closedById], references: [id])
+  collectionAttempts     CustomerDebtCollectionAttempt[]
+
+  @@index([customerId, status])
+  @@index([customerId, closedAt])
+  @@map("customer_debt_tracking_cycles")
 }
 
 /// Phiếu công nợ. Một ticket gồm nhiều khách, một người phụ trách.

@@ -232,6 +232,22 @@ export const DEBT_TICKET_CLOSE_MODE = {
   MANUAL: 'MANUAL',
 } as const;
 
+/** Chu kỳ theo dõi công nợ trên trang danh sách. */
+export const DEBT_TRACKING_CYCLE_STATUS = {
+  OPEN: 'OPEN',
+  CLOSED: 'CLOSED',
+} as const;
+
+export const DEBT_TRACKING_CYCLE_CLOSE_MODE = {
+  MANUAL: 'MANUAL',
+  AUTO_PAYMENT: 'AUTO_PAYMENT',
+} as const;
+
+export const DEBT_TRACKING_CYCLE_CLOSE_MODE_LABELS: Record<string, string> = {
+  MANUAL: 'Thủ công',
+  AUTO_PAYMENT: 'Tự động khi thanh toán đủ',
+};
+
 /** Tiền tố mã phiếu thu hồi nợ. */
 export const DEBT_TICKET_CODE_PREFIX = 'TCN';
 

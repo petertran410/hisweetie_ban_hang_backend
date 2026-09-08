@@ -18,6 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { DebtTrackingService } from './debt-tracking.service';
+import { DebtTrackingCycleService } from './debt-tracking-cycle.service';
 import { DebtPolicyImportService } from './debt-policy-import.service';
 import {
   DebtTrackingQueryDto,
@@ -51,6 +52,7 @@ export class DebtTrackingController {
 
   constructor(
     private debtTrackingService: DebtTrackingService,
+    private cycleService: DebtTrackingCycleService,
     private importService: DebtPolicyImportService,
   ) {}
 
@@ -326,6 +328,26 @@ export class DebtTrackingController {
     @Req() req: any,
   ) {
     return this.debtTrackingService.updateNote(+customerId, dto, req.user?.id);
+  }
+
+  @Get(':customerId/cycles')
+  @RequirePermissions('debt_tracking:view')
+  @ApiOperation({ summary: 'Lịch sử các chu kỳ theo dõi công nợ đã đóng' })
+  listCycles(@Param('customerId') customerId: string) {
+    return this.cycleService.listCycles(+customerId);
+  }
+
+  @Post(':customerId/cycles/close')
+  @RequirePermissions('debt_tracking:view')
+  @ApiOperation({
+    summary:
+      'Đóng chu kỳ hiện tại, lưu lịch sử đòi nợ/ghi chú và làm mới dòng theo dõi',
+  })
+  closeCycle(@Param('customerId') customerId: string, @Req() req: any) {
+    return this.cycleService.closeCurrentCycle(+customerId, {
+      mode: 'MANUAL',
+      userId: req.user?.id ?? null,
+    });
   }
 
   @Get(':customerId/collection-attempts')

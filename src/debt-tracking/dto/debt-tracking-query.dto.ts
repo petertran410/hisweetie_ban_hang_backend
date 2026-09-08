@@ -90,6 +90,29 @@ export class DebtTrackingQueryDto {
   @IsInt({ each: true })
   salePicIds?: number[];
 
+  /** Lọc theo nhóm khách hàng. */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  customerGroupId?: number;
+
+  /** Lọc theo nhiều nhóm khách hàng. */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value == null || value === '') return undefined;
+    const arr = Array.isArray(value)
+      ? value
+      : typeof value === 'number'
+        ? [value]
+        : String(value).split(',');
+    const ids = arr
+      .map((item) => Number(item))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    return ids.length ? ids : undefined;
+  })
+  @IsArray()
+  @IsInt({ each: true })
+  customerGroupIds?: number[];
 
   /** Lọc theo hình thức công nợ. */
   @IsOptional()
