@@ -206,6 +206,7 @@ export class LarkOrderNotificationService {
     const footerLines: string[] = [
       `**Tổng tiền hàng:** ${this.formatMoney(order.totalAmount)}`,
       `**Chiết khấu:** ${this.formatMoney(order.discount)}`,
+      `**Phí ship:** ${this.formatMoney(order.shippingFee)}`,
       `**Tổng thanh toán:** ${this.formatMoney(order.grandTotal)}`,
       '',
       'Cảm ơn và hẹn gặp lại!',
