@@ -22,7 +22,7 @@ const promotion = (
 });
 
 describe('analyzeDemandStability', () => {
-  it('nới ra 6 tháng khi 3 tháng gần nhất đều bình thường', () => {
+  it('dùng trung bình 3 tháng khi không có tháng bất thường', () => {
     const result = analyzeDemandStability([
       month('2026-01', 300),
       month('2026-02', 310),
@@ -32,7 +32,13 @@ describe('analyzeDemandStability', () => {
       month('2026-06', 298),
     ]);
 
-    expect(result.monthsUsed).toBe(6);
+    expect(result.monthsUsed).toBe(3);
+    expect(result.months.map((item) => item.month)).toEqual([
+      '2026-04',
+      '2026-05',
+      '2026-06',
+    ]);
+    expect(result.lookbackMonths).toEqual([]);
     expect(result.stability).toBe('STABLE');
     expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
   });
@@ -105,6 +111,44 @@ describe('analyzeDemandStability', () => {
   it('báo thiếu dữ liệu khi chưa đủ 2 tháng', () => {
     const result = analyzeDemandStability([month('2026-06', 300)]);
     expect(result.stability).toBe('INSUFFICIENT_DATA');
+  });
+
+  it('soi tháng 4 và 5 khi 3 tháng gần nhất có bất thường', () => {
+    const result = analyzeDemandStability([
+      month('2026-01', 300),
+      month('2026-02', 900),
+      month('2026-03', 300),
+      month('2026-04', 300),
+      month('2026-05', 900),
+      month('2026-06', 300),
+    ]);
+
+    expect(result.lookbackMonths.map((item) => item.month)).toEqual([
+      '2026-02',
+      '2026-03',
+    ]);
+    expect(result.lookbackRepeatsAnomaly).toBe(true);
+    expect(result.unexplainedAnomaly).toBe(true);
+    expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
+  });
+
+  it('không coi là nghi trend nếu tháng vọt đã được khai trend', () => {
+    const result = analyzeDemandStability(
+      [month('2026-04', 300), month('2026-05', 900), month('2026-06', 300)],
+      [],
+      [
+        {
+          startDate: new Date('2026-05-01T00:00:00.000Z'),
+          endDate: new Date('2026-05-31T00:00:00.000Z'),
+          name: 'Mùa hè',
+        },
+      ],
+    );
+    const may = result.months.find((item) => item.month === '2026-05');
+    expect(may?.hasTrend).toBe(true);
+    expect(may?.suspectedTrend).toBe(false);
+    expect(result.unexplainedAnomaly).toBe(false);
+    expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
   });
 });
 

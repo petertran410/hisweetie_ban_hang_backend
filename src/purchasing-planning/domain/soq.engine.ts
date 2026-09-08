@@ -55,12 +55,10 @@ export interface SoqInput {
   safetyDays: number;
   availableStock: number;
   usableIncoming?: number;
-  committedDemand?: number;
-  /**
-   * Nhu cầu cộng thêm ngoài mức nền — hiện dùng cho các đợt khuyến mãi đang
-   * chạy hoặc sắp chạy trong horizon đặt hàng.
-   */
+  customerOrders?: number;
+  companyNeed?: number;
   extraDemand?: number;
+  riskIncoming?: number;
   daysOfSupply?: number | null;
   packSize: number;
   moq: number;
@@ -86,28 +84,31 @@ export function coverageDaysFor(leadTimeDays: number): number {
 
 export function calculateSoq(input: SoqInput): SoqResult {
   const coverageDays = coverageDaysFor(input.leadTimeDays);
-  // Mức tồn mục tiêu: đủ bán trong lúc chờ hàng + đệm an toàn + một chu kỳ
-  // đặt hàng nữa, cộng phần nhu cầu tăng thêm đã biết trước (khuyến mãi).
-  const targetStock =
+  const salesDemand =
     Math.max(0, input.forecastDailyDemand) *
-      (input.leadTimeDays + input.safetyDays + coverageDays) +
-    Math.max(0, input.extraDemand ?? 0);
-  const rawQuantity = round(
-    Math.max(
-      0,
-      targetStock -
-        input.availableStock -
-        (input.usableIncoming ?? 0) -
-        (input.committedDemand ?? 0),
-    ),
-  );
+    (input.leadTimeDays + input.safetyDays + coverageDays);
+  const customerOrders = Math.max(0, input.customerOrders ?? 0);
+  const companyNeed = Math.max(0, input.companyNeed ?? 0);
+  const extraDemand = Math.max(0, input.extraDemand ?? 0);
+  const totalDemand = salesDemand + customerOrders + companyNeed + extraDemand;
+  const confirmedIncoming = Math.max(0, input.usableIncoming ?? 0);
+  const riskIncoming = Math.max(0, input.riskIncoming ?? 0);
+  const firmSupply = input.availableStock + confirmedIncoming;
+  const scenarioSupply = firmSupply + riskIncoming;
+  const rawQuantity = round(Math.max(0, totalDemand - firmSupply));
+  const scenarioRawQuantity = round(Math.max(0, totalDemand - scenarioSupply));
   const multiple =
     Math.max(1, input.packSize) * Math.max(1, input.purchaseMultiple ?? 1);
   const roundedQuantity =
     rawQuantity > 0 ? Math.ceil(rawQuantity / multiple) * multiple : 0;
+  const roundedScenario =
+    scenarioRawQuantity > 0
+      ? Math.ceil(scenarioRawQuantity / multiple) * multiple
+      : 0;
   const moq = Math.max(0, input.moq);
   const tolerance = Math.max(0, input.moqTolerance ?? 0.5);
   let suggestedQuantity = input.needsOrder === false ? 0 : roundedQuantity;
+  let scenarioQuantity = input.needsOrder === false ? 0 : roundedScenario;
   let moqApplied: number | null = null;
   let deferredByMoq = false;
 
@@ -123,8 +124,12 @@ export function calculateSoq(input: SoqInput): SoqResult {
       deferredByMoq = true;
     }
   }
+  if (scenarioQuantity > 0 && scenarioQuantity < moq && suggestedQuantity === 0) {
+    scenarioQuantity = 0;
+  }
 
   suggestedQuantity = round(suggestedQuantity);
+  scenarioQuantity = round(scenarioQuantity);
   return {
     rawQuantity,
     suggestedQuantity,
@@ -132,20 +137,29 @@ export function calculateSoq(input: SoqInput): SoqResult {
       suggestedQuantity / Math.max(1, input.packSize),
       2,
     ),
+    scenarioQuantity,
     moqApplied,
     deferredByMoq,
     steps: [
       {
-        code: 'TARGET_STOCK',
-        formula:
-          'FDD × (chờ hàng + dự phòng + chu kỳ đặt) + nhu cầu khuyến mãi',
-        value: round(targetStock),
+        code: 'SALES_DEMAND',
+        formula: 'FDD × (chờ hàng + dự phòng + chu kỳ đặt)',
+        value: round(salesDemand),
+      },
+      {
+        code: 'TOTAL_DEMAND',
+        formula: 'bán dự kiến + khách đặt + công ty cần + KM/trend',
+        value: round(totalDemand),
       },
       {
         code: 'SOQ_RAW',
-        formula:
-          'max(0, targetStock - available - usableIncoming - committedDemand)',
+        formula: 'max(0, totalDemand - tồn khả dụng - hàng về chắc chắn)',
         value: rawQuantity,
+      },
+      {
+        code: 'SOQ_SCENARIO',
+        formula: 'max(0, totalDemand - tồn - hàng về chắc chắn - ghép xe rủi ro)',
+        value: scenarioRawQuantity,
       },
       {
         code: 'ROUND_TO_PURCHASE_MULTIPLE',

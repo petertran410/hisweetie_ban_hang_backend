@@ -18,8 +18,10 @@ import {
   CreatePlanningConfigDto,
   RecommendationQueryDto,
   ResolvedPlanningConfigQueryDto,
+  CreatePlanningTrendDto,
   RunCalculationDto,
   UpdatePlanningConfigDto,
+  UpdatePlanningTrendDto,
 } from '../dto';
 import { PurchasingPlanningService } from '../services/purchasing-planning.service';
 import { PlanningNetworkService } from '../services/planning-network.service';
@@ -103,6 +105,36 @@ export class PurchasingPlanningController {
   @RequirePermissions('purchasing_planning:view')
   getRecommendationDetail(@Param('itemId', ParseIntPipe) itemId: number) {
     return this.service.getRecommendationDetail(itemId);
+  }
+
+  @Get('trends')
+  @RequirePermissions('purchasing_planning:view')
+  listTrends() {
+    return this.service.listTrends();
+  }
+
+  @Post('trends')
+  @RequirePermissions('purchasing_planning:config')
+  createTrend(
+    @Body() dto: CreatePlanningTrendDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.createTrend(dto, this.actor(user));
+  }
+
+  @Patch('trends/:id')
+  @RequirePermissions('purchasing_planning:config')
+  updateTrend(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdatePlanningTrendDto,
+  ) {
+    return this.service.updateTrend(id, dto);
+  }
+
+  @Delete('trends/:id')
+  @RequirePermissions('purchasing_planning:config')
+  deleteTrend(@Param('id', ParseIntPipe) id: number) {
+    return this.service.deleteTrend(id);
   }
 
   @Post('calculations/run')

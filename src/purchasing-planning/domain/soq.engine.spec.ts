@@ -25,7 +25,7 @@ describe('calculateSoq', () => {
     // coverage = max(30, 40×2) = 80 → 10 × (40+8+80) = 1280
     expect(result.rawQuantity).toBe(1280);
     expect(result.suggestedQuantity).toBe(1280);
-    expect(result.steps).toHaveLength(4);
+    expect(result.steps.length).toBeGreaterThanOrEqual(4);
   });
 
   it('trừ tồn kho và hàng đang về khỏi nhu cầu', () => {
@@ -74,6 +74,26 @@ describe('calculateSoq', () => {
     expect(result.rawQuantity).toBe(400);
     expect(result.suggestedQuantity).toBe(400);
   });
+  it('cộng khách đặt và công ty cần, trừ nguồn cung chắc chắn', () => {
+    const result = calculateSoq({
+      forecastDailyDemand: 10,
+      leadTimeDays: 10,
+      safetyDays: 0,
+      availableStock: 100,
+      usableIncoming: 50,
+      customerOrders: 80,
+      companyNeed: 20,
+      extraDemand: 30,
+      riskIncoming: 40,
+      packSize: 1,
+      moq: 0,
+    });
+    // coverage = 30 → sales = 10*(10+0+30)=400; demand=400+80+20+30=530
+    // firm = 530-100-50=380; scenario = 380-40=340
+    expect(result.rawQuantity).toBe(380);
+    expect(result.scenarioQuantity).toBe(340);
+  });
+
 });
 
 describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => {

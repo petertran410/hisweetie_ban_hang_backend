@@ -1,3 +1,4 @@
 export * from './recommendation-query.dto';
 export * from './run-calculation.dto';
 export * from './planning-config.dto';
+export * from './planning-trend.dto';

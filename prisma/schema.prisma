@@ -749,6 +749,7 @@ model Product {
   destructionDetails             DestructionDetail[]
   factoryChangeLogs              FactoryChangeLog[]
   factory_products               factory_products[]
+  planningTrends                 PlanningTrend[]
   internalUseDetails             InternalUseDetail[]
   inventories                    Inventory[]
   inventoryCheckDetails          InventoryCheckDetail[]
@@ -3648,6 +3649,28 @@ model PlanningNetworkConfig {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("planning_network_config")
+}
+
+/// Trend bán hàng do người dùng khai: theo SKU hoặc nhóm hàng + khoảng ngày.
+model PlanningTrend {
+  id            Int      @id @default(autoincrement())
+  productId     Int?     @map("product_id")
+  categoryName  String?  @map("category_name") @db.VarChar(255)
+  startDate     DateTime @map("start_date") @db.Date
+  endDate       DateTime @map("end_date") @db.Date
+  kind          String   @default("UPLIFT") @db.VarChar(20)
+  upliftFactor  Decimal? @map("uplift_factor") @db.Decimal(10, 4)
+  extraQuantity Decimal? @map("extra_quantity") @db.Decimal(18, 4)
+  note          String?
+  isActive      Boolean  @default(true) @map("is_active")
+  createdBy     Int?     @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  product       Product? @relation(fields: [productId], references: [id])
+
+  @@index([productId, isActive])
+  @@index([startDate, endDate])
+  @@map("planning_trend")
 }
 
 model PlanningConfig {

@@ -12,3 +12,5 @@ export * from './promotion-uplift.engine';
 export * from './replenishment.engine';
 export * from './soq.engine';
 export * from './stability.engine';
+export * from './trend.engine';
+export * from './supply.engine';

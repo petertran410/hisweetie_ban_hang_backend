@@ -12,6 +12,8 @@ function month(
     ratio: 1,
     hasPromotion: false,
     promotionNames: [],
+    hasTrend: false,
+    trendNames: [],
     suspectedTrend: false,
     ...overrides,
   };

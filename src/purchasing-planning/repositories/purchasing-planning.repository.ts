@@ -295,6 +295,8 @@ export class PurchasingPlanningRepository {
       categories,
       stockSnapshots,
       promotions,
+      pendingOrders,
+      trends,
     ] = await Promise.all([
       this.prisma.product.findMany({
         where: productWhere,
@@ -314,6 +316,7 @@ export class PurchasingPlanningRepository {
           branch: { select: { name: true, code: true } },
           onHand: true,
           reserved: true,
+          minQuality: true,
         },
       }),
       this.prisma.invoiceDetail.findMany({
@@ -448,7 +451,27 @@ export class PurchasingPlanningRepository {
           },
         },
       }) ?? Promise.resolve([]),
+      (this.prisma as any).orderItem?.groupBy?.({
+        by: ['productId'],
+        where: {
+          product: productWhere,
+          order: {
+            branchId: { in: branchIds },
+            status: { in: [1, 5] },
+          },
+        },
+        _sum: { quantity: true },
+      }) ?? Promise.resolve([]),
+      (this.prisma as any).planningTrend?.findMany?.({
+        where: { isActive: true, endDate: { gte: windowStart } },
+        orderBy: { startDate: 'asc' },
+      }) ?? Promise.resolve([]),
     ]);
+
+    const pendingOrderQty = new Map<number, number>();
+    for (const row of pendingOrders ?? []) {
+      pendingOrderQty.set(row.productId, Number(row._sum.quantity ?? 0));
+    }
 
     return {
       products,
@@ -461,6 +484,8 @@ export class PurchasingPlanningRepository {
       categories,
       stockSnapshots,
       promotions,
+      pendingOrderQty,
+      trends,
       branchScope,
     };
   }
@@ -532,5 +557,49 @@ export class PurchasingPlanningRepository {
         errorSummary: { message } as Prisma.InputJsonValue,
       },
     });
+  }
+
+  listTrends() {
+    return this.trendDelegate().findMany({
+      where: { isActive: true },
+      include: { product: { select: { id: true, code: true, name: true } } },
+      orderBy: [{ startDate: 'desc' }, { id: 'desc' }],
+    });
+  }
+
+  createTrend(data: Record<string, unknown>) {
+    return this.trendDelegate().create({
+      data,
+      include: { product: { select: { id: true, code: true, name: true } } },
+    });
+  }
+
+  updateTrend(id: number, data: Record<string, unknown>) {
+    return this.trendDelegate().update({
+      where: { id },
+      data,
+      include: { product: { select: { id: true, code: true, name: true } } },
+    });
+  }
+
+  deactivateTrend(id: number) {
+    return this.trendDelegate().update({
+      where: { id },
+      data: { isActive: false },
+    });
+  }
+
+  findTrend(id: number) {
+    return this.trendDelegate().findUnique({ where: { id } });
+  }
+
+  private trendDelegate() {
+    const delegate = (this.prisma as any).planningTrend;
+    if (!delegate) {
+      throw new Error(
+        'Bảng planning_trend chưa có trên database. Hãy chạy SQL prisma/sql/add-planning-trend.sql rồi yarn prisma generate.',
+      );
+    }
+    return delegate;
   }
 }

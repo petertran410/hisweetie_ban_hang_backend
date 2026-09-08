@@ -89,6 +89,10 @@ const HEADER_KEYS: Record<string, keyof ParsedFactoryRow | undefined> = {
   'sx nhanh nhat (ngay)': 'productionLeadtimeMin',
   'sx chậm nhất (ngày)': 'productionLeadtimeMax',
   'sx cham nhat (ngay)': 'productionLeadtimeMax',
+  'sx (ngày)': 'productionLeadtimeMax',
+  'sx (ngay)': 'productionLeadtimeMax',
+  'thời gian sản xuất (ngày)': 'productionLeadtimeMax',
+  'thoi gian san xuat (ngay)': 'productionLeadtimeMax',
   // File cũ chỉ có một cột Leadtime → coi là cận trên để không tính thiếu.
   leadtime: 'productionLeadtimeMax',
   'leadtime (ngày)': 'productionLeadtimeMax',
@@ -314,13 +318,15 @@ export class FactoryImportService {
           errors,
         ),
         productionLeadtimeMin: this.number(
-          cell(excelRow, 'productionLeadtimeMin'),
-          'SX nhanh nhất',
+          cell(excelRow, 'productionLeadtimeMax') ||
+            cell(excelRow, 'productionLeadtimeMin'),
+          'Thời gian sản xuất',
           errors,
         ),
         productionLeadtimeMax: this.number(
-          cell(excelRow, 'productionLeadtimeMax'),
-          'SX chậm nhất',
+          cell(excelRow, 'productionLeadtimeMax') ||
+            cell(excelRow, 'productionLeadtimeMin'),
+          'Thời gian sản xuất',
           errors,
         ),
         paymentTerm: cell(excelRow, 'paymentTerm') || undefined,

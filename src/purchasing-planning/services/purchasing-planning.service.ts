@@ -13,6 +13,8 @@ import {
   calculatePromotionUplift,
   calculateReplenishment,
   calculateSoq,
+  calculateTrendUplift,
+  classifyVehicleSupply,
   coverageDaysFor,
   ConfigScope,
   ConfigValue,
@@ -22,6 +24,7 @@ import {
   moqSpecToPacks,
   OPERATIONAL_PLANNING_DEFAULTS,
   PlanningConfigKey,
+  PlanningTrendWindow,
   projectInventory,
   PromotionWindow,
   resolveDemand,
@@ -29,6 +32,7 @@ import {
   resolveLeadtimePipeline,
   resolvePlanningConfig,
   safetyDaysFromStability,
+  trendsForProduct,
 } from '../domain';
 import {
   CreatePlanningConfigDto,
@@ -162,6 +166,27 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
     severity: 'CRITICAL',
     blocksRecommendation: false,
     message: 'Có lô hàng quá hạn lâu, cần xác minh trạng thái.',
+  },
+  UNEXPLAINED_ANOMALY: {
+    code: 'UNEXPLAINED_ANOMALY',
+    severity: 'HIGH',
+    blocksRecommendation: false,
+    message:
+      'Có tháng bán bất thường chưa giải thích được bằng khuyến mãi hoặc trend.',
+  },
+  VEHICLE_SHIPMENT_RISK: {
+    code: 'VEHICLE_SHIPMENT_RISK',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Có hàng ghép xe chưa chắc ETA nên chưa trừ hết khỏi đề xuất chắc chắn.',
+  },
+  VEHICLE_OVERSTOCK_RISK: {
+    code: 'VEHICLE_OVERSTOCK_RISK',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Nếu ghép xe về đúng hạn, lượng đặt thêm có thể dư so với nhu cầu.',
   },
 };
 
@@ -601,18 +626,41 @@ export class PurchasingPlanningService {
     }
 
     const currentMonth = snapshotDate.toISOString().slice(0, 7);
-    return [...buckets.entries()]
+    const months = [...buckets.entries()]
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([month, quantity]) => ({
         month,
         quantity,
-        // Tháng đang chạy dở chỉ tính tới hôm nay, nếu không mức bán/ngày sẽ
-        // bị chia cho số ngày chưa xảy ra và tụt xuống giả tạo.
         days:
           month === currentMonth
             ? snapshotDate.getUTCDate()
             : daysInMonth(month),
       }));
+    const completed = months.filter((month) => month.month < currentMonth);
+    return completed.length ? completed : months;
+  }
+
+  private trendsForProductRows(
+    product: any,
+    trends: any[],
+  ): PlanningTrendWindow[] {
+    return trendsForProduct(
+      product,
+      (trends ?? []).map((trend) => ({
+        id: trend.id,
+        productId: trend.productId,
+        categoryName: trend.categoryName,
+        startDate: new Date(trend.startDate),
+        endDate: new Date(trend.endDate),
+        name: trend.note,
+        note: trend.note,
+        kind: trend.kind,
+        upliftFactor:
+          trend.upliftFactor == null ? null : Number(trend.upliftFactor),
+        extraQuantity:
+          trend.extraQuantity == null ? null : Number(trend.extraQuantity),
+      })),
+    );
   }
 
   /** Các đợt khuyến mãi có áp dụng cho sản phẩm này. */
@@ -717,12 +765,24 @@ export class PurchasingPlanningService {
       );
     }
 
-    if (stability.trendMonths?.length > 0) {
+    if (stability.unexplainedAnomaly) {
       parts.push(
-        `Doanh số tháng ${stability.trendMonths.join(', ')} tăng bất thường không do khuyến mãi — cân nhắc đặt thêm.`,
+        `Doanh số tháng ${stability.trendMonths.join(', ')} tăng bất thường chưa giải thích được — cần người mua cân nhắc.`,
+      );
+    } else if (stability.trendMonths?.length > 0) {
+      parts.push(
+        `Đã tính trend/khuyến mãi cho tháng ${stability.trendMonths.join(', ')}.`,
       );
     } else if (stability.stability === 'VOLATILE') {
       parts.push('Doanh số dao động mạnh, số liệu dự báo kém chắc chắn.');
+    }
+    if (
+      soq.scenarioQuantity != null &&
+      soq.scenarioQuantity < soq.suggestedQuantity
+    ) {
+      parts.push(
+        `Nếu ghép xe về đúng hạn chỉ cần khoảng ${Math.round(soq.scenarioQuantity).toLocaleString('vi-VN')}.`,
+      );
     }
 
     const blocking = flags.find((flag) => flag.blocksRecommendation);
@@ -768,17 +828,19 @@ export class PurchasingPlanningService {
     // Leadtime áp vào SKU lấy từ pipeline mạng lưới: Sản xuất → Thông quan →
     // Về công ty. Không phân biệt chi nhánh nhận.
     const leadtimeInfo = this.resolveNetworkLeadtime(product, networkContext);
-    const leadTimeDays = leadtimeInfo?.pipeline.max ?? 0;
-    // Phân tích độ ổn định doanh số: 3 tháng gần nhất, nới ra 6 tháng nếu đều
-    // bình thường. Tháng bán đột biến được đối chiếu lịch khuyến mãi để biết
-    // là "giải thích được" hay "nghi trend".
+    const leadTimeDays = leadtimeInfo?.pipeline.days ?? leadtimeInfo?.pipeline.max ?? 0;
     const productPromotions = this.promotionsForProduct(
       product,
       data.promotions ?? [],
     );
+    const productTrends = this.trendsForProductRows(
+      product,
+      data.trends ?? [],
+    );
     const stability = analyzeDemandStability(
       this.monthlySales(invoiceRows, snapshotDate),
       productPromotions,
+      productTrends,
     );
     // Tồn dự phòng suy từ chính mức dao động đó thay vì một hằng số: SKU bán
     // đều cần đệm mỏng, SKU tháng cao tháng thấp cần đệm dày.
@@ -808,6 +870,11 @@ export class PurchasingPlanningService {
       0,
     );
     const physical = rawPhysical;
+    const customerOrders = Number(data.pendingOrderQty?.get(product.id) ?? 0);
+    const companyNeed = inventoryRows.reduce(
+      (sum: number, row: any) => sum + Number(row.minQuality ?? 0),
+      0,
+    );
     const available = Math.max(0, physical);
     const branches = inventoryRows.map((row: any) => ({
       branchId: row.branchId,
@@ -867,6 +934,21 @@ export class PurchasingPlanningService {
         ? stability.baselineDailyDemand
         : forecast.forecastDailyDemand;
 
+    if (stability.unexplainedAnomaly && forecast.confidence !== 'NO_DATA') {
+      const flags = new Set(forecast.flags ?? []);
+      flags.add('LOW_CONFIDENCE_FORECAST');
+      forecast.flags = [...flags] as typeof forecast.flags;
+      const rank = [
+        'NO_DATA',
+        'VERY_LOW',
+        'LOW',
+        'MEDIUM',
+        'HIGH',
+      ] as const;
+      const next = Math.max(1, rank.indexOf(forecast.confidence as typeof rank[number]) - 1);
+      forecast.confidence = rank[next];
+    }
+
     const purchaseRows = data.purchaseOrderItems.filter(
       (row: any) => row.productId === product.id,
     );
@@ -894,17 +976,63 @@ export class PurchasingPlanningService {
         orderDate: row.orderSupplier.orderDate,
       })),
     });
-    const shipments = activeOrders
-      .map((row: any) =>
-        this.mapShipment(row, receivedByOrder, leadTimeDays, snapshotDate),
-      )
-      .filter((shipment: any) => shipment.quantity > 0);
+    const remainingByOrder = new Map<number, number>();
+    for (const row of activeOrders) {
+      const leftover = Math.max(
+        0,
+        Number(row.quantity) - (receivedByOrder.get(row.orderSupplier.id) ?? 0),
+      );
+      remainingByOrder.set(
+        row.orderSupplier.id,
+        (remainingByOrder.get(row.orderSupplier.id) ?? 0) + leftover,
+      );
+    }
+    const horizonDays =
+      leadTimeDays + safetyDays + coverageDaysFor(leadTimeDays);
+    const vehicleLines = supplierRows.flatMap((row: any) =>
+      (row.orderSupplier?.vehicleShipmentItems ?? [])
+        .filter((item: any) => item.productId === product.id)
+        .map((item: any) => ({
+          id: item.id ?? `${row.orderSupplier.id}-${item.productId}`,
+          productId: product.id,
+          quantity: Number(item.quantity ?? 0),
+          status: item.vehicleShipment?.status,
+          expectedArrivalDate: item.vehicleShipment?.expectedArrivalDate ?? null,
+          orderSupplierId: row.orderSupplier.id,
+          orderCode: row.orderSupplier.code,
+          supplierName: row.orderSupplier.supplier?.name ?? null,
+        })),
+    );
+    const vehicleSupply = classifyVehicleSupply({
+      snapshotDate,
+      horizonDays,
+      vehicleLines,
+      remainingByOrder,
+    });
+    const shipments = [
+      ...activeOrders
+        .map((row: any) =>
+          this.mapShipment(row, receivedByOrder, leadTimeDays, snapshotDate),
+        )
+        .filter((shipment: any) => shipment.quantity > 0),
+      ...vehicleSupply.vehicleLines.map((line) => ({
+        orderSupplierId: line.orderSupplierId ?? 0,
+        orderCode: line.orderCode ?? 'GHÉP XE',
+        supplierName: line.supplierName,
+        quantity: line.quantity,
+        eta: line.eta,
+        etaType: line.etaType,
+        classifiedAs: line.classifiedAs,
+      })),
+    ];
+    const confirmedIncoming =
+      vehicleSupply.vehicleConfirmed + vehicleSupply.remainingNotOnVehicle;
     const replenishment = calculateReplenishment({
       forecastDailyDemand: forecastDailyDemand,
       leadTimeDays,
       safetyDays: config.safetyDays,
       availableStock: available,
-      incomingTotal: incoming.total,
+      incomingTotal: confirmedIncoming,
     });
     const projection = projectInventory({
       snapshotDate,
@@ -913,16 +1041,7 @@ export class PurchasingPlanningService {
       incoming: incoming.receipts,
       horizonDays: config.projectionDays,
     });
-    const usableIncomingCutoff = this.addDays(
-      snapshotDate,
-      leadTimeDays + safetyDays + coverageDaysFor(leadTimeDays),
-    );
-    const usableIncoming = incoming.receipts
-      .filter(
-        (receipt) =>
-          new Date(`${receipt.date}T00:00:00.000Z`) <= usableIncomingCutoff,
-      )
-      .reduce((sum, receipt) => sum + receipt.quantity, 0);
+    const usableIncoming = confirmedIncoming;
     // Trả lời "tháng sau có phải đặt không": chiếu tồn gộp toàn công ty với
     // tốc độ bán nền, rồi lùi lại đúng bằng leadtime để ra hạn đặt.
     const timing = calculateOrderTiming({
@@ -953,19 +1072,28 @@ export class PurchasingPlanningService {
     // thiếu hàng, vì lịch sử bán ba tháng qua không hề biết tới nó.
     const promotionUplift = calculatePromotionUplift({
       today: snapshotDate,
-      horizonDays:
-        leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays),
+      horizonDays,
       baselineDailyDemand: forecastDailyDemand,
       promotions: productPromotions,
       months: stability.months,
     });
+    const trendUplift = calculateTrendUplift({
+      today: snapshotDate,
+      horizonDays,
+      baselineDailyDemand: forecastDailyDemand,
+      trends: productTrends,
+    });
+    const extraDemand = promotionUplift.extraDemand + trendUplift.extraDemand;
     const soq = calculateSoq({
       forecastDailyDemand: forecastDailyDemand,
       leadTimeDays,
       safetyDays: config.safetyDays,
       availableStock: available,
       usableIncoming,
-      extraDemand: promotionUplift.extraDemand,
+      customerOrders,
+      companyNeed,
+      extraDemand,
+      riskIncoming: vehicleSupply.vehicleRisk,
       daysOfSupply: priority.daysOfSupply,
       packSize: config.packSize,
       moq: moqUnits,
@@ -989,6 +1117,9 @@ export class PurchasingPlanningService {
       incomingFlags: incoming.flags,
       leadtimeInfo,
       moqNotConvertible: leadtimeInfo?.moq != null && moqPacks == null,
+      unexplainedAnomaly: stability.unexplainedAnomaly,
+      vehicleRisk: vehicleSupply.vehicleRisk,
+      scenarioQuantity: soq.scenarioQuantity,
     });
     const reliability = this.reliability(forecast.confidence, flags);
     const status = flags.some((flag) => flag.blocksRecommendation)
@@ -1032,6 +1163,28 @@ export class PurchasingPlanningService {
       promotionExtraDemand: promotionUplift.extraDemand,
       promotionDays: promotionUplift.promotionDays,
       promotionUpliftFactor: promotionUplift.upliftFactor,
+      upcomingTrends: trendUplift.windows,
+      trendExtraDemand: trendUplift.extraDemand,
+      trendDays: trendUplift.trendDays,
+      lookbackMonths: stability.lookbackMonths,
+      lookbackRepeatsAnomaly: stability.lookbackRepeatsAnomaly,
+      unexplainedAnomaly: stability.unexplainedAnomaly,
+      demandBreakdown: {
+        customerOrders,
+        companyNeed,
+        salesDemand:
+          forecastDailyDemand *
+          (leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays)),
+        promotionExtra: promotionUplift.extraDemand,
+        trendExtra: trendUplift.extraDemand,
+      },
+      supplyBreakdown: {
+        available,
+        confirmedIncoming,
+        vehicleConfirmed: vehicleSupply.vehicleConfirmed,
+        vehicleRisk: vehicleSupply.vehicleRisk,
+      },
+      suggestedQuantityScenario: soq.scenarioQuantity,
       demandSource,
     };
     const trace = this.buildTrace(
@@ -1044,7 +1197,7 @@ export class PurchasingPlanningService {
       soq,
       priority,
       flags,
-      incoming.total,
+      confirmedIncoming,
       data.branchScope,
       leadtimeInfo,
     );
@@ -1084,9 +1237,9 @@ export class PurchasingPlanningService {
       safetyBuffer: replenishment.safetyBuffer,
       reorderPoint: replenishment.reorderPoint,
       physicalStock: physical,
-      reservedStock: 0,
+      reservedStock: customerOrders,
       availableStock: available,
-      incomingTotal: incoming.total,
+      incomingTotal: confirmedIncoming + vehicleSupply.vehicleRisk,
       inventoryPosition: replenishment.inventoryPosition,
       reorderGap: replenishment.reorderGap,
       needsOrder: replenishment.needsOrder,
@@ -1118,7 +1271,7 @@ export class PurchasingPlanningService {
       criticalBranchName: null,
       demandStability: stability.stability,
       variationCoefficient: stability.variationCoefficient,
-      leadTimeMinDays: leadtimeInfo?.pipeline.min ?? null,
+      leadTimeMinDays: leadTimeDays || null,
       status,
       summaryText,
       calculationTrace: trace,
@@ -1152,9 +1305,12 @@ export class PurchasingPlanningService {
               factoryId: leadtimeInfo.factoryId,
               factoryName: leadtimeInfo.factoryName,
               factoryRole: leadtimeInfo.factoryRole,
-              min: leadtimeInfo.pipeline.min,
-              max: leadtimeInfo.pipeline.max,
+              days: leadtimeInfo.pipeline.days ?? leadtimeInfo.pipeline.max,
+              min: leadtimeInfo.pipeline.days ?? leadtimeInfo.pipeline.min,
+              max: leadtimeInfo.pipeline.days ?? leadtimeInfo.pipeline.max,
               stages: leadtimeInfo.pipeline.stages,
+              customsLeadTimeDays: 10,
+              inboundLeadTimeDays: 10,
             }
           : null,
         // Tham số đã dùng — tất cả đều do hệ thống suy ra, không phải khai tay.
@@ -1165,7 +1321,9 @@ export class PurchasingPlanningService {
             label: 'Suy từ độ dao động doanh số',
           },
           coverageDays: {
-            value: coverageDaysFor(leadtimeInfo?.pipeline.max ?? 0),
+            value: coverageDaysFor(
+              leadtimeInfo?.pipeline.days ?? leadtimeInfo?.pipeline.max ?? 0,
+            ),
             source: 'DERIVED',
             label: 'Suy từ thời gian chờ hàng',
           },
@@ -1194,7 +1352,8 @@ export class PurchasingPlanningService {
           formula: 'FDD × leadTimeDays',
           values: {
             FDD: forecast.used,
-            leadTimeDays: leadtimeInfo?.pipeline.max ?? 0,
+            leadTimeDays:
+              leadtimeInfo?.pipeline.days ?? leadtimeInfo?.pipeline.max ?? 0,
           },
           result: replenishment.leadTimeDemand,
         },
@@ -1241,6 +1400,7 @@ export class PurchasingPlanningService {
         inventoryPosition: replenishment.inventoryPosition,
         reorderGap: replenishment.reorderGap,
         suggestedQuantity: soq.suggestedQuantity,
+        suggestedQuantityScenario: soq.scenarioQuantity ?? 0,
         priority: priority.priority,
       },
       flags,
@@ -1279,8 +1439,15 @@ export class PurchasingPlanningService {
         code: 'NEGATIVE_INVENTORY',
         context: { physicalStock: input.rawPhysical },
       });
-    if (input.inventoryRows.some((row: any) => Number(row.reserved) !== 0))
-      codes.push({ code: 'RESERVED_DATA_UNRELIABLE' });
+    if (input.unexplainedAnomaly) codes.push({ code: 'UNEXPLAINED_ANOMALY' });
+    if (input.vehicleRisk > 0) codes.push({ code: 'VEHICLE_SHIPMENT_RISK' });
+    if (
+      input.vehicleRisk > 0 &&
+      input.scenarioQuantity != null &&
+      input.soq.suggestedQuantity > input.scenarioQuantity
+    ) {
+      codes.push({ code: 'VEHICLE_OVERSTOCK_RISK' });
+    }
     if (input.unitPrice == null) codes.push({ code: 'PRICE_MISSING' });
     if (input.rawPhysical <= 0) codes.push({ code: 'OUT_OF_STOCK' });
     for (const code of input.soq.flags) codes.push({ code });
@@ -1421,6 +1588,10 @@ export class PurchasingPlanningService {
       reorderGap: Number(item.reorderGap),
       needsOrder: item.needsOrder,
       suggestedQuantity: Number(item.suggestedQuantity),
+      suggestedQuantityScenario:
+        trace?.result?.suggestedQuantityScenario == null
+          ? null
+          : Number(trace.result.suggestedQuantityScenario),
       suggestedPackCount:
         item.suggestedPackCount == null
           ? null
@@ -1815,6 +1986,89 @@ export class PurchasingPlanningService {
         counts: this.countPriorities([]),
         totalEstimatedValue: null,
       },
+    };
+  }
+
+  async listTrends() {
+    const rows = await this.repository.listTrends();
+    return { items: rows.map((row) => this.mapTrend(row)) };
+  }
+
+  async createTrend(dto: Record<string, any>, actor?: ConfigActor) {
+    this.assertTrend(dto);
+    const row = await this.repository.createTrend({
+      ...this.trendData(dto),
+      createdBy: actor?.id ?? null,
+    });
+    return this.mapTrend(row);
+  }
+
+  async updateTrend(id: number, dto: Record<string, any>) {
+    const existing = await this.repository.findTrend(id);
+    if (!existing || existing.isActive === false) {
+      throw new NotFoundException('Không tìm thấy trend');
+    }
+    this.assertTrend({ ...existing, ...dto });
+    const row = await this.repository.updateTrend(id, this.trendData(dto, existing));
+    return this.mapTrend(row);
+  }
+
+  async deleteTrend(id: number) {
+    const existing = await this.repository.findTrend(id);
+    if (!existing) throw new NotFoundException('Không tìm thấy trend');
+    await this.repository.deactivateTrend(id);
+    return { id, deleted: true };
+  }
+
+  private assertTrend(dto: Record<string, any>) {
+    if (!dto.productId && !dto.categoryName) {
+      throw new BadRequestException('Trend cần chọn sản phẩm hoặc nhóm hàng');
+    }
+    if (!dto.startDate || !dto.endDate) {
+      throw new BadRequestException('Trend cần ngày bắt đầu và kết thúc');
+    }
+    if (new Date(dto.endDate) < new Date(dto.startDate)) {
+      throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
+    }
+    if (dto.upliftFactor == null && dto.extraQuantity == null) {
+      throw new BadRequestException('Trend cần hệ số tăng hoặc số lượng tăng thêm');
+    }
+  }
+
+  private trendData(dto: Record<string, any>, existing: Record<string, any> = {}) {
+    const startDate = new Date(`${String(dto.startDate ?? existing.startDate).slice(0, 10)}T00:00:00.000Z`);
+    const endDate = new Date(`${String(dto.endDate ?? existing.endDate).slice(0, 10)}T00:00:00.000Z`);
+    const extraQuantity = dto.extraQuantity ?? existing.extraQuantity;
+    const upliftFactor = dto.upliftFactor ?? existing.upliftFactor;
+    return {
+      productId: dto.productId ?? existing.productId ?? null,
+      categoryName: dto.categoryName ?? existing.categoryName ?? null,
+      startDate,
+      endDate,
+      kind: extraQuantity != null ? 'QUANTITY' : 'UPLIFT',
+      upliftFactor: extraQuantity != null ? null : upliftFactor,
+      extraQuantity: extraQuantity ?? null,
+      note: dto.note ?? existing.note ?? null,
+      isActive: true,
+    };
+  }
+
+  private mapTrend(row: any) {
+    return {
+      id: row.id,
+      productId: row.productId,
+      product: row.product
+        ? { id: row.product.id, code: row.product.code, name: row.product.name }
+        : null,
+      categoryName: row.categoryName,
+      startDate: this.dateOnly(row.startDate),
+      endDate: this.dateOnly(row.endDate),
+      kind: row.kind,
+      upliftFactor: row.upliftFactor == null ? null : Number(row.upliftFactor),
+      extraQuantity: row.extraQuantity == null ? null : Number(row.extraQuantity),
+      note: row.note,
+      isActive: row.isActive,
+      updatedAt: row.updatedAt,
     };
   }
 

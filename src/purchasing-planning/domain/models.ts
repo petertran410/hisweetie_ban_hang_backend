@@ -109,6 +109,7 @@ export interface SoqResult {
   rawQuantity: number;
   suggestedQuantity: number;
   suggestedPackCount: number;
+  scenarioQuantity: number;
   moqApplied: number | null;
   deferredByMoq: boolean;
   steps: CalculationStep[];

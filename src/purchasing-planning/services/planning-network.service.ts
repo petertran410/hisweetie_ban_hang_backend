@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import {
+  CUSTOMS_LEADTIME_DAYS,
   FactoryLeadtimeConfig,
+  INBOUND_LEADTIME_DAYS,
   NetworkLeadtimeConfig,
-  buildRange,
+  singleLeadtimeDays,
 } from '../domain/leadtime.engine';
 import { UpdatePlanningNetworkConfigDto } from '../dto/planning-network-config.dto';
 import { MoqSpec, normalizeMoqSpec } from '../../common/moq.util';
@@ -25,10 +27,8 @@ export class PlanningNetworkService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Đọc cấu hình, tự tạo bản mặc định ở lần chạy đầu tiên.
-   *
-   * Giá trị mặc định lấy từ khảo sát nghiệp vụ: thông quan 7–10 ngày, về công
-   * ty 7–10 ngày.
+   * Đọc cấu hình mạng lưới. Leadtime thông quan và về kho gốc dùng hằng số
+   * 10 ngày, không lấy min-max từ DB.
    */
   async getRawConfig() {
     const existing = await this.prisma.planningNetworkConfig.findFirst({
@@ -41,10 +41,10 @@ export class PlanningNetworkService {
   }
 
   async getNetworkConfig(): Promise<NetworkLeadtimeConfig> {
-    const row = await this.getRawConfig();
+    await this.getRawConfig();
     return {
-      customs: buildRange(row.customsLeadtimeMin, row.customsLeadtimeMax)!,
-      inbound: buildRange(row.inboundLeadtimeMin, row.inboundLeadtimeMax)!,
+      customs: { min: CUSTOMS_LEADTIME_DAYS, max: CUSTOMS_LEADTIME_DAYS },
+      inbound: { min: INBOUND_LEADTIME_DAYS, max: INBOUND_LEADTIME_DAYS },
     };
   }
 
@@ -82,17 +82,22 @@ export class PlanningNetworkService {
     });
 
     return new Map(
-      factories.map((factory) => [
-        factory.id,
-        {
-          factoryId: factory.id,
-          factoryName: factory.name,
-          production: buildRange(
-            factory.productionLeadtimeMin,
-            factory.productionLeadtimeMax,
-          ),
-        } satisfies FactoryLeadtimeConfig,
-      ]),
+      factories.map((factory) => {
+        const days = singleLeadtimeDays(
+          factory.productionLeadtimeMin,
+          factory.productionLeadtimeMax,
+        );
+        return [
+          factory.id,
+          {
+            factoryId: factory.id,
+            factoryName: factory.name,
+            production:
+              days == null ? null : { min: days, max: days },
+            productionDays: days,
+          } satisfies FactoryLeadtimeConfig,
+        ];
+      }),
     );
   }
 

@@ -27,11 +27,22 @@ function formatProductionLeadtime(factory: {
   productionLeadtimeMin?: number | null;
   productionLeadtimeMax?: number | null;
 }): string {
-  const min = factory.productionLeadtimeMin;
-  const max = factory.productionLeadtimeMax;
-  if (min == null && max == null) return '';
-  if (min != null && max != null && min !== max) return `${min}-${max}`;
-  return String(min ?? max);
+  const days = factory.productionLeadtimeMax ?? factory.productionLeadtimeMin;
+  return days == null ? '' : String(days);
+}
+
+function normalizeProductionLeadtime(input: {
+  productionLeadtimeDays?: number | null;
+  productionLeadtimeMin?: number | null;
+  productionLeadtimeMax?: number | null;
+}): { min: number | null; max: number | null } {
+  const days =
+    input.productionLeadtimeDays ??
+    input.productionLeadtimeMax ??
+    input.productionLeadtimeMin ??
+    null;
+  if (days == null) return { min: null, max: null };
+  return { min: days, max: days };
 }
 
 /**
@@ -97,18 +108,12 @@ export class FactoriesService {
     );
   }
 
-  private assertProductionLeadtimeRange(input: {
+  private assertProductionLeadtimeRange(_input: {
     productionLeadtimeMin?: number;
     productionLeadtimeMax?: number;
+    productionLeadtimeDays?: number;
   }) {
-    const { productionLeadtimeMin: min, productionLeadtimeMax: max } = input;
-    // Chỉ validate khi đã khai đủ hai đầu; cho phép khai dần từng ô.
-    if (min == null || max == null) return;
-    if (min > max) {
-      throw new BadRequestException(
-        'Thời gian sản xuất: số ngày nhanh nhất không thể lớn hơn chậm nhất.',
-      );
-    }
+    // Một ô duy nhất — không còn khoảng min/max để đối chiếu.
   }
 
   /**
@@ -626,6 +631,7 @@ export class FactoriesService {
       moqUnit?: string | null;
       moqScope?: string | null;
       moqIncrement?: number | null;
+      productionLeadtimeDays?: number;
       productionLeadtimeMin?: number;
       productionLeadtimeMax?: number;
       paymentTerm?: string;
@@ -691,8 +697,8 @@ export class FactoriesService {
         moqUnit: dto.moqUnit ?? null,
         moqScope: dto.moqScope ?? null,
         moqIncrement: dto.moqIncrement ?? null,
-        productionLeadtimeMin: dto.productionLeadtimeMin ?? null,
-        productionLeadtimeMax: dto.productionLeadtimeMax ?? null,
+        productionLeadtimeMin: normalizeProductionLeadtime(dto).min,
+        productionLeadtimeMax: normalizeProductionLeadtime(dto).max,
         paymentTerm: dto.paymentTerm,
         country: dto.country,
         currency: dto.currency || 'VND',
@@ -728,6 +734,7 @@ export class FactoriesService {
       moqUnit?: string | null;
       moqScope?: string | null;
       moqIncrement?: number | null;
+      productionLeadtimeDays?: number | null;
       productionLeadtimeMin?: number;
       productionLeadtimeMax?: number;
       paymentTerm?: string;
@@ -794,10 +801,21 @@ export class FactoriesService {
     if (dto.moqUnit !== undefined) data.moqUnit = dto.moqUnit;
     if (dto.moqScope !== undefined) data.moqScope = dto.moqScope;
     if (dto.moqIncrement !== undefined) data.moqIncrement = dto.moqIncrement;
-    if (dto.productionLeadtimeMin !== undefined)
-      data.productionLeadtimeMin = dto.productionLeadtimeMin;
-    if (dto.productionLeadtimeMax !== undefined)
-      data.productionLeadtimeMax = dto.productionLeadtimeMax;
+    if (
+      dto.productionLeadtimeDays !== undefined ||
+      dto.productionLeadtimeMin !== undefined ||
+      dto.productionLeadtimeMax !== undefined
+    ) {
+      const leadtime = normalizeProductionLeadtime({
+        productionLeadtimeDays: dto.productionLeadtimeDays,
+        productionLeadtimeMin:
+          dto.productionLeadtimeMin ?? existing.productionLeadtimeMin,
+        productionLeadtimeMax:
+          dto.productionLeadtimeMax ?? existing.productionLeadtimeMax,
+      });
+      data.productionLeadtimeMin = leadtime.min;
+      data.productionLeadtimeMax = leadtime.max;
+    }
     if (dto.paymentTerm !== undefined) data.paymentTerm = dto.paymentTerm;
     if (dto.country !== undefined) data.country = dto.country;
     if (dto.currency !== undefined) data.currency = dto.currency;
