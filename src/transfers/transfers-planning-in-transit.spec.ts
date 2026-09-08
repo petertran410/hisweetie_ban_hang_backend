@@ -40,6 +40,12 @@ describe('TransfersService — inTransit cho Dự kiến chuyển kho HN → SG'
       receivedQuantity: number;
       status: number;
     }[],
+    orderItems: {
+      productId: number;
+      branchId: number;
+      status: number;
+      quantity: number;
+    }[] = [],
   ) => {
     const transferDetailFindMany = jest.fn(({ where, select }: any) => {
       const wanted = where?.transfer?.status;
@@ -57,7 +63,8 @@ describe('TransfersService — inTransit cho Dự kiến chuyển kho HN → SG'
             productId: PRODUCT.id,
             sendQuantity: d.sendQuantity,
           };
-          if (select?.receivedQuantity) row.receivedQuantity = d.receivedQuantity;
+          if (select?.receivedQuantity)
+            row.receivedQuantity = d.receivedQuantity;
           if (select?.transfer) {
             row.transfer = {
               id: 2000 + i,
@@ -84,15 +91,63 @@ describe('TransfersService — inTransit cho Dự kiến chuyển kho HN → SG'
       product: { findMany: jest.fn().mockResolvedValue([PRODUCT]) },
       inventory: { findMany: jest.fn().mockResolvedValue([]) },
       transferDetail: { findMany: transferDetailFindMany },
-      orderItem: { groupBy: jest.fn().mockResolvedValue([]) },
+      orderItem: {
+        groupBy: jest.fn(({ where }: any) => {
+          const wantedBranch = where?.order?.branchId;
+          const wantedStatus = where?.order?.status;
+          const matches = orderItems.filter((item) => {
+            const statusMatches =
+              typeof wantedStatus === 'number'
+                ? item.status === wantedStatus
+                : Array.isArray(wantedStatus?.in)
+                  ? wantedStatus.in.includes(item.status)
+                  : true;
+            return item.branchId === wantedBranch && statusMatches;
+          });
+          const quantityByProduct = new Map<number, number>();
+          for (const item of matches) {
+            quantityByProduct.set(
+              item.productId,
+              (quantityByProduct.get(item.productId) || 0) + item.quantity,
+            );
+          }
+          return Promise.resolve(
+            Array.from(quantityByProduct, ([productId, quantity]) => ({
+              productId,
+              _sum: { quantity },
+            })),
+          );
+        }),
+        findMany: jest.fn(({ where }: any) => {
+          const wantedBranch = where?.order?.branchId;
+          const wantedStatuses = where?.order?.status?.in;
+          return Promise.resolve(
+            orderItems
+              .filter(
+                (item) =>
+                  item.productId === where?.productId &&
+                  item.branchId === wantedBranch &&
+                  wantedStatuses.includes(item.status),
+              )
+              .map((item, index) => ({
+                quantity: item.quantity,
+                order: {
+                  id: 3000 + index,
+                  code: `OD00${3000 + index}`,
+                  createdAt: new Date(`2026-09-0${index + 1}`),
+                  grandTotal: 100000,
+                  status: item.status,
+                  customer: { id: 1, code: 'KH000001', name: 'Khách hàng' },
+                  creator: { id: 1, name: 'Nhân viên' },
+                },
+              })),
+          );
+        }),
+      },
       invoiceDetail: { findMany: jest.fn().mockResolvedValue([]) },
     };
 
-    const service = new TransfersService(
-      prisma as any,
-      {} as any,
-      {} as any,
-    );
+    const service = new TransfersService(prisma as any, {} as any, {} as any);
 
     return { service, prisma, transferDetailFindMany };
   };
@@ -162,10 +217,7 @@ describe('TransfersService — inTransit cho Dự kiến chuyển kho HN → SG'
         { sendQuantity: 120, receivedQuantity: 108, status: 3 },
       ]);
 
-      const res = await service.getTransfersByProductForPlanning(
-        PRODUCT.id,
-        2,
-      );
+      const res = await service.getTransfersByProductForPlanning(PRODUCT.id, 2);
 
       expect(res.total).toBe(1);
       expect(res.data.every((r) => r.status === 2)).toBe(true);
@@ -195,14 +247,94 @@ describe('TransfersService — inTransit cho Dự kiến chuyển kho HN → SG'
         { sendQuantity: 120, receivedQuantity: 108, status: 3 },
       ]);
 
-      const res = await service.getTransfersByProductForPlanning(
-        PRODUCT.id,
-        1,
-      );
+      const res = await service.getTransfersByProductForPlanning(PRODUCT.id, 1);
 
       expect(res.total).toBe(1);
       expect(res.sumQuantity).toBe(480);
       expect(res.data[0].statusLabel).toBe('Phiếu tạm');
+    });
+  });
+
+  describe('Hứa bán HN', () => {
+    it('cộng đơn Phiếu tạm và Đã xác nhận tại Kho Hà Nội', async () => {
+      const { service } = createService(
+        [],
+        [
+          {
+            productId: PRODUCT.id,
+            branchId: HN_BRANCH_ID,
+            status: 1,
+            quantity: 12,
+          },
+          {
+            productId: PRODUCT.id,
+            branchId: HN_BRANCH_ID,
+            status: 5,
+            quantity: 24,
+          },
+        ],
+      );
+
+      const res = await service.getPlanningSummary({} as any);
+
+      expect(res.data[0].promisedHN).toBe(36);
+    });
+
+    it('bỏ qua đơn kho SG và trạng thái khác', async () => {
+      const { service } = createService(
+        [],
+        [
+          {
+            productId: PRODUCT.id,
+            branchId: SG_BRANCH_ID,
+            status: 1,
+            quantity: 12,
+          },
+          {
+            productId: PRODUCT.id,
+            branchId: HN_BRANCH_ID,
+            status: 2,
+            quantity: 24,
+          },
+        ],
+      );
+
+      const res = await service.getPlanningSummary({} as any);
+
+      expect(res.data[0].promisedHN).toBe(0);
+    });
+
+    it('tổng drilldown khớp số lượng trên planning summary', async () => {
+      const { service } = createService(
+        [],
+        [
+          {
+            productId: PRODUCT.id,
+            branchId: HN_BRANCH_ID,
+            status: 1,
+            quantity: 12,
+          },
+          {
+            productId: PRODUCT.id,
+            branchId: HN_BRANCH_ID,
+            status: 5,
+            quantity: 24,
+          },
+          {
+            productId: PRODUCT.id,
+            branchId: SG_BRANCH_ID,
+            status: 1,
+            quantity: 48,
+          },
+        ],
+      );
+
+      const planning = await service.getPlanningSummary({} as any);
+      const drilldown = await service.getPromisedHNByProduct(PRODUCT.id);
+
+      expect(drilldown.sumQuantity).toBe(planning.data[0].promisedHN);
+      expect(drilldown.total).toBe(2);
+      expect(drilldown.data.map((order) => order.status)).toEqual([5, 1]);
     });
   });
 });
