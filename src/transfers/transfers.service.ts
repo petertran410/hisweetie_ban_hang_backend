@@ -32,6 +32,10 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  getStatusLabel,
+  ORDER_STATUS,
+} from '../orders/dto/order-status.constants';
 
 @Injectable()
 export class TransfersService {
@@ -2612,7 +2616,25 @@ export class TransfersService {
       confirmedOrdersMap.set(item.productId, Number(item._sum.quantity || 0));
     }
 
-    // 8. Lấy Lịch sử bán 5 ngày, 30 ngày, 90 ngày tại Sài Gòn (InvoiceDetail trong 90 ngày)
+    // 8. Lấy Hứa bán HN: Đơn Phiếu tạm (1) + Đã xác nhận (5) tại Kho Hà Nội
+    const promisedHNOrderItems = await this.prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        productId: { in: productIds },
+        order: {
+          branchId: branchHNId,
+          status: { in: [1, 5] },
+        },
+      },
+      _sum: { quantity: true },
+    });
+
+    const promisedHNMap = new Map<number, number>();
+    for (const item of promisedHNOrderItems) {
+      promisedHNMap.set(item.productId, Number(item._sum.quantity || 0));
+    }
+
+    // 9. Lấy Lịch sử bán 5 ngày, 30 ngày, 90 ngày tại Sài Gòn (InvoiceDetail trong 90 ngày)
     const now = new Date();
     const windowStart = new Date(now.getTime() - 90 * 86400000);
     const day5Start = new Date(now.getTime() - 5 * 86400000);
@@ -2656,9 +2678,10 @@ export class TransfersService {
       }
     }
 
-    // 9. Tính toán các chỉ số cho từng sản phẩm
+    // 10. Tính toán các chỉ số cho từng sản phẩm
     const allCalculatedItems = activeProducts.map((p) => {
       const stockHN = stockHNMap.get(p.id) || 0;
+      const promisedHN = promisedHNMap.get(p.id) || 0;
       const stockSG = stockSGMap.get(p.id) || 0;
       const committed = pendingOrdersMap.get(p.id) || 0; // Đơn tạm = PENDING(1) tại SG
       const inTransit = inTransitMap.get(p.id) || 0;
@@ -2731,6 +2754,7 @@ export class TransfersService {
         trademarkId: p.tradeMarkId,
         trademarkName: p.tradeMark?.name,
         stockHN,
+        promisedHN,
         stockSG,
         inTransit,
         pendingTransfer,
@@ -2761,14 +2785,14 @@ export class TransfersService {
       };
     });
 
-    // 10. Lọc Client/Filter bổ sung (alertFilter)
+    // 11. Lọc Client/Filter bổ sung (alertFilter)
     let filtered = allCalculatedItems;
 
     if (alertFilter && alertFilter !== 'ALL') {
       filtered = filtered.filter((i) => i.computed.alert === alertFilter);
     }
 
-    // 11. Sắp xếp (Sorting)
+    // 12. Sắp xếp (Sorting)
     const dir = sortDirection === 'desc' ? -1 : 1;
     filtered.sort((a, b) => {
       let valA: any = (a as any)[sortBy];
@@ -2783,7 +2807,7 @@ export class TransfersService {
       return dir * ((Number(valA) || 0) - (Number(valB) || 0));
     });
 
-    // 12. Tính Summary
+    // 13. Tính Summary
     const totalSku = allCalculatedItems.length;
     const needTransferSku = allCalculatedItems.filter(
       (i) => i.computed.suggestedQuantity > 0,
@@ -2796,7 +2820,7 @@ export class TransfersService {
       0,
     );
 
-    // 13. Phân trang (Pagination)
+    // 14. Phân trang (Pagination)
     const startIndex = (page - 1) * limit;
     const paginatedData = filtered.slice(startIndex, startIndex + limit);
 
@@ -2887,5 +2911,80 @@ export class TransfersService {
     const sumQuantity = data.reduce((sum, r) => sum + r.quantity, 0);
 
     return { data, total: data.length, sumQuantity };
+  }
+
+  async getPromisedHNByProduct(productId: number) {
+    const { branchHNId } = await this.resolvePlanningBranchIds();
+    const items = await this.prisma.orderItem.findMany({
+      where: {
+        productId,
+        order: {
+          branchId: branchHNId,
+          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+        },
+      },
+      select: {
+        quantity: true,
+        order: {
+          select: {
+            id: true,
+            code: true,
+            createdAt: true,
+            grandTotal: true,
+            status: true,
+            customer: { select: { id: true, code: true, name: true } },
+            creator: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { order: { createdAt: 'desc' } },
+    });
+
+    const orders = new Map<
+      number,
+      {
+        orderId: number;
+        code: string;
+        createdAt: string;
+        grandTotal: number;
+        status: number;
+        statusLabel: string;
+        customer: { id: number; code: string | null; name: string } | null;
+        creator: { id: number; name: string | null } | null;
+        quantity: number;
+      }
+    >();
+
+    for (const item of items) {
+      const order = item.order;
+      const quantity = Number(item.quantity || 0);
+      const existing = orders.get(order.id);
+      if (existing) {
+        existing.quantity += quantity;
+        continue;
+      }
+      orders.set(order.id, {
+        orderId: order.id,
+        code: order.code,
+        createdAt: order.createdAt.toISOString(),
+        grandTotal: Number(order.grandTotal || 0),
+        status: order.status,
+        statusLabel: getStatusLabel(order.status),
+        customer: order.customer,
+        creator: order.creator,
+        quantity,
+      });
+    }
+
+    const data = Array.from(orders.values()).sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    return {
+      data,
+      total: data.length,
+      sumQuantity: data.reduce((sum, order) => sum + order.quantity, 0),
+    };
   }
 }

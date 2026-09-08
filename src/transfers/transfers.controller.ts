@@ -139,6 +139,12 @@ export class TransfersController {
     );
   }
 
+  @Get('promised-hn-by-product')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
+  getPromisedHNByProduct(@Query() query: ProductTransferQueryDto) {
+    return this.transfersService.getPromisedHNByProduct(query.productId);
+  }
+
   @Get(':id')
   @RequirePermissions('transfers:view')
   findOne(@Param('id') id: string) {
