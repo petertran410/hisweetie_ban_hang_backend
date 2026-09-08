@@ -22,7 +22,10 @@ import {
   StopDeliveryTicketDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import {
+  RequirePermissions,
+  RequireAnyPermission,
+} from '../auth/decorators/permissions.decorator';
 
 @ApiTags('DebtTickets')
 @ApiBearerAuth()
@@ -46,7 +49,10 @@ export class DebtTicketsController {
   }
 
   @Post('stop-delivery')
-  @RequirePermissions('debt_tickets:create')
+  @RequireAnyPermission(
+    'debt_tracking:stop_delivery',
+    'debt_tickets:create',
+  )
   @ApiOperation({ summary: 'Tạo nhanh phiếu ngừng đi hàng cho một khách' })
   createStopDelivery(@Body() dto: StopDeliveryTicketDto, @Req() req: any) {
     return this.debtTicketsService.createStopDelivery(
