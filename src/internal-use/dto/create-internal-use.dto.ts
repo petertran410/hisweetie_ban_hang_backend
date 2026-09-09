@@ -7,6 +7,8 @@ import {
   IsNumber,
   Min,
   IsBoolean,
+  IsIn,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -32,6 +34,14 @@ class InternalUseDetailDto {
   @IsNumber()
   @Min(0)
   cost?: number;
+
+  @IsOptional()
+  @IsIn(['normal', 'damaged', 'near_expiry'])
+  conditionType?: 'normal' | 'damaged' | 'near_expiry';
+
+  @IsOptional()
+  @IsDateString()
+  soldExpiryDate?: string | null;
 }
 
 export class CreateInternalUseDto {

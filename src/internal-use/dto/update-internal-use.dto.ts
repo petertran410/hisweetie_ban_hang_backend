@@ -6,6 +6,8 @@ import {
   ValidateNested,
   IsNumber,
   IsBoolean,
+  IsIn,
+  IsDateString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -29,6 +31,14 @@ class UpdateInternalUseDetailDto {
   @IsOptional()
   @IsNumber()
   cost?: number;
+
+  @IsOptional()
+  @IsIn(['normal', 'damaged', 'near_expiry'])
+  conditionType?: 'normal' | 'damaged' | 'near_expiry';
+
+  @IsOptional()
+  @IsDateString()
+  soldExpiryDate?: string | null;
 }
 
 export class UpdateInternalUseDto {

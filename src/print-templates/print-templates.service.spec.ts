@@ -135,6 +135,32 @@ describe('PrintTemplatesService', () => {
     });
   });
 
+  describe('mapInternalUse', () => {
+    const mapInternalUse = (detail: Record<string, any>) =>
+      (createService() as any).mapInternalUse({
+        totalValue: 0,
+        details: [{ productName: 'Trà đào', quantity: 1, ...detail }],
+      }).items[0].Ten_Hang_Hoa;
+
+    it('appends damaged and near-expiry information to internal-use items', () => {
+      expect(mapInternalUse({ conditionType: 'damaged' })).toContain(
+        '(Bục rách)',
+      );
+      expect(
+        mapInternalUse({
+          conditionType: 'near_expiry',
+          soldExpiryDate: '2026-08-01T00:00:00.000Z',
+        }),
+      ).toContain('(Cận date 08/2026)');
+      expect(
+        mapInternalUse({
+          conditionType: 'near_expiry',
+          soldExpiryDate: null,
+        }),
+      ).toContain('(Cận date - Chưa xác định NSX)');
+    });
+  });
+
   describe('shipping fee print variables', () => {
     const baseEntity = {
       code: '',

@@ -592,6 +592,10 @@ export class TransfersService {
   }
 
   async findOne(id: number) {
+    if (!Number.isInteger(id) || id < 1) {
+      throw new BadRequestException('ID phiếu chuyển không hợp lệ');
+    }
+
     const transfer = await this.prisma.transfer.findUnique({
       where: { id },
       include: {
@@ -2920,6 +2924,81 @@ export class TransfersService {
         productId,
         order: {
           branchId: branchHNId,
+          status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+        },
+      },
+      select: {
+        quantity: true,
+        order: {
+          select: {
+            id: true,
+            code: true,
+            createdAt: true,
+            grandTotal: true,
+            status: true,
+            customer: { select: { id: true, code: true, name: true } },
+            creator: { select: { id: true, name: true } },
+          },
+        },
+      },
+      orderBy: { order: { createdAt: 'desc' } },
+    });
+
+    const orders = new Map<
+      number,
+      {
+        orderId: number;
+        code: string;
+        createdAt: string;
+        grandTotal: number;
+        status: number;
+        statusLabel: string;
+        customer: { id: number; code: string | null; name: string } | null;
+        creator: { id: number; name: string | null } | null;
+        quantity: number;
+      }
+    >();
+
+    for (const item of items) {
+      const order = item.order;
+      const quantity = Number(item.quantity || 0);
+      const existing = orders.get(order.id);
+      if (existing) {
+        existing.quantity += quantity;
+        continue;
+      }
+      orders.set(order.id, {
+        orderId: order.id,
+        code: order.code,
+        createdAt: order.createdAt.toISOString(),
+        grandTotal: Number(order.grandTotal || 0),
+        status: order.status,
+        statusLabel: getStatusLabel(order.status),
+        customer: order.customer,
+        creator: order.creator,
+        quantity,
+      });
+    }
+
+    const data = Array.from(orders.values()).sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    return {
+      data,
+      total: data.length,
+      sumQuantity: data.reduce((sum, order) => sum + order.quantity, 0),
+    };
+  }
+
+  async getPromisedSGByProduct(productId: number) {
+    const { branchSGId } = await this.resolvePlanningBranchIds();
+    const items = await this.prisma.orderItem.findMany({
+      where: {
+        productId,
+        order: {
+          branchId: branchSGId,
           status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
         },
       },

@@ -2152,19 +2152,21 @@ model InternalUse {
 }
 
 model InternalUseDetail {
-  id            Int         @id @default(autoincrement())
-  internalUseId Int
-  productId     Int
-  productCode   String
-  productName   String
-  unit          String?
-  quantity      Decimal
-  cost          Decimal
-  value         Decimal
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
-  internalUse   InternalUse @relation(fields: [internalUseId], references: [id], onDelete: Cascade)
-  product       Product     @relation(fields: [productId], references: [id])
+  id             Int         @id @default(autoincrement())
+  internalUseId  Int
+  productId      Int
+  productCode    String
+  productName    String
+  unit           String?
+  quantity       Decimal
+  cost           Decimal
+  value          Decimal
+  conditionType  String      @default("normal")
+  soldExpiryDate DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  internalUse    InternalUse @relation(fields: [internalUseId], references: [id], onDelete: Cascade)
+  product        Product     @relation(fields: [productId], references: [id])
 
   @@map("internal_use_details")
 }
