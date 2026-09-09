@@ -58,6 +58,8 @@ export interface StabilityResult {
   unexplainedAnomaly: boolean;
   trendMonths: string[];
   promotionMonths: string[];
+  /** Hệ số tăng trưởng đề xuất từ lịch sử, có giới hạn an toàn. */
+  systemGrowthFactor: number;
 }
 
 const SPIKE_THRESHOLD = 1.4;
@@ -84,6 +86,7 @@ export function analyzeDemandStability(
       unexplainedAnomaly: false,
       trendMonths: [],
       promotionMonths: [],
+      systemGrowthFactor: 1,
     };
   }
 
@@ -117,13 +120,20 @@ export function analyzeDemandStability(
       ((month.hasPromotion || month.hasTrend) && month.anomaly === 'SPIKE'),
   );
   // Tháng KM/trend không đưa vào mức nền — phần tăng thêm được cộng riêng.
-  const normalMonths = assessments.filter((month) => month.anomaly === 'NORMAL');
+  const normalMonths = assessments.filter(
+    (month) => month.anomaly === 'NORMAL',
+  );
   const baseRates = (
-    normalMonths.length > 0 ? normalMonths : baseMonths.length > 0 ? baseMonths : assessments
+    normalMonths.length > 0
+      ? normalMonths
+      : baseMonths.length > 0
+        ? baseMonths
+        : assessments
   ).map((month) => month.dailyRate);
 
   const baseline = mean(baseRates);
   const cv = coefficientOfVariation(assessments.map((m) => m.dailyRate));
+  const systemGrowthFactor = deriveSystemGrowthFactor(historyMonths);
 
   return {
     baselineDailyDemand: round(baseline),
@@ -141,7 +151,28 @@ export function analyzeDemandStability(
     promotionMonths: assessments
       .filter((month) => month.anomaly !== 'NORMAL' && month.hasPromotion)
       .map((month) => month.month),
+    systemGrowthFactor,
   };
+}
+
+/**
+ * Suy hệ số tăng trưởng từ tối đa 5 tháng gần nhất. Chỉ dùng khi có đủ
+ * nhóm tháng cũ và nhóm tháng mới; các tháng SPIKE/DROP bị loại khỏi phép
+ * so sánh để một tháng bất thường không làm phình forecast.
+ */
+export function deriveSystemGrowthFactor(months: MonthAssessment[]): number {
+  if (months.length < 4) return 1;
+  const usable = months.filter((month) => month.anomaly === 'NORMAL');
+  if (usable.length < 4) return 1;
+  const split = Math.floor(usable.length / 2);
+  const previous = usable.slice(0, split);
+  const recent = usable.slice(split);
+  const previousRate = mean(previous.map((month) => month.dailyRate));
+  const recentRate = mean(recent.map((month) => month.dailyRate));
+  if (previousRate <= 0 || recentRate <= 0) return 1;
+  const factor = recentRate / previousRate;
+  if (!Number.isFinite(factor)) return 1;
+  return round(Math.min(1.5, Math.max(0.8, factor)));
 }
 
 export function safetyDaysFromStability(

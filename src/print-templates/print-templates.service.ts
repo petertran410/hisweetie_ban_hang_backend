@@ -611,9 +611,12 @@ export class PrintTemplatesService {
     bank: any,
     amount: number,
     addInfo: string,
+    includeZeroAmount = false,
   ): string {
     const params = new URLSearchParams();
-    if (amount > 0) params.append('amount', String(amount));
+    if (amount > 0 || includeZeroAmount) {
+      params.append('amount', String(amount));
+    }
     if (addInfo) params.append('addInfo', addInfo);
     if (bank.accountHolder) params.append('accountName', bank.accountHolder);
     return `https://img.vietqr.io/image/${encodeURIComponent(
@@ -621,7 +624,12 @@ export class PrintTemplatesService {
     )}-${encodeURIComponent(bank.accountNumber)}-compact1.png?${params.toString()}`;
   }
 
-  private qrVars(soldBy: any, amount: any, addInfo: string) {
+  private qrVars(
+    soldBy: any,
+    amount: any,
+    addInfo: string,
+    includeZeroAmount = false,
+  ) {
     const bank = soldBy?.bankAccountMapping?.bankAccount;
     if (!bank) {
       return {
@@ -633,7 +641,12 @@ export class PrintTemplatesService {
     }
 
     const amt = Math.round(Number(amount || 0));
-    const url = this.generateVietQRUrl(bank, amt, addInfo);
+    const url = this.generateVietQRUrl(
+      bank,
+      amt,
+      addInfo,
+      includeZeroAmount,
+    );
 
     return {
       Ma_QR_Code: `<img src="${url}" alt="QR thanh toan" style="width:160px;height:160px;" />`,
@@ -692,7 +705,12 @@ export class PrintTemplatesService {
       ...this.staffVars(inv.soldBy, inv.creator),
       ...this.deliveryVars(inv.delivery, inv.customer),
       ...this.shippingFeeVars(inv.shippingFee),
-      ...this.qrVars(inv.soldBy, inv.grandTotal, inv.code),
+      ...this.qrVars(
+        inv.soldBy,
+        Math.max(0, Number(inv.debtAmount || 0)),
+        inv.code,
+        true,
+      ),
       ...(await this.documentQrVars('invoice', inv.code)),
       Ma_Hoa_Don: inv.code || '',
       Ghi_Chu: inv.description || '',
@@ -700,7 +718,7 @@ export class PrintTemplatesService {
       Giam_Gia: this.money(inv.discount),
       Tong_Can_Thanh_Toan: this.money(inv.grandTotal),
       Da_Thanh_Toan: this.money(inv.paidAmount),
-      Con_Lai: this.money(inv.debtAmount),
+      Con_Lai: this.money(Math.max(0, Number(inv.debtAmount || 0))),
       Tong_Can_Thanh_Toan_Bang_Chu: this.numberToWords(
         Number(inv.grandTotal || 0),
       ),

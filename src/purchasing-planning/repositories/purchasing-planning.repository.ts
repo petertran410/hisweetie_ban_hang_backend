@@ -211,6 +211,7 @@ export class PurchasingPlanningRepository {
     scopeId: number | null,
     values: Record<string, number | null | undefined>,
     userId?: number,
+    note?: string | null,
   ) {
     return this.prisma.$transaction(async (tx) => {
       for (const [paramKey, paramValue] of Object.entries(values)) {
@@ -222,13 +223,21 @@ export class PurchasingPlanningRepository {
           if (active) {
             await tx.planningConfig.update({
               where: { id: active.id },
-              data: { isActive: false, updatedBy: userId },
+              data: {
+                isActive: false,
+                updatedBy: userId,
+                ...(note !== undefined ? { note } : {}),
+              },
             });
           }
         } else if (active) {
           await tx.planningConfig.update({
             where: { id: active.id },
-            data: { paramValue, updatedBy: userId },
+            data: {
+              paramValue,
+              updatedBy: userId,
+              ...(note !== undefined ? { note } : {}),
+            },
           });
         } else {
           await tx.planningConfig.create({
@@ -239,6 +248,7 @@ export class PurchasingPlanningRepository {
               paramValue,
               createdBy: userId,
               updatedBy: userId,
+              ...(note !== undefined ? { note } : {}),
             },
           });
         }
@@ -296,7 +306,6 @@ export class PurchasingPlanningRepository {
       stockSnapshots,
       promotions,
       pendingOrders,
-      trends,
     ] = await Promise.all([
       this.prisma.product.findMany({
         where: productWhere,
@@ -462,10 +471,6 @@ export class PurchasingPlanningRepository {
         },
         _sum: { quantity: true },
       }) ?? Promise.resolve([]),
-      (this.prisma as any).planningTrend?.findMany?.({
-        where: { isActive: true, endDate: { gte: windowStart } },
-        orderBy: { startDate: 'asc' },
-      }) ?? Promise.resolve([]),
     ]);
 
     const pendingOrderQty = new Map<number, number>();
@@ -485,7 +490,6 @@ export class PurchasingPlanningRepository {
       stockSnapshots,
       promotions,
       pendingOrderQty,
-      trends,
       branchScope,
     };
   }

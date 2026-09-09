@@ -5,6 +5,8 @@ import {
   IsNumber,
   IsOptional,
   IsPositive,
+  IsString,
+  Max,
   Min,
   ValidateIf,
 } from 'class-validator';
@@ -22,6 +24,16 @@ export class PlanningConfigValuesDto {
   @IsInt()
   @IsPositive()
   coverageDays?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.8)
+  @Max(1.5)
+  growthFactor?: number | null;
+
+  @IsOptional()
+  @IsString()
+  note?: string | null;
 }
 
 export class CreatePlanningConfigDto extends PlanningConfigValuesDto {

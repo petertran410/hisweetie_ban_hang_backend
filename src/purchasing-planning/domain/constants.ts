@@ -7,6 +7,7 @@ import {
 export const DEFAULT_PLANNING_CONFIG: PlanningConfig = Object.freeze({
   safetyDays: 14,
   coverageDays: 30,
+  growthFactor: 1,
 });
 
 export const OPERATIONAL_PLANNING_DEFAULTS: OperationalPlanningDefaults =

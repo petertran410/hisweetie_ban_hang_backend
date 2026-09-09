@@ -41,6 +41,31 @@ describe('analyzeDemandStability', () => {
     expect(result.lookbackMonths).toEqual([]);
     expect(result.stability).toBe('STABLE');
     expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
+    expect(result.systemGrowthFactor).toBeCloseTo(0.995, 3);
+  });
+
+  it('tự đề xuất hệ số tăng trưởng từ các tháng bình thường', () => {
+    const result = analyzeDemandStability([
+      month('2026-01', 300),
+      month('2026-02', 330),
+      month('2026-03', 360),
+      month('2026-04', 390),
+      month('2026-05', 420),
+    ]);
+
+    expect(result.systemGrowthFactor).toBeCloseTo(1.2381, 3);
+  });
+
+  it('không lấy một tháng SPIKE đơn lẻ làm hệ số tăng trưởng', () => {
+    const result = analyzeDemandStability([
+      month('2026-01', 300),
+      month('2026-02', 300),
+      month('2026-03', 300),
+      month('2026-04', 900),
+      month('2026-05', 300),
+    ]);
+
+    expect(result.systemGrowthFactor).toBe(1);
   });
 
   it('chỉ dùng 3 tháng khi có tháng bất thường', () => {

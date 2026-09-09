@@ -6,7 +6,11 @@ describe('resolvePlanningConfig', () => {
     const result = resolvePlanningConfig([]);
     expect(result.config).toEqual(DEFAULT_PLANNING_CONFIG);
     expect(result.sources.safetyDays).toBe('DEFAULT');
-    expect(Object.keys(result.config)).toEqual(['safetyDays', 'coverageDays']);
+    expect(Object.keys(result.config)).toEqual([
+      'safetyDays',
+      'coverageDays',
+      'growthFactor',
+    ]);
   });
 
   it('resolves every field with SKU > supplier > category > global precedence', () => {

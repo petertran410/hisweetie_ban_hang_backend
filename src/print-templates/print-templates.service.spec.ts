@@ -135,6 +135,60 @@ describe('PrintTemplatesService', () => {
     });
   });
 
+  describe('invoice payment QR and remaining amount', () => {
+    const sellerWithBank = {
+      bankAccountMapping: {
+        bankAccount: {
+          bankCode: 'MB',
+          accountNumber: '1234567890',
+          accountHolder: 'NGUYEN VAN A',
+          bankName: 'Ngân hàng TMCP Quân đội',
+        },
+      },
+    };
+
+    it('uses the outstanding debt, not the invoice total, in the QR', () => {
+      const service = createService() as any;
+      const data = service.qrVars(
+        sellerWithBank,
+        600000,
+        'HD123',
+        true,
+      );
+
+      expect(data.Ma_QR_Code).toContain('amount=600000');
+      expect(data.Ma_QR_Code).not.toContain('amount=1000000');
+    });
+
+    it('encodes zero amount when the invoice has no outstanding debt', () => {
+      const service = createService() as any;
+      const data = service.qrVars(sellerWithBank, 0, 'HD123', true);
+
+      expect(data.Ma_QR_Code).toContain('amount=0');
+    });
+
+    it('clamps a negative invoice debt to zero for print output', async () => {
+      const service = createService() as any;
+      const data = await service.mapInvoice({
+        code: '',
+        branch: null,
+        customer: null,
+        soldBy: sellerWithBank,
+        creator: null,
+        delivery: null,
+        totalAmount: 27220000,
+        discount: 1361000,
+        grandTotal: 25859000,
+        paidAmount: 27220000,
+        debtAmount: -1361000,
+        details: [],
+      });
+
+      expect(data.Con_Lai).toBe('0');
+      expect(data.Ma_QR_Code).toContain('amount=0');
+    });
+  });
+
   describe('shipping fee print variables', () => {
     const baseEntity = {
       code: '',

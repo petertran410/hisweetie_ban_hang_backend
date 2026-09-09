@@ -13,7 +13,6 @@ import {
   calculatePromotionUplift,
   calculateReplenishment,
   calculateSoq,
-  calculateTrendUplift,
   classifyVehicleSupply,
   coverageDaysFor,
   ConfigScope,
@@ -26,7 +25,6 @@ import {
   moqSpecToPacks,
   OPERATIONAL_PLANNING_DEFAULTS,
   PlanningConfigKey,
-  PlanningTrendWindow,
   projectInventory,
   PromotionWindow,
   resolveDemand,
@@ -34,7 +32,6 @@ import {
   resolveLeadtimePipeline,
   resolvePlanningConfig,
   safetyDaysFromStability,
-  trendsForProduct,
 } from '../domain';
 import {
   CreatePlanningConfigDto,
@@ -192,6 +189,18 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
   },
 };
 
+const GROWTH_FACTOR_MIN = 0.8;
+const GROWTH_FACTOR_MAX = 1.5;
+
+function clampGrowthFactor(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return (
+    Math.round(
+      Math.min(GROWTH_FACTOR_MAX, Math.max(GROWTH_FACTOR_MIN, value)) * 10000,
+    ) / 10000
+  );
+}
+
 @Injectable()
 export class PurchasingPlanningService {
   constructor(
@@ -323,6 +332,7 @@ export class PurchasingPlanningService {
       scopeId,
       values,
       actor?.id,
+      dto.note,
     );
     const entities = await this.loadConfigEntities(
       rows,
@@ -359,6 +369,7 @@ export class PurchasingPlanningService {
       scopeId,
       values,
       actor?.id,
+      dto.note,
     );
     const entities = await this.loadConfigEntities(
       rows,
@@ -645,29 +656,6 @@ export class PurchasingPlanningService {
     return completed.length ? completed : months;
   }
 
-  private trendsForProductRows(
-    product: any,
-    trends: any[],
-  ): PlanningTrendWindow[] {
-    return trendsForProduct(
-      product,
-      (trends ?? []).map((trend) => ({
-        id: trend.id,
-        productId: trend.productId,
-        categoryName: trend.categoryName,
-        startDate: new Date(trend.startDate),
-        endDate: new Date(trend.endDate),
-        name: trend.note,
-        note: trend.note,
-        kind: trend.kind,
-        upliftFactor:
-          trend.upliftFactor == null ? null : Number(trend.upliftFactor),
-        extraQuantity:
-          trend.extraQuantity == null ? null : Number(trend.extraQuantity),
-      })),
-    );
-  }
-
   /** Các đợt khuyến mãi có áp dụng cho sản phẩm này. */
   private promotionsForProduct(
     product: any,
@@ -771,12 +759,12 @@ export class PurchasingPlanningService {
     }
 
     if (stability.unexplainedAnomaly) {
+      const anomalyMonths = stability.months
+        .filter((month: any) => month.anomaly !== 'NORMAL')
+        .map((month: any) => month.month)
+        .join(', ');
       parts.push(
-        `Doanh số tháng ${stability.trendMonths.join(', ')} tăng bất thường chưa giải thích được — cần người mua cân nhắc.`,
-      );
-    } else if (stability.trendMonths?.length > 0) {
-      parts.push(
-        `Đã tính trend/khuyến mãi cho tháng ${stability.trendMonths.join(', ')}.`,
+        `Phát hiện doanh số bất thường${anomalyMonths ? ` ở tháng ${anomalyMonths}` : ''}; hệ số tăng trưởng cần được người mua kiểm tra.`,
       );
     } else if (stability.stability === 'VOLATILE') {
       parts.push('Doanh số dao động mạnh, số liệu dự báo kém chắc chắn.');
@@ -833,21 +821,16 @@ export class PurchasingPlanningService {
     // Leadtime áp vào SKU lấy từ pipeline mạng lưới: Sản xuất → Thông quan →
     // Về công ty. Không phân biệt chi nhánh nhận.
     const leadtimeInfo = this.resolveNetworkLeadtime(product, networkContext);
-    const leadTimeDays = leadtimeInfo?.pipeline.days ?? leadtimeInfo?.pipeline.max ?? 0;
+    const leadTimeDays =
+      leadtimeInfo?.pipeline.days ?? leadtimeInfo?.pipeline.max ?? 0;
     const productPromotions = this.promotionsForProduct(
       product,
       data.promotions ?? [],
     );
-    const productTrends = this.trendsForProductRows(
-      product,
-      data.trends ?? [],
-    );
     const monthlySales = this.monthlySales(invoiceRows, snapshotDate);
-    const stability = analyzeDemandStability(
-      monthlySales,
-      productPromotions,
-      productTrends,
-    );
+    // Trend thủ công đã bị loại khỏi forecast. Các tháng bất thường chỉ được
+    // dùng để cảnh báo và suy hệ số tăng trưởng từ lịch sử đã làm sạch.
+    const stability = analyzeDemandStability(monthlySales, productPromotions);
     // Tồn dự phòng suy từ chính mức dao động đó thay vì một hằng số: SKU bán
     // đều cần đệm mỏng, SKU tháng cao tháng thấp cần đệm dày.
     const safetyDays = safetyDaysFromStability(stability, leadTimeDays);
@@ -863,13 +846,25 @@ export class PurchasingPlanningService {
       weightUnit: product.weightUnit,
     });
     const moqUnits = moqPacks ?? 0;
-    // Mọi tham số tính toán đều được suy ra từ dữ liệu thật, không còn ô nào
-    // để người dùng khai tay: leadtime từ pipeline mạng lưới, tồn dự phòng từ
-    // độ dao động doanh số, MOQ từ nhà máy, chu kỳ đặt từ chính leadtime.
+    // Hệ số tăng trưởng có hai nguồn: hệ thống tự suy từ lịch sử hoặc override
+    // theo scope (SKU → nhà cung cấp → nhóm hàng → toàn hệ thống).
+    const resolvedConfig = resolvePlanningConfig(configValues, {
+      skuId: product.id,
+      supplierId: latestSupplier?.supplierId ?? undefined,
+      categoryId: childCategoryId,
+    });
+    const configuredGrowthFactor = resolvedConfig.sourceValues.growthFactor
+      ? Number(resolvedConfig.config.growthFactor)
+      : null;
+    const systemGrowthFactor = Number(stability.systemGrowthFactor ?? 1);
+    const appliedGrowthFactor = clampGrowthFactor(
+      configuredGrowthFactor ?? systemGrowthFactor,
+    );
     const config = {
       ...OPERATIONAL_PLANNING_DEFAULTS,
       packSize,
       safetyDays,
+      growthFactor: appliedGrowthFactor,
     };
     const rawPhysical = inventoryRows.reduce(
       (sum: number, row: any) => sum + Number(row.onHand),
@@ -931,27 +926,26 @@ export class PurchasingPlanningService {
       asOfDate: snapshotDate,
       firstActivityDate: firstActivity,
       minDays: config.minDays,
+      growthFactor: appliedGrowthFactor,
     });
-    // MA ngắn hạn vẫn được giữ để so sánh/hiển thị, nhưng con số dùng cho quyết
-    // định đặt hàng là mức nền đã khử tháng đột biến và đối chiếu khuyến mãi.
-    // Không còn nhân một growthFactor nhập tay cho toàn bộ SKU.
-    const forecastDailyDemand =
+    // MA ngắn hạn vẫn được giữ để so sánh/hiển thị. Mức nền đã khử tháng bất
+    // thường là cơ sở, sau đó nhân hệ số hệ thống hoặc hệ số người dùng áp dụng.
+    const baselineDailyDemand =
       stability.baselineDailyDemand > 0
         ? stability.baselineDailyDemand
-        : forecast.forecastDailyDemand;
+        : forecast.forecastDailyDemand / Math.max(appliedGrowthFactor, 0.0001);
+    const forecastDailyDemand =
+      Math.round(baselineDailyDemand * appliedGrowthFactor * 10000) / 10000;
 
     if (stability.unexplainedAnomaly && forecast.confidence !== 'NO_DATA') {
       const flags = new Set(forecast.flags ?? []);
       flags.add('LOW_CONFIDENCE_FORECAST');
       forecast.flags = [...flags] as typeof forecast.flags;
-      const rank = [
-        'NO_DATA',
-        'VERY_LOW',
-        'LOW',
-        'MEDIUM',
-        'HIGH',
-      ] as const;
-      const next = Math.max(1, rank.indexOf(forecast.confidence as typeof rank[number]) - 1);
+      const rank = ['NO_DATA', 'VERY_LOW', 'LOW', 'MEDIUM', 'HIGH'] as const;
+      const next = Math.max(
+        1,
+        rank.indexOf(forecast.confidence as (typeof rank)[number]) - 1,
+      );
       forecast.confidence = rank[next];
     }
 
@@ -1003,7 +997,8 @@ export class PurchasingPlanningService {
           productId: product.id,
           quantity: Number(item.quantity ?? 0),
           status: item.vehicleShipment?.status,
-          expectedArrivalDate: item.vehicleShipment?.expectedArrivalDate ?? null,
+          expectedArrivalDate:
+            item.vehicleShipment?.expectedArrivalDate ?? null,
           orderSupplierId: row.orderSupplier.id,
           orderCode: row.orderSupplier.code,
           supplierName: row.orderSupplier.supplier?.name ?? null,
@@ -1087,13 +1082,7 @@ export class PurchasingPlanningService {
       promotions: productPromotions,
       months: stability.months,
     });
-    const trendUplift = calculateTrendUplift({
-      today: snapshotDate,
-      horizonDays,
-      baselineDailyDemand: forecastDailyDemand,
-      trends: productTrends,
-    });
-    const extraDemand = promotionUplift.extraDemand + trendUplift.extraDemand;
+    const extraDemand = promotionUplift.extraDemand;
     const soq = calculateSoq({
       forecastDailyDemand: forecastDailyDemand,
       leadTimeDays,
@@ -1118,7 +1107,6 @@ export class PurchasingPlanningService {
       firmReceipts,
       vehicleLines: vehicleSupply.vehicleLines,
       promotions: productPromotions,
-      trends: productTrends,
       shipments,
       forecastDailyDemand,
       available,
@@ -1172,6 +1160,8 @@ export class PurchasingPlanningService {
       ma60: forecast.ma60,
       ma90: forecast.ma90,
       trendRatio,
+      // Giữ field cũ để snapshot/API cũ vẫn đọc được; đây là hệ số áp dụng.
+      growthFactor: appliedGrowthFactor,
       totalDemand,
       validDays: forecast.validStockDays,
       windowDays: forecast.windowDays,
@@ -1184,16 +1174,25 @@ export class PurchasingPlanningService {
       variationCoefficient: stability.variationCoefficient,
       monthsAnalyzed: stability.monthsUsed,
       monthBreakdown: stability.months,
-      trendMonths: stability.trendMonths,
+      // Trend thủ công đã bị loại khỏi contract forecast mới.
+      trendMonths: [],
       promotionMonths: stability.promotionMonths,
       // Khuyến mãi đang/sắp chạy đã được cộng vào số lượng đề xuất.
       upcomingPromotions: promotionUplift.windows,
       promotionExtraDemand: promotionUplift.extraDemand,
       promotionDays: promotionUplift.promotionDays,
       promotionUpliftFactor: promotionUplift.upliftFactor,
-      upcomingTrends: trendUplift.windows,
-      trendExtraDemand: trendUplift.extraDemand,
-      trendDays: trendUplift.trendDays,
+      systemGrowthFactor,
+      appliedGrowthFactor,
+      growthFactorOverridden: configuredGrowthFactor != null,
+      growthFactorSource:
+        configuredGrowthFactor != null
+          ? resolvedConfig.sources.growthFactor
+          : 'DERIVED',
+      growthFactorNote:
+        configuredGrowthFactor != null
+          ? (resolvedConfig.sourceValues.growthFactor?.note ?? null)
+          : null,
       lookbackMonths: stability.lookbackMonths,
       lookbackRepeatsAnomaly: stability.lookbackRepeatsAnomaly,
       unexplainedAnomaly: stability.unexplainedAnomaly,
@@ -1204,7 +1203,6 @@ export class PurchasingPlanningService {
           forecastDailyDemand *
           (leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays)),
         promotionExtra: promotionUplift.extraDemand,
-        trendExtra: trendUplift.extraDemand,
       },
       supplyBreakdown: {
         available,
@@ -1318,7 +1316,6 @@ export class PurchasingPlanningService {
     firmReceipts: any[];
     vehicleLines: any[];
     promotions: PromotionWindow[];
-    trends: PlanningTrendWindow[];
     shipments: any[];
     forecastDailyDemand: number;
     available: number;
@@ -1361,7 +1358,8 @@ export class PurchasingPlanningService {
       quantity: Number(monthlyByKey.get(month.month)?.quantity ?? 0),
       dailyRate: Number(month.dailyRate ?? 0),
       // Baseline cùng đơn vị với quantity (theo tháng) để vẽ cùng trục.
-      baseline: Number(input.stability.baselineDailyDemand ?? 0) *
+      baseline:
+        Number(input.stability.baselineDailyDemand ?? 0) *
         Number(monthlyByKey.get(month.month)?.days ?? 30),
       anomaly: month.anomaly,
       hasPromotion: Boolean(month.hasPromotion),
@@ -1387,31 +1385,21 @@ export class PurchasingPlanningService {
         quantity: null,
         etaType: null,
       })),
-      ...input.trends.map((trend) => ({
-        type: 'TREND' as const,
-        name: trend.name ?? trend.note ?? null,
-        startDate: this.dateOnly(trend.startDate),
-        endDate: this.dateOnly(trend.endDate),
-        quantity:
-          trend.extraQuantity == null ? null : Number(trend.extraQuantity),
-        etaType: null,
-      })),
       ...input.shipments.map((shipment) => ({
         type: shipment.classifiedAs
           ? ('VEHICLE_SHIPMENT' as const)
           : ('INCOMING' as const),
         name: shipment.orderCode ?? null,
-        startDate: shipment.eta
-          ? this.dateOnly(new Date(shipment.eta))
-          : today,
+        startDate: shipment.eta ? this.dateOnly(new Date(shipment.eta)) : today,
         endDate: null,
         quantity: Number(shipment.quantity ?? 0),
         etaType: shipment.etaType ?? null,
       })),
     ];
-    const orderArrivalDate = input.leadTimeDays > 0
-      ? this.dateOnly(this.addDays(input.snapshotDate, input.leadTimeDays))
-      : null;
+    const orderArrivalDate =
+      input.leadTimeDays > 0
+        ? this.dateOnly(this.addDays(input.snapshotDate, input.leadTimeDays))
+        : null;
 
     return buildDecisionTimeline({
       history,
@@ -1437,9 +1425,13 @@ export class PurchasingPlanningService {
   private firmIncomingReceipts(receipts: any[], vehicleLines: any[]) {
     const riskByOrder = new Map<number, number>();
     for (const line of vehicleLines) {
-      if (line.classifiedAs !== 'RISK' || line.orderSupplierId == null) continue;
+      if (line.classifiedAs !== 'RISK' || line.orderSupplierId == null)
+        continue;
       const id = Number(line.orderSupplierId);
-      riskByOrder.set(id, (riskByOrder.get(id) ?? 0) + Number(line.quantity ?? 0));
+      riskByOrder.set(
+        id,
+        (riskByOrder.get(id) ?? 0) + Number(line.quantity ?? 0),
+      );
     }
     return receipts
       .map((receipt) => {
@@ -1512,6 +1504,18 @@ export class PurchasingPlanningService {
             ),
             source: 'DERIVED',
             label: 'Suy từ thời gian chờ hàng',
+          },
+          growthFactor: {
+            value: Number(
+              forecast.appliedGrowthFactor ?? config.growthFactor ?? 1,
+            ),
+            source: forecast.growthFactorSource ?? 'DERIVED',
+            label: forecast.growthFactorOverridden
+              ? 'Người dùng điều chỉnh theo SKU'
+              : 'Tự suy từ lịch sử bán hàng',
+            systemValue: Number(forecast.systemGrowthFactor ?? 1),
+            overridden: Boolean(forecast.growthFactorOverridden),
+            note: forecast.growthFactorNote ?? null,
           },
           packSize: {
             value: config.packSize,
@@ -2001,6 +2005,7 @@ export class PurchasingPlanningService {
         key: row.paramKey as PlanningConfigKey,
         value: Number(row.paramValue),
         active: row.isActive,
+        note: row.note ?? null,
       }));
   }
 
@@ -2036,6 +2041,7 @@ export class PurchasingPlanningService {
     scopeId: number | null,
     values: Record<string, number | null | undefined>,
     userId?: number,
+    note?: string | null,
   ) {
     try {
       return await this.repository.upsertConfigGroup(
@@ -2043,6 +2049,7 @@ export class PurchasingPlanningService {
         scopeId,
         values,
         userId,
+        note,
       );
     } catch (error) {
       if (
@@ -2195,7 +2202,10 @@ export class PurchasingPlanningService {
       throw new NotFoundException('Không tìm thấy trend');
     }
     this.assertTrend({ ...existing, ...dto });
-    const row = await this.repository.updateTrend(id, this.trendData(dto, existing));
+    const row = await this.repository.updateTrend(
+      id,
+      this.trendData(dto, existing),
+    );
     return this.mapTrend(row);
   }
 
@@ -2217,13 +2227,22 @@ export class PurchasingPlanningService {
       throw new BadRequestException('Ngày kết thúc phải sau ngày bắt đầu');
     }
     if (dto.upliftFactor == null && dto.extraQuantity == null) {
-      throw new BadRequestException('Trend cần hệ số tăng hoặc số lượng tăng thêm');
+      throw new BadRequestException(
+        'Trend cần hệ số tăng hoặc số lượng tăng thêm',
+      );
     }
   }
 
-  private trendData(dto: Record<string, any>, existing: Record<string, any> = {}) {
-    const startDate = new Date(`${String(dto.startDate ?? existing.startDate).slice(0, 10)}T00:00:00.000Z`);
-    const endDate = new Date(`${String(dto.endDate ?? existing.endDate).slice(0, 10)}T00:00:00.000Z`);
+  private trendData(
+    dto: Record<string, any>,
+    existing: Record<string, any> = {},
+  ) {
+    const startDate = new Date(
+      `${String(dto.startDate ?? existing.startDate).slice(0, 10)}T00:00:00.000Z`,
+    );
+    const endDate = new Date(
+      `${String(dto.endDate ?? existing.endDate).slice(0, 10)}T00:00:00.000Z`,
+    );
     const extraQuantity = dto.extraQuantity ?? existing.extraQuantity;
     const upliftFactor = dto.upliftFactor ?? existing.upliftFactor;
     return {
@@ -2251,7 +2270,8 @@ export class PurchasingPlanningService {
       endDate: this.dateOnly(row.endDate),
       kind: row.kind,
       upliftFactor: row.upliftFactor == null ? null : Number(row.upliftFactor),
-      extraQuantity: row.extraQuantity == null ? null : Number(row.extraQuantity),
+      extraQuantity:
+        row.extraQuantity == null ? null : Number(row.extraQuantity),
       note: row.note,
       isActive: row.isActive,
       updatedAt: row.updatedAt,

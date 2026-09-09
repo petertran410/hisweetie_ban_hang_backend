@@ -145,6 +145,8 @@ export type ConfigScope = 'GLOBAL' | 'CATEGORY' | 'SUPPLIER' | 'SKU';
 export interface PlanningConfig {
   safetyDays: number;
   coverageDays: number;
+  /** Hệ số tăng trưởng do người dùng cấu hình; mặc định 1. */
+  growthFactor: number;
 }
 
 export interface OperationalPlanningDefaults {
@@ -163,6 +165,7 @@ export interface ConfigValue {
   key: PlanningConfigKey;
   value: number;
   active?: boolean;
+  note?: string | null;
 }
 
 export interface ConfigContext {
