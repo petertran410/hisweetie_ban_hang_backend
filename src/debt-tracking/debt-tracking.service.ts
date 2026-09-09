@@ -6,6 +6,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { searchCustomerIds } from '../common/customer-search.util';
 import { Prisma } from '@prisma/client';
 import {
   DebtTrackingQueryDto,
@@ -163,13 +164,8 @@ export class DebtTrackingService {
     if (query.branchId) customerWhere.branchId = query.branchId;
 
     if (query.search?.trim()) {
-      const s = query.search.trim();
-      customerWhere.OR = [
-        { name: { contains: s, mode: 'insensitive' } },
-        { code: { contains: s, mode: 'insensitive' } },
-        { contactNumber: { contains: s } },
-        { phone: { contains: s } },
-      ];
+      const matchedIds = await searchCustomerIds(this.prisma, query.search);
+      customerWhere.id = { in: matchedIds.length > 0 ? matchedIds : [-1] };
     }
 
     const customerGroupIds = [
@@ -250,9 +246,13 @@ export class DebtTrackingService {
               policy.paymentScheduleDays,
               now,
             )
-          : evaluatePaymentFrequency(paymentDates, policy.paymentFrequency, now);
+          : evaluatePaymentFrequency(
+              paymentDates,
+              policy.paymentFrequency,
+              now,
+            );
 
-    const p = c.debtPolicy as
+      const p = c.debtPolicy as
         | (RawDebtPolicy & {
             paymentHistoryOverride?: string | null;
             paymentHistoryOverrideNote?: string | null;
@@ -260,7 +260,8 @@ export class DebtTrackingService {
             paymentHistoryOverriddenAt?: Date | null;
           })
         | null;
-      const ruleType = p?.debtRuleType ??
+      const ruleType =
+        p?.debtRuleType ??
         (policy.hasCreditLimit
           ? 'CREDIT_LIMIT'
           : policy.hasTermDays
@@ -354,17 +355,17 @@ export class DebtTrackingService {
         outstandingCount: aging.outstandingInvoices.length,
 
         // Ghi chú dùng chung và lịch sử các lần đòi nợ
-         note: debtNote?.note ?? null,
-         noteAt: debtNote?.noteAt ?? null,
-         accountantCollectionAttempts:
-           collectionAttemptMap.get(c.id)?.ACCOUNTANT ?? [],
-         salesCollectionAttempts: collectionAttemptMap.get(c.id)?.SALES ?? [],
+        note: debtNote?.note ?? null,
+        noteAt: debtNote?.noteAt ?? null,
+        accountantCollectionAttempts:
+          collectionAttemptMap.get(c.id)?.ACCOUNTANT ?? [],
+        salesCollectionAttempts: collectionAttemptMap.get(c.id)?.SALES ?? [],
         currentCycle: cycleSummaryMap.get(c.id)?.currentCycle
           ? {
               id: cycleSummaryMap.get(c.id)!.currentCycle!.id,
               startedAt: cycleSummaryMap.get(c.id)!.currentCycle!.startedAt,
-              requiredPaymentAtStart:
-                cycleSummaryMap.get(c.id)!.currentCycle!.requiredPaymentAtStart,
+              requiredPaymentAtStart: cycleSummaryMap.get(c.id)!.currentCycle!
+                .requiredPaymentAtStart,
             }
           : null,
         closedCycleCount: cycleSummaryMap.get(c.id)?.closedCycleCount ?? 0,
@@ -436,12 +437,16 @@ export class DebtTrackingService {
   }
 
   async notifySaleDebt(customerIds: number[]) {
-    const ids = [...new Set(customerIds.filter((id) => Number.isInteger(id) && id > 0))];
+    const ids = [
+      ...new Set(customerIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
     if (ids.length === 0) {
       throw new BadRequestException('Chưa chọn khách hàng để gửi nhắc công nợ');
     }
     if (ids.length > 50) {
-      throw new BadRequestException('Mỗi lần chỉ được gửi tối đa 50 khách hàng');
+      throw new BadRequestException(
+        'Mỗi lần chỉ được gửi tối đa 50 khách hàng',
+      );
     }
     if (!this.larkDebtNotification) {
       throw new BadRequestException('Chưa cấu hình dịch vụ gửi tin nhắn Lark');
@@ -551,7 +556,16 @@ export class DebtTrackingService {
       return `Thanh toán cố định tháng (ngày ${(policy.paymentScheduleDays ?? []).join(', ')})`;
     }
     if (policy.debtRuleType === 'WEEKLY_SCHEDULE') {
-      const labels = ['', 'Thứ 2', 'Thứ 3', 'Thứ 4', 'Thứ 5', 'Thứ 6', 'Thứ 7', 'Chủ nhật'];
+      const labels = [
+        '',
+        'Thứ 2',
+        'Thứ 3',
+        'Thứ 4',
+        'Thứ 5',
+        'Thứ 6',
+        'Thứ 7',
+        'Chủ nhật',
+      ];
       return `Thanh toán cố định tuần (${(policy.paymentScheduleDays ?? [])
         .map((day: number) => labels[day] ?? day)
         .join(', ')})`;
@@ -641,28 +655,29 @@ export class DebtTrackingService {
       now,
     );
 
-    const [{ monthPaymentDates }, recentPayments, ticketLines] = await Promise.all([
-      this.getPaymentInfo([customerId]),
-      this.getRecentPayments(customerId, 20),
-      this.prisma.debtTicketCustomer.findMany({
-        where: { customerId },
-        orderBy: { createdAt: 'desc' },
-        take: 20,
-        include: {
-          ticket: {
-            select: {
-              id: true,
-              code: true,
-              status: true,
-              ticketType: true,
-              createdAt: true,
-              closedAt: true,
-              assignee: { select: { id: true, name: true } },
+    const [{ monthPaymentDates }, recentPayments, ticketLines] =
+      await Promise.all([
+        this.getPaymentInfo([customerId]),
+        this.getRecentPayments(customerId, 20),
+        this.prisma.debtTicketCustomer.findMany({
+          where: { customerId },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          include: {
+            ticket: {
+              select: {
+                id: true,
+                code: true,
+                status: true,
+                ticketType: true,
+                createdAt: true,
+                closedAt: true,
+                assignee: { select: { id: true, name: true } },
+              },
             },
           },
-        },
-      }),
-    ]);
+        }),
+      ]);
 
     const paymentDates = monthPaymentDates.get(customerId) ?? [];
     const frequency =
@@ -763,8 +778,7 @@ export class DebtTrackingService {
     const isLimit = debtRuleType === 'CREDIT_LIMIT';
     const isTerm = debtRuleType === 'TERM_DAYS';
     const isSchedule =
-      debtRuleType === 'MONTHLY_SCHEDULE' ||
-      debtRuleType === 'WEEKLY_SCHEDULE';
+      debtRuleType === 'MONTHLY_SCHEDULE' || debtRuleType === 'WEEKLY_SCHEDULE';
     const scheduleDays = isSchedule
       ? [...new Set((dto.paymentScheduleDays ?? []).map(Number))].sort(
           (a, b) => a - b,
@@ -776,25 +790,28 @@ export class DebtTrackingService {
         'Vui lòng chọn ít nhất một ngày/thứ thanh toán cố định',
       );
     }
-    if (debtRuleType === 'MONTHLY_SCHEDULE' && scheduleDays!.some((d) => d < 1 || d > 31)) {
+    if (
+      debtRuleType === 'MONTHLY_SCHEDULE' &&
+      scheduleDays!.some((d) => d < 1 || d > 31)
+    ) {
       throw new BadRequestException('Ngày thanh toán tháng phải từ 1 đến 31');
     }
-    if (debtRuleType === 'WEEKLY_SCHEDULE' && scheduleDays!.some((d) => d < 1 || d > 7)) {
+    if (
+      debtRuleType === 'WEEKLY_SCHEDULE' &&
+      scheduleDays!.some((d) => d < 1 || d > 7)
+    ) {
       throw new BadRequestException('Thứ thanh toán tuần phải từ 1 đến 7');
     }
 
     const data = {
       debtRuleType,
       hasCreditLimit: isLimit,
-      creditLimit:
-        isLimit ? (dto.creditLimit ?? null) : null,
+      creditLimit: isLimit ? (dto.creditLimit ?? null) : null,
       hasTermDays: isTerm,
-      termDays:
-        isTerm ? (dto.termDays ?? null) : null,
-      paymentFrequency:
-        isSchedule
-          ? scheduleDays!.length
-          : dto.paymentFrequency ?? null,
+      termDays: isTerm ? (dto.termDays ?? null) : null,
+      paymentFrequency: isSchedule
+        ? scheduleDays!.length
+        : (dto.paymentFrequency ?? null),
       paymentScheduleType:
         dto.paymentScheduleType ??
         (debtRuleType === 'MONTHLY_SCHEDULE'
@@ -802,10 +819,7 @@ export class DebtTrackingService {
           : debtRuleType === 'WEEKLY_SCHEDULE'
             ? 'WEEKLY'
             : null),
-      paymentScheduleDays:
-        isSchedule
-          ? scheduleDays ?? []
-          : Prisma.JsonNull,
+      paymentScheduleDays: isSchedule ? (scheduleDays ?? []) : Prisma.JsonNull,
       debtForm: dto.debtForm ?? null,
       salePicId: dto.salePicId ?? null,
       isActive: dto.isActive ?? true,
@@ -847,11 +861,7 @@ export class DebtTrackingService {
   // ================================================================
   // GHI CHÚ — một nguồn dùng chung
   // ================================================================
-  async updateNote(
-    customerId: number,
-    dto: UpdateDebtNoteDto,
-    userId: number,
-  ) {
+  async updateNote(customerId: number, dto: UpdateDebtNoteDto, userId: number) {
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
       select: { id: true },
@@ -969,77 +979,81 @@ export class DebtTrackingService {
       throw new BadRequestException('Lý do chỉnh sửa không được để trống');
     }
     const attemptDate = this.parseCollectionAttemptDate(dto.attemptDate);
-    const { created, previousDate } = await this.prisma.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
-      const current = await tx.customerDebtCollectionAttempt.findFirst({
-        where: { id: attemptId, customerId, isActive: true },
-        include: { recordedBy: { select: { id: true, name: true } } },
-      });
-      if (!current) throw new NotFoundException('Không tìm thấy lần đòi nợ');
+    const { created, previousDate } = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
+        const current = await tx.customerDebtCollectionAttempt.findFirst({
+          where: { id: attemptId, customerId, isActive: true },
+          include: { recordedBy: { select: { id: true, name: true } } },
+        });
+        if (!current) throw new NotFoundException('Không tìm thấy lần đòi nợ');
 
-      const lastClosedAt = this.cycles
-        ? (await this.cycles.getLastClosedAtMap([customerId])).get(customerId)
-        : undefined;
-      const cycleFilter = lastClosedAt ? { recordedAt: { gt: lastClosedAt } } : {};
-      const [previous, next] = await Promise.all([
-        tx.customerDebtCollectionAttempt.findFirst({
-          where: {
+        const lastClosedAt = this.cycles
+          ? (await this.cycles.getLastClosedAtMap([customerId])).get(customerId)
+          : undefined;
+        const cycleFilter = lastClosedAt
+          ? { recordedAt: { gt: lastClosedAt } }
+          : {};
+        const [previous, next] = await Promise.all([
+          tx.customerDebtCollectionAttempt.findFirst({
+            where: {
+              customerId,
+              role: current.role,
+              isActive: true,
+              id: { not: current.id },
+              attemptDate: { lt: current.attemptDate },
+              ...cycleFilter,
+            },
+            orderBy: { attemptDate: 'desc' },
+            select: { attemptDate: true },
+          }),
+          tx.customerDebtCollectionAttempt.findFirst({
+            where: {
+              customerId,
+              role: current.role,
+              isActive: true,
+              id: { not: current.id },
+              attemptDate: { gt: current.attemptDate },
+              ...cycleFilter,
+            },
+            orderBy: { attemptDate: 'asc' },
+            select: { attemptDate: true },
+          }),
+        ]);
+        if (previous && attemptDate <= previous.attemptDate) {
+          throw new BadRequestException(
+            `Ngày mới phải sau ngày ${this.formatDateOnly(previous.attemptDate)}.`,
+          );
+        }
+        if (next && attemptDate >= next.attemptDate) {
+          throw new BadRequestException(
+            `Ngày mới phải trước ngày ${this.formatDateOnly(next.attemptDate)}.`,
+          );
+        }
+
+        await tx.customerDebtCollectionAttempt.update({
+          where: { id: current.id },
+          data: { isActive: false },
+        });
+        const created = await tx.customerDebtCollectionAttempt.create({
+          data: {
             customerId,
             role: current.role,
-            isActive: true,
-            id: { not: current.id },
-            attemptDate: { lt: current.attemptDate },
-            ...cycleFilter,
+            attemptDate,
+            recordedById: userId,
+            supersedesId: current.id,
+            actionType: 'EDIT',
+            reason: dto.reason.trim(),
+            cycleId: current.cycleId ?? null,
           },
-          orderBy: { attemptDate: 'desc' },
-          select: { attemptDate: true },
-        }),
-        tx.customerDebtCollectionAttempt.findFirst({
-          where: {
-            customerId,
-            role: current.role,
-            isActive: true,
-            id: { not: current.id },
-            attemptDate: { gt: current.attemptDate },
-            ...cycleFilter,
-          },
-          orderBy: { attemptDate: 'asc' },
-          select: { attemptDate: true },
-        }),
-      ]);
-      if (previous && attemptDate <= previous.attemptDate) {
-        throw new BadRequestException(
-          `Ngày mới phải sau ngày ${this.formatDateOnly(previous.attemptDate)}.`,
-        );
-      }
-      if (next && attemptDate >= next.attemptDate) {
-        throw new BadRequestException(
-          `Ngày mới phải trước ngày ${this.formatDateOnly(next.attemptDate)}.`,
-        );
-      }
-
-      await tx.customerDebtCollectionAttempt.update({
-        where: { id: current.id },
-        data: { isActive: false },
-      });
-      const created = await tx.customerDebtCollectionAttempt.create({
-        data: {
-          customerId,
-          role: current.role,
-          attemptDate,
-          recordedById: userId,
-          supersedesId: current.id,
-          actionType: 'EDIT',
-          reason: dto.reason.trim(),
-          cycleId: current.cycleId ?? null,
-        },
-        include: { recordedBy: { select: { id: true, name: true } } },
-      });
-      return {
-        created,
-        previousDate: current.attemptDate,
-      };
-    });
+          include: { recordedBy: { select: { id: true, name: true } } },
+        });
+        return {
+          created,
+          previousDate: current.attemptDate,
+        };
+      },
+    );
 
     await this.writeCollectionAttemptAudit(
       'EDIT',
@@ -1073,8 +1087,7 @@ export class DebtTrackingService {
       if (lastClosedAt && row.recordedAt.getTime() <= lastClosedAt.getTime()) {
         continue;
       }
-      const current =
-        map.get(row.customerId) ?? { ACCOUNTANT: [], SALES: [] };
+      const current = map.get(row.customerId) ?? { ACCOUNTANT: [], SALES: [] };
       if (row.role === 'ACCOUNTANT' || row.role === 'SALES') {
         current[row.role].push(this.serializeCollectionAttempt(row));
       }
@@ -1088,7 +1101,9 @@ export class DebtTrackingService {
     const date = new Date(Date.UTC(year, month - 1, day));
     const today = new Date();
     const todayKey = this.formatDateOnly(
-      new Date(Date.UTC(today.getFullYear(), today.getMonth(), today.getDate())),
+      new Date(
+        Date.UTC(today.getFullYear(), today.getMonth(), today.getDate()),
+      ),
     );
     if (
       !Number.isInteger(year) ||
@@ -1101,7 +1116,9 @@ export class DebtTrackingService {
       throw new BadRequestException('Ngày đòi nợ không hợp lệ.');
     }
     if (value > todayKey) {
-      throw new BadRequestException('Không thể chọn ngày đòi nợ trong tương lai.');
+      throw new BadRequestException(
+        'Không thể chọn ngày đòi nợ trong tương lai.',
+      );
     }
     return date;
   }
@@ -1166,9 +1183,7 @@ export class DebtTrackingService {
             {
               field: 'attemptDate',
               label: 'Ngày đòi nợ',
-              from: previousDate
-                ? this.formatDateOnly(previousDate)
-                : null,
+              from: previousDate ? this.formatDateOnly(previousDate) : null,
               to: this.formatDateOnly(row.attemptDate),
             },
             ...(reason
@@ -1506,7 +1521,13 @@ export class DebtTrackingService {
     const lastClosedAtMap = this.cycles
       ? await this.cycles.getLastClosedAtMap(customerIds)
       : new Map<number, Date>();
-    const map = new Map<number, { openTicket: OpenTicketInfo | null; latestStopTicket: OpenTicketInfo | null }>();
+    const map = new Map<
+      number,
+      {
+        openTicket: OpenTicketInfo | null;
+        latestStopTicket: OpenTicketInfo | null;
+      }
+    >();
     for (const l of lines) {
       const lastClosedAt = lastClosedAtMap.get(l.customerId);
       const ticketCreatedAt = l.ticket.createdAt ?? l.createdAt;
@@ -1540,9 +1561,16 @@ export class DebtTrackingService {
         requiredPaymentAmount: Number(l.requiredPaymentAmount),
         note: l.note ?? null,
       };
-      const current = map.get(l.customerId) ?? { openTicket: null, latestStopTicket: null };
+      const current = map.get(l.customerId) ?? {
+        openTicket: null,
+        latestStopTicket: null,
+      };
       if (!current.latestStopTicket) current.latestStopTicket = ticket;
-      if (!current.openTicket && DEBT_TICKET_OPEN_STATUSES.includes(l.ticket.status)) current.openTicket = ticket;
+      if (
+        !current.openTicket &&
+        DEBT_TICKET_OPEN_STATUSES.includes(l.ticket.status)
+      )
+        current.openTicket = ticket;
       map.set(l.customerId, current);
     }
     return map;
