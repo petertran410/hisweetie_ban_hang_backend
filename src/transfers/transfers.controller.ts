@@ -145,6 +145,12 @@ export class TransfersController {
     return this.transfersService.getPromisedHNByProduct(query.productId);
   }
 
+  @Get('promised-sg-by-product')
+  @RequireAnyPermission('transfer_planning:view', 'transfers:view')
+  getPromisedSGByProduct(@Query() query: ProductTransferQueryDto) {
+    return this.transfersService.getPromisedSGByProduct(query.productId);
+  }
+
   @Get(':id')
   @RequirePermissions('transfers:view')
   findOne(@Param('id') id: string) {

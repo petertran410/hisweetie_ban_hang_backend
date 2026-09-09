@@ -24,6 +24,12 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 import {
+  computeBucketTotals,
+  computeNearExpiryLots,
+  recalcConditionBucketsForPairs,
+  writeConditionLogs,
+} from '../common/stock-condition-onhand.util';
+import {
   buildInventoryLogActor,
   buildInventoryLogBase,
   InventoryLogActor,
@@ -32,6 +38,11 @@ import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 const COMPLETE_PERMISSION = 'internal-use:complete';
+const CONDITION_LABELS: Record<string, string> = {
+  normal: 'Bình thường',
+  damaged: 'Bục rách',
+  near_expiry: 'Cận date',
+};
 
 @Injectable()
 export class InternalUseService {
@@ -307,6 +318,8 @@ export class InternalUseService {
       { header: 'Trạng thái', key: 'status', width: 14 },
       { header: 'Mã hàng', key: 'productCode', width: 16 },
       { header: 'Tên hàng', key: 'productName', width: 36 },
+      { header: 'Loại tồn', key: 'conditionType', width: 16 },
+      { header: 'NSX', key: 'soldExpiryDate', width: 12 },
       { header: 'ĐVT', key: 'unit', width: 10 },
       { header: 'Số lượng xuất', key: 'quantity', width: 14 },
       { header: 'Giá vốn', key: 'cost', width: 14 },
@@ -351,6 +364,8 @@ export class InternalUseService {
             ...base,
             productCode: '',
             productName: '',
+            conditionType: '',
+            soldExpiryDate: '',
             unit: '',
             quantity: 0,
             cost: 0,
@@ -367,6 +382,13 @@ export class InternalUseService {
             ...base,
             productCode: item.productCode || '',
             productName: item.productName || '',
+            conditionType:
+              CONDITION_LABELS[item.conditionType || 'normal'] ||
+              item.conditionType,
+            soldExpiryDate:
+              item.conditionType === 'near_expiry'
+                ? this.formatMonthYear(item.soldExpiryDate)
+                : '',
             unit: item.unit || '',
             quantity,
             cost,
@@ -435,7 +457,8 @@ export class InternalUseService {
       this.ensureCanComplete(user);
     }
 
-    this.validateDetails(dto.internalUseDetails, isDraft);
+    const normalizedDetails = this.normalizeDetails(dto.internalUseDetails);
+    this.validateDetails(normalizedDetails, !isDraft);
 
     let usedUser: { name: string } | null = null;
     if (dto.userId) {
@@ -452,7 +475,7 @@ export class InternalUseService {
     // Resolve giá vốn cho từng dòng: nếu client không gửi cost (user không có
     // quyền xem giá vốn) thì tự lấy từ inventory theo (product, branch).
     const resolvedDetails = await this.resolveDetailCosts(
-      dto.internalUseDetails,
+      normalizedDetails,
       dto.branchId,
     );
 
@@ -487,6 +510,8 @@ export class InternalUseService {
               quantity: detail.quantity,
               cost: detail.cost,
               value: Number(detail.quantity) * Number(detail.cost),
+              conditionType: detail.conditionType,
+              soldExpiryDate: detail.soldExpiryDate,
             })),
           },
         },
@@ -602,12 +627,16 @@ export class InternalUseService {
       updateData.transDate = dto.transDate ? new Date(dto.transDate) : null;
     }
 
+    const normalizedInputDetails = dto.internalUseDetails
+      ? this.normalizeDetails(dto.internalUseDetails)
+      : null;
+
     const willComplete = dto.status === 2 || dto.isDraft === false;
     if (willComplete) {
       // Chỉ người duyệt (có internal-use:complete) mới được hoàn thành phiếu.
       this.ensureCanComplete(user);
-      const details = dto.internalUseDetails ?? internalUse.details;
-      this.validateDetails(details, false);
+      const details = normalizedInputDetails ?? internalUse.details;
+      this.validateDetails(details, true);
       updateData.status = 2;
       updateData.transDate = updateData.transDate ?? new Date();
     } else if (dto.status !== undefined) {
@@ -615,8 +644,8 @@ export class InternalUseService {
     }
 
     const branchIdForCost = internalUse.branchId;
-    const resolvedDetails = dto.internalUseDetails
-      ? await this.resolveDetailCosts(dto.internalUseDetails, branchIdForCost)
+    const resolvedDetails = normalizedInputDetails
+      ? await this.resolveDetailCosts(normalizedInputDetails, branchIdForCost)
       : null;
 
     if (resolvedDetails) {
@@ -644,6 +673,8 @@ export class InternalUseService {
             quantity: detail.quantity,
             cost: detail.cost,
             value: Number(detail.quantity) * Number(detail.cost),
+            conditionType: detail.conditionType,
+            soldExpiryDate: detail.soldExpiryDate,
           })),
         });
       }
@@ -714,7 +745,7 @@ export class InternalUseService {
       throw new BadRequestException('Internal use voucher already completed');
     }
 
-    this.validateDetails(internalUse.details, false);
+    this.validateDetails(internalUse.details, true);
 
     const touchedProductIds = new Set<number>();
 
@@ -821,6 +852,13 @@ export class InternalUseService {
             branchId: internalUse.branchId,
           })),
         );
+        await recalcConditionBucketsForPairs(
+          tx,
+          internalUse.details.map((detail: any) => ({
+            productId: detail.productId,
+            branchId: internalUse.branchId,
+          })),
+        );
       });
       for (const productId of touchedProductIds) {
         this.larkProductSync.enqueueSync(productId);
@@ -868,6 +906,133 @@ export class InternalUseService {
       if (Number(detail.quantity) <= 0) {
         throw new BadRequestException(
           'Số lượng xuất phải lớn hơn 0 để hoàn thành phiếu',
+        );
+      }
+    }
+  }
+
+  private normalizeDetails<
+    T extends {
+      conditionType?: string | null;
+      soldExpiryDate?: string | Date | null;
+    },
+  >(
+    details: T[],
+  ): Array<
+    T & {
+      conditionType: 'normal' | 'damaged' | 'near_expiry';
+      soldExpiryDate: Date | null;
+    }
+  > {
+    return details.map((detail) => {
+      const conditionType = (detail.conditionType || 'normal') as
+        | 'normal'
+        | 'damaged'
+        | 'near_expiry';
+      if (!CONDITION_LABELS[conditionType]) {
+        throw new BadRequestException(
+          `Loại tồn không hợp lệ: ${detail.conditionType}`,
+        );
+      }
+      return {
+        ...detail,
+        conditionType,
+        soldExpiryDate:
+          conditionType === 'near_expiry'
+            ? this.normalizeMonthDate(detail.soldExpiryDate)
+            : null,
+      };
+    });
+  }
+
+  private normalizeMonthDate(value?: string | Date | null): Date | null {
+    if (!value) return null;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new BadRequestException('NSX của hàng cận date không hợp lệ');
+    }
+    return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), 1));
+  }
+
+  private formatMonthYear(value?: string | Date | null): string {
+    if (!value) return 'Chưa xác định NSX';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return '';
+    return `${String(parsed.getUTCMonth() + 1).padStart(2, '0')}/${parsed.getUTCFullYear()}`;
+  }
+
+  private async validateConditionAvailability(
+    tx: any,
+    details: Array<{
+      productId: number;
+      productName?: string | null;
+      quantity: number | Prisma.Decimal;
+      conditionType?: string | null;
+      soldExpiryDate?: string | Date | null;
+    }>,
+    branchId: number,
+  ): Promise<void> {
+    const requested = new Map<
+      string,
+      {
+        productId: number;
+        productName: string;
+        conditionType: 'damaged' | 'near_expiry';
+        soldExpiryDate: Date | null;
+        quantity: number;
+      }
+    >();
+
+    for (const detail of details) {
+      const conditionType = detail.conditionType || 'normal';
+      if (conditionType !== 'damaged' && conditionType !== 'near_expiry') {
+        continue;
+      }
+      const soldExpiryDate =
+        conditionType === 'near_expiry'
+          ? this.normalizeMonthDate(detail.soldExpiryDate)
+          : null;
+      const lotKey = soldExpiryDate
+        ? soldExpiryDate.toISOString().slice(0, 10)
+        : '';
+      const key = `${detail.productId}|${conditionType}|${lotKey}`;
+      const current = requested.get(key);
+      if (current) {
+        current.quantity += Number(detail.quantity);
+      } else {
+        requested.set(key, {
+          productId: detail.productId,
+          productName: detail.productName || `ID ${detail.productId}`,
+          conditionType,
+          soldExpiryDate,
+          quantity: Number(detail.quantity),
+        });
+      }
+    }
+
+    for (const row of requested.values()) {
+      if (row.conditionType === 'damaged') {
+        const totals = await computeBucketTotals(tx, row.productId, branchId);
+        if (row.quantity > totals.damaged) {
+          throw new BadRequestException(
+            `${row.productName} chỉ còn ${totals.damaged} hàng bục rách, không đủ ${row.quantity}`,
+          );
+        }
+        continue;
+      }
+
+      const lots = await computeNearExpiryLots(tx, row.productId, branchId);
+      const wanted = row.soldExpiryDate
+        ? row.soldExpiryDate.toISOString().slice(0, 10)
+        : null;
+      const available =
+        lots.find((lot) => lot.expiryDate === wanted)?.quantity ?? 0;
+      if (row.quantity > available) {
+        const lotLabel = wanted
+          ? `lô cận date ${this.formatMonthYear(row.soldExpiryDate)}`
+          : 'lô cận date chưa xác định NSX';
+        throw new BadRequestException(
+          `${row.productName} ${lotLabel} chỉ còn ${available}, không đủ ${row.quantity}`,
         );
       }
     }
@@ -934,6 +1099,26 @@ export class InternalUseService {
       include: { details: true },
     });
 
+    const productIds = [
+      ...new Set<number>(
+        internalUse.details.map((detail: any) => Number(detail.productId)),
+      ),
+    ].sort((a, b) => a - b);
+    for (const productId of productIds) {
+      await tx.$queryRaw`
+        SELECT id FROM "inventories"
+        WHERE "productId" = ${productId}
+          AND "branchId" = ${internalUse.branchId}
+        FOR UPDATE
+      `;
+    }
+
+    await this.validateConditionAvailability(
+      tx,
+      internalUse.details,
+      internalUse.branchId,
+    );
+
     for (const detail of internalUse.details) {
       const inventory = await tx.inventory.findUnique({
         where: {
@@ -992,6 +1177,13 @@ export class InternalUseService {
             ...buildInventoryLogBase(actor),
           },
         });
+
+        await this.writeInternalUseConditionLog(tx, {
+          detail,
+          internalUse,
+          costPrice,
+          actor,
+        });
       }
     }
 
@@ -1004,7 +1196,50 @@ export class InternalUseService {
         branchId: internalUse.branchId,
       })),
     );
+    await recalcConditionBucketsForPairs(
+      tx,
+      internalUse.details.map((detail: any) => ({
+        productId: detail.productId,
+        branchId: internalUse.branchId,
+      })),
+    );
     return touched;
+  }
+
+  private async writeInternalUseConditionLog(
+    tx: any,
+    params: {
+      detail: any;
+      internalUse: any;
+      costPrice: number;
+      actor?: InventoryLogActor;
+    },
+  ): Promise<void> {
+    const { detail, internalUse, costPrice, actor } = params;
+    const conditionType = detail.conditionType || 'normal';
+    if (conditionType !== 'damaged' && conditionType !== 'near_expiry') return;
+
+    await writeConditionLogs(tx, {
+      productId: detail.productId,
+      productCode: detail.productCode,
+      productName: detail.productName,
+      branchId: internalUse.branchId,
+      branchName: internalUse.branchName,
+      refCode: internalUse.code,
+      refType: 'internal_use',
+      refId: internalUse.id,
+      transactionType: 'INTERNAL_USE',
+      transactionDate: internalUse.transDate ?? new Date(),
+      costPrice,
+      createdByName: actor?.userName,
+      damaged: conditionType === 'damaged' ? -Number(detail.quantity) : 0,
+      nearExpiry:
+        conditionType === 'near_expiry' ? -Number(detail.quantity) : 0,
+      nearExpiryDate:
+        conditionType === 'near_expiry'
+          ? this.normalizeMonthDate(detail.soldExpiryDate)
+          : null,
+    });
   }
 
   private buildSnapshot(d: any) {
@@ -1024,6 +1259,8 @@ export class InternalUseService {
         quantity: Number(item.quantity),
         cost: Number(item.cost),
         value: Number(item.value),
+        conditionType: item.conditionType || 'normal',
+        soldExpiryDate: item.soldExpiryDate || null,
       })),
     };
   }

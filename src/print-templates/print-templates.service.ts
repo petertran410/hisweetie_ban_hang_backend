@@ -949,7 +949,7 @@ export class PrintTemplatesService {
       Tong_Gia_Tri_Bang_Chu: this.numberToWords(totalValue),
       items: (iu.details || []).map((d: any) => ({
         Ma_Hang: d.productCode || d.product?.code || '',
-        Ten_Hang_Hoa: d.productName || d.product?.name || '',
+        Ten_Hang_Hoa: this.internalUseProductName(d),
         Don_Vi_Tinh: d.unit || d.product?.unit || '',
         So_Luong: Number(d.quantity),
         Gia_Von: this.money(d.cost),
@@ -957,6 +957,27 @@ export class PrintTemplatesService {
         Thanh_Tien: this.money(d.value),
       })),
     };
+  }
+
+  private internalUseProductName(item: any): string {
+    const baseName = item.productName || item.product?.name || '';
+    const conditionType = item.conditionType || 'normal';
+    if (conditionType === 'damaged') {
+      return `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span>`;
+    }
+    if (conditionType !== 'near_expiry') return baseName;
+
+    let monthYear = '';
+    if (item.soldExpiryDate) {
+      const parsed = new Date(item.soldExpiryDate);
+      if (!Number.isNaN(parsed.getTime())) {
+        monthYear = `${String(parsed.getUTCMonth() + 1).padStart(2, '0')}/${parsed.getUTCFullYear()}`;
+      }
+    }
+    const label = monthYear
+      ? `(Cận date ${monthYear})`
+      : '(Cận date - Chưa xác định NSX)';
+    return `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">${label}</span>`;
   }
 
   private mapCashFlow(cf: any) {

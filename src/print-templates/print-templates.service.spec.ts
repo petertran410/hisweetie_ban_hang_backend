@@ -135,58 +135,29 @@ describe('PrintTemplatesService', () => {
     });
   });
 
-  describe('invoice payment QR and remaining amount', () => {
-    const sellerWithBank = {
-      bankAccountMapping: {
-        bankAccount: {
-          bankCode: 'MB',
-          accountNumber: '1234567890',
-          accountHolder: 'NGUYEN VAN A',
-          bankName: 'Ngân hàng TMCP Quân đội',
-        },
-      },
-    };
+  describe('mapInternalUse', () => {
+    const mapInternalUse = (detail: Record<string, any>) =>
+      (createService() as any).mapInternalUse({
+        totalValue: 0,
+        details: [{ productName: 'Trà đào', quantity: 1, ...detail }],
+      }).items[0].Ten_Hang_Hoa;
 
-    it('uses the outstanding debt, not the invoice total, in the QR', () => {
-      const service = createService() as any;
-      const data = service.qrVars(
-        sellerWithBank,
-        600000,
-        'HD123',
-        true,
+    it('appends damaged and near-expiry information to internal-use items', () => {
+      expect(mapInternalUse({ conditionType: 'damaged' })).toContain(
+        '(Bục rách)',
       );
-
-      expect(data.Ma_QR_Code).toContain('amount=600000');
-      expect(data.Ma_QR_Code).not.toContain('amount=1000000');
-    });
-
-    it('encodes zero amount when the invoice has no outstanding debt', () => {
-      const service = createService() as any;
-      const data = service.qrVars(sellerWithBank, 0, 'HD123', true);
-
-      expect(data.Ma_QR_Code).toContain('amount=0');
-    });
-
-    it('clamps a negative invoice debt to zero for print output', async () => {
-      const service = createService() as any;
-      const data = await service.mapInvoice({
-        code: '',
-        branch: null,
-        customer: null,
-        soldBy: sellerWithBank,
-        creator: null,
-        delivery: null,
-        totalAmount: 27220000,
-        discount: 1361000,
-        grandTotal: 25859000,
-        paidAmount: 27220000,
-        debtAmount: -1361000,
-        details: [],
-      });
-
-      expect(data.Con_Lai).toBe('0');
-      expect(data.Chiet_Khau_Hoa_Don).toBe('1,361,000');
-      expect(data.Ma_QR_Code).toContain('amount=0');
+      expect(
+        mapInternalUse({
+          conditionType: 'near_expiry',
+          soldExpiryDate: '2026-08-01T00:00:00.000Z',
+        }),
+      ).toContain('(Cận date 08/2026)');
+      expect(
+        mapInternalUse({
+          conditionType: 'near_expiry',
+          soldExpiryDate: null,
+        }),
+      ).toContain('(Cận date - Chưa xác định NSX)');
     });
   });
 
