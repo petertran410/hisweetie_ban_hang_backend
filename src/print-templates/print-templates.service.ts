@@ -716,6 +716,7 @@ export class PrintTemplatesService {
       Ghi_Chu: inv.description || '',
       Tong_Tien_Hang: this.money(inv.totalAmount),
       Giam_Gia: this.money(inv.discount),
+      Chiet_Khau_Hoa_Don: this.money(inv.discount),
       Tong_Can_Thanh_Toan: this.money(inv.grandTotal),
       Da_Thanh_Toan: this.money(inv.paidAmount),
       Con_Lai: this.money(Math.max(0, Number(inv.debtAmount || 0))),

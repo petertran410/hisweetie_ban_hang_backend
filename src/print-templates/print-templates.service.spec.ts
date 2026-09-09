@@ -185,6 +185,7 @@ describe('PrintTemplatesService', () => {
       });
 
       expect(data.Con_Lai).toBe('0');
+      expect(data.Chiet_Khau_Hoa_Don).toBe('1,361,000');
       expect(data.Ma_QR_Code).toContain('amount=0');
     });
   });
