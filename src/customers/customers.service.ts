@@ -25,6 +25,7 @@ import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { LarkCustomerSyncService } from '../lark-sync/services/lark-customer-sync.service';
+import { INVOICE_STATUS } from '../invoices/dto';
 
 @Injectable()
 export class CustomersService {
@@ -2691,5 +2692,53 @@ export class CustomersService {
     );
     await workbook.xlsx.write(res);
     res.end();
+  }
+
+  async getShippingFeeHistory(customerId: number) {
+    const invoices = await this.prisma.invoice.findMany({
+      where: {
+        customerId,
+        status: { not: INVOICE_STATUS.CANCELLED },
+      },
+      select: {
+        code: true,
+        purchaseDate: true,
+        shippingFee: true,
+        details: {
+          where: { productCode: 'SHIP' },
+          select: { totalPrice: true },
+        },
+      },
+      orderBy: { purchaseDate: 'desc' },
+      take: 20,
+    });
+
+    return invoices
+      .map((inv) => {
+        const fee = Number(inv.shippingFee);
+        if (fee > 0) {
+          return {
+            code: inv.code,
+            date: inv.purchaseDate.toISOString(),
+            amount: fee,
+            source: 'field' as const,
+          };
+        }
+        const shipTotal = inv.details.reduce(
+          (sum, d) => sum + Number(d.totalPrice),
+          0,
+        );
+        if (shipTotal > 0) {
+          return {
+            code: inv.code,
+            date: inv.purchaseDate.toISOString(),
+            amount: shipTotal,
+            source: 'item' as const,
+          };
+        }
+        return null;
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null)
+      .slice(0, 5);
   }
 }
