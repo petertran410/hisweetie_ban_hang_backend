@@ -65,6 +65,8 @@ describe('PurchasingPlanningRepository calculation scope', () => {
     orderSupplierItem: { findMany, findFirst: jest.fn() },
     purchaseOrderItem: { findMany },
     category: { findMany, findFirst: jest.fn() },
+    orderItem: { findMany: jest.fn().mockResolvedValue([]) },
+    customerDemandMonth: { findMany },
   };
   const repository = new PurchasingPlanningRepository(prisma as any);
 
@@ -150,7 +152,25 @@ describe('PurchasingPlanningRepository calculation scope', () => {
     expect(prisma.invoiceDetail.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          invoice: expect.objectContaining({ branchId: scoped }),
+          invoice: expect.objectContaining({
+            branchId: scoped,
+            NOT: expect.objectContaining({
+              OR: expect.arrayContaining([
+                expect.objectContaining({
+                  customer: expect.objectContaining({
+                    customerGroupDetails: {
+                      some: { customerGroupId: 4 },
+                    },
+                  }),
+                }),
+                expect.objectContaining({
+                  customer: expect.objectContaining({
+                    code: { in: ['KH003147', 'KH003574', 'CHDT', 'KH005888'] },
+                  }),
+                }),
+              ]),
+            }),
+          }),
         }),
       }),
     );
@@ -184,12 +204,40 @@ describe('PurchasingPlanningRepository calculation scope', () => {
         }),
       }),
     );
+    expect(prisma.orderItem.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          order: expect.objectContaining({
+            branchId: scoped,
+            NOT: {
+              customer: {
+                code: { in: ['KH003147', 'KH003574', 'CHDT', 'KH005888'] },
+              },
+            },
+          }),
+        }),
+      }),
+    );
     expect(data.branchScope).toEqual({
       branches: [
         { id: 11, name: 'Kho Hà Nội', code: 'HN' },
         { id: 22, name: 'Kho Sài Gòn', code: 'SG' },
       ],
     });
+    expect(prisma.customerDemandMonth.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'CONFIRMED' },
+        select: expect.objectContaining({
+          createdAt: true,
+          demand: expect.objectContaining({
+            select: expect.objectContaining({ createdAt: true }),
+          }),
+          lines: expect.objectContaining({
+            select: expect.objectContaining({ createdAt: true }),
+          }),
+        }),
+      }),
+    );
   });
 
   it('does not launch calculation queries when there is no active branch', async () => {

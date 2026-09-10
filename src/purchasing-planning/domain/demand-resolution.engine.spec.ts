@@ -36,4 +36,16 @@ describe('resolveDemand', () => {
       { date: '2026-08-02', demand: 0, source: 'NONE' },
     ]);
   });
+
+  it('does not refill sales from inventory SALE_OUT when invoices are absent', () => {
+    expect(
+      resolveDemand({
+        invoiceDetails: [],
+        inventoryLogs: [
+          { date: '2026-08-01', quantity: 12, transactionType: 'SALE_OUT' },
+        ],
+        dates: ['2026-08-01'],
+      }),
+    ).toEqual([{ date: '2026-08-01', demand: 0, source: 'NONE' }]);
+  });
 });

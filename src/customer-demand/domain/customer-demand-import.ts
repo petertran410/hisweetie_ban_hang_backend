@@ -17,6 +17,7 @@ export interface CustomerDemandImportParsedRow extends CustomerDemandImportRawRo
   quantity: number | null;
   unit: CustomerDemandImportUnit;
   errors: string[];
+  voucherIndex?: number;
 }
 
 export interface CustomerDemandImportLine {
@@ -39,6 +40,7 @@ export interface CustomerDemandImportGroup {
   customerCode: string;
   customerName: string;
   note?: string;
+  voucherIndex?: number;
   months: CustomerDemandImportMonth[];
 }
 
@@ -153,10 +155,10 @@ export function groupCustomerDemandImportRows(
     }
   >,
 ): CustomerDemandImportGroup[] {
-  const groups = new Map<
-    number,
-    CustomerDemandImportGroup & { monthMap: Map<string, Map<number, CustomerDemandImportLine>> }
-  >();
+  type Bucket = CustomerDemandImportGroup & {
+    monthMap: Map<string, Map<number, CustomerDemandImportLine>>;
+  };
+  const bucketsByCustomer = new Map<number, Bucket[]>();
 
   for (const row of rows) {
     if (row.errors.length) continue;
@@ -171,35 +173,13 @@ export function groupCustomerDemandImportRows(
       continue;
     }
 
-    let group = groups.get(row.customerId);
-    if (!group) {
-      group = {
-        customerId: row.customerId,
-        customerCode: row.customerCode,
-        customerName: row.customerNameResolved || row.customerName || row.customerCode,
-        note: row.note || undefined,
-        months: [],
-        monthMap: new Map(),
-      };
-      groups.set(row.customerId, group);
-    } else if (!group.note && row.note) {
-      group.note = row.note;
+    let buckets = bucketsByCustomer.get(row.customerId);
+    if (!buckets) {
+      buckets = [];
+      bucketsByCustomer.set(row.customerId, buckets);
     }
 
-    let productMap = group.monthMap.get(row.month);
-    if (!productMap) {
-      productMap = new Map();
-      group.monthMap.set(row.month, productMap);
-    }
-
-    if (productMap.has(row.productId)) {
-      row.errors.push(
-        `Trùng sản phẩm ${row.productCode} trong tháng ${row.month} của cùng khách hàng`,
-      );
-      continue;
-    }
-
-    productMap.set(row.productId, {
+    const line: CustomerDemandImportLine = {
       productId: row.productId,
       productCode: row.productCode,
       productName: row.productNameResolved || row.productName || row.productCode,
@@ -207,21 +187,57 @@ export function groupCustomerDemandImportRows(
       unit: row.unit,
       quantityBase: row.quantityBase,
       conversionValue: row.conversionValue,
-    });
+    };
+
+    let placed: Bucket | undefined;
+    for (const bucket of buckets) {
+      let productMap = bucket.monthMap.get(row.month);
+      if (!productMap) {
+        productMap = new Map();
+        bucket.monthMap.set(row.month, productMap);
+      }
+      if (productMap.has(row.productId)) continue;
+      productMap.set(row.productId, line);
+      if (!bucket.note && row.note) bucket.note = row.note;
+      placed = bucket;
+      break;
+    }
+
+    if (!placed) {
+      const productMap = new Map<number, CustomerDemandImportLine>([
+        [row.productId, line],
+      ]);
+      placed = {
+        customerId: row.customerId,
+        customerCode: row.customerCode,
+        customerName:
+          row.customerNameResolved || row.customerName || row.customerCode,
+        note: row.note || undefined,
+        voucherIndex: buckets.length + 1,
+        months: [],
+        monthMap: new Map([[row.month, productMap]]),
+      };
+      buckets.push(placed);
+    }
+
+    row.voucherIndex = placed.voucherIndex;
   }
 
-  return [...groups.values()].map((group) => ({
-    customerId: group.customerId,
-    customerCode: group.customerCode,
-    customerName: group.customerName,
-    note: group.note,
-    months: [...group.monthMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, lines]) => ({
-        month,
-        lines: [...lines.values()],
-      })),
-  }));
+  return [...bucketsByCustomer.values()].flatMap((buckets) =>
+    buckets.map((bucket) => ({
+      customerId: bucket.customerId,
+      customerCode: bucket.customerCode,
+      customerName: bucket.customerName,
+      note: bucket.note,
+      voucherIndex: bucket.voucherIndex,
+      months: [...bucket.monthMap.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([month, lines]) => ({
+          month,
+          lines: [...lines.values()],
+        })),
+    })),
+  );
 }
 
 function parseYearMonthText(text: string): string | null {
