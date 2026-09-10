@@ -45,7 +45,10 @@ import {
   PurchasingPlanningRepository,
 } from '../repositories/purchasing-planning.repository';
 import { PlanningNetworkService } from './planning-network.service';
-import { resolveCustomerDemand } from '../../customer-demand/domain';
+import {
+  resolveCustomerDemand,
+  resolvePastCustomerDemand,
+} from '../../customer-demand/domain';
 
 type Flag = {
   code: string;
@@ -990,11 +993,13 @@ export class PurchasingPlanningService {
     }
     const horizonDays =
       leadTimeDays + safetyDays + coverageDaysFor(leadTimeDays);
-    const customerDemandResolution = resolveCustomerDemand(
-      (data.customerDemandMonths ?? []).map((row: any) => ({
+    const mappedDemandMonths = (data.customerDemandMonths ?? []).map(
+      (row: any) => ({
         id: row.id,
         demandMonth: row.demandMonth,
         status: row.status,
+        createdAt: row.createdAt,
+        demandCreatedAt: row.demand?.createdAt,
         customerId: row.demand?.customerId ?? null,
         customerName: row.demand?.customer?.name ?? null,
         lines: (row.lines ?? []).map((line: any) => ({
@@ -1003,15 +1008,35 @@ export class PurchasingPlanningService {
           inputQuantity: Number(line.inputQuantity),
           inputUnit: line.inputUnit,
           conversionValue: Number(line.conversionValue),
+          createdAt: line.createdAt,
         })),
-      })),
+      }),
+    );
+    const inboundOrders = (data.orderSupplierItems ?? []).map((row: any) => ({
+      productId: Number(row.productId),
+      orderDate: row.orderSupplier?.orderDate,
+      status: row.orderSupplier?.status,
+    }));
+    const customerDemandResolution = resolveCustomerDemand(
+      mappedDemandMonths,
       snapshotDate,
       horizonDays,
+      inboundOrders,
+    );
+    const pastCustomerDemandResolution = resolvePastCustomerDemand(
+      mappedDemandMonths,
+      snapshotDate,
+      3,
+      inboundOrders,
     );
     const customerDemand =
       customerDemandResolution.totalByProduct.get(product.id) ?? 0;
     const customerDemandDetails =
       customerDemandResolution.detailsByProduct.get(product.id) ?? [];
+    const pastCustomerDemand =
+      pastCustomerDemandResolution.totalByProduct.get(product.id) ?? 0;
+    const pastCustomerDemandDetails =
+      pastCustomerDemandResolution.detailsByProduct.get(product.id) ?? [];
     const vehicleLines = supplierRows.flatMap((row: any) =>
       (row.orderSupplier?.vehicleShipmentItems ?? [])
         .filter((item: any) => item.productId === product.id)
@@ -1119,6 +1144,7 @@ export class PurchasingPlanningService {
       usableIncoming,
       customerOrders,
       customerDemand,
+      pastCustomerDemand,
       companyNeed,
       extraDemand,
       riskIncoming: vehicleSupply.vehicleRisk,
@@ -1230,6 +1256,8 @@ export class PurchasingPlanningService {
         customerOrders,
         customerDemand,
         customerDemandDetails,
+        pastCustomerDemand,
+        pastCustomerDemandDetails,
         companyNeed,
         salesDemand:
           forecastDailyDemand *

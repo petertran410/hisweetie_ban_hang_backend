@@ -91,6 +91,40 @@ describe('calculateSoq', () => {
     expect(result.rawQuantity).toBe(20);
   });
 
+  it('trừ Demand OEM 3 tháng trước khỏi tổng nhu cầu trước khi ra số đặt', () => {
+    const result = calculateSoq({
+      forecastDailyDemand: 0,
+      leadTimeDays: 10,
+      safetyDays: 0,
+      availableStock: 0,
+      customerDemand: 100,
+      pastCustomerDemand: 40,
+      packSize: 1,
+      moq: 0,
+    });
+    expect(result.rawQuantity).toBe(60);
+    expect(
+      result.steps.find((step) => step.code === 'PAST_CUSTOMER_DEMAND')?.value,
+    ).toBe(-40);
+  });
+
+  it('không để tổng nhu cầu âm sau khi trừ Demand 3 tháng trước', () => {
+    const result = calculateSoq({
+      forecastDailyDemand: 0,
+      leadTimeDays: 10,
+      safetyDays: 0,
+      availableStock: 0,
+      customerDemand: 20,
+      pastCustomerDemand: 80,
+      packSize: 1,
+      moq: 0,
+    });
+    expect(result.rawQuantity).toBe(0);
+    expect(
+      result.steps.find((step) => step.code === 'TOTAL_DEMAND')?.value,
+    ).toBe(0);
+  });
+
   it('cộng khách đặt và công ty cần, trừ nguồn cung chắc chắn', () => {
     const result = calculateSoq({
       forecastDailyDemand: 10,

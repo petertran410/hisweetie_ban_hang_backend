@@ -57,6 +57,7 @@ export interface SoqInput {
   usableIncoming?: number;
   customerOrders?: number;
   customerDemand?: number;
+  pastCustomerDemand?: number;
   companyNeed?: number;
   extraDemand?: number;
   riskIncoming?: number;
@@ -90,10 +91,18 @@ export function calculateSoq(input: SoqInput): SoqResult {
     (input.leadTimeDays + input.safetyDays + coverageDays);
   const customerOrders = Math.max(0, input.customerOrders ?? 0);
   const customerDemand = Math.max(0, input.customerDemand ?? 0);
+  const pastCustomerDemand = Math.max(0, input.pastCustomerDemand ?? 0);
   const companyNeed = Math.max(0, input.companyNeed ?? 0);
   const extraDemand = Math.max(0, input.extraDemand ?? 0);
-  const totalDemand =
-    salesDemand + customerOrders + customerDemand + companyNeed + extraDemand;
+  const totalDemand = Math.max(
+    0,
+    salesDemand +
+      customerOrders +
+      customerDemand +
+      companyNeed +
+      extraDemand -
+      pastCustomerDemand,
+  );
   const confirmedIncoming = Math.max(0, input.usableIncoming ?? 0);
   const riskIncoming = Math.max(0, input.riskIncoming ?? 0);
   const firmSupply = input.availableStock + confirmedIncoming;
@@ -159,9 +168,14 @@ export function calculateSoq(input: SoqInput): SoqResult {
         value: round(customerDemand),
       },
       {
+        code: 'PAST_CUSTOMER_DEMAND',
+        formula: 'Demand OEM Confirmed của 3 tháng lịch đã kết thúc',
+        value: round(-pastCustomerDemand),
+      },
+      {
         code: 'TOTAL_DEMAND',
         formula:
-          'bán dự kiến + khách đặt + Demand khách hàng + công ty cần + KM',
+          'max(0, bán dự kiến + khách đặt + Demand khách hàng + công ty cần + KM - Demand 3 tháng trước)',
         value: round(totalDemand),
       },
       {

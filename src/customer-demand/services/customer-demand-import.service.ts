@@ -122,8 +122,8 @@ export class CustomerDemandImportService {
       ['Mỗi dòng là 1 sản phẩm của 1 khách hàng trong 1 tháng cần hàng.'],
       ['Bắt buộc: Mã khách hàng, Mã sản phẩm, Tháng cần hàng (YYYY-MM), Số lượng.'],
       ['Đơn vị để trống hoặc "Đơn vị cơ bản" = số lượng theo đơn vị sản phẩm; "Thùng" sẽ nhân conversionValue.'],
-      ['Nhiều dòng cùng mã khách hàng sẽ được gom thành 1 phiếu nháp.'],
-      ['Không được trùng cùng 1 sản phẩm trong cùng 1 tháng của cùng 1 khách hàng.'],
+      ['Nhiều dòng cùng mã khách hàng được gom vào phiếu nháp sớm nhất còn trống cặp sản phẩm/tháng.'],
+      ['Trùng cùng sản phẩm trong cùng tháng của cùng khách sẽ tách sang phiếu nháp mới, không báo lỗi trùng.'],
       ['Import chỉ tạo phiếu nháp. Cần duyệt từng tháng trước khi cộng vào dự kiến đặt hàng.'],
       ['Demand import không tạo Order, hóa đơn, công nợ hoặc giữ tồn.'],
     ]);
@@ -209,22 +209,24 @@ export class CustomerDemandImportService {
       };
     });
 
-    const groups = groupCustomerDemandImportRows(
-      rows.map((row) => ({
-        ...row,
-        customerId: row.customer?.id,
-        customerNameResolved: row.customer?.name,
-        productId: row.product?.id,
-        productNameResolved: row.product?.name,
-        quantityBase: row.quantityBase,
-        conversionValue:
-          row.unit === 'CARTON'
-            ? row.product?.conversionValue ?? null
-            : row.quantityBase != null
-              ? 1
-              : null,
-      })),
-    );
+    const groupedRows = rows.map((row) => ({
+      ...row,
+      customerId: row.customer?.id,
+      customerNameResolved: row.customer?.name,
+      productId: row.product?.id,
+      productNameResolved: row.product?.name,
+      quantityBase: row.quantityBase,
+      conversionValue:
+        row.unit === 'CARTON'
+          ? row.product?.conversionValue ?? null
+          : row.quantityBase != null
+            ? 1
+            : null,
+    }));
+    const groups = groupCustomerDemandImportRows(groupedRows);
+    groupedRows.forEach((grouped, index) => {
+      rows[index].voucherIndex = grouped.voucherIndex;
+    });
 
     const invalid = rows.filter((row) => row.errors.length).length;
     return {
