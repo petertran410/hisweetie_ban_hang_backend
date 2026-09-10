@@ -153,6 +153,13 @@ export class CustomersController {
     );
   }
 
+  @Get(':id/shipping-fee-history')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Lịch sử phí ship 5 lần gần nhất của khách hàng' })
+  getShippingFeeHistory(@Param('id') id: string) {
+    return this.customersService.getShippingFeeHistory(+id);
+  }
+
   @Get(':id')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })
