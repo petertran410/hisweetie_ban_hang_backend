@@ -56,6 +56,7 @@ export interface SoqInput {
   availableStock: number;
   usableIncoming?: number;
   customerOrders?: number;
+  customerDemand?: number;
   companyNeed?: number;
   extraDemand?: number;
   riskIncoming?: number;
@@ -88,9 +89,11 @@ export function calculateSoq(input: SoqInput): SoqResult {
     Math.max(0, input.forecastDailyDemand) *
     (input.leadTimeDays + input.safetyDays + coverageDays);
   const customerOrders = Math.max(0, input.customerOrders ?? 0);
+  const customerDemand = Math.max(0, input.customerDemand ?? 0);
   const companyNeed = Math.max(0, input.companyNeed ?? 0);
   const extraDemand = Math.max(0, input.extraDemand ?? 0);
-  const totalDemand = salesDemand + customerOrders + companyNeed + extraDemand;
+  const totalDemand =
+    salesDemand + customerOrders + customerDemand + companyNeed + extraDemand;
   const confirmedIncoming = Math.max(0, input.usableIncoming ?? 0);
   const riskIncoming = Math.max(0, input.riskIncoming ?? 0);
   const firmSupply = input.availableStock + confirmedIncoming;
@@ -124,7 +127,11 @@ export function calculateSoq(input: SoqInput): SoqResult {
       deferredByMoq = true;
     }
   }
-  if (scenarioQuantity > 0 && scenarioQuantity < moq && suggestedQuantity === 0) {
+  if (
+    scenarioQuantity > 0 &&
+    scenarioQuantity < moq &&
+    suggestedQuantity === 0
+  ) {
     scenarioQuantity = 0;
   }
 
@@ -147,8 +154,14 @@ export function calculateSoq(input: SoqInput): SoqResult {
         value: round(salesDemand),
       },
       {
+        code: 'CUSTOMER_DEMAND',
+        formula: 'tổng Demand khách hàng đã xác nhận trong kỳ kế hoạch',
+        value: round(customerDemand),
+      },
+      {
         code: 'TOTAL_DEMAND',
-        formula: 'bán dự kiến + khách đặt + công ty cần + KM/trend',
+        formula:
+          'bán dự kiến + khách đặt + Demand khách hàng + công ty cần + KM',
         value: round(totalDemand),
       },
       {
@@ -158,7 +171,8 @@ export function calculateSoq(input: SoqInput): SoqResult {
       },
       {
         code: 'SOQ_SCENARIO',
-        formula: 'max(0, totalDemand - tồn - hàng về chắc chắn - ghép xe rủi ro)',
+        formula:
+          'max(0, totalDemand - tồn - hàng về chắc chắn - ghép xe rủi ro)',
         value: scenarioRawQuantity,
       },
       {

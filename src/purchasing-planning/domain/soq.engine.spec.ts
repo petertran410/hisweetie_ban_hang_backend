@@ -74,6 +74,23 @@ describe('calculateSoq', () => {
     expect(result.rawQuantity).toBe(400);
     expect(result.suggestedQuantity).toBe(400);
   });
+  it('cộng Demand khách hàng riêng với Khách đặt', () => {
+    const result = calculateSoq({
+      forecastDailyDemand: 0,
+      leadTimeDays: 10,
+      safetyDays: 0,
+      availableStock: 100,
+      usableIncoming: 50,
+      customerOrders: 80,
+      customerDemand: 70,
+      companyNeed: 20,
+      packSize: 1,
+      moq: 0,
+    });
+    // customerOrders + customerDemand + companyNeed = 170; firm supply = 150.
+    expect(result.rawQuantity).toBe(20);
+  });
+
   it('cộng khách đặt và công ty cần, trừ nguồn cung chắc chắn', () => {
     const result = calculateSoq({
       forecastDailyDemand: 10,
@@ -93,7 +110,6 @@ describe('calculateSoq', () => {
     expect(result.rawQuantity).toBe(380);
     expect(result.scenarioQuantity).toBe(340);
   });
-
 });
 
 describe('moqSpecToPacks — quy MOQ có đơn vị về số gói lẻ', () => {

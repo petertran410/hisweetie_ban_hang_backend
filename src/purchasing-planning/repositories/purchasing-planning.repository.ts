@@ -306,6 +306,7 @@ export class PurchasingPlanningRepository {
       stockSnapshots,
       promotions,
       pendingOrders,
+      customerDemandMonths,
     ] = await Promise.all([
       this.prisma.product.findMany({
         where: productWhere,
@@ -471,6 +472,31 @@ export class PurchasingPlanningRepository {
         },
         _sum: { quantity: true },
       }) ?? Promise.resolve([]),
+      // Demand OEM độc lập với Order/Invoice, không liên quan công nợ.
+      // Chỉ lấy tháng Confirmed; service sẽ lọc tiếp theo tháng hiện tại và
+      // planning horizon của từng SKU. Optional để client cũ vẫn chạy trước khi
+      // người dùng tự đồng bộ schema + prisma generate.
+      (this.prisma as any).customerDemandMonth?.findMany?.({
+        where: { status: 'CONFIRMED' },
+        orderBy: { demandMonth: 'asc' },
+        select: {
+          id: true,
+          demandMonth: true,
+          status: true,
+          demand: {
+            select: { customerId: true, customer: { select: { name: true } } },
+          },
+          lines: {
+            select: {
+              productId: true,
+              quantityBase: true,
+              inputQuantity: true,
+              inputUnit: true,
+              conversionValue: true,
+            },
+          },
+        },
+      }) ?? Promise.resolve([]),
     ]);
 
     const pendingOrderQty = new Map<number, number>();
@@ -490,6 +516,7 @@ export class PurchasingPlanningRepository {
       stockSnapshots,
       promotions,
       pendingOrderQty,
+      customerDemandMonths,
       branchScope,
     };
   }

@@ -56,6 +56,7 @@
     "seed:invoices-report-delivered": "ts-node prisma/seeds/add-invoices-report-delivered-permission.ts",
     "seed:add-stock-condition-transfers": "ts-node prisma/seeds/add-stock-condition-transfers-permissions.ts",
     "seed:purchasing-planning": "ts-node prisma/seeds/add-purchasing-planning.ts",
+    "seed:customer-demand-permissions": "ts-node prisma/seeds/add-customer-demand-permissions.ts",
     "seed:backfill-stock-condition-logs": "ts-node prisma/seeds/backfill-stock-condition-logs.ts",
     "seed:stock-audits": "ts-node prisma/seeds/add-stock-audit-permissions.ts",
     "seed:vat-invoices": "ts-node prisma/seeds/add-vat-invoices-permissions.ts",

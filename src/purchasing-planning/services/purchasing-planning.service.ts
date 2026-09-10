@@ -45,6 +45,7 @@ import {
   PurchasingPlanningRepository,
 } from '../repositories/purchasing-planning.repository';
 import { PlanningNetworkService } from './planning-network.service';
+import { resolveCustomerDemand } from '../../customer-demand/domain';
 
 type Flag = {
   code: string;
@@ -989,6 +990,28 @@ export class PurchasingPlanningService {
     }
     const horizonDays =
       leadTimeDays + safetyDays + coverageDaysFor(leadTimeDays);
+    const customerDemandResolution = resolveCustomerDemand(
+      (data.customerDemandMonths ?? []).map((row: any) => ({
+        id: row.id,
+        demandMonth: row.demandMonth,
+        status: row.status,
+        customerId: row.demand?.customerId ?? null,
+        customerName: row.demand?.customer?.name ?? null,
+        lines: (row.lines ?? []).map((line: any) => ({
+          productId: line.productId,
+          quantityBase: Number(line.quantityBase),
+          inputQuantity: Number(line.inputQuantity),
+          inputUnit: line.inputUnit,
+          conversionValue: Number(line.conversionValue),
+        })),
+      })),
+      snapshotDate,
+      horizonDays,
+    );
+    const customerDemand =
+      customerDemandResolution.totalByProduct.get(product.id) ?? 0;
+    const customerDemandDetails =
+      customerDemandResolution.detailsByProduct.get(product.id) ?? [];
     const vehicleLines = supplierRows.flatMap((row: any) =>
       (row.orderSupplier?.vehicleShipmentItems ?? [])
         .filter((item: any) => item.productId === product.id)
@@ -1039,6 +1062,11 @@ export class PurchasingPlanningService {
       availableStock: available,
       incomingTotal: confirmedIncoming,
     });
+    // Demand OEM đã Confirmed phải có thể kích hoạt đặt hàng ngay cả khi
+    // nhu cầu bán thông thường chưa chạm điểm đặt.
+    const customerDemandNeedsOrder =
+      customerDemand > available + confirmedIncoming;
+    const needsOrder = replenishment.needsOrder || customerDemandNeedsOrder;
     const projection = projectInventory({
       snapshotDate,
       availableStock: available,
@@ -1069,7 +1097,7 @@ export class PurchasingPlanningService {
       leadTimeDays,
       safetyDays: config.safetyDays,
       overstockDays: config.overstockDays,
-      needsOrder: replenishment.needsOrder,
+      needsOrder,
       daysUntilStockout: projection.daysUntilStockout,
     });
     // Khuyến mãi đang chạy / sắp chạy trong horizon đặt hàng sẽ kéo nhu cầu
@@ -1090,6 +1118,7 @@ export class PurchasingPlanningService {
       availableStock: available,
       usableIncoming,
       customerOrders,
+      customerDemand,
       companyNeed,
       extraDemand,
       riskIncoming: vehicleSupply.vehicleRisk,
@@ -1098,7 +1127,7 @@ export class PurchasingPlanningService {
       moq: moqUnits,
       purchaseMultiple: config.purchaseMultiple,
       moqTolerance: config.moqTolerance,
-      needsOrder: replenishment.needsOrder,
+      needsOrder,
     });
     const decisionTimeline = this.buildDecisionTimelineData({
       snapshotDate,
@@ -1136,6 +1165,7 @@ export class PurchasingPlanningService {
       unexplainedAnomaly: stability.unexplainedAnomaly,
       vehicleRisk: vehicleSupply.vehicleRisk,
       scenarioQuantity: soq.scenarioQuantity,
+      customerDemand,
     });
     const reliability = this.reliability(forecast.confidence, flags);
     const status = flags.some((flag) => flag.blocksRecommendation)
@@ -1198,6 +1228,8 @@ export class PurchasingPlanningService {
       unexplainedAnomaly: stability.unexplainedAnomaly,
       demandBreakdown: {
         customerOrders,
+        customerDemand,
+        customerDemandDetails,
         companyNeed,
         salesDemand:
           forecastDailyDemand *
@@ -1269,7 +1301,7 @@ export class PurchasingPlanningService {
       incomingTotal: confirmedIncoming + vehicleSupply.vehicleRisk,
       inventoryPosition: replenishment.inventoryPosition,
       reorderGap: replenishment.reorderGap,
-      needsOrder: replenishment.needsOrder,
+      needsOrder,
       soqRaw: soq.rawQuantity,
       suggestedQuantity: status === 'BLOCKED' ? 0 : soq.suggestedQuantity,
       suggestedPackCount: status === 'BLOCKED' ? null : soq.suggestedPackCount,
@@ -1617,7 +1649,7 @@ export class PurchasingPlanningService {
         context: { supplierCount: input.supplierIds.size },
       });
     if (input.moqNotConvertible) codes.push({ code: 'MOQ_NOT_CONVERTIBLE' });
-    if (input.forecast.confidence === 'NO_DATA')
+    if (input.forecast.confidence === 'NO_DATA' && input.customerDemand <= 0)
       codes.push({ code: 'MISSING_FORECAST' });
     else if (
       ['LOW', 'VERY_LOW'].includes(input.forecast.confidence) ||
@@ -1765,6 +1797,9 @@ export class PurchasingPlanningService {
       ma60: item.ma60 == null ? null : Number(item.ma60),
       ma90: item.ma90 == null ? null : Number(item.ma90),
       trendRatio: item.trendRatio == null ? null : Number(item.trendRatio),
+      customerDemand: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.customerDemand ?? 0,
+      ),
       daysOfSupply:
         item.daysOfSupply == null ? null : Number(item.daysOfSupply),
       daysUntilStockout: item.daysUntilStockout,

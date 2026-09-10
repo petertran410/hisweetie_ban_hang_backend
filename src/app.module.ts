@@ -89,6 +89,7 @@ import { RecipesModule } from './recipes/recipes.module';
 import { PurchasingPlanningModule } from './purchasing-planning/purchasing-planning.module';
 import { InventorySnapshotModule } from './inventory-snapshot/inventory-snapshot.module';
 import { PublicApiModule } from './public-api/public-api.module';
+import { CustomerDemandModule } from './customer-demand/customer-demand.module';
 
 @Module({
   controllers: [HealthController],
@@ -190,6 +191,7 @@ import { PublicApiModule } from './public-api/public-api.module';
     PurchasingPlanningModule,
     InventorySnapshotModule,
     PublicApiModule,
+    CustomerDemandModule,
   ],
   providers: [
     {
