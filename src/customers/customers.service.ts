@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { TiktokEventsOutboxService } from '../tiktok-events/tiktok-events-outbox.service';
 import {
   CreateCustomerDto,
   UpdateCustomerDto,
@@ -33,6 +34,7 @@ export class CustomersService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private larkCustomerSync: LarkCustomerSyncService,
+    private tiktokOutbox: TiktokEventsOutboxService,
   ) {}
 
   async exportCustomers(
@@ -846,6 +848,13 @@ export class CustomersService {
           data: { groups: groupsString },
         });
       }
+
+      await this.tiktokOutbox.enqueueRegistration(tx, {
+        id: newCustomer.id,
+        phone: newCustomer.phone,
+        contactNumber: newCustomer.contactNumber,
+        createdAt: newCustomer.createdAt,
+      });
 
       return newCustomer;
     });

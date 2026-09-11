@@ -75,6 +75,7 @@ describe('InvoicesService delivery reporting', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     jest.spyOn(service, 'findOne').mockResolvedValue(currentInvoice as any);
 
@@ -192,6 +193,7 @@ describe('InvoicesService customer invoice debt guard', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
 
   const policy = (requireFullPaymentForInvoice: boolean) => ({
@@ -283,6 +285,7 @@ describe('InvoicesService customer invoice debt guard', () => {
 
 describe('InvoicesService source shipping fee allocation', () => {
   const service = new InvoicesService(
+    {} as any,
     {} as any,
     {} as any,
     {} as any,

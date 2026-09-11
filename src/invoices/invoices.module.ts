@@ -11,6 +11,7 @@ import { PackingSlipsModule } from '../packing-slips/packing-slips.module';
 import { PromotionsModule } from '../promotions/promotions.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { MetaPurchaseModule } from '../meta-purchase/meta-purchase.module';
+import { TiktokEventsModule } from '../tiktok-events/tiktok-events.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { MetaPurchaseModule } from '../meta-purchase/meta-purchase.module';
     PromotionsModule,
     LarkSyncModule,
     MetaPurchaseModule,
+    TiktokEventsModule,
   ],
   controllers: [InvoicesController, InvoicePaymentsController],
   providers: [InvoicesService, InvoicePaymentsService],
