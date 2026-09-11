@@ -27,8 +27,6 @@ import {
   AssignProductQualityTicketDto,
   UpdateProductQualityTaskDto,
   CloseProductQualityTicketDto,
-  UpsertRoutingConfigDto,
-  UpsertDepartmentMemberDto,
   LarkImportDto,
 } from './dto';
 
@@ -99,41 +97,6 @@ export class ProductQualityController {
     );
 
     await this.service.exportTicketsDetail(query, user, res);
-  }
-
-  @Get('routing-configs')
-  @RequirePermissions('product_quality:configure')
-  @ApiOperation({ summary: 'Danh sách cấu hình routing người quyết định' })
-  getRoutingConfigs() {
-    return this.service.getRoutingConfigs();
-  }
-
-  @Post('routing-configs')
-  @RequirePermissions('product_quality:configure')
-  @ApiOperation({ summary: 'Cập nhật cấu hình routing người quyết định' })
-  upsertRoutingConfig(@Body() dto: UpsertRoutingConfigDto) {
-    return this.service.upsertRoutingConfig(dto);
-  }
-
-  @Get('department-members')
-  @RequirePermissions('product_quality:configure')
-  @ApiOperation({ summary: 'Danh sách thành viên bộ phận' })
-  getDepartmentMembers(@Query('branchId') branchId?: string) {
-    return this.service.getDepartmentMembers(branchId ? +branchId : undefined);
-  }
-
-  @Post('department-members')
-  @RequirePermissions('product_quality:configure')
-  @ApiOperation({ summary: 'Thêm/sửa thành viên bộ phận' })
-  upsertDepartmentMember(@Body() dto: UpsertDepartmentMemberDto) {
-    return this.service.upsertDepartmentMember(dto);
-  }
-
-  @Delete('department-members/:id')
-  @RequirePermissions('product_quality:configure')
-  @ApiOperation({ summary: 'Xóa thành viên bộ phận' })
-  deleteDepartmentMember(@Param('id') id: string) {
-    return this.service.deleteDepartmentMember(+id);
   }
 
   @Post('import/lark')

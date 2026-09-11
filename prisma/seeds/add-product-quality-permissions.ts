@@ -56,7 +56,7 @@ const PERMISSIONS: PermissionSeed[] = [
     resource: 'product_quality',
     action: 'assign',
     scope: 'all',
-    description: 'Cập nhật hướng xử lý và phân công người quyết định',
+    description: 'Cập nhật hướng xử lý và giao nhiệm vụ các bộ phận',
     category: 'Sản phẩm',
   },
   {
@@ -96,21 +96,21 @@ const PERMISSIONS: PermissionSeed[] = [
     resource: 'product_quality',
     action: 'import',
     scope: 'all',
-    description: 'Import dữ liệu phiếu chất lượng từ LarkBase',
-    category: 'Sản phẩm',
-  },
-  {
-    name: 'product_quality:configure',
-    resource: 'product_quality',
-    action: 'configure',
-    scope: 'all',
-    description: 'Cấu hình routing người quyết định và danh sách bộ phận',
+    description: 'Import dữ liệu phiếu chất lượng từ Excel / LarkBase',
     category: 'Sản phẩm',
   },
 ];
 
 async function main() {
   console.log('🌱 Upserting product quality permissions...');
+  // Loại bỏ quyền configure không còn sử dụng
+  const removed = await prisma.permission.deleteMany({
+    where: { name: 'product_quality:configure' },
+  });
+  if (removed.count > 0) {
+    console.log(`  🗑 Đã loại bỏ quyền không còn dùng: product_quality:configure (${removed.count})`);
+  }
+
   for (const perm of PERMISSIONS) {
     const p = await prisma.permission.upsert({
       where: { name: perm.name },
