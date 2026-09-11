@@ -29,9 +29,16 @@ export const PRIORITY_RANK: Record<PlanningPriority, number> = {
   NO_DATA: 7,
 };
 
+export const RETAIL_CUSTOMER_GROUP_ID = 4;
+
+export const EXCLUDED_PLANNING_CUSTOMER_CODES = [
+  'KH003147',
+  'KH003574',
+  'CHDT',
+  'KH005888',
+] as const;
+
 export const INCLUDED_DEMAND_TYPES = new Set([
-  'SALE',
-  'SALE_OUT',
   'INTERNAL_USE',
   'PRODUCTION_OUT',
   'CONSIGNMENT_OUT',

@@ -49,8 +49,9 @@ export function resolveDemand(input: DemandResolutionInput): DemandDay[] {
     const day = getDay(record.date);
     const type = record.transactionType.toUpperCase();
     const isSale = type === 'SALE' || type === 'SALE_OUT';
-    // PRD §5.2: InvoiceDetail owns sales demand; InventoryLog only fills gaps.
-    if (isSale && day.hasInvoice) continue;
+    // InvoiceDetail owns sales demand. SALE/SALE_OUT logs must not refill
+    // days after retail or excluded-customer invoices were filtered out.
+    if (isSale) continue;
     if (INCLUDED_DEMAND_TYPES.has(type)) {
       day.inventory += Math.abs(record.quantity);
       day.hasInventory = true;

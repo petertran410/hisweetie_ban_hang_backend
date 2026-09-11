@@ -90,6 +90,52 @@ describe('CustomerDemandImportService', () => {
     );
   });
 
+  it('preview tách 2 phiếu khi trùng SKU cùng tháng', async () => {
+    const file = await excelFile([
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'Đơn vị cơ bản', ''],
+      ['KH001', 'Khách OEM', 'SP002', 'NL2', '2026-09', 5, 'Đơn vị cơ bản', 'OEM'],
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'Đơn vị cơ bản', 'Bổ sung demand tháng 9'],
+    ]);
+    const preview = await service.preview(file);
+    expect(preview.invalid).toBe(0);
+    expect(preview.vouchers).toBe(2);
+    expect(preview.rows[0].voucherIndex).toBe(1);
+    expect(preview.rows[2].voucherIndex).toBe(2);
+    expect(preview.groups[1].note).toBe('Bổ sung demand tháng 9');
+    expect(preview.groups[0].months[0].lines.map((line) => line.productId).sort()).toEqual([
+      11, 12,
+    ]);
+  });
+
+  it('preview nhận tháng 2026-9 và tách trùng SKU thành 2 phiếu', async () => {
+    const file = await excelFile([
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-9', 15, 'Đơn vị cơ bản', ''],
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-9', 15, 'Đơn vị cơ bản', 'Bổ sung demand tháng 9'],
+    ]);
+    const preview = await service.preview(file);
+    expect(preview.invalid).toBe(0);
+    expect(preview.vouchers).toBe(2);
+    expect(preview.rows.map((row) => row.month)).toEqual(['2026-09', '2026-09']);
+    expect(preview.rows[0].voucherIndex).toBe(1);
+    expect(preview.rows[1].voucherIndex).toBe(2);
+  });
+
+  it('commit tạo đúng số phiếu sau khi tách trùng SKU', async () => {
+    repository.createManyDrafts.mockResolvedValue([99, 100]);
+    const file = await excelFile([
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'BASE', ''],
+      ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'BASE', 'Bổ sung'],
+    ]);
+    const result = await service.commit(file, 7);
+    expect(repository.createManyDrafts).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ customerId: 1 }),
+        expect.objectContaining({ customerId: 1 }),
+      ]),
+    );
+    expect(result).toMatchObject({ imported: 2, vouchers: 2, ids: [99, 100] });
+  });
+
   it('commit tạo phiếu nháp khi file hợp lệ', async () => {
     const file = await excelFile([
       ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-10', 10, 'BASE', 'OEM'],

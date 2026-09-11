@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import {
+  EXCLUDED_PLANNING_CUSTOMER_CODES,
+  RETAIL_CUSTOMER_GROUP_ID,
+} from '../domain/constants';
 
 /**
  * Tên 2 kho đầu mối theo cấu hình cũ. Chỉ còn dùng làm **phương án dự phòng**
@@ -337,6 +341,22 @@ export class PurchasingPlanningRepository {
             branchId: { in: branchIds },
             status: { not: 2 },
             purchaseDate: { gte: windowStart, lt: snapshotEnd },
+            NOT: {
+              OR: [
+                {
+                  customer: {
+                    customerGroupDetails: {
+                      some: { customerGroupId: RETAIL_CUSTOMER_GROUP_ID },
+                    },
+                  },
+                },
+                {
+                  customer: {
+                    code: { in: [...EXCLUDED_PLANNING_CUSTOMER_CODES] },
+                  },
+                },
+              ],
+            },
           },
         },
         select: {
@@ -461,16 +481,20 @@ export class PurchasingPlanningRepository {
           },
         },
       }) ?? Promise.resolve([]),
-      (this.prisma as any).orderItem?.groupBy?.({
-        by: ['productId'],
+      (this.prisma as any).orderItem?.findMany?.({
         where: {
           product: productWhere,
           order: {
             branchId: { in: branchIds },
             status: { in: [1, 5] },
+            NOT: {
+              customer: {
+                code: { in: [...EXCLUDED_PLANNING_CUSTOMER_CODES] },
+              },
+            },
           },
         },
-        _sum: { quantity: true },
+        select: { productId: true, quantity: true },
       }) ?? Promise.resolve([]),
       // Demand OEM độc lập với Order/Invoice, không liên quan công nợ.
       // Chỉ lấy tháng Confirmed; service sẽ lọc tiếp theo tháng hiện tại và
@@ -483,8 +507,13 @@ export class PurchasingPlanningRepository {
           id: true,
           demandMonth: true,
           status: true,
+          createdAt: true,
           demand: {
-            select: { customerId: true, customer: { select: { name: true } } },
+            select: {
+              customerId: true,
+              createdAt: true,
+              customer: { select: { name: true } },
+            },
           },
           lines: {
             select: {
@@ -493,6 +522,7 @@ export class PurchasingPlanningRepository {
               inputQuantity: true,
               inputUnit: true,
               conversionValue: true,
+              createdAt: true,
             },
           },
         },
@@ -501,7 +531,13 @@ export class PurchasingPlanningRepository {
 
     const pendingOrderQty = new Map<number, number>();
     for (const row of pendingOrders ?? []) {
-      pendingOrderQty.set(row.productId, Number(row._sum.quantity ?? 0));
+      const productId = Number(row.productId);
+      const quantity = Number(row.quantity ?? row._sum?.quantity ?? 0);
+      if (!Number.isInteger(productId) || productId <= 0) continue;
+      pendingOrderQty.set(
+        productId,
+        (pendingOrderQty.get(productId) ?? 0) + quantity,
+      );
     }
 
     return {

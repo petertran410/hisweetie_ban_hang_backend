@@ -755,6 +755,9 @@ export class CustomersService {
   }
 
   async create(dto: CreateCustomerDto, userId?: number) {
+    if (!Number.isInteger(dto.salePicId) || dto.salePicId <= 0) {
+      throw new BadRequestException('Vui lòng chọn Sale PIC');
+    }
     await this.checkPhoneDuplicate(dto.contactNumber, dto.phone);
 
     let code: string;
@@ -779,11 +782,21 @@ export class CustomersService {
       }
     }
 
-    const { groupIds, birthDate, addresses, ...customerData } = dto;
+    const { groupIds, birthDate, addresses, salePicId, ...customerData } = dto;
 
     const normalizedAddresses = this.normalizeAddresses(addresses);
 
     const customer = await this.prisma.$transaction(async (tx) => {
+      const salePic = await tx.user.findFirst({
+        where: { id: salePicId, isActive: true },
+        select: { id: true },
+      });
+      if (!salePic) {
+        throw new BadRequestException(
+          'Sale PIC không tồn tại hoặc đã ngừng hoạt động',
+        );
+      }
+
       const newCustomer = await tx.customer.create({
         data: {
           ...customerData,
@@ -801,6 +814,7 @@ export class CustomersService {
               termDays: null,
               paymentFrequency: null,
               requireFullPaymentForInvoice: true,
+              salePicId: salePicId ?? null,
               isActive: true,
               createdBy: userId ?? null,
               updatedBy: userId ?? null,
@@ -902,7 +916,7 @@ export class CustomersService {
   async update(id: number, dto: UpdateCustomerDto, userId?: number) {
     await this.checkPhoneDuplicate(dto.contactNumber, dto.phone, id);
 
-    const { groupIds, birthDate, addresses, ...customerData } = dto;
+    const { groupIds, birthDate, addresses, salePicId, ...customerData } = dto;
 
     const existingCustomer = await this.prisma.customer.findUnique({
       where: { id },
@@ -925,6 +939,33 @@ export class CustomersService {
           branch: true,
         },
       });
+
+      if (salePicId !== undefined) {
+        const salePic = await tx.user.findFirst({
+          where: { id: salePicId, isActive: true },
+          select: { id: true },
+        });
+        if (!salePic) {
+          throw new BadRequestException(
+            'Sale PIC không tồn tại hoặc đã ngừng hoạt động',
+          );
+        }
+        await tx.customerDebtPolicy.upsert({
+          where: { customerId: id },
+          create: {
+            customerId: id,
+            salePicId,
+            debtForm: 'PREPAID',
+            hasCreditLimit: false,
+            hasTermDays: false,
+            requireFullPaymentForInvoice: true,
+            isActive: true,
+            createdBy: userId ?? null,
+            updatedBy: userId ?? null,
+          },
+          update: { salePicId, updatedBy: userId ?? null },
+        });
+      }
 
       if (groupIds !== undefined) {
         await tx.customerGroupDetail.deleteMany({

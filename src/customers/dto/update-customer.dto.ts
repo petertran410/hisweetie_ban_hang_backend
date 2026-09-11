@@ -49,6 +49,10 @@ export class UpdateCustomerDto {
   groupIds?: number[];
   @IsOptional() @IsNumber() @Type(() => Number) branchId?: number;
   @IsOptional() @IsInt() @Type(() => Number) parentId?: number;
+  @IsOptional()
+  @IsInt({ message: 'Sale PIC không hợp lệ' })
+  @Type(() => Number)
+  salePicId?: number;
   @IsOptional() @IsBoolean() isActive?: boolean;
   @IsOptional()
   @IsArray()
