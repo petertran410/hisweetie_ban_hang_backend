@@ -1663,6 +1663,8 @@ model Invoice {
   packingSlips           PackingSlipInvoice[]
   returnOrderDetails     ReturnOrderDetail[]
   returnOrders           ReturnOrder[]
+  mergeTargets           InvoiceMerge[]          @relation("InvoiceMergeTarget")
+  mergeSources           InvoiceMergeSource[]    @relation("InvoiceMergeSource")
   productQualityTickets         ProductQualityTicket[]  @relation("ProductQualityInvoice")
   productQualityOutboundTickets ProductQualityTicket[]  @relation("ProductQualityOutboundInvoice")
 
