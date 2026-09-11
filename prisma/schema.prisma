@@ -1675,6 +1675,40 @@ model Invoice {
   @@map("invoices")
 }
 
+model InvoiceMerge {
+  id                      Int                  @id @default(autoincrement())
+  targetInvoiceId         Int
+  representativeInvoiceId Int
+  createdBy               Int
+  reason                  String?
+  createdAt               DateTime             @default(now())
+  targetInvoice           Invoice              @relation("InvoiceMergeTarget", fields: [targetInvoiceId], references: [id])
+  sources                 InvoiceMergeSource[]
+
+  @@index([targetInvoiceId])
+  @@index([representativeInvoiceId])
+  @@map("invoice_merges")
+}
+
+model InvoiceMergeSource {
+  id                 Int          @id @default(autoincrement())
+  mergeId            Int
+  sourceInvoiceId    Int
+  sourceCode         String
+  sourceOrderId      Int?
+  sourceOrderCode    String?
+  sourceDescription  String?
+  sourcePurchaseDate DateTime
+  createdAt          DateTime     @default(now())
+  merge              InvoiceMerge @relation(fields: [mergeId], references: [id], onDelete: Cascade)
+  sourceInvoice      Invoice      @relation("InvoiceMergeSource", fields: [sourceInvoiceId], references: [id])
+
+  @@unique([mergeId, sourceInvoiceId])
+  @@index([sourceInvoiceId])
+  @@index([sourceOrderId])
+  @@map("invoice_merge_sources")
+}
+
 model InvoiceDetail {
   id                 Int                 @id @default(autoincrement())
   invoiceId          Int

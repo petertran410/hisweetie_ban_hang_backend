@@ -51,6 +51,11 @@ export const AUDIT_TEMPLATES: Record<
     category: 'invoice',
     severity: 'info',
   },
+  INVOICE_MERGE: {
+    template: 'Gộp hóa đơn {sourceInvoiceCodes} thành hóa đơn {invoiceCode}',
+    category: 'invoice',
+    severity: 'warning',
+  },
 
   INVOICE_PAYMENT_CREATE: {
     template:

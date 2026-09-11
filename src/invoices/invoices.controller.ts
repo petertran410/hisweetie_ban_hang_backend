@@ -17,6 +17,7 @@ import {
   UpdateInvoiceDto,
   InvoiceQueryDto,
   CreateInvoiceFromOrderDto,
+  MergeInvoicesDto,
 } from './dto';
 import { ResolveScanDto } from './dto/resolve-scan.dto';
 import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
@@ -281,6 +282,20 @@ export class InvoicesController {
   @RequirePermissions('invoices:create')
   createFromPos(@Body() dto: CreateInvoiceDto, @CurrentUser() user: any) {
     return this.invoicesService.create(dto, user.id, true);
+  }
+
+  @Post('merge')
+  @RequirePermissions('invoices:merge')
+  @ApiOperation({ summary: 'Gộp nhiều hóa đơn thành một hóa đơn mới' })
+  merge(@Body() dto: MergeInvoicesDto, @CurrentUser() user: any) {
+    return this.invoicesService.merge(dto, user.id);
+  }
+
+  @Post('merge/validate')
+  @RequirePermissions('invoices:merge')
+  @ApiOperation({ summary: 'Kiểm tra điều kiện gộp hóa đơn trước khi mở modal' })
+  validateMerge(@Body() body: { sourceInvoiceIds: number[] }) {
+    return this.invoicesService.validateMerge(body.sourceInvoiceIds);
   }
 
   @Put(':id')
