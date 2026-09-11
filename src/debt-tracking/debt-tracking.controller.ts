@@ -32,6 +32,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import {
   RequirePermissions,
+  RequireAnyPermission,
 } from '../auth/decorators/permissions.decorator';
 import {
   DEBT_STATUS_LABELS,
@@ -279,7 +280,7 @@ export class DebtTrackingController {
   }
 
   @Get('policy/:customerId')
-  @RequirePermissions('debt_tracking:view')
+  @RequireAnyPermission('debt_tracking:view', 'customers:assign_sale_pic')
   @ApiOperation({ summary: 'Xem chính sách công nợ của khách' })
   getPolicy(@Param('customerId') customerId: string) {
     return this.debtTrackingService.getPolicy(+customerId);

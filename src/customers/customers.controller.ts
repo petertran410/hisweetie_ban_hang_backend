@@ -181,7 +181,7 @@ export class CustomersController {
   }
 
   @Post()
-  @RequirePermissions('customers:create')
+  @RequirePermissions('customers:create', 'customers:assign_sale_pic')
   @ApiOperation({ summary: 'Thêm mới khách hàng' })
   create(@Body() dto: CreateCustomerDto, @Req() req: any) {
     const userId = req.user?.id;
@@ -189,7 +189,7 @@ export class CustomersController {
   }
 
   @Post('listaddcutomers')
-  @RequirePermissions('customers:create')
+  @RequirePermissions('customers:create', 'customers:assign_sale_pic')
   @ApiOperation({ summary: 'Thêm mới danh sách khách hàng' })
   bulkCreate(@Body() dto: BulkCreateCustomerDto) {
     return this.customersService.bulkCreate(dto);
@@ -211,14 +211,14 @@ export class CustomersController {
   }
 
   @Put('listupdatecustomers')
-  @RequirePermissions('customers:update')
+  @RequirePermissions('customers:update', 'customers:assign_sale_pic')
   @ApiOperation({ summary: 'Cập nhật danh sách khách hàng' })
   bulkUpdate(@Body() dto: BulkUpdateCustomerDto) {
     return this.customersService.bulkUpdate(dto);
   }
 
   @Put(':id')
-  @RequirePermissions('customers:update')
+  @RequirePermissions('customers:update', 'customers:assign_sale_pic')
   @ApiOperation({ summary: 'Cập nhật khách hàng' })
   update(
     @Param('id') id: string,
