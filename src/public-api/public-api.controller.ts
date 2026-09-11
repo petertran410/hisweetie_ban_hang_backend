@@ -10,6 +10,7 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
@@ -69,6 +70,7 @@ export class PublicApiController {
   @Post('customers')
   createCustomer(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Body() dto: CreateCustomerDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
@@ -79,6 +81,7 @@ export class PublicApiController {
         method: 'POST',
         path: '/customers',
         body: dto,
+        res: response,
       },
       () => this.writeService.createCustomer(dto),
     );
@@ -87,6 +90,7 @@ export class PublicApiController {
   @Put('customers/:id')
   updateCustomer(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateCustomerDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -98,6 +102,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/customers/${id}`,
         body: dto,
+        res: response,
       },
       () => this.writeService.updateCustomer(id, dto),
     );
@@ -111,6 +116,7 @@ export class PublicApiController {
   @Post('products')
   createProduct(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Body() dto: CreateProductDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
@@ -121,6 +127,7 @@ export class PublicApiController {
         method: 'POST',
         path: '/products',
         body: dto,
+        res: response,
       },
       () => this.writeService.createProduct(dto),
     );
@@ -129,6 +136,7 @@ export class PublicApiController {
   @Put('products/:id')
   updateProduct(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateProductDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -140,6 +148,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/products/${id}`,
         body: dto,
+        res: response,
       },
       () => this.writeService.updateProduct(id, dto),
     );
@@ -155,6 +164,7 @@ export class PublicApiController {
   @Post('categories')
   createCategory(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Body() dto: PublicCategoryWriteDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
@@ -165,6 +175,7 @@ export class PublicApiController {
         method: 'POST',
         path: '/categories',
         body: dto,
+        res: response,
       },
       () =>
         this.writeService.createCategory({
@@ -177,6 +188,7 @@ export class PublicApiController {
   @Put('categories/:id')
   updateCategory(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PublicCategoryWriteDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -188,6 +200,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/categories/${id}`,
         body: dto,
+        res: response,
       },
       () => this.writeService.updateCategory(id, dto),
     );
@@ -196,6 +209,7 @@ export class PublicApiController {
   @Post('orders')
   createOrder(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Body() dto: CreateOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
@@ -206,6 +220,7 @@ export class PublicApiController {
         method: 'POST',
         path: '/orders',
         body: dto,
+        res: response,
       },
       () => this.writeService.createOrder(dto),
     );
@@ -214,6 +229,7 @@ export class PublicApiController {
   @Put('orders/:id')
   updateOrder(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -225,6 +241,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/orders/${id}`,
         body: dto,
+        res: response,
       },
       () => this.writeService.updateOrder(id, dto),
     );
@@ -233,6 +250,7 @@ export class PublicApiController {
   @Put('orders/:id/cancel')
   cancelOrder(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: CancelOrderDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -244,6 +262,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/orders/${id}/cancel`,
         body: dto,
+        res: response,
       },
       () => this.writeService.cancelOrder(id, dto),
     );
@@ -252,6 +271,7 @@ export class PublicApiController {
   @Post('invoices')
   createInvoice(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Body() dto: CreateInvoiceDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
@@ -262,6 +282,7 @@ export class PublicApiController {
         method: 'POST',
         path: '/invoices',
         body: dto,
+        res: response,
       },
       () => this.writeService.createInvoice(dto),
     );
@@ -270,6 +291,7 @@ export class PublicApiController {
   @Put('invoices/:id')
   updateInvoice(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateInvoiceDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -281,6 +303,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/invoices/${id}`,
         body: dto,
+        res: response,
       },
       () => this.writeService.updateInvoice(id, dto),
     );
@@ -289,6 +312,7 @@ export class PublicApiController {
   @Put('invoices/:id/cancel')
   cancelInvoice(
     @Req() request: any,
+    @Res({ passthrough: true }) response: any,
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PublicInvoiceCancelDto,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -300,6 +324,7 @@ export class PublicApiController {
         method: 'PUT',
         path: `/invoices/${id}/cancel`,
         body: dto,
+        res: response,
       },
       () => this.writeService.cancelInvoice(id, dto.cancelPayments),
     );
@@ -323,6 +348,11 @@ export class PublicApiController {
   @Delete('webhooks/:id')
   unregisterWebhook(@Req() request: any, @Param('id') id: string) {
     return this.webhookService.unregister(request.publicApiClient.id, id);
+  }
+
+  @Post('webhooks/:id/retry')
+  retryWebhook(@Req() request: any, @Param('id') id: string) {
+    return this.webhookService.retry(request.publicApiClient.id, id);
   }
 
   @Get('customers/:id/addresses')

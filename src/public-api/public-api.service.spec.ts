@@ -315,4 +315,47 @@ describe('PublicApiService', () => {
       expect(row).not.toHaveProperty(field);
     }
   });
+
+  it('listKeyset truy vấn theo cursor kép (updatedAt, id) và trả về mốc tiếp theo', async () => {
+    const { service, prisma } = createService();
+    const t1 = new Date('2026-08-14T10:00:00.000Z');
+    const t2 = new Date('2026-08-14T10:00:00.000Z'); // Cùng thời điểm nhưng id khác
+    prisma.customer.findMany.mockResolvedValue([
+      { id: 10, name: 'A', updatedAt: t1, addresses: [] },
+      { id: 11, name: 'B', updatedAt: t2, addresses: [] },
+    ]);
+
+    const result = await service.listKeyset('customers', {
+      cursorAt: new Date('2026-08-14T09:00:00.000Z'),
+      cursorId: 5,
+      take: 2,
+    });
+
+    expect(result.data).toHaveLength(2);
+    expect(result.lastCursorAt).toEqual(t2);
+    expect(result.lastCursorId).toBe(11);
+    expect(result.hasMore).toBe(true);
+
+    // Kiểm tra điều kiện keyset where được xây dựng đúng
+    expect(prisma.customer.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {},
+            {
+              OR: [
+                { updatedAt: { gt: new Date('2026-08-14T09:00:00.000Z') } },
+                {
+                  updatedAt: new Date('2026-08-14T09:00:00.000Z'),
+                  id: { gt: 5 },
+                },
+              ],
+            },
+          ],
+        },
+        orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
+        take: 2,
+      }),
+    );
+  });
 });

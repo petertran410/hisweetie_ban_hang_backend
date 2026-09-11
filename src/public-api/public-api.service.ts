@@ -11,6 +11,21 @@ import { PublicCustomerLedgerQueryDto } from './dto/public-customer-ledger-query
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
 
+export interface KeysetPaginationOptions {
+  cursorAt?: Date | null;
+  cursorId?: bigint | number | null;
+  until?: Date | null;
+  take?: number;
+  includeInactive?: boolean;
+}
+
+export interface KeysetResult {
+  data: any[];
+  lastCursorAt: Date | null;
+  lastCursorId: number | null;
+  hasMore: boolean;
+}
+
 type Resource =
   | 'branches'
   | 'customer-types'
@@ -443,6 +458,278 @@ export class PublicApiService {
       data: this.toJson(entries.slice(currentItem, currentItem + pageSize)),
       timestamp: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Phân trang keyset theo (updatedAt, id) phục vụ Webhook và đồng bộ tăng dần không mất dữ liệu.
+   */
+  async listKeyset(
+    resource: Resource,
+    options: KeysetPaginationOptions = {},
+  ): Promise<KeysetResult> {
+    const take = Math.min(Math.max(options.take || 100, 1), 100);
+    const cursorAt = options.cursorAt ?? null;
+    const cursorId = options.cursorId ?? null;
+    const until = options.until ?? null;
+    const includeInactive = options.includeInactive ?? true;
+
+    const where = (extra: Record<string, unknown> = {}) =>
+      this.buildKeysetWhere(cursorAt, cursorId, until, extra);
+
+    const orderBy: any = [{ updatedAt: 'asc' }, { id: 'asc' }];
+
+    let rows: any[] = [];
+    switch (resource) {
+      case 'branches':
+        rows = await this.prisma.branch.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          orderBy,
+          take,
+        });
+        break;
+      case 'customer-types':
+        rows = await this.prisma.customerType.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'customer-groups':
+        rows = await this.prisma.customerGroup.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'customers':
+        rows = await this.prisma.customer.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          include: {
+            customerGroupDetails: { include: { customerGroup: true } },
+            addresses: true,
+          },
+          orderBy,
+          take,
+        });
+        break;
+      case 'products':
+        rows = await this.prisma.product.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          include: { images: true, attributes: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'inventories':
+        rows = await this.prisma.inventory.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'orders':
+        rows = await this.prisma.order.findMany({
+          where: where(),
+          include: { items: true, payments: true, delivery: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'invoices':
+        rows = await this.prisma.invoice.findMany({
+          where: where(),
+          include: { details: true, payments: true, delivery: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'return-orders':
+        rows = await this.prisma.returnOrder.findMany({
+          where: where(),
+          include: { details: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'categories':
+        rows = await this.prisma.category.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'trademarks':
+        rows = await this.prisma.tradeMark.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'sale-channels':
+        rows = await this.prisma.saleChannel.findMany({
+          where: where(includeInactive ? {} : { isActivate: true }),
+          orderBy,
+          take,
+        });
+        break;
+      case 'bank-accounts':
+        rows = await this.prisma.bankAccount.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'users':
+        rows = await this.prisma.user.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            avatar: true,
+            branchId: true,
+            isActive: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+          orderBy,
+          take,
+        });
+        break;
+      case 'suppliers':
+        rows = await this.prisma.supplier.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          orderBy,
+          take,
+        });
+        break;
+      case 'supplier-groups':
+        rows = await this.prisma.supplierGroup.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'price-books':
+        rows = await this.prisma.priceBook.findMany({
+          where: where(includeInactive ? {} : { isActive: true }),
+          orderBy,
+          take,
+        });
+        break;
+      case 'purchase-orders':
+        rows = await this.prisma.purchaseOrder.findMany({
+          where: where(),
+          include: { items: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'transfers':
+        rows = await this.prisma.transfer.findMany({
+          where: where(),
+          include: { details: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'cashflows':
+        rows = await this.prisma.cashFlow.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'surchages':
+        rows = await this.prisma.surcharge.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'locations':
+        rows = await this.prisma.location.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'settings':
+        rows = await this.prisma.settings.findMany({
+          where: where(),
+          orderBy,
+          take,
+        });
+        break;
+      case 'order-suppliers':
+        rows = await this.prisma.orderSupplier.findMany({
+          where: where(),
+          include: { items: true, payments: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'consignments':
+        rows = await this.prisma.consignment.findMany({
+          where: where(),
+          include: { items: true, delivery: true },
+          orderBy,
+          take,
+        });
+        break;
+      case 'supplier-returns':
+        rows = await this.prisma.supplierReturn.findMany({
+          where: where(),
+          include: { details: true },
+          orderBy,
+          take,
+        });
+        break;
+    }
+
+    const lastRow = rows.length > 0 ? rows[rows.length - 1] : null;
+    const lastCursorAt = lastRow ? new Date(lastRow.updatedAt) : null;
+    const lastCursorId = lastRow ? Number(lastRow.id) : null;
+    const hasMore = rows.length === take;
+
+    return {
+      data: rows.map((r) => this.mapResource(resource, r)),
+      lastCursorAt,
+      lastCursorId,
+      hasMore,
+    };
+  }
+
+  private buildKeysetWhere(
+    cursorAt?: Date | null,
+    cursorId?: bigint | number | null,
+    until?: Date | null,
+    extra: Record<string, unknown> = {},
+  ) {
+    const and: Prisma.Enumerable<Record<string, unknown>> = [extra];
+    if (cursorAt) {
+      const parsedId =
+        cursorId !== undefined && cursorId !== null ? Number(cursorId) : 0;
+      if (parsedId > 0) {
+        and.push({
+          OR: [
+            { updatedAt: { gt: cursorAt } },
+            { updatedAt: cursorAt, id: { gt: parsedId } },
+          ],
+        });
+      } else {
+        and.push({
+          updatedAt: { gt: cursorAt },
+        });
+      }
+    }
+    if (until) {
+      and.push({
+        updatedAt: { lte: until },
+      });
+    }
+    return { AND: and } as any;
   }
 
   async list(resource: Resource, query: PublicApiListQueryDto) {

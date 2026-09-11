@@ -113,6 +113,14 @@ model User {
   branch                                                    Branch?                           @relation(fields: [branchId], references: [id])
   supplier                                                  Supplier?                         @relation("SupplierStaff", fields: [supplierId], references: [id])
   createdVehicleShipments                                   VehicleShipment[]                 @relation("VehicleShipmentCreator")
+  productQualityTicketsDecisionMaker                        ProductQualityTicket[]            @relation("ProductQualityDecisionMaker")
+  productQualityTicketsCreated                              ProductQualityTicket[]            @relation("ProductQualityCreator")
+  productQualityTicketsClosed                               ProductQualityTicket[]            @relation("ProductQualityCloser")
+  productQualityTasksAssigned                               ProductQualityTask[]              @relation("ProductQualityTaskAssignee")
+  productQualityTasksCompleted                              ProductQualityTask[]              @relation("ProductQualityTaskCompleter")
+  productQualityAttachments                                 ProductQualityAttachment[]        @relation("ProductQualityAttachmentCreator")
+  productQualityRoutingConfigs                              ProductQualityRoutingConfig[]
+  productQualityDepartmentMembers                           ProductQualityDepartmentMember[]
 
   @@map("users")
 }
@@ -338,6 +346,9 @@ model Branch {
   userBranches              UserBranch[]
   users                     User[]
   vehicleShipments          VehicleShipment[]
+  productQualityTickets     ProductQualityTicket[]
+  productQualityRoutingConfigs ProductQualityRoutingConfig[]
+  productQualityDepartmentMembers ProductQualityDepartmentMember[]
 
   @@index([updatedAt, id])
   @@map("branches")
@@ -478,6 +489,7 @@ model Customer {
   promotionCustomers     PromotionCustomer[]
   returnOrders           ReturnOrder[]                   @relation("ReturnOrderCustomer")
   parentReturnOrders     ReturnOrder[]                   @relation("ReturnOrderParentCustomer")
+  productQualityTickets  ProductQualityTicket[]
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -793,6 +805,7 @@ model Product {
   transferDetails                TransferDetail[]
   transferTempQuantities         TransferTempQuantity[]
   vehicleShipmentItems           VehicleShipmentItem[]
+  productQualityTickets         ProductQualityTicket[]
 
   @@index([id, name])
   @@index([larkSyncStatus])
@@ -1650,6 +1663,10 @@ model Invoice {
   packingSlips           PackingSlipInvoice[]
   returnOrderDetails     ReturnOrderDetail[]
   returnOrders           ReturnOrder[]
+  mergeTargets           InvoiceMerge[]          @relation("InvoiceMergeTarget")
+  mergeSources           InvoiceMergeSource[]    @relation("InvoiceMergeSource")
+  productQualityTickets         ProductQualityTicket[]  @relation("ProductQualityInvoice")
+  productQualityOutboundTickets ProductQualityTicket[]  @relation("ProductQualityOutboundInvoice")
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
@@ -1658,6 +1675,40 @@ model Invoice {
   @@index([misaSyncStatus])
   @@index([updatedAt, id])
   @@map("invoices")
+}
+
+model InvoiceMerge {
+  id                      Int                  @id @default(autoincrement())
+  targetInvoiceId         Int
+  representativeInvoiceId Int
+  createdBy               Int
+  reason                  String?
+  createdAt               DateTime             @default(now())
+  targetInvoice           Invoice              @relation("InvoiceMergeTarget", fields: [targetInvoiceId], references: [id])
+  sources                 InvoiceMergeSource[]
+
+  @@index([targetInvoiceId])
+  @@index([representativeInvoiceId])
+  @@map("invoice_merges")
+}
+
+model InvoiceMergeSource {
+  id                 Int          @id @default(autoincrement())
+  mergeId            Int
+  sourceInvoiceId    Int
+  sourceCode         String
+  sourceOrderId      Int?
+  sourceOrderCode    String?
+  sourceDescription  String?
+  sourcePurchaseDate DateTime
+  createdAt          DateTime     @default(now())
+  merge              InvoiceMerge @relation(fields: [mergeId], references: [id], onDelete: Cascade)
+  sourceInvoice      Invoice      @relation("InvoiceMergeSource", fields: [sourceInvoiceId], references: [id])
+
+  @@unique([mergeId, sourceInvoiceId])
+  @@index([sourceInvoiceId])
+  @@index([sourceOrderId])
+  @@map("invoice_merge_sources")
 }
 
 model InvoiceDetail {
@@ -2487,6 +2538,7 @@ model Factory {
   factoryChangeLogs     FactoryChangeLog[]
   factory_products      factory_products[]
   orderSupplierItems    OrderSupplierItem[]
+  productQualityTickets ProductQualityTicket[]
 
   @@index([supplierId])
   @@index([isActive])
@@ -3928,6 +3980,7 @@ model PublicApiClient {
   description     String?
   isActive        Boolean                   @default(true) @map("is_active")
   accessTokenTtl  Int                       @default(3600) @map("access_token_ttl")
+  tokenVersion    Int                       @default(1) @map("token_version")
   createdAt       DateTime                  @default(now()) @map("created_at")
   updatedAt       DateTime                  @updatedAt @map("updated_at")
   auditLogs       PublicApiAuditLog[]
@@ -3966,6 +4019,9 @@ model PublicApiWebhook {
   description   String?
   isActive      Boolean                    @default(true) @map("is_active")
   cursorAt      DateTime?                  @map("cursor_at")
+  cursorId      BigInt?                    @map("cursor_id")
+  lockedAt      DateTime?                  @map("locked_at")
+  lockedBy      String?                    @map("locked_by") @db.VarChar(100)
   lastStatus    Int?                       @map("last_status")
   lastError     String?                    @map("last_error")
   lastSuccessAt DateTime?                  @map("last_success_at")
@@ -3977,6 +4033,7 @@ model PublicApiWebhook {
 
   @@unique([clientId, resource, url])
   @@index([isActive, resource])
+  @@index([isActive, failureCount, lockedAt])
   @@map("public_api_webhooks")
 }
 
@@ -3991,11 +4048,14 @@ model PublicApiWebhookDelivery {
   success      Boolean          @default(false)
   errorMessage String?          @map("error_message")
   nextRetryAt  DateTime?        @map("next_retry_at")
+  eventId      String?          @map("event_id") @db.VarChar(120)
+  eventType    String?          @map("event_type") @db.VarChar(100)
   createdAt    DateTime         @default(now()) @map("created_at")
   webhook      PublicApiWebhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
 
   @@index([webhookId, createdAt])
   @@index([success, nextRetryAt])
+  @@index([eventId])
   @@map("public_api_webhook_deliveries")
 }
 
@@ -4024,6 +4084,27 @@ model PublicApiIdempotencyKey {
   @@unique([clientId, key])
   @@index([createdAt])
   @@map("public_api_idempotency_keys")
+}
+
+model PublicApiEventOutbox {
+  id            BigInt    @id @default(autoincrement())
+  eventId       String    @unique @map("event_id") @db.VarChar(120)
+  resource      String    @db.VarChar(50)
+  eventType     String    @map("event_type") @db.VarChar(100)
+  aggregateId   Int       @map("aggregate_id")
+  payload       Json
+  status        String    @default("PENDING") @db.VarChar(20)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at")
+  lockedAt      DateTime? @map("locked_at")
+  lockedBy      String?   @map("locked_by") @db.VarChar(100)
+  lastError     String?   @map("last_error")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt])
+  @@index([resource, aggregateId])
+  @@map("public_api_event_outbox")
 }
 
 // ============================================================
@@ -4299,4 +4380,162 @@ enum MisaSyncStatus {
   SYNCED
   FAILED
   SKIP
+}
+
+/// Phiếu sự cố chất lượng sản phẩm
+model ProductQualityTicket {
+  id                    Int                          @id @default(autoincrement())
+  code                  String                       @unique // CLSP000001
+  legacyCode            String?                      @map("legacy_code")
+  sourceRecordId        String?                      @unique @map("source_record_id") // recXXX from Lark
+
+  branchId              Int?                         @map("branch_id")
+  branchName            String?                      @map("branch_name")
+
+  customerId            Int?                         @map("customer_id")
+  customerCode          String?                      @map("customer_code")
+  customerName          String                       @map("customer_name")
+
+  productId             Int?                         @map("product_id")
+  productCode           String?                      @map("product_code")
+  productName           String                       @map("product_name")
+  unit                  String?                      @map("unit")
+  sourceType            String?                      @map("source_type")
+
+  quantity              Decimal                      @default(0) @db.Decimal(18, 4)
+  expiryDate            DateTime?                    @map("expiry_date")
+  reason                String?                      @map("reason")
+  initialClassification String                       @map("initial_classification")
+  feedbackType          String                       @map("feedback_type")
+  severity              String?                      @map("severity")
+  responsibilities      String[]                     @default([]) @map("responsibilities")
+  factoryName           String?                      @map("factory_name")
+  factoryId             Int?                         @map("factory_id")
+  note                  String?                      @map("note")
+
+  invoiceId             Int?                         @map("invoice_id")
+  invoiceCode           String?                      @map("invoice_code")
+  outboundInvoiceId     Int?                         @map("outbound_invoice_id")
+  outboundInvoiceCode   String?                      @map("outbound_invoice_code")
+
+  decisionMakerId       Int?                         @map("decision_maker_id")
+  decisionMakerName     String?                      @map("decision_maker_name")
+  handlingDirection     String?                      @map("handling_direction")
+  assignedDepartments   String[]                     @default([]) @map("assigned_departments")
+
+  status                String                       @default("NEW") // NEW, IN_PROGRESS, REMEDIATING, COMPLETED, ENDED
+  isCompleted           Boolean                      @default(false) @map("is_completed")
+
+  handledAt             DateTime?                    @map("handled_at")
+  dueAt                 DateTime?                    @map("due_at")
+  completedAt           DateTime?                    @map("completed_at")
+  closedAt              DateTime?                    @map("closed_at")
+  closeReason           String?                      @map("close_reason")
+  closedById            Int?                         @map("closed_by_id")
+
+  createdById           Int?                         @map("created_by_id")
+  createdByName         String?                      @map("created_by_name")
+  updatedById           Int?                         @map("updated_by_id")
+
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
+
+  branch                Branch?                      @relation(fields: [branchId], references: [id])
+  customer              Customer?                    @relation(fields: [customerId], references: [id])
+  product               Product?                     @relation(fields: [productId], references: [id])
+  factory               Factory?                     @relation(fields: [factoryId], references: [id])
+  invoice               Invoice?                     @relation("ProductQualityInvoice", fields: [invoiceId], references: [id])
+  outboundInvoice       Invoice?                     @relation("ProductQualityOutboundInvoice", fields: [outboundInvoiceId], references: [id])
+  decisionMaker         User?                        @relation("ProductQualityDecisionMaker", fields: [decisionMakerId], references: [id])
+  creator               User?                        @relation("ProductQualityCreator", fields: [createdById], references: [id])
+  closer                User?                        @relation("ProductQualityCloser", fields: [closedById], references: [id])
+
+  tasks                 ProductQualityTask[]
+  attachments           ProductQualityAttachment[]
+
+  @@index([branchId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([dueAt])
+  @@index([customerId])
+  @@index([productId])
+  @@index([decisionMakerId])
+  @@map("product_quality_tickets")
+}
+
+model ProductQualityTask {
+  id                    Int                          @id @default(autoincrement())
+  ticketId              Int                          @map("ticket_id")
+  department            String                       @map("department") // Kinh Doanh | Kho + Logistics | Kế Toán Kho | Thu Mua
+  assignedUserId        Int?                         @map("assigned_user_id")
+  assignedUserName      String?                      @map("assigned_user_name")
+  feedback              String?                      @map("feedback")
+  isCompleted           Boolean                      @default(false) @map("is_completed")
+  completedById         Int?                         @map("completed_by_id")
+  completedByName       String?                      @map("completed_by_name")
+  completedAt           DateTime?                    @map("completed_at")
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
+
+  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assignedUser          User?                        @relation("ProductQualityTaskAssignee", fields: [assignedUserId], references: [id])
+  completedByUser       User?                        @relation("ProductQualityTaskCompleter", fields: [completedById], references: [id])
+
+  @@unique([ticketId, department])
+  @@index([department, isCompleted])
+  @@map("product_quality_tasks")
+}
+
+model ProductQualityAttachment {
+  id                    Int                          @id @default(autoincrement())
+  ticketId              Int                          @map("ticket_id")
+  department            String?                      @map("department")
+  kind                  String                       @default("PROOF_IMAGE") @map("kind") // PROOF_IMAGE | PROOF_VIDEO | COMPLETION_PROOF
+  filename              String                       @map("filename")
+  originalName          String?                      @map("original_name")
+  url                   String                       @map("url")
+  mimetype              String?                      @map("mimetype")
+  size                  Int?                         @map("size")
+  larkFileToken         String?                      @map("lark_file_token")
+  createdById           Int?                         @map("created_by_id")
+  createdAt             DateTime                     @default(now()) @map("created_at")
+
+  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  creator               User?                        @relation("ProductQualityAttachmentCreator", fields: [createdById], references: [id])
+
+  @@index([ticketId])
+  @@map("product_quality_attachments")
+}
+
+model ProductQualityRoutingConfig {
+  id                    Int                          @id @default(autoincrement())
+  initialClassification String                       @map("initial_classification")
+  branchId              Int?                         @map("branch_id")
+  decisionMakerId       Int                          @map("decision_maker_id")
+  fallbackToCreator     Boolean                      @default(false) @map("fallback_to_creator")
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
+
+  decisionMaker         User                         @relation(fields: [decisionMakerId], references: [id])
+  branch                Branch?                      @relation(fields: [branchId], references: [id])
+
+  @@unique([initialClassification, branchId])
+  @@map("product_quality_routing_configs")
+}
+
+model ProductQualityDepartmentMember {
+  id                    Int                          @id @default(autoincrement())
+  department            String                       @map("department") // Kinh Doanh | Kho + Logistics | Kế Toán Kho | Thu Mua
+  branchId              Int?                         @map("branch_id")
+  userId                Int                          @map("user_id")
+  isPrimary             Boolean                      @default(false) @map("is_primary")
+  createdAt             DateTime                     @default(now()) @map("created_at")
+  updatedAt             DateTime                     @updatedAt @map("updated_at")
+
+  user                  User                         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch                Branch?                      @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([department, branchId, userId])
+  @@index([department, branchId])
+  @@map("product_quality_department_members")
 }

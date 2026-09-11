@@ -6,7 +6,7 @@ describe('PublicApiAuthGuard', () => {
   const originalJwtSecret = process.env.JWT_SECRET;
 
   const createGuard = (
-    client: unknown = { id: 'client-uuid', isActive: true },
+    client: unknown = { id: 'client-uuid', isActive: true, tokenVersion: 1 },
   ) => {
     const jwtService = { verifyAsync: jest.fn() };
     const prisma = {
@@ -50,11 +50,13 @@ describe('PublicApiAuthGuard', () => {
     const { guard, jwtService, request, context } = createGuard({
       id: 'client-uuid',
       isActive: false,
+      tokenVersion: 1,
     });
     request.headers.authorization = 'Bearer token';
     jwtService.verifyAsync.mockResolvedValue({
       sub: 'client-uuid',
       clientId: 'zalo-crm',
+      tokenVersion: 1,
       typ: 'public_api',
     });
 
@@ -68,6 +70,7 @@ describe('PublicApiAuthGuard', () => {
     jwtService.verifyAsync.mockResolvedValue({
       sub: 'client-uuid',
       clientId: 'zalo-crm',
+      tokenVersion: 1,
       typ: 'public_api',
     });
 
@@ -85,10 +88,37 @@ describe('PublicApiAuthGuard', () => {
     });
   });
 
+  it('từ chối token cũ khi tokenVersion đã bị tăng do xoay khoá hoặc tắt client', async () => {
+    const { guard, jwtService, request, context } = createGuard({
+      id: 'client-uuid',
+      isActive: true,
+      tokenVersion: 2,
+    });
+    request.headers.authorization = 'Bearer old-token-v1';
+    jwtService.verifyAsync.mockResolvedValue({
+      sub: 'client-uuid',
+      clientId: 'zalo-crm',
+      tokenVersion: 1,
+      typ: 'public_api',
+    });
+
+    await expect(guard.canActivate(context)).rejects.toEqual(
+      expect.objectContaining({
+        message: 'Public API token has been revoked',
+      }),
+    );
+  });
+
   it.each([
-    { sub: 'client-uuid', clientId: 'zalo-crm', typ: 'internal' },
-    { clientId: 'zalo-crm', typ: 'public_api' },
-    { sub: 'client-uuid', typ: 'public_api' },
+    {
+      sub: 'client-uuid',
+      clientId: 'zalo-crm',
+      tokenVersion: 1,
+      typ: 'internal',
+    },
+    { clientId: 'zalo-crm', tokenVersion: 1, typ: 'public_api' },
+    { sub: 'client-uuid', tokenVersion: 1, typ: 'public_api' },
+    { sub: 'client-uuid', clientId: 'zalo-crm', typ: 'public_api' },
   ])(
     'rejects payloads that are not a complete public token: %p',
     async (payload) => {

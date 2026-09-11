@@ -129,7 +129,12 @@ describe('PublicApiAuthService', () => {
       where: { clientId: 'zalo-crm' },
     });
     expect(jwtService.signAsync).toHaveBeenCalledWith(
-      { sub: 'client-uuid', clientId: 'zalo-crm', typ: 'public_api' },
+      {
+        sub: 'client-uuid',
+        clientId: 'zalo-crm',
+        tokenVersion: 1,
+        typ: 'public_api',
+      },
       { secret: 'public-api-test-secret', expiresIn: 3600 },
     );
   });
