@@ -478,9 +478,15 @@ export class CashFlowsService {
     if (code && code.length > 0) {
       where.code = { in: code };
     } else if (search) {
-      where.OR = [
-        { code: { contains: search, mode: 'insensitive' } },
-        { partnerName: { contains: search, mode: 'insensitive' } },
+      where.AND = [
+        { code: { not: { startsWith: 'TTTU' } } },
+        { code: { not: { startsWith: 'PCTU' } } },
+        {
+          OR: [
+            { code: { contains: search, mode: 'insensitive' } },
+            { partnerName: { contains: search, mode: 'insensitive' } },
+          ],
+        },
       ];
     } else {
       // Ẩn cashflow CLONE (TTTU* phía bán, PCTU* phía mua) khỏi list mặc định
@@ -2780,9 +2786,15 @@ export class CashFlowsService {
     if (code && code.length > 0) {
       where.code = { in: code };
     } else if (search) {
-      where.OR = [
-        { code: { contains: search, mode: 'insensitive' } },
-        { partnerName: { contains: search, mode: 'insensitive' } },
+      where.AND = [
+        { code: { not: { startsWith: 'TTTU' } } },
+        { code: { not: { startsWith: 'PCTU' } } },
+        {
+          OR: [
+            { code: { contains: search, mode: 'insensitive' } },
+            { partnerName: { contains: search, mode: 'insensitive' } },
+          ],
+        },
       ];
     } else {
       // Ẩn cashflow CLONE (TTTU*, PCTU*) khỏi export mặc định
