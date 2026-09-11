@@ -54,6 +54,7 @@ import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { MetaPurchaseOutboxService } from '../meta-purchase/meta-purchase-outbox.service';
+import { TiktokEventsOutboxService } from '../tiktok-events/tiktok-events-outbox.service';
 import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
@@ -76,6 +77,7 @@ export class InvoicesService {
     private promotionsService: PromotionsService,
     private larkProductSync: LarkProductSyncService,
     private metaPurchaseOutbox: MetaPurchaseOutboxService,
+    private tiktokOutbox: TiktokEventsOutboxService,
   ) {}
 
   async resolveScan(
@@ -1852,6 +1854,26 @@ export class InvoicesService {
             totalPrice: Number((d as any).totalPrice),
             isGift: (d as any).isGift,
             lineType: (d as any).lineType,
+          })),
+        });
+
+        const ttCustomer = invoice.customerId
+          ? await tx.customer.findUnique({
+              where: { id: invoice.customerId },
+              select: { id: true, phone: true, contactNumber: true },
+            })
+          : null;
+        await this.tiktokOutbox.enqueuePurchase(tx, {
+          id: invoice.id,
+          code: invoice.code,
+          createdAt: invoice.createdAt,
+          grandTotal: Number(invoice.grandTotal),
+          customer: ttCustomer,
+          details: invoice.details.map((d: any) => ({
+            productCode: (d as any).productCode,
+            quantity: Number((d as any).quantity),
+            price: Number((d as any).price),
+            totalPrice: Number((d as any).totalPrice),
           })),
         });
 
@@ -3764,6 +3786,26 @@ export class InvoicesService {
         })),
       });
 
+      const ttCustomer2 = invoice.customerId
+        ? await tx.customer.findUnique({
+            where: { id: invoice.customerId },
+            select: { id: true, phone: true, contactNumber: true },
+          })
+        : null;
+      await this.tiktokOutbox.enqueuePurchase(tx, {
+        id: invoice.id,
+        code: invoice.code,
+        createdAt: invoice.createdAt,
+        grandTotal: Number(invoice.grandTotal),
+        customer: ttCustomer2,
+        details: invoice.details.map((d: any) => ({
+          productCode: (d as any).productCode,
+          quantity: Number((d as any).quantity),
+          price: Number((d as any).price),
+          totalPrice: Number((d as any).totalPrice),
+        })),
+      });
+
       return tx.invoice.findUnique({
         where: { id: invoice.id },
         include: {
@@ -4156,6 +4198,26 @@ export class InvoicesService {
           totalPrice: Number((d as any).totalPrice),
           isGift: (d as any).isGift,
           lineType: (d as any).lineType,
+        })),
+      });
+
+      const ttCustomer3 = invoice.customerId
+        ? await tx.customer.findUnique({
+            where: { id: invoice.customerId },
+            select: { id: true, phone: true, contactNumber: true },
+          })
+        : null;
+      await this.tiktokOutbox.enqueuePurchase(tx, {
+        id: invoice.id,
+        code: invoice.code,
+        createdAt: invoice.createdAt,
+        grandTotal: Number(invoice.grandTotal),
+        customer: ttCustomer3,
+        details: invoice.details.map((d: any) => ({
+          productCode: (d as any).productCode,
+          quantity: Number((d as any).quantity),
+          price: Number((d as any).price),
+          totalPrice: Number((d as any).totalPrice),
         })),
       });
 

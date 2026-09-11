@@ -3947,6 +3947,28 @@ model MetaPurchaseOutbox {
   @@map("meta_purchase_outbox")
 }
 
+model TiktokEventOutbox {
+  id             BigInt    @id @default(autoincrement())
+  eventType      String    @map("event_type") @db.VarChar(30)
+  eventId        String    @unique @map("event_id") @db.VarChar(120)
+  eventTime      DateTime  @map("event_time")
+  payload        Json
+  status         String    @default("PENDING") @db.VarChar(20)
+  attempts       Int       @default(0)
+  nextAttemptAt  DateTime  @default(now()) @map("next_attempt_at")
+  lockedAt       DateTime? @map("locked_at")
+  lockedBy       String?   @map("locked_by") @db.VarChar(100)
+  lastHttpStatus Int?      @map("last_http_status")
+  lastError      String?   @map("last_error")
+  sentAt         DateTime? @map("sent_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt, id])
+  @@index([status, lockedAt, id])
+  @@map("tiktok_event_outbox")
+}
+
 // ====================================================================
 // THEO DÕI CÔNG NỢ KHÁCH HÀNG
 //

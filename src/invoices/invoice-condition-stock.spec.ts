@@ -24,6 +24,7 @@ describe('InvoicesService condition stock', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
     return { service, prisma, create };
   };

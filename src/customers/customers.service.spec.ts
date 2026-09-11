@@ -10,6 +10,7 @@ describe('CustomersService.getShippingFeeHistory', () => {
       prisma as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   };
 
