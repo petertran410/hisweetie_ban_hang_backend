@@ -241,6 +241,16 @@ export class CreateInvoiceDto {
   items: CreateInvoiceDetailDto[];
 
   @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentNoteType?: 'cash' | 'transfer';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentType?: 'cash' | 'transfer';
+
+  @IsOptional()
   @IsBoolean()
   skipPromotions?: boolean;
 
@@ -275,6 +285,16 @@ export class CreateInvoiceFromOrderDto {
   soldById?: number;
 
   // Giảm giá cấp hóa đơn do user chỉnh ở màn "Tạo hóa đơn" (từ đơn hàng).
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentNoteType?: 'cash' | 'transfer';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentType?: 'cash' | 'transfer';
   // Không gửi → BE giữ cơ chế kế thừa "giảm giá còn lại" của đơn gốc.
   // Có gửi → ưu tiên giá trị này (kể cả 0, nghĩa là bỏ giảm giá).
   // discountRatio > 0 ⇒ mode %, BE quy đổi ra tiền theo tổng tiền hàng của HĐ.

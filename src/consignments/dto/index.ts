@@ -320,6 +320,16 @@ export class CreateInvoiceFromConsignmentDto {
   soldById?: number;
 
   @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentNoteType?: 'cash' | 'transfer';
+
+  @IsOptional()
+  @IsString()
+  @IsIn(['cash', 'transfer'])
+  paymentType?: 'cash' | 'transfer';
+
+  @IsOptional()
   @IsNumber({ allowNaN: false, allowInfinity: false })
   @Min(0)
   shippingFee?: number;

@@ -1477,12 +1477,15 @@ export class InvoicesService {
           }
         }
 
+        const paymentMethod = dto.paymentNoteType || dto.paymentType;
+
         this.assertCustomerInvoiceCanBeCreated({
           policy: customer?.debtPolicy,
           paidAmount,
           grandTotal,
           currentCustomerDebt: Number(customer?.totalDebt || 0),
           mode: 'invoice',
+          paymentMethod,
         });
 
         const currentCustomerDebt = Number(customer?.totalDebt || 0);
@@ -3024,8 +3027,10 @@ export class InvoicesService {
     grandTotal: number;
     currentCustomerDebt?: number;
     mode: 'invoice' | 'order';
+    paymentMethod?: 'cash' | 'transfer' | string;
   }) {
     if (!this.requiresFullPaymentForInvoice(input.policy)) return;
+    if (input.paymentMethod === 'cash') return;
     // Công nợ âm là tiền khách đã trả trước nhưng chưa phân bổ. Chỉ dùng
     // giá trị này để so sánh điều kiện; tuyệt đối không ghi vào đơn/hóa đơn.
     const advanceCredit = Math.max(0, -(input.currentCustomerDebt ?? 0));
@@ -3059,6 +3064,10 @@ export class InvoicesService {
           items: true,
           payments: true,
           delivery: true,
+          paymentNotes: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+          },
           invoices: {
             where: { status: { not: INVOICE_STATUS.CANCELLED } },
             include: { details: true },
@@ -3110,12 +3119,21 @@ export class InvoicesService {
         .filter((payment) => payment.status !== 2)
         .reduce((sum, payment) => sum + Number(payment.amount), 0);
 
+      const paymentMethod =
+        dto.paymentNoteType ||
+        dto.paymentType ||
+        (order.paymentNotes?.[0]?.paymentType as
+          | 'cash'
+          | 'transfer'
+          | undefined);
+
       this.assertCustomerInvoiceCanBeCreated({
         policy: order.customer?.debtPolicy,
         paidAmount: activeOrderPaid,
         grandTotal: Number(order.grandTotal),
         currentCustomerDebt: Number(order.customer?.totalDebt || 0),
         mode: 'order',
+        paymentMethod,
       });
 
       const invoicedQuantities: Record<number, number> = {};
@@ -3960,12 +3978,16 @@ export class InvoicesService {
       const grandTotal = totalAmount - discountForThisInvoice + shippingFee;
       const debtAmount = grandTotal - totalPaid;
 
+      const consignmentPaymentMethod =
+        dto.paymentNoteType || dto.paymentType;
+
       this.assertCustomerInvoiceCanBeCreated({
         policy: consignment.customer?.debtPolicy,
         paidAmount: totalPaid,
         grandTotal,
         currentCustomerDebt: Number(consignment.customer?.totalDebt || 0),
         mode: 'invoice',
+        paymentMethod: consignmentPaymentMethod,
       });
 
       // Hàng đã giao ở B2 → hóa đơn ký gửi tạo ở DELIVERED (đã giao).

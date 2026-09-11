@@ -215,6 +215,44 @@ describe('InvoicesService customer invoice debt guard', () => {
     ).toThrow('Khách hàng không được phép phát sinh công nợ');
   });
 
+  it('chặn thanh toán thiếu khi chính sách yêu cầu trả đủ và phương thức là chuyển khoản', () => {
+    const service = createService() as any;
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(true),
+        paidAmount: 50,
+        grandTotal: 100,
+        mode: 'order',
+        paymentMethod: 'transfer',
+      }),
+    ).toThrow('Khách hàng không được phép phát sinh công nợ');
+  });
+
+  it('cho phép tạo hóa đơn khi chính sách yêu cầu trả đủ nhưng phương thức là tiền mặt', () => {
+    const service = createService() as any;
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(true),
+        paidAmount: 0,
+        grandTotal: 100,
+        mode: 'invoice',
+        paymentMethod: 'cash',
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      service.assertCustomerInvoiceCanBeCreated({
+        policy: policy(true),
+        paidAmount: 0,
+        grandTotal: 100,
+        mode: 'order',
+        paymentMethod: 'cash',
+      }),
+    ).not.toThrow();
+  });
+
   it('cho phép thanh toán thiếu khi cờ cũ đang tắt', () => {
     const service = createService() as any;
 
@@ -237,6 +275,7 @@ describe('InvoicesService customer invoice debt guard', () => {
         paidAmount: 100,
         grandTotal: 100,
         mode: 'order',
+        paymentMethod: 'transfer',
       }),
     ).not.toThrow();
   });
