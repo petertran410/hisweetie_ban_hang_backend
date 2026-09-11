@@ -87,7 +87,9 @@ describe('PublicApiClientAdminService', () => {
 
     expect(result.data.isActive).toBe(false);
     expect(prisma.publicApiClient.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { isActive: false } }),
+      expect.objectContaining({
+        data: { isActive: false, tokenVersion: { increment: 1 } },
+      }),
     );
     expect(prisma.publicApiClient).not.toHaveProperty('delete');
   });

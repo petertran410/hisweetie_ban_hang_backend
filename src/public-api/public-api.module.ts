@@ -15,6 +15,7 @@ import { PublicApiWebhookService } from './public-api-webhook.service';
 import { PublicApiWriteService } from './public-api-write.service';
 import { PublicApiIdempotencyService } from './public-api-idempotency.service';
 import { PublicApiRetentionService } from './public-api-retention.service';
+import { PublicApiOutboxService } from './public-api-outbox.service';
 import { PublicApiAuthGuard } from './guards/public-api-auth.guard';
 import { PublicApiAuditInterceptor } from './interceptors/public-api-audit.interceptor';
 
@@ -41,8 +42,10 @@ import { PublicApiAuditInterceptor } from './interceptors/public-api-audit.inter
     PublicApiWriteService,
     PublicApiIdempotencyService,
     PublicApiRetentionService,
+    PublicApiOutboxService,
     PublicApiAuthGuard,
     PublicApiAuditInterceptor,
   ],
+  exports: [PublicApiOutboxService],
 })
 export class PublicApiModule {}

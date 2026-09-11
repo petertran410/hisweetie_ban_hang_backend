@@ -90,6 +90,7 @@ import { PurchasingPlanningModule } from './purchasing-planning/purchasing-plann
 import { InventorySnapshotModule } from './inventory-snapshot/inventory-snapshot.module';
 import { PublicApiModule } from './public-api/public-api.module';
 import { CustomerDemandModule } from './customer-demand/customer-demand.module';
+import { ProductQualityModule } from './product-quality/product-quality.module';
 
 @Module({
   controllers: [HealthController],
@@ -192,6 +193,7 @@ import { CustomerDemandModule } from './customer-demand/customer-demand.module';
     InventorySnapshotModule,
     PublicApiModule,
     CustomerDemandModule,
+    ProductQualityModule,
   ],
   providers: [
     {

@@ -10,6 +10,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 export interface PublicApiTokenPayload {
   sub: string;
   clientId: string;
+  tokenVersion?: number;
   typ: 'public_api';
 }
 
@@ -46,7 +47,12 @@ export class PublicApiAuthGuard implements CanActivate {
       );
     }
 
-    if (payload.typ !== 'public_api' || !payload.sub || !payload.clientId) {
+    if (
+      payload.typ !== 'public_api' ||
+      !payload.sub ||
+      !payload.clientId ||
+      payload.tokenVersion === undefined
+    ) {
       throw new UnauthorizedException('Invalid public API bearer token');
     }
 
@@ -55,10 +61,13 @@ export class PublicApiAuthGuard implements CanActivate {
     // token đã phát trước đó.
     const client = await this.prisma.publicApiClient.findUnique({
       where: { id: payload.sub },
-      select: { id: true, isActive: true },
+      select: { id: true, isActive: true, tokenVersion: true },
     });
     if (!client?.isActive) {
       throw new UnauthorizedException('Public API client is inactive');
+    }
+    if (payload.tokenVersion !== (client as any).tokenVersion) {
+      throw new UnauthorizedException('Public API token has been revoked');
     }
 
     request.publicApiClient = { id: payload.sub, clientId: payload.clientId };
@@ -66,9 +75,9 @@ export class PublicApiAuthGuard implements CanActivate {
   }
 
   private getTokenSecret(): string {
-    const secret = process.env.PUBLIC_API_JWT_SECRET || process.env.JWT_SECRET;
+    const secret = process.env.PUBLIC_API_JWT_SECRET;
     if (!secret) {
-      throw new Error('PUBLIC_API_JWT_SECRET or JWT_SECRET must be configured');
+      throw new Error('PUBLIC_API_JWT_SECRET must be configured');
     }
     return secret;
   }

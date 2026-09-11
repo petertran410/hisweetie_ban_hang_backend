@@ -22,6 +22,9 @@ export class PublicApiRetentionService {
   private readonly deliveryRetentionDays = Number(
     process.env.PUBLIC_API_DELIVERY_RETENTION_DAYS || 14,
   );
+  private readonly failedDeliveryRetentionDays = Number(
+    process.env.PUBLIC_API_FAILED_DELIVERY_RETENTION_DAYS || 60,
+  );
 
   constructor(
     private readonly prisma: PrismaService,
@@ -32,22 +35,42 @@ export class PublicApiRetentionService {
   async purgeExpiredLogs() {
     const auditCutoff = this.cutoff(this.auditLogRetentionDays);
     const deliveryCutoff = this.cutoff(this.deliveryRetentionDays);
+    const failedDeliveryCutoff = this.cutoff(this.failedDeliveryRetentionDays);
 
-    const [audit, deliveries, idempotencyKeys] = await Promise.all([
-      this.prisma.publicApiAuditLog.deleteMany({
-        where: { createdAt: { lt: auditCutoff } },
-      }),
-      // Giữ lại bản ghi thất bại còn hạn retry để không mất dấu vết khi đối tác
-      // báo thiếu dữ liệu.
-      this.prisma.publicApiWebhookDelivery.deleteMany({
-        where: { createdAt: { lt: deliveryCutoff }, success: true },
-      }),
-      this.idempotency.purgeExpired(),
-    ]);
+    const [audit, deliveries, failedDeliveries, idempotencyKeys] =
+      await Promise.all([
+        this.prisma.publicApiAuditLog.deleteMany({
+          where: { createdAt: { lt: auditCutoff } },
+        }),
+        this.prisma.publicApiWebhookDelivery.deleteMany({
+          where: { createdAt: { lt: deliveryCutoff }, success: true },
+        }),
+        this.prisma.publicApiWebhookDelivery.deleteMany({
+          where: { createdAt: { lt: failedDeliveryCutoff }, success: false },
+        }),
+        this.idempotency.purgeExpired(),
+      ]);
 
-    if (audit.count || deliveries.count || idempotencyKeys) {
+    // Xóa outbox đã hoàn thành quá hạn (nếu bảng tồn tại)
+    let outboxCount = 0;
+    try {
+      const outbox = await (
+        this.prisma as any
+      ).publicApiEventOutbox?.deleteMany?.({
+        where: {
+          createdAt: { lt: deliveryCutoff },
+          status: { in: ['SENT', 'SKIPPED', 'DEAD'] },
+        },
+      });
+      outboxCount = outbox?.count || 0;
+    } catch {
+      // Bỏ qua nếu bảng outbox chưa được migrate
+    }
+
+    const totalDeliveries = deliveries.count + failedDeliveries.count;
+    if (audit.count || totalDeliveries || idempotencyKeys || outboxCount) {
       this.logger.log(
-        `Đã dọn ${audit.count} audit log, ${deliveries.count} webhook delivery và ${idempotencyKeys} idempotency key quá hạn`,
+        `Đã dọn ${audit.count} audit log, ${totalDeliveries} webhook delivery (${deliveries.count} thành công, ${failedDeliveries.count} thất bại), ${outboxCount} outbox và ${idempotencyKeys} idempotency key quá hạn`,
       );
     }
   }

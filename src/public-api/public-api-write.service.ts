@@ -15,6 +15,7 @@ import { CreateInvoiceDto } from '../invoices/dto/create-invoice.dto';
 import { UpdateInvoiceDto } from '../invoices/dto/update-invoice.dto';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import { PublicApiService } from './public-api.service';
+import { PublicApiOutboxService } from './public-api-outbox.service';
 
 /**
  * Đường ghi của Public API.
@@ -40,11 +41,19 @@ export class PublicApiWriteService {
     private readonly ordersService: OrdersService,
     private readonly invoicesService: InvoicesService,
     private readonly publicApiService: PublicApiService,
+    private readonly outboxService?: PublicApiOutboxService,
   ) {}
 
   async createCustomer(dto: CreateCustomerDto) {
     const customer = await this.customersService.create(dto, this.actingUserId);
-    return this.present('customers', customer);
+    const presented = this.present('customers', customer);
+    void this.outboxService?.enqueue(
+      'customers',
+      'customers.created',
+      customer.id,
+      presented.data,
+    );
+    return presented;
   }
 
   async updateCustomer(id: number, dto: UpdateCustomerDto) {
@@ -53,7 +62,14 @@ export class PublicApiWriteService {
       dto,
       this.actingUserId,
     );
-    return this.present('customers', customer);
+    const presented = this.present('customers', customer);
+    void this.outboxService?.enqueue(
+      'customers',
+      'customers.updated',
+      customer.id,
+      presented.data,
+    );
+    return presented;
   }
 
   /**
@@ -62,6 +78,10 @@ export class PublicApiWriteService {
    */
   async deactivateCustomer(id: number) {
     await this.customersService.remove(id, this.actingUserId);
+    void this.outboxService?.enqueue('customers', 'customers.deactivated', id, {
+      id,
+      isActive: false,
+    });
     return {
       message: 'Ngừng hoạt động khách hàng thành công',
       timestamp: new Date().toISOString(),
@@ -70,7 +90,14 @@ export class PublicApiWriteService {
 
   async createProduct(dto: CreateProductDto) {
     const product = await this.productsService.create(dto, this.actingUserId);
-    return this.present('products', product);
+    const presented = this.present('products', product);
+    void this.outboxService?.enqueue(
+      'products',
+      'products.created',
+      product.id,
+      presented.data,
+    );
+    return presented;
   }
 
   async updateProduct(id: number, dto: UpdateProductDto) {
@@ -79,7 +106,14 @@ export class PublicApiWriteService {
       dto,
       this.actingUserId,
     );
-    return this.present('products', product);
+    const presented = this.present('products', product);
+    void this.outboxService?.enqueue(
+      'products',
+      'products.updated',
+      product.id,
+      presented.data,
+    );
+    return presented;
   }
 
   /**
@@ -92,12 +126,24 @@ export class PublicApiWriteService {
       { isActive: false } as UpdateProductDto,
       this.actingUserId,
     );
-    return this.present('products', product);
+    const presented = this.present('products', product);
+    void this.outboxService?.enqueue('products', 'products.deactivated', id, {
+      id,
+      isActive: false,
+    });
+    return presented;
   }
 
   async createCategory(dto: { name: string; type: CategoryType }) {
     const category = await this.categoriesService.create(dto);
-    return this.present('categories', category);
+    const presented = this.present('categories', category);
+    void this.outboxService?.enqueue(
+      'categories',
+      'categories.created',
+      category.id,
+      presented.data,
+    );
+    return presented;
   }
 
   async updateCategory(
@@ -105,7 +151,14 @@ export class PublicApiWriteService {
     dto: { name?: string; type?: CategoryType },
   ) {
     const category = await this.categoriesService.update(id, dto);
-    return this.present('categories', category);
+    const presented = this.present('categories', category);
+    void this.outboxService?.enqueue(
+      'categories',
+      'categories.updated',
+      category.id,
+      presented.data,
+    );
+    return presented;
   }
 
   /**
@@ -118,12 +171,19 @@ export class PublicApiWriteService {
     const result = await this.withLock('order', () =>
       this.ordersService.create(dto, this.actingUserId),
     );
+    const order = (result as any).order;
+    const presented = this.publicApiService.toPublicResource('orders', order);
+    if (order?.id) {
+      void this.outboxService?.enqueue(
+        'orders',
+        'orders.created',
+        order.id,
+        presented,
+      );
+    }
     // OrdersService trả { order, warnings }; warnings gồm cảnh báo thiếu tồn kho.
     return {
-      data: this.publicApiService.toPublicResource(
-        'orders',
-        (result as any).order,
-      ),
+      data: presented,
       warnings: (result as any).warnings ?? [],
       timestamp: new Date().toISOString(),
     };
@@ -140,8 +200,10 @@ export class PublicApiWriteService {
       email: 'public-api@system.local',
     });
     const order = (result as any)?.order ?? result;
+    const presented = this.publicApiService.toPublicResource('orders', order);
+    void this.outboxService?.enqueue('orders', 'orders.updated', id, presented);
     return {
-      data: this.publicApiService.toPublicResource('orders', order),
+      data: presented,
       warnings: (result as any)?.warnings ?? [],
       timestamp: new Date().toISOString(),
     };
@@ -158,6 +220,10 @@ export class PublicApiWriteService {
       dto,
       this.actingUserId,
     );
+    void this.outboxService?.enqueue('orders', 'orders.cancelled', id, {
+      id,
+      status: 'cancelled',
+    });
     return { ...result, timestamp: new Date().toISOString() };
   }
 
@@ -169,7 +235,16 @@ export class PublicApiWriteService {
     const invoice = await this.withLock('invoice', () =>
       this.invoicesService.create(dto, this.actingUserId),
     );
-    return this.present('invoices', invoice);
+    const presented = this.present('invoices', invoice);
+    if ((invoice as any)?.id) {
+      void this.outboxService?.enqueue(
+        'invoices',
+        'invoices.created',
+        (invoice as any).id,
+        presented.data,
+      );
+    }
+    return presented;
   }
 
   async updateInvoice(id: number, dto: UpdateInvoiceDto) {
@@ -178,7 +253,14 @@ export class PublicApiWriteService {
       dto,
       this.actingUserId,
     );
-    return this.present('invoices', invoice);
+    const presented = this.present('invoices', invoice);
+    void this.outboxService?.enqueue(
+      'invoices',
+      'invoices.updated',
+      id,
+      presented.data,
+    );
+    return presented;
   }
 
   /**
@@ -191,7 +273,12 @@ export class PublicApiWriteService {
       { status: INVOICE_STATUS.CANCELLED, cancelPayments } as UpdateInvoiceDto,
       this.actingUserId,
     );
-    return this.present('invoices', invoice);
+    const presented = this.present('invoices', invoice);
+    void this.outboxService?.enqueue('invoices', 'invoices.cancelled', id, {
+      id,
+      status: 'cancelled',
+    });
+    return presented;
   }
 
   /**

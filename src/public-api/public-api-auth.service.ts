@@ -49,7 +49,12 @@ export class PublicApiAuthService {
 
     const expiresIn = Math.max(300, Math.min(client.accessTokenTtl, 86400));
     const accessToken = await this.jwtService.signAsync(
-      { sub: client.id, clientId: client.clientId, typ: 'public_api' },
+      {
+        sub: client.id,
+        clientId: client.clientId,
+        tokenVersion: (client as any).tokenVersion ?? 1,
+        typ: 'public_api',
+      },
       { secret: this.getTokenSecret(), expiresIn },
     );
 
@@ -62,9 +67,8 @@ export class PublicApiAuthService {
   }
 
   private getTokenSecret(): string {
-    const secret = process.env.PUBLIC_API_JWT_SECRET || process.env.JWT_SECRET;
-    if (!secret)
-      throw new Error('PUBLIC_API_JWT_SECRET or JWT_SECRET must be configured');
+    const secret = process.env.PUBLIC_API_JWT_SECRET;
+    if (!secret) throw new Error('PUBLIC_API_JWT_SECRET must be configured');
     return secret;
   }
 }

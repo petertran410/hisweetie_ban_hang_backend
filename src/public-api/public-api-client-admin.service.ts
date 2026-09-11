@@ -15,6 +15,7 @@ const PUBLIC_FIELDS = {
   clientId: true,
   isActive: true,
   accessTokenTtl: true,
+  tokenVersion: true,
   createdAt: true,
   updatedAt: true,
 } as const;
@@ -89,7 +90,10 @@ export class PublicApiClientAdminService {
     const clientSecret = randomBytes(32).toString('base64url');
     const client = await this.prisma.publicApiClient.update({
       where: { id },
-      data: { clientSecret: await bcrypt.hash(clientSecret, 10) },
+      data: {
+        clientSecret: await bcrypt.hash(clientSecret, 10),
+        tokenVersion: { increment: 1 },
+      },
       select: PUBLIC_FIELDS,
     });
     return { data: { ...client, clientSecret } };
@@ -101,9 +105,13 @@ export class PublicApiClientAdminService {
    */
   async setActive(id: string, isActive: boolean) {
     await this.assertExists(id);
+    const data: any = { isActive };
+    if (!isActive) {
+      data.tokenVersion = { increment: 1 };
+    }
     const client = await this.prisma.publicApiClient.update({
       where: { id },
-      data: { isActive },
+      data,
       select: PUBLIC_FIELDS,
     });
     return { data: client };

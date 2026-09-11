@@ -1,4 +1,5 @@
 import { ConflictException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { PublicApiIdempotencyService } from './public-api-idempotency.service';
 
 describe('PublicApiIdempotencyService', () => {
@@ -54,10 +55,10 @@ describe('PublicApiIdempotencyService', () => {
     const { service, prisma } = createService();
     prisma.publicApiIdempotencyKey.findUnique.mockResolvedValue({
       status: 'COMPLETED',
-      // Băm của đúng body trong `options()`; phải khớp thì mới được replay.
+      // Băm của đúng method + path + body trong `options()`; phải khớp thì mới được replay.
       requestHash: require('crypto')
         .createHash('sha256')
-        .update(JSON.stringify({ name: 'Khách A' }))
+        .update('POST:/customers:{"name":"Khách A"}')
         .digest('hex'),
       response: { data: { id: 7 } },
     });
@@ -92,7 +93,7 @@ describe('PublicApiIdempotencyService', () => {
       status: 'PROCESSING',
       requestHash: require('crypto')
         .createHash('sha256')
-        .update(JSON.stringify({ name: 'Khách A' }))
+        .update('POST:/customers:{"name":"Khách A"}')
         .digest('hex'),
     });
     const operation = jest.fn();
@@ -128,5 +129,97 @@ describe('PublicApiIdempotencyService', () => {
 
     // Giữ khoá lại sẽ khoá cứng client khỏi thao tác hợp lệ về sau.
     expect(prisma.publicApiIdempotencyKey.delete).toHaveBeenCalled();
+  });
+
+  it('chấp nhận replay khi thứ tự key trong body JSON đảo lộn (canonical body)', async () => {
+    const { service, prisma } = createService();
+    const crypto = require('crypto');
+    const canonicalHash = crypto
+      .createHash('sha256')
+      .update('POST:/customers:{"name":"Khách A","phone":"090123"}')
+      .digest('hex');
+
+    prisma.publicApiIdempotencyKey.findUnique.mockResolvedValue({
+      status: 'COMPLETED',
+      requestHash: canonicalHash,
+      statusCode: 201,
+      response: { data: { id: 7 } },
+    });
+
+    const mockRes = { status: jest.fn() };
+    const operation = jest.fn();
+    // Client gửi phone trước name
+    const result = await service.run(
+      {
+        clientId,
+        key: 'key-1',
+        method: 'POST',
+        path: '/customers',
+        body: { phone: '090123', name: 'Khách A' },
+        res: mockRes,
+      },
+      operation,
+    );
+
+    expect(operation).not.toHaveBeenCalled();
+    expect(result).toEqual({ data: { id: 7 } });
+    expect(mockRes.status).toHaveBeenCalledWith(201);
+  });
+
+  it('từ chối khi cùng key nhưng khác path', async () => {
+    const { service, prisma } = createService();
+    const crypto = require('crypto');
+    const hash1 = crypto
+      .createHash('sha256')
+      .update('POST:/products:{"name":"Khách A"}')
+      .digest('hex');
+
+    prisma.publicApiIdempotencyKey.findUnique.mockResolvedValue({
+      status: 'COMPLETED',
+      requestHash: hash1,
+      response: { data: { id: 7 } },
+    });
+
+    await expect(
+      service.run(
+        {
+          clientId,
+          key: 'key-1',
+          method: 'POST',
+          path: '/customers',
+          body: { name: 'Khách A' },
+        },
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('từ chối Idempotency-Key không hợp lệ', async () => {
+    const { service } = createService();
+    await expect(
+      service.run(
+        {
+          clientId,
+          key: '   ',
+          method: 'POST',
+          path: '/customers',
+          body: {},
+        },
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    await expect(
+      service.run(
+        {
+          clientId,
+          key: 'a'.repeat(256),
+          method: 'POST',
+          path: '/customers',
+          body: {},
+        },
+        jest.fn(),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 });
