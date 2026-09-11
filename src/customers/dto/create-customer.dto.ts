@@ -50,6 +50,9 @@ export class CreateCustomerDto {
   groupIds?: number[];
   @IsOptional() @IsNumber() @Type(() => Number) branchId?: number;
   @IsOptional() @IsInt() @Type(() => Number) parentId?: number;
+  @IsInt({ message: 'Vui lòng chọn Sale PIC' })
+  @Type(() => Number)
+  salePicId!: number;
   @IsArray()
   @ArrayMinSize(1, { message: 'Phải có ít nhất 1 địa chỉ giao hàng' })
   @ValidateNested({ each: true })
