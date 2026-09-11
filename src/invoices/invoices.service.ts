@@ -14,6 +14,7 @@ import {
   INVOICE_STATUS,
   getStatusLabel,
   CreateInvoiceFromOrderDto,
+  MergeInvoicesDto,
 } from './dto';
 import {
   ORDER_STATUS,
@@ -1898,6 +1899,414 @@ export class InvoicesService {
     }
 
     return result;
+  }
+
+  async validateMerge(sourceInvoiceIds: number[]): Promise<{ valid: boolean; errors: string[] }> {
+    const sourceIds = [...new Set(sourceInvoiceIds.map(Number))];
+    const errors: string[] = [];
+
+    if (sourceIds.length < 2) {
+      return { valid: false, errors: ['Cần chọn ít nhất hai hóa đơn để gộp'] };
+    }
+
+    const invoices = await this.prisma.invoice.findMany({
+      where: { id: { in: sourceIds } },
+      select: {
+        id: true,
+        code: true,
+        status: true,
+        branchId: true,
+        customerId: true,
+        misaConfirmed: true,
+        misaSyncStatus: true,
+        returnOrderDetails: {
+          where: { returnOrder: { status: { not: 5 } } },
+          select: { id: true },
+          take: 1,
+        },
+        promotionLogs: {
+          where: { status: 'applied' },
+          select: { id: true },
+          take: 1,
+        },
+      },
+    });
+
+    if (invoices.length !== sourceIds.length) {
+      return { valid: false, errors: ['Một hoặc nhiều hóa đơn không tồn tại'] };
+    }
+
+    for (const inv of invoices) {
+      if (inv.status === INVOICE_STATUS.CANCELLED) {
+        errors.push(`Hóa đơn ${inv.code} đã bị hủy`);
+      } else if (inv.status === INVOICE_STATUS.RETURNED) {
+        errors.push(`Hóa đơn ${inv.code} đã trả hàng`);
+      }
+      if (inv.returnOrderDetails.length > 0) {
+        errors.push(`Hóa đơn ${inv.code} có phiếu trả hàng đang hoạt động`);
+      }
+      if (inv.promotionLogs.length > 0) {
+        errors.push(`Hóa đơn ${inv.code} có khuyến mãi đã áp dụng`);
+      }
+      if (inv.misaConfirmed || inv.misaSyncStatus === 'SYNCED') {
+        errors.push(`Hóa đơn ${inv.code} đã đồng bộ Misa`);
+      }
+    }
+
+    const branchIds = new Set(invoices.map((i) => i.branchId));
+    if (branchIds.size > 1) {
+      errors.push('Các hóa đơn phải cùng chi nhánh');
+    }
+    if (branchIds.has(null) || branchIds.has(undefined as any)) {
+      errors.push('Có hóa đơn chưa có chi nhánh');
+    }
+
+    const customerIds = new Set(invoices.map((i) => i.customerId ?? null));
+    if (customerIds.size > 1) {
+      errors.push('Các hóa đơn phải cùng khách hàng');
+    }
+
+    return { valid: errors.length === 0, errors };
+  }
+
+  /**
+   * Gộp nhiều hóa đơn thành một hóa đơn mới. Đây là một transaction domain
+   * riêng, không ghép bằng chuỗi PUT/DELETE từ client vì còn phải chuyển payment
+   * và các relation báo đơn một cách nguyên tử.
+   */
+  async merge(dto: MergeInvoicesDto, userId: number) {
+    const sourceIds = [...new Set(dto.sourceInvoiceIds.map(Number))];
+    if (sourceIds.length < 2) {
+      throw new BadRequestException('Cần chọn ít nhất hai hóa đơn để gộp');
+    }
+    if (!sourceIds.includes(Number(dto.representativeInvoiceId))) {
+      throw new BadRequestException('Hóa đơn đại diện phải nằm trong danh sách đã chọn');
+    }
+
+    const touchedProductIds = new Set<number>();
+    const result = await this.prisma.$transaction(async (tx) => {
+      for (const sourceId of [...sourceIds].sort((a, b) => a - b)) {
+        await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${sourceId} FOR UPDATE`;
+      }
+
+      const invoices = await tx.invoice.findMany({
+        where: { id: { in: sourceIds } },
+        include: {
+          details: true,
+          payments: true,
+          delivery: true,
+          order: { select: { id: true, code: true } },
+          customer: { select: { id: true, name: true, totalDebt: true } },
+          mergeTargets: {
+            include: {
+              sources: true,
+            },
+          },
+          packingSlips: {
+            where: { packingSlip: { cancelledAt: null } },
+            select: { packingSlipId: true },
+          },
+          packingHangs: {
+            where: { packingHang: { cancelledAt: null } },
+            select: { packingHangId: true },
+          },
+          packingLoadings: {
+            where: { packingLoading: { cancelledAt: null } },
+            select: { packingLoadingId: true },
+          },
+          returnOrderDetails: {
+            where: { returnOrder: { status: { not: 5 } } },
+            select: { id: true },
+          },
+          promotionLogs: {
+            where: { status: 'applied' },
+            select: { id: true },
+          },
+        },
+      });
+
+      if (invoices.length !== sourceIds.length) {
+        throw new NotFoundException('Một hoặc nhiều hóa đơn không tồn tại');
+      }
+
+      const representative = invoices.find(
+        (invoice) => invoice.id === Number(dto.representativeInvoiceId),
+      )!;
+      const invalid = invoices.find(
+        (invoice) =>
+          invoice.status === INVOICE_STATUS.CANCELLED ||
+          invoice.status === INVOICE_STATUS.RETURNED ||
+          invoice.returnOrderDetails.length > 0 ||
+          invoice.promotionLogs.length > 0 ||
+          invoice.misaConfirmed ||
+          invoice.misaSyncStatus === 'SYNCED',
+      );
+      if (invalid) {
+        throw new BadRequestException(
+          `Hóa đơn ${invalid.code} có trạng thái hoặc nghiệp vụ không thể gộp`,
+        );
+      }
+
+      const branchId = representative.branchId;
+      const customerId = representative.customerId ?? null;
+      if (invoices.some((invoice) => invoice.branchId !== branchId)) {
+        throw new BadRequestException('Các hóa đơn phải cùng chi nhánh');
+      }
+      if (invoices.some((invoice) => (invoice.customerId ?? null) !== customerId)) {
+        throw new BadRequestException('Các hóa đơn phải cùng khách hàng');
+      }
+      if (!branchId) {
+        throw new BadRequestException('Hóa đơn chưa có chi nhánh');
+      }
+
+      const sourceNotes = new Map<number, { id: number; code: string; note: string; date: Date; orderId: number | null; orderCode: string | null }>();
+      for (const invoice of invoices) {
+        const nested = invoice.mergeTargets.flatMap((merge) =>
+          merge.sources.map((item) => ({
+            id: item.sourceInvoiceId,
+            code: item.sourceCode,
+            note: item.sourceDescription?.trim() || '',
+            date: item.sourcePurchaseDate,
+            orderId: item.sourceOrderId ?? null,
+            orderCode: item.sourceOrderCode ?? null,
+          })),
+        );
+        const snapshots = nested.length > 0
+          ? nested
+          : [{
+              id: invoice.id,
+              code: invoice.code,
+              note: invoice.description?.trim() || '',
+              date: invoice.purchaseDate,
+              orderId: invoice.orderId ?? null,
+              orderCode: invoice.order?.code ?? null,
+            }];
+        for (const snapshot of snapshots) {
+          if (!sourceNotes.has(snapshot.id)) sourceNotes.set(snapshot.id, snapshot);
+        }
+      }
+      const orderedNotes = [...sourceNotes.values()].sort(
+        (a, b) => a.date.getTime() - b.date.getTime() || a.code.localeCompare(b.code),
+      );
+      const descriptionParts = [
+        `Hóa đơn được gộp từ: ${orderedNotes.map((item) => item.code).join(', ')}`,
+      ];
+      const notes = orderedNotes.filter((item) => item.note);
+      if (notes.length > 0) {
+        descriptionParts.push([
+          'Ghi chú hóa đơn gốc:',
+          ...notes.map((item) => `- ${item.code}: ${item.note}`),
+        ].join('\n'));
+      }
+
+      const detailData = invoices.flatMap((invoice) =>
+        invoice.details.map((detail) => ({
+          productId: detail.productId,
+          productCode: detail.productCode,
+          productName: detail.productName,
+          quantity: detail.quantity,
+          price: detail.price,
+          discount: detail.discount,
+          discountRatio: detail.discountRatio,
+          totalPrice: detail.totalPrice,
+          note: detail.note,
+          conditionType: detail.conditionType,
+          isGift: detail.isGift,
+          lineType: detail.lineType,
+          promotionId: detail.promotionId,
+          manufactureDate: detail.manufactureDate,
+          soldExpiryDate: detail.soldExpiryDate,
+        })),
+      );
+      const totalAmount = detailData.reduce((sum, item) => sum + Number(item.totalPrice), 0);
+      const discount = invoices.reduce((sum, invoice) => sum + Number(invoice.discount), 0);
+      const shippingFee = invoices.reduce((sum, invoice) => sum + Number(invoice.shippingFee), 0);
+      const grandTotal = totalAmount - discount + shippingFee;
+      const activePayments = invoices.flatMap((invoice) =>
+        invoice.payments.filter((payment) => payment.status !== 2),
+      );
+      const paidAmount = activePayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+      const debtAmount = grandTotal - paidAmount;
+
+      const slipIds = [...new Set(invoices.flatMap((invoice) => invoice.packingSlips.map((row) => row.packingSlipId)))];
+      const hangIds = [...new Set(invoices.flatMap((invoice) => invoice.packingHangs.map((row) => row.packingHangId)))];
+      const loadingIds = [...new Set(invoices.flatMap((invoice) => invoice.packingLoadings.map((row) => row.packingLoadingId)))];
+      const firstSlip = slipIds.length > 0
+        ? await tx.packingSlip.findFirst({
+            where: { id: { in: slipIds }, cancelledAt: null },
+            orderBy: { createdAt: 'asc' },
+            select: { createdAt: true },
+          })
+        : null;
+      const status = slipIds.length > 0
+        ? INVOICE_STATUS.DELIVERED
+        : loadingIds.length > 0
+          ? INVOICE_STATUS.LOADING
+          : hangIds.length > 0
+            ? INVOICE_STATUS.PACKED
+            : debtAmount <= 0 && invoices.every((invoice) => invoice.status === INVOICE_STATUS.COMPLETED)
+              ? INVOICE_STATUS.COMPLETED
+              : INVOICE_STATUS.PROCESSING;
+
+      const code = await this.generateSafeInvoiceCode(tx);
+      const target = await tx.invoice.create({
+        data: {
+          code,
+          orderId: null,
+          customerId,
+          parentCustomerId: customerId,
+          branchId,
+          soldById: representative.soldById,
+          saleChannelId: representative.saleChannelId,
+          priceBookId: representative.priceBookId,
+          priceBookName: representative.priceBookName,
+          purchaseDate: representative.purchaseDate,
+          deliveredAt: firstSlip?.createdAt ?? null,
+          totalAmount,
+          discount,
+          discountRatio: 0,
+          shippingFee,
+          grandTotal,
+          paidAmount,
+          debtAmount,
+          status,
+          statusValue: getStatusLabel(status),
+          usingCod: representative.usingCod,
+          description: descriptionParts.join('\n\n'),
+          createdBy: userId,
+          customerDebtSnapshot: null,
+          details: { create: detailData },
+          ...(representative.delivery
+            ? { delivery: { create: { ...this.copyInvoiceDelivery(representative.delivery) } } }
+            : {}),
+        },
+        include: { details: true, payments: true, delivery: true },
+      });
+
+      const sourceInvoices = invoices.map((invoice) => invoice.id);
+      for (const payment of activePayments) {
+        await tx.invoicePayment.update({
+          where: { id: payment.id },
+          data: {
+            invoiceId: target.id,
+            description: `${payment.description || 'Thanh toán hóa đơn'} (Chuyển từ ${payment.invoiceId} sang ${target.code})`,
+          },
+        });
+      }
+
+      const actorUser = await tx.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
+      const actor = buildInventoryLogActor(userId, actorUser?.name || actorUser?.email);
+      const branch = await tx.branch.findUnique({ where: { id: branchId }, select: { name: true } });
+      for (const invoice of invoices) {
+        for (const detail of invoice.details) {
+          if (detail.productId == null) continue;
+          await tx.inventory.updateMany({
+            where: { productId: detail.productId, branchId },
+            data: this.buildInventoryRestoreData(Number(detail.quantity), detail.conditionType, { isGift: detail.isGift }),
+          });
+          touchedProductIds.add(detail.productId);
+        }
+        await tx.invoice.update({
+          where: { id: invoice.id },
+          data: { status: INVOICE_STATUS.CANCELLED, statusValue: getStatusLabel(INVOICE_STATUS.CANCELLED), paidAmount: 0, debtAmount: 0 },
+        });
+      }
+      for (const detail of target.details) {
+        if (detail.productId == null) continue;
+        const condition = detail.conditionType || 'normal';
+        await this.validateConditionQuantity(tx, detail.productId, branchId, Number(detail.quantity), condition, detail.soldExpiryDate);
+        const inventory = await tx.inventory.findFirst({ where: { productId: detail.productId, branchId } });
+        await tx.inventory.updateMany({
+          where: { productId: detail.productId, branchId },
+          data: this.buildInventoryDeductData(Number(detail.quantity), condition, { isGift: detail.isGift }),
+        });
+        await tx.inventoryLog.create({
+          data: {
+            productId: detail.productId,
+            productCode: detail.productCode,
+            productName: detail.productName,
+            branchId,
+            branchName: branch?.name || '',
+            transactionType: 'SALE',
+            refCode: target.code,
+            refType: 'invoice',
+            refId: target.id,
+            quantity: -Number(detail.quantity),
+            costPrice: inventory ? Number(inventory.cost) : 0,
+            transactionPrice: Number(detail.price),
+            partnerId: customerId,
+            partnerName: representative.customer?.name,
+            transactionDate: target.purchaseDate,
+            ...buildInventoryLogBase(actor),
+          },
+        });
+      }
+
+      // Chuyển relation active theo từng document, rồi tạo duy nhất một row target.
+      await tx.packingSlipInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingSlipId: { in: slipIds } } });
+      await tx.packingHangInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingHangId: { in: hangIds } } });
+      await tx.packingLoadingInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingLoadingId: { in: loadingIds } } });
+      if (slipIds.length) await tx.packingSlipInvoice.createMany({ data: slipIds.map((packingSlipId) => ({ packingSlipId, invoiceId: target.id })) });
+      if (hangIds.length) await tx.packingHangInvoice.createMany({ data: hangIds.map((packingHangId) => ({ packingHangId, invoiceId: target.id })) });
+      if (loadingIds.length) await tx.packingLoadingInvoice.createMany({ data: loadingIds.map((packingLoadingId) => ({ packingLoadingId, invoiceId: target.id })) });
+
+      await recalcConditionBucketsForPairs(tx, detailData.filter((item) => item.productId != null).map((item) => ({ productId: item.productId!, branchId })));
+      await recalcOnHandForPairs(tx, detailData.filter((item) => item.productId != null).map((item) => ({ productId: item.productId!, branchId })));
+      if (customerId) await recalcCustomerDebt(tx, customerId);
+
+      const merge = await tx.invoiceMerge.create({
+        data: {
+          targetInvoiceId: target.id,
+          representativeInvoiceId: representative.id,
+          createdBy: userId,
+          reason: dto.reason,
+          sources: {
+            create: orderedNotes.map((item) => {
+              const source = invoices.find((invoice) => invoice.code === item.code);
+              return {
+                sourceInvoiceId: item.id,
+                sourceCode: item.code,
+                sourceOrderId: item.orderId,
+                sourceOrderCode: item.orderCode,
+                sourceDescription: item.note || null,
+                sourcePurchaseDate: item.date,
+              };
+            }),
+          },
+        },
+        include: { sources: true },
+      });
+
+      await this.auditLogsService.create({
+        actionType: 'POST',
+        actionCode: 'INVOICE_MERGE',
+        entityType: 'invoices',
+        entityId: String(target.id),
+        entityCode: target.code,
+        category: getCategoryFromActionCode('INVOICE_MERGE'),
+        severity: getSeverityFromActionCode('INVOICE_MERGE'),
+        snapshot: { targetInvoiceId: target.id, targetInvoiceCode: target.code, sourceInvoiceIds: sourceIds, sourceInvoiceCodes: invoices.map((invoice) => invoice.code), description: target.description, slipIds, hangIds, loadingIds, paymentIds: activePayments.map((payment) => payment.id) },
+        message: renderAuditMessage('INVOICE_MERGE', { invoiceCode: target.code, sourceInvoiceCodes: invoices.map((invoice) => invoice.code).join(', ') }),
+        messageTemplate: 'INVOICE_MERGE',
+        userId,
+        userName: actorUser?.name || actorUser?.email || 'System',
+        branchId,
+      });
+
+      const invoice = await tx.invoice.findUnique({
+        where: { id: target.id },
+        include: { details: true, payments: true, delivery: true },
+      });
+      return { invoice, merge };
+    });
+
+    for (const productId of touchedProductIds) this.larkProductSync.enqueueSync(productId);
+    return result;
+  }
+
+  private copyInvoiceDelivery(delivery: any) {
+    const { id, invoiceId, createdAt, updatedAt, invoice, location, partnerDelivery, ...data } = delivery;
+    return data;
   }
 
   async update(id: number, dto: UpdateInvoiceDto, userId?: number) {

@@ -37,6 +37,11 @@ model User {
   createdCustomerGroups                                     CustomerGroup[]                   @relation("CustomerGroupCreator")
   createdCustomers                                          Customer[]                        @relation("CustomerCreator")
   updatedCustomers                                          Customer[]                        @relation("CustomerUpdater")
+  createdCustomerDemands                                    CustomerDemand[]                  @relation("CustomerDemandCreator")
+  updatedCustomerDemands                                    CustomerDemand[]                  @relation("CustomerDemandUpdater")
+  approvedCustomerDemandMonths                              CustomerDemandMonth[]             @relation("CustomerDemandMonthApprover")
+  cancelledCustomerDemandMonths                             CustomerDemandMonth[]             @relation("CustomerDemandMonthCanceller")
+  customerDemandChangeLogs                                  CustomerDemandChangeLog[]         @relation("CustomerDemandChangeLogActor")
   assignedDebtTickets                                       DebtTicket[]                      @relation("DebtTicketAssignee")
   closedDebtTickets                                         DebtTicket[]                      @relation("DebtTicketCloser")
   createdDebtTickets                                        DebtTicket[]                      @relation("DebtTicketCreator")
@@ -470,6 +475,7 @@ model Customer {
   promotionCustomers     PromotionCustomer[]
   returnOrders           ReturnOrder[]                   @relation("ReturnOrderCustomer")
   parentReturnOrders     ReturnOrder[]                   @relation("ReturnOrderParentCustomer")
+  CustomerDemand         CustomerDemand[]
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -783,6 +789,8 @@ model Product {
   transferDetails                TransferDetail[]
   transferTempQuantities         TransferTempQuantity[]
   vehicleShipmentItems           VehicleShipmentItem[]
+  CustomerDemandLine             CustomerDemandLine[]
+  PlanningTrend                  PlanningTrend[]
 
   @@index([id, name])
   @@index([larkSyncStatus])
@@ -1640,6 +1648,8 @@ model Invoice {
   packingSlips           PackingSlipInvoice[]
   returnOrderDetails     ReturnOrderDetail[]
   returnOrders           ReturnOrder[]
+  mergeTargets           InvoiceMerge[]          @relation("InvoiceMergeTarget")
+  mergeSources           InvoiceMergeSource[]    @relation("InvoiceMergeSource")
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
@@ -1648,6 +1658,40 @@ model Invoice {
   @@index([misaSyncStatus])
   @@index([updatedAt, id])
   @@map("invoices")
+}
+
+model InvoiceMerge {
+  id                      Int                  @id @default(autoincrement())
+  targetInvoiceId         Int
+  representativeInvoiceId Int
+  createdBy               Int
+  reason                  String?
+  createdAt               DateTime             @default(now())
+  targetInvoice           Invoice              @relation("InvoiceMergeTarget", fields: [targetInvoiceId], references: [id])
+  sources                 InvoiceMergeSource[]
+
+  @@index([targetInvoiceId])
+  @@index([representativeInvoiceId])
+  @@map("invoice_merges")
+}
+
+model InvoiceMergeSource {
+  id                 Int          @id @default(autoincrement())
+  mergeId            Int
+  sourceInvoiceId    Int
+  sourceCode         String
+  sourceOrderId      Int?
+  sourceOrderCode    String?
+  sourceDescription  String?
+  sourcePurchaseDate DateTime
+  createdAt          DateTime     @default(now())
+  merge              InvoiceMerge @relation(fields: [mergeId], references: [id], onDelete: Cascade)
+  sourceInvoice      Invoice      @relation("InvoiceMergeSource", fields: [sourceInvoiceId], references: [id])
+
+  @@unique([mergeId, sourceInvoiceId])
+  @@index([sourceInvoiceId])
+  @@index([sourceOrderId])
+  @@map("invoice_merge_sources")
 }
 
 model InvoiceDetail {
@@ -3648,6 +3692,106 @@ model PlanningNetworkConfig {
   updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@map("planning_network_config")
+}
+
+/// Phiếu nhu cầu khách hàng OEM/đặt hộ, chỉ phục vụ hoạch định mua hàng.
+model CustomerDemand {
+  id         Int                   @id @default(autoincrement())
+  customerId Int                   @map("customer_id")
+  note       String?
+  createdBy  Int                   @map("created_by")
+  updatedBy  Int?                  @map("updated_by")
+  createdAt  DateTime              @default(now()) @map("created_at")
+  updatedAt  DateTime              @updatedAt @map("updated_at")
+  customer   Customer              @relation(fields: [customerId], references: [id])
+  creator    User                  @relation("CustomerDemandCreator", fields: [createdBy], references: [id])
+  updater    User?                 @relation("CustomerDemandUpdater", fields: [updatedBy], references: [id])
+  months     CustomerDemandMonth[]
+
+  @@index([customerId, updatedAt])
+  @@map("customer_demands")
+}
+
+/// Một tháng trong phiếu Demand; trạng thái được quản lý độc lập theo tháng.
+model CustomerDemandMonth {
+  id          Int                       @id @default(autoincrement())
+  demandId    Int                       @map("demand_id")
+  demandMonth DateTime                  @map("demand_month") @db.Date
+  status      String                    @default("DRAFT") @db.VarChar(15)
+  note        String?
+  approvedAt  DateTime?                 @map("approved_at")
+  approvedBy  Int?                      @map("approved_by")
+  cancelledAt DateTime?                 @map("cancelled_at")
+  cancelledBy Int?                      @map("cancelled_by")
+  createdAt   DateTime                  @default(now()) @map("created_at")
+  updatedAt   DateTime                  @updatedAt @map("updated_at")
+  demand      CustomerDemand            @relation(fields: [demandId], references: [id], onDelete: Cascade)
+  lines       CustomerDemandLine[]
+  approver    User?                     @relation("CustomerDemandMonthApprover", fields: [approvedBy], references: [id])
+  canceller   User?                     @relation("CustomerDemandMonthCanceller", fields: [cancelledBy], references: [id])
+  changeLogs  CustomerDemandChangeLog[]
+
+  @@unique([demandId, demandMonth])
+  @@index([demandMonth, status])
+  @@map("customer_demand_months")
+}
+
+/// Dòng sản phẩm trong một tháng Demand.
+model CustomerDemandLine {
+  id              Int                 @id @default(autoincrement())
+  demandMonthId   Int                 @map("demand_month_id")
+  productId       Int                 @map("product_id")
+  inputQuantity   Decimal             @map("input_quantity") @db.Decimal(18, 4)
+  inputUnit       String              @default("BASE") @map("input_unit") @db.VarChar(10)
+  quantityBase    Decimal             @map("quantity_base") @db.Decimal(18, 4)
+  conversionValue Decimal             @map("conversion_value") @db.Decimal(18, 4)
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+  demandMonth     CustomerDemandMonth @relation(fields: [demandMonthId], references: [id], onDelete: Cascade)
+  product         Product             @relation(fields: [productId], references: [id])
+
+  @@unique([demandMonthId, productId])
+  @@index([productId, demandMonthId])
+  @@map("customer_demand_lines")
+}
+
+/// Lịch sử thay đổi Demand, đặc biệt bắt buộc khi sửa tháng Confirmed.
+model CustomerDemandChangeLog {
+  id             Int                 @id @default(autoincrement())
+  demandMonthId  Int                 @map("demand_month_id")
+  action         String              @db.VarChar(20)
+  reason         String
+  beforeSnapshot Json?               @map("before_snapshot")
+  afterSnapshot  Json?               @map("after_snapshot")
+  actorId        Int                 @map("actor_id")
+  createdAt      DateTime            @default(now()) @map("created_at")
+  demandMonth    CustomerDemandMonth @relation(fields: [demandMonthId], references: [id], onDelete: Cascade)
+  actor          User                @relation("CustomerDemandChangeLogActor", fields: [actorId], references: [id])
+
+  @@index([demandMonthId, createdAt])
+  @@map("customer_demand_change_logs")
+}
+
+/// Trend bán hàng do người dùng khai: theo SKU hoặc nhóm hàng + khoảng ngày.
+model PlanningTrend {
+  id            Int      @id @default(autoincrement())
+  productId     Int?     @map("product_id")
+  categoryName  String?  @map("category_name") @db.VarChar(255)
+  startDate     DateTime @map("start_date") @db.Date
+  endDate       DateTime @map("end_date") @db.Date
+  kind          String   @default("UPLIFT") @db.VarChar(20)
+  upliftFactor  Decimal? @map("uplift_factor") @db.Decimal(10, 4)
+  extraQuantity Decimal? @map("extra_quantity") @db.Decimal(18, 4)
+  note          String?
+  isActive      Boolean  @default(true) @map("is_active")
+  createdBy     Int?     @map("created_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  product       Product? @relation(fields: [productId], references: [id])
+
+  @@index([productId, isActive])
+  @@index([startDate, endDate])
+  @@map("planning_trend")
 }
 
 model PlanningConfig {
