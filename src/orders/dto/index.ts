@@ -464,6 +464,11 @@ export class OrderQueryDto {
   @IsString()
   @IsIn(['asc', 'desc'])
   orderDirection?: string;
+
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  includeStatusCounts?: boolean;
 }
 
 export class CreateOrderPaymentDto {

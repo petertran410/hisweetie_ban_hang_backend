@@ -1463,6 +1463,10 @@ model Order {
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
+  @@index([branchId, orderDate(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([status, orderDate(sort: Desc)])
+  @@index([customerId, orderDate(sort: Desc)])
   @@map("orders")
 }
 
@@ -1551,6 +1555,7 @@ model OrderPayment {
 
   @@unique([code, orderId])
   @@index([code])
+  @@index([orderId])
   @@map("order_payments")
 }
 
@@ -1672,6 +1677,10 @@ model Invoice {
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
   @@index([branchId, purchaseDate])
+  @@index([branchId, createdAt(sort: Desc)])
+  @@index([status, purchaseDate(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([orderId])
   @@index([customerId, deliveredAt])
   @@index([misaSyncStatus])
   @@index([updatedAt, id])
@@ -1766,6 +1775,7 @@ model InvoicePayment {
 
   @@unique([code, invoiceId])
   @@index([code])
+  @@index([invoiceId])
   @@map("invoice_payments")
 }
 

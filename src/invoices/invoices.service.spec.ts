@@ -283,6 +283,102 @@ describe('InvoicesService customer invoice debt guard', () => {
   });
 });
 
+describe('InvoicesService optimized list contracts', () => {
+  const createService = (prisma: any) =>
+    new InvoicesService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+  it('getTotals chỉ tải invoice có return order để điều chỉnh totals', async () => {
+    const prisma = {
+      invoice: {
+        aggregate: jest.fn().mockResolvedValue({
+          _sum: {
+            totalAmount: 1000,
+            grandTotal: 1000,
+            paidAmount: 100,
+            debtAmount: 900,
+          },
+          _count: { _all: 2 },
+        }),
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 2,
+            grandTotal: 500,
+            paidAmount: 0,
+          },
+        ]),
+      },
+      returnOrder: {
+        groupBy: jest.fn().mockResolvedValue([
+          {
+            invoiceId: 2,
+            status: 4,
+            refundType: 'cash_refund',
+            _sum: {
+              refundAmount: 100,
+              refundedAmount: 100,
+            },
+          },
+        ]),
+      },
+    };
+    const service = createService(prisma);
+    jest
+      .spyOn(service as any, 'buildInvoiceListWhere')
+      .mockResolvedValue({ branchId: 1 });
+
+    const totals = await service.getTotals({} as any);
+
+    expect(prisma.invoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: [2] } },
+      }),
+    );
+    expect(totals.returnOrderAmount).toBe(100);
+    expect(totals.cashRefundAmount).toBe(100);
+    expect(totals.remainingAmount).toBe(900);
+  });
+
+  it('findPickupDetails chỉ select dữ liệu cần cho phiếu pick-up', async () => {
+    const prisma = {
+      invoice: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const service = createService(prisma);
+
+    await service.findPickupDetails([3, 5]);
+
+    expect(prisma.invoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: [3, 5] } },
+        select: expect.objectContaining({
+          id: true,
+          code: true,
+          customer: expect.any(Object),
+          details: expect.objectContaining({
+            select: expect.objectContaining({
+              productCode: true,
+              productName: true,
+              quantity: true,
+              conditionType: true,
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+});
+
 describe('InvoicesService source shipping fee allocation', () => {
   const service = new InvoicesService(
     {} as any,

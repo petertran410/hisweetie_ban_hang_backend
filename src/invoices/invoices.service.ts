@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateInvoiceDto,
@@ -66,6 +67,66 @@ const POS_PREPAID_ORDER_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
+
+const INVOICE_LIST_SELECT = {
+  id: true,
+  code: true,
+  orderId: true,
+  customerId: true,
+  branchId: true,
+  soldById: true,
+  saleChannelId: true,
+  purchaseDate: true,
+  totalAmount: true,
+  discount: true,
+  discountRatio: true,
+  shippingFee: true,
+  grandTotal: true,
+  paidAmount: true,
+  debtAmount: true,
+  status: true,
+  statusValue: true,
+  usingCod: true,
+  description: true,
+  createdBy: true,
+  createdAt: true,
+  updatedAt: true,
+  priceBookId: true,
+  priceBookName: true,
+  customer: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      contactNumber: true,
+      phone: true,
+      addresses: {
+        select: { address: true },
+        take: 1,
+      },
+    },
+  },
+  branch: { select: { id: true, name: true } },
+  soldBy: { select: { id: true, name: true } },
+  creator: { select: { id: true, name: true } },
+  order: { select: { id: true, code: true } },
+  delivery: {
+    select: {
+      id: true,
+      deliveryCode: true,
+      status: true,
+      price: true,
+      receiver: true,
+      contactNumber: true,
+      address: true,
+      locationName: true,
+      wardName: true,
+      weight: true,
+      noteForDriver: true,
+      partnerDelivery: { select: { id: true, name: true } },
+    },
+  },
+} as const;
 
 @Injectable()
 export class InvoicesService {
@@ -435,63 +496,71 @@ export class InvoicesService {
       _count: { _all: true },
     });
 
-    // Lấy minimum data để tính 4 trường computed per-invoice rồi cộng dồn.
-    // Chỉ select những field thực sự cần để tránh kéo về quá nhiều dữ liệu.
-    //
-    // ⚠ Phải chia batch theo cursor: khi where rất rộng (vd: không filter gì) số
-    // hóa đơn match có thể vượt 32k. Prisma sẽ load parent xong rồi nested
-    // `returnOrders` query với `WHERE invoiceId IN (id1, ..., idN)` — mỗi id là
-    // 1 bind variable, dễ vượt giới hạn 32767 của PostgreSQL prepared statement
-    // (`too many bind variables in prepared statement`).
-    const BATCH_SIZE = 5000;
+    // Các khoản trả hàng/hoàn tiền/cấn trừ phụ thuộc từng invoice (credit),
+    // nhưng chỉ cần tổng theo invoice. Group trước để không kéo toàn bộ
+    // returnOrders lồng vào từng bản ghi.
+    const returnGroups = await this.prisma.returnOrder.groupBy({
+      by: ['invoiceId', 'status', 'refundType'],
+      where: {
+        code: { startsWith: 'TH' },
+        status: { gte: 2, not: 5 },
+        invoice: where,
+      },
+      _sum: {
+        refundAmount: true,
+        refundedAmount: true,
+      },
+    });
+
+    const returnGroupsByInvoice = new Map<number, any[]>();
+    for (const group of returnGroups) {
+      if (group.invoiceId == null) continue;
+      const current = returnGroupsByInvoice.get(group.invoiceId) || [];
+      current.push({
+        code: 'TH',
+        status: group.status,
+        refundType: group.refundType,
+        refundAmount: Number(group._sum.refundAmount || 0),
+        refundedAmount: Number(group._sum.refundedAmount || 0),
+      });
+      returnGroupsByInvoice.set(group.invoiceId, current);
+    }
+
+    const baseRemainingAmount =
+      Number(agg._sum.grandTotal || 0) - Number(agg._sum.paidAmount || 0);
     let returnOrderAmount = 0;
     let cashRefundAmount = 0;
     let debtOffsetAmount = 0;
-    let remainingAmount = 0;
-    let cursor: { id: number } | undefined;
+    let remainingAmount = baseRemainingAmount;
 
-    while (true) {
+    // Chỉ các invoice có return order mới cần điều chỉnh credit/remaining.
+    // Invoice không có trả hàng đã được tính trong aggregate gốc.
+    const returnInvoiceIds = [...returnGroupsByInvoice.keys()];
+    const BATCH_SIZE = 5000;
+    for (let offset = 0; offset < returnInvoiceIds.length; offset += BATCH_SIZE) {
       const batch = await this.prisma.invoice.findMany({
-        where,
+        where: { id: { in: returnInvoiceIds.slice(offset, offset + BATCH_SIZE) } },
         select: {
           id: true,
           grandTotal: true,
           paidAmount: true,
-          returnOrders: {
-            where: {
-              status: { gte: 2, not: 5 },
-              code: { startsWith: 'TH' },
-            },
-            select: {
-              code: true,
-              status: true,
-              refundAmount: true,
-              refundedAmount: true,
-              refundType: true,
-            },
-          },
         },
         orderBy: { id: 'asc' },
-        take: BATCH_SIZE,
-        ...(cursor ? { cursor, skip: 1 } : {}),
       });
-
-      if (batch.length === 0) break;
 
       for (const inv of batch) {
         const summary = this.calculateReturnSummary(
-          inv.returnOrders || [],
+          returnGroupsByInvoice.get(inv.id) || [],
           Number(inv.grandTotal),
           Number(inv.paidAmount),
         );
         returnOrderAmount += summary.returnOrderAmount;
         cashRefundAmount += summary.cashRefundAmount;
         debtOffsetAmount += summary.debtOffsetAmount;
-        remainingAmount += summary.remainingAmount;
+        remainingAmount +=
+          summary.remainingAmount -
+          (Number(inv.grandTotal) - Number(inv.paidAmount));
       }
-
-      if (batch.length < BATCH_SIZE) break;
-      cursor = { id: batch[batch.length - 1].id };
     }
 
     const totalAmount = Number(agg._sum.totalAmount || 0);
@@ -522,6 +591,7 @@ export class InvoicesService {
       currentItem,
       orderBy: rawOrderBy,
       orderDirection: rawOrderDirection,
+      includeStatusCounts,
     } = query;
 
     const effectiveLimit = pageSize || limit;
@@ -553,33 +623,11 @@ export class InvoicesService {
     const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
     const isComputedSort = COMPUTED_SORT_FIELDS.includes(sortField);
 
-    const includeConfig = {
-      customer: true,
-      branch: { select: { id: true, name: true } },
-      soldBy: { select: { id: true, name: true } },
-      creator: { select: { id: true, name: true } },
-      order: { select: { id: true, code: true } },
-      details: { include: { product: true } },
-      payments: true,
-      delivery: true,
-      returnOrders: {
-        where: {
-          status: { gte: 2, not: 5 }, // Đã nhập kho trở lên, loại trừ Đã hủy (5)
-          code: { startsWith: 'TH' }, // CHỈ LẤY PHIẾU TRẢ HÀNG, KHÔNG LẤY CTN
-        },
-        select: {
-          id: true,
-          code: true,
-          status: true,
-          refundAmount: true,
-          refundedAmount: true,
-          refundType: true,
-        },
-      },
-    } as const;
+    const invoiceListSelect = INVOICE_LIST_SELECT;
 
     let data: any[];
     let total: number;
+    let statusCounts: Record<string, number> | undefined;
 
     if (isComputedSort) {
       // Sort theo computed field: build WHERE conditions trực tiếp trong raw SQL
@@ -693,7 +741,7 @@ export class InvoicesService {
       } else {
         const unsortedData = await this.prisma.invoice.findMany({
           where: { id: { in: sortedIds } },
-          include: includeConfig,
+          select: invoiceListSelect,
         });
         const dataMap = new Map(unsortedData.map((inv) => [inv.id, inv]));
         data = sortedIds.map((id) => dataMap.get(id)).filter(Boolean);
@@ -702,36 +750,156 @@ export class InvoicesService {
       // Sort theo DB field thông thường — dùng Prisma orderBy
       const prismaOrderBy = { [sortField]: sortDir };
 
-      [data, total] = await Promise.all([
+      [data, total, statusCounts] = await Promise.all([
         this.prisma.invoice.findMany({
           where,
           skip: effectiveSkip,
           take: effectiveLimit,
-          include: includeConfig,
+          select: invoiceListSelect,
           orderBy: prismaOrderBy,
         }),
         this.prisma.invoice.count({ where }),
+        includeStatusCounts
+          ? this.getInvoiceStatusCounts(where)
+          : Promise.resolve(undefined),
       ]);
     }
 
-    // Tính toán 4 trường mới cho mỗi invoice
-    const dataWithReturnCalculations = data.map((invoice) => {
-      const returnSummary = this.calculateReturnSummary(
-        invoice.returnOrders || [],
-        Number(invoice.grandTotal),
-        Number(invoice.paidAmount),
-      );
+    // Tính toán 4 trường mới cho mỗi invoice. List select đã bỏ returnOrders
+    // nên các field này được tính bằng truy vấn batch tối thiểu theo trang.
+    const returnSummaries = await this.getInvoiceReturnSummaries(
+      data.map((invoice) => invoice.id),
+    );
+    const dataWithReturnCalculations = await this.attachPriceBookWarnings(
+      data.map((invoice) => {
+        const summary = returnSummaries.get(invoice.id);
 
-      return {
-        ...invoice,
-        returnOrderAmount: returnSummary.returnOrderAmount,
-        cashRefundAmount: returnSummary.cashRefundAmount,
-        debtOffsetAmount: returnSummary.debtOffsetAmount,
-        remainingAmount: returnSummary.remainingAmount,
-      };
+        return {
+          ...invoice,
+          returnOrderAmount: summary?.returnOrderAmount || 0,
+          cashRefundAmount: summary?.cashRefundAmount || 0,
+          debtOffsetAmount: summary?.debtOffsetAmount || 0,
+          remainingAmount:
+            summary?.remainingAmount ??
+            Number(invoice.grandTotal) - Number(invoice.paidAmount),
+        };
+      }),
+    );
+
+    if (includeStatusCounts && statusCounts === undefined) {
+      statusCounts = await this.getInvoiceStatusCounts(where);
+    }
+
+    return {
+      data: dataWithReturnCalculations,
+      total,
+      ...(statusCounts ? { statusCounts } : {}),
+    };
+  }
+
+  private async getInvoiceReturnSummaries(invoiceIds: number[]) {
+    const summaries = new Map<
+      number,
+      {
+        returnOrderAmount: number;
+        cashRefundAmount: number;
+        debtOffsetAmount: number;
+        remainingAmount: number;
+      }
+    >();
+    if (invoiceIds.length === 0) return summaries;
+
+    const invoices = await this.prisma.invoice.findMany({
+      where: { id: { in: invoiceIds } },
+      select: {
+        id: true,
+        grandTotal: true,
+        paidAmount: true,
+        returnOrders: {
+          where: {
+            status: { gte: 2, not: 5 },
+            code: { startsWith: 'TH' },
+          },
+          select: {
+            code: true,
+            status: true,
+            refundAmount: true,
+            refundedAmount: true,
+            refundType: true,
+          },
+        },
+      },
     });
 
-    return { data: dataWithReturnCalculations, total };
+    for (const invoice of invoices) {
+      summaries.set(
+        invoice.id,
+        this.calculateReturnSummary(
+          invoice.returnOrders || [],
+          Number(invoice.grandTotal),
+          Number(invoice.paidAmount),
+        ),
+      );
+    }
+
+    return summaries;
+  }
+
+  private async attachPriceBookWarnings<T extends { id: number }>(
+    invoices: T[],
+  ): Promise<(T & { hasPriceBookWarning: boolean })[]> {
+    if (invoices.length === 0) return [];
+
+    const candidates = invoices.filter(
+      (invoice) =>
+        ![INVOICE_STATUS.CANCELLED].includes((invoice as any).status) &&
+        [2, 3].includes(Number((invoice as any).priceBookId)),
+    );
+    const candidateIds = candidates.map((invoice) => invoice.id);
+    const warningIds = new Set<number>();
+
+    if (candidateIds.length > 0) {
+      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
+        SELECT DISTINCT i.id
+         FROM invoices i
+         WHERE i.id IN (${Prisma.join(candidateIds)})
+           AND i.status <> 2
+           AND i."priceBookId" IN (2, 3)
+           AND EXISTS (
+             SELECT 1 FROM invoice_details d
+             JOIN price_book_details pbd
+               ON pbd."productId" = d."productId"
+              AND pbd."priceBookId" = i."priceBookId"
+              AND pbd."isActive" = true
+             WHERE d."invoiceId" = i.id
+               AND (d.price - d.discount) < pbd.price
+           )`;
+      rows.forEach((row) => warningIds.add(Number(row.id)));
+    }
+
+    return invoices.map((invoice) => ({
+      ...invoice,
+      hasPriceBookWarning: warningIds.has(invoice.id),
+    }));
+  }
+
+  private async getInvoiceStatusCounts(where: any) {
+    const countWhere = { ...where };
+    delete countWhere.status;
+
+    const grouped = await this.prisma.invoice.groupBy({
+      by: ['status'],
+      where: countWhere,
+      _count: { _all: true },
+    });
+
+    const counts: Record<string, number> = {
+      all: grouped.reduce((sum, item) => sum + item._count._all, 0),
+    };
+    for (const item of grouped) {
+      counts[String(item.status)] = item._count._all;
+    }
+    return counts;
   }
 
   /**
@@ -882,6 +1050,37 @@ export class InvoicesService {
     }
 
     return { count, totalPreTax, totalVat, totalAfterTax };
+  }
+
+  async findPickupDetails(ids: number[]) {
+    if (ids.length === 0) return [];
+
+    return this.prisma.invoice.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        code: true,
+        customer: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        details: {
+          select: {
+            productId: true,
+            productCode: true,
+            productName: true,
+            quantity: true,
+            price: true,
+            discount: true,
+            conditionType: true,
+            isGift: true,
+            lineType: true,
+          },
+        },
+      },
+    });
   }
 
   async findOne(id: number) {

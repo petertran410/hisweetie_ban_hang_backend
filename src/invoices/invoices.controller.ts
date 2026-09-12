@@ -101,6 +101,19 @@ export class InvoicesController {
     });
   }
 
+  @Get('pickup-details')
+  @RequirePermissions('invoices:view')
+  @ApiOperation({
+    summary: 'Lấy chi tiết sản phẩm của nhiều hóa đơn cho phiếu pick-up',
+  })
+  findPickupDetails(@Query('ids') ids?: string) {
+    const parsedIds = (ids || '')
+      .split(',')
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value) && value > 0);
+    return this.invoicesService.findPickupDetails(parsedIds);
+  }
+
   @Get('delivery-overview')
   @RequireAnyPermission('packing_slips:view', 'invoices:view')
   @ApiOperation({

@@ -10,6 +10,7 @@ import { CreateOrderDto, UpdateOrderDto, OrderQueryDto } from './dto';
 import { OrderItemDto, AppliedPromotionDto } from './dto';
 import {
   convertStatusStringToNumber,
+  convertStatusNumberToString,
   getStatusLabel,
   ORDER_STATUS,
 } from './dto/order-status.constants';
@@ -29,6 +30,73 @@ import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
+
+const ORDER_LIST_SELECT = {
+  id: true,
+  code: true,
+  customerId: true,
+  branchId: true,
+  soldById: true,
+  saleChannelId: true,
+  orderDate: true,
+  totalAmount: true,
+  discount: true,
+  discountRatio: true,
+  shippingFee: true,
+  grandTotal: true,
+  paidAmount: true,
+  debtAmount: true,
+  depositAmount: true,
+  paymentStatus: true,
+  orderStatus: true,
+  status: true,
+  statusValue: true,
+  usingCod: true,
+  description: true,
+  createdBy: true,
+  createdAt: true,
+  updatedAt: true,
+  priceBookId: true,
+  priceBookName: true,
+  customer: {
+    select: {
+      id: true,
+      code: true,
+      name: true,
+      contactNumber: true,
+      phone: true,
+    },
+  },
+  branch: { select: { id: true, name: true } },
+  soldBy: { select: { id: true, name: true } },
+  creator: { select: { id: true, name: true } },
+  saleChannel: { select: { id: true, name: true } },
+  delivery: {
+    select: {
+      id: true,
+      deliveryCode: true,
+      status: true,
+      statusValue: true,
+      price: true,
+      receiver: true,
+      contactNumber: true,
+      address: true,
+      locationName: true,
+      wardName: true,
+      weight: true,
+      weightUnit: true,
+      noteForDriver: true,
+      partnerDelivery: { select: { id: true, name: true } },
+    },
+  },
+  invoices: {
+    select: {
+      id: true,
+      code: true,
+      status: true,
+    },
+  },
+} as const;
 
 @Injectable()
 export class OrdersService {
@@ -1161,6 +1229,7 @@ export class OrdersService {
       currentItem,
       orderBy: rawOrderBy,
       orderDirection: rawOrderDirection,
+      includeStatusCounts,
     } = query;
 
     const effectiveLimit = pageSize || limit;
@@ -1183,25 +1252,50 @@ export class OrdersService {
       rawOrderBy && VALID_ORDER_BY.has(rawOrderBy) ? rawOrderBy : 'orderDate';
     const sortDir = rawOrderDirection === 'asc' ? 'asc' : 'desc';
 
-    const [data, total] = await Promise.all([
+    const [data, total, statusCounts] = await Promise.all([
       this.prisma.order.findMany({
         where,
         skip: effectiveSkip,
         take: effectiveLimit,
-        include: {
-          customer: true,
-          soldBy: { select: { id: true, name: true } },
-          items: { include: { product: true } },
-          payments: true,
-          invoices: true,
-          delivery: true,
-        },
+        select: ORDER_LIST_SELECT,
         orderBy: { [sortField]: sortDir },
       }),
       this.prisma.order.count({ where }),
+      includeStatusCounts
+        ? this.getOrderStatusCounts(where)
+        : Promise.resolve(undefined),
     ]);
 
-    return { data, total, page, limit };
+    return {
+      data,
+      total,
+      page,
+      limit,
+      ...(statusCounts ? { statusCounts } : {}),
+    };
+  }
+
+  private async getOrderStatusCounts(where: any) {
+    const countWhere = { ...where };
+    delete countWhere.status;
+
+    const grouped = await this.prisma.order.groupBy({
+      by: ['status'],
+      where: countWhere,
+      _count: { _all: true },
+    });
+
+    const counts: Record<string, number> = {
+      all: grouped.reduce((sum, item) => sum + item._count._all, 0),
+    };
+    for (const item of grouped) {
+      const key = convertStatusNumberToString(item.status);
+      counts[key] = item._count._all;
+    }
+    // Giữ tương thích với tab "Đang giao" hiện có trên mobile: trước đây
+    // backend quy đổi status string không nhận diện được thành PENDING.
+    counts.processing = counts.pending ?? 0;
+    return counts;
   }
 
   /**
