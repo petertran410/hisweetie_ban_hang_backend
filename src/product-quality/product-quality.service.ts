@@ -16,6 +16,7 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { ProductQualityImportService } from './product-quality-import.service';
+import { ProductQualityLarkService } from './product-quality-lark.service';
 import {
   ProductQualityQueryDto,
   CreateProductQualityTicketDto,
@@ -42,7 +43,7 @@ export const QUALITY_STATUS_LABELS: Record<string, string> = {
   IN_PROGRESS: 'Đang xử lý',
   REMEDIATING: 'Đang khắc phục',
   COMPLETED: 'Hoàn thành',
-  ENDED: 'Kết thúc (Dừng)',
+  ENDED: 'Đã hủy',
 };
 
 export const QUALITY_DEPARTMENTS = [
@@ -89,6 +90,7 @@ export class ProductQualityService {
     private readonly notificationsService: NotificationsService,
     private readonly auditLogsService: AuditLogsService,
     private readonly importService: ProductQualityImportService,
+    private readonly larkService: ProductQualityLarkService,
     @Optional() @Inject(LARK_CLIENT) private readonly larkClient?: lark.Client,
   ) {}
 
@@ -111,71 +113,82 @@ export class ProductQualityService {
   /**
    * Dựng mệnh đề WHERE theo bộ lọc và phạm vi chi nhánh
    */
-  private buildWhere(
-    query: ProductQualityQueryDto,
-    user: any,
-  ): Prisma.ProductQualityTicketWhereInput {
-    const where: Prisma.ProductQualityTicketWhereInput = {};
+ private buildWhere(
+   query: ProductQualityQueryDto,
+   user: any,
+ ): Prisma.ProductQualityTicketWhereInput {
+   const where: Prisma.ProductQualityTicketWhereInput = {};
+   const andConditions: Prisma.ProductQualityTicketWhereInput[] = [];
 
-    // Kiểm tra quyền xem chi nhánh
-    const canViewAll =
-      user?.roles?.includes('Super Admin') ||
-      user?.roles?.includes('Admin') ||
-      user?.permissions?.includes('product_quality:view_all_branches');
+   // Kiểm tra quyền xem chi nhánh
+   const canViewAll =
+     user?.roles?.includes('Super Admin') ||
+     user?.roles?.includes('Admin') ||
+     user?.permissions?.includes('product_quality:view_all_branches');
 
-    if (!canViewAll) {
-      const userBranchId = user?.branchId;
-      if (userBranchId) {
-        where.OR = [
-          { branchId: userBranchId },
-          { branchId: null }, // Cho phép xem các phiếu import chưa xác định chi nhánh
-        ];
-      }
-    } else if (query.branchIds && query.branchIds.length > 0) {
-      where.branchId = { in: query.branchIds };
-    } else if (query.branchId) {
-      where.branchId = query.branchId;
-    }
+   if (!canViewAll) {
+     const userBranchId = user?.branchId;
+     if (userBranchId) {
+       andConditions.push({
+         OR: [
+           { branchId: userBranchId },
+           { branchId: null }, // Cho phép xem các phiếu import chưa xác định chi nhánh
+         ],
+       });
+     }
+   } else if (query.branchIds && query.branchIds.length > 0) {
+     andConditions.push({ branchId: { in: query.branchIds } });
+   } else if (query.branchId !== undefined && query.branchId !== null) {
+     if (query.branchId === -1) {
+       andConditions.push({ branchId: null });
+     } else {
+       andConditions.push({ branchId: query.branchId });
+     }
+   }
 
-    // Tìm kiếm text
-    if (query.search) {
-      const s = query.search.trim();
-      where.OR = [
-        { code: { contains: s, mode: 'insensitive' } },
-        { legacyCode: { contains: s, mode: 'insensitive' } },
-        { customerName: { contains: s, mode: 'insensitive' } },
-        { customerCode: { contains: s, mode: 'insensitive' } },
-        { productName: { contains: s, mode: 'insensitive' } },
-        { productCode: { contains: s, mode: 'insensitive' } },
-        { reason: { contains: s, mode: 'insensitive' } },
-        { note: { contains: s, mode: 'insensitive' } },
-      ];
-    }
+   // Tìm kiếm text
+   if (query.search) {
+     const s = query.search.trim();
+     andConditions.push({
+       OR: [
+         { code: { contains: s, mode: 'insensitive' } },
+         { legacyCode: { contains: s, mode: 'insensitive' } },
+         { customerName: { contains: s, mode: 'insensitive' } },
+         { customerCode: { contains: s, mode: 'insensitive' } },
+         { productName: { contains: s, mode: 'insensitive' } },
+         { productCode: { contains: s, mode: 'insensitive' } },
+         { reason: { contains: s, mode: 'insensitive' } },
+         { note: { contains: s, mode: 'insensitive' } },
+       ],
+     });
+   }
 
-    // Bộ lọc trạng thái & tab
-    if (query.tab === 'new') {
-      where.status = QUALITY_STATUS.NEW;
-    } else if (query.tab === 'processing') {
-      where.status = {
-        in: [QUALITY_STATUS.NEW, QUALITY_STATUS.IN_PROGRESS, QUALITY_STATUS.REMEDIATING],
-      };
-    } else if (query.tab === 'overdue') {
-      where.status = { notIn: [QUALITY_STATUS.COMPLETED, QUALITY_STATUS.ENDED] };
-      where.dueAt = { lt: new Date() };
-      where.handledAt = { not: null };
-    } else if (query.tab === 'completed') {
-      where.status = QUALITY_STATUS.COMPLETED;
-    } else if (query.tab === 'my' && user?.id) {
-      where.OR = [
-        { createdById: user.id },
-        { decisionMakerId: user.id },
-        { tasks: { some: { assignedUserId: user.id } } },
-      ];
-    } else if (query.statuses && query.statuses.length > 0) {
-      where.status = { in: query.statuses };
-    } else if (query.status) {
-      where.status = query.status;
-    }
+   // Bộ lọc trạng thái & tab
+   if (query.tab === 'new') {
+     where.status = QUALITY_STATUS.NEW;
+   } else if (query.tab === 'processing') {
+     where.status = {
+       in: [QUALITY_STATUS.NEW, QUALITY_STATUS.IN_PROGRESS, QUALITY_STATUS.REMEDIATING],
+     };
+   } else if (query.tab === 'overdue') {
+     where.status = { notIn: [QUALITY_STATUS.COMPLETED, QUALITY_STATUS.ENDED] };
+     where.dueAt = { lt: new Date() };
+     where.handledAt = { not: null };
+   } else if (query.tab === 'completed') {
+     where.status = QUALITY_STATUS.COMPLETED;
+   } else if (query.tab === 'my' && user?.id) {
+     andConditions.push({
+       OR: [
+         { createdById: user.id },
+         { decisionMakerId: user.id },
+         { tasks: { some: { assignedUserId: user.id } } },
+       ],
+     });
+   } else if (query.statuses && query.statuses.length > 0) {
+     where.status = { in: query.statuses };
+   } else if (query.status) {
+     where.status = query.status;
+   }
 
     // Lọc theo quá hạn riêng lẻ
     if (query.isOverdue) {
@@ -212,18 +225,22 @@ export class ProductQualityService {
       where.productId = query.productId;
     }
 
-    if (query.fromDate || query.toDate) {
-      where.createdAt = {};
-      if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
-      if (query.toDate) {
-        const to = new Date(query.toDate);
-        to.setHours(23, 59, 59, 999);
-        where.createdAt.lte = to;
-      }
-    }
+   if (query.fromDate || query.toDate) {
+     where.createdAt = {};
+     if (query.fromDate) where.createdAt.gte = new Date(query.fromDate);
+     if (query.toDate) {
+       const to = new Date(query.toDate);
+       to.setHours(23, 59, 59, 999);
+       where.createdAt.lte = to;
+     }
+   }
 
-    return where;
-  }
+   if (andConditions.length > 0) {
+     where.AND = andConditions;
+   }
+
+   return where;
+ }
 
   async findAll(query: ProductQualityQueryDto, user: any) {
     const page = Math.max(1, query.page || 1);
@@ -363,7 +380,26 @@ export class ProductQualityService {
       throw new BadRequestException('Bạn không có quyền xem phiếu của chi nhánh này');
     }
 
-    return ticket;
+    // Hóa đơn bán hàng liên quan (nhiều-nhiều). Truy vấn tách riêng và chịu lỗi
+    // để không làm hỏng trang chi tiết nếu bảng liên kết chưa được tạo.
+    let relatedInvoices: unknown[] = [];
+    try {
+      relatedInvoices = await this.prisma.productQualityTicketInvoice.findMany({
+        where: { ticketId: id },
+        include: {
+          invoice: {
+            select: { id: true, code: true, purchaseDate: true, grandTotal: true },
+          },
+        },
+        orderBy: { id: 'asc' },
+      });
+    } catch (err: any) {
+      this.logger.warn(
+        `Không đọc được hóa đơn liên quan của phiếu #${id}: ${err?.message}`,
+      );
+    }
+
+    return { ...ticket, relatedInvoices };
   }
 
   async create(dto: CreateProductQualityTicketDto, userId: number, branchIdFromReq?: number) {
@@ -399,14 +435,35 @@ export class ProductQualityService {
     if (dto.productId) {
       const p = await this.prisma.product.findUnique({
         where: { id: dto.productId },
-        select: { code: true, name: true, unit: true, cargoType: true },
+        select: { code: true, name: true, unit: true, middleName: true },
       });
       if (p) {
         productCode = p.code || productCode;
         productName = p.name || productName;
         unit = p.unit || unit;
-        sourceType = p.cargoType === 'COLD' ? 'Hàng lạnh' : sourceType || 'Hàng thường';
+        // Nguồn hàng lấy từ Product.middle_name (nhóm hàng cấp 2).
+        sourceType = p.middleName || sourceType;
       }
+    }
+
+    // Hóa đơn bán hàng liên quan: cho phép nhiều hóa đơn, đồng bộ invoiceId/code
+    // với hóa đơn đầu tiên để tương thích dữ liệu cũ.
+    let invoiceId = dto.invoiceId;
+    let invoiceCode = dto.invoiceCode;
+    const relatedInvoiceIds = Array.from(
+      new Set((dto.invoiceIds || []).filter((v) => Number.isFinite(v))),
+    );
+    const relatedInvoices =
+      relatedInvoiceIds.length > 0
+        ? await this.prisma.invoice.findMany({
+            where: { id: { in: relatedInvoiceIds } },
+            select: { id: true, code: true },
+            orderBy: { id: 'asc' },
+          })
+        : [];
+    if (relatedInvoices.length > 0) {
+      invoiceId = relatedInvoices[0].id;
+      invoiceCode = relatedInvoices.map((i) => i.code).join(', ');
     }
 
     const creator = await this.prisma.user.findUnique({
@@ -455,8 +512,8 @@ export class ProductQualityService {
           factoryName: dto.factoryName,
           factoryId: dto.factoryId,
           note: dto.note,
-          invoiceId: dto.invoiceId,
-          invoiceCode: dto.invoiceCode,
+          invoiceId,
+          invoiceCode,
           outboundInvoiceId: dto.outboundInvoiceId,
           outboundInvoiceCode: dto.outboundInvoiceCode,
           decisionMakerId,
@@ -502,6 +559,23 @@ export class ProductQualityService {
 
       return created;
     });
+
+    // Lưu liên kết nhiều-nhiều hóa đơn bán hàng (chịu lỗi nếu bảng chưa được tạo).
+    if (relatedInvoices.length > 0) {
+      try {
+        await this.prisma.productQualityTicketInvoice.createMany({
+          data: relatedInvoices.map((i) => ({
+            ticketId: ticket.id,
+            invoiceId: i.id,
+          })),
+          skipDuplicates: true,
+        });
+      } catch (err: any) {
+        this.logger.warn(
+          `Không lưu được hóa đơn liên quan cho phiếu #${ticket.id}: ${err?.message}`,
+        );
+      }
+    }
 
     // Thông báo in-app cho người quyết định
     if (decisionMakerId && decisionMakerId !== userId) {
@@ -613,6 +687,12 @@ export class ProductQualityService {
     });
     if (!ticket) throw new NotFoundException(`Không tìm thấy phiếu #${id}`);
 
+    if (ticket.status === QUALITY_STATUS.ENDED) {
+      throw new BadRequestException(
+        'Phiếu đã hủy, không thể cập nhật hướng xử lý.',
+      );
+    }
+
     let decisionMakerName: string | undefined;
     if (dto.decisionMakerId) {
       const u = await this.prisma.user.findUnique({
@@ -623,6 +703,47 @@ export class ProductQualityService {
     }
 
     const hasHandling = !!dto.handlingDirection?.trim();
+    if (!hasHandling && !ticket.handlingDirection?.trim()) {
+      throw new BadRequestException(
+        'Vui lòng nhập hướng xử lý trước khi chuyển phiếu sang Đang xử lý',
+      );
+    }
+
+    const nextDepartments = dto.assignedDepartments || ticket.assignedDepartments;
+    if (!nextDepartments || nextDepartments.length === 0) {
+      throw new BadRequestException(
+        'Vui lòng chọn ít nhất một bộ phận thực hiện',
+      );
+    }
+
+    // Nhà máy sản xuất: ưu tiên id để đồng bộ tên theo bảng factories.
+    let factoryId = dto.factoryId !== undefined ? dto.factoryId : ticket.factoryId;
+    let factoryName = dto.factoryName !== undefined ? dto.factoryName : ticket.factoryName;
+    if (dto.factoryId) {
+      const factory = await this.prisma.factory.findUnique({
+        where: { id: dto.factoryId },
+        select: { id: true, name: true },
+      });
+      if (!factory) throw new BadRequestException('Không tìm thấy nhà máy đã chọn');
+      factoryId = factory.id;
+      factoryName = factory.name;
+    }
+
+    // Hóa đơn xuất bù/hoàn: ưu tiên id để đồng bộ mã theo bảng invoices.
+    let outboundInvoiceId =
+      dto.outboundInvoiceId !== undefined ? dto.outboundInvoiceId : ticket.outboundInvoiceId;
+    let outboundInvoiceCode =
+      dto.outboundInvoiceCode !== undefined ? dto.outboundInvoiceCode : ticket.outboundInvoiceCode;
+    if (dto.outboundInvoiceId) {
+      const inv = await this.prisma.invoice.findUnique({
+        where: { id: dto.outboundInvoiceId },
+        select: { id: true, code: true },
+      });
+      if (!inv) throw new BadRequestException('Không tìm thấy hóa đơn xuất bù đã chọn');
+      outboundInvoiceId = inv.id;
+      outboundInvoiceCode = inv.code;
+    }
+
     const isFirstHandling = hasHandling && !ticket.handledAt;
     const handledAt = isFirstHandling ? new Date() : ticket.handledAt;
     const dueAt = isFirstHandling ? this.calcDueDate(handledAt!, 5) : ticket.dueAt;
@@ -632,8 +753,6 @@ export class ProductQualityService {
       newStatus = QUALITY_STATUS.IN_PROGRESS;
     }
 
-    const nextDepartments = dto.assignedDepartments || ticket.assignedDepartments;
-
     await this.prisma.$transaction(async (tx) => {
       await tx.productQualityTicket.update({
         where: { id },
@@ -641,13 +760,15 @@ export class ProductQualityService {
           decisionMakerId: dto.decisionMakerId !== undefined ? dto.decisionMakerId : ticket.decisionMakerId,
           decisionMakerName: decisionMakerName !== undefined ? decisionMakerName : ticket.decisionMakerName,
           handlingDirection: dto.handlingDirection !== undefined ? dto.handlingDirection : ticket.handlingDirection,
+          reason: dto.reason !== undefined ? dto.reason : ticket.reason,
+          note: dto.note !== undefined ? dto.note : ticket.note,
           assignedDepartments: nextDepartments,
           severity: dto.severity !== undefined ? dto.severity : ticket.severity,
           responsibilities: dto.responsibilities !== undefined ? dto.responsibilities : ticket.responsibilities,
-          factoryName: dto.factoryName !== undefined ? dto.factoryName : ticket.factoryName,
-          factoryId: dto.factoryId !== undefined ? dto.factoryId : ticket.factoryId,
-          outboundInvoiceId: dto.outboundInvoiceId !== undefined ? dto.outboundInvoiceId : ticket.outboundInvoiceId,
-          outboundInvoiceCode: dto.outboundInvoiceCode !== undefined ? dto.outboundInvoiceCode : ticket.outboundInvoiceCode,
+          factoryName,
+          factoryId,
+          outboundInvoiceId,
+          outboundInvoiceCode,
           handledAt,
           dueAt,
           status: newStatus,
@@ -669,6 +790,36 @@ export class ProductQualityService {
           });
         }
       }
+
+      // Bỏ các ảnh/video người dùng đã xóa (chỉ trong phạm vi phiếu này).
+      const removeIds = (dto.removeAttachmentIds || []).filter((v) =>
+        Number.isFinite(v),
+      );
+      if (removeIds.length > 0) {
+        await tx.productQualityAttachment.deleteMany({
+          where: { ticketId: id, id: { in: removeIds } },
+        });
+      }
+
+      // Thêm ảnh/video minh chứng mới.
+      if (dto.attachments && dto.attachments.length > 0) {
+        for (const a of dto.attachments) {
+          await tx.productQualityAttachment.create({
+            data: {
+              ticketId: id,
+              department: a.department,
+              kind: a.kind || 'PROOF_IMAGE',
+              filename: a.filename,
+              originalName: a.originalName,
+              url: a.url,
+              mimetype: a.mimetype,
+              size: a.size,
+              larkFileToken: a.larkFileToken,
+              createdById: userId,
+            },
+          });
+        }
+      }
     });
 
     // Thông báo cho người phụ trách chính & người tạo phiếu
@@ -685,6 +836,80 @@ export class ProductQualityService {
     }
 
     return this.findOne(id, { id: userId, roles: ['Super Admin'] });
+  }
+
+  /**
+   * Chuyển phiếu từ "Đang xử lý" sang "Đang khắc phục".
+   * Điều kiện: đã có hướng xử lý và ít nhất một bộ phận thực hiện.
+   */
+  async moveToRemediating(id: number, userId: number) {
+    const ticket = await this.prisma.productQualityTicket.findUnique({
+      where: { id },
+      include: { tasks: true },
+    });
+    if (!ticket) throw new NotFoundException(`Không tìm thấy phiếu #${id}`);
+
+    if (
+      ticket.status === QUALITY_STATUS.COMPLETED ||
+      ticket.status === QUALITY_STATUS.ENDED
+    ) {
+      throw new BadRequestException(
+        'Phiếu đã hoàn thành hoặc đã kết thúc, không thể chuyển sang Đang khắc phục',
+      );
+    }
+    if (!ticket.handlingDirection?.trim()) {
+      throw new BadRequestException(
+        'Vui lòng nhập hướng xử lý trước khi chuyển sang Đang khắc phục',
+      );
+    }
+    if (!ticket.assignedDepartments || ticket.assignedDepartments.length === 0) {
+      throw new BadRequestException(
+        'Vui lòng chọn ít nhất một bộ phận thực hiện trước khi chuyển sang Đang khắc phục',
+      );
+    }
+
+    // Đảm bảo mỗi bộ phận được giao đều có task trước khi bắt đầu khắc phục.
+    const existingDepts = ticket.tasks.map((t) => t.department);
+    const missingDepts = ticket.assignedDepartments.filter(
+      (dept) => !existingDepts.includes(dept),
+    );
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      for (const dept of missingDepts) {
+        await tx.productQualityTask.create({
+          data: {
+            ticketId: id,
+            department: dept,
+            assignedUserId: null,
+            assignedUserName: null,
+          },
+        });
+      }
+      return tx.productQualityTicket.update({
+        where: { id },
+        data: {
+          status: QUALITY_STATUS.REMEDIATING,
+          isCompleted: false,
+          completedAt: null,
+          updatedById: userId,
+        },
+      });
+    });
+
+    const targetUserIds = [ticket.decisionMakerId, ticket.createdById].filter(
+      (uid): uid is number => !!uid && uid !== userId,
+    );
+    if (targetUserIds.length > 0) {
+      await this.notificationsService.createForUsers(targetUserIds, {
+        type: 'product_quality_ticket',
+        title: `Chuyển sang Đang khắc phục: ${ticket.code}`,
+        body: `Phiếu ${ticket.code} đã chuyển sang giai đoạn Đang khắc phục. Vui lòng cập nhật kết quả theo bộ phận phụ trách.`,
+        link: `/san-pham/chat-luong-hang-hoa/${ticket.id}`,
+        dedupeKey: `remediating_${ticket.id}_${Date.now()}`,
+      });
+    }
+
+    return this.findOne(updated.id, { id: userId, roles: ['Super Admin'] });
   }
 
   /**
@@ -721,6 +946,19 @@ export class ProductQualityService {
     let completedByName: string | null | undefined = undefined;
 
     if (dto.isCompleted === true) {
+      // Bắt buộc có ảnh minh chứng hoàn thành cho bộ phận trước khi tick.
+      const existingProof = await this.prisma.productQualityAttachment.findMany({
+        where: { ticketId: id, department },
+        select: { kind: true, mimetype: true },
+      });
+      const hasImageProof = [...existingProof, ...(dto.attachments || [])].some((a) =>
+        this.isImageAttachment(a),
+      );
+      if (!hasImageProof) {
+        throw new BadRequestException(
+          `Vui lòng tải lên ít nhất 1 hình ảnh minh chứng hoàn thành cho bộ phận ${department}`,
+        );
+      }
       completedAt = new Date();
       completedById = userId;
       completedByName = user?.name;
@@ -782,10 +1020,16 @@ export class ProductQualityService {
 
       if (requiredDepartments.length > 0) {
         const assignedTasks = allTasks.filter((t) => requiredDepartments.includes(t.department));
-        const allDone = assignedTasks.length === requiredDepartments.length && assignedTasks.every((t) => t.isCompleted);
+        const allDone =
+          assignedTasks.length === requiredDepartments.length &&
+          assignedTasks.every((t) => t.isCompleted);
         const someDone = assignedTasks.some((t) => t.isCompleted);
 
-        if (allDone) {
+        const canAutoComplete =
+          ticket.status === QUALITY_STATUS.REMEDIATING ||
+          ticket.status === QUALITY_STATUS.COMPLETED;
+
+        if (allDone && canAutoComplete) {
           await tx.productQualityTicket.update({
             where: { id },
             data: {
@@ -795,7 +1039,7 @@ export class ProductQualityService {
               updatedById: userId,
             },
           });
-        } else if (someDone) {
+        } else if (someDone || ticket.status === QUALITY_STATUS.REMEDIATING) {
           await tx.productQualityTicket.update({
             where: { id },
             data: {
@@ -805,7 +1049,7 @@ export class ProductQualityService {
               updatedById: userId,
             },
           });
-        } else if (ticket.handledAt) {
+        } else if (ticket.handledAt && ticket.status === QUALITY_STATUS.NEW) {
           await tx.productQualityTicket.update({
             where: { id },
             data: {
@@ -838,10 +1082,79 @@ export class ProductQualityService {
     return this.findOne(id, { id: userId, roles: ['Super Admin'] });
   }
 
+  /**
+   * Tra cứu nhà máy đang hoạt động để liên kết ở bước nhập hướng xử lý.
+   */
+  async searchFactories(search?: string, limit?: number) {
+    const take = Math.min(50, Math.max(1, limit || 20));
+    const where: Prisma.FactoryWhereInput = { isActive: true };
+    const keyword = search?.trim();
+    if (keyword) {
+      where.OR = [
+        { code: { contains: keyword, mode: 'insensitive' } },
+        { name: { contains: keyword, mode: 'insensitive' } },
+        { fullName: { contains: keyword, mode: 'insensitive' } },
+      ];
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.factory.findMany({
+        where,
+        take,
+        orderBy: { name: 'asc' },
+        select: { id: true, code: true, name: true, fullName: true },
+      }),
+      this.prisma.factory.count({ where }),
+    ]);
+
+    return { data, total, page: 1, limit: take };
+  }
+
+  /**
+   * Tra cứu hóa đơn để liên kết ở bước nhập hướng xử lý (hóa đơn xuất bù/hoàn)
+   * hoặc ở bước tạo mới (hóa đơn bán hàng liên quan).
+   */
+  async searchInvoices(search?: string, customerId?: number, limit?: number) {
+    const take = Math.min(50, Math.max(1, limit || 15));
+    const where: Prisma.InvoiceWhereInput = {};
+    if (customerId) where.customerId = customerId;
+    const keyword = search?.trim();
+    if (keyword) {
+      where.code = { contains: keyword, mode: 'insensitive' };
+    }
+
+    const [data, total] = await Promise.all([
+      this.prisma.invoice.findMany({
+        where,
+        take,
+        orderBy: { id: 'desc' },
+        select: {
+          id: true,
+          code: true,
+          purchaseDate: true,
+          grandTotal: true,
+          customer: { select: { id: true, code: true, name: true } },
+        },
+      }),
+      this.prisma.invoice.count({ where }),
+    ]);
+
+    return { data, total, page: 1, limit: take };
+  }
+
   async close(id: number, dto: CloseProductQualityTicketDto, userId: number) {
     const ticket = await this.prisma.productQualityTicket.findUnique({ where: { id } });
     if (!ticket) throw new NotFoundException(`Không tìm thấy phiếu #${id}`);
 
+    if (ticket.status === QUALITY_STATUS.COMPLETED) {
+      throw new BadRequestException('Phiếu đã hoàn thành, không thể hủy.');
+    }
+    if (ticket.status === QUALITY_STATUS.ENDED) {
+      throw new BadRequestException('Phiếu đã được hủy trước đó.');
+    }
+
+    // Hủy phiếu chỉ cập nhật trạng thái + audit, không xóa bất kỳ dữ liệu nào
+    // (task, hình ảnh, liên kết hóa đơn vẫn được giữ nguyên).
     const updated = await this.prisma.productQualityTicket.update({
       where: { id },
       data: {
@@ -859,17 +1172,13 @@ export class ProductQualityService {
   }
 
   async delete(id: number, _userId: number) {
-    const ticket = await this.prisma.productQualityTicket.findUnique({
-      where: { id },
-      include: { tasks: true },
-    });
+    const ticket = await this.prisma.productQualityTicket.findUnique({ where: { id } });
     if (!ticket) throw new NotFoundException(`Không tìm thấy phiếu #${id}`);
-    if (ticket.status !== QUALITY_STATUS.NEW && ticket.tasks.some((t) => t.isCompleted)) {
-      throw new BadRequestException('Chỉ được xóa phiếu mới chưa có bộ phận nào xử lý');
-    }
 
-    await this.prisma.productQualityTicket.delete({ where: { id } });
-    return { success: true, message: `Đã xóa phiếu ${ticket.code}` };
+    // Không hỗ trợ xóa cứng để bảo toàn dữ liệu lịch sử. Dùng chức năng Hủy phiếu.
+    throw new BadRequestException(
+      'Không hỗ trợ xóa phiếu chất lượng. Vui lòng sử dụng chức năng Hủy phiếu.',
+    );
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1127,298 +1436,7 @@ export class ProductQualityService {
   // ─────────────────────────────────────────────────────────────
 
   async importFromLark(dto: LarkImportDto, userId: number) {
-    const baseToken = dto.baseToken || 'Vx4hb0o0Va3S1RsvbpGl4imYgYc';
-    const tableId = dto.tableId || 'tblF032Qb8D2dcyd';
-
-    const appId = this.config.get<string>('LARK_APP_ID');
-    const appSecret = this.config.get<string>('LARK_APP_SECRET');
-
-    if (!appId || !appSecret) {
-      throw new BadRequestException('LARK_APP_ID hoặc LARK_APP_SECRET chưa được cấu hình');
-    }
-
-    const token = await this.getLarkTenantAccessToken(appId, appSecret);
-
-    // Đọc tất cả record từ bảng
-    const records = await this.fetchAllLarkRecords(baseToken, tableId, token, dto.limit);
-
-    this.logger.log(`Fetched ${records.length} records from LarkBase ${baseToken}/${tableId}`);
-
-    // Chuẩn bị lookup cache để match nhanh
-    const [customers, products, invoices, users, branches] = await Promise.all([
-      this.prisma.customer.findMany({ select: { id: true, code: true, name: true, larkRecordId: true } }),
-      this.prisma.product.findMany({ select: { id: true, code: true, name: true, unit: true, larkRecordId: true } }),
-      this.prisma.invoice.findMany({ select: { id: true, code: true } }),
-      this.prisma.user.findMany({ select: { id: true, name: true, larkUserId: true } }),
-      this.prisma.branch.findMany({ select: { id: true, name: true } }),
-    ]);
-
-    const customerByLarkId = new Map<string, typeof customers[0]>();
-    const customerByName = new Map<string, typeof customers[0]>();
-    for (const c of customers) {
-      if (c.larkRecordId) customerByLarkId.set(c.larkRecordId, c);
-      if (c.name) customerByName.set(c.name.trim().toLowerCase(), c);
-    }
-
-    const productByLarkId = new Map<string, typeof products[0]>();
-    const productByCode = new Map<string, typeof products[0]>();
-    for (const p of products) {
-      if (p.larkRecordId) productByLarkId.set(p.larkRecordId, p);
-      if (p.code) productByCode.set(p.code.trim().toUpperCase(), p);
-    }
-
-    const invoiceByCode = new Map<string, typeof invoices[0]>();
-    for (const inv of invoices) {
-      invoiceByCode.set(inv.code.trim().toUpperCase(), inv);
-    }
-
-    const userByLarkId = new Map<string, typeof users[0]>();
-    const userByName = new Map<string, typeof users[0]>();
-    for (const u of users) {
-      if (u.larkUserId) userByLarkId.set(u.larkUserId, u);
-      if (u.name) userByName.set(u.name.trim().toLowerCase(), u);
-    }
-
-    const branchByName = new Map<string, typeof branches[0]>();
-    for (const b of branches) {
-      branchByName.set(b.name.trim().toLowerCase(), b);
-    }
-
-    let matchedCustomers = 0;
-    let matchedProducts = 0;
-    let matchedInvoices = 0;
-    let importedCount = 0;
-    let skippedCount = 0;
-
-    const itemsPreview: any[] = [];
-
-    for (const rec of records) {
-      const f = rec.fields || {};
-
-      // Customer
-      const customerLink = this.extractLinkRecord(f['Tên Khách Hàng']);
-      let matchedCustomer = customerLink?.id ? customerByLarkId.get(customerLink.id) : undefined;
-      if (!matchedCustomer && customerLink?.text) {
-        matchedCustomer = customerByName.get(customerLink.text.trim().toLowerCase());
-      }
-      if (matchedCustomer) matchedCustomers++;
-
-      // Product
-      const productLink = this.extractLinkRecord(f['Tên Sản Phẩm']);
-      let matchedProduct = productLink?.id ? productByLarkId.get(productLink.id) : undefined;
-      if (!matchedProduct && productLink?.text) {
-        // Thử tìm code SP bên trong tên, ví dụ "SP000390"
-        const codeMatch = productLink.text.match(/SP\d{6}|[A-Z0-9]{5,15}/i);
-        if (codeMatch) {
-          matchedProduct = productByCode.get(codeMatch[0].toUpperCase());
-        }
-      }
-      if (matchedProduct) matchedProducts++;
-
-      // Invoice
-      const invoiceLink = this.extractLinkRecord(f['Hóa Đơn']);
-      const invoiceCode = invoiceLink?.text?.trim().toUpperCase();
-      const matchedInvoice = invoiceCode ? invoiceByCode.get(invoiceCode) : undefined;
-      if (matchedInvoice) matchedInvoices++;
-
-      // Branch
-      const rawKho = this.extractText(f['Kho']);
-      let matchedBranch: typeof branches[0] | undefined;
-      if (rawKho) {
-        if (rawKho.includes('Hà Nội')) matchedBranch = branchByName.get('kho hà nội') || branches.find((b) => b.id === 6);
-        else if (rawKho.includes('Sài Gòn')) matchedBranch = branchByName.get('kho sài gòn') || branches.find((b) => b.id === 1);
-      }
-
-      // Decision maker
-      const rawDecisionMaker = this.extractUser(f['Người Quyết Định']);
-      let matchedDecisionMaker = rawDecisionMaker?.id ? userByLarkId.get(rawDecisionMaker.id) : undefined;
-      if (!matchedDecisionMaker && rawDecisionMaker?.name) {
-        matchedDecisionMaker = userByName.get(rawDecisionMaker.name.trim().toLowerCase());
-      }
-
-      // Status
-      const rawStatus = this.extractText(f['Trạng Thái Sự Cố']) || 'Mới';
-      const status = this.mapLarkStatus(rawStatus);
-
-      // Dates
-      const createdAt = f['Ngày tạo'] ? new Date(Number(f['Ngày tạo'])) : new Date(rec.created_time || Date.now());
-      const handledAt = f['Ngày Có Xử Lý'] ? new Date(Number(f['Ngày Có Xử Lý'])) : undefined;
-      const completedAt = f['Ngày Hoàn Thành'] ? new Date(Number(f['Ngày Hoàn Thành'])) : undefined;
-      const dueAt = handledAt ? this.calcDueDate(handledAt, 5) : undefined;
-
-      // Assigned departments & checkboxes
-      const assignedDepts = this.extractMultiSelect(f['Bộ Phận Thực Hiện']);
-      const kdDone = !!f['Phòng Kinh Doanh'];
-      const khoDone = !!f['Kho + Logistics'];
-      const ktDone = !!f['Kế Toán Kho'];
-      const tmDone = !!f['Thu Mua'];
-
-      const item = {
-        sourceRecordId: rec.record_id,
-        legacyCode: this.extractText(f['Mã Phiếu']) || rec.record_id,
-        branchId: matchedBranch?.id,
-        branchName: matchedBranch?.name || rawKho,
-        customerId: matchedCustomer?.id,
-        customerCode: matchedCustomer?.code,
-        customerName: customerLink?.text || 'Khách hàng',
-        productId: matchedProduct?.id,
-        productCode: matchedProduct?.code,
-        productName: productLink?.text || 'Sản phẩm',
-        unit: this.extractText(f['Đơn Vị Tính']) || matchedProduct?.unit,
-        sourceType: this.extractText(f['Nguồn Hàng']),
-        quantity: Number(this.extractText(f['Số Lượng']) || 1),
-        expiryDate: f['Hạn Sử Dụng'] ? new Date(Number(f['Hạn Sử Dụng'])) : undefined,
-        reason: this.extractText(f['Nguyên Nhân']),
-        initialClassification: this.extractText(f['Phân Loại Sự Cố Ban Đầu']) || 'Chất Lượng Sản Phẩm',
-        feedbackType: this.extractText(f['Loại phản hồi']) || 'Hàng Lỗi / Hỏng',
-        severity: this.extractText(f['Mức Độ Nghiêm Trọng']),
-        responsibilities: this.extractMultiSelect(f['Trách Nhiệm Thuộc Về']),
-        factoryName: this.extractText(f['Nhà Máy Sản Xuất']),
-        note: this.extractText(f['Ghi Chú']),
-        invoiceId: matchedInvoice?.id,
-        invoiceCode: invoiceCode || undefined,
-        decisionMakerId: matchedDecisionMaker?.id,
-        decisionMakerName: matchedDecisionMaker?.name || rawDecisionMaker?.name,
-        handlingDirection: this.extractText(f['Hướng Xử Lý']),
-        assignedDepartments: assignedDepts,
-        status,
-        isCompleted: status === QUALITY_STATUS.COMPLETED,
-        handledAt,
-        dueAt,
-        completedAt,
-        createdAt,
-        tasks: [
-          { dept: 'Kinh Doanh', isCompleted: kdDone, feedback: this.extractText(f['Phòng Kinh Doanh Phản Hồi ( Nếu có)']) },
-          { dept: 'Kho + Logistics', isCompleted: khoDone, feedback: this.extractText(f['Kho Phản Hồi (Nếu Có)']) },
-          { dept: 'Kế Toán Kho', isCompleted: ktDone, feedback: this.extractText(f['Kế Toán Phản Hồi ( Nếu Có)']) },
-          { dept: 'Thu Mua', isCompleted: tmDone, feedback: this.extractText(f['Thu Mua Phản Hồi (Nếu Có)']) },
-        ].filter((t) => assignedDepts.includes(t.dept) || t.isCompleted || !!t.feedback),
-      };
-
-      itemsPreview.push(item);
-
-      if (!dto.dryRun) {
-        try {
-          const existing = await this.prisma.productQualityTicket.findUnique({
-            where: { sourceRecordId: rec.record_id },
-          });
-          const ticketCode = existing ? existing.code : await this.generateCode();
-
-          const savedTicket = await this.prisma.productQualityTicket.upsert({
-            where: { sourceRecordId: rec.record_id },
-            create: {
-              code: ticketCode,
-              legacyCode: item.legacyCode,
-              sourceRecordId: item.sourceRecordId,
-              branchId: item.branchId,
-              branchName: item.branchName,
-              customerId: item.customerId,
-              customerCode: item.customerCode,
-              customerName: item.customerName,
-              productId: item.productId,
-              productCode: item.productCode,
-              productName: item.productName,
-              unit: item.unit,
-              sourceType: item.sourceType,
-              quantity: item.quantity,
-              expiryDate: item.expiryDate,
-              reason: item.reason,
-              initialClassification: item.initialClassification,
-              feedbackType: item.feedbackType,
-              severity: item.severity,
-              responsibilities: item.responsibilities,
-              factoryName: item.factoryName,
-              note: item.note,
-              invoiceId: item.invoiceId,
-              invoiceCode: item.invoiceCode,
-              decisionMakerId: item.decisionMakerId,
-              decisionMakerName: item.decisionMakerName,
-              handlingDirection: item.handlingDirection,
-              assignedDepartments: item.assignedDepartments,
-              status: item.status,
-              isCompleted: item.isCompleted,
-              handledAt: item.handledAt,
-              dueAt: item.dueAt,
-              completedAt: item.completedAt,
-              createdById: userId,
-              createdAt: item.createdAt,
-            },
-            update: {
-              branchId: item.branchId,
-              branchName: item.branchName,
-              customerId: item.customerId,
-              customerCode: item.customerCode,
-              customerName: item.customerName,
-              productId: item.productId,
-              productCode: item.productCode,
-              productName: item.productName,
-              unit: item.unit,
-              sourceType: item.sourceType,
-              quantity: item.quantity,
-              expiryDate: item.expiryDate,
-              reason: item.reason,
-              initialClassification: item.initialClassification,
-              feedbackType: item.feedbackType,
-              severity: item.severity,
-              responsibilities: item.responsibilities,
-              factoryName: item.factoryName,
-              note: item.note,
-              invoiceId: item.invoiceId,
-              invoiceCode: item.invoiceCode,
-              decisionMakerId: item.decisionMakerId,
-              decisionMakerName: item.decisionMakerName,
-              handlingDirection: item.handlingDirection,
-              assignedDepartments: item.assignedDepartments,
-              status: item.status,
-              isCompleted: item.isCompleted,
-              handledAt: item.handledAt,
-              dueAt: item.dueAt,
-              completedAt: item.completedAt,
-            },
-          });
-
-          // Upsert tasks
-          for (const t of item.tasks) {
-            await this.prisma.productQualityTask.upsert({
-              where: {
-                ticketId_department: {
-                  ticketId: savedTicket.id,
-                  department: t.dept,
-                },
-              },
-              create: {
-                ticketId: savedTicket.id,
-                department: t.dept,
-                isCompleted: t.isCompleted,
-                feedback: t.feedback,
-                completedAt: t.isCompleted ? item.completedAt || item.handledAt : null,
-              },
-              update: {
-                isCompleted: t.isCompleted,
-                feedback: t.feedback,
-                completedAt: t.isCompleted ? item.completedAt || item.handledAt : null,
-              },
-            });
-          }
-
-          importedCount++;
-        } catch (err: any) {
-          this.logger.error(`Error importing record ${rec.record_id}: ${err?.message}`);
-          skippedCount++;
-        }
-      }
-    }
-
-    return {
-      totalFetched: records.length,
-      matchedCustomers,
-      matchedProducts,
-      matchedInvoices,
-      importedCount: dto.dryRun ? 0 : importedCount,
-      skippedCount: dto.dryRun ? 0 : skippedCount,
-      dryRun: !!dto.dryRun,
-      sample: itemsPreview.slice(0, 10),
-    };
+    return this.larkService.sync(dto, userId);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1429,6 +1447,17 @@ export class ProductQualityService {
     const d = new Date(startDate.getTime());
     d.setDate(d.getDate() + days);
     return d;
+  }
+
+  /** Coi là ảnh minh chứng nếu mimetype là ảnh, hoặc thiếu mimetype và không phải video. */
+  private isImageAttachment(a: {
+    kind?: string | null;
+    mimetype?: string | null;
+  }): boolean {
+    const mime = (a.mimetype || '').toLowerCase();
+    if (mime.startsWith('image/')) return true;
+    if (mime.startsWith('video/')) return false;
+    return a.kind !== 'PROOF_VIDEO';
   }
 
   private mapLarkStatus(rawStatus: string): string {
@@ -1516,154 +1545,5 @@ export class ProductQualityService {
         content: JSON.stringify({ text: contentText }),
       },
     });
-  }
-
-  private async getLarkTenantAccessToken(appId: string, appSecret: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const payload = JSON.stringify({ app_id: appId, app_secret: appSecret });
-      const req = https.request(
-        {
-          hostname: 'open.larksuite.com',
-          path: '/open-apis/auth/v3/tenant_access_token/internal',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(payload),
-          },
-        },
-        (res) => {
-          let data = '';
-          res.on('data', (c) => (data += c));
-          res.on('end', () => {
-            try {
-              const body = JSON.parse(data);
-              if (body.code === 0 && body.tenant_access_token) {
-                resolve(body.tenant_access_token);
-              } else {
-                reject(new Error(body.msg || 'Auth failed'));
-              }
-            } catch (err) {
-              reject(err);
-            }
-          });
-        },
-      );
-      req.on('error', reject);
-      req.write(payload);
-      req.end();
-    });
-  }
-
-  private async fetchAllLarkRecords(
-    baseToken: string,
-    tableId: string,
-    token: string,
-    maxLimit?: number,
-  ): Promise<any[]> {
-    const all: any[] = [];
-    let pageToken: string | undefined;
-    let hasMore = true;
-
-    while (hasMore) {
-      const pageSize = Math.min(100, maxLimit ? maxLimit - all.length : 100);
-      if (pageSize <= 0) break;
-
-      const qs = new URLSearchParams({
-        page_size: String(pageSize),
-        automatic_fields: 'true',
-      });
-      if (pageToken) qs.set('page_token', pageToken);
-
-      const res: any = await new Promise((resolve, reject) => {
-        const req = https.request(
-          {
-            hostname: 'open.larksuite.com',
-            path: `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${qs.toString()}`,
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` },
-          },
-          (response) => {
-            let d = '';
-            response.on('data', (c) => (d += c));
-            response.on('end', () => {
-              try {
-                resolve(JSON.parse(d));
-              } catch (err) {
-                reject(err);
-              }
-            });
-          },
-        );
-        req.on('error', reject);
-        req.end();
-      });
-
-      if (res.code !== 0) {
-        this.logger.error(`Lark API error: ${res.msg}`);
-        break;
-      }
-
-      const items = res.data?.items || [];
-      all.push(...items);
-
-      hasMore = res.data?.has_more || false;
-      pageToken = res.data?.page_token;
-
-      if (maxLimit && all.length >= maxLimit) break;
-    }
-
-    return all;
-  }
-
-  private extractText(v: any): string {
-    if (v == null) return '';
-    if (typeof v === 'string') return v.trim();
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v);
-    if (Array.isArray(v)) {
-      return v.map((item) => this.extractText(item)).filter(Boolean).join(' ');
-    }
-    if (typeof v === 'object') {
-      return v.text || v.name || v.full_address || '';
-    }
-    return String(v).trim();
-  }
-
-  private extractMultiSelect(v: any): string[] {
-    if (!v) return [];
-    if (Array.isArray(v)) {
-      return v.map((item) => (typeof item === 'string' ? item : item.name || item.text || '')).filter(Boolean);
-    }
-    if (typeof v === 'string') {
-      return v.split(',').map((s) => s.trim()).filter(Boolean);
-    }
-    return [];
-  }
-
-  private extractLinkRecord(v: any): { id?: string; text?: string } | null {
-    if (!v) return null;
-    if (Array.isArray(v) && v.length > 0) {
-      const first = v[0];
-      const id = first.record_ids?.[0] || first.id;
-      const text = first.text || first.name || (Array.isArray(first.text_arr) ? first.text_arr[0] : '');
-      return { id, text };
-    }
-    if (typeof v === 'object') {
-      const id = v.record_ids?.[0] || v.id;
-      const text = v.text || v.name;
-      return { id, text };
-    }
-    return null;
-  }
-
-  private extractUser(v: any): { id?: string; name?: string } | null {
-    if (!v) return null;
-    if (Array.isArray(v) && v.length > 0) {
-      const first = v[0];
-      return { id: first.id, name: first.name };
-    }
-    if (typeof v === 'object') {
-      return { id: v.id, name: v.name };
-    }
-    return null;
   }
 }

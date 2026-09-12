@@ -178,6 +178,46 @@ export class DebtTrackingService {
       };
     }
 
+    const accountantPics = [
+      ...(query.accountantPics ?? []),
+      ...(query.accountantPic ? [query.accountantPic] : []),
+      ...(query.misaEmployeeCodes ?? []),
+    ]
+      .map((s) => String(s).trim())
+      .filter(Boolean);
+
+    if (accountantPics.length) {
+      const uniquePics = [...new Set(accountantPics)];
+      const matchingAccountObjects =
+        await this.prisma.misaAccountObject.findMany({
+          where: {
+            isEmployee: true,
+            OR: [
+              { accountObjectCode: { in: uniquePics } },
+              { accountObjectName: { in: uniquePics } },
+            ],
+          },
+          select: { accountObjectCode: true, accountObjectName: true },
+        });
+
+      const allSearchTerms = new Set(uniquePics);
+      for (const obj of matchingAccountObjects) {
+        if (obj.accountObjectCode) allSearchTerms.add(obj.accountObjectCode);
+        if (obj.accountObjectName) allSearchTerms.add(obj.accountObjectName);
+      }
+
+      const termsList = [...allSearchTerms];
+      customerWhere.AND = [
+        ...((customerWhere.AND as any[]) || []),
+        {
+          OR: [
+            { misaEmployeeCode: { in: termsList } },
+            { misaEmployeeName: { in: termsList } },
+          ],
+        },
+      ];
+    }
+
     const customers = await this.prisma.customer.findMany({
       where: customerWhere,
       take: MAX_CUSTOMERS_SCAN,
@@ -187,6 +227,7 @@ export class DebtTrackingService {
         name: true,
         contactNumber: true,
         phone: true,
+        misaEmployeeCode: true,
         misaEmployeeName: true,
         totalDebt: true,
         branchId: true,
@@ -289,6 +330,7 @@ export class DebtTrackingService {
         name: c.name,
         contactNumber: c.contactNumber ?? c.phone ?? null,
         misaEmployeeName: c.misaEmployeeName ?? null,
+        misaEmployeeCode: (c as any).misaEmployeeCode ?? null,
         branch: c.branch,
 
         // 1. Nợ hiện tại

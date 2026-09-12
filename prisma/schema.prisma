@@ -1667,6 +1667,7 @@ model Invoice {
   mergeSources           InvoiceMergeSource[]    @relation("InvoiceMergeSource")
   productQualityTickets         ProductQualityTicket[]  @relation("ProductQualityInvoice")
   productQualityOutboundTickets ProductQualityTicket[]  @relation("ProductQualityOutboundInvoice")
+  productQualityRelatedTickets  ProductQualityTicketInvoice[]
 
   @@index([purchaseDate])
   @@index([customerId, purchaseDate])
@@ -2687,6 +2688,9 @@ model PackingSlip {
   creator              User                     @relation("PackingSlipCreator", fields: [createdBy], references: [id])
   expensePayer         User?                    @relation("PackingSlipExpensePayer", fields: [expensePayerId], references: [id])
 
+  @@index([branchId, createdAt(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
   @@map("packing_slips")
 }
 
@@ -2702,6 +2706,8 @@ model PackingSlipInvoice {
 
   @@unique([packingSlipId, invoiceId])
   @@unique([packingSlipId, consignmentId])
+  @@index([invoiceId])
+  @@index([consignmentId])
   @@map("packing_slip_invoices")
 }
 
@@ -2756,6 +2762,9 @@ model PackingHang {
   cancelledBy      User?                @relation("PackingHangCancelledBy", fields: [cancelledById], references: [id])
   creator          User                 @relation("PackingHangCreator", fields: [createdBy], references: [id])
 
+  @@index([branchId, createdAt(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
   @@map("packing_hangs")
 }
 
@@ -2771,6 +2780,8 @@ model PackingHangInvoice {
 
   @@unique([packingHangId, invoiceId])
   @@unique([packingHangId, consignmentId])
+  @@index([invoiceId])
+  @@index([consignmentId])
   @@map("packing_hang_invoices")
 }
 
@@ -2803,6 +2814,9 @@ model PackingLoading {
   creator          User                    @relation("PackingLoadingCreator", fields: [createdBy], references: [id])
   loadingBy        User                    @relation("PackingLoadingUser", fields: [loadingById], references: [id])
 
+  @@index([branchId, createdAt(sort: Desc)])
+  @@index([createdBy, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
   @@map("packing_loadings")
 }
 
@@ -2818,6 +2832,8 @@ model PackingLoadingInvoice {
 
   @@unique([packingLoadingId, invoiceId])
   @@unique([packingLoadingId, consignmentId])
+  @@index([invoiceId])
+  @@index([consignmentId])
   @@map("packing_loading_invoices")
 }
 
@@ -4452,6 +4468,7 @@ model ProductQualityTicket {
 
   tasks                 ProductQualityTask[]
   attachments           ProductQualityAttachment[]
+  relatedInvoices       ProductQualityTicketInvoice[]
 
   @@index([branchId])
   @@index([status])
@@ -4477,7 +4494,7 @@ model ProductQualityTask {
   createdAt             DateTime                     @default(now()) @map("created_at")
   updatedAt             DateTime                     @updatedAt @map("updated_at")
 
-  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
   assignedUser          User?                        @relation("ProductQualityTaskAssignee", fields: [assignedUserId], references: [id])
   completedByUser       User?                        @relation("ProductQualityTaskCompleter", fields: [completedById], references: [id])
 
@@ -4500,11 +4517,28 @@ model ProductQualityAttachment {
   createdById           Int?                         @map("created_by_id")
   createdAt             DateTime                     @default(now()) @map("created_at")
 
-  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  ticket                ProductQualityTicket         @relation(fields: [ticketId], references: [id], onDelete: Restrict)
   creator               User?                        @relation("ProductQualityAttachmentCreator", fields: [createdById], references: [id])
 
   @@index([ticketId])
   @@map("product_quality_attachments")
+}
+
+/// Liên kết nhiều-nhiều giữa phiếu chất lượng và hóa đơn bán hàng liên quan.
+/// Giữ invoiceId/invoiceCode trên ticket để tương thích dữ liệu cũ, đồng bộ với
+/// hóa đơn đầu tiên trong danh sách.
+model ProductQualityTicketInvoice {
+  id        Int      @id @default(autoincrement())
+  ticketId  Int      @map("ticket_id")
+  invoiceId Int      @map("invoice_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ticket  ProductQualityTicket @relation(fields: [ticketId], references: [id], onDelete: Restrict)
+  invoice Invoice              @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@unique([ticketId, invoiceId])
+  @@index([invoiceId])
+  @@map("product_quality_ticket_invoices")
 }
 
 model ProductQualityRoutingConfig {

@@ -90,6 +90,47 @@ export class DebtTrackingQueryDto {
   @IsInt({ each: true })
   salePicIds?: number[];
 
+  /** Lọc theo Kế toán PIC (Misa). */
+  @IsOptional()
+  @IsString()
+  accountantPic?: string;
+
+  /** Lọc theo nhiều Kế toán PIC (Misa). */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value == null || value === '') return undefined;
+    const arr = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value.split(',')
+        : [value];
+    const items = arr
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+    return items.length ? items : undefined;
+  })
+  @IsArray()
+  @IsString({ each: true })
+  accountantPics?: string[];
+
+  /** Alias tương thích cho accountantPics (mã NV Misa). */
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value == null || value === '') return undefined;
+    const arr = Array.isArray(value)
+      ? value
+      : typeof value === 'string'
+        ? value.split(',')
+        : [value];
+    const items = arr
+      .map((item) => String(item).trim())
+      .filter(Boolean);
+    return items.length ? items : undefined;
+  })
+  @IsArray()
+  @IsString({ each: true })
+  misaEmployeeCodes?: string[];
+
   /** Lọc theo nhóm khách hàng. */
   @IsOptional()
   @IsInt()

@@ -1,4 +1,12 @@
-import { IsOptional, IsString, IsNumber, IsArray } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsNumber,
+  IsArray,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import { AttachmentInputDto } from './create-product-quality-ticket.dto';
 
 export class AssignProductQualityTicketDto {
   @IsOptional()
@@ -36,4 +44,26 @@ export class AssignProductQualityTicketDto {
   @IsOptional()
   @IsString()
   outboundInvoiceCode?: string;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  /** Ảnh/video minh chứng mới tải lên trong bước xử lý. */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => AttachmentInputDto)
+  attachments?: AttachmentInputDto[];
+
+  /** Danh sách id attachment cần bỏ khỏi phiếu (ảnh/video đã thêm sai). */
+  @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  removeAttachmentIds?: number[];
 }

@@ -138,3 +138,48 @@ describe('DebtTrackingService Sale PIC notifications', () => {
     ).rejects.toThrow('tối đa 50');
   });
 });
+
+describe('DebtTrackingService accountant PIC filtering', () => {
+  it('filters customers by MISA employee code and name', async () => {
+    const findManyMisa = jest.fn().mockResolvedValue([
+      { accountObjectCode: 'KT01', accountObjectName: 'Kế Toán A' },
+    ]);
+    const findManyCustomers = jest.fn().mockResolvedValue([]);
+    const prisma = {
+      misaAccountObject: { findMany: findManyMisa },
+      customer: { findMany: findManyCustomers },
+    };
+    const service = new DebtTrackingService(prisma as any, {} as any);
+
+    await service.findAll({
+      accountantPics: ['KT01'],
+    } as any);
+
+    expect(findManyMisa).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isEmployee: true,
+          OR: [
+            { accountObjectCode: { in: ['KT01'] } },
+            { accountObjectName: { in: ['KT01'] } },
+          ],
+        }),
+      }),
+    );
+
+    expect(findManyCustomers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          AND: expect.arrayContaining([
+            {
+              OR: [
+                { misaEmployeeCode: { in: expect.arrayContaining(['KT01', 'Kế Toán A']) } },
+                { misaEmployeeName: { in: expect.arrayContaining(['KT01', 'Kế Toán A']) } },
+              ],
+            },
+          ]),
+        }),
+      }),
+    );
+  });
+});

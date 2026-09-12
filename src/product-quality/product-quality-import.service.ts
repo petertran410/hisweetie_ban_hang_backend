@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import * as ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -359,7 +360,8 @@ export class ProductQualityImportService {
     if (s.includes('hoàn thành') || s === 'done' || s === 'completed') return QUALITY_STATUS.COMPLETED;
     if (s.includes('khắc phục') || s === 'remediating') return QUALITY_STATUS.REMEDIATING;
     if (s.includes('đang xử lý') || s === 'in_progress') return QUALITY_STATUS.IN_PROGRESS;
-    if (s.includes('dừng') || s.includes('ended') || s.includes('kết thúc')) return QUALITY_STATUS.ENDED;
+    if (s.includes('dừng') || s.includes('ended') || s.includes('kết thúc') || s.includes('hủy'))
+      return QUALITY_STATUS.ENDED;
     return QUALITY_STATUS.NEW;
   }
 
@@ -388,24 +390,39 @@ export class ProductQualityImportService {
   private async parseWorkbookRows(file: Express.Multer.File): Promise<any[]> {
     if (!file || !file.buffer) throw new BadRequestException('Chưa chọn file');
 
-    const workbook = new ExcelJS.Workbook();
+    let workbook: XLSX.WorkBook;
     try {
-      await workbook.xlsx.load(file.buffer as any);
+      // SheetJS đọc được cả OOXML (.xlsx) và BIFF8 (.xls).
+      workbook = XLSX.read(file.buffer, {
+        type: 'buffer',
+        cellDates: true,
+      });
     } catch {
       throw new BadRequestException('Không đọc được file Excel (.xlsx hoặc .xls)');
     }
 
-    const sheet = workbook.worksheets[0];
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = firstSheetName ? workbook.Sheets[firstSheetName] : undefined;
     if (!sheet) throw new BadRequestException('File Excel trống không có trang dữ liệu');
 
-    // Xác định cột ở dòng 1
+    const matrix = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
+      header: 1,
+      raw: true,
+      defval: '',
+      blankrows: true,
+    });
+    if (matrix.length === 0) {
+      throw new BadRequestException('File Excel trống không có trang dữ liệu');
+    }
+
+    // Xác định cột ở dòng 1. Chỉ các tiêu đề đã biết mới được đọc.
     const colMap = new Map<number, string>();
-    sheet.getRow(1).eachCell((cell, colNumber) => {
-      const rawText = this.value(cell.value);
+    (matrix[0] || []).forEach((cellValue, index) => {
+      const rawText = this.value(cellValue);
       const normalized = norm(rawText);
       const mappedKey = HEADER_KEY_MAP[normalized];
       if (mappedKey) {
-        colMap.set(colNumber, mappedKey);
+        colMap.set(index, mappedKey);
       }
     });
 
@@ -417,26 +434,22 @@ export class ProductQualityImportService {
 
     const rawRows: any[] = [];
 
-    sheet.eachRow((excelRow, rowNumber) => {
-      if (rowNumber === 1) return;
-
+    matrix.slice(1).forEach((values, index) => {
+      const rowNumber = index + 2;
       const rowObj: any = { _row: rowNumber };
       let hasData = false;
 
-      colMap.forEach((key, colNumber) => {
-        const cell = excelRow.getCell(colNumber);
-        const val = this.value(cell.value);
+      colMap.forEach((key, columnIndex) => {
+        const rawValue = values?.[columnIndex];
+        const val = this.value(rawValue);
         if (val) hasData = true;
         rowObj[key] = val;
-        // Nếu là ô Date hoặc số timestamp, lưu raw value
-        if (cell.value instanceof Date || typeof cell.value === 'number') {
-          rowObj[`${key}_raw`] = cell.value;
+        if (rawValue instanceof Date || typeof rawValue === 'number') {
+          rowObj[`${key}_raw`] = rawValue;
         }
       });
 
-      if (hasData) {
-        rawRows.push(rowObj);
-      }
+      if (hasData) rawRows.push(rowObj);
     });
 
     return rawRows;

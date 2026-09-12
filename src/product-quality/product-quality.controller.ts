@@ -155,6 +155,34 @@ export class ProductQualityController {
     return this.service.findOne(+id, user);
   }
 
+  @Get('reference/factories')
+  @RequirePermissions('product_quality:assign')
+  @ApiOperation({ summary: 'Tra cứu nhà máy đang hoạt động cho phiếu chất lượng' })
+  searchFactories(
+    @Query('search') search?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.searchFactories(
+      search,
+      limit ? parseInt(limit, 10) : undefined,
+    );
+  }
+
+  @Get('reference/invoices')
+  @RequirePermissions('product_quality:assign')
+  @ApiOperation({ summary: 'Tra cứu hóa đơn cho phiếu chất lượng' })
+  searchInvoices(
+    @Query('search') search?: string,
+    @Query('customerId') customerId?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.service.searchInvoices(
+      search,
+      customerId ? parseInt(customerId, 10) : undefined,
+      limit ? parseInt(limit, 10) : undefined,
+    );
+  }
+
   @Post()
   @RequirePermissions('product_quality:create')
   @ApiOperation({ summary: 'Tạo phiếu sự cố chất lượng' })
@@ -189,6 +217,26 @@ export class ProductQualityController {
     return this.service.assign(+id, dto, user.id);
   }
 
+  @Post(':id/processing')
+  @RequirePermissions('product_quality:assign')
+  @ApiOperation({
+    summary: 'Chuyển phiếu sang giai đoạn Đang xử lý (alias của /assign)',
+  })
+  moveToProcessing(
+    @Param('id') id: string,
+    @Body() dto: AssignProductQualityTicketDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.assign(+id, dto, user.id);
+  }
+
+  @Post(':id/remediating')
+  @RequirePermissions('product_quality:assign')
+  @ApiOperation({ summary: 'Chuyển phiếu sang giai đoạn Đang khắc phục' })
+  moveToRemediating(@Param('id') id: string, @CurrentUser() user: any) {
+    return this.service.moveToRemediating(+id, user.id);
+  }
+
   @Post(':id/tasks/:department')
   @RequirePermissions('product_quality:complete')
   @ApiOperation({ summary: 'Cập nhật phản hồi / hoàn tất nhiệm vụ của bộ phận' })
@@ -203,7 +251,7 @@ export class ProductQualityController {
 
   @Post(':id/close')
   @RequirePermissions('product_quality:close')
-  @ApiOperation({ summary: 'Kết thúc phiếu thủ công (ENDED)' })
+  @ApiOperation({ summary: 'Hủy phiếu sự cố chất lượng (ENDED)' })
   close(
     @Param('id') id: string,
     @Body() dto: CloseProductQualityTicketDto,
@@ -214,7 +262,9 @@ export class ProductQualityController {
 
   @Delete(':id')
   @RequirePermissions('product_quality:delete')
-  @ApiOperation({ summary: 'Xóa phiếu mới' })
+  @ApiOperation({
+    summary: 'Không hỗ trợ xóa phiếu — giữ route để tương thích client cũ',
+  })
   delete(@Param('id') id: string, @CurrentUser() user: any) {
     return this.service.delete(+id, user.id);
   }

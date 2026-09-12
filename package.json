@@ -79,6 +79,7 @@
     "seed:contracts": "ts-node prisma/seeds/add-contract-permissions.ts",
     "seed:contract-signer": "ts-node prisma/seeds/add-contract-signer-permission.ts",
     "seed:product-quality-permissions": "ts-node prisma/seeds/add-product-quality-permissions.ts",
+    "sync:lark-product-quality": "ts-node -r tsconfig-paths/register prisma/seeds/sync-lark-product-quality.ts",
     "seed:note-templates": "ts-node prisma/seeds/add-note-templates-permission.ts",
     "seed:factories-product-factory": "ts-node prisma/seeds/add-factories-and-product-factory-permissions.ts",
     "seed:fix-export-categories": "ts-node prisma/seeds/fix-export-permission-categories.ts",
@@ -138,7 +139,8 @@
     "qrcode": "^1.5.4",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

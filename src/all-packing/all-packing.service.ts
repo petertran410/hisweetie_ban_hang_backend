@@ -3,6 +3,161 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AllPackingQueryDto } from './dto/all-packing-query.dto';
 import { searchCustomerIds } from '../common/customer-search.util';
 
+const PACKING_SLIP_LIST_SELECT = {
+  id: true,
+  code: true,
+  branchId: true,
+  numberOfPackages: true,
+  paymentMethod: true,
+  cashAmount: true,
+  hasFeeGuiBen: true,
+  feeGuiBen: true,
+  hasFeeGrab: true,
+  feeGrab: true,
+  hasCuocGuiHang: true,
+  cuocGuiHang: true,
+  hasCuocNhanHang: true,
+  cuocNhanHang: true,
+  note: true,
+  createdBy: true,
+  createdAt: true,
+  updatedAt: true,
+  cancelledAt: true,
+  cancelledById: true,
+  branch: { select: { id: true, name: true } },
+  creator: { select: { id: true, name: true } },
+  expensePayer: { select: { id: true, name: true, larkUserId: true } },
+  invoices: {
+    select: {
+      id: true,
+      invoice: {
+        select: {
+          id: true,
+          code: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+      consignment: {
+        select: {
+          id: true,
+          code: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+    },
+  },
+  _count: {
+    select: {
+      images: true,
+      expenseFiles: true,
+    },
+  },
+} as const;
+
+const PACKING_HANG_LIST_SELECT = {
+  id: true,
+  code: true,
+  branchId: true,
+  numberOfPackages: true,
+  note: true,
+  createdBy: true,
+  createdAt: true,
+  updatedAt: true,
+  cancelledAt: true,
+  cancelledById: true,
+  branch: { select: { id: true, name: true } },
+  creator: { select: { id: true, name: true } },
+  invoices: {
+    select: {
+      id: true,
+      invoice: {
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          purchaseDate: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+      consignment: {
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+    },
+  },
+  _count: {
+    select: {
+      images: true,
+    },
+  },
+} as const;
+
+const PACKING_LOADING_LIST_SELECT = {
+  id: true,
+  code: true,
+  branchId: true,
+  loadingById: true,
+  numberOfPackages: true,
+  note: true,
+  createdBy: true,
+  createdAt: true,
+  updatedAt: true,
+  cancelledAt: true,
+  cancelledById: true,
+  branch: { select: { id: true, name: true } },
+  creator: { select: { id: true, name: true } },
+  loadingBy: { select: { id: true, name: true } },
+  invoices: {
+    select: {
+      id: true,
+      invoice: {
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          purchaseDate: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+      consignment: {
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          grandTotal: true,
+          customer: {
+            select: { id: true, name: true, contactNumber: true },
+          },
+        },
+      },
+    },
+  },
+  _count: {
+    select: {
+      images: true,
+    },
+  },
+} as const;
+
 @Injectable()
 export class AllPackingService {
   constructor(private prisma: PrismaService) {}
@@ -46,111 +201,265 @@ export class AllPackingService {
         ? currentUser.id
         : undefined;
 
-    // Khớp khách hàng theo từ trọn vẹn (dùng chung util). Resolve 1 lần rồi
-    // truyền id xuống 3 nhánh để tránh query trùng.
-    const customerMatchedIds = customerSearch
-      ? await searchCustomerIds(this.prisma, customerSearch)
-      : undefined;
+   // Khớp khách hàng theo từ trọn vẹn (dùng chung util). Resolve 1 lần rồi
+   // truyền id xuống 3 nhánh để tránh query trùng.
+   const customerMatchedIds = customerSearch
+     ? await searchCustomerIds(this.prisma, customerSearch)
+     : undefined;
 
-    let allData: any[] = [];
-    let total = 0;
-
-    // Khi lọc theo paymentMethod → chỉ PackingSlip (giao hàng) có trường này.
-    // PackingHang (đóng hàng) & PackingLoading (loading) không có paymentMethod
-    // nên bị loại bỏ hoàn toàn, bất kể `type` được chọn là gì.
-    if (paymentMethod) {
-      const packingSlips = await this.getPackingSlips(
-        effectiveBranchIds,
-        search,
-        invoiceSearch,
-        customerMatchedIds,
-        ownerFilterId,
-        paymentMethod,
-        createdDateRange,
-      );
-      allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
-    } else if (!type || type === 'all') {
-      const [packingSlips, packingHangs, packingLoadings] = await Promise.all([
-        this.getPackingSlips(
-          effectiveBranchIds,
-          search,
-          invoiceSearch,
-          customerMatchedIds,
-          ownerFilterId,
-          undefined,
-          createdDateRange,
-        ),
-        this.getPackingHangs(
-          effectiveBranchIds,
-          search,
-          invoiceSearch,
-          customerMatchedIds,
-          ownerFilterId,
-          createdDateRange,
-        ),
-        this.getPackingLoadings(
-          effectiveBranchIds,
-          search,
-          invoiceSearch,
-          customerMatchedIds,
-          ownerFilterId,
-          createdDateRange,
-        ),
-      ]);
-
-      allData = [
-        ...packingSlips.map((item) => ({ ...item, type: 'giao-hang' })),
-        ...packingHangs.map((item) => ({ ...item, type: 'dong-hang' })),
-        ...packingLoadings.map((item) => ({ ...item, type: 'loading' })),
-      ];
-    } else if (type === 'giao-hang') {
-      const packingSlips = await this.getPackingSlips(
-        effectiveBranchIds,
-        search,
-        invoiceSearch,
-        customerMatchedIds,
-        ownerFilterId,
-        undefined,
-        createdDateRange,
-      );
-      allData = packingSlips.map((item) => ({ ...item, type: 'giao-hang' }));
-    } else if (type === 'dong-hang') {
-      const packingHangs = await this.getPackingHangs(
-        effectiveBranchIds,
-        search,
-        invoiceSearch,
-        customerMatchedIds,
-        ownerFilterId,
-        createdDateRange,
-      );
-      allData = packingHangs.map((item) => ({ ...item, type: 'dong-hang' }));
-    } else if (type === 'loading') {
-      const packingLoadings = await this.getPackingLoadings(
-        effectiveBranchIds,
-        search,
-        invoiceSearch,
-        customerMatchedIds,
-        ownerFilterId,
-        createdDateRange,
-      );
-      allData = packingLoadings.map((item) => ({
-        ...item,
-        type: 'loading',
-      }));
-    }
-
-    allData.sort(
-      (a, b) =>
-        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    const whereSlips = this.buildWhereSlips(
+      effectiveBranchIds,
+      search,
+      invoiceSearch,
+      customerMatchedIds,
+      ownerFilterId,
+      paymentMethod,
+      createdDateRange,
     );
 
-    total = allData.length;
-    const paginatedData = allData.slice(currentItem, currentItem + take);
+    // Nếu có paymentMethod hoặc type === 'giao-hang' → chỉ truy vấn packing_slips.
+    if (paymentMethod || type === 'giao-hang') {
+      const [items, total] = await Promise.all([
+        this.prisma.packingSlip.findMany({
+          where: whereSlips,
+          select: PACKING_SLIP_LIST_SELECT,
+          orderBy: { createdAt: 'desc' },
+          skip: currentItem,
+          take,
+        }),
+        this.prisma.packingSlip.count({ where: whereSlips }),
+      ]);
+      return {
+        data: items.map((item) => this.mapPackingSlip(item)),
+        total,
+      };
+    }
+
+    if (type === 'dong-hang') {
+      const whereHangs = this.buildWhereHangs(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerMatchedIds,
+        ownerFilterId,
+        createdDateRange,
+      );
+      const [items, total] = await Promise.all([
+        this.prisma.packingHang.findMany({
+          where: whereHangs,
+          select: PACKING_HANG_LIST_SELECT,
+          orderBy: { createdAt: 'desc' },
+          skip: currentItem,
+          take,
+        }),
+        this.prisma.packingHang.count({ where: whereHangs }),
+      ]);
+      return {
+        data: items.map((item) => this.mapPackingHang(item)),
+        total,
+      };
+    }
+
+    if (type === 'loading') {
+      const whereLoadings = this.buildWhereLoadings(
+        effectiveBranchIds,
+        search,
+        invoiceSearch,
+        customerMatchedIds,
+        ownerFilterId,
+        createdDateRange,
+      );
+      const [items, total] = await Promise.all([
+        this.prisma.packingLoading.findMany({
+          where: whereLoadings,
+          select: PACKING_LOADING_LIST_SELECT,
+          orderBy: { createdAt: 'desc' },
+          skip: currentItem,
+          take,
+        }),
+        this.prisma.packingLoading.count({ where: whereLoadings }),
+      ]);
+      return {
+        data: items.map((item) => this.mapPackingLoading(item)),
+        total,
+      };
+    }
+
+    // type === 'all' hoặc không truyền
+    const whereHangs = this.buildWhereHangs(
+      effectiveBranchIds,
+      search,
+      invoiceSearch,
+      customerMatchedIds,
+      ownerFilterId,
+      createdDateRange,
+    );
+    const whereLoadings = this.buildWhereLoadings(
+      effectiveBranchIds,
+      search,
+      invoiceSearch,
+      customerMatchedIds,
+      ownerFilterId,
+      createdDateRange,
+    );
+
+    const [countSlips, countHangs, countLoadings] = await Promise.all([
+      this.prisma.packingSlip.count({ where: whereSlips }),
+      this.prisma.packingHang.count({ where: whereHangs }),
+      this.prisma.packingLoading.count({ where: whereLoadings }),
+    ]);
+    const total = countSlips + countHangs + countLoadings;
+    if (total === 0 || currentItem >= total) {
+      return { data: [], total };
+    }
+
+    // Lấy danh sách ID + createdAt của các dòng có khả năng thuộc trang hiện tại
+    const needed = currentItem + take;
+    const [slipKeys, hangKeys, loadingKeys] = await Promise.all([
+      countSlips > 0
+        ? this.prisma.packingSlip.findMany({
+            where: whereSlips,
+            select: { id: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+            take: needed,
+          })
+        : [],
+      countHangs > 0
+        ? this.prisma.packingHang.findMany({
+            where: whereHangs,
+            select: { id: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+            take: needed,
+          })
+        : [],
+      countLoadings > 0
+        ? this.prisma.packingLoading.findMany({
+            where: whereLoadings,
+            select: { id: true, createdAt: true },
+            orderBy: { createdAt: 'desc' },
+            take: needed,
+          })
+        : [],
+    ]);
+
+    const combinedKeys = [
+      ...slipKeys.map((k) => ({
+        id: k.id,
+        createdAt: k.createdAt,
+        type: 'giao-hang' as const,
+      })),
+      ...hangKeys.map((k) => ({
+        id: k.id,
+        createdAt: k.createdAt,
+        type: 'dong-hang' as const,
+      })),
+      ...loadingKeys.map((k) => ({
+        id: k.id,
+        createdAt: k.createdAt,
+        type: 'loading' as const,
+      })),
+    ];
+
+    combinedKeys.sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime() ||
+        b.id - a.id,
+    );
+
+    const pageKeys = combinedKeys.slice(currentItem, currentItem + take);
+    const pageSlipIds = pageKeys
+      .filter((k) => k.type === 'giao-hang')
+      .map((k) => k.id);
+    const pageHangIds = pageKeys
+      .filter((k) => k.type === 'dong-hang')
+      .map((k) => k.id);
+    const pageLoadingIds = pageKeys
+      .filter((k) => k.type === 'loading')
+      .map((k) => k.id);
+
+    // Chỉ tải đầy đủ quan hệ cho đúng các bản ghi hiển thị trên trang hiện tại
+    const [pageSlips, pageHangs, pageLoadings] = await Promise.all([
+      pageSlipIds.length > 0
+        ? this.prisma.packingSlip.findMany({
+            where: { id: { in: pageSlipIds } },
+            select: PACKING_SLIP_LIST_SELECT,
+          })
+        : [],
+      pageHangIds.length > 0
+        ? this.prisma.packingHang.findMany({
+            where: { id: { in: pageHangIds } },
+            select: PACKING_HANG_LIST_SELECT,
+          })
+        : [],
+      pageLoadingIds.length > 0
+        ? this.prisma.packingLoading.findMany({
+            where: { id: { in: pageLoadingIds } },
+            select: PACKING_LOADING_LIST_SELECT,
+          })
+        : [],
+    ]);
+
+    const slipMap = new Map(
+      pageSlips.map((s) => [s.id, this.mapPackingSlip(s)] as [number, any]),
+    );
+    const hangMap = new Map(
+      pageHangs.map((h) => [h.id, this.mapPackingHang(h)] as [number, any]),
+    );
+    const loadingMap = new Map(
+      pageLoadings.map((l) => [l.id, this.mapPackingLoading(l)] as [number, any]),
+    );
+
+    const paginatedData = pageKeys
+      .map((k) => {
+        if (k.type === 'giao-hang') return slipMap.get(k.id);
+        if (k.type === 'dong-hang') return hangMap.get(k.id);
+        return loadingMap.get(k.id);
+      })
+      .filter(Boolean);
 
     return { data: paginatedData, total };
   }
 
-  private async getPackingSlips(
+  private mapPackingSlip(item: any) {
+    const imageCount = item._count?.images ?? 0;
+    const expenseFileCount = item._count?.expenseFiles ?? 0;
+    return {
+      ...item,
+      type: 'giao-hang' as const,
+      imageCount,
+      expenseFileCount,
+      images: Array.from({ length: imageCount }, (_, i) => ({ id: i })),
+      expenseFiles: Array.from({ length: expenseFileCount }, (_, i) => ({
+        id: i,
+      })),
+    };
+  }
+
+  private mapPackingHang(item: any) {
+    const imageCount = item._count?.images ?? 0;
+    return {
+      ...item,
+      type: 'dong-hang' as const,
+      imageCount,
+      expenseFileCount: 0,
+      images: Array.from({ length: imageCount }, (_, i) => ({ id: i })),
+      expenseFiles: [],
+    };
+  }
+
+  private mapPackingLoading(item: any) {
+    const imageCount = item._count?.images ?? 0;
+    return {
+      ...item,
+      type: 'loading' as const,
+      imageCount,
+      expenseFileCount: 0,
+      images: Array.from({ length: imageCount }, (_, i) => ({ id: i })),
+      expenseFiles: [],
+    };
+  }
+
+  private buildWhereSlips(
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
@@ -210,52 +519,10 @@ export class AllPackingService {
       };
     }
 
-    return this.prisma.packingSlip.findMany({
-      where,
-      include: {
-        branch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-        expensePayer: { select: { id: true, name: true, larkUserId: true } },
-        invoices: {
-          include: {
-            invoice: {
-              select: {
-                id: true,
-                code: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-            consignment: {
-              select: {
-                id: true,
-                code: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        images: true,
-        expenseFiles: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    return where;
   }
 
-  private async getPackingHangs(
+  private buildWhereHangs(
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
@@ -309,52 +576,10 @@ export class AllPackingService {
       };
     }
 
-    return this.prisma.packingHang.findMany({
-      where,
-      include: {
-        branch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-        invoices: {
-          include: {
-            invoice: {
-              select: {
-                id: true,
-                code: true,
-                customerId: true,
-                purchaseDate: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-            consignment: {
-              select: {
-                id: true,
-                code: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        images: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    return where;
   }
 
-  private async getPackingLoadings(
+  private buildWhereLoadings(
     branchIds?: number[],
     search?: string,
     invoiceSearch?: string,
@@ -408,49 +633,6 @@ export class AllPackingService {
       };
     }
 
-    return this.prisma.packingLoading.findMany({
-      where,
-      include: {
-        branch: { select: { id: true, name: true } },
-        creator: { select: { id: true, name: true } },
-        loadingBy: { select: { id: true, name: true } },
-        invoices: {
-          include: {
-            invoice: {
-              select: {
-                id: true,
-                code: true,
-                customerId: true,
-                purchaseDate: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-            consignment: {
-              select: {
-                id: true,
-                code: true,
-                grandTotal: true,
-                customer: {
-                  select: {
-                    id: true,
-                    name: true,
-                    contactNumber: true,
-                  },
-                },
-              },
-            },
-          },
-        },
-        images: true,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
+    return where;
   }
 }

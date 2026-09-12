@@ -1,5 +1,6 @@
 import { ProductQualityImportService } from './product-quality-import.service';
 import * as ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 
 describe('ProductQualityImportService (Unit)', () => {
   let service: ProductQualityImportService;
@@ -141,6 +142,24 @@ describe('ProductQualityImportService (Unit)', () => {
       expect(result.valid).toBe(0);
       expect(result.invalid).toBe(1);
       expect(result.rows[0].errors.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it('accepts legacy .xls workbooks', async () => {
+      const workbook = XLSX.utils.book_new();
+      const sheet = XLSX.utils.aoa_to_sheet([
+        ['Tên khách hàng', 'Tên sản phẩm', 'Số lượng'],
+        ['Khách hàng A', 'Sản phẩm B', 2],
+      ]);
+      XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
+      const buffer = Buffer.from(
+        XLSX.write(workbook, { type: 'buffer', bookType: 'xls' }),
+      );
+      const file = { buffer, originalname: 'legacy.xls' } as Express.Multer.File;
+
+      const result = await service.preview(file, { id: 1, name: 'Admin' }, 6);
+      expect(result.total).toBe(1);
+      expect(result.valid).toBe(1);
+      expect(result.rows[0].quantity).toBe(2);
     });
 
     it('identifies update action when sourceRecordId or legacyCode exists', async () => {

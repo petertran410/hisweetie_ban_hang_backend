@@ -125,6 +125,12 @@ export class CreateProductQualityTicketDto {
   invoiceId?: number;
 
   @IsOptional()
+  @IsArray()
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  invoiceIds?: number[];
+
+  @IsOptional()
   @IsString()
   invoiceCode?: string;
 
