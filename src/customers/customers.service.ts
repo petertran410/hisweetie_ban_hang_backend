@@ -755,8 +755,11 @@ export class CustomersService {
   }
 
   async create(dto: CreateCustomerDto, userId?: number) {
-    if (!Number.isInteger(dto.salePicId) || dto.salePicId <= 0) {
-      throw new BadRequestException('Vui lòng chọn Sale PIC');
+    if (
+      dto.salePicId !== undefined &&
+      (!Number.isInteger(dto.salePicId) || dto.salePicId <= 0)
+    ) {
+      throw new BadRequestException('Sale PIC không hợp lệ');
     }
     await this.checkPhoneDuplicate(dto.contactNumber, dto.phone);
 
@@ -787,14 +790,16 @@ export class CustomersService {
     const normalizedAddresses = this.normalizeAddresses(addresses);
 
     const customer = await this.prisma.$transaction(async (tx) => {
-      const salePic = await tx.user.findFirst({
-        where: { id: salePicId, isActive: true },
-        select: { id: true },
-      });
-      if (!salePic) {
-        throw new BadRequestException(
-          'Sale PIC không tồn tại hoặc đã ngừng hoạt động',
-        );
+      if (salePicId !== undefined) {
+        const salePic = await tx.user.findFirst({
+          where: { id: salePicId, isActive: true },
+          select: { id: true },
+        });
+        if (!salePic) {
+          throw new BadRequestException(
+            'Sale PIC không tồn tại hoặc đã ngừng hoạt động',
+          );
+        }
       }
 
       const newCustomer = await tx.customer.create({

@@ -5,9 +5,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { TiktokEventsModule } from '../tiktok-events/tiktok-events.module';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [PrismaModule, AuditLogsModule, LarkSyncModule, TiktokEventsModule],
+  imports: [
+    PrismaModule,
+    AuditLogsModule,
+    LarkSyncModule,
+    TiktokEventsModule,
+    AuthModule,
+  ],
   controllers: [CustomersController],
   providers: [CustomersService],
   exports: [CustomersService],

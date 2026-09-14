@@ -10,6 +10,8 @@ import {
   UseGuards,
   Req,
   Res,
+  ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { CustomersService } from './customers.service';
@@ -25,13 +27,60 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
+import { AuthService } from '../auth/auth.service';
 
 @ApiTags('Customers')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('customers')
 export class CustomersController {
-  constructor(private customersService: CustomersService) {}
+  constructor(
+    private customersService: CustomersService,
+    private authService: AuthService,
+  ) {}
+
+  /** Quyền gắn/bỏ Sale PIC, có xét quyền theo chi nhánh. */
+  private async canAssignSalePic(req: any): Promise<boolean> {
+    const user = req?.user;
+    if (!user?.id) return false;
+    if (user.roles?.includes('Super Admin')) return true;
+
+    const branchIdRaw =
+      req.headers?.['x-branch-id'] ?? req.body?.branchId ?? req.query?.branchId;
+    const branchId = branchIdRaw ? parseInt(String(branchIdRaw)) : undefined;
+
+    const permissions =
+      branchId && !Number.isNaN(branchId)
+        ? await this.authService.getPermissionsForBranch(user.id, branchId)
+        : user.permissions || [];
+
+    return permissions.includes('customers:assign_sale_pic');
+  }
+
+  /**
+   * Chỉ chặn theo quyền Sale PIC khi payload thực sự đụng tới field này, để
+   * người có quyền sửa khách hàng vẫn cập nhật được các thông tin khác.
+   */
+  private async assertSalePicAccess(
+    req: any,
+    salePicId?: number | null,
+    opts: { requiredWhenAllowed?: boolean } = {},
+  ): Promise<void> {
+    const canAssign = await this.canAssignSalePic(req);
+
+    if (salePicId === undefined || salePicId === null) {
+      if (opts.requiredWhenAllowed && canAssign) {
+        throw new BadRequestException('Vui lòng chọn Sale PIC');
+      }
+      return;
+    }
+
+    if (!canAssign) {
+      throw new ForbiddenException(
+        'Bạn không có quyền gắn Sale PIC cho khách hàng. Cần quyền: customers:assign_sale_pic',
+      );
+    }
+  }
 
   @Get()
   @RequirePermissions('customers:view')
@@ -181,17 +230,23 @@ export class CustomersController {
   }
 
   @Post()
-  @RequirePermissions('customers:create', 'customers:assign_sale_pic')
+  @RequirePermissions('customers:create')
   @ApiOperation({ summary: 'Thêm mới khách hàng' })
-  create(@Body() dto: CreateCustomerDto, @Req() req: any) {
+  async create(@Body() dto: CreateCustomerDto, @Req() req: any) {
+    await this.assertSalePicAccess(req, dto.salePicId, {
+      requiredWhenAllowed: true,
+    });
     const userId = req.user?.id;
     return this.customersService.create(dto, userId);
   }
 
   @Post('listaddcutomers')
-  @RequirePermissions('customers:create', 'customers:assign_sale_pic')
+  @RequirePermissions('customers:create')
   @ApiOperation({ summary: 'Thêm mới danh sách khách hàng' })
-  bulkCreate(@Body() dto: BulkCreateCustomerDto) {
+  async bulkCreate(@Body() dto: BulkCreateCustomerDto, @Req() req: any) {
+    for (const item of dto.listCustomers ?? []) {
+      await this.assertSalePicAccess(req, item.salePicId);
+    }
     return this.customersService.bulkCreate(dto);
   }
 
@@ -211,20 +266,27 @@ export class CustomersController {
   }
 
   @Put('listupdatecustomers')
-  @RequirePermissions('customers:update', 'customers:assign_sale_pic')
+  @RequirePermissions('customers:update')
   @ApiOperation({ summary: 'Cập nhật danh sách khách hàng' })
-  bulkUpdate(@Body() dto: BulkUpdateCustomerDto) {
+  async bulkUpdate(@Body() dto: BulkUpdateCustomerDto, @Req() req: any) {
+    for (const item of dto.listCustomers ?? []) {
+      await this.assertSalePicAccess(
+        req,
+        (item as { salePicId?: number }).salePicId,
+      );
+    }
     return this.customersService.bulkUpdate(dto);
   }
 
   @Put(':id')
-  @RequirePermissions('customers:update', 'customers:assign_sale_pic')
+  @RequirePermissions('customers:update')
   @ApiOperation({ summary: 'Cập nhật khách hàng' })
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateCustomerDto,
     @Req() req: any,
   ) {
+    await this.assertSalePicAccess(req, dto.salePicId);
     const userId = req.user?.id;
     return this.customersService.update(+id, dto, userId);
   }
