@@ -1,6 +1,7 @@
 export * from './constants';
 export * from './models';
 export * from './config-resolution.engine';
+export * from './backtest.engine';
 export * from './demand-resolution.engine';
 export * from './forecast.engine';
 export * from './incoming-resolution.engine';

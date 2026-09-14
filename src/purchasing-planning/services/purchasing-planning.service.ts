@@ -31,6 +31,7 @@ import {
   resolveIncoming,
   resolveLeadtimePipeline,
   resolvePlanningConfig,
+  runForecastBacktest,
   safetyDaysFromStability,
 } from '../domain';
 import {
@@ -38,6 +39,7 @@ import {
   RecommendationQueryDto,
   ResolvedPlanningConfigQueryDto,
   RunCalculationDto,
+  RunBacktestDto,
   UpdatePlanningConfigDto,
 } from '../dto';
 import {
@@ -176,6 +178,41 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
     blocksRecommendation: false,
     message:
       'Có tháng bán bất thường chưa giải thích được bằng khuyến mãi hoặc trend.',
+  },
+  SEASONALITY_UNCERTAIN: {
+    code: 'SEASONALITY_UNCERTAIN',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Mùa vụ giữa các năm chưa ổn định; hệ số mùa vụ đã được giảm trọng số.',
+  },
+  MISSING_STOCK_HISTORY: {
+    code: 'MISSING_STOCK_HISTORY',
+    severity: 'HIGH',
+    blocksRecommendation: false,
+    message:
+      'Thiếu lịch sử tồn kho theo ngày; tốc độ bán và độ tin cậy đang dùng dữ liệu suy đoán.',
+  },
+  SHORT_LONG_TERM_MISMATCH: {
+    code: 'SHORT_LONG_TERM_MISMATCH',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Xu hướng ngắn hạn trái chiều với xu hướng dài hạn; cần kiểm tra trước khi duyệt.',
+  },
+  DEMAND_OVERLAP: {
+    code: 'DEMAND_OVERLAP',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Một phần Demand đã bị loại vì trùng với đơn đặt hàng nhập theo quy tắc PĐN.',
+  },
+  INSUFFICIENT_HISTORY: {
+    code: 'INSUFFICIENT_HISTORY',
+    severity: 'HIGH',
+    blocksRecommendation: false,
+    message:
+      'Lịch sử bán hàng dưới 12 tháng; chưa đủ cơ sở để xác nhận xu hướng/mùa vụ.',
   },
   VEHICLE_SHIPMENT_RISK: {
     code: 'VEHICLE_SHIPMENT_RISK',
@@ -331,6 +368,12 @@ export class PurchasingPlanningService {
     await this.validateScopeEntity(dto.scopeType, scopeId);
     const values = this.dtoValues(dto);
     this.assertCreateValuesPresent(values);
+    await this.assertGrowthFactorNote(
+      dto.scopeType,
+      scopeId,
+      values.growthFactor,
+      dto.note,
+    );
     const rows = await this.upsertConfigGroup(
       dto.scopeType,
       scopeId,
@@ -368,6 +411,12 @@ export class PurchasingPlanningService {
       throw new NotFoundException('Không tìm thấy cấu hình');
     const values = this.dtoValues(dto);
     this.assertUpdateValuesPresent(values);
+    await this.assertGrowthFactorNote(
+      scopeType,
+      scopeId,
+      values.growthFactor,
+      dto.note,
+    );
     const rows = await this.upsertConfigGroup(
       scopeType,
       scopeId,
@@ -473,6 +522,13 @@ export class PurchasingPlanningService {
       },
       meta: {
         snapshotDate: this.dateOnly(snapshot.snapshotDate),
+        historyStartDate: this.historyStartDate(snapshot.snapshotDate),
+        historyEndDate: this.dateOnly(snapshot.snapshotDate),
+        skuTotal: total,
+        needOrderSku: items.filter((item) => item.needsOrder).length,
+        lowConfidenceSku: items.filter((item) =>
+          ['LOW', 'VERY_LOW', 'NO_DATA'].includes(item.confidence),
+        ).length,
         isStale:
           Date.now() - snapshot.snapshotDate.getTime() > 26 * 60 * 60 * 1000,
         lastRunAt: snapshot.run.completedAt?.toISOString() ?? null,
@@ -524,9 +580,10 @@ export class PurchasingPlanningService {
       const end = new Date(snapshotDate);
       end.setUTCDate(end.getUTCDate() + 1);
       const start = new Date(snapshotDate);
-      // Cần đủ lịch sử cho biểu đồ 5 tháng: 3 tháng gần nhất và 2 tháng
-      // đối chiếu trước đó. Lấy dư khoảng 180 ngày để không hụt tháng biên.
-      start.setUTCDate(start.getUTCDate() - 180);
+      // Tải 24 tháng đã hoàn tất cộng tháng snapshot hiện tại. Tháng hiện tại
+      // chỉ dùng số ngày đã qua và không được xem là tháng hoàn tất.
+      start.setUTCMonth(start.getUTCMonth() - 24);
+      start.setUTCDate(1);
       const data = await this.repository.loadCalculationData(start, end);
       const configValues = data.configs
         .filter((row) => CONFIG_KEYS.has(row.paramKey))
@@ -536,6 +593,9 @@ export class PurchasingPlanningService {
           key: row.paramKey as PlanningConfigKey,
           value: Number(row.paramValue),
           active: row.isActive,
+          note: row.note ?? null,
+          updatedBy: row.updatedBy ?? null,
+          updatedAt: row.updatedAt ?? null,
         })) as ConfigValue[];
       const categoryByName = new Map(
         data.categories.map((item) => [item.name, item.id]),
@@ -599,6 +659,62 @@ export class PurchasingPlanningService {
     }
   }
 
+  async runBacktest(dto: RunBacktestDto) {
+    const snapshotDate = this.parseDate(dto.snapshotDate) ?? this.today();
+    const end = new Date(snapshotDate);
+    end.setUTCDate(end.getUTCDate() + 1);
+    const start = new Date(snapshotDate);
+    start.setUTCMonth(start.getUTCMonth() - 36);
+    start.setUTCDate(1);
+    const data = await this.repository.loadCalculationData(start, end);
+    const stockHistory = new Map<number, Map<string, boolean>>();
+    for (const row of data.stockSnapshots ?? []) {
+      let byDate = stockHistory.get(row.productId);
+      if (!byDate) {
+        byDate = new Map<string, boolean>();
+        stockHistory.set(row.productId, byDate);
+      }
+      const key = row.date.toISOString().slice(0, 10);
+      byDate.set(key, (byDate.get(key) ?? false) || row.hadStock);
+    }
+
+    const products = data.products.map((product: any) => {
+      const invoiceRows = data.invoiceDetails.filter(
+        (row: any) => row.productId === product.id,
+      );
+      const firstSale = invoiceRows.reduce(
+        (first: Date | null, row: any) =>
+          !first || row.invoice.purchaseDate < first
+            ? row.invoice.purchaseDate
+            : first,
+        null as Date | null,
+      );
+      const firstActivity =
+        firstSale && firstSale > product.createdAt
+          ? firstSale
+          : product.createdAt;
+      return {
+        productId: product.id,
+        productCode: product.code,
+        productName: product.name,
+        months: this.monthlySales(
+          invoiceRows,
+          snapshotDate,
+          stockHistory.get(product.id),
+          firstActivity,
+          37,
+        ),
+      };
+    });
+
+    return {
+      snapshotDate: this.dateOnly(snapshotDate),
+      ...runForecastBacktest(products, {
+        minTrainingMonths: dto.minTrainingMonths,
+      }),
+    };
+  }
+
   /**
    * Dựng leadtime pipeline cho một SKU.
    *
@@ -635,8 +751,18 @@ export class PurchasingPlanningService {
     };
   }
 
-  /** Gom doanh số thành từng tháng để phân tích độ ổn định. */
-  private monthlySales(invoiceRows: any[], snapshotDate: Date): MonthlySales[] {
+  /**
+   * Gom doanh số theo lịch để tháng không phát sinh hóa đơn vẫn xuất hiện
+   * dưới dạng `0`. Khi có snapshot tồn kho, mẫu số chỉ là số ngày SKU có hàng;
+   * nếu không có snapshot thì dùng ngày lịch và đánh dấu thiếu dữ liệu.
+   */
+  private monthlySales(
+    invoiceRows: any[],
+    snapshotDate: Date,
+    stockByDate?: Map<string, boolean>,
+    firstActivity?: Date,
+    maxMonths = 25,
+  ): MonthlySales[] {
     const buckets = new Map<string, number>();
     for (const row of invoiceRows) {
       const date: Date = row.invoice?.purchaseDate;
@@ -646,18 +772,62 @@ export class PurchasingPlanningService {
     }
 
     const currentMonth = snapshotDate.toISOString().slice(0, 7);
-    const months = [...buckets.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([month, quantity]) => ({
+    const snapshotMonth = new Date(
+      Date.UTC(snapshotDate.getUTCFullYear(), snapshotDate.getUTCMonth(), 1),
+    );
+    const firstMonth = new Date(snapshotMonth);
+    firstMonth.setUTCMonth(
+      firstMonth.getUTCMonth() - Math.max(1, maxMonths) + 1,
+    );
+    if (firstActivity) {
+      const activityMonth = new Date(
+        Date.UTC(
+          firstActivity.getUTCFullYear(),
+          firstActivity.getUTCMonth(),
+          1,
+        ),
+      );
+      if (activityMonth > firstMonth)
+        firstMonth.setTime(activityMonth.getTime());
+    }
+
+    const months: MonthlySales[] = [];
+    const cursor = new Date(firstMonth);
+    while (cursor <= snapshotMonth) {
+      const month = cursor.toISOString().slice(0, 7);
+      const isCurrentMonth = month === currentMonth;
+      const days = isCurrentMonth
+        ? snapshotDate.getUTCDate()
+        : daysInMonth(month);
+      const monthStart = `${month}-01`;
+      const monthEnd = isCurrentMonth
+        ? this.dateOnly(snapshotDate)
+        : `${month}-${String(days).padStart(2, '0')}`;
+      const calendarDays = daysInMonth(month);
+      const stockEntries = stockByDate
+        ? [...stockByDate.entries()].filter(
+            ([date]) => date >= monthStart && date <= monthEnd,
+          )
+        : [];
+      const hasStockSnapshots = stockEntries.length > 0;
+      const stockDataAvailable = stockEntries.length >= days;
+      const validSellingDays = hasStockSnapshots
+        ? stockEntries.filter(([, hadStock]) => hadStock).length
+        : days;
+      months.push({
         month,
-        quantity,
-        days:
-          month === currentMonth
-            ? snapshotDate.getUTCDate()
-            : daysInMonth(month),
-      }));
-    const completed = months.filter((month) => month.month < currentMonth);
-    return completed.length ? completed : months;
+        quantity: buckets.get(month) ?? 0,
+        days,
+        daysInMonth: calendarDays,
+        validSellingDays,
+        hadStock: hasStockSnapshots ? validSellingDays > 0 : undefined,
+        stockDataAvailable,
+        stockDataDays: stockEntries.length,
+        isCurrentMonth,
+      });
+      cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+    }
+    return months;
   }
 
   /** Các đợt khuyến mãi có áp dụng cho sản phẩm này. */
@@ -831,10 +1001,31 @@ export class PurchasingPlanningService {
       product,
       data.promotions ?? [],
     );
-    const monthlySales = this.monthlySales(invoiceRows, snapshotDate);
+    const firstSale = invoiceRows.reduce(
+      (first: Date | null, row: any) =>
+        !first || row.invoice.purchaseDate < first
+          ? row.invoice.purchaseDate
+          : first,
+      null as Date | null,
+    ) as Date | null;
+    const firstActivity =
+      firstSale && firstSale > product.createdAt
+        ? firstSale
+        : product.createdAt;
+    const monthlySales = this.monthlySales(
+      invoiceRows,
+      snapshotDate,
+      stockHistory.get(product.id),
+      firstActivity,
+    );
     // Trend thủ công đã bị loại khỏi forecast. Các tháng bất thường chỉ được
     // dùng để cảnh báo và suy hệ số tăng trưởng từ lịch sử đã làm sạch.
-    const stability = analyzeDemandStability(monthlySales, productPromotions);
+    const stability = analyzeDemandStability(
+      monthlySales,
+      productPromotions,
+      [],
+      ((snapshotDate.getUTCMonth() + 1) % 12) + 1,
+    );
     // Tồn dự phòng suy từ chính mức dao động đó thay vì một hằng số: SKU bán
     // đều cần đệm mỏng, SKU tháng cao tháng thấp cần đệm dày.
     const safetyDays = safetyDaysFromStability(stability, leadTimeDays);
@@ -857,7 +1048,8 @@ export class PurchasingPlanningService {
       supplierId: latestSupplier?.supplierId ?? undefined,
       categoryId: childCategoryId,
     });
-    const configuredGrowthFactor = resolvedConfig.sourceValues.growthFactor
+    const growthFactorConfig = resolvedConfig.sourceValues.growthFactor;
+    const configuredGrowthFactor = growthFactorConfig
       ? Number(resolvedConfig.config.growthFactor)
       : null;
     const systemGrowthFactor = Number(stability.systemGrowthFactor ?? 1);
@@ -887,17 +1079,6 @@ export class PurchasingPlanningService {
       branchCode: row.branch.code,
       onHand: Number(row.onHand),
     }));
-    const firstSale = invoiceRows.reduce(
-      (first: Date | null, row: any) =>
-        !first || row.invoice.purchaseDate < first
-          ? row.invoice.purchaseDate
-          : first,
-      null as Date | null,
-    ) as Date | null;
-    const firstActivity =
-      firstSale && firstSale > product.createdAt
-        ? firstSale
-        : product.createdAt;
     const dates = this.calendar(firstActivity, snapshotDate);
     const demand = resolveDemand({
       invoiceDetails: invoiceRows.map((row: any) => ({
@@ -1022,6 +1203,7 @@ export class PurchasingPlanningService {
       snapshotDate,
       horizonDays,
       inboundOrders,
+      data.pendingOrderEvents ?? [],
     );
     const pastCustomerDemandResolution = resolvePastCustomerDemand(
       mappedDemandMonths,
@@ -1089,15 +1271,29 @@ export class PurchasingPlanningService {
     });
     // Demand OEM đã Confirmed phải có thể kích hoạt đặt hàng ngay cả khi
     // nhu cầu bán thông thường chưa chạm điểm đặt.
-    const customerDemandNeedsOrder =
-      customerDemand > available + confirmedIncoming;
-    const needsOrder = replenishment.needsOrder || customerDemandNeedsOrder;
+    const promotionUplift = calculatePromotionUplift({
+      today: snapshotDate,
+      horizonDays,
+      baselineDailyDemand: forecastDailyDemand,
+      promotions: productPromotions,
+      months: stability.months,
+    });
+    const extraDemand = promotionUplift.extraDemand;
+    const knownDemand =
+      customerOrders +
+      customerDemand +
+      companyNeed +
+      extraDemand -
+      pastCustomerDemand;
+    const knownDemandNeedsOrder =
+      Math.max(0, knownDemand) > available + confirmedIncoming;
+    const needsOrder = replenishment.needsOrder || knownDemandNeedsOrder;
     const projection = projectInventory({
       snapshotDate,
       availableStock: available,
       forecastDailyDemand: forecastDailyDemand,
       incoming: incoming.receipts,
-      horizonDays: config.projectionDays,
+      horizonDays: Math.max(config.projectionDays, horizonDays),
     });
     const usableIncoming = confirmedIncoming;
     // Trả lời "tháng sau có phải đặt không": chiếu tồn gộp toàn công ty với
@@ -1125,17 +1321,6 @@ export class PurchasingPlanningService {
       needsOrder,
       daysUntilStockout: projection.daysUntilStockout,
     });
-    // Khuyến mãi đang chạy / sắp chạy trong horizon đặt hàng sẽ kéo nhu cầu
-    // lên trên mức nền. Không cộng phần này thì đợt KM tháng sau chắc chắn
-    // thiếu hàng, vì lịch sử bán ba tháng qua không hề biết tới nó.
-    const promotionUplift = calculatePromotionUplift({
-      today: snapshotDate,
-      horizonDays,
-      baselineDailyDemand: forecastDailyDemand,
-      promotions: productPromotions,
-      months: stability.months,
-    });
-    const extraDemand = promotionUplift.extraDemand;
     const soq = calculateSoq({
       forecastDailyDemand: forecastDailyDemand,
       leadTimeDays,
@@ -1171,6 +1356,7 @@ export class PurchasingPlanningService {
       leadTimeDays,
       suggestedQuantity: soq.suggestedQuantity,
       scenarioQuantity: soq.scenarioQuantity,
+      planningHorizonDays: horizonDays,
     });
     const latestPriceRow = purchaseRows.find(
       (row: any) => Number(row.price) > 0,
@@ -1192,6 +1378,9 @@ export class PurchasingPlanningService {
       vehicleRisk: vehicleSupply.vehicleRisk,
       scenarioQuantity: soq.scenarioQuantity,
       customerDemand,
+      customerDemandDetails,
+      pastCustomerDemandDetails,
+      growthFactorWarnings: stability.growthFactorWarnings,
     });
     const reliability = this.reliability(forecast.confidence, flags);
     const status = flags.some((flag) => flag.blocksRecommendation)
@@ -1229,9 +1418,12 @@ export class PurchasingPlanningService {
       demandStability: stability.stability,
       variationCoefficient: stability.variationCoefficient,
       monthsAnalyzed: stability.monthsUsed,
-      monthBreakdown: stability.months,
+      monthBreakdown: stability.historyMonths,
       // Trend thủ công đã bị loại khỏi contract forecast mới.
       trendMonths: [],
+      upcomingTrends: [],
+      trendExtraDemand: 0,
+      trendDays: 0,
       promotionMonths: stability.promotionMonths,
       // Khuyến mãi đang/sắp chạy đã được cộng vào số lượng đề xuất.
       upcomingPromotions: promotionUplift.windows,
@@ -1247,8 +1439,20 @@ export class PurchasingPlanningService {
           : 'DERIVED',
       growthFactorNote:
         configuredGrowthFactor != null
-          ? (resolvedConfig.sourceValues.growthFactor?.note ?? null)
+          ? (growthFactorConfig?.note ?? null)
           : null,
+      growthFactorUpdatedBy: growthFactorConfig?.updatedBy ?? null,
+      growthFactorUpdatedAt: growthFactorConfig?.updatedAt
+        ? new Date(growthFactorConfig.updatedAt).toISOString()
+        : null,
+      shortTermTrendFactor: stability.shortTermTrend,
+      seasonalIndex: stability.seasonalIndex,
+      seasonalWeight: stability.seasonalWeight,
+      growthFactorConfidence: stability.growthFactorConfidence,
+      growthFactorMethod: stability.growthFactorMethod,
+      growthFactorDataMonths: stability.growthFactorDataMonths,
+      growthFactorWarnings: stability.growthFactorWarnings,
+      growthFactorAnalysis: stability.growthFactorAnalysis,
       lookbackMonths: stability.lookbackMonths,
       lookbackRepeatsAnomaly: stability.lookbackRepeatsAnomaly,
       unexplainedAnomaly: stability.unexplainedAnomaly,
@@ -1385,9 +1589,10 @@ export class PurchasingPlanningService {
     leadTimeDays: number;
     suggestedQuantity: number;
     scenarioQuantity: number;
+    planningHorizonDays: number;
   }): DecisionTimeline {
     const today = this.dateOnly(input.snapshotDate);
-    const projectionDays = 90;
+    const projectionDays = Math.max(90, input.planningHorizonDays);
     const riskReceipts = input.vehicleLines
       .filter((line) => line.classifiedAs === 'RISK' && line.eta)
       .map((line) => ({
@@ -1530,8 +1735,9 @@ export class PurchasingPlanningService {
     decisionTimeline?: DecisionTimeline,
   ) {
     return {
-      version: '1.1',
+      version: '1.2',
       computedAt: new Date().toISOString(),
+      growthFactorAnalysis: forecast.growthFactorAnalysis ?? null,
       decisionTimeline: decisionTimeline ?? null,
       inputs: {
         branchScope,
@@ -1571,11 +1777,15 @@ export class PurchasingPlanningService {
             ),
             source: forecast.growthFactorSource ?? 'DERIVED',
             label: forecast.growthFactorOverridden
-              ? 'Người dùng điều chỉnh theo SKU'
+              ? `Người dùng điều chỉnh · ${
+                  SOURCE_LABEL[forecast.growthFactorSource] ?? 'theo cấu hình'
+                }`
               : 'Tự suy từ lịch sử bán hàng',
             systemValue: Number(forecast.systemGrowthFactor ?? 1),
             overridden: Boolean(forecast.growthFactorOverridden),
             note: forecast.growthFactorNote ?? null,
+            updatedBy: forecast.growthFactorUpdatedBy ?? null,
+            updatedAt: forecast.growthFactorUpdatedAt ?? null,
           },
           packSize: {
             value: config.packSize,
@@ -1594,6 +1804,7 @@ export class PurchasingPlanningService {
         },
         shipments,
         forecast,
+        growthFactorAnalysis: forecast.growthFactorAnalysis ?? null,
       },
       steps: [
         {
@@ -1690,6 +1901,26 @@ export class PurchasingPlanningService {
         context: { physicalStock: input.rawPhysical },
       });
     if (input.unexplainedAnomaly) codes.push({ code: 'UNEXPLAINED_ANOMALY' });
+    if (
+      [
+        ...(input.customerDemandDetails ?? []),
+        ...(input.pastCustomerDemandDetails ?? []),
+      ].some((detail: any) => detail.skipped || detail.customerOrderOffset > 0)
+    ) {
+      codes.push({ code: 'DEMAND_OVERLAP' });
+    }
+    for (const warning of input.growthFactorWarnings ?? []) {
+      if (
+        [
+          'SEASONALITY_UNCERTAIN',
+          'MISSING_STOCK_HISTORY',
+          'SHORT_LONG_TERM_MISMATCH',
+          'INSUFFICIENT_HISTORY',
+        ].includes(warning)
+      ) {
+        codes.push({ code: warning });
+      }
+    }
     if (input.vehicleRisk > 0) codes.push({ code: 'VEHICLE_SHIPMENT_RISK' });
     if (
       input.vehicleRisk > 0 &&
@@ -1828,6 +2059,20 @@ export class PurchasingPlanningService {
       customerDemand: Number(
         trace?.inputs?.forecast?.demandBreakdown?.customerDemand ?? 0,
       ),
+      systemGrowthFactor:
+        trace?.inputs?.forecast?.systemGrowthFactor == null
+          ? undefined
+          : Number(trace.inputs.forecast.systemGrowthFactor),
+      appliedGrowthFactor:
+        trace?.inputs?.forecast?.appliedGrowthFactor == null
+          ? undefined
+          : Number(trace.inputs.forecast.appliedGrowthFactor),
+      growthFactorConfidence:
+        trace?.inputs?.forecast?.growthFactorConfidence ?? undefined,
+      growthFactorMethod:
+        trace?.inputs?.forecast?.growthFactorMethod ?? undefined,
+      growthFactorWarnings:
+        trace?.inputs?.forecast?.growthFactorWarnings ?? undefined,
       daysOfSupply:
         item.daysOfSupply == null ? null : Number(item.daysOfSupply),
       daysUntilStockout: item.daysUntilStockout,
@@ -2069,6 +2314,8 @@ export class PurchasingPlanningService {
         value: Number(row.paramValue),
         active: row.isActive,
         note: row.note ?? null,
+        updatedBy: row.updatedBy ?? null,
+        updatedAt: row.updatedAt ?? null,
       }));
   }
 
@@ -2099,6 +2346,29 @@ export class PurchasingPlanningService {
     }
   }
 
+  private async assertGrowthFactorNote(
+    scopeType: ConfigScope,
+    scopeId: number | null,
+    value: number | null | undefined,
+    note?: string | null,
+  ) {
+    if (value == null) return;
+    const item =
+      scopeType === 'SKU' && scopeId != null
+        ? await this.repository.findLatestItemForProduct(scopeId)
+        : null;
+    const trace = item?.calculationTrace as any;
+    const systemGrowthFactor =
+      Number(trace?.inputs?.forecast?.systemGrowthFactor) || 1;
+    if (!Number.isFinite(systemGrowthFactor) || systemGrowthFactor <= 0) return;
+    const deviation = Math.abs(value / systemGrowthFactor - 1);
+    if (deviation > 0.2 && !note?.trim()) {
+      throw new BadRequestException(
+        'Hệ số điều chỉnh lệch quá 20% so với hệ thống nên bắt buộc có ghi chú',
+      );
+    }
+  }
+
   private async upsertConfigGroup(
     scopeType: ConfigScope,
     scopeId: number | null,
@@ -2107,6 +2377,14 @@ export class PurchasingPlanningService {
     note?: string | null,
   ) {
     try {
+      if (note === undefined) {
+        return await this.repository.upsertConfigGroup(
+          scopeType,
+          scopeId,
+          values,
+          userId,
+        );
+      }
       return await this.repository.upsertConfigGroup(
         scopeType,
         scopeId,
@@ -2357,6 +2635,12 @@ export class PurchasingPlanningService {
   }
   private parseDate(value?: string) {
     return value ? new Date(`${value.slice(0, 10)}T00:00:00.000Z`) : undefined;
+  }
+  private historyStartDate(snapshotDate: Date) {
+    const start = new Date(snapshotDate);
+    start.setUTCMonth(start.getUTCMonth() - 24);
+    start.setUTCDate(1);
+    return this.dateOnly(start);
   }
 }
 

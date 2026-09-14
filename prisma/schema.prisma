@@ -1776,6 +1776,7 @@ model InvoicePayment {
   @@unique([code, invoiceId])
   @@index([code])
   @@index([invoiceId])
+  @@index([cashFlowId])
   @@map("invoice_payments")
 }
 
@@ -1923,6 +1924,7 @@ model PurchaseOrderPayment {
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
   @@unique([code, purchaseOrderId])
+  @@index([cashFlowId])
   @@map("purchase_order_payments")
 }
 
@@ -2151,6 +2153,12 @@ model CashFlow {
   returnOrders              ReturnOrder[]
   supplierReturns           SupplierReturn[]
 
+  @@index([branchId, transDate])
+  @@index([createdBy, transDate])
+  @@index([status, transDate])
+  @@index([sepayReferenceCode])
+  @@index([partnerId])
+  @@index([accountId])
   @@map("cash_flows")
 }
 
@@ -2318,6 +2326,7 @@ model OrderSupplierPayment {
   cashFlow        CashFlow?     @relation(fields: [cashFlowId], references: [id])
   orderSupplier   OrderSupplier @relation(fields: [orderSupplierId], references: [id], onDelete: Cascade)
 
+  @@index([cashFlowId])
   @@map("order_supplier_payments")
 }
 
@@ -2982,6 +2991,7 @@ model ReturnOrder {
   @@index([customerId])
   @@index([branchId])
   @@index([status])
+  @@index([cashFlowId])
   @@index([updatedAt, id])
   @@map("return_orders")
 }

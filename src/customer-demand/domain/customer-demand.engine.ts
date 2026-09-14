@@ -1,6 +1,6 @@
 export type CustomerDemandStatus = 'DRAFT' | 'CONFIRMED' | 'CANCELLED';
 export type CustomerDemandUnit = 'BASE' | 'CARTON';
-export type CustomerDemandSkipReason = 'INBOUND_BETWEEN';
+export type CustomerDemandSkipReason = 'INBOUND_BETWEEN' | 'CUSTOMER_ORDER';
 
 export interface CustomerDemandLineInput {
   productId: number;
@@ -28,12 +28,20 @@ export interface InboundOrderEvent {
   status?: number | string | null;
 }
 
+export interface PendingCustomerOrderEvent {
+  productId: number;
+  customerId?: number | null;
+  orderDate: Date | string;
+  quantity: number;
+}
+
 export interface CustomerDemandDetail {
   monthId: number | null;
   customerId: number | null;
   customerName: string | null;
   demandMonth: string;
   quantityBase: number;
+  customerOrderOffset?: number;
   skipped?: boolean;
   skipReason?: CustomerDemandSkipReason | null;
 }
@@ -58,6 +66,7 @@ export function resolveCustomerDemand(
   snapshotDate: Date | string,
   horizonDays: number,
   inboundOrders: InboundOrderEvent[] = [],
+  pendingCustomerOrders: PendingCustomerOrderEvent[] = [],
 ): ResolvedCustomerDemand {
   const snapshot = toDate(snapshotDate);
   const currentMonthStart = startOfMonth(snapshot);
@@ -69,6 +78,7 @@ export function resolveCustomerDemand(
     (demandMonth) =>
       demandMonth >= currentMonthStart && demandMonth <= horizonEnd,
     inboundOrders,
+    pendingCustomerOrders,
   );
 }
 
@@ -104,6 +114,7 @@ function accumulateConfirmedDemand(
   months: CustomerDemandMonthInput[],
   includeMonth: (demandMonth: Date) => boolean,
   inboundOrders: InboundOrderEvent[],
+  pendingCustomerOrders: PendingCustomerOrderEvent[] = [],
 ): ResolvedCustomerDemand {
   const events: DemandEvent[] = [];
 
@@ -125,17 +136,22 @@ function accumulateConfirmedDemand(
         productId,
         demandMonth: monthKey,
         quantityBase,
-        createdAt: eventTime(line.createdAt, month.createdAt, month.demandCreatedAt),
+        createdAt: eventTime(
+          line.createdAt,
+          month.createdAt,
+          month.demandCreatedAt,
+        ),
       });
     }
   }
 
   const { kept, skipped } = collapseOverlappingDemand(events, inboundOrders);
+  const adjusted = subtractPendingCustomerOrders(kept, pendingCustomerOrders);
   const totalByProduct = new Map<number, number>();
   const detailsByProduct = new Map<number, CustomerDemandDetail[]>();
   const includedMonths = new Set<string>();
 
-  for (const event of kept) {
+  for (const event of adjusted.kept) {
     totalByProduct.set(
       event.productId,
       (totalByProduct.get(event.productId) ?? 0) + event.quantityBase,
@@ -145,6 +161,9 @@ function accumulateConfirmedDemand(
   }
   for (const event of skipped) {
     pushDetail(detailsByProduct, event, true);
+  }
+  for (const event of adjusted.fullyCovered) {
+    pushDetail(detailsByProduct, event, true, 'CUSTOMER_ORDER');
   }
   for (const [productId, details] of detailsByProduct) {
     detailsByProduct.set(productId, sortDetails(details));
@@ -164,7 +183,53 @@ interface DemandEvent {
   productId: number;
   demandMonth: string;
   quantityBase: number;
+  customerOrderOffset?: number;
   createdAt: number;
+}
+
+/**
+ * Demand OEM là nhu cầu dự kiến, còn Order khách đang chờ đã là nhu cầu chắc
+ * chắn. Phần giao nhau theo cùng khách/SKU/tháng bị khấu trừ khỏi Demand OEM
+ * để SOQ không cộng hai lần.
+ */
+function subtractPendingCustomerOrders(
+  events: DemandEvent[],
+  orders: PendingCustomerOrderEvent[],
+): { kept: DemandEvent[]; fullyCovered: DemandEvent[] } {
+  if (orders.length === 0) return { kept: events, fullyCovered: [] };
+
+  const remainingByKey = new Map<string, number>();
+  for (const order of orders) {
+    const productId = Number(order.productId);
+    const quantity = Number(order.quantity);
+    const date = toDateTime(order.orderDate);
+    if (!Number.isInteger(productId) || productId <= 0) continue;
+    if (!Number.isFinite(quantity) || quantity <= 0 || !date) continue;
+    const key = `${order.customerId ?? 0}:${productId}:${dateKey(
+      startOfMonth(date),
+    ).slice(0, 7)}`;
+    remainingByKey.set(key, (remainingByKey.get(key) ?? 0) + quantity);
+  }
+
+  const kept: DemandEvent[] = [];
+  const fullyCovered: DemandEvent[] = [];
+  for (const event of events) {
+    const key = `${event.customerId ?? 0}:${event.productId}:${event.demandMonth}`;
+    const available = remainingByKey.get(key) ?? 0;
+    if (available <= 0) {
+      kept.push(event);
+      continue;
+    }
+    const offset = Math.min(available, event.quantityBase);
+    remainingByKey.set(key, available - offset);
+    const quantityBase = event.quantityBase - offset;
+    if (quantityBase <= 0) {
+      fullyCovered.push(event);
+    } else {
+      kept.push({ ...event, quantityBase, customerOrderOffset: offset });
+    }
+  }
+  return { kept, fullyCovered };
 }
 
 function collapseOverlappingDemand(
@@ -192,7 +257,11 @@ function collapseOverlappingDemand(
       const isLast = index === list.length - 1;
       if (
         !isLast &&
-        hasInboundBetween(times, list[index].createdAt, list[index + 1].createdAt)
+        hasInboundBetween(
+          times,
+          list[index].createdAt,
+          list[index + 1].createdAt,
+        )
       ) {
         skipped.push(list[index]);
         continue;
@@ -249,6 +318,9 @@ function pushDetail(
   detailsByProduct: Map<number, CustomerDemandDetail[]>,
   event: DemandEvent,
   skipped: boolean,
+  skipReason: CustomerDemandSkipReason | null = skipped
+    ? 'INBOUND_BETWEEN'
+    : null,
 ) {
   const details = detailsByProduct.get(event.productId) ?? [];
   details.push({
@@ -257,8 +329,11 @@ function pushDetail(
     customerName: event.customerName,
     demandMonth: event.demandMonth,
     quantityBase: event.quantityBase,
+    ...(event.customerOrderOffset
+      ? { customerOrderOffset: event.customerOrderOffset }
+      : {}),
     skipped,
-    skipReason: skipped ? 'INBOUND_BETWEEN' : null,
+    skipReason,
   });
   detailsByProduct.set(event.productId, details);
 }
@@ -280,7 +355,8 @@ function toDate(value: Date | string): Date {
 
 function toDateTime(value?: Date | string | null): Date | null {
   if (value == null || value === '') return null;
-  const parsed = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  const parsed =
+    value instanceof Date ? new Date(value.getTime()) : new Date(value);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 

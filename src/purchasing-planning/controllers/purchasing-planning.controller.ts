@@ -19,6 +19,7 @@ import {
   RecommendationQueryDto,
   ResolvedPlanningConfigQueryDto,
   CreatePlanningTrendDto,
+  RunBacktestDto,
   RunCalculationDto,
   UpdatePlanningConfigDto,
   UpdatePlanningTrendDto,
@@ -144,6 +145,12 @@ export class PurchasingPlanningController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.service.runCalculation(dto, user.id);
+  }
+
+  @Post('backtest')
+  @RequirePermissions('purchasing_planning:config')
+  runBacktest(@Body() dto: RunBacktestDto) {
+    return this.service.runBacktest(dto);
   }
 
   private actor(user: AuthenticatedUser) {

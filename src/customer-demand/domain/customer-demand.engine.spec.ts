@@ -339,3 +339,91 @@ describe('collapse overlapping OEM demand by inbound orders', () => {
     ).toHaveLength(1);
   });
 });
+
+describe('offset OEM demand by pending customer orders', () => {
+  const month = (
+    demandMonth: string,
+    quantity: number,
+    customerId = 1,
+    productId = 11,
+  ) => ({
+    id: 1,
+    demandMonth,
+    status: 'CONFIRMED',
+    customerId,
+    customerName: 'Khách OEM',
+    createdAt: '2026-09-01T08:00:00.000Z',
+    lines: [
+      {
+        productId,
+        quantityBase: quantity,
+        createdAt: '2026-09-01T08:00:00.000Z',
+      },
+    ],
+  });
+
+  it('trừ đúng phần Demand đã có trong Order khách đang chờ', () => {
+    const result = resolveCustomerDemand(
+      [month('2026-10-01', 100)],
+      '2026-09-09',
+      90,
+      [],
+      [
+        {
+          productId: 11,
+          customerId: 1,
+          orderDate: '2026-10-05T00:00:00.000Z',
+          quantity: 35,
+        },
+      ],
+    );
+
+    expect(result.totalByProduct.get(11)).toBe(65);
+    expect(result.detailsByProduct.get(11)?.[0]).toMatchObject({
+      quantityBase: 65,
+      customerOrderOffset: 35,
+    });
+  });
+
+  it('bỏ qua Demand khi Order khách đã phủ toàn bộ và ghi rõ lý do', () => {
+    const result = resolveCustomerDemand(
+      [month('2026-10-01', 100)],
+      '2026-09-09',
+      90,
+      [],
+      [
+        {
+          productId: 11,
+          customerId: 1,
+          orderDate: '2026-10-05T00:00:00.000Z',
+          quantity: 120,
+        },
+      ],
+    );
+
+    expect(result.totalByProduct.get(11)).toBeUndefined();
+    expect(result.detailsByProduct.get(11)?.[0]).toMatchObject({
+      skipped: true,
+      skipReason: 'CUSTOMER_ORDER',
+    });
+  });
+
+  it('chỉ khấu trừ khi cùng khách, SKU và tháng', () => {
+    const result = resolveCustomerDemand(
+      [month('2026-10-01', 100)],
+      '2026-09-09',
+      90,
+      [],
+      [
+        {
+          productId: 99,
+          customerId: 1,
+          orderDate: '2026-10-05T00:00:00.000Z',
+          quantity: 100,
+        },
+      ],
+    );
+
+    expect(result.totalByProduct.get(11)).toBe(100);
+  });
+});

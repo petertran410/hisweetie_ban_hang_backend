@@ -166,6 +166,8 @@ export interface ConfigValue {
   value: number;
   active?: boolean;
   note?: string | null;
+  updatedBy?: number | null;
+  updatedAt?: string | Date | null;
 }
 
 export interface ConfigContext {

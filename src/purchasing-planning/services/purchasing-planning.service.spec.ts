@@ -10,6 +10,7 @@ describe('PurchasingPlanningService config', () => {
     findSupplierEntity: jest.fn(),
     findCategory: jest.fn(),
     findActiveConfigGroup: jest.fn(),
+    findLatestItemForProduct: jest.fn(),
     findConfigEntities: jest.fn(),
     upsertConfigGroup: jest.fn(),
     deactivateConfigGroup: jest.fn(),
@@ -49,6 +50,13 @@ describe('PurchasingPlanningService config', () => {
       supplierId: 8,
       categoryId: 7,
     });
+    repository.findProductParameters.mockResolvedValue({
+      id: 9,
+      code: 'SKU-9',
+      name: 'Product 9',
+      conversionValue: 24,
+    });
+    repository.findLatestItemForProduct.mockResolvedValue(null);
   });
 
   it('returns groups with batch-loaded entity metadata', async () => {
@@ -196,6 +204,60 @@ describe('PurchasingPlanningService config', () => {
       }),
     ).rejects.toBeInstanceOf(BadRequestException);
     expect(repository.upsertConfigGroup).not.toHaveBeenCalled();
+  });
+
+  it('requires a note when SKU growth factor deviates more than 20%', async () => {
+    repository.findLatestItemForProduct.mockResolvedValue({
+      calculationTrace: {
+        inputs: {
+          forecast: {
+            systemGrowthFactor: 1,
+          },
+        },
+      },
+    });
+
+    await expect(
+      service.createConfig({
+        scopeType: 'SKU',
+        scopeId: 9,
+        growthFactor: 1.3,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(repository.upsertConfigGroup).not.toHaveBeenCalled();
+  });
+
+  it('accepts a well-explained SKU growth factor override', async () => {
+    repository.findLatestItemForProduct.mockResolvedValue({
+      calculationTrace: {
+        inputs: {
+          forecast: {
+            systemGrowthFactor: 1,
+          },
+        },
+      },
+    });
+    repository.upsertConfigGroup.mockResolvedValue([
+      row('SKU', 9, 'growthFactor', 1.3),
+    ]);
+
+    await service.createConfig({
+      scopeType: 'SKU',
+      scopeId: 9,
+      growthFactor: 1.3,
+      note: 'Khách xác nhận tăng sản lượng',
+    });
+
+    expect(repository.upsertConfigGroup).toHaveBeenCalled();
+  });
+
+  it('also requires a note for a large global growth-factor override', async () => {
+    await expect(
+      service.createConfig({
+        scopeType: 'GLOBAL',
+        growthFactor: 1.3,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it.each(['create', 'update'] as const)(
@@ -371,6 +433,29 @@ describe('PurchasingPlanningService calculation branch metadata', () => {
       [],
       expect.objectContaining({ branchScope }),
     );
+  });
+
+  it('runs a read-only backtest over loaded history', async () => {
+    repository.loadCalculationData.mockResolvedValue({
+      products: [],
+      invoiceDetails: [],
+      stockSnapshots: [],
+    });
+
+    const result = await service.runBacktest({
+      snapshotDate: '2026-09-14',
+      minTrainingMonths: 12,
+    });
+
+    expect(repository.loadCalculationData).toHaveBeenCalledWith(
+      new Date('2023-09-01T00:00:00.000Z'),
+      new Date('2026-09-15T00:00:00.000Z'),
+    );
+    expect(result).toMatchObject({
+      snapshotDate: '2026-09-14',
+      evaluatedProducts: 0,
+      evaluatedSamples: 0,
+    });
   });
 
   it('includes branch scope in calculation trace inputs', () => {
@@ -575,5 +660,159 @@ describe('PurchasingPlanningService incoming shipments', () => {
     expect(position.onHand).toBe(100);
     expect(position.incoming).toBe(300);
     expect(position.dailyDemand).toBe(20);
+  });
+});
+
+describe('PurchasingPlanningService normalized history', () => {
+  const service = new PurchasingPlanningService(
+    {} as any,
+    {} as any,
+    {} as any,
+  );
+
+  it('builds 24 completed months plus the current partial month', () => {
+    const months = (service as any).monthlySales(
+      [
+        {
+          invoice: { purchaseDate: new Date('2025-01-12T00:00:00.000Z') },
+          quantity: 12,
+        },
+      ],
+      new Date('2026-09-14T00:00:00.000Z'),
+      new Map(),
+      new Date('2024-01-01T00:00:00.000Z'),
+    );
+
+    expect(months).toHaveLength(25);
+    expect(months[0]).toMatchObject({
+      month: '2024-09',
+      quantity: 0,
+      days: 30,
+      daysInMonth: 30,
+      isCurrentMonth: false,
+    });
+    expect(months.find((item: any) => item.month === '2025-01')).toMatchObject({
+      quantity: 12,
+    });
+    expect(months.at(-1)).toMatchObject({
+      month: '2026-09',
+      days: 14,
+      daysInMonth: 30,
+      isCurrentMonth: true,
+    });
+  });
+
+  it('uses a planning horizon longer than 90 days for the decision timeline', () => {
+    const timeline = (service as any).buildDecisionTimelineData({
+      snapshotDate: new Date('2026-09-14T00:00:00.000Z'),
+      monthlySales: [],
+      stability: { historyMonths: [], baselineDailyDemand: 0 },
+      firmReceipts: [],
+      vehicleLines: [],
+      promotions: [],
+      shipments: [],
+      forecastDailyDemand: 1,
+      available: 100,
+      reorderPoint: 10,
+      safetyBuffer: 2,
+      latestOrderDate: null,
+      leadTimeDays: 40,
+      suggestedQuantity: 0,
+      scenarioQuantity: 0,
+      planningHorizonDays: 120,
+    });
+
+    expect(timeline.projection).toHaveLength(121);
+    expect(timeline.projection.at(-1).date).toBe('2027-01-12');
+  });
+});
+
+describe('PurchasingPlanningService growth-factor trace', () => {
+  const service = new PurchasingPlanningService(
+    {} as any,
+    {} as any,
+    {} as any,
+  );
+
+  it('preserves growth analysis and marks overlapping demand for review', () => {
+    const analysis = {
+      inputMonths: 12,
+      cleanMonths: 11,
+      excludedMonths: ['2026-05'],
+      shortTermTrend: 1.08,
+      seasonalIndex: 1.2,
+      seasonalWeight: 0.4,
+      systemGrowthFactor: 1.1664,
+      confidence: 'MEDIUM',
+      formula: 'shortTermTrend × (1 + seasonalWeight × (seasonalIndex - 1))',
+    };
+    const forecast = {
+      used: 10,
+      growthFactor: 1.25,
+      systemGrowthFactor: 1.1664,
+      appliedGrowthFactor: 1.25,
+      growthFactorOverridden: true,
+      growthFactorSource: 'SKU',
+      growthFactorNote: 'Khách xác nhận tăng sản lượng',
+      growthFactorUpdatedBy: 7,
+      growthFactorUpdatedAt: '2026-09-14T00:00:00.000Z',
+      growthFactorAnalysis: analysis,
+    };
+    const trace = (service as any).buildTrace(
+      new Date('2026-09-14T00:00:00.000Z'),
+      { safetyDays: 7, packSize: 1, growthFactor: 1.25 },
+      [],
+      [],
+      forecast,
+      {
+        leadTimeDemand: 0,
+        safetyBuffer: 0,
+        reorderPoint: 0,
+        inventoryPosition: 0,
+        reorderGap: 0,
+      },
+      { suggestedQuantity: 0, steps: [] },
+      { priority: 'LOW' },
+      [],
+      0,
+      { branches: [] },
+    );
+
+    expect(trace.growthFactorAnalysis).toEqual(analysis);
+    expect(trace.inputs.growthFactorAnalysis).toEqual(analysis);
+    expect(trace.inputs.config.growthFactor).toMatchObject({
+      value: 1.25,
+      systemValue: 1.1664,
+      overridden: true,
+      updatedBy: 7,
+    });
+
+    const flags = (service as any).buildFlags({
+      forecast: {
+        confidence: 'HIGH',
+        flags: [],
+      },
+      supplierIds: new Set([1]),
+      latestSupplier: {},
+      rawPhysical: 10,
+      inventoryRows: [],
+      unitPrice: 10,
+      soq: { flags: [], suggestedQuantity: 0 },
+      shipments: [],
+      incomingFlags: [],
+      leadtimeInfo: null,
+      moqNotConvertible: false,
+      unexplainedAnomaly: false,
+      vehicleRisk: 0,
+      scenarioQuantity: 0,
+      customerDemand: 0,
+      customerDemandDetails: [{ skipped: true }],
+      pastCustomerDemandDetails: [],
+      growthFactorWarnings: ['INSUFFICIENT_HISTORY'],
+    });
+
+    expect(flags.map((flag: any) => flag.code)).toEqual(
+      expect.arrayContaining(['DEMAND_OVERLAP', 'INSUFFICIENT_HISTORY']),
+    );
   });
 });

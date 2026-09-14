@@ -41,7 +41,7 @@ describe('analyzeDemandStability', () => {
     expect(result.lookbackMonths).toEqual([]);
     expect(result.stability).toBe('STABLE');
     expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
-    expect(result.systemGrowthFactor).toBeCloseTo(0.995, 3);
+    expect(result.systemGrowthFactor).toBeCloseTo(0.9978, 3);
   });
 
   it('tự đề xuất hệ số tăng trưởng từ các tháng bình thường', () => {
@@ -174,6 +174,86 @@ describe('analyzeDemandStability', () => {
     expect(may?.suspectedTrend).toBe(false);
     expect(result.unexplainedAnomaly).toBe(false);
     expect(result.baselineDailyDemand).toBeCloseTo(10, 1);
+  });
+
+  it('giữ tháng không phát sinh hóa đơn bằng 0 trong lịch sử', () => {
+    const result = analyzeDemandStability([
+      month('2026-01', 300),
+      month('2026-02', 0),
+      month('2026-03', 300),
+      month('2026-04', 300),
+      month('2026-05', 300),
+      month('2026-06', 300),
+    ]);
+
+    expect(
+      result.historyMonths.find((item) => item.month === '2026-02'),
+    ).toEqual(
+      expect.objectContaining({
+        dailyRate: 0,
+        anomaly: 'NORMAL',
+        validSellingDays: 30,
+      }),
+    );
+    expect(result.growthFactorAnalysis.cleanMonths).toBe(6);
+  });
+
+  it('không dùng tháng snapshot đang chạy dở để suy xu hướng', () => {
+    const result = analyzeDemandStability([
+      month('2026-01', 300),
+      month('2026-02', 300),
+      month('2026-03', 300),
+      { ...month('2026-04', 900, 10), isCurrentMonth: true },
+    ]);
+
+    expect(result.growthFactorDataMonths).toBe(3);
+    expect(result.historyMonths.at(-1)?.isCurrentMonth).toBe(true);
+    expect(result.systemGrowthFactor).toBe(1);
+  });
+
+  it('áp dụng mùa vụ sơ bộ khi có ít nhất 12 tháng', () => {
+    const months = Array.from({ length: 12 }, (_, index) =>
+      month(
+        `2025-${String(index + 1).padStart(2, '0')}`,
+        index === 9 ? 140 : 100,
+      ),
+    );
+    const result = analyzeDemandStability(months, [], [], 10);
+
+    expect(result.seasonalIndex).toBe(1.4);
+    expect(result.seasonalWeight).toBe(0.4);
+    expect(result.growthFactorMethod).toBe('6M_TREND+12M_SEASONALITY');
+    expect(result.systemGrowthFactor).toBeCloseTo(1.16, 2);
+  });
+
+  it('giảm trọng số và gắn cảnh báo khi mùa vụ giữa các năm không ổn định', () => {
+    const months = Array.from({ length: 24 }, (_, index) => {
+      const year = index < 12 ? 2025 : 2026;
+      const monthNumber = (index % 12) + 1;
+      const quantity = monthNumber === 10 ? (year === 2025 ? 150 : 50) : 100;
+      return month(`${year}-${String(monthNumber).padStart(2, '0')}`, quantity);
+    });
+    const result = analyzeDemandStability(months, [], [], 10);
+
+    expect(result.growthFactorMethod).toBe('6M_TREND+24M_SEASONALITY');
+    expect(result.seasonalWeight).toBe(0.3);
+    expect(result.growthFactorWarnings).toContain('SEASONALITY_UNCERTAIN');
+    expect(result.growthFactorConfidence).toBe('MEDIUM');
+  });
+
+  it('hạ độ tin cậy khi thiếu lịch sử tồn kho theo ngày', () => {
+    const result = analyzeDemandStability(
+      Array.from({ length: 12 }, (_, index) => ({
+        ...month(`2025-${String(index + 1).padStart(2, '0')}`, 300),
+        stockDataAvailable: false,
+      })),
+      [],
+      [],
+      10,
+    );
+
+    expect(result.growthFactorWarnings).toContain('MISSING_STOCK_HISTORY');
+    expect(result.growthFactorConfidence).toBe('MEDIUM');
   });
 });
 

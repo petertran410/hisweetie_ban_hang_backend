@@ -107,6 +107,14 @@ export class PurchasingPlanningRepository {
     });
   }
 
+  findLatestItemForProduct(productId: number) {
+    return this.prisma.recommendationItem.findFirst({
+      where: { productId },
+      orderBy: { id: 'desc' },
+      select: { calculationTrace: true },
+    });
+  }
+
   findCategory(categoryId: number) {
     return this.prisma.category.findUnique({
       where: { id: categoryId },
@@ -494,7 +502,11 @@ export class PurchasingPlanningRepository {
             },
           },
         },
-        select: { productId: true, quantity: true },
+        select: {
+          productId: true,
+          quantity: true,
+          order: { select: { customerId: true, orderDate: true } },
+        },
       }) ?? Promise.resolve([]),
       // Demand OEM độc lập với Order/Invoice, không liên quan công nợ.
       // Chỉ lấy tháng Confirmed; service sẽ lọc tiếp theo tháng hiện tại và
@@ -530,6 +542,12 @@ export class PurchasingPlanningRepository {
     ]);
 
     const pendingOrderQty = new Map<number, number>();
+    const pendingOrderEvents: Array<{
+      productId: number;
+      customerId: number | null;
+      orderDate: Date;
+      quantity: number;
+    }> = [];
     for (const row of pendingOrders ?? []) {
       const productId = Number(row.productId);
       const quantity = Number(row.quantity ?? row._sum?.quantity ?? 0);
@@ -538,6 +556,14 @@ export class PurchasingPlanningRepository {
         productId,
         (pendingOrderQty.get(productId) ?? 0) + quantity,
       );
+      if (row.order?.orderDate) {
+        pendingOrderEvents.push({
+          productId,
+          customerId: row.order.customerId ?? null,
+          orderDate: row.order.orderDate,
+          quantity,
+        });
+      }
     }
 
     return {
@@ -552,6 +578,7 @@ export class PurchasingPlanningRepository {
       stockSnapshots,
       promotions,
       pendingOrderQty,
+      pendingOrderEvents,
       customerDemandMonths,
       branchScope,
     };

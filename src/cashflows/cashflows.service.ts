@@ -25,6 +25,44 @@ import { SUPPLIER_DEBT_PO_WHERE } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
+const CASH_FLOW_LIST_SELECT = {
+  id: true,
+  code: true,
+  branchId: true,
+  cashFlowGroupId: true,
+  isReceipt: true,
+  amount: true,
+  currency: true,
+  exchangeRate: true,
+  foreignAmount: true,
+  transDate: true,
+  method: true,
+  accountId: true,
+  partnerType: true,
+  partnerId: true,
+  partnerName: true,
+  contactNumber: true,
+  address: true,
+  wardName: true,
+  description: true,
+  sepayReferenceCode: true,
+  status: true,
+  statusValue: true,
+  usedForFinancialReporting: true,
+  createdBy: true,
+  collectorUserId: true,
+  createdAt: true,
+  updatedAt: true,
+  branch: { select: { id: true, name: true } },
+  cashFlowGroup: { select: { id: true, name: true } },
+  account: {
+    select: { id: true, bankName: true, accountNumber: true },
+  },
+  creator: { select: { id: true, name: true } },
+  collector: { select: { id: true, name: true } },
+  collectionBranch: { select: { id: true, name: true } },
+} as const;
+
 @Injectable()
 export class CashFlowsService {
   constructor(
@@ -459,100 +497,15 @@ export class CashFlowsService {
       limit,
       pageSize = 20,
       currentItem = 0,
+      includeSummary,
     } = query;
 
     const take = limit || pageSize;
 
-    const where: any = {};
-
-    if (currentUser && !currentUser.canViewOtherStaffData) {
-      where.createdBy = currentUser.id;
-    } else if (userIds?.length) {
-      where.createdBy = { in: userIds };
-    }
-
-    if (!code?.length && branchIds && branchIds.length > 0) {
-      where.branchId = { in: branchIds };
-    }
-
-    if (code && code.length > 0) {
-      where.code = { in: code };
-    } else if (search) {
-      where.AND = [
-        { code: { not: { startsWith: 'TTTU' } } },
-        { code: { not: { startsWith: 'PCTU' } } },
-        {
-          OR: [
-            { code: { contains: search, mode: 'insensitive' } },
-            { partnerName: { contains: search, mode: 'insensitive' } },
-          ],
-        },
-      ];
-    } else {
-      // Ẩn cashflow CLONE (TTTU* phía bán, PCTU* phía mua) khỏi list mặc định
-      // — chúng chỉ phục vụ filter công nợ, không hiển thị riêng để tránh trùng.
-      where.AND = [
-        { code: { not: { startsWith: 'TTTU' } } },
-        { code: { not: { startsWith: 'PCTU' } } },
-      ];
-    }
-
-    if (accountIds && accountIds.length > 0) {
-      where.accountId = { in: accountIds };
-    } else if (accountId) {
-      where.accountId = accountId;
-    }
-
-    if (partnerType && partnerType !== 'A') {
-      where.partnerType = partnerType;
-    }
-
-    if (method && method.length > 0) {
-      where.method = { in: method };
-    }
-
-    if (cashFlowGroupId && cashFlowGroupId.length > 0) {
-      where.cashFlowGroupId = { in: cashFlowGroupId };
-    }
-
-    if (usedForFinancialReporting !== undefined) {
-      where.usedForFinancialReporting = usedForFinancialReporting;
-    }
-
-    if (partnerName) {
-      where.partnerName = { contains: partnerName, mode: 'insensitive' };
-    }
-
-    if (contactNumber) {
-      where.contactNumber = { contains: contactNumber };
-    }
-
-    if (isReceipt !== undefined) {
-      where.isReceipt = isReceipt;
-    }
-
-    if (!code?.length && (startDate || endDate)) {
-      where.transDate = {};
-      if (startDate) {
-        where.transDate.gte = new Date(startDate);
-      }
-      if (endDate) {
-        where.transDate.lte = new Date(endDate);
-      }
-    }
-
-    if (status !== undefined) {
-      where.status = status;
-    }
-
-    if (ids && ids.length > 0) {
-      where.id = { in: ids };
-    }
+    const where = this.buildCashFlowWhere(query, currentUser);
 
     if (invoiceId) {
-      where.code = {
-        contains: `TT`,
-      };
+      where.code = { contains: 'TT' };
       const invoice = await this.prisma.invoice.findUnique({
         where: { id: invoiceId },
         select: { code: true },
@@ -569,31 +522,21 @@ export class CashFlowsService {
       };
     }
 
-    const [cashFlows, total] = await Promise.all([
+    const [cashFlows, total, summary] = await Promise.all([
       this.prisma.cashFlow.findMany({
         where,
-        include: {
-          branch: { select: { id: true, name: true } },
-          cashFlowGroup: { select: { id: true, name: true } },
-          account: {
-            select: { id: true, bankName: true, accountNumber: true },
-          },
-          creator: { select: { id: true, name: true } },
-          collector: { select: { id: true, name: true } },
-          collectionBranch: {
-            select: { id: true, name: true },
-          },
-          returnOrders: {
-            where: { refundType: 'manual_offset', status: { not: 5 } },
-            select: { id: true, refundAmount: true, status: true },
-          },
-        },
-        orderBy: { transDate: 'desc' },
+        select: CASH_FLOW_LIST_SELECT,
+        orderBy: [{ transDate: 'desc' }, { id: 'desc' }],
         skip: currentItem,
         take: take,
       }),
       this.prisma.cashFlow.count({ where }),
+      includeSummary
+        ? this.getCashFlowListSummary(query, currentUser)
+        : Promise.resolve(undefined),
     ]);
+
+    const cashFlowIds = cashFlows.map((cashFlow) => cashFlow.id);
 
     // Gom partnerId theo partnerType để batch query mã KH / mã NCC (tránh N+1).
     const customerIds = [
@@ -611,7 +554,7 @@ export class CashFlowsService {
       ),
     ];
 
-    const [customers, suppliers] = await Promise.all([
+    const [customers, suppliers, debtOffsetGroups] = await Promise.all([
       customerIds.length
         ? this.prisma.customer.findMany({
             where: { id: { in: customerIds } },
@@ -624,10 +567,34 @@ export class CashFlowsService {
             select: { id: true, code: true, name: true },
           })
         : Promise.resolve([]),
+      cashFlowIds.length
+        ? this.prisma.returnOrder.groupBy({
+            by: ['cashFlowId'],
+            where: {
+              cashFlowId: { in: cashFlowIds },
+              refundType: 'manual_offset',
+              status: { not: 5 },
+            },
+            _sum: { refundAmount: true },
+          })
+        : Promise.resolve([]),
     ]);
 
     const customerMap = new Map(customers.map((c) => [c.id, c] as const));
     const supplierMap = new Map(suppliers.map((s) => [s.id, s] as const));
+    const debtOffsetMap = new Map<number, number>(
+      (debtOffsetGroups as Array<{
+        cashFlowId: number | null;
+        _sum: { refundAmount: unknown };
+      }>)
+        .filter((group) => group.cashFlowId !== null)
+        .map(
+          (group): [number, number] => [
+            group.cashFlowId as number,
+            Number(group._sum.refundAmount || 0),
+          ],
+        ),
+    );
 
     const data = cashFlows.map((cashFlow) => ({
       ...cashFlow,
@@ -644,17 +611,94 @@ export class CashFlowsService {
         cashFlow.partnerType === 'S' && cashFlow.partnerId
           ? (supplierMap.get(cashFlow.partnerId) ?? null)
           : null,
-      debtOffsetTotal:
-        cashFlow.returnOrders?.reduce(
-          (sum: number, ro: any) => sum + Number(ro.refundAmount),
-          0,
-        ) || 0,
+      debtOffsetTotal: debtOffsetMap.get(cashFlow.id) || 0,
     }));
 
     return {
       total,
       pageSize: take,
       data,
+      ...(summary ? { summary } : {}),
+    };
+  }
+
+  private async getCashFlowListSummary(
+    query: CashFlowQueryDto,
+    currentUser?: any,
+  ) {
+    const periodWhere = this.buildCashFlowExportWhere(query);
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      periodWhere.createdBy = currentUser.id;
+    }
+    if (query.status === undefined) {
+      periodWhere.status = { not: 2 };
+    }
+
+    const openingWhere = this.buildCashFlowExportWhere(query);
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      openingWhere.createdBy = currentUser.id;
+    }
+    if (query.ids && query.ids.length > 0) {
+      periodWhere.id = { in: query.ids };
+      openingWhere.id = { in: query.ids };
+    }
+    if (query.startDate) {
+      openingWhere.transDate = { lt: new Date(query.startDate) };
+    } else {
+      openingWhere.id = { in: [] };
+    }
+    openingWhere.status = 0;
+
+    if (query.invoiceId) {
+      const invoice = await this.prisma.invoice.findUnique({
+        where: { id: query.invoiceId },
+        select: { code: true },
+      });
+      periodWhere.code = { contains: invoice?.code || 'TT' };
+      periodWhere.invoicePayments = {
+        some: { invoiceId: query.invoiceId },
+      };
+      openingWhere.code = { contains: invoice?.code || 'TT' };
+      openingWhere.invoicePayments = {
+        some: { invoiceId: query.invoiceId },
+      };
+    }
+
+    const [periodGroups, openingGroups] = await Promise.all([
+      this.prisma.cashFlow.groupBy({
+        by: ['isReceipt'],
+        where: periodWhere,
+        _sum: { amount: true },
+      }),
+      this.prisma.cashFlow.groupBy({
+        by: ['isReceipt'],
+        where: openingWhere,
+        _sum: { amount: true },
+      }),
+    ]);
+
+    let totalReceipt = 0;
+    let totalPayment = 0;
+    for (const group of periodGroups) {
+      const amount = Number(group._sum.amount || 0);
+      if (group.isReceipt) totalReceipt = amount;
+      else totalPayment = amount;
+    }
+
+    let openingReceipt = 0;
+    let openingPayment = 0;
+    for (const group of openingGroups) {
+      const amount = Number(group._sum.amount || 0);
+      if (group.isReceipt) openingReceipt = amount;
+      else openingPayment = amount;
+    }
+
+    const openingBalance = openingReceipt - openingPayment;
+    return {
+      openingBalance,
+      totalReceipt,
+      totalPayment,
+      closingBalance: openingBalance + totalReceipt - totalPayment,
     };
   }
 
@@ -2752,6 +2796,20 @@ export class CashFlowsService {
     };
   }
 
+  private buildCashFlowWhere(query: CashFlowQueryDto, currentUser?: any): any {
+    const where = this.buildCashFlowExportWhere(query);
+
+    if (currentUser && !currentUser.canViewOtherStaffData) {
+      where.createdBy = currentUser.id;
+    }
+
+    if (query.ids && query.ids.length > 0) {
+      where.id = { in: query.ids };
+    }
+
+    return where;
+  }
+
   // ─── BUILD WHERE ─────────────────────────────────────────────────────────
   private buildCashFlowExportWhere(query: CashFlowQueryDto): any {
     const {
@@ -2792,6 +2850,12 @@ export class CashFlowsService {
         {
           OR: [
             { code: { contains: search, mode: 'insensitive' } },
+            {
+              sepayReferenceCode: {
+                contains: search,
+                mode: 'insensitive',
+              },
+            },
             { partnerName: { contains: search, mode: 'insensitive' } },
           ],
         },
