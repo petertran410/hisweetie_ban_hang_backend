@@ -183,7 +183,8 @@ export class ProductQualityLarkService {
   }
 
   /**
-   * Đọc toàn bộ các bản ghi theo trang (page_size: 500)
+   * Đọc danh sách bản ghi bằng bitable v1 để giữ nguyên link/attachment/url.
+   * Field "Trạng Thái Sự Cố" bị v1 bỏ qua, nên ghép thêm từ Base API v3.
    */
   async fetchAllLarkRecords(
     baseToken: string,
@@ -205,29 +206,10 @@ export class ProductQualityLarkService {
       });
       if (pageToken) qs.set('page_token', pageToken);
 
-      const res: any = await new Promise((resolve, reject) => {
-        const req = https.request(
-          {
-            hostname: 'open.larksuite.com',
-            path: `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${qs.toString()}`,
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` },
-          },
-          (response) => {
-            let d = '';
-            response.on('data', (c) => (d += c));
-            response.on('end', () => {
-              try {
-                resolve(JSON.parse(d));
-              } catch (err) {
-                reject(err);
-              }
-            });
-          },
-        );
-        req.on('error', reject);
-        req.end();
-      });
+      const res = await this.fetchLarkJson(
+        `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records?${qs.toString()}`,
+        token,
+      );
 
       if (res.code !== 0) {
         this.logger.error(`Lark API error: ${res.msg}`);
@@ -243,7 +225,101 @@ export class ProductQualityLarkService {
       if (maxLimit && all.length >= maxLimit) break;
     }
 
+    if (all.length > 0) {
+      try {
+        const statusByRecordId = await this.fetchLarkStatusMapV3(
+          baseToken,
+          tableId,
+          token,
+          maxLimit,
+        );
+        for (const record of all) {
+          const rawStatus = statusByRecordId.get(record.record_id);
+          if (rawStatus === undefined) continue;
+          record.fields = record.fields || {};
+          record.fields['Trạng Thái Sự Cố'] = rawStatus;
+        }
+      } catch (err: any) {
+        this.logger.warn(`Không đọc được trạng thái từ Lark Base v3: ${err?.message}`);
+      }
+    }
+
     return all;
+  }
+
+  private fetchLarkJson(path: string, token: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const req = https.request(
+        {
+          hostname: 'open.larksuite.com',
+          path,
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+        (response) => {
+          let d = '';
+          response.on('data', (c) => (d += c));
+          response.on('end', () => {
+            try {
+              resolve(JSON.parse(d));
+            } catch (err) {
+              reject(err);
+            }
+          });
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  private async fetchLarkStatusMapV3(
+    baseToken: string,
+    tableId: string,
+    token: string,
+    maxLimit?: number,
+  ): Promise<Map<string, any>> {
+    const statusByRecordId = new Map<string, any>();
+    let offset = 0;
+
+    while (true) {
+      const pageSize = Math.min(200, maxLimit ? maxLimit - offset : 200);
+      if (pageSize <= 0) break;
+
+      const qs = new URLSearchParams({
+        field_id: 'Trạng Thái Sự Cố',
+        limit: String(pageSize),
+        offset: String(offset),
+      });
+      const res = await this.fetchLarkJson(
+        `/open-apis/base/v3/bases/${baseToken}/tables/${tableId}/records?${qs.toString()}`,
+        token,
+      );
+
+      if (res.code !== 0) {
+        throw new Error(res.msg || `Lark Base v3 error ${res.code}`);
+      }
+
+      const page = res.data || {};
+      const fieldNames: string[] = Array.isArray(page.fields) ? page.fields : [];
+      const statusIndex = fieldNames.indexOf('Trạng Thái Sự Cố');
+      const rows: any[][] = Array.isArray(page.data) ? page.data : [];
+      const recordIds: string[] = Array.isArray(page.record_id_list)
+        ? page.record_id_list
+        : [];
+
+      rows.forEach((row, index) => {
+        const recordId = recordIds[index];
+        if (!recordId || statusIndex < 0) return;
+        statusByRecordId.set(recordId, row?.[statusIndex] ?? null);
+      });
+
+      if (maxLimit && offset + rows.length >= maxLimit) break;
+      if (!page.has_more || rows.length === 0) break;
+      offset += rows.length;
+    }
+
+    return statusByRecordId;
   }
 
   /**
@@ -384,7 +460,7 @@ export class ProductQualityLarkService {
       }
 
       // 6. Trạng thái & SLA
-      const rawStatus = this.extractText(f['Trạng Thái Sự Cố']) || 'Mới';
+      const rawStatus = this.getFieldValue(f, ['Trạng Thái Sự Cố']);
       const status = this.mapLarkStatus(rawStatus);
 
       const createdAt = f['Ngày tạo'] ? new Date(Number(f['Ngày tạo'])) : new Date(rec.created_time || Date.now());
@@ -510,8 +586,8 @@ export class ProductQualityLarkService {
                 decisionMakerName: item.decisionMakerName || existing.decisionMakerName,
                 handlingDirection: item.handlingDirection || existing.handlingDirection,
                 assignedDepartments: item.assignedDepartments,
-                status: item.status,
-                isCompleted: item.isCompleted,
+                status: item.status || existing.status,
+                isCompleted: item.status ? item.isCompleted : existing.isCompleted,
                 handledAt: item.handledAt || existing.handledAt,
                 dueAt: item.dueAt || existing.dueAt,
                 completedAt: item.completedAt || existing.completedAt,
@@ -552,7 +628,7 @@ export class ProductQualityLarkService {
                 decisionMakerName: item.decisionMakerName,
                 handlingDirection: item.handlingDirection,
                 assignedDepartments: item.assignedDepartments,
-                status: item.status,
+                status: item.status || QUALITY_STATUS.NEW,
                 isCompleted: item.isCompleted,
                 handledAt: item.handledAt,
                 dueAt: item.dueAt,
@@ -704,14 +780,92 @@ export class ProductQualityLarkService {
     return d;
   }
 
-  private mapLarkStatus(rawStatus: string): string {
-    const s = (rawStatus || '').trim().toLowerCase();
-    if (s.includes('hoàn thành') || s === 'done') return QUALITY_STATUS.COMPLETED;
-    if (s.includes('khắc phục')) return QUALITY_STATUS.REMEDIATING;
-    if (s.includes('đang xử lý')) return QUALITY_STATUS.IN_PROGRESS;
-    if (s.includes('ended') || s.includes('dừng') || s.includes('hủy'))
+  private getFieldValue(fields: Record<string, any>, aliases: string[]): any {
+    for (const alias of aliases) {
+      if (fields[alias] !== undefined && fields[alias] !== null) {
+        return fields[alias];
+      }
+    }
+
+    const normalizedAliases = new Set(aliases.map((alias) => this.normalizeStatusText(alias)));
+    for (const [key, value] of Object.entries(fields)) {
+      if (normalizedAliases.has(this.normalizeStatusText(key))) {
+        return value;
+      }
+    }
+
+    return undefined;
+  }
+
+  private extractStatusValue(value: any): string {
+    if (value == null) return '';
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value);
+    }
+    if (Array.isArray(value)) {
+      return value
+        .map((item) => this.extractStatusValue(item))
+        .filter(Boolean)
+        .join(' ')
+        .trim();
+    }
+    if (typeof value === 'object') {
+      const candidate =
+        value.text ??
+        value.name ??
+        value.value ??
+        value.label ??
+        value.en_name;
+
+      if (candidate !== undefined) {
+        return this.extractStatusValue(candidate);
+      }
+
+      if (Array.isArray(value.text_arr)) {
+        return this.extractStatusValue(value.text_arr);
+      }
+    }
+
+    return '';
+  }
+
+  private normalizeStatusText(value: any): string {
+    return this.extractStatusValue(value)
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/đ/g, 'd')
+      .replace(/Đ/g, 'D')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  private mapLarkStatus(rawStatus: unknown): string | null {
+    const s = this.normalizeStatusText(rawStatus);
+    if (!s) return null;
+
+    if (
+      ['done', 'completed', 'complete', 'hoan thanh', 'ket thuc'].includes(s) ||
+      s.includes('hoan thanh') ||
+      s.includes('ket thuc')
+    ) {
+      return QUALITY_STATUS.COMPLETED;
+    }
+    if (s.includes('remediating') || s.includes('khac phuc')) {
+      return QUALITY_STATUS.REMEDIATING;
+    }
+    if (s.includes('in progress') || s.includes('dang xu ly')) {
+      return QUALITY_STATUS.IN_PROGRESS;
+    }
+    if (['ended', 'dung', 'da dung', 'huy', 'da huy'].includes(s)) {
       return QUALITY_STATUS.ENDED;
-    return QUALITY_STATUS.NEW;
+    }
+    if (['moi', 'new'].includes(s)) {
+      return QUALITY_STATUS.NEW;
+    }
+
+    return null;
   }
 
   private extractText(v: any): string {

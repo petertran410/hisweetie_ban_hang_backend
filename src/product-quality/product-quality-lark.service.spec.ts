@@ -110,6 +110,64 @@ describe('ProductQualityLarkService (Unit)', () => {
     });
   });
 
+  describe('mapLarkStatus', () => {
+    it.each([
+      ['Done', QUALITY_STATUS.COMPLETED],
+      [['Done'], QUALITY_STATUS.COMPLETED],
+      [{ text: 'Hoàn Thành' }, QUALITY_STATUS.COMPLETED],
+      ['Đang Xử Lý', QUALITY_STATUS.IN_PROGRESS],
+      [{ name: 'Đang Khắc Phục' }, QUALITY_STATUS.REMEDIATING],
+      ['Ended', QUALITY_STATUS.ENDED],
+      ['Mới', QUALITY_STATUS.NEW],
+      ['', null],
+      ['Không xác định', null],
+    ])('maps %p to %p', (raw, expected) => {
+      expect((service as any).mapLarkStatus(raw)).toBe(expected);
+    });
+  });
+
+  describe('fetchAllLarkRecords', () => {
+    it('merges the status field from Base v3 into v1 records', async () => {
+      jest
+        .spyOn(service as any, 'fetchLarkJson')
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            items: [
+              {
+                record_id: 'rec_done_001',
+                fields: { 'Mã Phiếu': 'CLSP-DONE-01' },
+              },
+            ],
+            has_more: false,
+          },
+        })
+        .mockResolvedValueOnce({
+          code: 0,
+          data: {
+            fields: ['Mã Phiếu', 'Trạng Thái Sự Cố'],
+            data: [['CLSP-DONE-01', ['Done']]],
+            record_id_list: ['rec_done_001'],
+            has_more: false,
+          },
+        });
+
+      const records = await service.fetchAllLarkRecords(
+        'base_test',
+        'table_test',
+        'token_test',
+        1,
+      );
+
+      expect(records).toHaveLength(1);
+      expect(records[0].record_id).toBe('rec_done_001');
+      expect(records[0].fields['Trạng Thái Sự Cố']).toEqual(['Done']);
+      expect((service as any).mapLarkStatus(records[0].fields['Trạng Thái Sự Cố'])).toBe(
+        QUALITY_STATUS.COMPLETED,
+      );
+    });
+  });
+
   describe('sync records only (fast mode)', () => {
     it('upserts tickets without downloading media when downloadMedia is false', async () => {
       jest.spyOn(service, 'getTenantAccessToken').mockResolvedValue('test_token');
@@ -155,6 +213,95 @@ describe('ProductQualityLarkService (Unit)', () => {
       // Fast mode MUST NOT download media
       expect(downloadSpy).not.toHaveBeenCalled();
       expect(mockUploadService.saveFile).not.toHaveBeenCalled();
+    });
+
+    it('updates an existing NEW ticket to COMPLETED when Lark returns Done', async () => {
+      jest.spyOn(service, 'getTenantAccessToken').mockResolvedValue('test_token');
+      jest.spyOn(service, 'fetchAllLarkRecords').mockResolvedValue([
+        {
+          record_id: 'rec_done',
+          created_time: 1726056000000,
+          fields: {
+            'Mã Phiếu': 'CLSP-DONE-01',
+            'Trạng Thái Sự Cố': ['Done'],
+          },
+        },
+      ]);
+
+      const completedAt = new Date('2025-11-18T03:56:36.000Z');
+      const existingTicket = {
+        id: 201,
+        code: 'CLSP000201',
+        legacyCode: 'CLSP-DONE-01',
+        sourceRecordId: 'rec_done',
+        branchId: 6,
+        status: QUALITY_STATUS.NEW,
+        isCompleted: false,
+        completedAt,
+        attachments: [],
+      };
+      mockPrisma.productQualityTicket.findUnique.mockResolvedValue(existingTicket);
+      mockPrisma.productQualityTicket.update.mockResolvedValue({
+        ...existingTicket,
+        status: QUALITY_STATUS.COMPLETED,
+        isCompleted: true,
+      });
+
+      const res = await service.sync({ downloadMedia: false }, 1);
+
+      expect(res.updatedCount).toBe(1);
+      expect(mockPrisma.productQualityTicket.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 201 },
+          data: expect.objectContaining({
+            status: QUALITY_STATUS.COMPLETED,
+            isCompleted: true,
+            completedAt,
+          }),
+        }),
+      );
+    });
+
+    it('does not downgrade an existing REMEDIATING ticket when Lark status is missing', async () => {
+      jest.spyOn(service, 'getTenantAccessToken').mockResolvedValue('test_token');
+      jest.spyOn(service, 'fetchAllLarkRecords').mockResolvedValue([
+        {
+          record_id: 'rec_missing_status',
+          created_time: 1726056000000,
+          fields: {
+            'Mã Phiếu': 'CLSP-MISSING-STATUS',
+          },
+        },
+      ]);
+
+      const existingCompletedAt = new Date('2025-11-18T03:56:36.000Z');
+      const existingTicket = {
+        id: 202,
+        code: 'CLSP000202',
+        legacyCode: 'CLSP-MISSING-STATUS',
+        sourceRecordId: 'rec_missing_status',
+        branchId: 6,
+        status: QUALITY_STATUS.REMEDIATING,
+        isCompleted: false,
+        completedAt: existingCompletedAt,
+        attachments: [],
+      };
+      mockPrisma.productQualityTicket.findUnique.mockResolvedValue(existingTicket);
+      mockPrisma.productQualityTicket.update.mockResolvedValue(existingTicket);
+
+      const res = await service.sync({ downloadMedia: false }, 1);
+
+      expect(res.updatedCount).toBe(1);
+      expect(mockPrisma.productQualityTicket.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 202 },
+          data: expect.objectContaining({
+            status: QUALITY_STATUS.REMEDIATING,
+            isCompleted: false,
+            completedAt: existingCompletedAt,
+          }),
+        }),
+      );
     });
   });
 
