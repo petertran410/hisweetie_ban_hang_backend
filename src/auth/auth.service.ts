@@ -14,6 +14,24 @@ export class AuthService {
   async login(email: string, password: string, branchId?: number) {
     const user = await this.prisma.user.findUnique({
       where: { email },
+      select: { id: true, password: true, isActive: true },
+    });
+
+    if (!user) throw new UnauthorizedException('Invalid credentials');
+    if (!user.password)
+      throw new UnauthorizedException('Vui lòng đăng nhập bằng Lark');
+
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    if (!isPasswordValid)
+      throw new UnauthorizedException('Invalid credentials');
+    if (!user.isActive) throw new UnauthorizedException('Account is inactive');
+
+    return this.issueAuthResponse(user.id, branchId);
+  }
+
+  async issueAuthResponse(userId: number, branchId?: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
       include: {
         userRoles: {
           include: {
@@ -29,12 +47,6 @@ export class AuthService {
     });
 
     if (!user) throw new UnauthorizedException('Invalid credentials');
-    if (!user.password)
-      throw new UnauthorizedException('Please login with Google');
-
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid)
-      throw new UnauthorizedException('Invalid credentials');
     if (!user.isActive) throw new UnauthorizedException('Account is inactive');
 
     const roles = user.userRoles.map((ur) => ur.role.name);

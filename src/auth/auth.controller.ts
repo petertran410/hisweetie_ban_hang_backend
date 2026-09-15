@@ -11,9 +11,11 @@ import {
   Query,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
-import { Throttle } from '@nestjs/throttler';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Response } from 'express';
 import { AuthService } from './auth.service';
+import { LarkAuthService } from './lark-auth.service';
+import { LarkSetupPasswordDto } from './dto/lark-setup-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -21,7 +23,10 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private larkAuthService: LarkAuthService,
+  ) {}
 
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
@@ -29,6 +34,46 @@ export class AuthController {
   @ApiOperation({ summary: 'Login' })
   login(@Body() data: { email: string; password: string }) {
     return this.authService.login(data.email, data.password);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Get('lark')
+  @ApiOperation({ summary: 'Lark OAuth QR login' })
+  startLarkLogin(
+    @Query('return_to') returnTo: string,
+    @Res() res: Response,
+  ) {
+    const url = this.larkAuthService.buildAuthorizeUrl(returnTo);
+    return res.redirect(url);
+  }
+
+  @Public()
+  @Get('lark/callback')
+  @ApiOperation({ summary: 'Lark OAuth callback' })
+  async larkCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    const url = await this.larkAuthService.handleCallback(code, state);
+    return res.redirect(url);
+  }
+
+  @Public()
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @Post('lark/setup-password')
+  @ApiOperation({ summary: 'Set password after first Lark QR login' })
+  setupLarkPassword(@Body() data: LarkSetupPasswordDto) {
+    return this.larkAuthService.setupPassword(data);
+  }
+
+  @Public()
+  @SkipThrottle()
+  @Post('lark/events')
+  @ApiOperation({ summary: 'Lark contact.user.created webhook' })
+  handleLarkEvent(@Body() body: Record<string, unknown>) {
+    return this.larkAuthService.handleEvent(body);
   }
 
   @Public()

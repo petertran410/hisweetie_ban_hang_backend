@@ -168,6 +168,7 @@ export class UsersController {
       canViewOtherStaffData?: boolean;
       canViewOnlyOwnPackings?: boolean;
       canViewOnlyOwnLoadingInvoices?: boolean;
+      larkUserId?: string | null;
     },
     @Req() req: any,
   ) {

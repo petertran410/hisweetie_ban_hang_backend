@@ -23,6 +23,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    if (payload?.typ && payload.typ !== 'access') {
+      throw new UnauthorizedException('Tài khoản không hợp lệ');
+    }
+
     const userId: number = payload.sub;
     const tokenPv: number = payload.pv;
 

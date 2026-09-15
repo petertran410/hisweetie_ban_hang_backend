@@ -296,6 +296,7 @@ export class UsersService {
       canViewOtherStaffData?: boolean;
       canViewOnlyOwnPackings?: boolean;
       canViewOnlyOwnLoadingInvoices?: boolean;
+      larkUserId?: string | null;
     },
     performedByUserId?: number,
   ) {
@@ -362,6 +363,22 @@ export class UsersService {
 
       if (data.password) {
         updateData.password = await bcrypt.hash(data.password, 10);
+      }
+
+      if (data.larkUserId !== undefined) {
+        const nextLarkUserId = data.larkUserId?.trim() || null;
+        if (nextLarkUserId) {
+          const clash = await tx.user.findFirst({
+            where: { larkUserId: nextLarkUserId, NOT: { id } },
+            select: { id: true },
+          });
+          if (clash) {
+            throw new BadRequestException(
+              'Lark ID đã được gán cho người dùng khác',
+            );
+          }
+        }
+        updateData.larkUserId = nextLarkUserId;
       }
 
       await tx.user.update({
