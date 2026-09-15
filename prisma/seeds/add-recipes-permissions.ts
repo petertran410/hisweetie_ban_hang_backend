@@ -38,7 +38,7 @@ const PERMISSIONS: Array<{
     resource: 'recipes',
     action: 'create',
     scope: 'all',
-    description: 'Tạo công thức và draft version',
+    description: 'Tạo công thức pha chế mới',
     category: 'Sản phẩm',
   },
   {
@@ -46,7 +46,7 @@ const PERMISSIONS: Array<{
     resource: 'recipes',
     action: 'update',
     scope: 'all',
-    description: 'Sửa draft version (nguyên liệu, quy trình)',
+    description: 'Sửa công thức (nguyên liệu, quy trình, media)',
     category: 'Sản phẩm',
   },
   {
@@ -62,7 +62,7 @@ const PERMISSIONS: Array<{
     resource: 'recipes',
     action: 'publish',
     scope: 'all',
-    description: 'Publish draft → version bất biến',
+    description: 'Xuất bản công thức để hiển thị công khai cho khách hàng',
     category: 'Sản phẩm',
   },
   {
