@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { IncomingHttpHeaders } from 'http';
 import * as bcrypt from 'bcrypt';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../prisma/prisma.service';
@@ -147,18 +148,28 @@ export class LarkAuthService {
     return this.authService.issueAuthResponse(user.id);
   }
 
-  async handleEvent(body: Record<string, unknown>) {
+  async handleEvent(
+    body: Record<string, unknown>,
+    headers: IncomingHttpHeaders = {},
+  ) {
     const encryptKey = this.config.get<string>('LARK_ENCRYPT_KEY') || '';
     const verificationToken =
       this.config.get<string>('LARK_VERIFICATION_TOKEN') || '';
 
-    const challenge = lark.generateChallenge(body, { encryptKey });
+    // SDK reads signature headers from the prototype so JSON.stringify(body)
+    // still matches the raw payload Lark signed.
+    const payload = Object.assign(Object.create({ headers }), body);
+
+    const challenge = lark.generateChallenge(payload, { encryptKey });
     if (challenge.isChallenge) {
       return challenge.challenge;
     }
 
     const dispatcher = this.getEventDispatcher(encryptKey, verificationToken);
-    await dispatcher.invoke(body);
+    const result = await dispatcher.invoke(payload);
+    if (result === undefined) {
+      this.logger.warn('Lark event verification failed or handler returned empty');
+    }
     return { ok: true };
   }
 

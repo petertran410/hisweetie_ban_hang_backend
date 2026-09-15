@@ -40,10 +40,7 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Get('lark')
   @ApiOperation({ summary: 'Lark OAuth QR login' })
-  startLarkLogin(
-    @Query('return_to') returnTo: string,
-    @Res() res: Response,
-  ) {
+  startLarkLogin(@Query('return_to') returnTo: string, @Res() res: Response) {
     const url = this.larkAuthService.buildAuthorizeUrl(returnTo);
     return res.redirect(url);
   }
@@ -72,8 +69,8 @@ export class AuthController {
   @SkipThrottle()
   @Post('lark/events')
   @ApiOperation({ summary: 'Lark contact.user.created webhook' })
-  handleLarkEvent(@Body() body: Record<string, unknown>) {
-    return this.larkAuthService.handleEvent(body);
+  handleLarkEvent(@Req() req, @Body() body: Record<string, unknown>) {
+    return this.larkAuthService.handleEvent(body, req.headers);
   }
 
   @Public()
