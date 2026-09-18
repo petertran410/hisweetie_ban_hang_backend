@@ -258,3 +258,40 @@ describe('PurchasingPlanningRepository calculation scope', () => {
     expect(prisma.product.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe('PurchasingPlanningRepository product search', () => {
+  it('intersects every normalized search token regardless of order', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ id: 42 }, { id: 7 }])
+      .mockResolvedValueOnce([{ id: 42 }]);
+    const repository = new PurchasingPlanningRepository({
+      $queryRaw: queryRaw,
+    } as any);
+
+    await expect(repository.searchProductIds('lựu lermao')).resolves.toEqual([
+      42,
+    ]);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+
+    queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: 42 }, { id: 7 }])
+      .mockResolvedValueOnce([{ id: 42 }]);
+
+    await expect(repository.searchProductIds('lermao lựu')).resolves.toEqual([
+      42,
+    ]);
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips the query when the search contains only separators', async () => {
+    const queryRaw = jest.fn();
+    const repository = new PurchasingPlanningRepository({
+      $queryRaw: queryRaw,
+    } as any);
+
+    await expect(repository.searchProductIds('  ,  ')).resolves.toEqual([]);
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+});

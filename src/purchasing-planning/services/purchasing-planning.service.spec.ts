@@ -928,3 +928,86 @@ describe('PurchasingPlanningService growth-factor trace', () => {
     );
   });
 });
+
+describe('PurchasingPlanningService recommendation search', () => {
+  const repository = {
+    findRecommendation: jest.fn(),
+    findCategory: jest.fn(),
+    searchProductIds: jest.fn(),
+  };
+  const service = new PurchasingPlanningService(
+    repository as any,
+    {} as any,
+    {} as any,
+  );
+
+  const item = (productId: number, needsOrder: boolean) => ({
+    id: productId,
+    productId,
+    productCode: `SKU-${productId}`,
+    productName: productId === 42 ? 'Gấu Lermao - Siro Lựu 1kg' : 'Siro Cam',
+    packSize: 1,
+    priority: 'HIGH',
+    priorityRank: 1,
+    reliability: 'RELIABLE',
+    physicalStock: 0,
+    reservedStock: 0,
+    availableStock: 0,
+    incomingTotal: 0,
+    forecastDailyDemand: 0,
+    reorderPoint: 0,
+    inventoryPosition: 0,
+    reorderGap: 0,
+    needsOrder,
+    suggestedQuantity: 0,
+    estimatedValue: 10,
+    estimatedUnitPrice: 10,
+    calculationTrace: { flags: [] },
+    flags: [],
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    repository.findRecommendation.mockResolvedValue({
+      snapshotDate: new Date('2026-09-18T00:00:00.000Z'),
+      run: { completedAt: null },
+      items: [item(42, true), item(7, true)],
+    });
+  });
+
+  it('intersects shared product search ids with snapshot items', async () => {
+    repository.searchProductIds.mockResolvedValue([42]);
+
+    const result = await service.getRecommendations({
+      search: ' lựu lermao ',
+    } as any);
+
+    expect(repository.searchProductIds).toHaveBeenCalledWith('lựu lermao');
+    expect(result.items.map((row) => row.productId)).toEqual([42]);
+  });
+
+  it('still applies needsOrderOnly after the shared search', async () => {
+    repository.searchProductIds.mockResolvedValue([42, 7]);
+    repository.findRecommendation.mockResolvedValue({
+      snapshotDate: new Date('2026-09-18T00:00:00.000Z'),
+      run: { completedAt: null },
+      items: [item(42, true), item(7, false)],
+    });
+
+    const result = await service.getRecommendations({
+      search: 'lựu',
+      needsOrderOnly: true,
+    } as any);
+
+    expect(result.items.map((row) => row.productId)).toEqual([42]);
+  });
+
+  it('does not query product ids for a blank search', async () => {
+    const result = await service.getRecommendations({
+      search: '   ',
+    } as any);
+
+    expect(repository.searchProductIds).not.toHaveBeenCalled();
+    expect(result.items.map((row) => row.productId)).toEqual([42, 7]);
+  });
+});

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
+import { searchProductIds } from '../../common/product-search.util';
 import {
   EXCLUDED_PLANNING_CUSTOMER_CODES,
   RETAIL_CUSTOMER_GROUP_ID,
@@ -96,6 +97,10 @@ export class PurchasingPlanningRepository {
         items: true,
       },
     });
+  }
+
+  searchProductIds(search: string) {
+    return searchProductIds(this.prisma, search);
   }
 
   findItem(itemId: number) {

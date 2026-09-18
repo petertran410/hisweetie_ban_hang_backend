@@ -508,6 +508,9 @@ export class PurchasingPlanningService {
     );
     if (!snapshot) return this.emptyList(query);
 
+    const matchedProductIds = query.search?.trim()
+      ? await this.repository.searchProductIds(query.search.trim())
+      : undefined;
     const legacyCategory = query.categoryId
       ? await this.repository.findCategory(query.categoryId)
       : null;
@@ -517,6 +520,7 @@ export class PurchasingPlanningService {
       items,
       query,
       legacyCategory?.type === 'child' ? legacyCategory.name : undefined,
+      matchedProductIds,
     );
     this.sort(items, query.sortBy, query.sortDir);
     const total = items.length;
@@ -2257,6 +2261,7 @@ export class PurchasingPlanningService {
     items: any[],
     query: RecommendationQueryDto,
     legacyCategoryName?: string,
+    matchedProductIds?: number[],
   ) {
     const includes = (values: any[] | undefined, value: any) =>
       !values?.length || values.includes(value);
@@ -2269,12 +2274,12 @@ export class PurchasingPlanningService {
       : query.supplierId
         ? [query.supplierId]
         : undefined;
+    const matchedProductIdSet = matchedProductIds
+      ? new Set(matchedProductIds)
+      : undefined;
     return items.filter((item) => {
-      const q = query.search?.trim().toLowerCase();
       return (
-        (!q ||
-          item.productCode.toLowerCase().includes(q) ||
-          item.productName.toLowerCase().includes(q)) &&
+        (!matchedProductIdSet || matchedProductIdSet.has(item.productId)) &&
         includes(query.priority, item.priority) &&
         includes(query.reliability, item.reliability) &&
         includes(query.confidence, item.confidence) &&
