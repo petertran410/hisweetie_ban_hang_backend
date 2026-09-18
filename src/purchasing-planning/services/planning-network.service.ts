@@ -76,16 +76,16 @@ export class PlanningNetworkService {
       select: {
         id: true,
         name: true,
-        productionLeadtimeMin: true,
-        productionLeadtimeMax: true,
+        productionLeadtimeDays: true,
       },
     });
 
     return new Map(
       factories.map((factory) => {
         const days = singleLeadtimeDays(
-          factory.productionLeadtimeMin,
-          factory.productionLeadtimeMax,
+          null,
+          null,
+          factory.productionLeadtimeDays,
         );
         return [
           factory.id,

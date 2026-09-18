@@ -2538,7 +2538,9 @@ model Factory {
   notes                 String?
   paymentTerm           String?
   port                  String?
-  productionLeadtime    Int?
+  /// Số ngày sản xuất tại nhà máy — một số duy nhất, phục vụ dự báo đặt hàng.
+  /// Map production_leadtime_max vì dữ liệu đang sống ở cột đó.
+  productionLeadtimeDays Int?               @map("production_leadtime_max") @db.SmallInt
   shippingLeadtime      Int?
   strategicLevel        String?
   wechat                String?
@@ -2549,10 +2551,6 @@ model Factory {
   moqUnit               String?
   /// Cấu hình MOQ có đơn vị. Giữ `moq` để tương thích dữ liệu/API cũ.
   moqValue              Decimal?            @db.Decimal(18, 4)
-  productionLeadtimeMax Int?                @map("production_leadtime_max") @db.SmallInt
-  /// Khoảng thời gian SẢN XUẤT dự kiến (ngày) — riêng từng nhà máy.
-  /// Chỉ phục vụ DỰ BÁO đặt hàng, không phải mốc thực tế của đơn nào.
-  productionLeadtimeMin Int?                @map("production_leadtime_min") @db.SmallInt
   creator               User?               @relation("FactoryCreator", fields: [createdBy], references: [id])
   supplier              Supplier?           @relation(fields: [supplierId], references: [id])
   factoryChangeLogs     FactoryChangeLog[]

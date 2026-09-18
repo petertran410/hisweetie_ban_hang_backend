@@ -53,9 +53,6 @@ export class CreateFactoryDto {
     | null;
   /** Số ngày sản xuất tại nhà máy — một ô duy nhất. */
   @IsOptional() @IsInt() @Min(0) productionLeadtimeDays?: number;
-  /** @deprecated Dùng productionLeadtimeDays. Vẫn nhận để tương thích dữ liệu cũ. */
-  @IsOptional() @IsInt() @Min(0) productionLeadtimeMin?: number;
-  @IsOptional() @IsInt() @Min(0) productionLeadtimeMax?: number;
   @IsOptional() @IsString() paymentTerm?: string;
   @IsOptional() @IsString() country?: string;
   @IsOptional() @IsString() currency?: string;

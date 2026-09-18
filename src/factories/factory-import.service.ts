@@ -85,20 +85,16 @@ const HEADER_KEYS: Record<string, keyof ParsedFactoryRow | undefined> = {
   'bội số moq': 'moqIncrement',
   'boi so moq': 'moqIncrement',
   'moq increment': 'moqIncrement',
-  'sx nhanh nhất (ngày)': 'productionLeadtimeMin',
-  'sx nhanh nhat (ngay)': 'productionLeadtimeMin',
-  'sx chậm nhất (ngày)': 'productionLeadtimeMax',
-  'sx cham nhat (ngay)': 'productionLeadtimeMax',
-  'sx (ngày)': 'productionLeadtimeMax',
-  'sx (ngay)': 'productionLeadtimeMax',
-  'thời gian sản xuất (ngày)': 'productionLeadtimeMax',
-  'thoi gian san xuat (ngay)': 'productionLeadtimeMax',
-  // File cũ chỉ có một cột Leadtime → coi là cận trên để không tính thiếu.
-  leadtime: 'productionLeadtimeMax',
-  'leadtime (ngày)': 'productionLeadtimeMax',
-  'leadtime (ngay)': 'productionLeadtimeMax',
-  'thời gian giao hàng (ngày)': 'productionLeadtimeMax',
-  'thoi gian giao hang (ngay)': 'productionLeadtimeMax',
+  'số ngày sản xuất': 'productionLeadtimeDays',
+  'so ngay san xuat': 'productionLeadtimeDays',
+  'production leadtime days': 'productionLeadtimeDays',
+  'sx (ngày)': 'productionLeadtimeDays',
+  'sx (ngay)': 'productionLeadtimeDays',
+  'thời gian sản xuất (ngày)': 'productionLeadtimeDays',
+  'thoi gian san xuat (ngay)': 'productionLeadtimeDays',
+  leadtime: 'productionLeadtimeDays',
+  'leadtime (ngày)': 'productionLeadtimeDays',
+  'leadtime (ngay)': 'productionLeadtimeDays',
   'payment term': 'paymentTerm',
   'điều khoản thanh toán': 'paymentTerm',
   'dieu khoan thanh toan': 'paymentTerm',
@@ -136,8 +132,7 @@ export interface ParsedFactoryRow {
   moqUnit?: MoqUnit;
   moqScope?: MoqScope;
   moqIncrement?: number;
-  productionLeadtimeMin?: number;
-  productionLeadtimeMax?: number;
+  productionLeadtimeDays?: number;
   paymentTerm?: string;
   isActive?: boolean;
   contactNumber?: string;
@@ -291,6 +286,11 @@ export class FactoryImportService {
       const moqValue = this.number(cell(excelRow, 'moq'), 'MOQ', errors);
       const moqUnit = this.moqUnit(cell(excelRow, 'moqUnit'), errors);
       const moqScope = this.moqScope(cell(excelRow, 'moqScope'), errors);
+      const productionLeadtimeDays = this.number(
+        cell(excelRow, 'productionLeadtimeDays'),
+        'Số ngày sản xuất',
+        errors,
+      );
       rows.push({
         row: rowNumber,
         code: code || undefined,
@@ -317,18 +317,7 @@ export class FactoryImportService {
           'Bội số MOQ',
           errors,
         ),
-        productionLeadtimeMin: this.number(
-          cell(excelRow, 'productionLeadtimeMax') ||
-            cell(excelRow, 'productionLeadtimeMin'),
-          'Thời gian sản xuất',
-          errors,
-        ),
-        productionLeadtimeMax: this.number(
-          cell(excelRow, 'productionLeadtimeMax') ||
-            cell(excelRow, 'productionLeadtimeMin'),
-          'Thời gian sản xuất',
-          errors,
-        ),
+        productionLeadtimeDays,
         paymentTerm: cell(excelRow, 'paymentTerm') || undefined,
         isActive: this.bool(cell(excelRow, 'isActive'), errors),
         contactNumber: cell(excelRow, 'contactNumber') || undefined,
@@ -457,11 +446,8 @@ export class FactoryImportService {
             ...(row.moqIncrement !== undefined
               ? { moqIncrement: row.moqIncrement }
               : {}),
-            ...(row.productionLeadtimeMin !== undefined
-              ? { productionLeadtimeMin: row.productionLeadtimeMin }
-              : {}),
-            ...(row.productionLeadtimeMax !== undefined
-              ? { productionLeadtimeMax: row.productionLeadtimeMax }
+            ...(row.productionLeadtimeDays !== undefined
+              ? { productionLeadtimeDays: row.productionLeadtimeDays }
               : {}),
             ...(row.paymentTerm !== undefined
               ? { paymentTerm: row.paymentTerm }
@@ -528,13 +514,8 @@ export class FactoryImportService {
       },
       { header: 'Bội số MOQ', key: 'moqIncrement', width: 14 },
       {
-        header: 'SX nhanh nhất (ngày)',
-        key: 'productionLeadtimeMin',
-        width: 22,
-      },
-      {
-        header: 'SX chậm nhất (ngày)',
-        key: 'productionLeadtimeMax',
+        header: 'Số ngày sản xuất',
+        key: 'productionLeadtimeDays',
         width: 22,
       },
       { header: 'Payment Term', key: 'paymentTerm', width: 26 },
@@ -560,8 +541,7 @@ export class FactoryImportService {
       moq: 5,
       moqUnit: 'tấn',
       moqScope: 'Toàn đơn',
-      productionLeadtimeMin: 10,
-      productionLeadtimeMax: 15,
+      productionLeadtimeDays: 14,
       paymentTerm: 'T/T 30% - 70%',
       isActive: 'Hoạt động',
       currency: 'CNY',

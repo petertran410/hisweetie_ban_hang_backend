@@ -19,30 +19,12 @@ import {
   normalizeMoqSpec,
 } from '../common/moq.util';
 
-/**
- * Hiển thị khoảng thời gian sản xuất của nhà máy dưới dạng chuỗi cho file
- * Excel: `10-15` khi có khoảng, `12` khi hai đầu bằng nhau, rỗng khi chưa khai.
- */
 function formatProductionLeadtime(factory: {
-  productionLeadtimeMin?: number | null;
-  productionLeadtimeMax?: number | null;
-}): string {
-  const days = factory.productionLeadtimeMax ?? factory.productionLeadtimeMin;
-  return days == null ? '' : String(days);
-}
-
-function normalizeProductionLeadtime(input: {
   productionLeadtimeDays?: number | null;
-  productionLeadtimeMin?: number | null;
-  productionLeadtimeMax?: number | null;
-}): { min: number | null; max: number | null } {
-  const days =
-    input.productionLeadtimeDays ??
-    input.productionLeadtimeMax ??
-    input.productionLeadtimeMin ??
-    null;
-  if (days == null) return { min: null, max: null };
-  return { min: days, max: days };
+}): string {
+  return factory.productionLeadtimeDays == null
+    ? ''
+    : String(factory.productionLeadtimeDays);
 }
 
 /**
@@ -106,14 +88,6 @@ export class FactoriesService {
     throw new BadRequestException(
       'Không thể tự sinh mã nhà máy, vui lòng thử lại',
     );
-  }
-
-  private assertProductionLeadtimeRange(_input: {
-    productionLeadtimeMin?: number;
-    productionLeadtimeMax?: number;
-    productionLeadtimeDays?: number;
-  }) {
-    // Một ô duy nhất — không còn khoảng min/max để đối chiếu.
   }
 
   /**
@@ -632,8 +606,6 @@ export class FactoriesService {
       moqScope?: string | null;
       moqIncrement?: number | null;
       productionLeadtimeDays?: number;
-      productionLeadtimeMin?: number;
-      productionLeadtimeMax?: number;
       paymentTerm?: string;
       country?: string;
       currency?: string;
@@ -644,10 +616,6 @@ export class FactoriesService {
     },
     userId: number,
   ) {
-    // Leadtime sản xuất là dải dự báo: không cho phép nhập đảo thứ tự vì
-    // pipeline cần min ≤ dự kiến ≤ max để ra ngày đặt hàng có ý nghĩa.
-    this.assertProductionLeadtimeRange(dto);
-
     const name = (dto.name || '').trim();
     if (!name) throw new BadRequestException('Tên nhà máy không được để trống');
 
@@ -697,8 +665,7 @@ export class FactoriesService {
         moqUnit: dto.moqUnit ?? null,
         moqScope: dto.moqScope ?? null,
         moqIncrement: dto.moqIncrement ?? null,
-        productionLeadtimeMin: normalizeProductionLeadtime(dto).min,
-        productionLeadtimeMax: normalizeProductionLeadtime(dto).max,
+        productionLeadtimeDays: dto.productionLeadtimeDays ?? null,
         paymentTerm: dto.paymentTerm,
         country: dto.country,
         currency: dto.currency || 'VND',
@@ -735,8 +702,6 @@ export class FactoriesService {
       moqScope?: string | null;
       moqIncrement?: number | null;
       productionLeadtimeDays?: number | null;
-      productionLeadtimeMin?: number;
-      productionLeadtimeMax?: number;
       paymentTerm?: string;
       country?: string;
       currency?: string;
@@ -747,16 +712,6 @@ export class FactoriesService {
     },
   ) {
     const existing = await this.findOne(id);
-    this.assertProductionLeadtimeRange({
-      productionLeadtimeMin:
-        dto.productionLeadtimeMin ??
-        existing.productionLeadtimeMin ??
-        undefined,
-      productionLeadtimeMax:
-        dto.productionLeadtimeMax ??
-        existing.productionLeadtimeMax ??
-        undefined,
-    });
     const data: any = {};
 
     // Form cũ gửi code rỗng khi không có mã. Thay vì ghi null, tự sinh mã để
@@ -801,20 +756,8 @@ export class FactoriesService {
     if (dto.moqUnit !== undefined) data.moqUnit = dto.moqUnit;
     if (dto.moqScope !== undefined) data.moqScope = dto.moqScope;
     if (dto.moqIncrement !== undefined) data.moqIncrement = dto.moqIncrement;
-    if (
-      dto.productionLeadtimeDays !== undefined ||
-      dto.productionLeadtimeMin !== undefined ||
-      dto.productionLeadtimeMax !== undefined
-    ) {
-      const leadtime = normalizeProductionLeadtime({
-        productionLeadtimeDays: dto.productionLeadtimeDays,
-        productionLeadtimeMin:
-          dto.productionLeadtimeMin ?? existing.productionLeadtimeMin,
-        productionLeadtimeMax:
-          dto.productionLeadtimeMax ?? existing.productionLeadtimeMax,
-      });
-      data.productionLeadtimeMin = leadtime.min;
-      data.productionLeadtimeMax = leadtime.max;
+    if (dto.productionLeadtimeDays !== undefined) {
+      data.productionLeadtimeDays = dto.productionLeadtimeDays;
     }
     if (dto.paymentTerm !== undefined) data.paymentTerm = dto.paymentTerm;
     if (dto.country !== undefined) data.country = dto.country;
