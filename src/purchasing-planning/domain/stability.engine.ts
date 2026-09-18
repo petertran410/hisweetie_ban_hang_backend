@@ -101,6 +101,13 @@ export interface StabilityResult {
   };
 }
 
+export interface LegacyForecastResult {
+  baselineDailyDemand: number;
+  growthFactor: number;
+  monthsUsed: number;
+  excludedMonths: string[];
+}
+
 const SPIKE_THRESHOLD = 1.4;
 const DROP_THRESHOLD = 0.6;
 const VOLATILE_CV = 0.35;
@@ -238,6 +245,55 @@ export function deriveSystemGrowthFactor(months: MonthAssessment[]): number {
   return deriveGrowthFactor(months).systemGrowthFactor;
 }
 
+/**
+ * Công thức cũ 5 tháng: loại tháng nằm ngoài dải 0,6–1,4 lần trung vị,
+ * lấy mức nền từ các tháng bình thường và chia đôi để suy xu hướng.
+ * Hàm này được dùng chung cho chế độ LEGACY và backtest để tránh hai nơi
+ * diễn giải cùng một công thức theo hai cách khác nhau.
+ */
+export function calculateLegacyForecast(
+  months: MonthlySales[],
+): LegacyForecastResult {
+  const completed = months
+    .filter((month) => !month.isCurrentMonth && month.days > 0)
+    .sort((a, b) => a.month.localeCompare(b.month));
+  const recent = completed.slice(-5);
+  const rates = recent.map(rate);
+  const reference = median(rates);
+  const normal =
+    reference > 0
+      ? recent.filter((month) => {
+          const ratio = rate(month) / reference;
+          return ratio > DROP_THRESHOLD && ratio < SPIKE_THRESHOLD;
+        })
+      : recent;
+  const baselineMonths = normal.length > 0 ? normal : recent;
+  const baselineDailyDemand = round(
+    mean(baselineMonths.map((month) => rate(month))),
+  );
+
+  let growthFactor = 1;
+  if (normal.length >= 4) {
+    const split = Math.floor(normal.length / 2);
+    const previousRate = mean(
+      normal.slice(0, split).map((month) => rate(month)),
+    );
+    const recentRate = mean(normal.slice(split).map((month) => rate(month)));
+    if (previousRate > 0 && recentRate > 0) {
+      growthFactor = clampFactor(recentRate / previousRate);
+    }
+  }
+
+  return {
+    baselineDailyDemand,
+    growthFactor,
+    monthsUsed: recent.length,
+    excludedMonths: recent
+      .filter((month) => !normal.includes(month))
+      .map((month) => month.month),
+  };
+}
+
 function deriveGrowthFactor(months: MonthAssessment[], targetMonth?: number) {
   const clean = months.filter(isCleanMonth);
   const excludedMonths = months
@@ -285,6 +341,7 @@ function deriveGrowthFactor(months: MonthAssessment[], targetMonth?: number) {
     clean.length === 0 || mean(clean.map((month) => month.dailyRate)) <= 0
       ? 'NO_DATA'
       : dataMonths >= 24 &&
+          seasonal.repeated &&
           !warnings.includes('SEASONALITY_UNCERTAIN') &&
           !warnings.includes('MISSING_STOCK_HISTORY') &&
           !warnings.includes('SHORT_LONG_TERM_MISMATCH')
@@ -470,10 +527,11 @@ function calculateSeasonality(
 ): {
   index: number | null;
   weight: number;
+  repeated: boolean;
   warning?: string;
 } {
   if (months.length < 12 || targetMonth == null) {
-    return { index: null, weight: 0 };
+    return { index: null, weight: 0, repeated: false };
   }
   const seasonalCandidates = months.filter(
     (month) =>
@@ -490,7 +548,12 @@ function calculateSeasonality(
   );
   const base = mean(otherMonths.map((month) => month.dailyRate));
   if (sameMonth.length === 0 || base <= 0) {
-    return { index: null, weight: 0, warning: 'SEASONALITY_UNCERTAIN' };
+    return {
+      index: null,
+      weight: 0,
+      repeated: false,
+      warning: 'SEASONALITY_UNCERTAIN',
+    };
   }
   const index = round(
     Math.min(
@@ -498,13 +561,34 @@ function calculateSeasonality(
       Math.max(0.7, mean(sameMonth.map((month) => month.dailyRate)) / base),
     ),
   );
-  const weight = months.length >= 24 ? 0.6 : 0.4;
   const sameRates = sameMonth.map((month) => month.dailyRate);
-  const unstable =
+  const byYear = new Map<string, MonthAssessment[]>();
+  for (const month of sameMonth) {
+    const year = month.month.slice(0, 4);
+    const rows = byYear.get(year) ?? [];
+    rows.push(month);
+    byYear.set(year, rows);
+  }
+  const yearDirections = [...byYear.values()]
+    .map((rows) => mean(rows.map((month) => month.dailyRate)) - base)
+    .filter((value) => Math.abs(value) > 0.0001);
+  const directionMismatch =
+    yearDirections.length >= 2 &&
+    yearDirections.some((value) => value > 0) &&
+    yearDirections.some((value) => value < 0);
+  const highVariation =
     sameRates.length >= 2 && coefficientOfVariation(sameRates) > 0.35;
+  const missingRepeat = months.length >= 24 && byYear.size < 2;
+  const unstable = highVariation || directionMismatch || missingRepeat;
+  const repeated = byYear.size >= 2 && !highVariation && !directionMismatch;
+  const baseWeight = months.length >= 24 ? 0.65 : 0.4;
+  const stableWeight =
+    months.length >= 24 && repeated && sameRates.length >= 3 ? 0.7 : baseWeight;
+  const weight = unstable ? (months.length >= 24 ? 0.5 : 0.3) : stableWeight;
   return {
     index,
-    weight: unstable ? Math.min(weight, 0.3) : weight,
+    weight,
+    repeated,
     ...(unstable ? { warning: 'SEASONALITY_UNCERTAIN' } : {}),
   };
 }

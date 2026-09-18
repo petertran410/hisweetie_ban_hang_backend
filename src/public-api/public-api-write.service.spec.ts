@@ -173,6 +173,7 @@ describe('PublicApiWriteService', () => {
       31,
       { status: 2, cancelPayments: true },
       1,
+      { cancellationAuthorized: true },
     );
     expect(invoicesService).not.toHaveProperty('remove');
   });

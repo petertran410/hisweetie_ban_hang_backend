@@ -1,4 +1,8 @@
-import { MonthlySales, analyzeDemandStability } from './stability.engine';
+import {
+  MonthlySales,
+  analyzeDemandStability,
+  calculateLegacyForecast,
+} from './stability.engine';
 
 export type BacktestMethod = 'A' | 'B' | 'C';
 
@@ -6,6 +10,7 @@ export interface BacktestProductHistory {
   productId: number;
   productCode: string;
   productName: string;
+  categoryName?: string | null;
   months: MonthlySales[];
 }
 
@@ -28,14 +33,31 @@ export interface BacktestSkuReport {
   productId: number;
   productCode: string;
   productName: string;
+  categoryName: string | null;
   samples: number;
   metrics: Record<BacktestMethod, BacktestMethodMetrics>;
+}
+
+export interface BacktestCategoryReport {
+  categoryName: string;
+  evaluatedProducts: number;
+  evaluatedSamples: number;
+  methods: BacktestMethodMetrics[];
+  improvedVsLegacy: number;
+  worseThanLegacy: number;
+}
+
+export interface BacktestAcceptance {
+  status: 'PASS' | 'WARN' | 'INSUFFICIENT';
+  reasons: string[];
 }
 
 export interface ForecastBacktestResult {
   evaluatedProducts: number;
   evaluatedSamples: number;
   methods: BacktestMethodMetrics[];
+  categoryReports: BacktestCategoryReport[];
+  acceptance: BacktestAcceptance;
   improvedVsLegacy: number;
   worseThanLegacy: number;
   skuReports: BacktestSkuReport[];
@@ -45,6 +67,7 @@ interface Sample {
   productId: number;
   productCode: string;
   productName: string;
+  categoryName: string | null;
   actual: number;
   predicted: Record<BacktestMethod, number>;
 }
@@ -86,17 +109,17 @@ export function runForecastBacktest(
         actualMonth.daysInMonth ??
         actualMonth.days ??
         daysInCalendarMonth(actualMonth.month);
-      const factorA = legacyGrowthFactor(training);
+      const legacy = calculateLegacyForecast(training);
       const factorB = clamp(stability.shortTermTrend);
       const factorC = clamp(stability.systemGrowthFactor);
-      const baselineA = legacyBaseline(training);
       samples.push({
         productId: product.productId,
         productCode: product.productCode,
         productName: product.productName,
+        categoryName: product.categoryName ?? null,
         actual: Math.max(0, actualMonth.quantity),
         predicted: {
-          A: baselineA * factorA * days,
+          A: legacy.baselineDailyDemand * legacy.growthFactor * days,
           B: stability.baselineDailyDemand * factorB * days,
           C: stability.baselineDailyDemand * factorC * days,
         },
@@ -108,6 +131,7 @@ export function runForecastBacktest(
     aggregateMetrics(samples, method),
   );
   const skuReports = buildSkuReports(samples);
+  const categoryReports = buildCategoryReports(samples);
   const improvedVsLegacy = skuReports.filter(
     (report) => report.metrics.C.wape < report.metrics.A.wape,
   ).length;
@@ -119,43 +143,12 @@ export function runForecastBacktest(
     evaluatedProducts: skuReports.length,
     evaluatedSamples: samples.length,
     methods,
+    categoryReports,
+    acceptance: buildAcceptance(methods),
     improvedVsLegacy,
     worseThanLegacy,
     skuReports,
   };
-}
-
-function legacyBaseline(months: MonthlySales[]): number {
-  const recent = months.slice(-3).map(dailyRate);
-  const reference = median(months.slice(-5).map(dailyRate));
-  if (reference <= 0) return mean(recent);
-  const normal = recent.filter((rate) => {
-    const ratio = rate / reference;
-    return ratio < 1.4 && ratio > 0.6;
-  });
-  return mean(normal.length ? normal : recent);
-}
-
-function legacyGrowthFactor(months: MonthlySales[]): number {
-  const recent = months.slice(-5).map((month) => ({
-    ...month,
-    dailyRate: dailyRate(month),
-  }));
-  if (recent.length < 4) return 1;
-  const reference = median(recent.map((month) => month.dailyRate));
-  const normal = recent.filter((month) => {
-    if (reference <= 0) return true;
-    const ratio = month.dailyRate / reference;
-    return ratio < 1.4 && ratio > 0.6;
-  });
-  if (normal.length < 4) return 1;
-  const split = Math.floor(normal.length / 2);
-  const previousRate = mean(
-    normal.slice(0, split).map((month) => month.dailyRate),
-  );
-  const recentRate = mean(normal.slice(split).map((month) => month.dailyRate));
-  if (previousRate <= 0 || recentRate <= 0) return 1;
-  return clamp(recentRate / previousRate);
 }
 
 function aggregateMetrics(
@@ -203,6 +196,7 @@ function buildSkuReports(samples: Sample[]): BacktestSkuReport[] {
       productId,
       productCode: first.productCode,
       productName: first.productName,
+      categoryName: first.categoryName,
       samples: rows.length,
       metrics: {
         A: aggregateMetrics(rows, 'A'),
@@ -211,6 +205,73 @@ function buildSkuReports(samples: Sample[]): BacktestSkuReport[] {
       },
     };
   });
+}
+
+function buildCategoryReports(samples: Sample[]): BacktestCategoryReport[] {
+  const byCategory = new Map<string, Sample[]>();
+  for (const sample of samples) {
+    const categoryName = sample.categoryName || 'Chưa phân nhóm';
+    const list = byCategory.get(categoryName) ?? [];
+    list.push(sample);
+    byCategory.set(categoryName, list);
+  }
+  return [...byCategory.entries()]
+    .map(([categoryName, rows]) => {
+      const methods = (['A', 'B', 'C'] as BacktestMethod[]).map((method) =>
+        aggregateMetrics(rows, method),
+      );
+      const productIds = new Set(rows.map((row) => row.productId));
+      const skuReports = buildSkuReports(rows);
+      return {
+        categoryName,
+        evaluatedProducts: productIds.size,
+        evaluatedSamples: rows.length,
+        methods,
+        improvedVsLegacy: skuReports.filter(
+          (report) => report.metrics.C.wape < report.metrics.A.wape,
+        ).length,
+        worseThanLegacy: skuReports.filter(
+          (report) => report.metrics.C.wape > report.metrics.A.wape,
+        ).length,
+      };
+    })
+    .sort((a, b) => b.evaluatedSamples - a.evaluatedSamples);
+}
+
+function buildAcceptance(methods: BacktestMethodMetrics[]): BacktestAcceptance {
+  const legacy = methods.find((method) => method.method === 'A');
+  const seasonal = methods.find((method) => method.method === 'C');
+  if (!legacy || !seasonal || seasonal.samples === 0) {
+    return {
+      status: 'INSUFFICIENT',
+      reasons: ['Chưa đủ mẫu để so sánh công thức mùa vụ với công thức cũ.'],
+    };
+  }
+  const reasons: string[] = [];
+  if (seasonal.wape > legacy.wape) {
+    reasons.push(
+      `WAPE công thức mùa vụ (${seasonal.wape}) cao hơn công thức cũ (${legacy.wape}).`,
+    );
+  }
+  if (seasonal.underForecastRate > legacy.underForecastRate) {
+    reasons.push(
+      `Tỷ lệ dự báo thiếu tăng từ ${legacy.underForecastRate} lên ${seasonal.underForecastRate}.`,
+    );
+  }
+  if (
+    seasonal.underForecastRate < legacy.underForecastRate &&
+    seasonal.overForecastRate > legacy.overForecastRate + 0.1
+  ) {
+    reasons.push(
+      `Giảm dự báo thiếu nhưng tỷ lệ dự báo dư tăng từ ${legacy.overForecastRate} lên ${seasonal.overForecastRate}.`,
+    );
+  }
+  return {
+    status: reasons.length ? 'WARN' : 'PASS',
+    reasons: reasons.length
+      ? reasons
+      : ['WAPE và tỷ lệ dự báo thiếu không xấu hơn công thức cũ.'],
+  };
 }
 
 function dailyRate(month: MonthlySales): number {

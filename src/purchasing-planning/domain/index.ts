@@ -4,6 +4,7 @@ export * from './config-resolution.engine';
 export * from './backtest.engine';
 export * from './demand-resolution.engine';
 export * from './forecast.engine';
+export * from './forecast-formula.engine';
 export * from './incoming-resolution.engine';
 export * from './leadtime.engine';
 export * from './order-timing.engine';

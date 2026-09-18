@@ -236,9 +236,23 @@ describe('analyzeDemandStability', () => {
     const result = analyzeDemandStability(months, [], [], 10);
 
     expect(result.growthFactorMethod).toBe('6M_TREND+24M_SEASONALITY');
-    expect(result.seasonalWeight).toBe(0.3);
+    expect(result.seasonalWeight).toBe(0.5);
     expect(result.growthFactorWarnings).toContain('SEASONALITY_UNCERTAIN');
     expect(result.growthFactorConfidence).toBe('MEDIUM');
+  });
+
+  it('xác nhận mùa vụ lặp lại ổn định khi có đủ 3 năm cùng kỳ', () => {
+    const months = Array.from({ length: 36 }, (_, index) => {
+      const year = 2024 + Math.floor(index / 12);
+      const monthNumber = (index % 12) + 1;
+      const quantity = monthNumber === 10 ? 120 : 100;
+      return month(`${year}-${String(monthNumber).padStart(2, '0')}`, quantity);
+    });
+    const result = analyzeDemandStability(months, [], [], 10);
+
+    expect(result.growthFactorWarnings).not.toContain('SEASONALITY_UNCERTAIN');
+    expect(result.seasonalWeight).toBe(0.65);
+    expect(result.growthFactorConfidence).toBe('HIGH');
   });
 
   it('hạ độ tin cậy khi thiếu lịch sử tồn kho theo ngày', () => {

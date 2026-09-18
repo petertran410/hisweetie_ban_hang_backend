@@ -387,7 +387,7 @@ describe('PurchasingPlanningService calculation branch metadata', () => {
   };
   const service = new PurchasingPlanningService(
     repository as any,
-    {} as any,
+    { create: jest.fn().mockResolvedValue({ id: 9 }) } as any,
     networkService as any,
   );
 
@@ -724,6 +724,118 @@ describe('PurchasingPlanningService normalized history', () => {
 
     expect(timeline.projection).toHaveLength(121);
     expect(timeline.projection.at(-1).date).toBe('2027-01-12');
+  });
+});
+
+describe('PurchasingPlanningService past customer demand', () => {
+  const branchScope = {
+    branches: [{ id: 11, name: 'Kho Hà Nội', code: 'HN' }],
+  };
+  const service = new PurchasingPlanningService(
+    {} as any,
+    {} as any,
+    {} as any,
+  );
+  const product = {
+    id: 1,
+    code: 'SP007356',
+    name: 'Gấu Lermao - Siro Đường Đen 1kg',
+    unit: 'túi',
+    createdAt: new Date('2025-01-01T00:00:00.000Z'),
+    conversionValue: 12,
+    tradeMark: null,
+  };
+  const baseData = (invoiceCustomerId: number) => ({
+    inventories: [
+      {
+        productId: 1,
+        branchId: 11,
+        branchName: 'Kho Hà Nội',
+        branch: { name: 'Kho Hà Nội', code: 'HN' },
+        onHand: 0,
+        reserved: 0,
+        minQuality: 0,
+      },
+    ],
+    invoiceDetails: [
+      {
+        productId: 1,
+        quantity: 500,
+        invoice: {
+          purchaseDate: new Date('2026-08-20T00:00:00.000Z'),
+          branchId: 11,
+          customerId: invoiceCustomerId,
+        },
+      },
+    ],
+    inventoryLogs: [],
+    orderSupplierItems: [],
+    purchaseOrderItems: [],
+    promotions: [],
+    customerDemandMonths: [
+      {
+        id: 5,
+        demandMonth: new Date('2026-08-01T00:00:00.000Z'),
+        status: 'CONFIRMED',
+        createdAt: new Date('2026-06-01T08:00:00.000Z'),
+        demand: {
+          customerId: 7,
+          createdAt: new Date('2026-06-01T08:00:00.000Z'),
+          customer: { name: 'Chuỗi Maycha' },
+        },
+        lines: [
+          {
+            productId: 1,
+            quantityBase: 1500,
+            inputQuantity: 1500,
+            inputUnit: 'BASE',
+            conversionValue: 12,
+            createdAt: new Date('2026-06-01T08:00:00.000Z'),
+          },
+        ],
+      },
+    ],
+    branchScope,
+  });
+
+  it('chỉ trừ số thực tế khách đã mua theo Demand cũ (1.500 demand / 500 hóa đơn)', () => {
+    const item = (service as any).calculateProduct(
+      product,
+      baseData(7),
+      [],
+      new Map(),
+      new Date('2026-09-14T00:00:00.000Z'),
+    );
+
+    const breakdown = item.calculationTrace.inputs.forecast.demandBreakdown;
+    expect(breakdown.pastCustomerDemand).toBe(500);
+    expect(breakdown.pastCustomerDemandDetails[0]).toMatchObject({
+      customerName: 'Chuỗi Maycha',
+      demandMonth: '2026-08',
+      quantityBase: 1500,
+      actualPurchasedQuantity: 500,
+      deductedQuantity: 500,
+      remainingQuantity: 1000,
+    });
+  });
+
+  it('không trừ khi hóa đơn thuộc khách hàng khác', () => {
+    const item = (service as any).calculateProduct(
+      product,
+      baseData(99),
+      [],
+      new Map(),
+      new Date('2026-09-14T00:00:00.000Z'),
+    );
+
+    const breakdown = item.calculationTrace.inputs.forecast.demandBreakdown;
+    expect(breakdown.pastCustomerDemand).toBe(0);
+    expect(breakdown.pastCustomerDemandDetails[0]).toMatchObject({
+      quantityBase: 1500,
+      actualPurchasedQuantity: 0,
+      deductedQuantity: 0,
+      remainingQuantity: 1500,
+    });
   });
 });
 

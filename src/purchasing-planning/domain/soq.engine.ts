@@ -169,13 +169,14 @@ export function calculateSoq(input: SoqInput): SoqResult {
       },
       {
         code: 'PAST_CUSTOMER_DEMAND',
-        formula: 'Demand OEM Confirmed của 3 tháng lịch đã kết thúc',
+        formula:
+          'min(Demand OEM Confirmed 3 tháng trước, hóa đơn thực tế cùng khách/SKU/tháng)',
         value: round(-pastCustomerDemand),
       },
       {
         code: 'TOTAL_DEMAND',
         formula:
-          'max(0, bán dự kiến + khách đặt + Demand khách hàng + công ty cần + KM - Demand 3 tháng trước)',
+          'max(0, bán dự kiến + khách đặt + Demand khách hàng + công ty cần + KM - hàng thực tế đã mua theo Demand cũ)',
         value: round(totalDemand),
       },
       {

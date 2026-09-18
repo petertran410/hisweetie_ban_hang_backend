@@ -2,10 +2,13 @@ import { InvoicesService } from './invoices.service';
 import { INVOICE_STATUS } from './dto';
 
 describe('InvoicesService delivery reporting', () => {
-  const createInvoice = (deliveredAt: Date | null) => ({
+  const createInvoice = (
+    deliveredAt: Date | null,
+    status: number = INVOICE_STATUS.PROCESSING,
+  ) => ({
     id: 1,
     code: 'HDTEST001',
-    status: INVOICE_STATUS.PROCESSING,
+    status,
     statusValue: 'Đang xử lý',
     deliveredAt,
     createdBy: 7,
@@ -58,6 +61,17 @@ describe('InvoicesService delivery reporting', () => {
               ? { packingSlip: { createdAt: firstPackingSlipAt } }
               : null,
           ),
+      },
+      invoicePromotionLog: {
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      returnOrder: {
+        findMany: jest.fn().mockResolvedValue([]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      inventory: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
       },
     };
     const prisma = {
@@ -135,6 +149,43 @@ describe('InvoicesService delivery reporting', () => {
     const updateInput = tx.invoice.update.mock.calls[0][0];
     expect(updateInput.data.deliveredAt).toBeUndefined();
     expect(tx.packingSlipInvoice.findFirst).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    INVOICE_STATUS.PROCESSING,
+    INVOICE_STATUS.PACKED,
+    INVOICE_STATUS.LOADING,
+    INVOICE_STATUS.DELIVERED,
+    INVOICE_STATUS.FAILED_DELIVERY,
+    INVOICE_STATUS.RETURNED,
+    INVOICE_STATUS.COMPLETED,
+  ])(
+    'cho phép hủy hóa đơn ở trạng thái %s khi đã qua endpoint hủy',
+    async (status) => {
+      const { service, tx } = createService(createInvoice(null, status));
+
+      await service.update(1, { status: INVOICE_STATUS.CANCELLED } as any, 9, {
+        cancellationAuthorized: true,
+      });
+
+      expect(tx.invoice.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: INVOICE_STATUS.CANCELLED,
+            debtAmount: 0,
+          }),
+        }),
+      );
+    },
+  );
+
+  it('từ chối hủy khi đi qua endpoint cập nhật thông thường', async () => {
+    const { service, tx } = createService(createInvoice(null));
+
+    await expect(
+      service.update(1, { status: INVOICE_STATUS.CANCELLED } as any, 9),
+    ).rejects.toThrow('Vui lòng sử dụng chức năng Hủy hóa đơn');
+    expect(tx.invoice.update).not.toHaveBeenCalled();
   });
 
   it('tính lại tổng và công nợ khi cập nhật phí giao hàng', async () => {

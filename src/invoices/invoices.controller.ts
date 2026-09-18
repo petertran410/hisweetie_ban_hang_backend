@@ -3,7 +3,6 @@ import {
   Get,
   Post,
   Put,
-  Delete,
   Body,
   Param,
   Query,
@@ -18,6 +17,8 @@ import {
   InvoiceQueryDto,
   CreateInvoiceFromOrderDto,
   MergeInvoicesDto,
+  CancelInvoiceDto,
+  INVOICE_STATUS,
 } from './dto';
 import { ResolveScanDto } from './dto/resolve-scan.dto';
 import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
@@ -321,6 +322,25 @@ export class InvoicesController {
     return this.invoicesService.update(+id, dto, user.id);
   }
 
+  @Put(':id/cancel')
+  @RequirePermissions('invoices:cancel')
+  @ApiOperation({ summary: 'Hủy hóa đơn ở mọi trạng thái chưa hủy' })
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelInvoiceDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.invoicesService.update(
+      +id,
+      {
+        status: INVOICE_STATUS.CANCELLED,
+        cancelPayments: dto.cancelPayments,
+      },
+      user.id,
+      { cancellationAuthorized: true },
+    );
+  }
+
   @Post('from-order/:orderId')
   @RequirePermissions('invoices:create')
   createFromOrder(
@@ -354,11 +374,5 @@ export class InvoicesController {
       dto,
       user.id,
     );
-  }
-
-  @Delete(':id')
-  @RequirePermissions('invoices:delete')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.invoicesService.remove(+id, user.id);
   }
 }

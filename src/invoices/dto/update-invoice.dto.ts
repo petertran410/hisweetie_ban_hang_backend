@@ -7,3 +7,9 @@ export class UpdateInvoiceDto extends PartialType(CreateInvoiceDto) {
   @IsBoolean()
   cancelPayments?: boolean;
 }
+
+export class CancelInvoiceDto {
+  @IsOptional()
+  @IsBoolean()
+  cancelPayments?: boolean;
+}

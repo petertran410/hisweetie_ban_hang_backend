@@ -149,8 +149,11 @@ export class PurchasingPlanningController {
 
   @Post('backtest')
   @RequirePermissions('purchasing_planning:config')
-  runBacktest(@Body() dto: RunBacktestDto) {
-    return this.service.runBacktest(dto);
+  runBacktest(
+    @Body() dto: RunBacktestDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.service.runBacktest(dto, this.actor(user));
   }
 
   private actor(user: AuthenticatedUser) {

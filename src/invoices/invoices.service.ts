@@ -2512,8 +2512,14 @@ export class InvoicesService {
     return data;
   }
 
-  async update(id: number, dto: UpdateInvoiceDto, userId?: number) {
+  async update(
+    id: number,
+    dto: UpdateInvoiceDto,
+    userId?: number,
+    options: { cancellationAuthorized?: boolean } = {},
+  ) {
     await this.findOne(id);
+    this.assertCancellationAuthorized(dto, options);
 
     // Danh sách packing slip (giao-hang) bị ảnh hưởng bởi versioning để gửi lại Zalo
     // sau khi transaction commit (fire-and-forget).
@@ -3083,24 +3089,6 @@ export class InvoicesService {
           dto.status === INVOICE_STATUS.CANCELLED &&
           currentInvoice.status !== INVOICE_STATUS.CANCELLED
         ) {
-          if (currentInvoice.status === INVOICE_STATUS.COMPLETED) {
-            const actor = userId
-              ? await tx.user.findUnique({
-                  where: { id: userId },
-                  include: { userRoles: { include: { role: true } } },
-                })
-              : null;
-            const isAdmin = actor?.userRoles?.some(
-              (ur: any) =>
-                ur.role.name === 'Admin' || ur.role.name === 'Super Admin',
-            );
-            if (!isAdmin) {
-              throw new ForbiddenException(
-                'Chỉ Admin mới được phép hủy hóa đơn hoàn thành',
-              );
-            }
-          }
-
           if (!currentInvoice.branchId) {
             throw new BadRequestException(
               'Không thể hủy hóa đơn vì không có thông tin chi nhánh',
@@ -3560,35 +3548,18 @@ export class InvoicesService {
     return result;
   }
 
-  async remove(id: number, userId: number) {
-    const invoice = await this.findOne(id);
-
-    await this.prisma.invoice.delete({ where: { id } });
-
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { name: true, email: true, branchId: true },
-    });
-
-    await this.auditLogsService.create({
-      actionType: 'DELETE',
-      actionCode: 'INVOICE_DELETE',
-      entityType: 'invoices',
-      entityId: id.toString(),
-      entityCode: (invoice as any).code,
-      category: getCategoryFromActionCode('INVOICE_DELETE'),
-      severity: getSeverityFromActionCode('INVOICE_DELETE'),
-      snapshot: this.buildInvoiceSnapshot(invoice),
-      message: renderAuditMessage('INVOICE_DELETE', {
-        invoiceCode: (invoice as any).code,
-      }),
-      messageTemplate: 'INVOICE_DELETE',
-      userId,
-      userName: user?.name || user?.email || 'System',
-      branchId: (invoice as any).branchId || user?.branchId || undefined,
-    });
-
-    return { message: 'Xóa hóa đơn thành công' };
+  private assertCancellationAuthorized(
+    dto: UpdateInvoiceDto,
+    options: { cancellationAuthorized?: boolean },
+  ) {
+    if (
+      dto.status === INVOICE_STATUS.CANCELLED &&
+      !options.cancellationAuthorized
+    ) {
+      throw new ForbiddenException(
+        'Vui lòng sử dụng chức năng Hủy hóa đơn để thực hiện thao tác này',
+      );
+    }
   }
 
   private async updateCustomerTotals(customerId: number, tx: any) {

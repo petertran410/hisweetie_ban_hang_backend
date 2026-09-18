@@ -1,4 +1,5 @@
 import {
+  CustomerDemandActualPurchaseInput,
   InboundOrderEvent,
   resolveCustomerDemand,
   resolvePastCustomerDemand,
@@ -112,8 +113,15 @@ describe('resolvePastCustomerDemand', () => {
         month('2026-09-01', 'CONFIRMED', 1, 50),
       ],
       '2026-09-10',
+      3,
+      [],
+      [
+        purchase('2026-06-05', 10),
+        purchase('2026-07-05', 20),
+        purchase('2026-08-05', 30),
+      ],
     );
-    expect(result.totalByProduct.get(1)).toBe(90);
+    expect(result.totalByProduct.get(1)).toBe(60);
     expect(result.includedMonths).toEqual(['2026-06', '2026-07', '2026-08']);
   });
 
@@ -125,6 +133,9 @@ describe('resolvePastCustomerDemand', () => {
         month('2026-08-01', 'CONFIRMED', 1, 15),
       ],
       '2026-09-10',
+      3,
+      [],
+      [purchase('2026-08-15', 15)],
     );
     expect(result.totalByProduct.get(1)).toBe(15);
   });
@@ -136,10 +147,158 @@ describe('resolvePastCustomerDemand', () => {
         month('2026-08-01', 'CONFIRMED', 1, 8, 2),
       ],
       '2026-09-10',
+      3,
+      [],
+      [
+        purchase('2026-07-15', 12, 1),
+        purchase('2026-08-15', 8, 2),
+      ],
     );
     expect(result.totalByProduct.get(1)).toBe(20);
     expect(result.detailsByProduct.get(1)).toHaveLength(2);
   });
+
+  it('chỉ khấu trừ số thực tế mua từ InvoiceDetail, không trừ toàn bộ Demand', () => {
+    const result = resolvePastCustomerDemand(
+      [month('2026-05-01', 'CONFIRMED', 1, 1500)],
+      '2026-09-10',
+      5,
+      [],
+      [purchase('2026-05-20', 500)],
+    );
+
+    expect(result.totalByProduct.get(1)).toBe(500);
+    expect(result.detailsByProduct.get(1)?.[0]).toMatchObject({
+      quantityBase: 1500,
+      actualPurchasedQuantity: 500,
+      deductedQuantity: 500,
+      remainingQuantity: 1000,
+    });
+  });
+
+  it('cộng nhiều hóa đơn trong cùng tháng và không khấu trừ vượt Demand', () => {
+    const result = resolvePastCustomerDemand(
+      [month('2026-05-01', 'CONFIRMED', 1, 1500)],
+      '2026-09-10',
+      5,
+      [],
+      [
+        purchase('2026-05-05', 300),
+        purchase('2026-05-20', 200),
+        purchase('2026-05-25', 2000),
+      ],
+    );
+
+    expect(result.totalByProduct.get(1)).toBe(1500);
+    expect(result.detailsByProduct.get(1)?.[0]).toMatchObject({
+      actualPurchasedQuantity: 1500,
+      deductedQuantity: 1500,
+      remainingQuantity: 0,
+    });
+  });
+
+  it('không khấu trừ khi không có hóa đơn đúng khách, SKU và tháng', () => {
+    const result = resolvePastCustomerDemand(
+      [month('2026-05-01', 'CONFIRMED', 1, 1500)],
+      '2026-09-10',
+      5,
+      [],
+      [
+        purchase('2026-05-05', 500, 2),
+        purchase('2026-06-05', 500, 1),
+        purchase('2026-05-05', 500, 1, 99),
+      ],
+    );
+
+    expect(result.totalByProduct.get(1)).toBe(0);
+    expect(result.detailsByProduct.get(1)?.[0]).toMatchObject({
+      actualPurchasedQuantity: 0,
+      deductedQuantity: 0,
+      remainingQuantity: 1500,
+    });
+  });
+
+  it('phân bổ hóa đơn một lần cho nhiều Demand cùng khóa để không khấu trừ trùng', () => {
+    const result = resolvePastCustomerDemand(
+      [
+        month('2026-05-01', 'CONFIRMED', 1, 300),
+        { ...month('2026-05-01', 'CONFIRMED', 1, 400), id: 99 },
+      ],
+      '2026-09-10',
+      5,
+      [],
+      [purchase('2026-05-20', 500)],
+    );
+
+    expect(result.totalByProduct.get(1)).toBe(500);
+    expect(result.detailsByProduct.get(1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actualPurchasedQuantity: 300,
+          deductedQuantity: 300,
+          remainingQuantity: 0,
+        }),
+        expect.objectContaining({
+          actualPurchasedQuantity: 200,
+          deductedQuantity: 200,
+          remainingQuantity: 200,
+        }),
+      ]),
+    );
+  });
+
+  it('Demand bị loại bởi PĐN xen giữa không được khấu trừ lại từ hóa đơn', () => {
+    const result = resolvePastCustomerDemand(
+      [
+        {
+          ...month('2026-08-01', 'CONFIRMED', 1, 100),
+          id: 1,
+          createdAt: '2026-06-01T08:00:00.000Z',
+        },
+        {
+          ...month('2026-08-01', 'CONFIRMED', 1, 40),
+          id: 2,
+          createdAt: '2026-06-10T08:00:00.000Z',
+        },
+      ],
+      '2026-09-10',
+      3,
+      [inboundForTest('2026-06-05T00:00:00.000Z')],
+      [purchase('2026-08-20', 100)],
+    );
+
+    expect(result.totalByProduct.get(1)).toBe(40);
+    expect(result.detailsByProduct.get(1)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          quantityBase: 100,
+          skipped: true,
+        }),
+        expect.objectContaining({
+          quantityBase: 40,
+          deductedQuantity: 40,
+        }),
+      ]),
+    );
+    expect(
+      result.detailsByProduct
+        .get(1)
+        ?.find((detail) => detail.skipped)?.actualPurchasedQuantity,
+    ).toBeUndefined();
+  });
+
+  function purchase(
+    purchaseDate: string,
+    quantity: number,
+    customerId = 1,
+    productId = 1,
+  ): CustomerDemandActualPurchaseInput {
+    return { purchaseDate, quantity, customerId, productId };
+  }
+
+  function inboundForTest(orderDate: string): InboundOrderEvent {
+    return { productId: 1, orderDate, status: 1 };
+  }
 });
 
 describe('collapse overlapping OEM demand by inbound orders', () => {
@@ -332,6 +491,14 @@ describe('collapse overlapping OEM demand by inbound orders', () => {
       '2026-09-10',
       3,
       [inbound('2026-06-05T00:00:00.000Z')],
+      [
+        {
+          productId: pearJam,
+          customerId: 1,
+          purchaseDate: '2026-08-20T00:00:00.000Z',
+          quantity: 40,
+        },
+      ],
     );
     expect(result.totalByProduct.get(pearJam)).toBe(40);
     expect(

@@ -26,12 +26,14 @@ describe('runForecastBacktest', () => {
         productId: 1,
         productCode: 'SP001',
         productName: 'Sản phẩm 1',
+        categoryName: 'Nhóm A',
         months: months(30),
       },
       {
         productId: 2,
         productCode: 'SP002',
         productName: 'Sản phẩm 2',
+        categoryName: 'Nhóm A',
         months: months(30).map((month) => ({
           ...month,
           quantity: month.quantity * 0.7,
@@ -53,6 +55,14 @@ describe('runForecastBacktest', () => {
     expect(
       result.improvedVsLegacy + result.worseThanLegacy,
     ).toBeLessThanOrEqual(result.evaluatedProducts);
+    expect(result.categoryReports).toEqual([
+      expect.objectContaining({
+        categoryName: 'Nhóm A',
+        evaluatedProducts: 2,
+        evaluatedSamples: result.evaluatedSamples,
+      }),
+    ]);
+    expect(['PASS', 'WARN']).toContain(result.acceptance.status);
   });
 
   it('does not evaluate a current partial month', () => {

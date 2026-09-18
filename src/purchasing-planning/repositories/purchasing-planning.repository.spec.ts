@@ -172,6 +172,15 @@ describe('PurchasingPlanningRepository calculation scope', () => {
             }),
           }),
         }),
+        select: expect.objectContaining({
+          invoice: {
+            select: {
+              purchaseDate: true,
+              branchId: true,
+              customerId: true,
+            },
+          },
+        }),
       }),
     );
     expect(prisma.inventoryLog.findMany).toHaveBeenCalledWith(

@@ -35,6 +35,13 @@ export interface PendingCustomerOrderEvent {
   quantity: number;
 }
 
+export interface CustomerDemandActualPurchaseInput {
+  productId: number;
+  customerId?: number | null;
+  purchaseDate: Date | string | null | undefined;
+  quantity: number;
+}
+
 export interface CustomerDemandDetail {
   monthId: number | null;
   customerId: number | null;
@@ -42,6 +49,12 @@ export interface CustomerDemandDetail {
   demandMonth: string;
   quantityBase: number;
   customerOrderOffset?: number;
+  /** Số lượng InvoiceDetail được phân bổ cho Demand này để đối chiếu. */
+  actualPurchasedQuantity?: number;
+  /** Phần được khấu trừ khỏi tổng nhu cầu dự báo. */
+  deductedQuantity?: number;
+  /** Demand còn chưa được khách mua sau khi đối chiếu hóa đơn. */
+  remainingQuantity?: number;
   skipped?: boolean;
   skipReason?: CustomerDemandSkipReason | null;
 }
@@ -91,6 +104,7 @@ export function resolvePastCustomerDemand(
   snapshotDate: Date | string,
   completedMonths = 3,
   inboundOrders: InboundOrderEvent[] = [],
+  actualPurchases: CustomerDemandActualPurchaseInput[] = [],
 ): ResolvedCustomerDemand {
   const snapshot = toDate(snapshotDate);
   const currentMonthStart = startOfMonth(snapshot);
@@ -107,6 +121,8 @@ export function resolvePastCustomerDemand(
     (demandMonth) =>
       demandMonth >= windowStart && demandMonth < currentMonthStart,
     inboundOrders,
+    [],
+    actualPurchases,
   );
 }
 
@@ -115,6 +131,7 @@ function accumulateConfirmedDemand(
   includeMonth: (demandMonth: Date) => boolean,
   inboundOrders: InboundOrderEvent[],
   pendingCustomerOrders: PendingCustomerOrderEvent[] = [],
+  actualPurchases?: CustomerDemandActualPurchaseInput[],
 ): ResolvedCustomerDemand {
   const events: DemandEvent[] = [];
 
@@ -147,14 +164,19 @@ function accumulateConfirmedDemand(
 
   const { kept, skipped } = collapseOverlappingDemand(events, inboundOrders);
   const adjusted = subtractPendingCustomerOrders(kept, pendingCustomerOrders);
+  const demandForOutput =
+    actualPurchases === undefined
+      ? adjusted.kept
+      : applyActualCustomerPurchases(adjusted.kept, actualPurchases);
   const totalByProduct = new Map<number, number>();
   const detailsByProduct = new Map<number, CustomerDemandDetail[]>();
   const includedMonths = new Set<string>();
 
-  for (const event of adjusted.kept) {
+  for (const event of demandForOutput) {
     totalByProduct.set(
       event.productId,
-      (totalByProduct.get(event.productId) ?? 0) + event.quantityBase,
+      (totalByProduct.get(event.productId) ?? 0) +
+        (event.deductedQuantity ?? event.quantityBase),
     );
     includedMonths.add(event.demandMonth);
     pushDetail(detailsByProduct, event, false);
@@ -184,6 +206,9 @@ interface DemandEvent {
   demandMonth: string;
   quantityBase: number;
   customerOrderOffset?: number;
+  actualPurchasedQuantity?: number;
+  deductedQuantity?: number;
+  remainingQuantity?: number;
   createdAt: number;
 }
 
@@ -230,6 +255,48 @@ function subtractPendingCustomerOrders(
     }
   }
   return { kept, fullyCovered };
+}
+
+/**
+ * Đối chiếu Demand đã collapse với lượng thực tế khách mua trên hóa đơn.
+ *
+ * Invoice được gom theo cùng khách/SKU/tháng. Khi có nhiều Demand cùng khóa,
+ * lượng hóa đơn được phân bổ lần lượt để tổng khấu trừ không bao giờ vượt
+ * tổng Demand và không bị nhân đôi ở từng dòng chi tiết.
+ */
+function applyActualCustomerPurchases(
+  events: DemandEvent[],
+  purchases: CustomerDemandActualPurchaseInput[],
+): DemandEvent[] {
+  const remainingByKey = new Map<string, number>();
+  for (const purchase of purchases ?? []) {
+    const productId = Number(purchase.productId);
+    const quantity = Number(purchase.quantity);
+    const purchaseDate = toDateTime(purchase.purchaseDate);
+    if (!Number.isInteger(productId) || productId <= 0) continue;
+    if (!Number.isFinite(quantity) || quantity <= 0 || !purchaseDate) continue;
+
+    const key = `${purchase.customerId ?? 0}:${productId}:${dateKey(
+      startOfMonth(purchaseDate),
+    ).slice(0, 7)}`;
+    remainingByKey.set(
+      key,
+      (remainingByKey.get(key) ?? 0) + quantity,
+    );
+  }
+
+  return events.map((event) => {
+    const key = `${event.customerId ?? 0}:${event.productId}:${event.demandMonth}`;
+    const available = remainingByKey.get(key) ?? 0;
+    const deducted = Math.min(available, event.quantityBase);
+    remainingByKey.set(key, available - deducted);
+    return {
+      ...event,
+      actualPurchasedQuantity: deducted,
+      deductedQuantity: deducted,
+      remainingQuantity: Math.max(0, event.quantityBase - deducted),
+    };
+  });
 }
 
 function collapseOverlappingDemand(
@@ -331,6 +398,15 @@ function pushDetail(
     quantityBase: event.quantityBase,
     ...(event.customerOrderOffset
       ? { customerOrderOffset: event.customerOrderOffset }
+      : {}),
+    ...(event.actualPurchasedQuantity !== undefined
+      ? { actualPurchasedQuantity: event.actualPurchasedQuantity }
+      : {}),
+    ...(event.deductedQuantity !== undefined
+      ? { deductedQuantity: event.deductedQuantity }
+      : {}),
+    ...(event.remainingQuantity !== undefined
+      ? { remainingQuantity: event.remainingQuantity }
       : {}),
     skipped,
     skipReason,

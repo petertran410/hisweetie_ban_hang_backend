@@ -18,6 +18,7 @@ import {
   ConfigScope,
   ConfigValue,
   buildDecisionTimeline,
+  calculateLegacyForecast,
   DecisionTimeline,
   DEFAULT_PLANNING_CONFIG,
   forecastDemand,
@@ -29,10 +30,12 @@ import {
   PromotionWindow,
   resolveDemand,
   resolveIncoming,
+  resolveForecastFormulaMode,
   resolveLeadtimePipeline,
   resolvePlanningConfig,
   runForecastBacktest,
   safetyDaysFromStability,
+  selectForecastFormula,
 } from '../domain';
 import {
   CreatePlanningConfigDto,
@@ -213,6 +216,20 @@ const FLAG_DEFINITIONS: Record<string, Omit<Flag, 'context'>> = {
     blocksRecommendation: false,
     message:
       'Lịch sử bán hàng dưới 12 tháng; chưa đủ cơ sở để xác nhận xu hướng/mùa vụ.',
+  },
+  FORMULA_MODE_FALLBACK: {
+    code: 'FORMULA_MODE_FALLBACK',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Cấu hình công thức dự báo không hợp lệ; hệ thống đã quay về công thức mới.',
+  },
+  GROWTH_FACTOR_FALLBACK: {
+    code: 'GROWTH_FACTOR_FALLBACK',
+    severity: 'MEDIUM',
+    blocksRecommendation: false,
+    message:
+      'Không đủ dữ liệu để suy hệ số tăng trưởng; hệ thống đang áp dụng hệ số 1,00.',
   },
   VEHICLE_SHIPMENT_RISK: {
     code: 'VEHICLE_SHIPMENT_RISK',
@@ -659,7 +676,7 @@ export class PurchasingPlanningService {
     }
   }
 
-  async runBacktest(dto: RunBacktestDto) {
+  async runBacktest(dto: RunBacktestDto, actor?: ConfigActor) {
     const snapshotDate = this.parseDate(dto.snapshotDate) ?? this.today();
     const end = new Date(snapshotDate);
     end.setUTCDate(end.getUTCDate() + 1);
@@ -697,6 +714,7 @@ export class PurchasingPlanningService {
         productId: product.id,
         productCode: product.code,
         productName: product.name,
+        categoryName: product.childName ?? product.parentName ?? null,
         months: this.monthlySales(
           invoiceRows,
           snapshotDate,
@@ -707,11 +725,26 @@ export class PurchasingPlanningService {
       };
     });
 
-    return {
+    const result = {
       snapshotDate: this.dateOnly(snapshotDate),
       ...runForecastBacktest(products, {
         minTrainingMonths: dto.minTrainingMonths,
       }),
+    };
+    const audit = await this.auditLogs.create({
+      actionType: 'READ',
+      actionCode: 'purchasing_planning.backtest.run',
+      entityType: 'purchasing_planning_backtest',
+      category: 'purchasing_planning',
+      severity: 'info',
+      message: `Chạy backtest dự báo: ${result.evaluatedProducts} SKU, ${result.evaluatedSamples} mẫu`,
+      userId: actor?.id ?? 0,
+      userName: actor?.name ?? 'System',
+      snapshot: result,
+    });
+    return {
+      ...result,
+      auditLogId: audit?.id ?? null,
     };
   }
 
@@ -1052,15 +1085,17 @@ export class PurchasingPlanningService {
     const configuredGrowthFactor = growthFactorConfig
       ? Number(resolvedConfig.config.growthFactor)
       : null;
-    const systemGrowthFactor = Number(stability.systemGrowthFactor ?? 1);
-    const appliedGrowthFactor = clampGrowthFactor(
-      configuredGrowthFactor ?? systemGrowthFactor,
+    const preliminarySystemGrowthFactor = Number(
+      stability.systemGrowthFactor ?? 1,
+    );
+    const preliminaryAppliedGrowthFactor = clampGrowthFactor(
+      configuredGrowthFactor ?? preliminarySystemGrowthFactor,
     );
     const config = {
       ...OPERATIONAL_PLANNING_DEFAULTS,
       packSize,
       safetyDays,
-      growthFactor: appliedGrowthFactor,
+      growthFactor: preliminaryAppliedGrowthFactor,
     };
     const rawPhysical = inventoryRows.reduce(
       (sum: number, row: any) => sum + Number(row.onHand),
@@ -1111,16 +1146,40 @@ export class PurchasingPlanningService {
       asOfDate: snapshotDate,
       firstActivityDate: firstActivity,
       minDays: config.minDays,
-      growthFactor: appliedGrowthFactor,
+      growthFactor: preliminaryAppliedGrowthFactor,
+    });
+    const legacyForecast = calculateLegacyForecast(monthlySales);
+    const formulaModeResolution = resolveForecastFormulaMode(
+      process.env.PURCHASING_PLANNING_FORMULA_MODE,
+    );
+    const formulaSelection = selectForecastFormula({
+      mode: formulaModeResolution,
+      stabilityBaselineDailyDemand: stability.baselineDailyDemand,
+      stabilityGrowthFactor: Number(stability.systemGrowthFactor ?? 1),
+      stabilityConfidence: stability.growthFactorConfidence,
+      legacy: legacyForecast,
+      fallbackDailyDemand:
+        forecast.forecastDailyDemand /
+        Math.max(preliminaryAppliedGrowthFactor, 0.0001),
     });
     // MA ngắn hạn vẫn được giữ để so sánh/hiển thị. Mức nền đã khử tháng bất
     // thường là cơ sở, sau đó nhân hệ số hệ thống hoặc hệ số người dùng áp dụng.
-    const baselineDailyDemand =
-      stability.baselineDailyDemand > 0
-        ? stability.baselineDailyDemand
-        : forecast.forecastDailyDemand / Math.max(appliedGrowthFactor, 0.0001);
+    const systemGrowthFactor = formulaSelection.systemGrowthFactor;
+    const appliedGrowthFactor = clampGrowthFactor(
+      configuredGrowthFactor ?? systemGrowthFactor,
+    );
+    const baselineDailyDemand = formulaSelection.baselineDailyDemand;
     const forecastDailyDemand =
       Math.round(baselineDailyDemand * appliedGrowthFactor * 10000) / 10000;
+    forecast.growthFactor = appliedGrowthFactor;
+    forecast.forecastDailyDemand = forecastDailyDemand;
+    config.growthFactor = appliedGrowthFactor;
+    const growthFactorWarnings = [
+      ...new Set([
+        ...stability.growthFactorWarnings,
+        ...formulaSelection.warnings,
+      ]),
+    ];
 
     if (stability.unexplainedAnomaly && forecast.confidence !== 'NO_DATA') {
       const flags = new Set(forecast.flags ?? []);
@@ -1210,6 +1269,12 @@ export class PurchasingPlanningService {
       snapshotDate,
       3,
       inboundOrders,
+      invoiceRows.map((row: any) => ({
+        productId: Number(row.productId),
+        customerId: row.invoice?.customerId ?? null,
+        purchaseDate: row.invoice?.purchaseDate,
+        quantity: Number(row.quantity),
+      })),
     );
     const customerDemand =
       customerDemandResolution.totalByProduct.get(product.id) ?? 0;
@@ -1285,9 +1350,13 @@ export class PurchasingPlanningService {
       companyNeed +
       extraDemand -
       pastCustomerDemand;
-    const knownDemandNeedsOrder =
-      Math.max(0, knownDemand) > available + confirmedIncoming;
-    const needsOrder = replenishment.needsOrder || knownDemandNeedsOrder;
+    const salesDemand =
+      forecastDailyDemand *
+      (leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays));
+    const plannedTotalDemand = Math.max(0, salesDemand + knownDemand);
+    const totalDemandNeedsOrder =
+      plannedTotalDemand > available + confirmedIncoming;
+    const needsOrder = replenishment.needsOrder || totalDemandNeedsOrder;
     const projection = projectInventory({
       snapshotDate,
       availableStock: available,
@@ -1380,7 +1449,7 @@ export class PurchasingPlanningService {
       customerDemand,
       customerDemandDetails,
       pastCustomerDemandDetails,
-      growthFactorWarnings: stability.growthFactorWarnings,
+      growthFactorWarnings,
     });
     const reliability = this.reliability(forecast.confidence, flags);
     const status = flags.some((flag) => flag.blocksRecommendation)
@@ -1390,6 +1459,37 @@ export class PurchasingPlanningService {
       forecast.ma30 != null && forecast.ma90
         ? forecast.ma30 / forecast.ma90
         : null;
+    const usingLegacyFormula = formulaSelection.effectiveMode === 'LEGACY';
+    const growthFactorMethod = usingLegacyFormula
+      ? 'LEGACY_5M'
+      : formulaSelection.configuredMode === 'SHADOW'
+        ? `${stability.growthFactorMethod}+SHADOW_LEGACY`
+        : stability.growthFactorMethod;
+    const growthFactorConfidence = usingLegacyFormula
+      ? legacyForecast.monthsUsed >= 5
+        ? 'MEDIUM'
+        : legacyForecast.monthsUsed >= 2
+          ? 'LOW'
+          : 'NO_DATA'
+      : stability.growthFactorConfidence;
+    const growthFactorDataMonths = usingLegacyFormula
+      ? legacyForecast.monthsUsed
+      : stability.growthFactorDataMonths;
+    const growthFactorAnalysis = usingLegacyFormula
+      ? {
+          inputMonths: monthlySales.filter((row) => !row.isCurrentMonth).length,
+          cleanMonths:
+            legacyForecast.monthsUsed - legacyForecast.excludedMonths.length,
+          excludedMonths: legacyForecast.excludedMonths,
+          shortTermTrend: legacyForecast.growthFactor,
+          seasonalIndex: null,
+          seasonalWeight: 0,
+          systemGrowthFactor,
+          confidence: growthFactorConfidence,
+          formula: 'công thức cũ: nền 5 tháng sau làm sạch × xu hướng chia đôi',
+        }
+      : stability.growthFactorAnalysis;
+    const legacyShadow = formulaSelection.legacyShadow;
     const totalDemand = demand.reduce((sum, day) => sum + day.demand, 0);
     const demandSources = new Set(
       demand.filter((day) => day.source !== 'NONE').map((day) => day.source),
@@ -1414,10 +1514,10 @@ export class PurchasingPlanningService {
         0,
         forecast.windowDays - forecast.validStockDays,
       ),
-      baselineDailyDemand: stability.baselineDailyDemand,
+      baselineDailyDemand,
       demandStability: stability.stability,
       variationCoefficient: stability.variationCoefficient,
-      monthsAnalyzed: stability.monthsUsed,
+      monthsAnalyzed: growthFactorDataMonths,
       monthBreakdown: stability.historyMonths,
       // Trend thủ công đã bị loại khỏi contract forecast mới.
       trendMonths: [],
@@ -1448,11 +1548,29 @@ export class PurchasingPlanningService {
       shortTermTrendFactor: stability.shortTermTrend,
       seasonalIndex: stability.seasonalIndex,
       seasonalWeight: stability.seasonalWeight,
-      growthFactorConfidence: stability.growthFactorConfidence,
-      growthFactorMethod: stability.growthFactorMethod,
-      growthFactorDataMonths: stability.growthFactorDataMonths,
-      growthFactorWarnings: stability.growthFactorWarnings,
-      growthFactorAnalysis: stability.growthFactorAnalysis,
+      growthFactorConfidence,
+      growthFactorMethod,
+      growthFactorDataMonths,
+      growthFactorWarnings,
+      growthFactorAnalysis,
+      formulaMode: formulaSelection.configuredMode,
+      effectiveFormulaMode: formulaSelection.effectiveMode,
+      formulaFallbackApplied: formulaSelection.fallbackApplied,
+      formulaWarnings: formulaSelection.warnings,
+      legacyShadow: legacyShadow
+        ? {
+            baselineDailyDemand: legacyShadow.baselineDailyDemand,
+            growthFactor: legacyShadow.growthFactor,
+            forecastDailyDemand:
+              Math.round(
+                legacyShadow.baselineDailyDemand *
+                  legacyShadow.growthFactor *
+                  10000,
+              ) / 10000,
+            monthsUsed: legacyShadow.monthsUsed,
+            excludedMonths: legacyShadow.excludedMonths,
+          }
+        : null,
       lookbackMonths: stability.lookbackMonths,
       lookbackRepeatsAnomaly: stability.lookbackRepeatsAnomaly,
       unexplainedAnomaly: stability.unexplainedAnomaly,
@@ -1463,10 +1581,9 @@ export class PurchasingPlanningService {
         pastCustomerDemand,
         pastCustomerDemandDetails,
         companyNeed,
-        salesDemand:
-          forecastDailyDemand *
-          (leadTimeDays + config.safetyDays + coverageDaysFor(leadTimeDays)),
+        salesDemand,
         promotionExtra: promotionUplift.extraDemand,
+        totalDemand: plannedTotalDemand,
       },
       supplyBreakdown: {
         available,
@@ -1530,7 +1647,7 @@ export class PurchasingPlanningService {
       physicalStock: physical,
       reservedStock: customerOrders,
       availableStock: available,
-      incomingTotal: confirmedIncoming + vehicleSupply.vehicleRisk,
+      incomingTotal: confirmedIncoming,
       inventoryPosition: replenishment.inventoryPosition,
       reorderGap: replenishment.reorderGap,
       needsOrder,
@@ -1916,6 +2033,8 @@ export class PurchasingPlanningService {
           'MISSING_STOCK_HISTORY',
           'SHORT_LONG_TERM_MISMATCH',
           'INSUFFICIENT_HISTORY',
+          'FORMULA_MODE_FALLBACK',
+          'GROWTH_FACTOR_FALLBACK',
         ].includes(warning)
       ) {
         codes.push({ code: warning });
@@ -2059,6 +2178,29 @@ export class PurchasingPlanningService {
       customerDemand: Number(
         trace?.inputs?.forecast?.demandBreakdown?.customerDemand ?? 0,
       ),
+      salesDemand: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.salesDemand ?? 0,
+      ),
+      customerOrders: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.customerOrders ??
+          item.reservedStock ??
+          0,
+      ),
+      companyNeed: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.companyNeed ?? 0,
+      ),
+      promotionExtra: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.promotionExtra ?? 0,
+      ),
+      pastCustomerDemand: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.pastCustomerDemand ?? 0,
+      ),
+      totalDemand: Number(
+        trace?.inputs?.forecast?.demandBreakdown?.totalDemand ?? 0,
+      ),
+      vehicleRisk: Number(
+        trace?.inputs?.forecast?.supplyBreakdown?.vehicleRisk ?? 0,
+      ),
       systemGrowthFactor:
         trace?.inputs?.forecast?.systemGrowthFactor == null
           ? undefined
@@ -2073,6 +2215,11 @@ export class PurchasingPlanningService {
         trace?.inputs?.forecast?.growthFactorMethod ?? undefined,
       growthFactorWarnings:
         trace?.inputs?.forecast?.growthFactorWarnings ?? undefined,
+      formulaMode: trace?.inputs?.forecast?.formulaMode ?? undefined,
+      effectiveFormulaMode:
+        trace?.inputs?.forecast?.effectiveFormulaMode ?? undefined,
+      formulaFallbackApplied:
+        trace?.inputs?.forecast?.formulaFallbackApplied ?? undefined,
       daysOfSupply:
         item.daysOfSupply == null ? null : Number(item.daysOfSupply),
       daysUntilStockout: item.daysUntilStockout,

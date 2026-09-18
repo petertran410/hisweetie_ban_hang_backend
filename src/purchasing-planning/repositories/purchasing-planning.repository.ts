@@ -370,7 +370,9 @@ export class PurchasingPlanningRepository {
         select: {
           productId: true,
           quantity: true,
-          invoice: { select: { purchaseDate: true, branchId: true } },
+          invoice: {
+            select: { purchaseDate: true, branchId: true, customerId: true },
+          },
         },
       }),
       this.prisma.inventoryLog.findMany({

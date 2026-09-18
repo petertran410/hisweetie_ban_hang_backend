@@ -272,6 +272,7 @@ export class PublicApiWriteService {
       id,
       { status: INVOICE_STATUS.CANCELLED, cancelPayments } as UpdateInvoiceDto,
       this.actingUserId,
+      { cancellationAuthorized: true },
     );
     const presented = this.present('invoices', invoice);
     void this.outboxService?.enqueue('invoices', 'invoices.cancelled', id, {
