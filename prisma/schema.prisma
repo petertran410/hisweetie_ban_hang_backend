@@ -485,6 +485,7 @@ model Customer {
   parentInvoices         Invoice[]                       @relation("InvoiceParentCustomer")
   orders                 Order[]
   customerDemands        CustomerDemand[]
+  customerDemandLarkRecords CustomerDemandLarkRecord[]
   priceBookCustomers     PriceBookCustomer[]
   promotionCustomers     PromotionCustomer[]
   returnOrders           ReturnOrder[]                   @relation("ReturnOrderCustomer")
@@ -795,6 +796,7 @@ model Product {
   promotionGiftRewards           PromotionReward[]              @relation("PromotionRewardProduct")
   purchaseOrderItems             PurchaseOrderItem[]
   customerDemandLines            CustomerDemandLine[]
+  customerDemandLarkRecords      CustomerDemandLarkRecord[]
   recipeIngredients              RecipeIngredient[]             @relation("RecipeIngredientProduct")
   outputRecipes                  Recipe[]                       @relation("RecipeOutputProduct")
   returnOrderDetails             ReturnOrderDetail[]
@@ -3751,6 +3753,8 @@ model CustomerDemand {
   id         Int      @id @default(autoincrement())
   customerId Int      @map("customer_id")
   note       String?
+  syncKey    String?  @map("sync_key")
+  sourceSystem String? @map("source_system") @db.VarChar(30)
   createdBy  Int       @map("created_by")
   updatedBy  Int?      @map("updated_by")
   createdAt  DateTime @default(now()) @map("created_at")
@@ -3761,6 +3765,7 @@ model CustomerDemand {
   months     CustomerDemandMonth[]
 
   @@index([customerId, updatedAt])
+  @@index([sourceSystem, syncKey])
   @@map("customer_demands")
 }
 
@@ -3801,10 +3806,42 @@ model CustomerDemandLine {
   updatedAt       DateTime @updatedAt @map("updated_at")
   demandMonth     CustomerDemandMonth @relation(fields: [demandMonthId], references: [id], onDelete: Cascade)
   product         Product @relation(fields: [productId], references: [id])
+  larkRecords     CustomerDemandLarkRecord[]
 
   @@unique([demandMonthId, productId])
   @@index([productId, demandMonthId])
   @@map("customer_demand_lines")
+}
+
+/// Ánh xạ từng record Demand trên LarkBase vào dòng Demand của POS để chống
+/// đồng bộ trùng và giữ lại record chưa map được.
+model CustomerDemandLarkRecord {
+  id               Int       @id @default(autoincrement())
+  sourceRecordId   String    @unique @map("source_record_id")
+  sourceModifiedAt DateTime? @map("source_modified_at")
+  rawFields        Json?     @map("raw_fields")
+  status           LarkDemandSyncStatus @default(PENDING_MAPPING)
+  customerId       Int?      @map("customer_id")
+  productId        Int?      @map("product_id")
+  demandLineId     Int?      @map("demand_line_id")
+  errorMessage     String?   @map("error_message")
+  lastSyncedAt     DateTime? @map("last_synced_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+  customer         Customer? @relation(fields: [customerId], references: [id])
+  product          Product?  @relation(fields: [productId], references: [id])
+  demandLine       CustomerDemandLine? @relation(fields: [demandLineId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([demandLineId])
+  @@map("customer_demand_lark_records")
+}
+
+enum LarkDemandSyncStatus {
+  SYNCED
+  PENDING_MAPPING
+  ORPHANED
+  ERROR
 }
 
 /// Lịch sử thay đổi Demand, đặc biệt bắt buộc khi sửa tháng Confirmed.

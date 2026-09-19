@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
-import { LarkClientProvider } from './lark-client.provider';
+import { LARK_CLIENT, LarkClientProvider } from './lark-client.provider';
 import { LarkBaseService } from './services/lark-base.service';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
 import { LarkOrderNotificationService } from './services/lark-order-notification.service';
@@ -37,6 +37,7 @@ import { LarkDebtNotificationService } from './services/lark-debt-notification.s
     LarkDebtNotificationService,
   ],
   exports: [
+    LARK_CLIENT,
     LarkOrderSyncService,
     LarkOrderNotificationService,
     LarkLoadingNotificationService,

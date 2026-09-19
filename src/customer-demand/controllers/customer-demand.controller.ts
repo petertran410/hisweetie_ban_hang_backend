@@ -27,6 +27,7 @@ import {
 } from '../dto';
 import { CustomerDemandImportService } from '../services/customer-demand-import.service';
 import { CustomerDemandService } from '../services/customer-demand.service';
+import { LarkCustomerDemandSyncService } from '../services/lark-customer-demand-sync.service';
 
 @ApiTags('Customer Demand')
 @ApiBearerAuth()
@@ -36,6 +37,7 @@ export class CustomerDemandController {
   constructor(
     private readonly service: CustomerDemandService,
     private readonly importService: CustomerDemandImportService,
+    private readonly larkSyncService: LarkCustomerDemandSyncService,
   ) {}
 
   private static readonly UPLOAD_OPTIONS = {
@@ -101,6 +103,24 @@ export class CustomerDemandController {
   ) {
     this.assertExcel(file);
     return this.importService.commit(file, user.id);
+  }
+
+  @Post('sync/lark/preview')
+  @RequirePermissions('customer_demand:update')
+  previewLarkSync() {
+    return this.larkSyncService.preview();
+  }
+
+  @Post('sync/lark')
+  @RequirePermissions('customer_demand:update')
+  commitLarkSync(@CurrentUser() user: { id: number }) {
+    return this.larkSyncService.sync(user.id);
+  }
+
+  @Get('sync/lark/status')
+  @RequirePermissions('customer_demand:update')
+  larkSyncStatus() {
+    return this.larkSyncService.status();
   }
 
   @Get(':id')
