@@ -3802,13 +3802,15 @@ model CustomerDemandLine {
   inputUnit       String   @default("BASE") @map("input_unit") @db.VarChar(10)
   quantityBase    Decimal  @map("quantity_base") @db.Decimal(18, 4)
   conversionValue Decimal  @map("conversion_value") @db.Decimal(18, 4)
+  sourceCreatedAt DateTime? @map("source_created_at")
+  sourceUpdatedAt DateTime? @map("source_updated_at")
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
   demandMonth     CustomerDemandMonth @relation(fields: [demandMonthId], references: [id], onDelete: Cascade)
   product         Product @relation(fields: [productId], references: [id])
   larkRecords     CustomerDemandLarkRecord[]
 
-  @@unique([demandMonthId, productId])
+  @@index([demandMonthId, productId])
   @@index([productId, demandMonthId])
   @@map("customer_demand_lines")
 }
@@ -3818,6 +3820,7 @@ model CustomerDemandLine {
 model CustomerDemandLarkRecord {
   id               Int       @id @default(autoincrement())
   sourceRecordId   String    @unique @map("source_record_id")
+  sourceCreatedAt  DateTime? @map("source_created_at")
   sourceModifiedAt DateTime? @map("source_modified_at")
   rawFields        Json?     @map("raw_fields")
   status           LarkDemandSyncStatus @default(PENDING_MAPPING)

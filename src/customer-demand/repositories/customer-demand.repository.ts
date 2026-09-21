@@ -1,24 +1,39 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
 export class CustomerDemandRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findList(where: Record<string, unknown>, skip: number, take: number) {
+  async findList(
+    where: Record<string, unknown>,
+    skip: number,
+    take: number,
+    orderBy: any[],
+  ) {
     const delegate = this.delegate();
     return Promise.all([
       delegate.findMany({
         where,
         skip,
         take,
-        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        orderBy,
         include: {
           customer: { select: { id: true, code: true, name: true } },
           months: {
             orderBy: { demandMonth: 'asc' },
             include: {
-              lines: { select: { productId: true, quantityBase: true } },
+              lines: {
+                select: {
+                  productId: true,
+                  quantityBase: true,
+                  sourceCreatedAt: true,
+                },
+              },
             },
           },
         },
@@ -64,7 +79,10 @@ export class CustomerDemandRepository {
   findMonthById(id: number) {
     return this.monthDelegate().findUnique({
       where: { id },
-      include: { lines: true },
+      include: {
+        lines: { orderBy: { id: 'asc' } },
+        demand: { select: { id: true, customerId: true, note: true } },
+      },
     });
   }
 
@@ -323,6 +341,16 @@ export class CustomerDemandRepository {
       for (const existingMonth of existing.months) {
         if (incomingIds.has(existingMonth.id)) continue;
         if (existingMonth.status !== 'DRAFT') continue;
+        const linked = await (tx as any).customerDemandLarkRecord.count({
+          where: {
+            demandLineId: { in: existingMonth.lines.map((line: any) => line.id) },
+          },
+        });
+        if (linked > 0) {
+          throw new BadRequestException(
+            'Tháng có dòng Lark; không thể xóa bằng API cập nhật phiếu',
+          );
+        }
         await monthDelegate.delete({ where: { id: existingMonth.id } });
       }
 
@@ -344,6 +372,16 @@ export class CustomerDemandRepository {
         );
         if (!current)
           throw new NotFoundException('Tháng Demand không thuộc phiếu này');
+        const linked = await (tx as any).customerDemandLarkRecord.count({
+          where: {
+            demandLineId: { in: current.lines.map((line: any) => line.id) },
+          },
+        });
+        if (linked > 0) {
+          throw new BadRequestException(
+            'Tháng có dòng Lark; hãy dùng chức năng sửa từng tháng để giữ liên kết đồng bộ',
+          );
+        }
         await lineDelegate.deleteMany({ where: { demandMonthId: current.id } });
         await monthDelegate.update({
           where: { id: current.id },
@@ -372,6 +410,138 @@ export class CustomerDemandRepository {
       }
 
       return demandId;
+    });
+  }
+
+  async updateMonth(
+    monthId: number,
+    data: {
+      customerId?: number;
+      demandMonth: Date;
+      lines: Array<{
+        id?: number;
+        productId: number;
+        inputQuantity: number;
+        inputUnit: string;
+        quantityBase: number;
+        conversionValue: number;
+      }>;
+      note?: string | null;
+      updatedBy: number;
+      confirmedChange?: { reason: string; before: unknown };
+    },
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const demandDelegate = (tx as any).customerDemand;
+      const monthDelegate = (tx as any).customerDemandMonth;
+      const lineDelegate = (tx as any).customerDemandLine;
+      const logDelegate = (tx as any).customerDemandChangeLog;
+      const current = await monthDelegate.findUnique({
+        where: { id: monthId },
+        include: {
+          demand: { select: { id: true, sourceSystem: true } },
+          lines: true,
+        },
+      });
+      if (!current) throw new NotFoundException('Không tìm thấy tháng Demand');
+
+      const duplicateMonth = await monthDelegate.findFirst({
+        where: {
+          demandId: current.demandId,
+          demandMonth: data.demandMonth,
+          id: { not: monthId },
+        },
+        select: { id: true },
+      });
+      if (duplicateMonth) {
+        throw new BadRequestException('Tháng đã tồn tại trong phiếu Demand');
+      }
+
+      await demandDelegate.update({
+        where: { id: current.demandId },
+        data: {
+          updatedBy: data.updatedBy,
+          ...(data.customerId !== undefined
+            ? { customerId: data.customerId }
+            : {}),
+          ...(data.note !== undefined ? { note: data.note } : {}),
+        },
+      });
+
+      const existingLines = new Map<number, any>(
+        current.lines.map((line: any) => [line.id, line]),
+      );
+      const retainedIds = new Set<number>();
+      for (const line of data.lines) {
+        const { id, ...values } = line;
+        if (id) {
+          if (retainedIds.has(id) || !existingLines.has(id)) {
+            throw new BadRequestException(
+              'Dòng Demand không thuộc tháng này hoặc bị trùng',
+            );
+          }
+          retainedIds.add(id);
+          const existing = existingLines.get(id);
+          if (
+            existing.productId !== values.productId ||
+            Number(existing.inputQuantity) !== values.inputQuantity ||
+            existing.inputUnit !== values.inputUnit ||
+            Number(existing.quantityBase) !== values.quantityBase ||
+            Number(existing.conversionValue) !== values.conversionValue
+          ) {
+            await lineDelegate.update({ where: { id }, data: values });
+          }
+        } else {
+          const created = await lineDelegate.create({
+            data: { demandMonthId: monthId, ...values },
+          });
+          retainedIds.add(created.id);
+        }
+      }
+      await lineDelegate.deleteMany({
+        where: {
+          demandMonthId: monthId,
+          id: { notIn: [...retainedIds] },
+        },
+      });
+      const updated = await monthDelegate.update({
+        where: { id: monthId },
+        data: { demandMonth: data.demandMonth },
+      });
+
+      if (data.confirmedChange) {
+        await logDelegate.create({
+          data: {
+            demandMonthId: monthId,
+            action: 'EDIT',
+            reason: data.confirmedChange.reason,
+            beforeSnapshot: data.confirmedChange.before,
+            afterSnapshot: {
+              demandMonth: data.demandMonth,
+              lines: data.lines,
+            },
+            actorId: data.updatedBy,
+          },
+        });
+      }
+
+      if (current.demand.sourceSystem === 'LARK') {
+        const dates = await (tx as any).customerDemandLine.aggregate({
+          where: { demandMonth: { demandId: current.demandId } },
+          _max: { sourceCreatedAt: true, sourceUpdatedAt: true },
+        });
+        if (dates._max.sourceCreatedAt && dates._max.sourceUpdatedAt) {
+          await demandDelegate.update({
+            where: { id: current.demandId },
+            data: {
+              createdAt: dates._max.sourceCreatedAt,
+              updatedAt: dates._max.sourceUpdatedAt,
+            },
+          });
+        }
+      }
+
+      return updated.id;
     });
   }
 

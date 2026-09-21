@@ -23,6 +23,7 @@ import {
   CreateCustomerDemandDto,
   CustomerDemandMonthActionDto,
   CustomerDemandQueryDto,
+  UpdateCustomerDemandMonthDto,
   UpdateCustomerDemandDto,
 } from '../dto';
 import { CustomerDemandImportService } from '../services/customer-demand-import.service';
@@ -50,7 +51,10 @@ export class CustomerDemandController {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       'application/vnd.ms-excel',
     ];
-    if (!allowed.includes(file.mimetype) && !file.originalname.toLowerCase().endsWith('.xlsx')) {
+    if (
+      !allowed.includes(file.mimetype) &&
+      !file.originalname.toLowerCase().endsWith('.xlsx')
+    ) {
       throw new BadRequestException('Chỉ chấp nhận file Excel (.xlsx)');
     }
   }
@@ -123,6 +127,31 @@ export class CustomerDemandController {
     return this.larkSyncService.status();
   }
 
+  @Post('sync/lark/vouchers/preview')
+  @RequirePermissions('customer_demand:update')
+  previewLarkVoucherSplit() {
+    return this.larkSyncService.previewVoucherSplit();
+  }
+
+  @Post('sync/lark/vouchers')
+  @RequirePermissions('customer_demand:update')
+  commitLarkVoucherSplit(@CurrentUser() user: { id: number }) {
+    return this.larkSyncService.splitLegacyVouchers(user.id);
+  }
+
+  // Compatibility for a frontend deployed before the voucher-level split flow.
+  @Post('sync/lark/backfill/preview')
+  @RequirePermissions('customer_demand:update')
+  previewLarkBackfill() {
+    return this.larkSyncService.previewBackfill();
+  }
+
+  @Post('sync/lark/backfill')
+  @RequirePermissions('customer_demand:update')
+  commitLarkBackfill(@CurrentUser() user: { id: number }) {
+    return this.larkSyncService.backfill(user.id);
+  }
+
   @Get(':id')
   @RequirePermissions('customer_demand:view')
   get(@Param('id', ParseIntPipe) id: number) {
@@ -146,6 +175,16 @@ export class CustomerDemandController {
     @CurrentUser() user: { id: number },
   ) {
     return this.service.update(id, dto, user.id);
+  }
+
+  @Patch('months/:id')
+  @RequirePermissions('customer_demand:update')
+  updateMonth(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateCustomerDemandMonthDto,
+    @CurrentUser() user: { id: number },
+  ) {
+    return this.service.updateMonth(id, dto, user.id);
   }
 
   @Post('months/:id/approve')

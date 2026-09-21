@@ -11,8 +11,11 @@ import {
   CustomerDemandMonthDto,
   CustomerDemandQueryDto,
   CreateCustomerDemandDto,
+  UpdateCustomerDemandMonthDto,
   UpdateCustomerDemandDto,
 } from '../dto';
+
+const LEGACY_LARK_DEMAND_NOTE = 'Đồng bộ tự động từ LarkBase';
 
 @Injectable()
 export class CustomerDemandService {
@@ -33,6 +36,7 @@ export class CustomerDemandService {
       where,
       (page - 1) * limit,
       limit,
+      this.listOrderBy(query.sortBy, query.sortOrder),
     );
     return {
       data: rows.map((row: any) => this.mapList(row)),
@@ -54,6 +58,11 @@ export class CustomerDemandService {
   }
 
   async create(dto: CreateCustomerDemandDto, userId: number) {
+    if (dto.months.length !== 1) {
+      throw new BadRequestException(
+        'Mỗi phiếu Demand chỉ được tạo cho một tháng',
+      );
+    }
     const customer = await this.repository.findCustomer(dto.customerId);
     if (!customer) throw new BadRequestException('Khách hàng không tồn tại');
     const months = await this.normalizeMonths(dto.months);
@@ -104,6 +113,62 @@ export class CustomerDemandService {
     return this.get(id);
   }
 
+  async updateMonth(
+    id: number,
+    dto: UpdateCustomerDemandMonthDto,
+    userId: number,
+  ) {
+    const current: any = await this.repository.findMonthById(id);
+    if (!current) throw new NotFoundException('Không tìm thấy tháng Demand');
+    if (current.status === 'CANCELLED') {
+      throw new BadRequestException('Không được sửa tháng đã hủy');
+    }
+    if (
+      dto.customerId !== undefined &&
+      dto.customerId !== current.demand.customerId
+    ) {
+      const customer = await this.repository.findCustomer(dto.customerId);
+      if (!customer) throw new BadRequestException('Khách hàng không tồn tại');
+    }
+
+    const nextMonth = dto.month ?? this.monthKey(current.demandMonth);
+    const normalizedLines = await this.normalizeLines(dto.lines);
+    const lineIds = dto.lines.map((line) => line.id).filter((id): id is number => id != null);
+    if (
+      new Set(lineIds).size !== lineIds.length ||
+      lineIds.some((lineId) => !current.lines.some((line: any) => line.id === lineId))
+    ) {
+      throw new BadRequestException('Dòng Demand không thuộc tháng này hoặc bị trùng');
+    }
+    const incoming: CustomerDemandMonthDto = {
+      id,
+      month: nextMonth,
+      lines: dto.lines,
+      changeNote: dto.changeNote,
+    };
+    const confirmedChange =
+      current.status === 'CONFIRMED' &&
+      this.changed(current, incoming, normalizedLines)
+        ? {
+            reason: this.requireChangeNote(dto.changeNote),
+            before: this.snapshotMonth(current),
+          }
+        : undefined;
+
+    await this.repository.updateMonth(id, {
+      customerId: dto.customerId,
+      demandMonth: this.monthDate(nextMonth),
+      lines: normalizedLines.map((line, index) => ({
+        ...line,
+        ...(dto.lines[index].id ? { id: dto.lines[index].id } : {}),
+      })),
+      note: dto.note,
+      updatedBy: userId,
+      confirmedChange,
+    });
+    return this.get(current.demandId);
+  }
+
   async approveMonth(id: number, userId: number) {
     const month: any = await this.repository.findMonthById(id);
     if (!month) throw new NotFoundException('Không tìm thấy tháng Demand');
@@ -139,19 +204,37 @@ export class CustomerDemandService {
       if (monthKeys.has(month.month))
         throw new BadRequestException(`Trùng tháng ${month.month}`);
       monthKeys.add(month.month);
-      const productIds = month.lines.map((line) => line.productId);
-      if (new Set(productIds).size !== productIds.length) {
-        throw new BadRequestException(
-          `Trùng sản phẩm trong tháng ${month.month}`,
-        );
-      }
     }
 
-    const productIds = [
-      ...new Set(
-        months.flatMap((month) => month.lines.map((line) => line.productId)),
-      ),
-    ];
+    const currentMonths = new Map<number, any>(
+      (current?.months ?? []).map((month: any) => [month.id, month]),
+    );
+    return Promise.all(
+      months.map(async (month) => {
+        const existing = month.id ? currentMonths.get(month.id) : null;
+        if (existing?.status === 'CANCELLED')
+          throw new BadRequestException('Không được sửa tháng đã hủy');
+        const normalizedLines = await this.normalizeLines(month.lines);
+        const confirmedChange =
+          existing?.status === 'CONFIRMED' &&
+          this.changed(existing, month, normalizedLines)
+            ? {
+                reason: this.requireChangeNote(month.changeNote),
+                before: this.snapshotMonth(existing),
+              }
+            : undefined;
+        return {
+          id: month.id,
+          demandMonth: this.monthDate(month.month),
+          lines: normalizedLines,
+          confirmedChange,
+        };
+      }),
+    );
+  }
+
+  private async normalizeLines(lines: CustomerDemandLineDto[]) {
+    const productIds = [...new Set(lines.map((line) => line.productId))];
     const products = await this.repository.findProducts(productIds);
     const productMap = new Map(
       products.map((product: any) => [product.id, product]),
@@ -160,32 +243,9 @@ export class CustomerDemandService {
       if (!productMap.has(id))
         throw new BadRequestException(`Sản phẩm ${id} không tồn tại`);
     }
-
-    const currentMonths = new Map<number, any>(
-      (current?.months ?? []).map((month: any) => [month.id, month]),
+    return lines.map((line) =>
+      this.normalizeLine(line, productMap.get(line.productId)),
     );
-    return months.map((month) => {
-      const existing = month.id ? currentMonths.get(month.id) : null;
-      if (existing?.status === 'CANCELLED')
-        throw new BadRequestException('Không được sửa tháng đã hủy');
-      const normalizedLines = month.lines.map((line) =>
-        this.normalizeLine(line, productMap.get(line.productId)),
-      );
-      const confirmedChange =
-        existing?.status === 'CONFIRMED' &&
-        this.changed(existing, month, normalizedLines)
-          ? {
-              reason: this.requireChangeNote(month.changeNote),
-              before: this.snapshotMonth(existing),
-            }
-          : undefined;
-      return {
-        id: month.id,
-        demandMonth: this.monthDate(month.month),
-        lines: normalizedLines,
-        confirmedChange,
-      };
-    });
   }
 
   private normalizeLine(line: CustomerDemandLineDto, product: any) {
@@ -227,7 +287,7 @@ export class CustomerDemandService {
         inputUnit: line.inputUnit,
         quantityBase: Number(line.quantityBase),
       }))
-      .sort((a: any, b: any) => a.productId - b.productId);
+      .sort(this.compareLines);
     const next = lines
       .map((line) => ({
         productId: line.productId,
@@ -235,8 +295,30 @@ export class CustomerDemandService {
         inputUnit: line.inputUnit,
         quantityBase: line.quantityBase,
       }))
-      .sort((a: any, b: any) => a.productId - b.productId);
+      .sort(this.compareLines);
     return JSON.stringify(previous) !== JSON.stringify(next);
+  }
+
+  private compareLines(
+    left: {
+      productId: number;
+      inputQuantity: number;
+      inputUnit: string;
+      quantityBase: number;
+    },
+    right: {
+      productId: number;
+      inputQuantity: number;
+      inputUnit: string;
+      quantityBase: number;
+    },
+  ) {
+    return (
+      left.productId - right.productId ||
+      left.inputUnit.localeCompare(right.inputUnit) ||
+      left.inputQuantity - right.inputQuantity ||
+      left.quantityBase - right.quantityBase
+    );
   }
 
   private snapshotMonth(month: any) {
@@ -295,7 +377,11 @@ export class CustomerDemandService {
     return {
       id: row.id,
       customer: row.customer,
-      note: row.note,
+      sourceSystem: row.sourceSystem,
+      hasSourceDates: months.some((month: any) =>
+        (month.lines ?? []).some((line: any) => !!line.sourceCreatedAt),
+      ),
+      note: row.note === LEGACY_LARK_DEMAND_NOTE ? null : row.note,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       totalProducts: totals.size,
@@ -316,6 +402,26 @@ export class CustomerDemandService {
     };
   }
 
+  private listOrderBy(
+    sortBy: CustomerDemandQueryDto['sortBy'] = 'createdAt',
+    sortOrder: CustomerDemandQueryDto['sortOrder'] = 'desc',
+  ) {
+    const direction = sortOrder === 'asc' ? 'asc' : 'desc';
+    const idDirection = direction;
+
+    switch (sortBy) {
+      case 'updatedAt':
+        return [{ updatedAt: direction }, { id: idDirection }];
+      case 'id':
+        return [{ id: direction }];
+      case 'customerName':
+        return [{ customer: { name: direction } }, { id: 'desc' }];
+      case 'createdAt':
+      default:
+        return [{ createdAt: direction }, { id: idDirection }];
+    }
+  }
+
   private mapDetail(row: any) {
     return {
       ...this.mapList(row),
@@ -334,6 +440,8 @@ export class CustomerDemandService {
           inputUnit: line.inputUnit,
           quantityBase: Number(line.quantityBase),
           conversionValue: Number(line.conversionValue),
+          sourceCreatedAt: line.sourceCreatedAt,
+          sourceUpdatedAt: line.sourceUpdatedAt,
         })),
         changeLogs: month.changeLogs ?? [],
       })),

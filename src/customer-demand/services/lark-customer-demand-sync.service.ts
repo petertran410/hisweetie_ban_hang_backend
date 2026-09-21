@@ -15,7 +15,8 @@ import { PrismaService } from '../../prisma/prisma.service';
  *
  * Nguyên tắc:
  * - Đọc toàn bộ bảng Lark, không phụ thuộc view.
- * - Gộp record trùng khách + tháng + sản phẩm theo quy tắc đơn vị.
+ * - Mỗi record Lark tương ứng một dòng POS, kể cả record trùng SKU/tháng.
+ * - Một phiếu POS tương ứng một khách hàng và một tháng.
  * - Lưu mapping của từng record Lark để chạy lại không tạo trùng.
  * - Record thiếu mapping vẫn được lưu để có thể retry sau.
  * - Không xóa/hủy dữ liệu POS khi record biến mất khỏi Lark.
@@ -31,6 +32,8 @@ const TEXT_FIELDS = {
   QUANTITY_BASE: 'Số lượng quy đổi',
   MONTH: 'Thời Gian (yyyy/mm)',
   NOTE: 'Ghi Chú',
+  CREATED_AT: 'Ngày Tạo',
+  UPDATED_AT: 'Ngày Cập Nhật',
 } as const;
 
 const DEFAULT_BASE_TOKEN = 'Vx4hb0o0Va3S1RsvbpGl4imYgYc';
@@ -41,7 +44,6 @@ const DEFAULT_PRODUCT_TABLE_ID = 'tbldKbrNjFkqdzao';
 const PAGE_SIZE = 500;
 const MAX_PREVIEW_ISSUES = 200;
 const SYNC_SOURCE = 'LARK';
-const SYNC_DEMAND_NOTE = 'Đồng bộ tự động từ LarkBase';
 const SYNC_MONTH_NOTE = 'Đồng bộ từ LarkBase';
 
 type DemandUnit = 'BASE' | 'CARTON';
@@ -54,6 +56,8 @@ export type LarkDemandIssueCode =
   | 'MISSING_MONTH'
   | 'MISSING_QUANTITY'
   | 'MISSING_CONVERSION'
+  | 'MISSING_SOURCE_TIMESTAMP'
+  | 'LEGACY_MERGED_VOUCHER'
   | 'LINE_CONFLICT';
 
 export interface LarkDemandPreviewIssue {
@@ -72,6 +76,7 @@ export interface LarkDemandPreviewSummary {
   totalRecords: number;
   validRecords: number;
   pendingRecords: number;
+  invalidTimestampRecords: number;
   conflictedRecords: number;
   mergedRecords: number;
   aggregatedRows: number;
@@ -79,11 +84,17 @@ export interface LarkDemandPreviewSummary {
   updatedLines: number;
   demandsToCreate: number;
   monthsToCreate: number;
+  sourceDatesToRestore: number;
+  legacyMergedRecords: number;
+  legacyMergedLines: number;
+  legacyVouchers: number;
+  legacyVoucherRecords: number;
   issues: LarkDemandPreviewIssue[];
   truncatedIssues: boolean;
 }
 
 export interface LarkDemandSyncResult extends LarkDemandPreviewSummary {
+  syncedDemands: number;
   syncedLines: number;
   syncedRecords: number;
   unmappedRecords: number;
@@ -94,11 +105,13 @@ export interface LarkDemandSyncResult extends LarkDemandPreviewSummary {
 interface LarkRecordItem {
   record_id?: string;
   fields?: Record<string, any>;
+  created_time?: number | string;
   last_modified_time?: number | string;
 }
 
 interface ResolvedLarkRow {
   sourceRecordId: string;
+  sourceCreatedAt: Date | null;
   sourceModifiedAt: Date | null;
   rawFields: Record<string, unknown>;
   customerCode: string | null;
@@ -119,10 +132,16 @@ interface ResolvedLarkRow {
 interface DemandLineInfo {
   id: number;
   demandId: number;
+  sourceSystem: string | null;
   monthId: number;
   monthKey: string;
   customerId: number;
   productId: number;
+  inputQuantity: number;
+  inputUnit: DemandUnit;
+  quantityBase: number;
+  sourceCreatedAt: Date | null;
+  sourceUpdatedAt: Date | null;
   status: string;
 }
 
@@ -148,8 +167,10 @@ interface PlannedLine {
   conversionValue: number;
   note: string | null;
   sourceRecordIds: string[];
-  sourceModifiedAt: Date | null;
+  sourceCreatedAt: Date;
+  sourceModifiedAt: Date;
   existingDemandId: number | null;
+  existingDemandSourceSystem: string | null;
   existingMonthId: number | null;
   existingLineId: number | null;
   existingMonthStatus: string | null;
@@ -159,19 +180,81 @@ interface PlannedLine {
   action: PlannedAction;
 }
 
-interface GroupAccumulator {
-  line: PlannedLine;
-  baseQuantity: number;
-  cartonQuantity: number;
-  units: Set<DemandUnit>;
-}
-
 interface LoadedPlan {
   summary: LarkDemandPreviewSummary;
   groups: PlannedLine[];
   rawRows: ResolvedLarkRow[];
   rawById: Map<string, ResolvedLarkRow>;
   issues: LarkDemandPreviewIssue[];
+}
+
+interface LoadedRawRows {
+  rawRows: ResolvedLarkRow[];
+  rawById: Map<string, ResolvedLarkRow>;
+  issues: LarkDemandPreviewIssue[];
+}
+
+export interface LarkDemandVoucherSplitIssue {
+  demandId: number;
+  demandMonthId: number | null;
+  sourceRecordIds: string[];
+  customerName: string | null;
+  month: string | null;
+  lineCount: number;
+  message: string;
+}
+
+export interface LarkDemandVoucherSplitPreview {
+  totalMappedRecords: number;
+  totalLarkVouchers: number;
+  vouchersToSplit: number;
+  vouchersToCreate: number;
+  linesToMove: number;
+  readyVouchers: number;
+  conflictedVouchers: number;
+  quantityBaseBefore: number;
+  quantityBaseAfter: number;
+  issues: LarkDemandVoucherSplitIssue[];
+}
+
+export interface LarkDemandVoucherSplitResult extends LarkDemandVoucherSplitPreview {
+  vouchersSplit: number;
+  vouchersCreated: number;
+  linesMoved: number;
+  splitAt: string;
+}
+
+interface VoucherSplitRow {
+  lineId: number;
+  sourceRecordId: string;
+  sourceCreatedAt: Date;
+  sourceModifiedAt: Date;
+  quantityBase: number;
+}
+
+interface VoucherSplitPlanItem {
+  demandId: number;
+  demandMonthId: number;
+  customerId: number;
+  customerName: string | null;
+  month: string;
+  createdBy: number;
+  updatedBy: number | null;
+  demandNote: string | null;
+  monthStatus: string;
+  monthNote: string | null;
+  approvedAt: Date | null;
+  approvedBy: number | null;
+  cancelledAt: Date | null;
+  cancelledBy: number | null;
+  rows: VoucherSplitRow[];
+  quantityBase: number;
+}
+
+interface VoucherSplitPlan {
+  preview: LarkDemandVoucherSplitPreview;
+  ready: VoucherSplitPlanItem[];
+  legacySourceRecordIds: Set<string>;
 }
 
 @Injectable()
@@ -242,6 +325,11 @@ export class LarkCustomerDemandSyncService {
     if (plan.summary.totalRecords === 0) {
       throw new BadRequestException('LarkBase không có record Demand nào');
     }
+    if (plan.summary.legacyVouchers > 0) {
+      throw new BadRequestException(
+        'Còn phiếu Lark cũ chứa nhiều record; hãy tách phiếu cũ trước khi đồng bộ',
+      );
+    }
 
     const now = new Date();
     const persisted = await this.persistPlan(plan, userId, now);
@@ -251,7 +339,7 @@ export class LarkCustomerDemandSyncService {
       actionCode: 'CUSTOMER_DEMAND_SYNC_LARK',
       entityType: 'CUSTOMER_DEMAND',
       entityId: 'lark-sync',
-      message: `Đã đồng bộ ${persisted.syncedLines} dòng Demand từ LarkBase`,
+      message: `Đã đồng bộ ${persisted.syncedDemands} phiếu Demand từ LarkBase`,
       userId,
       userName: 'System',
       snapshot: {
@@ -264,6 +352,7 @@ export class LarkCustomerDemandSyncService {
 
     const result: LarkDemandSyncResult = {
       ...plan.summary,
+      syncedDemands: persisted.syncedDemands,
       syncedLines: persisted.syncedLines,
       syncedRecords: persisted.syncedRecords,
       unmappedRecords: plan.summary.pendingRecords,
@@ -272,12 +361,421 @@ export class LarkCustomerDemandSyncService {
     };
 
     this.logger.log(
-      `Lark demand sync done: ${persisted.syncedRecords}/${plan.summary.totalRecords} records, ${persisted.syncedLines} POS lines`,
+      `Lark demand sync done: ${persisted.syncedRecords}/${plan.summary.totalRecords} records, ${persisted.syncedDemands} POS demands`,
     );
     return result;
   }
 
-  private async loadPlan(): Promise<LoadedPlan> {
+  async previewVoucherSplit(): Promise<LarkDemandVoucherSplitPreview> {
+    return (await this.loadVoucherSplitPlan()).preview;
+  }
+
+  async splitLegacyVouchers(
+    userId: number,
+  ): Promise<LarkDemandVoucherSplitResult> {
+    const plan = await this.loadVoucherSplitPlan();
+    const now = new Date();
+    if (!plan.ready.length) {
+      return {
+        ...plan.preview,
+        vouchersSplit: 0,
+        vouchersCreated: 0,
+        linesMoved: 0,
+        splitAt: now.toISOString(),
+      };
+    }
+
+    const persisted = await this.persistVoucherSplit(plan, now);
+    await this.auditLogs.create({
+      actionType: 'UPDATE',
+      actionCode: 'CUSTOMER_DEMAND_SPLIT_LARK_VOUCHERS',
+      entityType: 'CUSTOMER_DEMAND',
+      entityId: 'lark-voucher-split',
+      message: `Đã tách ${persisted.vouchersSplit} phiếu Lark thành ${persisted.vouchersCreated} phiếu riêng`,
+      userId,
+      userName: 'System',
+      snapshot: {
+        ...plan.preview,
+        ...persisted,
+      },
+    });
+
+    return {
+      ...plan.preview,
+      ...persisted,
+      splitAt: now.toISOString(),
+    };
+  }
+
+  // Kept for clients that were deployed before the voucher-split endpoints.
+  async previewBackfill(): Promise<LarkDemandVoucherSplitPreview> {
+    return this.previewVoucherSplit();
+  }
+
+  async backfill(userId: number): Promise<LarkDemandVoucherSplitResult> {
+    return this.splitLegacyVouchers(userId);
+  }
+
+  private async loadVoucherSplitPlan(): Promise<VoucherSplitPlan> {
+    const demands = await this.prisma.customerDemand.findMany({
+      where: { sourceSystem: SYNC_SOURCE },
+      select: {
+        id: true,
+        customerId: true,
+        createdBy: true,
+        updatedBy: true,
+        note: true,
+        customer: { select: { name: true } },
+        months: {
+          orderBy: { id: 'asc' },
+          select: {
+            id: true,
+            demandMonth: true,
+            status: true,
+            note: true,
+            approvedAt: true,
+            approvedBy: true,
+            cancelledAt: true,
+            cancelledBy: true,
+            changeLogs: { select: { id: true } },
+            lines: {
+              orderBy: { id: 'asc' },
+              select: {
+                id: true,
+                quantityBase: true,
+                larkRecords: {
+                  orderBy: { sourceRecordId: 'asc' },
+                  select: {
+                    sourceRecordId: true,
+                    sourceCreatedAt: true,
+                    sourceModifiedAt: true,
+                    status: true,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const totalMappedRecords = demands.reduce(
+      (sum, demand) =>
+        sum +
+        demand.months.reduce(
+          (monthSum, month) =>
+            monthSum +
+            month.lines.reduce(
+              (lineSum, line) => lineSum + line.larkRecords.length,
+              0,
+            ),
+          0,
+        ),
+      0,
+    );
+    const issues: LarkDemandVoucherSplitIssue[] = [];
+    const ready: VoucherSplitPlanItem[] = [];
+    const legacySourceRecordIds = new Set<string>();
+    let vouchersToSplit = 0;
+    let vouchersToCreate = 0;
+    let linesToMove = 0;
+    let quantityBaseBefore = 0;
+    let quantityBaseAfter = 0;
+
+    for (const demand of demands) {
+      const mappedLines = demand.months.flatMap((month) =>
+        month.lines.filter((line) => line.larkRecords.length > 0),
+      );
+      if (mappedLines.length <= 1) continue;
+
+      vouchersToSplit += 1;
+      const sourceRecordIds = mappedLines.flatMap((line) =>
+        line.larkRecords.map((record) => record.sourceRecordId),
+      );
+      sourceRecordIds.forEach((id) => legacySourceRecordIds.add(id));
+      const month = demand.months[0];
+      const monthKey = month ? this.monthKeyOf(month.demandMonth) : null;
+      const issue = (message: string) =>
+        issues.push({
+          demandId: demand.id,
+          demandMonthId: month?.id ?? null,
+          sourceRecordIds,
+          customerName: demand.customer.name,
+          month: monthKey,
+          lineCount: mappedLines.length,
+          message,
+        });
+
+      if (demand.months.length !== 1 || !month || !monthKey) {
+        issue('Phiếu Lark cũ có nhiều tháng, cần xử lý thủ công');
+        continue;
+      }
+      if (month.status !== 'CONFIRMED') {
+        issue('Tháng Demand Lark không ở trạng thái Đã duyệt');
+        continue;
+      }
+      if (month.changeLogs.length > 0) {
+        issue('Tháng Demand đã có lịch sử chỉnh sửa, cần xử lý thủ công');
+        continue;
+      }
+      if (
+        month.lines.length !== mappedLines.length ||
+        mappedLines.some((line) => line.larkRecords.length !== 1)
+      ) {
+        issue(
+          'Phiếu Lark không có đúng một mapping cho mỗi dòng Demand, không thể tách an toàn',
+        );
+        continue;
+      }
+
+      const rows: VoucherSplitRow[] = [];
+      for (const line of mappedLines) {
+        const record = line.larkRecords[0];
+        if (
+          record.status !== 'SYNCED' ||
+          !record.sourceCreatedAt ||
+          !record.sourceModifiedAt ||
+          record.sourceModifiedAt < record.sourceCreatedAt
+        ) {
+          issue('Có record Lark thiếu ngày nguồn hợp lệ hoặc chưa đồng bộ');
+          rows.length = 0;
+          break;
+        }
+        rows.push({
+          lineId: line.id,
+          sourceRecordId: record.sourceRecordId,
+          sourceCreatedAt: record.sourceCreatedAt,
+          sourceModifiedAt: record.sourceModifiedAt,
+          quantityBase: Number(line.quantityBase),
+        });
+      }
+      if (!rows.length) continue;
+
+      const quantityBase = rows.reduce((sum, row) => sum + row.quantityBase, 0);
+      ready.push({
+        demandId: demand.id,
+        demandMonthId: month.id,
+        customerId: demand.customerId,
+        customerName: demand.customer.name,
+        month: monthKey,
+        createdBy: demand.createdBy,
+        updatedBy: demand.updatedBy,
+        demandNote: demand.note,
+        monthStatus: month.status,
+        monthNote: month.note,
+        approvedAt: month.approvedAt,
+        approvedBy: month.approvedBy,
+        cancelledAt: month.cancelledAt,
+        cancelledBy: month.cancelledBy,
+        rows,
+        quantityBase,
+      });
+      vouchersToCreate += rows.length - 1;
+      linesToMove += rows.length - 1;
+      quantityBaseBefore += quantityBase;
+      quantityBaseAfter += quantityBase;
+    }
+
+    return {
+      preview: {
+        totalMappedRecords,
+        totalLarkVouchers: demands.length,
+        vouchersToSplit,
+        vouchersToCreate,
+        linesToMove,
+        readyVouchers: ready.length,
+        conflictedVouchers: vouchersToSplit - ready.length,
+        quantityBaseBefore: this.roundQuantity(quantityBaseBefore),
+        quantityBaseAfter: this.roundQuantity(quantityBaseAfter),
+        issues: issues.slice(0, MAX_PREVIEW_ISSUES),
+      },
+      ready,
+      legacySourceRecordIds,
+    };
+  }
+
+  private async persistVoucherSplit(plan: VoucherSplitPlan, now: Date) {
+    let vouchersSplit = 0;
+    let vouchersCreated = 0;
+    let linesMoved = 0;
+
+    for (const item of plan.ready) {
+      const persisted = await this.prisma.$transaction(
+        async (tx) => {
+          const current = await tx.customerDemand.findUnique({
+            where: { id: item.demandId },
+            select: {
+              id: true,
+              customerId: true,
+              sourceSystem: true,
+              createdBy: true,
+              updatedBy: true,
+              months: {
+                select: {
+                  id: true,
+                  demandMonth: true,
+                  status: true,
+                  changeLogs: { select: { id: true } },
+                  lines: {
+                    select: {
+                      id: true,
+                      larkRecords: {
+                        select: {
+                          sourceRecordId: true,
+                          sourceCreatedAt: true,
+                          sourceModifiedAt: true,
+                          status: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          });
+          const currentMonth = current?.months[0];
+          const currentRows = currentMonth?.lines.flatMap((line) =>
+            line.larkRecords.map((record) => ({
+              lineId: line.id,
+              ...record,
+            })),
+          );
+          const expectedByRecord = new Map(
+            item.rows.map((row) => [row.sourceRecordId, row]),
+          );
+          const validCurrentState =
+            current &&
+            current.sourceSystem === SYNC_SOURCE &&
+            current.customerId === item.customerId &&
+            current.createdBy === item.createdBy &&
+            current.updatedBy === item.updatedBy &&
+            current.months.length === 1 &&
+            currentMonth &&
+            currentMonth.id === item.demandMonthId &&
+            currentMonth.status === item.monthStatus &&
+            currentMonth.changeLogs.length === 0 &&
+            currentRows?.length === item.rows.length &&
+            currentRows.every((row) => {
+              const expected = expectedByRecord.get(row.sourceRecordId);
+              return (
+                !!expected &&
+                row.lineId === expected.lineId &&
+                row.status === 'SYNCED' &&
+                !!row.sourceCreatedAt &&
+                !!row.sourceModifiedAt &&
+                row.sourceCreatedAt.getTime() ===
+                  expected.sourceCreatedAt.getTime() &&
+                row.sourceModifiedAt.getTime() ===
+                  expected.sourceModifiedAt.getTime()
+              );
+            });
+          if (!validCurrentState || !currentMonth || !currentRows) {
+            throw new BadRequestException(
+              `Phiếu Demand #${item.demandId} đã thay đổi; hãy kiểm tra lại trước khi tách`,
+            );
+          }
+
+          const [retained, ...rowsToMove] = item.rows;
+          await tx.customerDemand.update({
+            where: { id: item.demandId },
+            data: {
+              syncKey: this.syncKeyFor(retained.sourceRecordId),
+              createdAt: retained.sourceCreatedAt,
+              updatedAt: retained.sourceModifiedAt,
+            },
+          });
+          await tx.customerDemandMonth.update({
+            where: { id: item.demandMonthId },
+            data: {
+              createdAt: retained.sourceCreatedAt,
+              updatedAt: retained.sourceModifiedAt,
+            },
+          });
+          await tx.customerDemandLine.update({
+            where: { id: retained.lineId },
+            data: {
+              sourceCreatedAt: retained.sourceCreatedAt,
+              sourceUpdatedAt: retained.sourceModifiedAt,
+              createdAt: retained.sourceCreatedAt,
+              updatedAt: retained.sourceModifiedAt,
+            },
+          });
+          await tx.customerDemandLarkRecord.update({
+            where: { sourceRecordId: retained.sourceRecordId },
+            data: {
+              status: 'SYNCED',
+              demandLineId: retained.lineId,
+              errorMessage: null,
+              lastSyncedAt: now,
+            },
+          });
+
+          for (const row of rowsToMove) {
+            const createdDemand = await tx.customerDemand.create({
+              data: {
+                customerId: item.customerId,
+                note: item.demandNote,
+                sourceSystem: SYNC_SOURCE,
+                syncKey: this.syncKeyFor(row.sourceRecordId),
+                createdBy: item.createdBy,
+                updatedBy: item.updatedBy,
+                createdAt: row.sourceCreatedAt,
+                updatedAt: row.sourceModifiedAt,
+              },
+              select: { id: true },
+            });
+            const createdMonth = await tx.customerDemandMonth.create({
+              data: {
+                demandId: createdDemand.id,
+                demandMonth: this.monthDate(item.month),
+                status: item.monthStatus,
+                note: item.monthNote,
+                approvedAt: item.approvedAt,
+                approvedBy: item.approvedBy,
+                cancelledAt: item.cancelledAt,
+                cancelledBy: item.cancelledBy,
+                createdAt: row.sourceCreatedAt,
+                updatedAt: row.sourceModifiedAt,
+              },
+              select: { id: true },
+            });
+            await tx.customerDemandLine.update({
+              where: { id: row.lineId },
+              data: {
+                demandMonthId: createdMonth.id,
+                sourceCreatedAt: row.sourceCreatedAt,
+                sourceUpdatedAt: row.sourceModifiedAt,
+                createdAt: row.sourceCreatedAt,
+                updatedAt: row.sourceModifiedAt,
+              },
+            });
+            await tx.customerDemandLarkRecord.update({
+              where: { sourceRecordId: row.sourceRecordId },
+              data: {
+                status: 'SYNCED',
+                demandLineId: row.lineId,
+                errorMessage: null,
+                lastSyncedAt: now,
+              },
+            });
+          }
+
+          return {
+            vouchersCreated: rowsToMove.length,
+            linesMoved: rowsToMove.length,
+          };
+        },
+        { timeout: 120_000 },
+      );
+      vouchersSplit += 1;
+      vouchersCreated += persisted.vouchersCreated;
+      linesMoved += persisted.linesMoved;
+    }
+
+    return { vouchersSplit, vouchersCreated, linesMoved };
+  }
+
+  private async loadRawRows(): Promise<LoadedRawRows> {
     const rawRecords = await this.fetchAllRecords(this.tableId);
     const customerLinkIds = [
       ...new Set(
@@ -322,60 +820,25 @@ export class LarkCustomerDemandSyncService {
           },
         ]),
     );
-    const sourceRecordIds = rawRecords
-      .map((record) => record.record_id)
-      .filter((recordId): recordId is string => !!recordId);
-
-    const [customers, products, demandMonths, mappings, syncDemands] =
-      await Promise.all([
-        this.prisma.customer.findMany({
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            larkRecordId: true,
-          },
-        }),
-        this.prisma.product.findMany({
-          select: {
-            id: true,
-            code: true,
-            name: true,
-            conversionValue: true,
-            larkRecordId: true,
-          },
-        }),
-        this.prisma.customerDemandMonth.findMany({
-          select: {
-            id: true,
-            demandId: true,
-            demandMonth: true,
-            status: true,
-            lines: { select: { id: true, productId: true } },
-            demand: { select: { customerId: true } },
-          },
-        }),
-        sourceRecordIds.length
-          ? this.prisma.customerDemandLarkRecord.findMany({
-              where: { sourceRecordId: { in: sourceRecordIds } },
-              select: { sourceRecordId: true, demandLineId: true },
-            })
-          : Promise.resolve([]),
-        this.prisma.customerDemand.findMany({
-          where: { sourceSystem: SYNC_SOURCE },
-          select: {
-            id: true,
-            customerId: true,
-            months: {
-              select: {
-                id: true,
-                demandMonth: true,
-                status: true,
-              },
-            },
-          },
-        }),
-      ]);
+    const [customers, products] = await Promise.all([
+      this.prisma.customer.findMany({
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          larkRecordId: true,
+        },
+      }),
+      this.prisma.product.findMany({
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          conversionValue: true,
+          larkRecordId: true,
+        },
+      }),
+    ]);
 
     const customerByLark = new Map(
       customers
@@ -412,29 +875,70 @@ export class LarkCustomerDemandSyncService {
         .map((row) => [row.sourceRecordId, row]),
     );
 
+    return {
+      rawRows: resolvedRows,
+      rawById: resolvedById,
+      issues: resolvedRows
+        .map((row) => row.issue)
+        .filter((issue): issue is LarkDemandPreviewIssue => !!issue),
+    };
+  }
+
+  private async loadPlan(): Promise<LoadedPlan> {
+    const raw = await this.loadRawRows();
+    const sourceRecordIds = raw.rawRows
+      .map((row) => row.sourceRecordId)
+      .filter(Boolean);
+    const [demandMonths, mappings, voucherSplitPlan] = await Promise.all([
+      this.prisma.customerDemandMonth.findMany({
+        select: {
+          id: true,
+          demandId: true,
+          demandMonth: true,
+          status: true,
+          lines: {
+            select: {
+              id: true,
+              productId: true,
+              inputQuantity: true,
+              inputUnit: true,
+              quantityBase: true,
+              sourceCreatedAt: true,
+              sourceUpdatedAt: true,
+            },
+          },
+          demand: { select: { customerId: true, sourceSystem: true } },
+        },
+      }),
+      sourceRecordIds.length
+        ? this.prisma.customerDemandLarkRecord.findMany({
+            where: { sourceRecordId: { in: sourceRecordIds } },
+            select: { sourceRecordId: true, demandLineId: true },
+          })
+        : Promise.resolve([]),
+      this.loadVoucherSplitPlan(),
+    ]);
+
     const lineById = new Map<number, DemandLineInfo>();
-    const linesByKey = new Map<string, DemandLineInfo[]>();
     for (const month of demandMonths) {
       const monthKey = this.monthKeyOf(month.demandMonth);
       for (const line of month.lines) {
         const info: DemandLineInfo = {
           id: line.id,
           demandId: month.demandId,
+          sourceSystem: month.demand.sourceSystem,
           monthId: month.id,
           monthKey,
           customerId: month.demand.customerId,
           productId: line.productId,
+          inputQuantity: Number(line.inputQuantity),
+          inputUnit: line.inputUnit as DemandUnit,
+          quantityBase: Number(line.quantityBase),
+          sourceCreatedAt: line.sourceCreatedAt,
+          sourceUpdatedAt: line.sourceUpdatedAt,
           status: month.status,
         };
         lineById.set(line.id, info);
-        const key = this.demandKey(
-          info.customerId,
-          info.monthKey,
-          info.productId,
-        );
-        const list = linesByKey.get(key) ?? [];
-        list.push(info);
-        linesByKey.set(key, list);
       }
     }
 
@@ -444,112 +948,79 @@ export class LarkCustomerDemandSyncService {
           [item.sourceRecordId, item.demandLineId] as [string, number | null],
       ),
     );
-    const syncDemandsByCustomer = new Map<
-      number,
-      Array<(typeof syncDemands)[number]>
-    >();
-    for (const demand of syncDemands) {
-      const list = syncDemandsByCustomer.get(demand.customerId) ?? [];
-      list.push(demand);
-      syncDemandsByCustomer.set(demand.customerId, list);
-    }
-
-    const issues: LarkDemandPreviewIssue[] = resolvedRows
-      .map((row) => row.issue)
-      .filter((issue): issue is LarkDemandPreviewIssue => !!issue);
-    const validRows = resolvedRows.filter((row) => !row.issue);
-    const mergedLines = this.mergeResolvedRows(validRows);
+    const legacyRecordIds = voucherSplitPlan.legacySourceRecordIds;
+    const issues: LarkDemandPreviewIssue[] = [
+      ...raw.issues,
+      ...raw.rawRows
+        .filter((row) => legacyRecordIds.has(row.sourceRecordId))
+        .map((row) => ({
+          sourceRecordId: row.sourceRecordId,
+          customerCode: row.customerCode,
+          customerName: row.customerName,
+          productCode: row.productCode,
+          productName: row.productName,
+          month: row.month,
+          quantity: row.quantity,
+          code: 'LEGACY_MERGED_VOUCHER' as const,
+          message:
+            'Phiếu POS Lark cũ đang gộp nhiều record; cần tách phiếu trước khi đồng bộ',
+        })),
+    ];
+    const validRows = raw.rawRows.filter(
+      (row) => !row.issue && !legacyRecordIds.has(row.sourceRecordId),
+    );
+    const plannedLines = this.planResolvedRows(validRows);
     const groups: PlannedLine[] = [];
 
-    for (const line of mergedLines) {
-      const key = this.demandKey(line.customerId, line.month, line.productId);
-      const candidates = linesByKey.get(key) ?? [];
-      const mappedLineIds = [
-        ...new Set(
-          line.sourceRecordIds
-            .map((sourceRecordId) => mappingByRecord.get(sourceRecordId))
-            .filter((value): value is number => typeof value === 'number'),
-        ),
-      ];
-
-      let target: DemandLineInfo | null = null;
-      let conflictMessage: string | null = null;
-
-      if (mappedLineIds.length > 1) {
-        conflictMessage =
-          'Các record Lark từng được gắn vào nhiều dòng POS khác nhau';
-      } else if (mappedLineIds.length === 1) {
-        const mapped = lineById.get(mappedLineIds[0]);
-        if (mapped) {
-          if (!this.sameDemandKey(mapped, line)) {
-            conflictMessage =
-              'Mapping cũ không còn khớp khách hàng, tháng và sản phẩm của record Lark';
-          } else {
-            target = mapped;
-          }
-        }
-      }
-
-      if (!target && !conflictMessage) {
-        if (candidates.length === 1) {
-          target = candidates[0];
-        } else if (candidates.length > 1) {
-          conflictMessage = `Có ${candidates.length} dòng POS cùng khách/tháng/sản phẩm nên không xác định được dòng đích`;
-        }
-      }
-
-      if (target?.status === 'CANCELLED') {
-        conflictMessage =
-          'Dòng POS tương ứng thuộc tháng đã hủy; cần xử lý thủ công trước khi đồng bộ';
-        target = null;
-      }
-
-      if (conflictMessage) {
-        issues.push(...this.conflictIssues(line, conflictMessage));
-        continue;
-      }
-
-      if (target) {
-        line.existingDemandId = target.demandId;
-        line.existingMonthId = target.monthId;
-        line.existingLineId = target.id;
-        line.existingMonthStatus = target.status;
-        line.action = 'UPDATE';
-        groups.push(line);
-        continue;
-      }
-
-      const syncDemandCandidates =
-        syncDemandsByCustomer.get(line.customerId) ?? [];
-      if (syncDemandCandidates.length > 1) {
-        issues.push(
-          ...this.conflictIssues(
-            line,
-            `Có ${syncDemandCandidates.length} phiếu đồng bộ cùng khách hàng; cần xử lý thủ công`,
-          ),
-        );
-        continue;
-      }
-
-      const syncDemand = syncDemandCandidates[0];
-      if (syncDemand) {
-        line.syncDemandId = syncDemand.id;
-        const syncMonth = syncDemand.months.find(
-          (month) => this.monthKeyOf(month.demandMonth) === line.month,
-        );
-        if (syncMonth?.status === 'CANCELLED') {
+    for (const line of plannedLines) {
+      const mappedLineId = mappingByRecord.get(line.sourceRecordIds[0]);
+      if (typeof mappedLineId === 'number') {
+        const mapped = lineById.get(mappedLineId);
+        if (!mapped) {
           issues.push(
             ...this.conflictIssues(
               line,
-              'Tháng tương ứng trong phiếu đồng bộ đã bị hủy; cần xử lý thủ công',
+              'Mapping cũ trỏ tới dòng POS không còn tồn tại; cần kiểm tra dữ liệu',
             ),
           );
           continue;
         }
-        if (syncMonth) {
-          line.syncMonthId = syncMonth.id;
-          line.syncMonthStatus = syncMonth.status;
+        if (mapped.sourceSystem !== SYNC_SOURCE) {
+          issues.push(
+            ...this.conflictIssues(
+              line,
+              'Mapping Lark đang trỏ tới phiếu POS thủ công; cần xử lý thủ công trước khi đồng bộ',
+            ),
+          );
+          continue;
         }
+        if (!this.sameDemandKey(mapped, line)) {
+          issues.push(
+            ...this.conflictIssues(
+              line,
+              'Mapping cũ không còn khớp khách hàng, tháng và sản phẩm của record Lark',
+            ),
+          );
+          continue;
+        }
+        if (mapped.status === 'CANCELLED') {
+          issues.push(
+            ...this.conflictIssues(
+              line,
+              'Dòng POS tương ứng thuộc tháng đã hủy; cần xử lý thủ công trước khi đồng bộ',
+            ),
+          );
+          continue;
+        }
+
+        line.existingDemandId = mapped.demandId;
+        line.existingDemandSourceSystem = mapped.sourceSystem;
+        line.existingMonthId = mapped.monthId;
+        line.existingLineId = mapped.id;
+        line.existingMonthStatus = mapped.status;
+        line.action = 'UPDATE';
+        groups.push(line);
+        continue;
       }
 
       line.action = 'CREATE';
@@ -561,29 +1032,38 @@ export class LarkCustomerDemandSyncService {
       0,
     );
     const conflicts = issues.filter((issue) => issue.code === 'LINE_CONFLICT');
-    const pending = issues.filter((issue) => issue.code !== 'LINE_CONFLICT');
-    const demandsToCreate = new Set(
-      groups
-        .filter((group) => group.action === 'CREATE' && !group.syncDemandId)
-        .map((group) => group.customerId),
-    ).size;
+    const pending = issues.filter(
+      (issue) =>
+        issue.code !== 'LINE_CONFLICT' &&
+        issue.code !== 'LEGACY_MERGED_VOUCHER' &&
+        issue.code !== 'MISSING_SOURCE_TIMESTAMP',
+    );
+    const newRecords = groups.filter((group) => group.action === 'CREATE');
 
     const summary: LarkDemandPreviewSummary = {
-      totalRecords: resolvedRows.length,
+      totalRecords: raw.rawRows.length,
       validRecords,
       pendingRecords: pending.length,
-      conflictedRecords: conflicts.length,
-      mergedRecords: Math.max(0, validRecords - groups.length),
-      aggregatedRows: groups.length,
-      newLines: groups.filter((group) => group.action === 'CREATE').length,
-      updatedLines: groups.filter((group) => group.action === 'UPDATE').length,
-      demandsToCreate,
-      monthsToCreate: groups.filter(
-        (group) =>
-          group.action === 'CREATE' &&
-          !group.existingMonthId &&
-          !group.syncMonthId,
+      invalidTimestampRecords: issues.filter(
+        (issue) => issue.code === 'MISSING_SOURCE_TIMESTAMP',
       ).length,
+      conflictedRecords: conflicts.length,
+      mergedRecords: 0,
+      aggregatedRows: groups.length,
+      newLines: newRecords.length,
+      updatedLines: groups.filter((group) => group.action === 'UPDATE').length,
+      demandsToCreate: newRecords.length,
+      monthsToCreate: newRecords.length,
+      sourceDatesToRestore: groups.filter(
+        (group) =>
+          group.existingLineId &&
+          (!lineById.get(group.existingLineId)?.sourceCreatedAt ||
+            !lineById.get(group.existingLineId)?.sourceUpdatedAt),
+      ).length,
+      legacyMergedRecords: legacyRecordIds.size,
+      legacyMergedLines: voucherSplitPlan.preview.vouchersToSplit,
+      legacyVouchers: voucherSplitPlan.preview.vouchersToSplit,
+      legacyVoucherRecords: legacyRecordIds.size,
       issues: issues.slice(0, MAX_PREVIEW_ISSUES),
       truncatedIssues: issues.length > MAX_PREVIEW_ISSUES,
     };
@@ -591,14 +1071,14 @@ export class LarkCustomerDemandSyncService {
     return {
       summary,
       groups,
-      rawRows: resolvedRows,
-      rawById: resolvedById,
+      rawRows: raw.rawRows,
+      rawById: raw.rawById,
       issues,
     };
   }
 
   private async persistPlan(plan: LoadedPlan, userId: number, now: Date) {
-    const demandCache = new Map<number, number>();
+    const demandCache = new Map<string, number>();
     const monthCache = new Map<string, { id: number; status: string }>();
     let syncedLines = 0;
     let syncedRecords = 0;
@@ -611,6 +1091,8 @@ export class LarkCustomerDemandSyncService {
             inputUnit: group.inputUnit,
             quantityBase: group.quantityBase,
             conversionValue: group.conversionValue,
+            sourceCreatedAt: group.sourceCreatedAt,
+            sourceUpdatedAt: group.sourceModifiedAt,
           };
 
           let lineId: number;
@@ -624,9 +1106,20 @@ export class LarkCustomerDemandSyncService {
             );
             const updated = await tx.customerDemandLine.update({
               where: { id: group.existingLineId },
-              data: lineData,
+              data: {
+                ...lineData,
+                createdAt: group.sourceCreatedAt,
+                updatedAt: group.sourceModifiedAt,
+              },
             });
             lineId = updated.id;
+            await this.applyLarkVoucherSourceDates(
+              tx,
+              group.existingDemandId as number,
+              group.existingMonthId,
+              group,
+              userId,
+            );
           } else {
             const demandId = await this.ensureSyncDemand(
               tx,
@@ -642,19 +1135,14 @@ export class LarkCustomerDemandSyncService {
               userId,
               monthCache,
             );
-            const created = await tx.customerDemandLine.upsert({
-              where: {
-                demandMonthId_productId: {
-                  demandMonthId: month.id,
-                  productId: group.productId,
-                },
-              },
-              create: {
+            const created = await tx.customerDemandLine.create({
+              data: {
                 demandMonthId: month.id,
                 productId: group.productId,
                 ...lineData,
+                createdAt: group.sourceCreatedAt,
+                updatedAt: group.sourceModifiedAt,
               },
-              update: lineData,
             });
             lineId = created.id;
           }
@@ -665,6 +1153,7 @@ export class LarkCustomerDemandSyncService {
               where: { sourceRecordId },
               create: {
                 sourceRecordId,
+                sourceCreatedAt: raw?.sourceCreatedAt ?? null,
                 sourceModifiedAt: raw?.sourceModifiedAt ?? null,
                 rawFields: this.jsonSafe(raw?.rawFields ?? {}),
                 status: 'SYNCED',
@@ -674,6 +1163,7 @@ export class LarkCustomerDemandSyncService {
                 lastSyncedAt: now,
               },
               update: {
+                sourceCreatedAt: raw?.sourceCreatedAt ?? null,
                 sourceModifiedAt: raw?.sourceModifiedAt ?? null,
                 rawFields: this.jsonSafe(raw?.rawFields ?? {}),
                 status: 'SYNCED',
@@ -693,11 +1183,15 @@ export class LarkCustomerDemandSyncService {
         for (const issue of plan.issues) {
           const raw = plan.rawById.get(issue.sourceRecordId);
           const status: MappingStatus =
-            issue.code === 'LINE_CONFLICT' ? 'ERROR' : 'PENDING_MAPPING';
+            issue.code === 'LINE_CONFLICT' ||
+            issue.code === 'MISSING_SOURCE_TIMESTAMP'
+              ? 'ERROR'
+              : 'PENDING_MAPPING';
           await tx.customerDemandLarkRecord.upsert({
             where: { sourceRecordId: issue.sourceRecordId },
             create: {
               sourceRecordId: issue.sourceRecordId,
+              sourceCreatedAt: raw?.sourceCreatedAt ?? null,
               sourceModifiedAt: raw?.sourceModifiedAt ?? null,
               rawFields: this.jsonSafe(raw?.rawFields ?? {}),
               status,
@@ -708,12 +1202,19 @@ export class LarkCustomerDemandSyncService {
               lastSyncedAt: now,
             },
             update: {
-              sourceModifiedAt: raw?.sourceModifiedAt ?? null,
+              ...(raw?.sourceCreatedAt
+                ? { sourceCreatedAt: raw.sourceCreatedAt }
+                : {}),
+              ...(raw?.sourceModifiedAt
+                ? { sourceModifiedAt: raw.sourceModifiedAt }
+                : {}),
               rawFields: this.jsonSafe(raw?.rawFields ?? {}),
               status,
               customerId: raw?.customerId ?? null,
               productId: raw?.productId ?? null,
-              demandLineId: null,
+              ...(issue.code === 'MISSING_SOURCE_TIMESTAMP'
+                ? {}
+                : { demandLineId: null }),
               errorMessage: issue.message,
               lastSyncedAt: now,
             },
@@ -738,6 +1239,7 @@ export class LarkCustomerDemandSyncService {
     );
 
     return {
+      syncedDemands: plan.groups.length,
       syncedLines,
       syncedRecords,
       orphanedRecords: orphaned.count,
@@ -748,16 +1250,13 @@ export class LarkCustomerDemandSyncService {
     tx: any,
     group: PlannedLine,
     userId: number,
-    cache: Map<number, number>,
+    cache: Map<string, number>,
   ) {
-    const cached = cache.get(group.customerId);
+    const syncKey = this.syncKeyFor(group.sourceRecordIds[0]);
+    const cacheKey = syncKey;
+    const cached = cache.get(cacheKey);
     if (cached) return cached;
-    if (group.syncDemandId) {
-      cache.set(group.customerId, group.syncDemandId);
-      return group.syncDemandId;
-    }
 
-    const syncKey = this.syncKeyFor(group.customerId);
     let demand = await tx.customerDemand.findFirst({
       where: { sourceSystem: SYNC_SOURCE, syncKey },
       select: { id: true },
@@ -766,22 +1265,27 @@ export class LarkCustomerDemandSyncService {
       demand = await tx.customerDemand.create({
         data: {
           customerId: group.customerId,
-          note: SYNC_DEMAND_NOTE,
           sourceSystem: SYNC_SOURCE,
           syncKey,
           createdBy: userId,
           updatedBy: userId,
+          createdAt: group.sourceCreatedAt,
+          updatedAt: group.sourceModifiedAt,
         },
         select: { id: true },
       });
     } else {
       await tx.customerDemand.update({
         where: { id: demand.id },
-        data: { updatedBy: userId },
+        data: {
+          updatedBy: userId,
+          createdAt: group.sourceCreatedAt,
+          updatedAt: group.sourceModifiedAt,
+        },
       });
     }
 
-    cache.set(group.customerId, demand.id);
+    cache.set(cacheKey, demand.id);
     return demand.id as number;
   }
 
@@ -826,15 +1330,49 @@ export class LarkCustomerDemandSyncService {
           note: SYNC_MONTH_NOTE,
           approvedAt: now,
           approvedBy: userId,
+          createdAt: group.sourceCreatedAt,
+          updatedAt: group.sourceModifiedAt,
         },
         select: { id: true, status: true },
       });
     } else {
       await this.ensureConfirmedMonth(tx, month.id, month.status, now, userId);
+      await tx.customerDemandMonth.update({
+        where: { id: month.id },
+        data: {
+          createdAt: group.sourceCreatedAt,
+          updatedAt: group.sourceModifiedAt,
+        },
+      });
     }
 
     cache.set(cacheKey, month);
     return month as { id: number; status: string };
+  }
+
+  private async applyLarkVoucherSourceDates(
+    tx: any,
+    demandId: number,
+    demandMonthId: number,
+    group: PlannedLine,
+    userId: number,
+  ) {
+    await tx.customerDemand.update({
+      where: { id: demandId },
+      data: {
+        syncKey: this.syncKeyFor(group.sourceRecordIds[0]),
+        updatedBy: userId,
+        createdAt: group.sourceCreatedAt,
+        updatedAt: group.sourceModifiedAt,
+      },
+    });
+    await tx.customerDemandMonth.update({
+      where: { id: demandMonthId },
+      data: {
+        createdAt: group.sourceCreatedAt,
+        updatedAt: group.sourceModifiedAt,
+      },
+    });
   }
 
   private async ensureConfirmedMonth(
@@ -861,98 +1399,52 @@ export class LarkCustomerDemandSyncService {
     });
   }
 
-  private mergeResolvedRows(rows: ResolvedLarkRow[]): PlannedLine[] {
-    const buckets = new Map<string, GroupAccumulator>();
-
-    for (const row of rows) {
-      if (
-        !row.customerId ||
-        !row.productId ||
-        !row.month ||
-        !row.quantity ||
-        !row.quantityBase
-      ) {
-        continue;
-      }
-
-      const key = this.demandKey(row.customerId, row.month, row.productId);
-      let bucket = buckets.get(key);
-      if (!bucket) {
-        const line: PlannedLine = {
-          customerId: row.customerId,
-          customerName: row.customerName ?? `#${row.customerId}`,
-          month: row.month,
-          productId: row.productId,
-          productName: row.productName ?? `#${row.productId}`,
-          inputUnit: row.unit,
-          inputQuantity: row.quantity,
-          quantityBase: row.quantityBase,
-          conversionValue: row.conversionValue,
-          note: row.note,
-          sourceRecordIds: [row.sourceRecordId],
-          sourceModifiedAt: row.sourceModifiedAt,
-          existingDemandId: null,
-          existingMonthId: null,
-          existingLineId: null,
-          existingMonthStatus: null,
-          syncDemandId: null,
-          syncMonthId: null,
-          syncMonthStatus: null,
-          action: 'CREATE',
-        };
-        bucket = {
-          line,
-          baseQuantity: row.unit === 'BASE' ? row.quantity : 0,
-          cartonQuantity: row.unit === 'CARTON' ? row.quantity : 0,
-          units: new Set([row.unit]),
-        };
-        buckets.set(key, bucket);
-        continue;
-      }
-
-      bucket.line.sourceRecordIds.push(row.sourceRecordId);
-      bucket.line.quantityBase += row.quantityBase;
-      bucket.units.add(row.unit);
-      if (row.unit === 'BASE') {
-        bucket.baseQuantity += row.quantity;
-      } else {
-        bucket.cartonQuantity += row.quantity;
-      }
-      if (
-        row.sourceModifiedAt &&
-        (!bucket.line.sourceModifiedAt ||
-          row.sourceModifiedAt > bucket.line.sourceModifiedAt)
-      ) {
-        bucket.line.sourceModifiedAt = row.sourceModifiedAt;
-      }
-      if (!bucket.line.note && row.note) {
-        bucket.line.note = row.note;
-      }
-    }
-
-    for (const bucket of buckets.values()) {
-      const units = [...bucket.units];
-      if (units.length === 1 && units[0] === 'BASE') {
-        bucket.line.inputUnit = 'BASE';
-        bucket.line.inputQuantity = this.roundQuantity(bucket.baseQuantity);
-        bucket.line.quantityBase = this.roundQuantity(bucket.baseQuantity);
-        bucket.line.conversionValue = 1;
-      } else if (units.length === 1) {
-        bucket.line.inputUnit = 'CARTON';
-        bucket.line.inputQuantity = this.roundQuantity(bucket.cartonQuantity);
-        bucket.line.quantityBase = this.roundQuantity(bucket.line.quantityBase);
-        // conversionValue đã lấy từ product ở resolveRecord().
-      } else {
-        bucket.line.inputUnit = 'BASE';
-        bucket.line.inputQuantity = this.roundQuantity(
-          bucket.line.quantityBase,
-        );
-        bucket.line.quantityBase = this.roundQuantity(bucket.line.quantityBase);
-        bucket.line.conversionValue = 1;
-      }
-    }
-
-    return [...buckets.values()].map((bucket) => bucket.line);
+  private planResolvedRows(rows: ResolvedLarkRow[]): PlannedLine[] {
+    return rows
+      .filter(
+        (
+          row,
+        ): row is ResolvedLarkRow & {
+          customerId: number;
+          productId: number;
+          month: string;
+          quantity: number;
+          quantityBase: number;
+          sourceCreatedAt: Date;
+          sourceModifiedAt: Date;
+        } =>
+          !!row.customerId &&
+          !!row.productId &&
+          !!row.month &&
+          !!row.quantity &&
+          !!row.quantityBase &&
+          !!row.sourceCreatedAt &&
+          !!row.sourceModifiedAt,
+      )
+      .map((row) => ({
+        customerId: row.customerId,
+        customerName: row.customerName ?? `#${row.customerId}`,
+        month: row.month,
+        productId: row.productId,
+        productName: row.productName ?? `#${row.productId}`,
+        inputUnit: row.unit,
+        inputQuantity: row.quantity,
+        quantityBase: row.quantityBase,
+        conversionValue: row.conversionValue,
+        note: row.note,
+        sourceRecordIds: [row.sourceRecordId],
+        sourceCreatedAt: row.sourceCreatedAt,
+        sourceModifiedAt: row.sourceModifiedAt,
+        existingDemandId: null,
+        existingDemandSourceSystem: null,
+        existingMonthId: null,
+        existingLineId: null,
+        existingMonthStatus: null,
+        syncDemandId: null,
+        syncMonthId: null,
+        syncMonthStatus: null,
+        action: 'CREATE',
+      }));
   }
 
   private resolveRecord(
@@ -1037,7 +1529,12 @@ export class LarkCustomerDemandSyncService {
 
     const row: ResolvedLarkRow = {
       sourceRecordId: recordId,
-      sourceModifiedAt: this.modifiedDate(record.last_modified_time),
+      sourceCreatedAt:
+        this.sourceDate(record.created_time) ??
+        this.sourceDate(fields[TEXT_FIELDS.CREATED_AT]),
+      sourceModifiedAt:
+        this.sourceDate(record.last_modified_time) ??
+        this.sourceDate(fields[TEXT_FIELDS.UPDATED_AT]),
       rawFields: fields,
       customerCode: customerCodes[0] ?? linkedCustomer?.code ?? null,
       customerId: customer?.id ?? null,
@@ -1086,6 +1583,16 @@ export class LarkCustomerDemandSyncService {
         row,
         'MISSING_CONVERSION',
         `Sản phẩm ${product.code} thiếu quy đổi thùng`,
+      );
+    } else if (
+      !row.sourceCreatedAt ||
+      !row.sourceModifiedAt ||
+      row.sourceModifiedAt < row.sourceCreatedAt
+    ) {
+      row.issue = this.issueFor(
+        row,
+        'MISSING_SOURCE_TIMESTAMP',
+        'Record Lark thiếu Ngày Tạo/Ngày Cập Nhật hợp lệ',
       );
     }
 
@@ -1274,13 +1781,21 @@ export class LarkCustomerDemandSyncService {
     return `${year}-${String(month).padStart(2, '0')}`;
   }
 
-  private modifiedDate(value?: number | string): Date | null {
+  private sourceDate(value: unknown): Date | null {
     if (value == null) return null;
-    const raw =
-      typeof value === 'number' ? value : Number(String(value).trim());
-    if (!Number.isFinite(raw) || raw <= 0) return null;
-    const millis = raw < 10_000_000_000 ? raw * 1000 : raw;
-    const date = new Date(millis);
+    const text = this.fieldText(value).trim();
+    if (!text) return null;
+    const raw = Number(text);
+    const localDate = text.match(
+      /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?$/,
+    );
+    const zonedText = localDate
+      ? `${localDate[1]}-${localDate[2].padStart(2, '0')}-${localDate[3].padStart(2, '0')}T${localDate[4].padStart(2, '0')}:${localDate[5]}:${localDate[6] ?? '00'}+07:00`
+      : text;
+    const date =
+      Number.isFinite(raw) && raw > 0
+        ? new Date(raw < 10_000_000_000 ? raw * 1000 : raw)
+        : new Date(zonedText);
     return Number.isFinite(date.getTime()) ? date : null;
   }
 
@@ -1293,10 +1808,6 @@ export class LarkCustomerDemandSyncService {
     return new Date(`${value}-01T00:00:00.000Z`);
   }
 
-  private demandKey(customerId: number, month: string, productId: number) {
-    return `${customerId}|${month}|${productId}`;
-  }
-
   private sameDemandKey(line: DemandLineInfo, group: PlannedLine) {
     return (
       line.customerId === group.customerId &&
@@ -1305,8 +1816,8 @@ export class LarkCustomerDemandSyncService {
     );
   }
 
-  private syncKeyFor(customerId: number): string {
-    return `lark:${customerId}`;
+  private syncKeyFor(sourceRecordId: string): string {
+    return `lark:${sourceRecordId}`;
   }
 
   private roundQuantity(value: number): number {

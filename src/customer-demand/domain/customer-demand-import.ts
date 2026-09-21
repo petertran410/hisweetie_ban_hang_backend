@@ -30,18 +30,14 @@ export interface CustomerDemandImportLine {
   conversionValue: number;
 }
 
-export interface CustomerDemandImportMonth {
-  month: string;
-  lines: CustomerDemandImportLine[];
-}
-
 export interface CustomerDemandImportGroup {
   customerId: number;
   customerCode: string;
   customerName: string;
   note?: string;
-  voucherIndex?: number;
-  months: CustomerDemandImportMonth[];
+  voucherIndex: number;
+  month: string;
+  lines: CustomerDemandImportLine[];
 }
 
 export function normalizeImportHeader(value: string): string {
@@ -155,10 +151,7 @@ export function groupCustomerDemandImportRows(
     }
   >,
 ): CustomerDemandImportGroup[] {
-  type Bucket = CustomerDemandImportGroup & {
-    monthMap: Map<string, Map<number, CustomerDemandImportLine>>;
-  };
-  const bucketsByCustomer = new Map<number, Bucket[]>();
+  const groups = new Map<string, CustomerDemandImportGroup>();
 
   for (const row of rows) {
     if (row.errors.length) continue;
@@ -173,12 +166,6 @@ export function groupCustomerDemandImportRows(
       continue;
     }
 
-    let buckets = bucketsByCustomer.get(row.customerId);
-    if (!buckets) {
-      buckets = [];
-      bucketsByCustomer.set(row.customerId, buckets);
-    }
-
     const line: CustomerDemandImportLine = {
       productId: row.productId,
       productCode: row.productCode,
@@ -188,56 +175,27 @@ export function groupCustomerDemandImportRows(
       quantityBase: row.quantityBase,
       conversionValue: row.conversionValue,
     };
-
-    let placed: Bucket | undefined;
-    for (const bucket of buckets) {
-      let productMap = bucket.monthMap.get(row.month);
-      if (!productMap) {
-        productMap = new Map();
-        bucket.monthMap.set(row.month, productMap);
-      }
-      if (productMap.has(row.productId)) continue;
-      productMap.set(row.productId, line);
-      if (!bucket.note && row.note) bucket.note = row.note;
-      placed = bucket;
-      break;
-    }
-
-    if (!placed) {
-      const productMap = new Map<number, CustomerDemandImportLine>([
-        [row.productId, line],
-      ]);
-      placed = {
+    const key = `${row.customerId}|${row.month}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = {
         customerId: row.customerId,
         customerCode: row.customerCode,
         customerName:
           row.customerNameResolved || row.customerName || row.customerCode,
         note: row.note || undefined,
-        voucherIndex: buckets.length + 1,
-        months: [],
-        monthMap: new Map([[row.month, productMap]]),
+        voucherIndex: groups.size + 1,
+        month: row.month,
+        lines: [],
       };
-      buckets.push(placed);
+      groups.set(key, group);
     }
-
-    row.voucherIndex = placed.voucherIndex;
+    group.lines.push(line);
+    if (!group.note && row.note) group.note = row.note;
+    row.voucherIndex = group.voucherIndex;
   }
 
-  return [...bucketsByCustomer.values()].flatMap((buckets) =>
-    buckets.map((bucket) => ({
-      customerId: bucket.customerId,
-      customerCode: bucket.customerCode,
-      customerName: bucket.customerName,
-      note: bucket.note,
-      voucherIndex: bucket.voucherIndex,
-      months: [...bucket.monthMap.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([month, lines]) => ({
-          month,
-          lines: [...lines.values()],
-        })),
-    })),
-  );
+  return [...groups.values()];
 }
 
 function parseYearMonthText(text: string): string | null {

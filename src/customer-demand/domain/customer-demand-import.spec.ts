@@ -67,7 +67,7 @@ describe('customer-demand import parsers', () => {
     );
   });
 
-  it('tách phiếu khi trùng SKU/tháng và first-fit SKU mới vào phiếu 1', () => {
+  it('gom theo khách + tháng và giữ các dòng SKU trùng', () => {
     const rows = [
       {
         ...validRow(2, 'KH01', 'SP01', '2026-10', 10),
@@ -110,26 +110,24 @@ describe('customer-demand import parsers', () => {
 
     const groups = groupCustomerDemandImportRows(rows);
     expect(rows.every((row) => row.errors.length === 0)).toBe(true);
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(2);
     expect(groups[0].customerId).toBe(1);
     expect(groups[0].voucherIndex).toBe(1);
     expect(groups[0].note).toBe('OEM tháng 10');
-    expect(groups[0].months[0].lines.map((line) => line.productId).sort()).toEqual([
-      11, 12, 13,
+    expect(groups[0].month).toBe('2026-10');
+    expect(groups[0].lines.map((line) => line.productId)).toEqual([
+      11, 12, 11, 13,
     ]);
-    expect(groups[1].customerId).toBe(1);
+    expect(groups[1].customerId).toBe(2);
     expect(groups[1].voucherIndex).toBe(2);
-    expect(groups[1].note).toBe('Bổ sung');
-    expect(groups[1].months[0].lines).toEqual([
-      expect.objectContaining({ productId: 11, quantity: 7 }),
-    ]);
-    expect(groups[2].customerId).toBe(2);
+    expect(groups[1].month).toBe('2026-11');
     expect(rows[0].voucherIndex).toBe(1);
-    expect(rows[2].voucherIndex).toBe(2);
+    expect(rows[2].voucherIndex).toBe(1);
     expect(rows[3].voucherIndex).toBe(1);
+    expect(rows[4].voucherIndex).toBe(2);
   });
 
-  it('file mẫu: KH004517 + SP007356 tháng 2026-09 hai dòng thì tách 2 phiếu, không lỗi', () => {
+  it('file mẫu: cùng khách + tháng giữ 3 dòng trong một phiếu', () => {
     const rows = [
       {
         ...validRow(39, 'KH004517', 'SP007356', '2026-09', 15),
@@ -157,20 +155,23 @@ describe('customer-demand import parsers', () => {
 
     const groups = groupCustomerDemandImportRows(rows);
     expect(rows.every((row) => row.errors.length === 0)).toBe(true);
-    expect(groups).toHaveLength(2);
+    expect(groups).toHaveLength(1);
     expect(groups[0].customerCode).toBe('KH004517');
     expect(groups[0].voucherIndex).toBe(1);
-    expect(groups[0].months[0].lines.map((line) => line.productCode).sort()).toEqual([
+    expect(groups[0].month).toBe('2026-09');
+    expect(groups[0].lines.map((line) => line.productCode)).toEqual([
+      'SP007356',
       'SP007305',
       'SP007356',
     ]);
-    expect(groups[1].voucherIndex).toBe(2);
-    expect(groups[1].note).toBe('Bổ sung demand tháng 9');
-    expect(groups[1].months[0].lines).toEqual([
-      expect.objectContaining({ productCode: 'SP007356', quantity: 15 }),
+    expect(groups[0].note).toBe('Bổ sung demand tháng 9');
+    expect(groups[0].lines.map((line) => line.productCode).sort()).toEqual([
+      'SP007305',
+      'SP007356',
+      'SP007356',
     ]);
     expect(rows[0].voucherIndex).toBe(1);
-    expect(rows[2].voucherIndex).toBe(2);
+    expect(rows[2].voucherIndex).toBe(1);
   });
 
   it('vẫn từ chối dòng thiếu mã hoặc số lượng không hợp lệ', () => {
