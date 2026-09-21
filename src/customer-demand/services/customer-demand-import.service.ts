@@ -122,9 +122,9 @@ export class CustomerDemandImportService {
       ['Mỗi dòng là 1 sản phẩm của 1 khách hàng trong 1 tháng cần hàng.'],
       ['Bắt buộc: Mã khách hàng, Mã sản phẩm, Tháng cần hàng (YYYY-MM), Số lượng.'],
       ['Đơn vị để trống hoặc "Đơn vị cơ bản" = số lượng theo đơn vị sản phẩm; "Thùng" sẽ nhân conversionValue.'],
-      ['Các dòng cùng mã khách hàng và cùng tháng được gom vào một phiếu nháp.'],
+      ['Các dòng cùng mã khách hàng và cùng tháng được gom vào một phiếu hoàn thành.'],
       ['Cùng sản phẩm lặp lại trong cùng tháng vẫn được giữ thành nhiều dòng riêng.'],
-      ['Import chỉ tạo phiếu nháp. Cần duyệt từng tháng trước khi cộng vào dự kiến đặt hàng.'],
+      ['Import tạo phiếu hoàn thành và được cộng ngay vào dự kiến đặt hàng.'],
       ['Demand import không tạo Order, hóa đơn, công nợ hoặc giữ tồn.'],
     ]);
     return workbook.xlsx.writeBuffer();
@@ -251,7 +251,7 @@ export class CustomerDemandImportService {
       throw new BadRequestException('Không có dòng hợp lệ để import');
     }
 
-    const ids = await this.repository.createManyDrafts(
+    const ids = await this.repository.createManyConfirmed(
       preview.groups.map((group) => ({
         customerId: group.customerId,
         note: group.note ?? null,

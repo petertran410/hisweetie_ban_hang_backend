@@ -6,7 +6,7 @@ describe('CustomerDemandImportService', () => {
   const repository = {
     findCustomersByCodes: jest.fn(),
     findProductsByCodes: jest.fn(),
-    createManyDrafts: jest.fn(),
+    createManyConfirmed: jest.fn(),
   };
   const auditLogs = { create: jest.fn() };
   const service = new CustomerDemandImportService(
@@ -37,7 +37,7 @@ describe('CustomerDemandImportService', () => {
         isActive: true,
       },
     ]);
-    repository.createManyDrafts.mockResolvedValue([99]);
+    repository.createManyConfirmed.mockResolvedValue([99]);
   });
 
   it('tạo được file mẫu', async () => {
@@ -120,13 +120,13 @@ describe('CustomerDemandImportService', () => {
   });
 
   it('commit tạo một phiếu chứa hai dòng trùng SKU', async () => {
-    repository.createManyDrafts.mockResolvedValue([99]);
+    repository.createManyConfirmed.mockResolvedValue([99]);
     const file = await excelFile([
       ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'BASE', ''],
       ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-09', 15, 'BASE', 'Bổ sung'],
     ]);
     const result = await service.commit(file, 7);
-    expect(repository.createManyDrafts).toHaveBeenCalledWith([
+    expect(repository.createManyConfirmed).toHaveBeenCalledWith([
       expect.objectContaining({
         customerId: 1,
         months: [
@@ -142,12 +142,12 @@ describe('CustomerDemandImportService', () => {
     expect(result).toMatchObject({ imported: 2, vouchers: 1, ids: [99] });
   });
 
-  it('commit tạo phiếu nháp khi file hợp lệ', async () => {
+  it('commit tạo phiếu hoàn thành khi file hợp lệ', async () => {
     const file = await excelFile([
       ['KH001', 'Khách OEM', 'SP001', 'NL1', '2026-10', 10, 'BASE', 'OEM'],
     ]);
     const result = await service.commit(file, 7);
-    expect(repository.createManyDrafts).toHaveBeenCalledTimes(1);
+    expect(repository.createManyConfirmed).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       imported: 1,
       vouchers: 1,

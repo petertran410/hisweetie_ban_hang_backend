@@ -16,6 +16,8 @@ restore-pos-db.sh
 setup-backup-dirs.sh
 nginx
 
+POSTGRES-STANDBY-SETUP.md
+
 /uploads
 
 # Logs

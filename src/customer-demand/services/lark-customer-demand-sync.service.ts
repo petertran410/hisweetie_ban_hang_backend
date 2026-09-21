@@ -511,7 +511,7 @@ export class LarkCustomerDemandSyncService {
         continue;
       }
       if (month.status !== 'CONFIRMED') {
-        issue('Tháng Demand Lark không ở trạng thái Đã duyệt');
+        issue('Tháng Demand Lark không ở trạng thái Hoàn thành');
         continue;
       }
       if (month.changeLogs.length > 0) {
@@ -1101,8 +1101,6 @@ export class LarkCustomerDemandSyncService {
               tx,
               group.existingMonthId,
               group.existingMonthStatus,
-              now,
-              userId,
             );
             const updated = await tx.customerDemandLine.update({
               where: { id: group.existingLineId },
@@ -1304,8 +1302,6 @@ export class LarkCustomerDemandSyncService {
         tx,
         cached.id,
         cached.status,
-        now,
-        userId,
       );
       return cached;
     }
@@ -1328,15 +1324,13 @@ export class LarkCustomerDemandSyncService {
           demandMonth,
           status: 'CONFIRMED',
           note: SYNC_MONTH_NOTE,
-          approvedAt: now,
-          approvedBy: userId,
           createdAt: group.sourceCreatedAt,
           updatedAt: group.sourceModifiedAt,
         },
         select: { id: true, status: true },
       });
     } else {
-      await this.ensureConfirmedMonth(tx, month.id, month.status, now, userId);
+      await this.ensureConfirmedMonth(tx, month.id, month.status);
       await tx.customerDemandMonth.update({
         where: { id: month.id },
         data: {
@@ -1379,8 +1373,6 @@ export class LarkCustomerDemandSyncService {
     tx: any,
     monthId: number,
     status: string | null,
-    now: Date,
-    userId: number,
   ) {
     if (status === 'CANCELLED') {
       throw new BadRequestException(
@@ -1393,8 +1385,6 @@ export class LarkCustomerDemandSyncService {
       where: { id: monthId },
       data: {
         status: 'CONFIRMED',
-        approvedAt: now,
-        approvedBy: userId,
       },
     });
   }

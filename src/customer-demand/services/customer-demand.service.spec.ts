@@ -7,6 +7,7 @@ describe('CustomerDemandService', () => {
     findProducts: jest.fn(),
     findMonthById: jest.fn(),
     findCustomer: jest.fn(),
+    createConfirmed: jest.fn(),
     updateMonth: jest.fn(),
     findById: jest.fn(),
   };
@@ -148,6 +149,48 @@ describe('CustomerDemandService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('tạo phiếu Demand một tháng ở trạng thái hoàn thành', async () => {
+    repository.findCustomer.mockResolvedValue({
+      id: 1,
+      code: 'KH001',
+      name: 'Khách OEM',
+    });
+    repository.createConfirmed.mockResolvedValue(99);
+    repository.findById.mockResolvedValue({
+      id: 99,
+      customer: { id: 1, code: 'KH001', name: 'Khách OEM' },
+      note: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      months: [],
+    });
+
+    await service.create(
+      {
+        customerId: 1,
+        months: [
+          {
+            month: '2026-10',
+            lines: [{ productId: 1, quantity: 10, unit: 'BASE' }],
+          },
+        ],
+      },
+      7,
+    );
+
+    expect(repository.createConfirmed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerId: 1,
+        createdBy: 7,
+        months: [
+          expect.objectContaining({
+            demandMonth: new Date('2026-10-01T00:00:00.000Z'),
+          }),
+        ],
+      }),
+    );
+  });
+
   it('từ chối số lượng không hợp lệ', async () => {
     await expect(
       (service as any).normalizeMonths([
@@ -248,7 +291,7 @@ describe('CustomerDemandService', () => {
       id: 10,
       demandId: 20,
       demandMonth: new Date('2026-10-01T00:00:00.000Z'),
-      status: 'DRAFT',
+      status: 'CONFIRMED',
       demand: { id: 20, customerId: 1, note: null },
       lines: [
         {
@@ -277,7 +320,7 @@ describe('CustomerDemandService', () => {
           id: 10,
           demandId: 20,
           demandMonth: new Date('2026-10-01T00:00:00.000Z'),
-          status: 'DRAFT',
+          status: 'CONFIRMED',
           lines: [],
           changeLogs: [],
         },
@@ -289,6 +332,7 @@ describe('CustomerDemandService', () => {
       {
         customerId: 2,
         month: '2026-10',
+        changeNote: 'Điều chỉnh khách hàng và số lượng',
         lines: [
           { productId: 1, quantity: 10, unit: 'BASE' },
           { productId: 1, quantity: 2, unit: 'CARTON' },

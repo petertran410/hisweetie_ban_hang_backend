@@ -210,7 +210,7 @@ export class CustomerDemandRepository {
     });
   }
 
-  async createDraft(data: {
+  async createConfirmed(data: {
     customerId: number;
     note?: string | null;
     createdBy: number;
@@ -226,12 +226,12 @@ export class CustomerDemandRepository {
     }>;
   }) {
     return this.prisma.$transaction(async (tx) => {
-      const demand = await this.createDraftInTx(tx, data);
+      const demand = await this.createConfirmedInTx(tx, data);
       return demand.id as number;
     });
   }
 
-  async createManyDrafts(
+  async createManyConfirmed(
     items: Array<{
       customerId: number;
       note?: string | null;
@@ -252,7 +252,7 @@ export class CustomerDemandRepository {
       async (tx) => {
         const ids: number[] = [];
         for (const data of items) {
-          const demand = await this.createDraftInTx(tx, data);
+          const demand = await this.createConfirmedInTx(tx, data);
           ids.push(demand.id as number);
         }
         return ids;
@@ -261,7 +261,7 @@ export class CustomerDemandRepository {
     );
   }
 
-  private async createDraftInTx(tx: any, data: {
+  private async createConfirmedInTx(tx: any, data: {
     customerId: number;
     note?: string | null;
     createdBy: number;
@@ -285,7 +285,7 @@ export class CustomerDemandRepository {
         months: {
           create: data.months.map((month) => ({
             demandMonth: month.demandMonth,
-            status: 'DRAFT',
+            status: 'CONFIRMED',
             lines: { create: month.lines },
           })),
         },
@@ -360,7 +360,7 @@ export class CustomerDemandRepository {
             data: {
               demandId,
               demandMonth: month.demandMonth,
-              status: 'DRAFT',
+              status: 'CONFIRMED',
               lines: { create: month.lines },
             },
           });
@@ -542,44 +542,6 @@ export class CustomerDemandRepository {
       }
 
       return updated.id;
-    });
-  }
-
-  async approveMonth(monthId: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const monthDelegate = (tx as any).customerDemandMonth;
-      const logDelegate = (tx as any).customerDemandChangeLog;
-      const current = await monthDelegate.findUnique({
-        where: { id: monthId },
-        include: { lines: true },
-      });
-      if (!current) throw new NotFoundException('Không tìm thấy tháng Demand');
-      const updated = await monthDelegate.update({
-        where: { id: monthId },
-        data: {
-          status: 'CONFIRMED',
-          approvedAt: new Date(),
-          approvedBy: userId,
-        },
-        include: { lines: true },
-      });
-      await logDelegate.create({
-        data: {
-          demandMonthId: monthId,
-          action: 'APPROVE',
-          reason: 'Duyệt nhu cầu khách hàng',
-          beforeSnapshot: {
-            status: current.status,
-            lines: this.snapshotLines(current.lines),
-          },
-          afterSnapshot: {
-            status: updated.status,
-            lines: this.snapshotLines(updated.lines),
-          },
-          actorId: userId,
-        },
-      });
-      return updated;
     });
   }
 

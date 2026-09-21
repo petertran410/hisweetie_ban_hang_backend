@@ -6,9 +6,8 @@ const prisma = new PrismaClient();
 
 const PERMISSIONS = [
   ['customer_demand:view', 'view', 'Xem Demand khách hàng (OEM/đặt hộ)'],
-  ['customer_demand:create', 'create', 'Tạo phiếu Demand khách hàng ở trạng thái nháp'],
+  ['customer_demand:create', 'create', 'Tạo phiếu Demand khách hàng ở trạng thái hoàn thành'],
   ['customer_demand:update', 'update', 'Chỉnh sửa phiếu Demand khách hàng'],
-  ['customer_demand:approve', 'approve', 'Duyệt tháng Demand khách hàng'],
   ['customer_demand:cancel', 'cancel', 'Hủy tháng Demand khách hàng'],
 ] as const;
 

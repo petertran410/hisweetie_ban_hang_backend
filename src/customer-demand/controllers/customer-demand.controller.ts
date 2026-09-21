@@ -187,15 +187,6 @@ export class CustomerDemandController {
     return this.service.updateMonth(id, dto, user.id);
   }
 
-  @Post('months/:id/approve')
-  @RequirePermissions('customer_demand:approve')
-  approve(
-    @Param('id', ParseIntPipe) id: number,
-    @CurrentUser() user: { id: number },
-  ) {
-    return this.service.approveMonth(id, user.id);
-  }
-
   @Post('months/:id/cancel')
   @RequirePermissions('customer_demand:cancel')
   cancel(

@@ -697,6 +697,10 @@ describe('LarkCustomerDemandSyncService', () => {
 
     expect(tx.customerDemand.create).toHaveBeenCalledTimes(1);
     expect(tx.customerDemandMonth.create).toHaveBeenCalledTimes(1);
+    const createdMonth = (tx.customerDemandMonth.create.mock.calls as any[])[0][0];
+    expect(createdMonth.data).toMatchObject({ status: 'CONFIRMED' });
+    expect(createdMonth.data).not.toHaveProperty('approvedAt');
+    expect(createdMonth.data).not.toHaveProperty('approvedBy');
     expect(tx.customerDemandLine.create).toHaveBeenCalledTimes(1);
     expect(tx.customerDemandLine.update).toHaveBeenCalledTimes(1);
     expect(tx.customerDemandLine.update).toHaveBeenCalledWith({

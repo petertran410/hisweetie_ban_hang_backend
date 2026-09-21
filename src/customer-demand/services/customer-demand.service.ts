@@ -66,7 +66,7 @@ export class CustomerDemandService {
     const customer = await this.repository.findCustomer(dto.customerId);
     if (!customer) throw new BadRequestException('Khách hàng không tồn tại');
     const months = await this.normalizeMonths(dto.months);
-    const id = await this.repository.createDraft({
+    const id = await this.repository.createConfirmed({
       customerId: dto.customerId,
       note: dto.note ?? null,
       createdBy: userId,
@@ -99,7 +99,7 @@ export class CustomerDemandService {
       if (incomingIds.has(existing.id)) continue;
       if (existing.status !== 'DRAFT') {
         throw new BadRequestException(
-          'Không thể xóa tháng đã xác nhận hoặc đã hủy khỏi phiếu',
+          'Không thể xóa tháng đã hoàn thành hoặc đã hủy khỏi phiếu',
         );
       }
     }
@@ -167,15 +167,6 @@ export class CustomerDemandService {
       confirmedChange,
     });
     return this.get(current.demandId);
-  }
-
-  async approveMonth(id: number, userId: number) {
-    const month: any = await this.repository.findMonthById(id);
-    if (!month) throw new NotFoundException('Không tìm thấy tháng Demand');
-    if (month.status !== 'DRAFT')
-      throw new BadRequestException('Chỉ được duyệt tháng Draft');
-    const updated = await this.repository.approveMonth(id, userId);
-    return { id: updated.id, status: updated.status };
   }
 
   async cancelMonth(
@@ -338,7 +329,7 @@ export class CustomerDemandService {
   private requireChangeNote(value?: string) {
     if (!value?.trim())
       throw new BadRequestException(
-        'Phải nhập lý do khi sửa tháng đã Confirmed',
+        'Phải nhập lý do khi sửa Demand đã hoàn thành',
       );
     return value.trim();
   }
