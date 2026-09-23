@@ -286,6 +286,31 @@ describe('CustomerDemandService', () => {
     );
   });
 
+  it('lọc Demand theo khoảng tháng cần hàng', async () => {
+    repository.findList.mockResolvedValue([[], 0]);
+
+    await service.list({
+      monthFrom: '2026-09',
+      monthTo: '2026-11',
+    } as any);
+
+    expect(repository.findList).toHaveBeenCalledWith(
+      {
+        months: {
+          some: {
+            demandMonth: {
+              gte: new Date('2026-09-01T00:00:00.000Z'),
+              lt: new Date('2026-12-01T00:00:00.000Z'),
+            },
+          },
+        },
+      },
+      0,
+      50,
+      [{ createdAt: 'desc' }, { id: 'desc' }],
+    );
+  });
+
   it('cập nhật riêng một tháng và giữ hai dòng cùng sản phẩm', async () => {
     repository.findMonthById.mockResolvedValue({
       id: 10,

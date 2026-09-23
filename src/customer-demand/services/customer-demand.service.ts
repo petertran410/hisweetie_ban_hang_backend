@@ -29,7 +29,7 @@ export class CustomerDemandService {
     const limit = Math.min(query.limit ?? 50, 200);
     const where: Record<string, any> = {};
     if (query.customerId) where.customerId = query.customerId;
-    if (query.month || query.status) {
+    if (query.month || query.monthFrom || query.monthTo || query.status) {
       where.months = { some: this.monthWhere(query) };
     }
     const [rows, total] = await this.repository.findList(
@@ -336,13 +336,23 @@ export class CustomerDemandService {
 
   private monthWhere(query: CustomerDemandQueryDto) {
     const where: Record<string, any> = {};
+    const demandMonth: Record<string, Date> = {};
     if (query.status) where.status = query.status;
     if (query.month) {
       const date = this.monthDate(query.month);
       const next = new Date(date);
       next.setUTCMonth(next.getUTCMonth() + 1);
-      where.demandMonth = { gte: date, lt: next };
+      demandMonth.gte = date;
+      demandMonth.lt = next;
+    } else if (query.monthFrom || query.monthTo) {
+      if (query.monthFrom) demandMonth.gte = this.monthDate(query.monthFrom);
+      if (query.monthTo) {
+        const next = this.monthDate(query.monthTo);
+        next.setUTCMonth(next.getUTCMonth() + 1);
+        demandMonth.lt = next;
+      }
     }
+    if (Object.keys(demandMonth).length) where.demandMonth = demandMonth;
     return where;
   }
 

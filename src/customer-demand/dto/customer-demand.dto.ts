@@ -154,6 +154,16 @@ export class CustomerDemandQueryDto {
   month?: string;
 
   @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
+  monthFrom?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
+  monthTo?: string;
+
+  @IsOptional()
   @IsIn(CUSTOMER_DEMAND_STATUSES)
   status?: (typeof CUSTOMER_DEMAND_STATUSES)[number];
 
