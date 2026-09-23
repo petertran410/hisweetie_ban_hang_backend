@@ -152,6 +152,12 @@ export class CustomerDemandController {
     return this.larkSyncService.backfill(user.id);
   }
 
+  @Get('order-summary')
+  @RequirePermissions('customer_demand:view')
+  orderSummary(@Query() query: CustomerDemandQueryDto) {
+    return this.service.orderSummary(query);
+  }
+
   @Get(':id')
   @RequirePermissions('customer_demand:view')
   get(@Param('id', ParseIntPipe) id: number) {

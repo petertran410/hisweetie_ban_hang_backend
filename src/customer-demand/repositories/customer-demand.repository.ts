@@ -110,6 +110,35 @@ export class CustomerDemandRepository {
     });
   }
 
+  findSummaryMonths(where: Record<string, unknown>) {
+    return this.monthDelegate().findMany({
+      where,
+      orderBy: { demandMonth: 'asc' },
+      select: {
+        id: true,
+        demandId: true,
+        demandMonth: true,
+        demand: {
+          select: {
+            customerId: true,
+            customer: { select: { id: true, code: true, name: true } },
+          },
+        },
+        lines: {
+          select: {
+            id: true,
+            inputQuantity: true,
+            inputUnit: true,
+            quantityBase: true,
+            product: {
+              select: { id: true, code: true, name: true, unit: true },
+            },
+          },
+        },
+      },
+    });
+  }
+
   searchCustomers(search?: string) {
     const value = search?.trim();
     return this.prisma.customer.findMany({

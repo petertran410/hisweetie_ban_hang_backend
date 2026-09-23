@@ -164,6 +164,11 @@ export class CustomerDemandQueryDto {
   monthTo?: string;
 
   @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  search?: string;
+
+  @IsOptional()
   @IsIn(CUSTOMER_DEMAND_STATUSES)
   status?: (typeof CUSTOMER_DEMAND_STATUSES)[number];
 

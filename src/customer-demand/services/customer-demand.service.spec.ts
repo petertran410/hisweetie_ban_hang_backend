@@ -10,6 +10,7 @@ describe('CustomerDemandService', () => {
     createConfirmed: jest.fn(),
     updateMonth: jest.fn(),
     findById: jest.fn(),
+    findSummaryMonths: jest.fn(),
   };
   const auditLogs = { create: jest.fn() };
   const service = new CustomerDemandService(
@@ -309,6 +310,57 @@ describe('CustomerDemandService', () => {
       50,
       [{ createdAt: 'desc' }, { id: 'desc' }],
     );
+  });
+
+  it('cộng số lượng cùng mã của nhiều khách theo từng tháng', async () => {
+    repository.findSummaryMonths.mockResolvedValue([
+      {
+        demandMonth: new Date('2026-10-01T00:00:00.000Z'),
+        demand: { customerId: 1, customer: { id: 1, code: 'KH1', name: 'A' } },
+        lines: [
+          {
+            quantityBase: 10,
+            product: { id: 11, code: 'SP001', name: 'Nguyên liệu', unit: 'gói' },
+          },
+        ],
+      },
+      {
+        demandMonth: new Date('2026-10-01T00:00:00.000Z'),
+        demand: { customerId: 2, customer: { id: 2, code: 'KH2', name: 'B' } },
+        lines: [
+          {
+            quantityBase: 15,
+            product: { id: 11, code: 'SP001', name: 'Nguyên liệu', unit: 'gói' },
+          },
+        ],
+      },
+      {
+        demandMonth: new Date('2026-11-01T00:00:00.000Z'),
+        demand: { customerId: 1, customer: { id: 1, code: 'KH1', name: 'A' } },
+        lines: [
+          {
+            quantityBase: 5,
+            product: { id: 11, code: 'SP001', name: 'Nguyên liệu', unit: 'gói' },
+          },
+        ],
+      },
+    ]);
+
+    const result = await service.orderSummary({ monthFrom: '2026-10' } as any);
+
+    expect(repository.findSummaryMonths).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'CONFIRMED',
+        demandMonth: { gte: new Date('2026-10-01T00:00:00.000Z') },
+      }),
+    );
+    expect(result.months).toEqual(['2026-10', '2026-11']);
+    expect(result.products[0]).toMatchObject({
+      customerCount: 2,
+      totalQuantityBase: 30,
+      quantities: { '2026-10': 25, '2026-11': 5 },
+    });
+    expect(result.totals).toEqual({ '2026-10': 25, '2026-11': 5 });
   });
 
   it('cập nhật riêng một tháng và giữ hai dòng cùng sản phẩm', async () => {

@@ -51,6 +51,150 @@ export class CustomerDemandService {
     return this.repository.searchCustomers(search);
   }
 
+  async orderSummary(query: CustomerDemandQueryDto) {
+    const where = this.monthWhere({
+      ...query,
+      status: query.status ?? 'CONFIRMED',
+    });
+    if (query.customerId) where.demand = { customerId: query.customerId };
+    const months = await this.repository.findSummaryMonths(where);
+    const search = this.normalizeSearch(query.search);
+    const monthKeys = new Set<string>();
+    const products = new Map<
+      number,
+      {
+        product: { id: number; code: string; name: string; unit: string | null };
+        customers: Set<number>;
+        customersByMonth: Map<string, Set<number>>;
+        customerDetails: Map<
+          number,
+          { id: number; code: string | null; name: string }
+        >;
+        detailsByMonth: Map<
+          string,
+          Array<{
+            demandId: number;
+            demandMonthId: number;
+            demandMonth: string;
+            customer: { id: number; code: string | null; name: string };
+            quantityBase: number;
+            inputQuantity: number;
+            inputUnit: string;
+          }>
+        >;
+        quantities: Map<string, number>;
+      }
+    >();
+
+    for (const month of months) {
+      const monthKey = this.monthKey(month.demandMonth);
+      const customerId = month.demand?.customerId;
+      for (const line of month.lines ?? []) {
+        const product = line.product;
+        if (!product) continue;
+        const haystack = `${product.code ?? ''} ${product.name ?? ''}`.toLowerCase();
+        if (search && !haystack.includes(search)) continue;
+        const quantity = Number(line.quantityBase);
+        if (!Number.isFinite(quantity) || quantity <= 0) continue;
+        monthKeys.add(monthKey);
+        let bucket = products.get(product.id);
+        if (!bucket) {
+          bucket = {
+            product: {
+              id: product.id,
+              code: product.code,
+              name: product.name,
+              unit: product.unit ?? null,
+            },
+            customers: new Set<number>(),
+            customersByMonth: new Map<string, Set<number>>(),
+            customerDetails: new Map<
+              number,
+              { id: number; code: string | null; name: string }
+            >(),
+            detailsByMonth: new Map(),
+            quantities: new Map<string, number>(),
+          };
+          products.set(product.id, bucket);
+        }
+        if (customerId) {
+          bucket.customers.add(customerId);
+          if (month.demand?.customer) {
+            bucket.customerDetails.set(customerId, month.demand.customer);
+          }
+          const monthCustomers =
+            bucket.customersByMonth.get(monthKey) ?? new Set<number>();
+          monthCustomers.add(customerId);
+          bucket.customersByMonth.set(monthKey, monthCustomers);
+          const details = bucket.detailsByMonth.get(monthKey) ?? [];
+          details.push({
+            demandId: month.demandId,
+            demandMonthId: month.id,
+            demandMonth: monthKey,
+            customer: month.demand.customer,
+            quantityBase: quantity,
+            inputQuantity: Number(line.inputQuantity),
+            inputUnit: line.inputUnit,
+          });
+          bucket.detailsByMonth.set(monthKey, details);
+        }
+        bucket.quantities.set(
+          monthKey,
+          this.roundQuantity((bucket.quantities.get(monthKey) ?? 0) + quantity),
+        );
+      }
+    }
+
+    const orderedMonths = [...monthKeys].sort();
+    const rows = [...products.values()]
+      .map((bucket) => {
+        const quantities = Object.fromEntries(
+          orderedMonths.map((month) => [
+            month,
+            this.roundQuantity(bucket.quantities.get(month) ?? 0),
+          ]),
+        );
+        return {
+          product: bucket.product,
+          customerCount: bucket.customers.size,
+          totalQuantityBase: this.roundQuantity(
+            [...bucket.quantities.values()].reduce((sum, value) => sum + value, 0),
+          ),
+          quantities,
+          customersByMonth: Object.fromEntries(
+            [...bucket.customersByMonth.entries()].map(([month, customers]) => [
+              month,
+              [...customers].map((customerId) =>
+                bucket.customerDetails.get(customerId),
+              ).filter(Boolean),
+            ]),
+          ),
+          customers: [...bucket.customerDetails.values()],
+          detailsByMonth: Object.fromEntries(bucket.detailsByMonth),
+        };
+      })
+      .sort((left, right) =>
+        left.product.code.localeCompare(right.product.code, 'vi'),
+      );
+    const totals = Object.fromEntries(
+      orderedMonths.map((month) => [
+        month,
+        this.roundQuantity(
+          rows.reduce((sum, row) => sum + (row.quantities[month] ?? 0), 0),
+        ),
+      ]),
+    );
+
+    return {
+      months: orderedMonths,
+      products: rows,
+      totals,
+      totalQuantityBase: this.roundQuantity(
+        rows.reduce((sum, row) => sum + row.totalQuantityBase, 0),
+      ),
+    };
+  }
+
   async get(id: number) {
     const row = await this.repository.findById(id);
     if (!row) throw new NotFoundException('Không tìm thấy phiếu Demand');
@@ -358,6 +502,14 @@ export class CustomerDemandService {
 
   private monthDate(value: string) {
     return new Date(`${value}-01T00:00:00.000Z`);
+  }
+
+  private normalizeSearch(value?: string) {
+    return value?.trim().toLocaleLowerCase('vi') ?? '';
+  }
+
+  private roundQuantity(value: number) {
+    return Math.round((value + Number.EPSILON) * 10000) / 10000;
   }
 
   private monthKey(value: Date | string) {
