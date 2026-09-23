@@ -158,6 +158,24 @@ export class CustomerDemandController {
     return this.service.orderSummary(query);
   }
 
+  @Get('export/summary')
+  @RequirePermissions('customer_demand:export')
+  async exportSummary(
+    @Query() query: CustomerDemandQueryDto,
+    @Res() res: Response,
+  ) {
+    await this.service.exportSummary(query, res);
+  }
+
+  @Get('export/detail')
+  @RequirePermissions('customer_demand:export')
+  async exportDetail(
+    @Query() query: CustomerDemandQueryDto,
+    @Res() res: Response,
+  ) {
+    await this.service.exportDetail(query, res);
+  }
+
   @Get(':id')
   @RequirePermissions('customer_demand:view')
   get(@Param('id', ParseIntPipe) id: number) {

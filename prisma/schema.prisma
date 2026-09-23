@@ -1479,6 +1479,8 @@ model OrderItem {
   productCode    String
   productName    String
   quantity       Decimal    @default(0) @db.Decimal(18, 4)
+  quantityUnit   String     @default("base") @map("quantity_unit")
+  conversionValueSnapshot Decimal @default(1) @map("conversion_value_snapshot") @db.Decimal(18, 4)
   price          Decimal    @default(0) @db.Decimal(18, 2)
   appliedPrice   Decimal    @default(0) @db.Decimal(18, 2)
   discount       Decimal    @default(0) @db.Decimal(18, 2)
@@ -1730,6 +1732,8 @@ model InvoiceDetail {
   productCode        String
   productName        String
   quantity           Decimal
+  quantityUnit       String              @default("base") @map("quantity_unit")
+  conversionValueSnapshot Decimal        @default(1) @map("conversion_value_snapshot") @db.Decimal(18, 4)
   price              Decimal
   discount           Decimal             @default(0)
   discountRatio      Decimal             @default(0)

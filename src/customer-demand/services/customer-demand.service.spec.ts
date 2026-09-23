@@ -11,6 +11,7 @@ describe('CustomerDemandService', () => {
     updateMonth: jest.fn(),
     findById: jest.fn(),
     findSummaryMonths: jest.fn(),
+    searchCustomerIds: jest.fn(),
   };
   const auditLogs = { create: jest.fn() };
   const service = new CustomerDemandService(
@@ -306,6 +307,23 @@ describe('CustomerDemandService', () => {
           },
         },
       },
+      0,
+      50,
+      [{ createdAt: 'desc' }, { id: 'desc' }],
+    );
+  });
+
+  it('lọc Demand theo mã, tên hoặc số điện thoại khách hàng', async () => {
+    repository.findList.mockResolvedValue([[], 0]);
+    repository.searchCustomerIds.mockResolvedValue([7, 9]);
+
+    await service.list({ customerSearch: 'KH005507.1 · NLPC Ngu' } as any);
+
+    expect(repository.searchCustomerIds).toHaveBeenCalledWith(
+      'KH005507.1 · NLPC Ngu',
+    );
+    expect(repository.findList).toHaveBeenCalledWith(
+      { customerId: { in: [7, 9] } },
       0,
       50,
       [{ createdAt: 'desc' }, { id: 'desc' }],

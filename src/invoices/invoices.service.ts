@@ -1288,6 +1288,11 @@ export class InvoicesService {
           productCode: it.productCode,
           productName: it.productName,
           quantity: Number(it.quantity),
+          quantityUnit: it.quantityUnit === 'carton' ? 'carton' : 'base',
+          conversionValueSnapshot:
+            Number(it.conversionValueSnapshot) > 0
+              ? Number(it.conversionValueSnapshot)
+              : 1,
           price: manualGift ? 0 : Number(it.price),
           discount: manualGift ? 0 : Number(it.discount || 0),
           discountRatio: Number(it.discountRatio || 0),
@@ -1770,6 +1775,11 @@ export class InvoicesService {
                   productCode: item.productCode,
                   productName: item.productName,
                   quantity: item.quantity,
+                  quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+                  conversionValueSnapshot:
+                    Number(item.conversionValueSnapshot) > 0
+                      ? Number(item.conversionValueSnapshot)
+                      : 1,
                   price: item.price,
                   discount: item.discount || 0,
                   discountRatio: item.discountRatio || 0,
@@ -2308,6 +2318,8 @@ export class InvoicesService {
           productCode: detail.productCode,
           productName: detail.productName,
           quantity: detail.quantity,
+          quantityUnit: detail.quantityUnit || 'base',
+          conversionValueSnapshot: Number(detail.conversionValueSnapshot || 1),
           price: detail.price,
           discount: detail.discount,
           discountRatio: detail.discountRatio,
@@ -2787,6 +2799,11 @@ export class InvoicesService {
                 productCode: item.productCode,
                 productName: item.productName,
                 quantity: item.quantity,
+                quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+                conversionValueSnapshot:
+                  Number(item.conversionValueSnapshot) > 0
+                    ? Number(item.conversionValueSnapshot)
+                    : 1,
                 price: item.price,
                 discount: item.discount || 0,
                 discountRatio: item.discountRatio || 0,
@@ -3346,6 +3363,11 @@ export class InvoicesService {
             productCode: item.productCode,
             productName: item.productName,
             quantity: item.quantity,
+            quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+            conversionValueSnapshot:
+              Number(item.conversionValueSnapshot) > 0
+                ? Number(item.conversionValueSnapshot)
+                : 1,
             price: item.price,
             discount: item.discount || 0,
             discountRatio: item.discountRatio || 0,
@@ -3807,6 +3829,8 @@ export class InvoicesService {
               productCode: item.productCode,
               productName: item.productName,
               quantity: item.remainingQuantity,
+              quantityUnit: item.quantityUnit || 'base',
+              conversionValueSnapshot: Number(item.conversionValueSnapshot || 1),
               price: Number(item.price),
               discount: Number(item.discount),
               discountRatio: Number(item.discountRatio),
@@ -3998,6 +4022,11 @@ export class InvoicesService {
               productCode: item.productCode,
               productName: item.productName,
               quantity: item.quantity,
+              quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+              conversionValueSnapshot:
+                Number(item.conversionValueSnapshot) > 0
+                  ? Number(item.conversionValueSnapshot)
+                  : 1,
               price: item.price,
               discount: item.discount,
               discountRatio: item.discountRatio,
@@ -4577,6 +4606,8 @@ export class InvoicesService {
               productCode: item.productCode,
               productName: item.productName,
               quantity: item.remainingQuantity,
+              quantityUnit: 'base',
+              conversionValueSnapshot: 1,
               price: Number(item.price),
               discount: Number(item.discount),
               discountRatio: Number(item.discountRatio),
@@ -4644,6 +4675,11 @@ export class InvoicesService {
               productCode: item.productCode,
               productName: item.productName,
               quantity: item.quantity,
+              quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+              conversionValueSnapshot:
+                Number(item.conversionValueSnapshot) > 0
+                  ? Number(item.conversionValueSnapshot)
+                  : 1,
               price: item.price,
               discount: item.discount,
               discountRatio: item.discountRatio,
@@ -5629,6 +5665,8 @@ export class InvoicesService {
         productCode: i.productCode || i.product?.code,
         productName: i.productName || i.product?.name,
         quantity: Number(i.quantity),
+        quantityUnit: i.quantityUnit || 'base',
+        conversionValueSnapshot: Number(i.conversionValueSnapshot || 1),
         price: Number(i.price),
         discount: Number(i.discount || 0),
         isRewardPoint: i.isRewardPoint,

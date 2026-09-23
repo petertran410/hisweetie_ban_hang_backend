@@ -118,3 +118,39 @@ describe('CustomerDemandRepository.updateMonth', () => {
     expect(tx.customerDemandLine.deleteMany).not.toHaveBeenCalled();
   });
 });
+
+describe('CustomerDemandRepository.searchCustomers', () => {
+  it('tìm được khi query gồm cả mã và tên khách hàng', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const repository = new CustomerDemandRepository({
+      customer: { findMany },
+    } as any);
+
+    await repository.searchCustomers('KH005507.1 · NLPC Ngu');
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          isActive: true,
+          AND: [
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { code: { contains: 'KH005507.1', mode: 'insensitive' } },
+              ]),
+            }),
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { name: { contains: 'NLPC', mode: 'insensitive' } },
+              ]),
+            }),
+            expect.objectContaining({
+              OR: expect.arrayContaining([
+                { name: { contains: 'Ngu', mode: 'insensitive' } },
+              ]),
+            }),
+          ],
+        }),
+      }),
+    );
+  });
+});

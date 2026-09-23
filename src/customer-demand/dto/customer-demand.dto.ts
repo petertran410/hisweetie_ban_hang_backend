@@ -150,6 +150,11 @@ export class CustomerDemandQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(200)
+  customerSearch?: string;
+
+  @IsOptional()
+  @IsString()
   @Matches(/^\d{4}-(0[1-9]|1[0-2])$/)
   month?: string;
 

@@ -66,6 +66,16 @@ export class OrderItemDto {
   @IsNumber()
   quantity: number;
 
+  @IsString()
+  @IsOptional()
+  @IsIn(['base', 'carton'])
+  quantityUnit?: 'base' | 'carton';
+
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @IsOptional()
+  @Min(1)
+  conversionValueSnapshot?: number;
+
   @IsNumber()
   unitPrice: number;
 

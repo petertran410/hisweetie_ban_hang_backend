@@ -9,6 +9,7 @@ const PERMISSIONS = [
   ['customer_demand:create', 'create', 'Tạo phiếu Demand khách hàng ở trạng thái hoàn thành'],
   ['customer_demand:update', 'update', 'Chỉnh sửa phiếu Demand khách hàng'],
   ['customer_demand:cancel', 'cancel', 'Hủy tháng Demand khách hàng'],
+  ['customer_demand:export', 'export', 'Xuất file Demand khách hàng'],
 ] as const;
 
 async function main() {

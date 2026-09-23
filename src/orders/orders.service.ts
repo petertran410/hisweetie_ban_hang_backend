@@ -240,6 +240,11 @@ export class OrdersService {
           note: it.note,
           serialNumbers: it.serialNumbers,
           conditionType: it.conditionType || 'normal',
+          quantityUnit: it.quantityUnit === 'carton' ? 'carton' : 'base',
+          conversionValueSnapshot:
+            Number(it.conversionValueSnapshot) > 0
+              ? Number(it.conversionValueSnapshot)
+              : 1,
           soldExpiryDate: it.soldExpiryDate ?? null,
           lineType: manualGift ? 'gift' : it.lineType || 'normal',
           isGift: manualGift,
@@ -544,6 +549,11 @@ export class OrdersService {
             productCode: product.code,
             productName: product.name,
             quantity: item.quantity,
+            quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+            conversionValueSnapshot:
+              Number(item.conversionValueSnapshot) > 0
+                ? Number(item.conversionValueSnapshot)
+                : Number(product.conversionValue || 1),
             price: unitPrice,
             appliedPrice: appliedPrice,
             discount: itemDiscount,
@@ -816,6 +826,11 @@ export class OrdersService {
               productCode: product.code,
               productName: product.name,
               quantity: item.quantity,
+              quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+              conversionValueSnapshot:
+                Number(item.conversionValueSnapshot) > 0
+                  ? Number(item.conversionValueSnapshot)
+                  : Number(product.conversionValue || 1),
               price: unitPrice,
               appliedPrice: appliedPrice,
               discount: itemDiscount,
@@ -2286,6 +2301,8 @@ export class OrdersService {
         productCode: i.productCode || i.product?.code,
         productName: i.productName || i.product?.name,
         quantity: Number(i.quantity),
+        quantityUnit: i.quantityUnit || 'base',
+        conversionValueSnapshot: Number(i.conversionValueSnapshot || 1),
         price: Number(i.price),
         discount: Number(i.discount || 0),
       })),

@@ -25,6 +25,16 @@ class CreateInvoiceDetailDto {
   @IsNumber()
   quantity: number;
 
+  @IsOptional()
+  @IsString()
+  @IsIn(['base', 'carton'])
+  quantityUnit?: 'base' | 'carton';
+
+  @IsOptional()
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @Min(1)
+  conversionValueSnapshot?: number;
+
   @IsNumber()
   price: number;
 
@@ -324,6 +334,8 @@ export class CreateInvoiceFromOrderDto {
     productCode: string;
     productName: string;
     quantity: number;
+    quantityUnit?: 'base' | 'carton';
+    conversionValueSnapshot?: number;
     price: number;
     discount: number;
     discountRatio: number;

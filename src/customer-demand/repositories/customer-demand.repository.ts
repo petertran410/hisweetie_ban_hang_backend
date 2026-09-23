@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { searchCustomerIds } from '../../common/customer-search.util';
 import { PrismaService } from '../../prisma/prisma.service';
 
 @Injectable()
@@ -139,23 +140,61 @@ export class CustomerDemandRepository {
     });
   }
 
+  findExportMonths(where: Record<string, unknown>) {
+    return this.monthDelegate().findMany({
+      where,
+      orderBy: [{ demandMonth: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        demandId: true,
+        demandMonth: true,
+        status: true,
+        note: true,
+        demand: {
+          select: {
+            note: true,
+            customer: { select: { id: true, code: true, name: true } },
+          },
+        },
+        lines: {
+          orderBy: { id: 'asc' },
+          select: {
+            inputQuantity: true,
+            inputUnit: true,
+            quantityBase: true,
+            product: {
+              select: { id: true, code: true, name: true, unit: true },
+            },
+          },
+        },
+      },
+    });
+  }
+
   searchCustomers(search?: string) {
     const value = search?.trim();
+    const tokens = value ? value.split(/[\s·]+/).filter(Boolean) : [];
     return this.prisma.customer.findMany({
       where: value
         ? {
             isActive: true,
-            OR: [
-              { name: { contains: value, mode: 'insensitive' } },
-              { code: { contains: value, mode: 'insensitive' } },
-              { contactNumber: { contains: value, mode: 'insensitive' } },
-            ],
+            AND: tokens.map((token) => ({
+              OR: [
+                { name: { contains: token, mode: 'insensitive' } },
+                { code: { contains: token, mode: 'insensitive' } },
+                { contactNumber: { contains: token, mode: 'insensitive' } },
+              ],
+            })),
           }
         : { isActive: true },
       select: { id: true, code: true, name: true },
       orderBy: { name: 'asc' },
       take: 100,
     });
+  }
+
+  searchCustomerIds(search: string) {
+    return searchCustomerIds(this.prisma, search);
   }
 
   findCustomer(id: number) {

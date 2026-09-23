@@ -14,6 +14,8 @@ import {
   UpdateCustomerDemandMonthDto,
   UpdateCustomerDemandDto,
 } from '../dto';
+import * as ExcelJS from 'exceljs';
+import { Response } from 'express';
 
 const LEGACY_LARK_DEMAND_NOTE = 'Đồng bộ tự động từ LarkBase';
 
@@ -29,6 +31,16 @@ export class CustomerDemandService {
     const limit = Math.min(query.limit ?? 50, 200);
     const where: Record<string, any> = {};
     if (query.customerId) where.customerId = query.customerId;
+    if (query.customerSearch?.trim()) {
+      const matchedIds = await this.repository.searchCustomerIds(
+        query.customerSearch,
+      );
+      if (query.customerId) {
+        if (!matchedIds.includes(query.customerId)) where.customerId = -1;
+      } else {
+        where.customerId = { in: matchedIds.length ? matchedIds : [-1] };
+      }
+    }
     if (query.month || query.monthFrom || query.monthTo || query.status) {
       where.months = { some: this.monthWhere(query) };
     }
@@ -56,7 +68,16 @@ export class CustomerDemandService {
       ...query,
       status: query.status ?? 'CONFIRMED',
     });
-    if (query.customerId) where.demand = { customerId: query.customerId };
+    const customerSearchIds = query.customerSearch?.trim()
+      ? await this.repository.searchCustomerIds(query.customerSearch)
+      : null;
+    if (query.customerId) {
+      where.demand = { customerId: query.customerId };
+    } else if (customerSearchIds) {
+      where.demand = {
+        customerId: { in: customerSearchIds.length ? customerSearchIds : [-1] },
+      };
+    }
     const months = await this.repository.findSummaryMonths(where);
     const search = this.normalizeSearch(query.search);
     const monthKeys = new Set<string>();
@@ -193,6 +214,121 @@ export class CustomerDemandService {
         rows.reduce((sum, row) => sum + row.totalQuantityBase, 0),
       ),
     };
+  }
+
+  async exportSummary(query: CustomerDemandQueryDto, res: Response) {
+    const summary = await this.orderSummary(query);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Tong quan Demand');
+    const monthColumns = summary.months.map((month) => ({
+      header: month,
+      key: month,
+      width: 14,
+    }));
+
+    sheet.columns = [
+      { header: 'STT', key: 'index', width: 8 },
+      { header: 'Mã hàng', key: 'code', width: 20 },
+      { header: 'Tên hàng', key: 'name', width: 38 },
+      { header: 'Đơn vị cơ bản', key: 'unit', width: 16 },
+      { header: 'Số khách', key: 'customerCount', width: 12 },
+      ...monthColumns,
+      { header: 'Tổng quy đổi', key: 'total', width: 16 },
+    ];
+    summary.products.forEach((row, index) => {
+      const values: Record<string, unknown> = {
+        index: index + 1,
+        code: row.product.code,
+        name: row.product.name,
+        unit: row.product.unit ?? 'Đơn vị',
+        customerCount: row.customerCount,
+        total: row.totalQuantityBase,
+      };
+      for (const month of summary.months) {
+        values[month] = row.quantities[month] ?? 0;
+      }
+      sheet.addRow(values);
+    });
+    const totalValues: Record<string, unknown> = {
+      index: '',
+      code: '',
+      name: 'TỔNG',
+      unit: '',
+      customerCount: '',
+      total: summary.totalQuantityBase,
+    };
+    for (const month of summary.months) {
+      totalValues[month] = summary.totals[month] ?? 0;
+    }
+    sheet.addRow(totalValues);
+    this.styleExportSheet(sheet);
+    return this.sendExcel(res, workbook, `demand-khach-hang-tong-quan-${Date.now()}.xlsx`);
+  }
+
+  async exportDetail(query: CustomerDemandQueryDto, res: Response) {
+    const where = this.monthWhere({
+      ...query,
+      status: query.status ?? 'CONFIRMED',
+    });
+    const customerSearchIds = query.customerSearch?.trim()
+      ? await this.repository.searchCustomerIds(query.customerSearch)
+      : null;
+    if (query.customerId) {
+      where.demand = { customerId: query.customerId };
+    } else if (customerSearchIds) {
+      where.demand = {
+        customerId: { in: customerSearchIds.length ? customerSearchIds : [-1] },
+      };
+    }
+    const months = await this.repository.findExportMonths(where);
+    const search = this.normalizeSearch(query.search);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Chi tiet Demand');
+    sheet.columns = [
+      { header: 'STT', key: 'index', width: 8 },
+      { header: 'Mã phiếu', key: 'demandId', width: 12 },
+      { header: 'Khách hàng', key: 'customer', width: 36 },
+      { header: 'Mã khách', key: 'customerCode', width: 18 },
+      { header: 'Tháng', key: 'month', width: 12 },
+      { header: 'Trạng thái', key: 'status', width: 16 },
+      { header: 'Mã hàng', key: 'productCode', width: 20 },
+      { header: 'Tên hàng', key: 'productName', width: 38 },
+      { header: 'Đơn vị nhập', key: 'inputUnit', width: 16 },
+      { header: 'Số lượng nhập', key: 'inputQuantity', width: 16 },
+      { header: 'Đơn vị cơ bản', key: 'baseUnit', width: 16 },
+      { header: 'Số lượng quy đổi', key: 'quantityBase', width: 18 },
+      { header: 'Ghi chú', key: 'note', width: 36 },
+    ];
+
+    let index = 0;
+    for (const month of months) {
+      for (const line of month.lines) {
+        const haystack =
+          `${line.product.code} ${line.product.name}`.toLocaleLowerCase('vi');
+        if (search && !haystack.includes(search)) continue;
+        index += 1;
+        sheet.addRow({
+          index,
+          demandId: `#${month.demandId}`,
+          customer: month.demand.customer.name,
+          customerCode: month.demand.customer.code ?? '',
+          month: this.monthKey(month.demandMonth),
+          status: this.statusLabel(month.status),
+          productCode: line.product.code,
+          productName: line.product.name,
+          inputUnit:
+            line.inputUnit === 'CARTON'
+              ? 'Thùng'
+              : line.product.unit ?? 'Đơn vị',
+          inputQuantity: Number(line.inputQuantity),
+          baseUnit: line.product.unit ?? 'Đơn vị',
+          quantityBase: Number(line.quantityBase),
+          note: month.note ?? month.demand.note ?? '',
+        });
+      }
+    }
+    this.styleExportSheet(sheet);
+    return this.sendExcel(res, workbook, `demand-khach-hang-chi-tiet-${Date.now()}.xlsx`);
   }
 
   async get(id: number) {
@@ -514,6 +650,54 @@ export class CustomerDemandService {
 
   private monthKey(value: Date | string) {
     return new Date(value).toISOString().slice(0, 7);
+  }
+
+  private statusLabel(status: string) {
+    if (status === 'CONFIRMED') return 'Hoàn thành';
+    if (status === 'CANCELLED') return 'Đã hủy';
+    return 'Chưa cập nhật';
+  }
+
+  private styleExportSheet(sheet: ExcelJS.Worksheet) {
+    const header = sheet.getRow(1);
+    header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    header.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF0F766E' },
+    };
+    header.alignment = { vertical: 'middle', horizontal: 'center' };
+    header.height = 24;
+    sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    sheet.autoFilter = {
+      from: 'A1',
+      to: `${this.excelColumnName(sheet.columnCount)}1`,
+    };
+  }
+
+  private excelColumnName(columnNumber: number) {
+    let value = columnNumber;
+    let result = '';
+    while (value > 0) {
+      const remainder = (value - 1) % 26;
+      result = String.fromCharCode(65 + remainder) + result;
+      value = Math.floor((value - 1) / 26);
+    }
+    return result;
+  }
+
+  private async sendExcel(
+    res: Response,
+    workbook: ExcelJS.Workbook,
+    filename: string,
+  ) {
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await workbook.xlsx.write(res);
+    res.end();
   }
 
   private mapList(row: any) {
