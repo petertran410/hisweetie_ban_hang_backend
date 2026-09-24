@@ -28,7 +28,12 @@ import { SepaySyncService } from './sepay-sync.service';
 import { SepayMatchService } from './sepay-match.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
-import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
+import {
+  AssignCustomersDto,
+  ConfirmReceiptDto,
+  OrderCandidateQueryDto,
+  SelectOrderDto,
+} from './dto/sepay-match.dto';
 import { SepayBackfillDto } from './dto/sepay-backfill.dto';
 import { SepayBackfillCashflowDto } from './dto/sepay-backfill-cashflow.dto';
 
@@ -217,6 +222,45 @@ export class SepayController {
       user,
       branchId && !isNaN(branchId) ? branchId : undefined,
     );
+  }
+
+  /**
+   * Danh sách đơn để sale chọn trực tiếp và tự gắn khách hàng.
+   * Chỉ trả đơn Phiếu tạm (1) hoặc Đã xác nhận (5).
+   */
+  @Get('transactions/:id/order-candidates')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Danh sách đơn hàng đề xuất cho giao dịch Sepay' })
+  async getOrderCandidates(
+    @Param('id') id: string,
+    @Query() query: OrderCandidateQueryDto,
+  ) {
+    return this.sepayMatchService.getOrderCandidates(Number(id), query);
+  }
+
+  /**
+   * Sale chọn một đơn hàng — backend tự lấy khách từ đơn và gắn vào giao dịch.
+   */
+  @Put('transactions/:id/order')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Gắn đơn hàng cho giao dịch Sepay' })
+  async selectOrder(
+    @Param('id') id: string,
+    @Body() dto: SelectOrderDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.sepayMatchService.selectOrder(
+      Number(id),
+      dto,
+      user?.id || 1,
+    );
+  }
+
+  @Delete('transactions/:id/order')
+  @RequirePermissions('sepay:assign')
+  @ApiOperation({ summary: 'Bỏ đơn hàng đề xuất khỏi giao dịch Sepay' })
+  async unselectOrder(@Param('id') id: string) {
+    return this.sepayMatchService.unselectOrder(Number(id));
   }
 
   /**

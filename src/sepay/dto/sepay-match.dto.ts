@@ -7,6 +7,7 @@ import {
   ArrayMinSize,
   IsNumber,
   Min,
+  IsNumberString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -17,6 +18,28 @@ export class AssignCustomersDto {
   @IsInt({ each: true })
   @Type(() => Number)
   customerIds!: number[];
+}
+
+/** Bộ lọc danh sách đơn đề xuất cho giao dịch Sepay. */
+export class OrderCandidateQueryDto {
+  @IsOptional()
+  @IsNumberString()
+  page?: string;
+
+  @IsOptional()
+  @IsNumberString()
+  limit?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+/** Sale chọn một đơn hàng để hệ thống tự gắn khách hàng theo đơn. */
+export class SelectOrderDto {
+  @IsInt()
+  @Type(() => Number)
+  orderId!: number;
 }
 
 /** Phân bổ số tiền của 1 khách vào 1 hóa đơn cụ thể (để tạo InvoicePayment). */
@@ -41,6 +64,11 @@ export class AllocationItemDto {
   @Min(0)
   @Type(() => Number)
   amount!: number;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  orderId?: number;
 
   @IsOptional()
   @IsString()

@@ -7,7 +7,17 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
-import { AssignCustomersDto, ConfirmReceiptDto } from './dto/sepay-match.dto';
+import { OrderPaymentsService } from '../orders/order-payments.service';
+import {
+  AssignCustomersDto,
+  ConfirmReceiptDto,
+  OrderCandidateQueryDto,
+  SelectOrderDto,
+} from './dto/sepay-match.dto';
+import {
+  getStatusLabel,
+  ORDER_STATUS,
+} from '../orders/dto/order-status.constants';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
 import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-close.service';
 
@@ -39,6 +49,24 @@ export interface SepayMatchInfo {
   // Số tiền CHƯA gắn vào khách nào (vd sau khi 1 phiếu thu bị hủy).
   // = amountIn - tổng tiền các phiếu thu còn hiệu lực.
   unassignedAmount?: number;
+  suggestedOrder?: SepaySuggestedOrder | null;
+}
+
+export interface SepaySuggestedOrder {
+  id: number;
+  code: string;
+  orderDate: Date;
+  grandTotal: number;
+  paidAmount: number;
+  debtAmount: number;
+  status: number;
+  statusValue: string;
+  customer: {
+    id: number;
+    code: string | null;
+    name: string;
+  };
+  branch: { id: number; name: string } | null;
 }
 
 interface TxLite {
@@ -53,6 +81,7 @@ export class SepayMatchService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cashFlowsService: CashFlowsService,
+    private readonly orderPaymentsService: OrderPaymentsService,
     private readonly debtTicketAutoClose: DebtTicketAutoCloseService,
   ) {}
 
@@ -109,12 +138,61 @@ export class SepayMatchService {
       }),
       this.prisma.sepayTransaction.findMany({
         where: { id: { in: txIds } },
-        select: { id: true, amountIn: true },
+        select: { id: true, amountIn: true, suggestedOrderId: true },
       }),
     ]);
 
     const txAmountMap = new Map(
-      txAmounts.map((t) => [t.id, Number(t.amountIn)] as const),
+      txAmounts.map((t) => [
+        t.id,
+        {
+          amountIn: Number(t.amountIn),
+          suggestedOrderId: t.suggestedOrderId,
+        },
+      ] as const),
+    );
+    const suggestedOrderIds = Array.from(
+      new Set(
+        txAmounts
+          .map((t) => t.suggestedOrderId)
+          .filter((v): v is number => v != null),
+      ),
+    );
+    const suggestedOrders = suggestedOrderIds.length
+      ? await this.prisma.order.findMany({
+          where: {
+            id: { in: suggestedOrderIds },
+            customerId: { not: null },
+          },
+          select: {
+            id: true,
+            code: true,
+            orderDate: true,
+            grandTotal: true,
+            paidAmount: true,
+            debtAmount: true,
+            status: true,
+            customer: { select: { id: true, code: true, name: true } },
+            branch: { select: { id: true, name: true } },
+          },
+        })
+      : [];
+    const suggestedOrderMap = new Map(
+      suggestedOrders.map((order) => [
+        order.id,
+        {
+          id: order.id,
+          code: order.code,
+          orderDate: order.orderDate,
+          grandTotal: Number(order.grandTotal),
+          paidAmount: Number(order.paidAmount),
+          debtAmount: Number(order.debtAmount),
+          status: order.status,
+          statusValue: getStatusLabel(order.status),
+          customer: order.customer!,
+          branch: order.branch,
+        } satisfies SepaySuggestedOrder,
+      ] as const),
     );
 
     const webhookMap = new Map<
@@ -190,22 +268,29 @@ export class SepayMatchService {
               ]
             : [],
           refCode: webhook.refCode,
+          suggestedOrder: null,
         });
         continue;
       }
 
       const allocs = allocByTx.get(tx.id) || [];
+      const txMeta = txAmountMap.get(tx.id);
+      const suggestedOrder =
+        (txMeta?.suggestedOrderId &&
+          suggestedOrderMap.get(txMeta.suggestedOrderId)) ||
+        null;
       if (allocs.length === 0) {
         result.set(tx.sepayId, {
           status: 'processing',
           completedSource: null,
           customers: [],
           refCode: null,
+          suggestedOrder,
         });
         continue;
       }
 
-      const amountIn = Number(txAmountMap.get(tx.id) ?? 0);
+      const amountIn = Number(txMeta?.amountIn ?? 0);
 
       // Phân loại allocation theo trạng thái phiếu thu:
       //   - cf hủy (status=2)  → BỎ khỏi danh sách khách; tiền quay về "chưa gắn".
@@ -262,6 +347,7 @@ export class SepayMatchService {
         customers: matchCustomers,
         refCode: null,
         unassignedAmount: unassignedAmount > 0 ? unassignedAmount : 0,
+        suggestedOrder,
       });
     }
 
@@ -276,6 +362,230 @@ export class SepayMatchService {
       { id: tx.id, sepayId: tx.sepayId },
     ]);
     return { tx, match: matchMap.get(tx.sepayId)! };
+  }
+
+  async getOrderCandidates(id: number, query: OrderCandidateQueryDto) {
+    const { match } = await this.getTxWithMatch(id);
+    if (match.status === 'completed') {
+      throw new ConflictException(
+        'Giao dịch đã hoàn thành, không thể chọn đơn hàng',
+      );
+    }
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const search = query.search?.trim();
+    const where: any = {
+      status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
+      customerId: { not: null },
+    };
+
+    if (search) {
+      where.OR = [
+        { code: { contains: search, mode: 'insensitive' } },
+        { customer: { code: { contains: search, mode: 'insensitive' } } },
+        { customer: { name: { contains: search, mode: 'insensitive' } } },
+      ];
+    }
+
+    const [orders, total] = await Promise.all([
+      this.prisma.order.findMany({
+        where,
+        orderBy: [{ orderDate: 'desc' }, { id: 'desc' }],
+        select: {
+          id: true,
+          code: true,
+          orderDate: true,
+          grandTotal: true,
+          paidAmount: true,
+          debtAmount: true,
+          status: true,
+          customer: { select: { id: true, code: true, name: true } },
+          branch: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.order.count({ where }),
+    ]);
+
+    return {
+      data: orders.map((order) => ({
+        id: order.id,
+        code: order.code,
+        orderDate: order.orderDate,
+        grandTotal: Number(order.grandTotal),
+        paidAmount: Number(order.paidAmount),
+        debtAmount: Number(order.debtAmount),
+        status: order.status,
+        statusValue: getStatusLabel(order.status),
+        customer: order.customer,
+        branch: order.branch,
+      })),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  async selectOrder(id: number, dto: SelectOrderDto, userId: number) {
+    const { tx, match } = await this.getTxWithMatch(id);
+    if (match.status === 'completed') {
+      throw new ConflictException(
+        'Giao dịch đã hoàn thành, không thể gắn đơn hàng',
+      );
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: dto.orderId },
+      select: {
+        id: true,
+        code: true,
+        orderDate: true,
+        grandTotal: true,
+        paidAmount: true,
+        debtAmount: true,
+        status: true,
+        customer: { select: { id: true, code: true, name: true } },
+        branch: { select: { id: true, name: true } },
+      },
+    });
+    const orderCustomer = order?.customer;
+    if (
+      !order ||
+      !orderCustomer ||
+      (order.status !== ORDER_STATUS.PENDING &&
+        order.status !== ORDER_STATUS.CONFIRMED)
+    ) {
+      throw new ConflictException(
+        'Đơn hàng không tồn tại hoặc không còn ở trạng thái Phiếu tạm/Đã xác nhận',
+      );
+    }
+
+    const existingAllocs = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: tx.id },
+    });
+    const activeCashFlowIds = existingAllocs
+      .map((allocation) => allocation.cashFlowId)
+      .filter((value): value is number => value != null);
+    const activeCashFlows = activeCashFlowIds.length
+      ? await this.prisma.cashFlow.findMany({
+          where: { id: { in: activeCashFlowIds }, status: { not: 2 } },
+          select: { id: true },
+        })
+      : [];
+    if (activeCashFlows.length > 0) {
+      throw new ConflictException(
+        'Giao dịch đã có phiếu thu hiệu lực, không thể đổi đơn hàng',
+      );
+    }
+
+    await this.prisma.$transaction(async (txc) => {
+      await txc.sepayAllocation.deleteMany({
+        where: { sepayTransactionId: tx.id },
+      });
+      await txc.sepayAllocation.create({
+        data: {
+          sepayTransactionId: tx.id,
+          customerId: orderCustomer.id,
+          customerName: orderCustomer.name,
+          amount: 0,
+          createdById: userId,
+        },
+      });
+      await txc.sepayTransaction.update({
+        where: { id: tx.id },
+        data: {
+          suggestedOrderId: order.id,
+          assignedCustomerId: orderCustomer.id,
+          assignedCustomerName: orderCustomer.name,
+          assignedById: userId,
+          assignedAt: new Date(),
+        },
+      });
+    });
+
+    const oldCustomerIds = [
+      ...new Set(existingAllocs.map((allocation) => allocation.customerId)),
+    ];
+    if (oldCustomerIds.length > 0) {
+      await this.debtTicketAutoClose.onSepayCustomersUnassigned(
+        tx.id,
+        oldCustomerIds,
+      );
+    }
+    await this.debtTicketAutoClose.onSepayCustomersAssigned(tx.id, [
+      orderCustomer.id,
+    ]);
+
+    return {
+      success: true,
+      order: {
+        id: order.id,
+        code: order.code,
+        orderDate: order.orderDate,
+        grandTotal: Number(order.grandTotal),
+        paidAmount: Number(order.paidAmount),
+        debtAmount: Number(order.debtAmount),
+        status: order.status,
+        statusValue: getStatusLabel(order.status),
+        customer: order.customer,
+        branch: order.branch,
+      },
+    };
+  }
+
+  async unselectOrder(id: number) {
+    const { tx, match } = await this.getTxWithMatch(id);
+    if (match.status === 'completed') {
+      throw new ConflictException(
+        'Giao dịch đã hoàn thành, không thể bỏ đơn hàng',
+      );
+    }
+
+    const existingAllocs = await this.prisma.sepayAllocation.findMany({
+      where: { sepayTransactionId: tx.id },
+    });
+    const cashFlowIds = existingAllocs
+      .map((allocation) => allocation.cashFlowId)
+      .filter((value): value is number => value != null);
+    const activeCashFlows = cashFlowIds.length
+      ? await this.prisma.cashFlow.findMany({
+          where: { id: { in: cashFlowIds }, status: { not: 2 } },
+          select: { id: true },
+        })
+      : [];
+    if (activeCashFlows.length > 0) {
+      throw new ConflictException(
+        'Giao dịch đã có phiếu thu hiệu lực, không thể bỏ đơn hàng',
+      );
+    }
+
+    await this.prisma.$transaction(async (txc) => {
+      await txc.sepayAllocation.deleteMany({
+        where: { sepayTransactionId: tx.id },
+      });
+      await txc.sepayTransaction.update({
+        where: { id: tx.id },
+        data: {
+          suggestedOrderId: null,
+          assignedCustomerId: null,
+          assignedCustomerName: null,
+          assignedById: null,
+          assignedAt: null,
+        },
+      });
+    });
+
+    const customerIds = [
+      ...new Set(existingAllocs.map((allocation) => allocation.customerId)),
+    ];
+    if (customerIds.length > 0) {
+      await this.debtTicketAutoClose.onSepayCustomersUnassigned(
+        tx.id,
+        customerIds,
+      );
+    }
+
+    return { success: true };
   }
 
   /**
@@ -352,6 +662,7 @@ export class SepayMatchService {
       await txc.sepayTransaction.update({
         where: { id: tx.id },
         data: {
+          suggestedOrderId: null,
           assignedCustomerId: customers[0].id,
           assignedCustomerName: customers[0].name,
           assignedById: userId,
@@ -424,10 +735,12 @@ export class SepayMatchService {
         where: { id: tx.id },
         data: keptAllocs.length
           ? {
+              suggestedOrderId: null,
               assignedCustomerId: keptAllocs[0].customerId,
               assignedCustomerName: keptAllocs[0].customerName,
             }
           : {
+              suggestedOrderId: null,
               assignedCustomerId: null,
               assignedCustomerName: null,
               assignedById: null,
@@ -506,6 +819,64 @@ export class SepayMatchService {
     }
     if (allocations.some((a) => !(Number(a.amount) > 0))) {
       throw new BadRequestException('Mỗi khách phải được phân bổ số tiền > 0');
+    }
+
+    let selectedOrder: {
+      id: number;
+      code: string;
+      customerId: number;
+      status: number;
+    } | null = null;
+    if (tx.suggestedOrderId != null) {
+      if (allocations.length !== 1) {
+        throw new BadRequestException(
+          'Giao dịch gắn đơn hàng chỉ được có một phân bổ khách hàng',
+        );
+      }
+      const allocation = allocations[0];
+      if (
+        allocation.orderId != null &&
+        allocation.orderId !== tx.suggestedOrderId
+      ) {
+        throw new BadRequestException(
+          'Đơn hàng xác nhận không khớp với đơn đã được gắn',
+        );
+      }
+      const order = await this.prisma.order.findUnique({
+        where: { id: tx.suggestedOrderId },
+        select: {
+          id: true,
+          code: true,
+          customerId: true,
+          status: true,
+        },
+      });
+      if (
+        !order ||
+        order.customerId == null ||
+        (order.status !== ORDER_STATUS.PENDING &&
+          order.status !== ORDER_STATUS.CONFIRMED)
+      ) {
+        throw new ConflictException(
+          'Đơn hàng không còn ở trạng thái Phiếu tạm/Đã xác nhận',
+        );
+      }
+      if (allocation.customerId !== order.customerId) {
+        throw new BadRequestException(
+          'Khách hàng phân bổ không khớp với khách hàng của đơn hàng',
+        );
+      }
+      if (allocation.invoices && allocation.invoices.length > 0) {
+        throw new BadRequestException(
+          'Không thể phân bổ hóa đơn khi giao dịch đã gắn đơn hàng',
+        );
+      }
+      selectedOrder = {
+        id: order.id,
+        code: order.code,
+        customerId: order.customerId,
+        status: order.status,
+      };
     }
 
     // Validate khách tồn tại
@@ -605,6 +976,26 @@ export class SepayMatchService {
         ? (tx.transactionContent || '').trim()
         : (tx.referenceNumber || '').trim();
       const note = a.note && a.note.trim() ? a.note : defaultNote;
+      if (selectedOrder) {
+        const result = await this.orderPaymentsService.create(
+          {
+            orderId: selectedOrder.id,
+            amount: Number(a.amount),
+            paymentDate: transDate,
+            paymentMethod: 'transfer',
+            accountId,
+            description: note,
+            // Đây là luồng xác nhận thủ công, không phải webhook tự động.
+            sepayReferenceCode: tx.referenceNumber || undefined,
+          },
+          userId,
+        );
+        createdCashFlows.push({
+          customerId: a.customerId,
+          cashFlow: (result as any)?.cashFlow ?? null,
+        });
+        continue;
+      }
       // Nếu có phân bổ hóa đơn → tạo InvoicePayment trừ trực tiếp công nợ hóa đơn.
       // Phần dư (amount - Σ invoices) tự ghi nhận thành credit (Formula A xử lý).
       const invoiceAllocs = (a.invoices || []).filter(
