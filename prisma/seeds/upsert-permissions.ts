@@ -51,6 +51,12 @@ const PERMISSIONS: PermissionSeed[] = [
     category: 'Sản phẩm',
   },
   {
+    resource: 'products',
+    action: 'edit_publication',
+    description: 'Sửa thông tin công bố sản phẩm',
+    category: 'Sản phẩm',
+  },
+  {
     resource: 'customers',
     action: 'link_misa',
     description: 'Gắn nhân viên phụ trách (Misa) cho khách hàng',

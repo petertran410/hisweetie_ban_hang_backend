@@ -90,6 +90,41 @@ export class ProductsController {
   }
 
   /**
+   * Chỉ user có `products:edit_publication` mới được ghi dữ liệu công bố.
+   * Khi thiếu quyền, loại bỏ toàn bộ nhóm field này để giữ nguyên dữ liệu cũ
+   * thay vì để payload từ client xóa hoặc ghi đè ngoài ý muốn.
+   */
+  private async stripPublicationFieldsIfNoPermission<
+    T extends {
+      documents?: unknown;
+      publicationLocation?: unknown;
+      publicationDate?: unknown;
+      publicationLink?: unknown;
+    },
+  >(dto: T, req: any): Promise<T> {
+    if (
+      dto.documents === undefined &&
+      dto.publicationLocation === undefined &&
+      dto.publicationDate === undefined &&
+      dto.publicationLink === undefined
+    ) {
+      return dto;
+    }
+
+    const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
+    const canEditPublication =
+      isSuperAdmin || permissions.includes('products:edit_publication');
+    if (canEditPublication) return dto;
+
+    const sanitized = { ...dto };
+    delete sanitized.documents;
+    delete sanitized.publicationLocation;
+    delete sanitized.publicationDate;
+    delete sanitized.publicationLink;
+    return sanitized;
+  }
+
+  /**
    * Strip giá vốn (cost) + thông tin công bố khỏi 1 product nếu thiếu quyền.
    * Lưu ý: KHÔNG strip basePrice (giá bán) vì màn hình bán hàng cần — giá bán
    * chỉ ẩn ở UI.
@@ -97,7 +132,7 @@ export class ProductsController {
   private stripProduct(
     product: any,
     canViewCost: boolean,
-    canViewPublication: boolean,
+    canAccessPublication: boolean,
   ): any {
     if (!product || typeof product !== 'object') return product;
 
@@ -108,7 +143,7 @@ export class ProductsController {
       }));
     }
 
-    if (!canViewPublication) {
+    if (!canAccessPublication) {
       product.publicationLocation = undefined;
       product.publicationDate = undefined;
       product.publicationLink = undefined;
@@ -140,12 +175,14 @@ export class ProductsController {
     const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
     const canViewCost =
       isSuperAdmin || permissions.includes('products:view_cost_price');
-    const canViewPublication =
-      isSuperAdmin || permissions.includes('products:view_publication');
+    const canAccessPublication =
+      isSuperAdmin ||
+      permissions.includes('products:view_publication') ||
+      permissions.includes('products:edit_publication');
 
-    if (!canViewCost || !canViewPublication) {
+    if (!canViewCost || !canAccessPublication) {
       result.data = (result.data || []).map((p: any) =>
-        this.stripProduct(p, canViewCost, canViewPublication),
+        this.stripProduct(p, canViewCost, canAccessPublication),
       );
     }
     return result;
@@ -294,16 +331,25 @@ export class ProductsController {
     const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
     const canViewCost =
       isSuperAdmin || permissions.includes('products:view_cost_price');
-    const canViewPublication =
-      isSuperAdmin || permissions.includes('products:view_publication');
-    return this.stripProduct(product, canViewCost, canViewPublication);
+    const canAccessPublication =
+      isSuperAdmin ||
+      permissions.includes('products:view_publication') ||
+      permissions.includes('products:edit_publication');
+    return this.stripProduct(product, canViewCost, canAccessPublication);
   }
 
   @Post()
   @RequirePermissions('products:create')
   async create(@Body() dto: CreateProductDto, @Req() req: any) {
     const userId = req.user?.id;
-    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    const withoutFactoryFields = await this.stripFactoryFieldsIfNoPermission(
+      dto,
+      req,
+    );
+    const sanitized = await this.stripPublicationFieldsIfNoPermission(
+      withoutFactoryFields,
+      req,
+    );
     return this.productsService.create(sanitized, userId);
   }
 
@@ -328,7 +374,14 @@ export class ProductsController {
     @Req() req: any,
   ) {
     const userId = req.user?.id;
-    const sanitized = await this.stripFactoryFieldsIfNoPermission(dto, req);
+    const withoutFactoryFields = await this.stripFactoryFieldsIfNoPermission(
+      dto,
+      req,
+    );
+    const sanitized = await this.stripPublicationFieldsIfNoPermission(
+      withoutFactoryFields,
+      req,
+    );
     return this.productsService.update(+id, sanitized, userId);
   }
 
