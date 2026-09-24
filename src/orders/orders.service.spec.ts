@@ -28,3 +28,43 @@ describe('OrdersService findOne', () => {
     );
   });
 });
+
+describe('OrdersService findAll', () => {
+  it('trả loại công nợ hiện tại cùng khách hàng trong danh sách', async () => {
+    const order = {
+      id: 1,
+      customer: { id: 2, debtPolicy: { debtRuleType: 'CREDIT_LIMIT' } },
+    };
+    const prisma = {
+      order: {
+        findMany: jest.fn().mockResolvedValue([order]),
+        count: jest.fn().mockResolvedValue(1),
+      },
+    };
+    const service = new OrdersService(
+      prisma as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+    const result = await service.findAll({ page: 1, limit: 15 } as any);
+
+    expect(prisma.order.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: expect.objectContaining({
+          customer: expect.objectContaining({
+            select: expect.objectContaining({
+              debtPolicy: { select: { debtRuleType: true } },
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result.data[0].customer?.debtPolicy?.debtRuleType).toBe(
+      'CREDIT_LIMIT',
+    );
+  });
+});

@@ -65,6 +65,7 @@ const ORDER_LIST_SELECT = {
       name: true,
       contactNumber: true,
       phone: true,
+      debtPolicy: { select: { debtRuleType: true } },
     },
   },
   branch: { select: { id: true, name: true } },

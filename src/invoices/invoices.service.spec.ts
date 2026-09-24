@@ -1,6 +1,64 @@
 import { InvoicesService } from './invoices.service';
 import { INVOICE_STATUS } from './dto';
 
+describe('InvoicesService findAll', () => {
+  it.each(['createdAt', 'remainingAmount'])(
+    'trả loại công nợ khi sắp xếp theo %s',
+    async (orderBy) => {
+      const invoice = {
+        id: 1,
+        customer: { id: 2, debtPolicy: { debtRuleType: 'TERM_DAYS' } },
+        grandTotal: 100_000,
+        paidAmount: 0,
+      };
+      const prisma = {
+        invoice: {
+          findMany: jest.fn().mockResolvedValue([invoice]),
+          count: jest.fn().mockResolvedValue(1),
+        },
+        $queryRawUnsafe: jest
+          .fn()
+          .mockResolvedValueOnce([{ count: 1n }])
+          .mockResolvedValueOnce([{ id: 1 }]),
+      };
+      const service = new InvoicesService(
+        prisma as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+      jest
+        .spyOn(service as any, 'getInvoiceReturnSummaries')
+        .mockResolvedValue(new Map());
+      jest
+        .spyOn(service as any, 'attachPriceBookWarnings')
+        .mockImplementation(async (rows: any[]) => rows);
+
+      const result = await service.findAll({ orderBy } as any);
+
+      expect(prisma.invoice.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            customer: expect.objectContaining({
+              select: expect.objectContaining({
+                debtPolicy: { select: { debtRuleType: true } },
+              }),
+            }),
+          }),
+        }),
+      );
+      expect(result.data[0].customer?.debtPolicy?.debtRuleType).toBe(
+        'TERM_DAYS',
+      );
+    },
+  );
+});
+
 describe('InvoicesService delivery reporting', () => {
   const createInvoice = (
     deliveredAt: Date | null,
