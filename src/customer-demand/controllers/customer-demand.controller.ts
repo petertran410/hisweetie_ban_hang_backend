@@ -158,6 +158,12 @@ export class CustomerDemandController {
     return this.service.orderSummary(query);
   }
 
+  @Get('customer-summary')
+  @RequirePermissions('customer_demand:view')
+  customerSummary(@Query() query: CustomerDemandQueryDto) {
+    return this.service.customerSummary(query);
+  }
+
   @Get('export/summary')
   @RequirePermissions('customer_demand:export')
   async exportSummary(

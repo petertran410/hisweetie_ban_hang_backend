@@ -64,21 +64,9 @@ export class CustomerDemandService {
   }
 
   async orderSummary(query: CustomerDemandQueryDto) {
-    const where = this.monthWhere({
-      ...query,
-      status: query.status ?? 'CONFIRMED',
-    });
-    const customerSearchIds = query.customerSearch?.trim()
-      ? await this.repository.searchCustomerIds(query.customerSearch)
-      : null;
-    if (query.customerId) {
-      where.demand = { customerId: query.customerId };
-    } else if (customerSearchIds) {
-      where.demand = {
-        customerId: { in: customerSearchIds.length ? customerSearchIds : [-1] },
-      };
-    }
-    const months = await this.repository.findSummaryMonths(where);
+    const months = await this.repository.findSummaryMonths(
+      await this.summaryMonthWhere(query),
+    );
     const search = this.normalizeSearch(query.search);
     const monthKeys = new Set<string>();
     const products = new Map<
@@ -113,8 +101,11 @@ export class CustomerDemandService {
       for (const line of month.lines ?? []) {
         const product = line.product;
         if (!product) continue;
-        const haystack = `${product.code ?? ''} ${product.name ?? ''}`.toLowerCase();
-        if (search && !haystack.includes(search)) continue;
+        if (
+          !this.matchesSummarySearch(product, month.demand?.customer, search)
+        ) {
+          continue;
+        }
         const quantity = Number(line.quantityBase);
         if (!Number.isFinite(quantity) || quantity <= 0) continue;
         monthKeys.add(monthKey);
@@ -216,7 +207,157 @@ export class CustomerDemandService {
     };
   }
 
+  async customerSummary(query: CustomerDemandQueryDto) {
+    const months = await this.repository.findSummaryMonths(
+      await this.summaryMonthWhere(query),
+    );
+    const search = this.normalizeSearch(query.search);
+    const monthKeys = new Set<string>();
+    const groups = new Map<
+      number,
+      {
+        customer: { id: number; code: string | null; name: string };
+        products: Map<
+          number,
+          {
+            product: {
+              id: number;
+              code: string;
+              name: string;
+              unit: string | null;
+            };
+            quantities: Map<string, number>;
+          }
+        >;
+      }
+    >();
+
+    for (const month of months) {
+      const customer = month.demand?.customer;
+      const customerId = customer?.id ?? month.demand?.customerId;
+      if (!customerId || !customer?.name) continue;
+      const monthKey = this.monthKey(month.demandMonth);
+      for (const line of month.lines ?? []) {
+        const product = line.product;
+        if (!product) continue;
+        if (!this.matchesSummarySearch(product, customer, search)) continue;
+        const quantity = Number(line.quantityBase);
+        if (!Number.isFinite(quantity) || quantity <= 0) continue;
+        monthKeys.add(monthKey);
+        let group = groups.get(customerId);
+        if (!group) {
+          group = {
+            customer: {
+              id: customer.id ?? customerId,
+              code: customer.code ?? null,
+              name: customer.name,
+            },
+            products: new Map(),
+          };
+          groups.set(customerId, group);
+        }
+        let bucket = group.products.get(product.id);
+        if (!bucket) {
+          bucket = {
+            product: {
+              id: product.id,
+              code: product.code,
+              name: product.name,
+              unit: product.unit ?? null,
+            },
+            quantities: new Map<string, number>(),
+          };
+          group.products.set(product.id, bucket);
+        }
+        bucket.quantities.set(
+          monthKey,
+          this.roundQuantity((bucket.quantities.get(monthKey) ?? 0) + quantity),
+        );
+      }
+    }
+
+    const orderedMonths = [...monthKeys].sort();
+    const groupRows = [...groups.values()]
+      .map((group) => {
+        const products = [...group.products.values()]
+          .map((bucket) => {
+            const quantities = Object.fromEntries(
+              orderedMonths.map((month) => [
+                month,
+                this.roundQuantity(bucket.quantities.get(month) ?? 0),
+              ]),
+            );
+            return {
+              product: bucket.product,
+              quantities,
+              totalQuantityBase: this.roundQuantity(
+                [...bucket.quantities.values()].reduce(
+                  (sum, value) => sum + value,
+                  0,
+                ),
+              ),
+            };
+          })
+          .sort((left, right) =>
+            left.product.code.localeCompare(right.product.code, 'vi'),
+          );
+        const totals = Object.fromEntries(
+          orderedMonths.map((month) => [
+            month,
+            this.roundQuantity(
+              products.reduce(
+                (sum, product) => sum + (product.quantities[month] ?? 0),
+                0,
+              ),
+            ),
+          ]),
+        );
+        return {
+          customer: group.customer,
+          products,
+          totals,
+          totalQuantityBase: this.roundQuantity(
+            products.reduce(
+              (sum, product) => sum + product.totalQuantityBase,
+              0,
+            ),
+          ),
+        };
+      })
+      .sort((left, right) => {
+        const byName = left.customer.name.localeCompare(
+          right.customer.name,
+          'vi',
+        );
+        if (byName) return byName;
+        return (left.customer.code ?? '').localeCompare(
+          right.customer.code ?? '',
+          'vi',
+        );
+      });
+    const totals = Object.fromEntries(
+      orderedMonths.map((month) => [
+        month,
+        this.roundQuantity(
+          groupRows.reduce((sum, group) => sum + (group.totals[month] ?? 0), 0),
+        ),
+      ]),
+    );
+
+    return {
+      months: orderedMonths,
+      groups: groupRows,
+      totals,
+      totalQuantityBase: this.roundQuantity(
+        groupRows.reduce((sum, group) => sum + group.totalQuantityBase, 0),
+      ),
+    };
+  }
+
   async exportSummary(query: CustomerDemandQueryDto, res: Response) {
+    if (query.groupBy === 'customer') {
+      return this.exportCustomerSummary(query, res);
+    }
     const summary = await this.orderSummary(query);
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Tong quan Demand');
@@ -265,22 +406,84 @@ export class CustomerDemandService {
     return this.sendExcel(res, workbook, `demand-khach-hang-tong-quan-${Date.now()}.xlsx`);
   }
 
-  async exportDetail(query: CustomerDemandQueryDto, res: Response) {
-    const where = this.monthWhere({
-      ...query,
-      status: query.status ?? 'CONFIRMED',
-    });
-    const customerSearchIds = query.customerSearch?.trim()
-      ? await this.repository.searchCustomerIds(query.customerSearch)
-      : null;
-    if (query.customerId) {
-      where.demand = { customerId: query.customerId };
-    } else if (customerSearchIds) {
-      where.demand = {
-        customerId: { in: customerSearchIds.length ? customerSearchIds : [-1] },
+  private async exportCustomerSummary(
+    query: CustomerDemandQueryDto,
+    res: Response,
+  ) {
+    const summary = await this.customerSummary(query);
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Tong quan theo khach');
+    const monthColumns = summary.months.map((month) => ({
+      header: month,
+      key: month,
+      width: 14,
+    }));
+    sheet.columns = [
+      { header: 'STT', key: 'index', width: 8 },
+      { header: 'Khách hàng', key: 'customer', width: 36 },
+      { header: 'Mã hàng', key: 'code', width: 20 },
+      { header: 'Tên hàng', key: 'name', width: 38 },
+      ...monthColumns,
+      { header: 'Tổng quy đổi', key: 'total', width: 16 },
+    ];
+
+    let index = 0;
+    for (const group of summary.groups) {
+      const customerLabel = group.customer.code
+        ? `${group.customer.code} · ${group.customer.name}`
+        : group.customer.name;
+      group.products.forEach((product, productIndex) => {
+        index += 1;
+        const values: Record<string, unknown> = {
+          index,
+          customer: productIndex === 0 ? customerLabel : '',
+          code: product.product.code,
+          name: product.product.name,
+          total: product.totalQuantityBase,
+        };
+        for (const month of summary.months) {
+          values[month] = product.quantities[month] ?? 0;
+        }
+        sheet.addRow(values);
+      });
+      const subtotal: Record<string, unknown> = {
+        index: '',
+        customer: '',
+        code: '',
+        name: `Tổng ${group.customer.name}`,
+        total: group.totalQuantityBase,
       };
+      for (const month of summary.months) {
+        subtotal[month] = group.totals[month] ?? 0;
+      }
+      const subtotalRow = sheet.addRow(subtotal);
+      subtotalRow.font = { bold: true };
     }
-    const months = await this.repository.findExportMonths(where);
+
+    const totalValues: Record<string, unknown> = {
+      index: '',
+      customer: '',
+      code: '',
+      name: 'TỔNG',
+      total: summary.totalQuantityBase,
+    };
+    for (const month of summary.months) {
+      totalValues[month] = summary.totals[month] ?? 0;
+    }
+    const totalRow = sheet.addRow(totalValues);
+    totalRow.font = { bold: true };
+    this.styleExportSheet(sheet);
+    return this.sendExcel(
+      res,
+      workbook,
+      `demand-khach-hang-theo-khach-${Date.now()}.xlsx`,
+    );
+  }
+
+  async exportDetail(query: CustomerDemandQueryDto, res: Response) {
+    const months = await this.repository.findExportMonths(
+      await this.summaryMonthWhere(query),
+    );
     const search = this.normalizeSearch(query.search);
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Chi tiet Demand');
@@ -303,9 +506,15 @@ export class CustomerDemandService {
     let index = 0;
     for (const month of months) {
       for (const line of month.lines) {
-        const haystack =
-          `${line.product.code} ${line.product.name}`.toLocaleLowerCase('vi');
-        if (search && !haystack.includes(search)) continue;
+        if (
+          !this.matchesSummarySearch(
+            line.product,
+            month.demand?.customer,
+            search,
+          )
+        ) {
+          continue;
+        }
         index += 1;
         sheet.addRow({
           index,
@@ -634,6 +843,45 @@ export class CustomerDemandService {
     }
     if (Object.keys(demandMonth).length) where.demandMonth = demandMonth;
     return where;
+  }
+
+  private async summaryMonthWhere(query: CustomerDemandQueryDto) {
+    const where = this.monthWhere({
+      ...query,
+      status: query.status ?? 'CONFIRMED',
+    });
+    const customerSearchIds = query.customerSearch?.trim()
+      ? await this.repository.searchCustomerIds(query.customerSearch)
+      : null;
+    if (query.customerId && customerSearchIds) {
+      where.demand = {
+        customerId: customerSearchIds.includes(query.customerId)
+          ? query.customerId
+          : -1,
+      };
+    } else if (query.customerId) {
+      where.demand = { customerId: query.customerId };
+    } else if (customerSearchIds) {
+      where.demand = {
+        customerId: {
+          in: customerSearchIds.length ? customerSearchIds : [-1],
+        },
+      };
+    }
+    return where;
+  }
+
+  private matchesSummarySearch(
+    product?: { code?: string | null; name?: string | null } | null,
+    customer?: { code?: string | null; name?: string | null } | null,
+    search?: string,
+  ) {
+    if (!search) return true;
+    const productText = `${product?.code ?? ''} ${product?.name ?? ''}`
+      .toLocaleLowerCase('vi');
+    const customerText = `${customer?.code ?? ''} ${customer?.name ?? ''}`
+      .toLocaleLowerCase('vi');
+    return productText.includes(search) || customerText.includes(search);
   }
 
   private monthDate(value: string) {

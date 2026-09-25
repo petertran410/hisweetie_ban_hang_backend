@@ -29,6 +29,7 @@ export const CUSTOMER_DEMAND_SORT_FIELDS = [
   'customerName',
 ] as const;
 export const CUSTOMER_DEMAND_SORT_ORDERS = ['asc', 'desc'] as const;
+export const CUSTOMER_DEMAND_SUMMARY_GROUPS = ['product', 'customer'] as const;
 
 export class CustomerDemandLineDto {
   @IsOptional()
@@ -172,6 +173,10 @@ export class CustomerDemandQueryDto {
   @IsString()
   @MaxLength(200)
   search?: string;
+
+  @IsOptional()
+  @IsIn(CUSTOMER_DEMAND_SUMMARY_GROUPS)
+  groupBy?: (typeof CUSTOMER_DEMAND_SUMMARY_GROUPS)[number];
 
   @IsOptional()
   @IsIn(CUSTOMER_DEMAND_STATUSES)
