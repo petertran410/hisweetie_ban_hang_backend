@@ -1214,6 +1214,7 @@ export class OrdersService {
       where,
       _sum: {
         totalAmount: true,
+        shippingFee: true,
         grandTotal: true,
         paidAmount: true,
         debtAmount: true,
@@ -1222,6 +1223,7 @@ export class OrdersService {
     });
 
     const totalAmount = Number(agg._sum.totalAmount || 0);
+    const shippingFee = Number(agg._sum.shippingFee || 0);
     const grandTotal = Number(agg._sum.grandTotal || 0);
     const paidAmount = Number(agg._sum.paidAmount || 0);
     const debtAmount = Number(agg._sum.debtAmount || 0);
@@ -1229,6 +1231,7 @@ export class OrdersService {
     return {
       count: agg._count._all,
       totalAmount,
+      shippingFee,
       grandTotal,
       // "Khách cần trả" trên FE đang hiển thị grandTotal — giữ nhất quán.
       customerDebt: grandTotal,
