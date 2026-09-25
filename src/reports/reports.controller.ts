@@ -274,6 +274,15 @@ export class ReportsController {
     return this.customerReportsService.getCustomerSaleInvoices(query);
   }
 
+  @Get('customer/shipping-invoices')
+  @ReportPermission({ group: 'customer' })
+  @ApiOperation({
+    summary: 'Drilldown Lv2 (CustomerShipping): hóa đơn + phí ship của 1 KH',
+  })
+  getCustomerShippingInvoices(@Query() query: CustomerReportQueryDto) {
+    return this.customerReportsService.getCustomerShippingInvoices(query);
+  }
+
   @Get('customer/products')
   @ReportPermission({ group: 'customer' })
   @ApiOperation({ summary: 'Drilldown Lv2: sản phẩm 1 KH đã mua' })
@@ -343,6 +352,27 @@ export class ReportsController {
     );
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     await this.customerReportsService.exportCustomerSaleInvoices(query, res);
+  }
+
+  @Get('customer/shipping-invoices/export')
+  @ReportPermission({ group: 'customer', exportKey: 'reports:export_customer' })
+  @ApiOperation({
+    summary: 'Xuất Excel chi tiết hóa đơn + phí ship theo KH',
+  })
+  async exportCustomerShippingInvoices(
+    @Query() query: CustomerReportQueryDto,
+    @Res() res: Response,
+  ) {
+    const filename = `chi-tiet-phi-ship_${Date.now()}.xlsx`;
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+    await this.customerReportsService.exportCustomerShippingInvoices(
+      query,
+      res,
+    );
   }
 
   @Get('customer/debt-documents/export')

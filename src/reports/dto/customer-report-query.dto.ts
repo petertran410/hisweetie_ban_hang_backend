@@ -6,6 +6,7 @@ export const CUSTOMER_VIEW_TYPES = [
   'CustomerByProfit',
   'CustomerDebt',
   'CustomerByProduct',
+  'CustomerShipping',
 ] as const;
 
 export type CustomerViewType = (typeof CUSTOMER_VIEW_TYPES)[number];

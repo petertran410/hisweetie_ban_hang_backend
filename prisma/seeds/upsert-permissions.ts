@@ -62,6 +62,12 @@ const PERMISSIONS: PermissionSeed[] = [
     description: 'Gắn nhân viên phụ trách (Misa) cho khách hàng',
     category: 'Khách hàng',
   },
+  {
+    resource: 'reports',
+    action: 'customer_shipping',
+    description: 'Báo cáo khách hàng - Phí ship',
+    category: 'Báo cáo',
+  },
   // {
   //   resource: 'order_suppliers',
   //   action: 'view_price',
