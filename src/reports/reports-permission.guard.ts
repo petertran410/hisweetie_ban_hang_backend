@@ -54,6 +54,7 @@ const VIEWTYPE_KEY_MAP: Record<ReportGroup, Record<string, string>> = {
     CustomerByProfit: 'reports:customer_profit',
     CustomerDebt: 'reports:customer_debt',
     CustomerByProduct: 'reports:customer_product',
+    CustomerShipping: 'reports:customer_shipping',
   },
 };
 

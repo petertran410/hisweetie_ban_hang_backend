@@ -28,9 +28,15 @@ export interface CustomerChartRow {
   debit?: number;
   credit?: number;
   closing?: number;
+  // Shipping view — phí ship + tiền hàng theo KH
+  shippingFee?: number;
+  orderAmount?: number;
+  grandTotal?: number;
 }
 
 const CUSTOMER_INVOICE_EXCLUDE_STATUS = [2, 8]; // CANCELLED, ...
+// Báo cáo Phí ship: chỉ loại hóa đơn hủy (giữ hóa đơn trả hàng).
+const SHIPPING_INVOICE_EXCLUDE_STATUS = [2];
 const DEBT_GROUP_SIZE = 200;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -180,9 +186,12 @@ export class CustomerReportsService {
 
   // WHERE ở cấp invoice cho drilldown CustomerBySale.
   // Không có alias d./p. để có thể dùng khi không lọc sản phẩm.
-  private buildInvoiceOnlyWhereSql(query: CustomerReportQueryDto): Prisma.Sql {
+  private buildInvoiceOnlyWhereSql(
+    query: CustomerReportQueryDto,
+    excludeStatuses: number[] = CUSTOMER_INVOICE_EXCLUDE_STATUS,
+  ): Prisma.Sql {
     const conds: Prisma.Sql[] = [
-      Prisma.sql`i.status NOT IN (${Prisma.join(CUSTOMER_INVOICE_EXCLUDE_STATUS)})`,
+      Prisma.sql`i.status NOT IN (${Prisma.join(excludeStatuses)})`,
       Prisma.sql`c."isActive" = true`,
     ];
     if (query.fromDate)
@@ -357,6 +366,8 @@ export class CustomerReportsService {
         return this.chartByDebt(query);
       case 'CustomerByProduct':
         return this.chartByProduct(query);
+      case 'CustomerShipping':
+        return this.chartByShipping(query);
       case 'CustomerBySale':
       default:
         return this.chartBySale(query);
@@ -543,6 +554,47 @@ export class CustomerReportsService {
     }));
   }
 
+  // ── CustomerShipping: tổng phí ship (và tiền hàng) theo KH ──
+  // Phí ship nằm ở cấp hóa đơn nên không áp bộ lọc sản phẩm. Chỉ thống kê KH
+  // có phát sinh phí ship > 0 trong kỳ; loại hóa đơn hủy (status 2).
+  private async chartByShipping(
+    query: CustomerReportQueryDto,
+  ): Promise<CustomerChartRow[]> {
+    const where = this.buildInvoiceOnlyWhereSql(
+      query,
+      SHIPPING_INVOICE_EXCLUDE_STATUS,
+    );
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        c.id AS customer_id,
+        c.code AS code,
+        c.name AS name,
+        COALESCE(SUM(i."totalAmount"), 0)::float8 AS order_amount,
+        COALESCE(SUM(i."shippingFee"), 0)::float8 AS shipping_fee,
+        COALESCE(SUM(i."grandTotal"), 0)::float8 AS grand_total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${where}
+      GROUP BY c.id, c.code, c.name
+      HAVING COALESCE(SUM(i."shippingFee"), 0) > 0
+      ORDER BY shipping_fee DESC
+      LIMIT ${this.chartTop(query)}
+    `;
+    return rows.map((r) => {
+      const shippingFee = Number(r.shipping_fee) || 0;
+      return {
+        subject: r.name || 'Khách lẻ',
+        value: shippingFee,
+        total: shippingFee,
+        shippingFee,
+        orderAmount: Number(r.order_amount) || 0,
+        grandTotal: Number(r.grand_total) || 0,
+        extra1: r.code || null,
+        customerId: r.customer_id != null ? Number(r.customer_id) : null,
+      };
+    });
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   // PREVIEW (bảng tổng hợp theo KH — Lv1)
   // ═══════════════════════════════════════════════════════════════════════════
@@ -567,6 +619,10 @@ export class CustomerReportsService {
           acc.totalRevenue += r.revenue || 0;
           acc.totalCost += r.totalCost || 0;
         }
+        if (viewType === 'CustomerShipping') {
+          acc.totalShippingFee += r.shippingFee || 0;
+          acc.totalOrderAmount += r.orderAmount || 0;
+        }
         return acc;
       },
       {
@@ -577,6 +633,8 @@ export class CustomerReportsService {
         totalGrossRevenue: 0,
         totalReturnAmount: 0,
         totalNetRevenue: 0,
+        totalShippingFee: 0,
+        totalOrderAmount: 0,
       },
     );
     return { viewType, data: rows, total: rows.length, summary };
@@ -1019,6 +1077,81 @@ export class CustomerReportsService {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  // SHIPPING INVOICES Lv2: danh sách HÓA ĐƠN + phí ship của 1 KH
+  // ═══════════════════════════════════════════════════════════════════════════
+  async getCustomerShippingInvoices(query: CustomerReportQueryDto) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const offset = (page - 1) * limit;
+
+    const invoiceWhere = this.buildInvoiceOnlyWhereSql(
+      query,
+      SHIPPING_INVOICE_EXCLUDE_STATUS,
+    );
+
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        i.id,
+        i.code AS invoice_code,
+        i."purchaseDate" AS purchase_date,
+        c.name AS customer_name,
+        i."totalAmount"::float8 AS total_amount,
+        i.discount::float8 AS discount,
+        i."shippingFee"::float8 AS shipping_fee,
+        i."grandTotal"::float8 AS grand_total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${invoiceWhere}
+      ORDER BY i."purchaseDate" DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const totalRow = await this.prisma.$queryRaw<any[]>`
+      SELECT COUNT(*)::int AS total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${invoiceWhere}
+    `;
+    const total = Number(totalRow[0]?.total) || 0;
+
+    const summaryRow = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        COUNT(*)::int AS rows,
+        COALESCE(SUM(i."totalAmount"), 0)::float8 AS total_amount,
+        COALESCE(SUM(i.discount), 0)::float8 AS discount,
+        COALESCE(SUM(i."shippingFee"), 0)::float8 AS shipping_fee,
+        COALESCE(SUM(i."grandTotal"), 0)::float8 AS grand_total
+      FROM invoices i
+      JOIN customers c ON c.id = i."customerId"
+      WHERE ${invoiceWhere}
+    `;
+    const s = summaryRow[0] || {};
+
+    return {
+      data: rows.map((r) => ({
+        id: r.id,
+        invoiceCode: r.invoice_code,
+        purchaseDate: r.purchase_date,
+        customerName: r.customer_name,
+        totalAmount: Number(r.total_amount) || 0,
+        discount: Number(r.discount) || 0,
+        shippingFee: Number(r.shipping_fee) || 0,
+        grandTotal: Number(r.grand_total) || 0,
+      })),
+      total,
+      page,
+      limit,
+      summary: {
+        totalInvoices: Number(s.rows) || 0,
+        totalAmount: Number(s.total_amount) || 0,
+        totalDiscount: Number(s.discount) || 0,
+        totalShippingFee: Number(s.shipping_fee) || 0,
+        totalGrandTotal: Number(s.grand_total) || 0,
+      },
+    };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   // INVOICES Lv2: dòng hóa đơn của 1 KH (Sale / Profit / Product)
   // ═══════════════════════════════════════════════════════════════════════════
   async getCustomerInvoices(query: CustomerReportQueryDto) {
@@ -1158,6 +1291,14 @@ export class CustomerReportsService {
         { header: 'Hàng trả', key: 'return', width: 16 },
         { header: 'Doanh thu thuần', key: 'net', width: 18 },
       ];
+    } else if (viewType === 'CustomerShipping') {
+      sheet.columns = [
+        { header: 'STT', key: 'stt', width: 6 },
+        { header: 'Mã KH', key: 'code', width: 14 },
+        { header: 'Khách hàng', key: 'name', width: 32 },
+        { header: 'Tiền hàng', key: 'orderAmount', width: 18 },
+        { header: 'Phí ship', key: 'shippingFee', width: 18 },
+      ];
     } else {
       // CustomerByProduct: tiền hàng theo giá bán từng dòng (SUM totalPrice),
       // CHƯA trừ chiết khấu toàn hóa đơn → khác "Doanh thu thuần" ở view Sale.
@@ -1213,6 +1354,16 @@ export class CustomerReportsService {
             net: r.netRevenue ?? r.value ?? 0,
           })
           .commit();
+      } else if (viewType === 'CustomerShipping') {
+        sheet
+          .addRow({
+            stt: idx + 1,
+            code: r.extra1 || '',
+            name: r.subject,
+            orderAmount: r.orderAmount || 0,
+            shippingFee: r.shippingFee || 0,
+          })
+          .commit();
       } else {
         sheet
           .addRow({
@@ -1234,6 +1385,16 @@ export class CustomerReportsService {
         gross: s.totalGrossRevenue || 0,
         return: s.totalReturnAmount || 0,
         net: s.totalNetRevenue || 0,
+      });
+      totalRow.font = { bold: true };
+      totalRow.commit();
+    } else if (viewType === 'CustomerShipping') {
+      const s = preview.summary as any;
+      sheet.addRow({}).commit();
+      const totalRow = sheet.addRow({
+        name: 'TỔNG CỘNG',
+        orderAmount: s.totalOrderAmount || 0,
+        shippingFee: s.totalShippingFee || 0,
       });
       totalRow.font = { bold: true };
       totalRow.commit();
@@ -1398,6 +1559,77 @@ export class CustomerReportsService {
     });
     rowNet.font = { bold: true, size: 12 };
     rowNet.commit();
+
+    sheet.commit();
+    await workbook.commit();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // EXPORT EXCEL — chi tiết HÓA ĐƠN + phí ship theo KH (view CustomerShipping)
+  // ═══════════════════════════════════════════════════════════════════════════
+  async exportCustomerShippingInvoices(
+    query: CustomerReportQueryDto,
+    res: Response,
+  ) {
+    const result = await this.getCustomerShippingInvoices({
+      ...query,
+      page: 1,
+      limit: 1000000,
+    });
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('ChiTietPhiShip');
+
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã hóa đơn', key: 'invoiceCode', width: 18 },
+      { header: 'Thời gian', key: 'purchaseDate', width: 18 },
+      { header: 'Khách hàng', key: 'customerName', width: 30 },
+      { header: 'Tiền hàng', key: 'totalAmount', width: 16 },
+      { header: 'Chiết khấu HĐ', key: 'discount', width: 16 },
+      { header: 'Phí ship', key: 'shippingFee', width: 16 },
+      { header: 'Tổng sau giảm', key: 'grandTotal', width: 18 },
+    ];
+
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    (result.data as any[]).forEach((r, idx) => {
+      sheet
+        .addRow({
+          stt: idx + 1,
+          invoiceCode: r.invoiceCode,
+          purchaseDate: new Date(r.purchaseDate),
+          customerName: r.customerName,
+          totalAmount: r.totalAmount,
+          discount: r.discount,
+          shippingFee: r.shippingFee,
+          grandTotal: r.grandTotal,
+        })
+        .commit();
+    });
+
+    const s = result.summary;
+    sheet.addRow({}).commit();
+    const totalRow = sheet.addRow({
+      customerName: 'TỔNG CỘNG',
+      totalAmount: s.totalAmount,
+      discount: s.totalDiscount,
+      shippingFee: s.totalShippingFee,
+      grandTotal: s.totalGrandTotal,
+    });
+    totalRow.font = { bold: true };
+    totalRow.commit();
 
     sheet.commit();
     await workbook.commit();
