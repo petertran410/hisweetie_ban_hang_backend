@@ -217,6 +217,76 @@ export class InvoicesService {
   }
 
   /**
+   * Hóa đơn hủy còn phiếu GIAO HÀNG chưa sang bản kế tiếp.
+   * Không xét đóng hàng hay loading. Hậu tố kế tiếp là số nhỏ nhất lớn hơn
+   * hậu tố hiện tại, cùng gốc HD######. Phiếu đã hủy mềm không tính.
+   * Không có bản .xx thì không khớp.
+   */
+  private async findOrphanedPackingInvoiceIds(): Promise<number[]> {
+    const rows = await this.prisma.$queryRaw<{ id: number }[]>`
+      WITH parsed AS (
+        SELECT
+          id,
+          status,
+          substring(code from '^(HD[0-9]{6})') AS base_code,
+          COALESCE(substring(code from '\\.([0-9]+)$')::int, 0) AS suffix
+        FROM invoices
+        WHERE code ~ '^HD[0-9]{6}(\\.[0-9]+)?$'
+      ),
+      successors AS (
+        SELECT DISTINCT ON (c.id)
+          c.id AS cancelled_id,
+          s.id AS successor_id
+        FROM parsed c
+        JOIN parsed s
+          ON s.base_code = c.base_code
+         AND s.suffix > c.suffix
+        WHERE c.status = 2
+        ORDER BY c.id, s.suffix ASC, s.id ASC
+      )
+      SELECT c.id
+      FROM parsed c
+      JOIN successors suc ON suc.cancelled_id = c.id
+      WHERE c.status = 2
+        AND EXISTS (
+          SELECT 1
+          FROM packing_slip_invoices link
+          JOIN packing_slips parent
+            ON parent.id = link."packingSlipId"
+           AND parent."cancelledAt" IS NULL
+          WHERE link."invoiceId" = c.id
+            AND NOT EXISTS (
+              SELECT 1
+              FROM packing_slip_invoices moved
+              WHERE moved."packingSlipId" = link."packingSlipId"
+                AND moved."invoiceId" = suc.successor_id
+            )
+        )`;
+    return rows.map((row) => Number(row.id));
+  }
+
+  private intersectInvoiceIds(where: { id?: { in: number[] } }, ids: number[]) {
+    const next = ids.length > 0 ? ids : [-1];
+    const current = where.id?.in;
+    if (!current) {
+      where.id = { in: next };
+      return;
+    }
+    const allowed = new Set(current.map(Number));
+    const intersection = next.filter((id) => allowed.has(id));
+    where.id = { in: intersection.length > 0 ? intersection : [-1] };
+  }
+
+  private async applyOrphanedPackingFilter(where: any, enabled?: boolean) {
+    if (!enabled) return;
+    // Checklist trạng thái mặc định đang ẩn "Đã hủy". Công tắc này phải
+    // vẫn ra đúng các hóa đơn hủy, nên ghi đè status sau khi build where.
+    where.status = INVOICE_STATUS.CANCELLED;
+    const ids = await this.findOrphanedPackingInvoiceIds();
+    this.intersectInvoiceIds(where, ids);
+  }
+
+  /**
    * Tách logic build `where` để dùng chung giữa findAll và getTotals.
    * Mọi filter (status/branch/date/payment/advanced search...) áp lên cả 2.
    */
@@ -467,6 +537,8 @@ export class InvoicesService {
       const ids = rows.map((r) => Number(r.id));
       where.id = { in: ids.length ? ids : [-1] };
     }
+
+    await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
 
     return where;
   }
@@ -6113,6 +6185,8 @@ export class InvoicesService {
       const ids = rows.map((r) => Number(r.id));
       where.id = { in: ids.length ? ids : [-1] };
     }
+
+    await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
 
     return where;
   }
