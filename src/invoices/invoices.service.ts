@@ -28,6 +28,10 @@ import {
   getStatusLabel as getConsignmentStatusLabel,
 } from '../consignments/dto/consignment-status.constants';
 import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
+import {
+  invoiceVersion,
+  pickLivePackingInvoice,
+} from '../common/packing-invoice-target.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
   renderAuditMessage,
@@ -171,12 +175,42 @@ export class InvoicesService {
 
     if (!document) throw new NotFoundException('Không tìm thấy chứng từ');
 
+    let resolved = document;
+    if (
+      parsed.kind === 'invoice' &&
+      document.status === INVOICE_STATUS.CANCELLED
+    ) {
+      const version = invoiceVersion(document.code);
+      if (!version) {
+        throw new BadRequestException(
+          `Hóa đơn ${document.code} đã hủy, không thể báo đơn`,
+        );
+      }
+      const family = await this.prisma.invoice.findMany({
+        where: {
+          OR: [
+            { code: version.base },
+            { code: { startsWith: `${version.base}.` } },
+          ],
+        },
+        select: { ...select, purchaseDate: true },
+      });
+      const live = pickLivePackingInvoice(document, family);
+      const successor = family.find((item) => item.id === live.id);
+      if (!successor) {
+        throw new BadRequestException(
+          `Hóa đơn ${document.code} đã hủy, không thể báo đơn`,
+        );
+      }
+      resolved = successor;
+    }
+
     if (
       parsed.kind === 'invoice' &&
       packingType !== 'packing-slip' &&
       (
         [INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED] as number[]
-      ).includes(document.status)
+      ).includes(resolved.status)
     ) {
       throw new BadRequestException('Hóa đơn đã giao hoặc đã hoàn thành');
     }
@@ -196,23 +230,23 @@ export class InvoicesService {
     const canAccessAllBranches =
       user?.roles?.includes('Super Admin') || allowedBranchIds.length === 0;
     if (
-      document.branchId == null ||
-      (!canAccessAllBranches && !allowedBranchIds.includes(document.branchId))
+      resolved.branchId == null ||
+      (!canAccessAllBranches && !allowedBranchIds.includes(resolved.branchId))
     ) {
       throw new ForbiddenException('Bạn không có quyền truy cập chi nhánh này');
     }
 
     return {
       kind: parsed.kind,
-      id: document.id,
-      code: document.code,
-      branchId: document.branchId,
-      grandTotal: Number(document.grandTotal),
+      id: resolved.id,
+      code: resolved.code,
+      branchId: resolved.branchId,
+      grandTotal: Number(resolved.grandTotal),
       purchaseDate:
         parsed.kind === 'invoice'
-          ? (document as any).purchaseDate
-          : (document as any).consignDate,
-      customer: document.customer,
+          ? (resolved as any).purchaseDate
+          : (resolved as any).consignDate,
+      customer: resolved.customer,
     };
   }
 
@@ -5396,13 +5430,16 @@ export class InvoicesService {
     const where: any = {};
     if (branchId) where.branchId = branchId;
 
-    // Khi tạo phiếu LOADING / ĐÓNG HÀNG: loại hóa đơn đã giao hàng thành công
-    // (DELIVERED) hoặc đã hoàn thành (COMPLETED) — không cho báo đơn lại.
+    // Hóa đơn đã hủy không được báo đơn. Loading và đóng hàng còn loại
+    // hóa đơn đã giao hoặc đã hoàn thành.
+    const excludedStatuses: number[] = [INVOICE_STATUS.CANCELLED];
     if (excludeDelivered) {
-      where.status = {
-        notIn: [INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED],
-      };
+      excludedStatuses.push(
+        INVOICE_STATUS.DELIVERED,
+        INVOICE_STATUS.COMPLETED,
+      );
     }
+    where.status = { notIn: excludedStatuses };
 
     const keyword = search?.trim();
     if (keyword) {

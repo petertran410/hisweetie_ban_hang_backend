@@ -30,6 +30,7 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
+import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -236,9 +237,13 @@ export class PackingHangsService {
         return created;
       }
 
+      const invoiceIds = await resolveActivePackingInvoiceIds(
+        tx,
+        dto.invoiceIds ?? [],
+      );
       const invoices = await tx.invoice.findMany({
         where: {
-          id: { in: dto.invoiceIds },
+          id: { in: invoiceIds },
         },
         select: {
           id: true,
@@ -290,7 +295,7 @@ export class PackingHangsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds!.map((invoiceId) => ({
+            create: invoiceIds.map((invoiceId) => ({
               invoiceId,
             })),
           },
@@ -316,7 +321,7 @@ export class PackingHangsService {
 
       await tx.invoice.updateMany({
         where: {
-          id: { in: dto.invoiceIds },
+          id: { in: invoiceIds },
           status: {
             notIn: [
               INVOICE_STATUS.CANCELLED,
@@ -369,9 +374,12 @@ export class PackingHangsService {
     const packingHang = await this.findOne(id);
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      if (dto.invoiceIds) {
+      const invoiceIds = dto.invoiceIds
+        ? await resolveActivePackingInvoiceIds(tx, dto.invoiceIds)
+        : undefined;
+      if (invoiceIds) {
         const invoices = await tx.invoice.findMany({
-          where: { id: { in: dto.invoiceIds } },
+          where: { id: { in: invoiceIds } },
           select: { id: true, branchId: true, customerId: true },
         });
 
@@ -396,12 +404,12 @@ export class PackingHangsService {
         note: dto.note,
       };
 
-      if (dto.invoiceIds) {
+      if (invoiceIds) {
         await tx.packingHangInvoice.deleteMany({
           where: { packingHangId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
+          create: invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
       }
 

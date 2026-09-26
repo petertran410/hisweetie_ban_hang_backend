@@ -31,6 +31,7 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
+import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
 
 @Injectable()
 export class PackingLoadingsService {
@@ -252,8 +253,12 @@ export class PackingLoadingsService {
         return created;
       }
 
+      const invoiceIds = await resolveActivePackingInvoiceIds(
+        tx,
+        dto.invoiceIds ?? [],
+      );
       const invoices = await tx.invoice.findMany({
-        where: { id: { in: dto.invoiceIds } },
+        where: { id: { in: invoiceIds } },
         select: {
           id: true,
           code: true,
@@ -306,7 +311,7 @@ export class PackingLoadingsService {
           note: dto.note,
           createdBy: userId,
           invoices: {
-            create: dto.invoiceIds!.map((invoiceId) => ({ invoiceId })),
+            create: invoiceIds.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
             ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
@@ -323,7 +328,7 @@ export class PackingLoadingsService {
 
       await tx.invoice.updateMany({
         where: {
-          id: { in: dto.invoiceIds },
+          id: { in: invoiceIds },
           status: {
             notIn: [
               INVOICE_STATUS.CANCELLED,
@@ -392,9 +397,12 @@ export class PackingLoadingsService {
     const packingLoading = await this.findOne(id);
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      if (dto.invoiceIds) {
+      const invoiceIds = dto.invoiceIds
+        ? await resolveActivePackingInvoiceIds(tx, dto.invoiceIds)
+        : undefined;
+      if (invoiceIds) {
         const invoices = await tx.invoice.findMany({
-          where: { id: { in: dto.invoiceIds } },
+          where: { id: { in: invoiceIds } },
           select: { id: true, branchId: true, customerId: true },
         });
 
@@ -420,12 +428,12 @@ export class PackingLoadingsService {
         note: dto.note,
       };
 
-      if (dto.invoiceIds) {
+      if (invoiceIds) {
         await tx.packingLoadingInvoice.deleteMany({
           where: { packingLoadingId: id },
         });
         updateData.invoices = {
-          create: dto.invoiceIds.map((invoiceId) => ({ invoiceId })),
+          create: invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
       }
 

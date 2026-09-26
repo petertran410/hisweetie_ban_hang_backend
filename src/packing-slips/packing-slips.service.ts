@@ -33,6 +33,7 @@ import {
   recalcInvoiceStatusAfterPackingCancel,
 } from '../common/packing-status.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
+import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -203,6 +204,9 @@ export class PackingSlipsService {
 
     const packingSlip = await this.prisma.$transaction(async (tx) => {
       const code = await this.generateCode(tx);
+      const invoiceIds = isConsignment
+        ? []
+        : await resolveActivePackingInvoiceIds(tx, dto.invoiceIds ?? []);
 
       if (isConsignment) {
         const consignments = await tx.consignment.findMany({
@@ -215,7 +219,7 @@ export class PackingSlipsService {
         );
       } else {
         const invoices = await tx.invoice.findMany({
-          where: { id: { in: dto.invoiceIds } },
+          where: { id: { in: invoiceIds } },
           select: { customerId: true },
         });
         await assertCanDeliverForCustomers(
@@ -245,7 +249,7 @@ export class PackingSlipsService {
           invoices: {
             create: isConsignment
               ? dto.consignmentIds!.map((consignmentId) => ({ consignmentId }))
-              : dto.invoiceIds!.map((invoiceId) => ({ invoiceId })),
+              : invoiceIds.map((invoiceId) => ({ invoiceId })),
           },
           images: dto.imageUrls
             ? { create: dto.imageUrls.map((url) => ({ imageUrl: url })) }
@@ -319,7 +323,7 @@ export class PackingSlipsService {
       } else {
         await tx.invoice.updateMany({
           where: {
-            id: { in: dto.invoiceIds },
+            id: { in: invoiceIds },
             status: {
               notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
             },
@@ -344,7 +348,7 @@ export class PackingSlipsService {
         // recalcInvoiceStatusAfterPackingCancel (common/packing-status.util.ts).
         await tx.invoice.updateMany({
           where: {
-            id: { in: dto.invoiceIds },
+            id: { in: invoiceIds },
             deliveredAt: null,
             status: { notIn: [INVOICE_STATUS.CANCELLED] },
           },
@@ -457,20 +461,23 @@ export class PackingSlipsService {
       }
 
       if (dto.invoiceIds || dto.consignmentIds) {
+        const invoiceIds = dto.invoiceIds
+          ? await resolveActivePackingInvoiceIds(tx, dto.invoiceIds)
+          : [];
         // Hóa đơn bị BỎ khỏi phiếu (có trước, không còn trong payload).
         const previousInvoiceIds = (packingSlip.invoices || [])
           .map((row: any) => row.invoiceId)
           .filter(
             (invoiceId: number | null): invoiceId is number => !!invoiceId,
           );
-        const nextInvoiceIds = new Set(dto.invoiceIds ?? []);
+        const nextInvoiceIds = new Set(invoiceIds);
         const removedInvoiceIds = previousInvoiceIds.filter(
           (invoiceId) => !nextInvoiceIds.has(invoiceId),
         );
 
-        if (dto.invoiceIds && dto.invoiceIds.length > 0) {
+        if (invoiceIds.length > 0) {
           const invoices = await tx.invoice.findMany({
-            where: { id: { in: dto.invoiceIds } },
+            where: { id: { in: invoiceIds } },
             select: { customerId: true },
           });
           await assertCanDeliverForCustomers(
@@ -495,17 +502,17 @@ export class PackingSlipsService {
         updateData.invoices = {
           create: dto.consignmentIds
             ? dto.consignmentIds.map((consignmentId) => ({ consignmentId }))
-            : (dto.invoiceIds || []).map((invoiceId) => ({ invoiceId })),
+            : invoiceIds.map((invoiceId) => ({ invoiceId })),
         };
 
         // Hóa đơn mới được THÊM vào phiếu giao hàng qua bước sửa cũng là "báo
         // đơn thành công" → phải set DELIVERED và stamp mốc công nợ giống lúc
         // tạo phiếu, nếu không thì hạn nợ không bao giờ khởi động cho các hóa
         // đơn này. Chỉ áp dụng cho phiếu giao hàng (không phải ký gửi).
-        if (dto.invoiceIds && dto.invoiceIds.length > 0) {
+        if (!dto.consignmentIds && invoiceIds.length > 0) {
           await tx.invoice.updateMany({
             where: {
-              id: { in: dto.invoiceIds },
+              id: { in: invoiceIds },
               status: {
                 notIn: [INVOICE_STATUS.CANCELLED, INVOICE_STATUS.COMPLETED],
               },
@@ -517,7 +524,7 @@ export class PackingSlipsService {
           });
           await tx.invoice.updateMany({
             where: {
-              id: { in: dto.invoiceIds },
+              id: { in: invoiceIds },
               deliveredAt: null,
               status: { notIn: [INVOICE_STATUS.CANCELLED] },
             },
