@@ -2,6 +2,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
+import { isRetiredPermissionName } from '../permissions/permission-policy';
 import * as bcrypt from 'bcrypt';
 
 @Injectable()
@@ -73,7 +74,9 @@ export class AuthService {
       );
       permissions = [
         ...new Set([...rolePermissions, ...grantPermissions]),
-      ].filter((p) => !denyPermissions.has(p));
+      ].filter(
+        (p) => !denyPermissions.has(p) && !isRetiredPermissionName(p),
+      );
     }
 
     const userBranches = await this.prisma.userBranch.findMany({
@@ -211,7 +214,7 @@ export class AuthService {
     );
     const permissions = [
       ...new Set([...rolePermissions, ...grantPermissions]),
-    ].filter((p) => !denyPermissions.has(p));
+    ].filter((p) => !denyPermissions.has(p) && !isRetiredPermissionName(p));
 
     const userBranches = await this.prisma.userBranch.findMany({
       where: { userId: user.id },
@@ -372,7 +375,9 @@ export class AuthService {
       );
       permissions = [
         ...new Set([...rolePermissions, ...grantPermissions]),
-      ].filter((p) => !denyPermissions.has(p));
+      ].filter(
+        (p) => !denyPermissions.has(p) && !isRetiredPermissionName(p),
+      );
     }
 
     const branchIds = user.userBranches.map((ub) => ub.branchId);
@@ -538,6 +543,8 @@ export class AuthService {
       }
     }
 
-    return Array.from(permissions);
+    return Array.from(permissions).filter(
+      (permission) => !isRetiredPermissionName(permission),
+    );
   }
 }

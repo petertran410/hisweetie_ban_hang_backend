@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { isRetiredPermissionName } from './permission-policy';
 
 @Injectable()
 export class PermissionsService {
@@ -11,7 +12,10 @@ export class PermissionsService {
     if (filters?.resource) where.resource = filters.resource;
 
     return this.prisma.permission.findMany({
-      where,
+      where: {
+        ...where,
+        NOT: { resource: 'orders', action: 'delete' },
+      },
       orderBy: [{ category: 'asc' }, { resource: 'asc' }, { action: 'asc' }],
     });
   }
@@ -43,7 +47,8 @@ export class PermissionsService {
           ...rp.permission,
           conditions: rp.conditions,
         })),
-      ) || [];
+      ).filter((permission) => !isRetiredPermissionName(permission.name)) ||
+      [];
 
     const grantPermissions =
       user?.userPermissions
@@ -51,7 +56,9 @@ export class PermissionsService {
         .map((up) => ({
           ...up.permission,
           conditions: up.conditions,
-        })) || [];
+        }))
+        .filter((permission) => !isRetiredPermissionName(permission.name)) ||
+      [];
 
     const denyPermissionNames = new Set(
       user?.userPermissions
@@ -109,6 +116,8 @@ export class PermissionsService {
     field?: string,
     data?: any,
   ): Promise<boolean> {
+    if (isRetiredPermissionName(`${resource}:${action}`)) return false;
+
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {

@@ -1814,64 +1814,6 @@ export class OrdersService {
     return `DH${nextId.toString().padStart(6, '0')}`;
   }
 
-  async remove(id: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({
-        where: { id },
-        include: {
-          items: true,
-          customer: { select: { id: true, code: true, name: true } },
-        },
-      });
-
-      if (!order) {
-        throw new Error('Order not found');
-      }
-
-      // Hoàn lại usageCount của KM trước khi xóa cứng (log sẽ bị cascade-delete)
-      const promoLogs = await tx.invoicePromotionLog.findMany({
-        where: { orderId: id, status: 'applied' },
-        select: { promotionId: true },
-      });
-      for (const lg of promoLogs) {
-        await tx.promotion.updateMany({
-          where: { id: lg.promotionId },
-          data: { usageCount: { decrement: 1 } },
-        });
-      }
-
-      await tx.order.delete({ where: { id } });
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true, branchId: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'DELETE',
-        actionCode: 'ORDER_DELETE',
-        entityType: 'orders',
-        entityId: id.toString(),
-        entityCode: order.code,
-        category: getCategoryFromActionCode('ORDER_DELETE'),
-        severity: getSeverityFromActionCode('ORDER_DELETE'),
-        snapshot: {
-          code: order.code,
-          status: order.statusValue,
-          customerName: order.customer?.name || 'N/A',
-          grandTotal: Number(order.grandTotal),
-        },
-        message: renderAuditMessage('ORDER_DELETE', {
-          orderCode: order.code,
-        }),
-        messageTemplate: 'ORDER_DELETE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: order.branchId || user?.branchId || undefined,
-      });
-    });
-  }
-
   async cancelOrder(id: number, dto: CancelOrderDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({
