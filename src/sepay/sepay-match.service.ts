@@ -18,6 +18,7 @@ import {
   getStatusLabel,
   ORDER_STATUS,
 } from '../orders/dto/order-status.constants';
+import { DEBT_RULE_TYPE } from '../debt-tracking/debt-tracking.constants';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
 import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-close.service';
 
@@ -377,7 +378,9 @@ export class SepayMatchService {
     const search = query.search?.trim();
     const where: any = {
       status: { in: [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED] },
-      customerId: { not: null },
+      customer: {
+        is: { debtPolicy: { is: { debtRuleType: DEBT_RULE_TYPE.NONE } } },
+      },
     };
 
     if (search) {
@@ -444,7 +447,14 @@ export class SepayMatchService {
         paidAmount: true,
         debtAmount: true,
         status: true,
-        customer: { select: { id: true, code: true, name: true } },
+        customer: {
+          select: {
+            id: true,
+            code: true,
+            name: true,
+            debtPolicy: { select: { debtRuleType: true } },
+          },
+        },
         branch: { select: { id: true, name: true } },
       },
     });
@@ -452,11 +462,12 @@ export class SepayMatchService {
     if (
       !order ||
       !orderCustomer ||
+      orderCustomer.debtPolicy?.debtRuleType !== DEBT_RULE_TYPE.NONE ||
       (order.status !== ORDER_STATUS.PENDING &&
         order.status !== ORDER_STATUS.CONFIRMED)
     ) {
       throw new ConflictException(
-        'Đơn hàng không tồn tại hoặc không còn ở trạng thái Phiếu tạm/Đã xác nhận',
+        'Chỉ được chọn đơn Phiếu tạm/Đã xác nhận của khách Không công nợ',
       );
     }
 
@@ -849,16 +860,22 @@ export class SepayMatchService {
           code: true,
           customerId: true,
           status: true,
+          customer: {
+            select: {
+              debtPolicy: { select: { debtRuleType: true } },
+            },
+          },
         },
       });
       if (
         !order ||
         order.customerId == null ||
+        order.customer?.debtPolicy?.debtRuleType !== DEBT_RULE_TYPE.NONE ||
         (order.status !== ORDER_STATUS.PENDING &&
           order.status !== ORDER_STATUS.CONFIRMED)
       ) {
         throw new ConflictException(
-          'Đơn hàng không còn ở trạng thái Phiếu tạm/Đã xác nhận',
+          'Đơn hàng không còn hợp lệ: chỉ nhận Phiếu tạm/Đã xác nhận của khách Không công nợ',
         );
       }
       if (allocation.customerId !== order.customerId) {
