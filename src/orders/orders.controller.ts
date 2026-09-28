@@ -3,7 +3,6 @@ import {
   Get,
   Post,
   Put,
-  Delete,
   Body,
   Param,
   Query,
@@ -158,11 +157,5 @@ export class OrdersController {
     @CurrentUser() user: any,
   ) {
     return this.ordersService.update(+id, dto, user);
-  }
-
-  @Delete(':id')
-  @RequirePermissions('orders:delete')
-  remove(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.ordersService.remove(+id, user.id);
   }
 }

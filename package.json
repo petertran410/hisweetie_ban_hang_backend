@@ -37,6 +37,7 @@
     "patch:print-shipping-fee": "ts-node prisma/seeds/patch-shipping-fee-print-templates.ts",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
     "seed:upsert-permissions": "ts-node prisma/seeds/upsert-permissions.ts",
+    "permissions:remove-orders-delete": "ts-node prisma/maintenance/remove-orders-delete-permission.ts",
     "seed:customers-import-export": "ts-node prisma/seeds/add-customers-import-permission.ts",
     "seed:customers-sale-pic-permission": "ts-node prisma/seeds/add-customers-sale-pic-permission.ts",
     "seed:suppliers-export": "ts-node prisma/seeds/add-suppliers-export-permission.ts",
