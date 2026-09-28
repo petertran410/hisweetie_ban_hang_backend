@@ -68,7 +68,7 @@ export class AuthController {
   @Public()
   @SkipThrottle()
   @Post('lark/events')
-  @ApiOperation({ summary: 'Lark contact.user.created webhook' })
+  @ApiOperation({ summary: 'Lark event webhook' })
   handleLarkEvent(@Req() req, @Body() body: Record<string, unknown>) {
     return this.larkAuthService.handleEvent(body, req.headers);
   }

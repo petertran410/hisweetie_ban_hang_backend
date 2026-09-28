@@ -167,3 +167,64 @@ describe('CashFlowsService.findAll', () => {
     expect(summaryWhere.code).toEqual({ contains: 'HD001' });
   });
 });
+
+describe('CashFlowsService approval cashflows', () => {
+  it('preserves transfer method for an internal receipt transfer', async () => {
+    const created: any[] = [];
+    const tx = {
+      approvalRequest: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 41,
+          status: 'APPROVED',
+          cashFlowId: null,
+          detailSnapshot: {},
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      cashFlow: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockImplementation(({ data }: any) => {
+          const cashFlow = { id: created.length + 1, ...data };
+          created.push(cashFlow);
+          return Promise.resolve(cashFlow);
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn((callback: (transaction: any) => unknown) =>
+        callback(tx),
+      ),
+    };
+    const service = new CashFlowsService(prisma as any, {} as any);
+
+    const result = await service.createApprovalTransferCashFlows(
+      {
+        approvalRequestId: 41,
+        sourceBranchId: 6,
+        destinationBranchId: 1,
+        amount: 500000,
+        transDate: '2026-09-26',
+        method: 'transfer',
+      },
+      7,
+    );
+
+    expect(result.cashFlows).toHaveLength(2);
+    expect(created.map((cashFlow) => cashFlow.method)).toEqual([
+      'transfer',
+      'transfer',
+    ]);
+    expect(tx.approvalRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          cashFlowId: 1,
+          detailSnapshot: expect.objectContaining({
+            transferCashFlowIds: [1, 2],
+          }),
+        }),
+      }),
+    );
+  });
+});

@@ -2158,6 +2158,7 @@ model CashFlow {
   purchaseOrderPayments     PurchaseOrderPayment[]
   returnOrders              ReturnOrder[]
   supplierReturns           SupplierReturn[]
+  approvalRequest            ApprovalRequest?
 
   @@index([branchId, transDate])
   @@index([createdBy, transDate])
@@ -2166,6 +2167,56 @@ model CashFlow {
   @@index([partnerId])
   @@index([accountId])
   @@map("cash_flows")
+}
+
+model ApprovalRequest {
+  id             Int       @id @default(autoincrement())
+  kind           String    @db.VarChar(32)
+  approvalCode   String    @map("approval_code") @db.VarChar(64)
+  instanceCode   String?   @unique @map("instance_code") @db.VarChar(64)
+  clientUuid     String    @unique @map("client_uuid") @db.VarChar(64)
+  status         String    @default("PENDING") @db.VarChar(20)
+  currentNode    String?   @map("current_node")
+  sourceType     String?   @map("source_type") @db.VarChar(64)
+  sourceId       Int?      @map("source_id")
+  branchId       Int?      @map("branch_id")
+  createdById    Int       @map("created_by_id")
+  formSnapshot  Json      @map("form_snapshot")
+  detailSnapshot Json?    @map("detail_snapshot")
+  lastEventUuid String?   @map("last_event_uuid") @db.VarChar(128)
+  lastEventAt   DateTime? @map("last_event_at")
+  completedAt   DateTime? @map("completed_at")
+  cashFlowId    Int?      @unique @map("cash_flow_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  cashFlow CashFlow?             @relation(fields: [cashFlowId], references: [id])
+  events   ApprovalRequestEvent[]
+
+  @@index([kind, status])
+  @@index([status, lastEventAt])
+  @@index([sourceType, sourceId])
+  @@map("approval_requests")
+}
+
+model ApprovalRequestEvent {
+  id                  Int       @id @default(autoincrement())
+  eventKey            String    @unique @map("event_key") @db.VarChar(255)
+  approvalRequestId   Int?      @map("approval_request_id")
+  approvalCode        String    @map("approval_code") @db.VarChar(64)
+  instanceCode        String    @map("instance_code") @db.VarChar(64)
+  status              String    @db.VarChar(20)
+  instanceOperateTime DateTime? @map("instance_operate_time")
+  payload             Json
+  receivedAt          DateTime  @default(now()) @map("received_at")
+  processedAt         DateTime? @map("processed_at")
+  error               String?
+
+  approvalRequest ApprovalRequest? @relation(fields: [approvalRequestId], references: [id], onDelete: SetNull)
+
+  @@index([instanceCode, receivedAt])
+  @@index([approvalRequestId, receivedAt])
+  @@map("approval_request_events")
 }
 
 model Destruction {

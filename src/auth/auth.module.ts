@@ -9,11 +9,13 @@ import { JwtStrategy } from './strategies/jwt.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { UsersModule } from '../users/users.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycle.module';
 
 @Module({
   imports: [
     UsersModule,
     PrismaModule,
+    ApprovalLifecycleModule,
     PassportModule,
     ConfigModule,
     JwtModule.registerAsync({

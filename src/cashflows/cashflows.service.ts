@@ -61,6 +61,17 @@ const CASH_FLOW_LIST_SELECT = {
   creator: { select: { id: true, name: true } },
   collector: { select: { id: true, name: true } },
   collectionBranch: { select: { id: true, name: true } },
+  approvalRequest: {
+    select: {
+      id: true,
+      kind: true,
+      approvalCode: true,
+      instanceCode: true,
+      clientUuid: true,
+      status: true,
+      currentNode: true,
+    },
+  },
 } as const;
 
 @Injectable()
@@ -474,6 +485,221 @@ export class CashFlowsService {
     });
   }
 
+  async createApprovalCashFlow(
+    params: {
+      approvalRequestId: number;
+      branchId: number;
+      amount: number;
+      transDate?: string;
+      description?: string;
+      isReceipt?: boolean;
+      method?: string;
+    },
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.approvalRequest.findUnique({
+        where: { id: params.approvalRequestId },
+        select: {
+          id: true,
+          status: true,
+          branchId: true,
+          cashFlowId: true,
+        },
+      });
+
+      if (!request) throw new Error('Không tìm thấy yêu cầu Approval');
+      if (request.status !== 'APPROVED') {
+        throw new Error('Approval chưa được duyệt');
+      }
+      if (request.cashFlowId) {
+        const existing = await tx.cashFlow.findUnique({
+          where: { id: request.cashFlowId },
+        });
+        return { cashFlow: existing, alreadyPosted: true };
+      }
+      if (request.branchId && request.branchId !== params.branchId) {
+        throw new Error('Chi nhánh Approval không khớp chi nhánh dòng tiền');
+      }
+
+      const claimed = await tx.approvalRequest.updateMany({
+        where: {
+          id: request.id,
+          status: 'APPROVED',
+          cashFlowId: null,
+        },
+        data: { status: 'POSTING' },
+      });
+      if (claimed.count !== 1) {
+        throw new Error('Approval đang được ghi nhận hoặc đã có dòng tiền');
+      }
+
+      try {
+        const method = params.method || 'cash';
+        const isReceipt = params.isReceipt ?? false;
+        const code = await this.generateManualCode(isReceipt, method, tx);
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code,
+            branchId: params.branchId,
+            isReceipt,
+            amount: params.amount,
+            transDate: params.transDate
+              ? new Date(params.transDate)
+              : new Date(),
+            method,
+            usedForFinancialReporting: 1,
+            description: params.description,
+            status: 0,
+            statusValue: isReceipt ? 'Đã thanh toán' : 'Đã chi',
+            createdBy: userId,
+            collectorUserId: userId,
+          },
+          include: {
+            branch: { select: { id: true, name: true } },
+          },
+        });
+
+        await tx.approvalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: 'APPROVED',
+            cashFlowId: cashFlow.id,
+          },
+        });
+
+        return { cashFlow, alreadyPosted: false };
+      } catch (error) {
+        await tx.approvalRequest.update({
+          where: { id: request.id },
+          data: { status: 'APPROVED' },
+        });
+        throw error;
+      }
+    });
+  }
+
+  async createApprovalTransferCashFlows(
+    params: {
+      approvalRequestId: number;
+      sourceBranchId: number;
+      destinationBranchId: number;
+      amount: number;
+      transDate?: string;
+      description?: string;
+      method?: string;
+    },
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const request = await tx.approvalRequest.findUnique({
+        where: { id: params.approvalRequestId },
+        select: {
+          id: true,
+          status: true,
+          cashFlowId: true,
+          detailSnapshot: true,
+        },
+      });
+      if (!request) throw new Error('Không tìm thấy yêu cầu Approval');
+      if (request.status !== 'APPROVED') {
+        throw new Error('Approval chưa được duyệt');
+      }
+      if (request.cashFlowId) {
+        return { cashFlows: [], alreadyPosted: true };
+      }
+      if (params.sourceBranchId === params.destinationBranchId) {
+        throw new Error('Nơi đi và nơi nhận không được trùng nhau');
+      }
+
+      const claimed = await tx.approvalRequest.updateMany({
+        where: {
+          id: request.id,
+          status: 'APPROVED',
+          cashFlowId: null,
+        },
+        data: { status: 'POSTING' },
+      });
+      if (claimed.count !== 1) {
+        throw new Error('Approval đang được ghi nhận hoặc đã có dòng tiền');
+      }
+
+      try {
+        const method = params.method || 'cash';
+        if (method !== 'cash' && method !== 'transfer') {
+          throw new Error('Phương thức chuyển quỹ không hợp lệ');
+        }
+        const date = params.transDate ? new Date(params.transDate) : new Date();
+        const sourceCode = await this.generateManualCode(false, method, tx);
+        const destinationCode = await this.generateManualCode(true, method, tx);
+        const description =
+          params.description || `Chuyển quỹ từ chi nhánh ${params.sourceBranchId}`;
+
+        const source = await tx.cashFlow.create({
+          data: {
+            code: sourceCode,
+            branchId: params.sourceBranchId,
+            isReceipt: false,
+            amount: params.amount,
+            transDate: date,
+            method,
+            usedForFinancialReporting: 1,
+            description,
+            status: 0,
+            statusValue: 'Đã chi',
+            createdBy: userId,
+            collectorUserId: userId,
+          },
+        });
+        const destination = await tx.cashFlow.create({
+          data: {
+            code: destinationCode,
+            branchId: params.destinationBranchId,
+            isReceipt: true,
+            amount: params.amount,
+            transDate: date,
+            method,
+            usedForFinancialReporting: 1,
+            description,
+            status: 0,
+            statusValue: 'Đã thanh toán',
+            createdBy: userId,
+            collectorUserId: userId,
+          },
+        });
+
+        const previousDetail =
+          request.detailSnapshot &&
+          typeof request.detailSnapshot === 'object' &&
+          !Array.isArray(request.detailSnapshot)
+            ? request.detailSnapshot
+            : {};
+        await tx.approvalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: 'APPROVED',
+            cashFlowId: source.id,
+            detailSnapshot: {
+              ...(previousDetail as Record<string, unknown>),
+              transferCashFlowIds: [source.id, destination.id],
+            },
+          },
+        });
+
+        return {
+          cashFlows: [source, destination],
+          alreadyPosted: false,
+        };
+      } catch (error) {
+        await tx.approvalRequest.update({
+          where: { id: request.id },
+          data: { status: 'APPROVED' },
+        });
+        throw error;
+      }
+    });
+  }
+
   async findAll(query: CashFlowQueryDto, currentUser?: any) {
     const {
       branchIds,
@@ -736,6 +962,17 @@ export class CashFlowsService {
           select: {
             id: true,
             name: true,
+          },
+        },
+        approvalRequest: {
+          select: {
+            id: true,
+            kind: true,
+            approvalCode: true,
+            instanceCode: true,
+            clientUuid: true,
+            status: true,
+            currentNode: true,
           },
         },
       },

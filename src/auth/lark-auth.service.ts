@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from './auth.service';
+import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
 import {
   buildAuthorizationUrl,
   exchangeCode,
@@ -45,6 +46,7 @@ export class LarkAuthService {
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
     private readonly authService: AuthService,
+    private readonly approvalLifecycle: ApprovalLifecycleService,
   ) {}
 
   buildAuthorizeUrl(returnTo?: string): string {
@@ -412,6 +414,10 @@ export class LarkAuthService {
     }).register({
       'contact.user.created_v3': async (data) => {
         await this.provisionFromContactCreated(data?.object);
+      },
+      approval_instance: async (data) => {
+        const event = (data as any)?.event || data;
+        await this.approvalLifecycle.handleInstanceEvent(event as any);
       },
     });
     return this.eventDispatcher;

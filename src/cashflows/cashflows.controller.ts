@@ -25,19 +25,51 @@ import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { Response } from 'express';
+import { CashFlowHistoryAuditService } from './cashflow-history-audit.service';
+import { ImportLarkHistoryDto } from './dto/import-lark-history.dto';
 
 @ApiTags('Cash Flows')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('cashflows')
 export class CashFlowsController {
-  constructor(private cashFlowsService: CashFlowsService) {}
+  constructor(
+    private cashFlowsService: CashFlowsService,
+    private historyAuditService: CashFlowHistoryAuditService,
+  ) {}
 
   @Get('opening-balance')
   @RequirePermissions('cash_flows:view')
   @ApiOperation({ summary: 'Get opening balance' })
   getOpeningBalance(@Query() query: any) {
     return this.cashFlowsService.getOpeningBalance(query);
+  }
+
+  @Get('lark-history/preview')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Preview Lark cashflow history matches' })
+  previewLarkHistory(
+    @Query('pageToken') pageToken?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.historyAuditService.preview(
+      pageToken,
+      pageSize ? Number(pageSize) : 50,
+    );
+  }
+
+  @Post('lark-history/import')
+  @RequirePermissions('cash_flows:create')
+  @ApiOperation({ summary: 'Import selected Lark cashflow history after review' })
+  importLarkHistory(
+    @Body() dto: ImportLarkHistoryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.historyAuditService.importSelected(
+      dto.recordIds,
+      user.id,
+      dto.confirm,
+    );
   }
 
   @Get('summary')
