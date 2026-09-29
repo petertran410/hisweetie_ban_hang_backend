@@ -387,53 +387,54 @@ export class PackingSlipsService {
       branchId: packingSlip.branchId || undefined,
     });
 
-    // Notify n8n webhook để gửi tin nhắn Zalo "Báo đơn giao hàng thành công".
-    // Lấy lại bản đầy đủ relation (đặc biệt là invoice.customer/consignment.customer)
-    // để build payload.
+    // Zalo/Lark chỉ cần bản đầy đủ sau khi phiếu đã ghi xong. Không chờ
+    // findOne này trong response, để màn hình lưu không bị đứng.
+    void this.dispatchDeliveryNotifications(packingSlip.id);
+
+    return packingSlip;
+  }
+
+  private async dispatchDeliveryNotifications(id: number) {
     try {
-      const fullPackingSlip = await this.findOne(packingSlip.id);
+      const fullPackingSlip = await this.findOne(id);
       const hasConsignments = (fullPackingSlip.invoices || []).some(
         (item: any) => item.consignmentId != null,
       );
 
       if (hasConsignments) {
-        // Ký gửi luôn đi vào workflow/group Zalo ký gửi riêng, kể cả khách Bibi.
         void this.n8nNotifyService
           .notifyConsignmentDelivery(fullPackingSlip as any)
           .catch((err) => {
             console.error('notifyConsignmentDelivery unexpected error:', err);
           });
-      } else {
-        // Routing loại trừ: phiếu có hóa đơn của khách Bibi → chỉ gửi luồng Bibi.
-        if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
-          void this.n8nNotifyService
-            .notifyBibiDelivery(fullPackingSlip as any)
-            .catch((err) => {
-              console.error('notifyBibiDelivery unexpected error:', err);
-            });
-        } else {
-          void this.n8nNotifyService
-            .notifyDelivery(fullPackingSlip as any)
-            .catch((err) => {
-              console.error('notifyDelivery unexpected error:', err);
-            });
-        }
-
-        // Sync phiếu chi sang Lark Base "Quản lý Tài chính" (HN/SG).
-        void this.larkExpenseSync
-          .syncPackingSlipExpenses(fullPackingSlip as any)
-          .catch((err) => {
-            console.error('larkExpenseSync unexpected error:', err);
-          });
+        return;
       }
+
+      if (this.n8nNotifyService.isBibiPackingSlip(fullPackingSlip as any)) {
+        void this.n8nNotifyService
+          .notifyBibiDelivery(fullPackingSlip as any)
+          .catch((err) => {
+            console.error('notifyBibiDelivery unexpected error:', err);
+          });
+        return;
+      }
+
+      void this.n8nNotifyService
+        .notifyDelivery(fullPackingSlip as any)
+        .catch((err) => {
+          console.error('notifyDelivery unexpected error:', err);
+        });
+      void this.larkExpenseSync
+        .syncPackingSlipExpenses(fullPackingSlip as any)
+        .catch((err) => {
+          console.error('larkExpenseSync unexpected error:', err);
+        });
     } catch (err) {
       console.error(
         'Failed to load packing slip for n8n notify:',
         (err as Error).message,
       );
     }
-
-    return packingSlip;
   }
 
   async update(id: number, dto: UpdatePackingSlipDto, userId?: number) {
