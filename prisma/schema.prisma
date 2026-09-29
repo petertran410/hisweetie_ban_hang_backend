@@ -1,5 +1,7 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  /// Alpine hiện tại chỉ có OpenSSL 3. Engine linux-musl mặc định của Prisma 4.16 cần libssl.so.1.1.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
