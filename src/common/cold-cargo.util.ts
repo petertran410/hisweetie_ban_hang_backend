@@ -12,6 +12,12 @@ export interface ColdCargoWarning {
   coldItems: ColdCargoItem[];
 }
 
+export interface ColdCargoInvoiceRecord {
+  id: number;
+  code: string;
+  details?: ColdDetailRecord[] | null;
+}
+
 interface ColdDetailRecord {
   productId?: number | null;
   productCode?: string | null;
@@ -78,5 +84,14 @@ export function summarizeColdCargoWarning(
   return {
     hasColdItems: warning.hasColdItems,
     coldItemCount: warning.coldItemCount,
+  };
+}
+
+export function mapColdCargoInvoice(invoice: ColdCargoInvoiceRecord) {
+  const warning = buildColdCargoWarning([{ invoice }]);
+  return {
+    hasColdItems: warning.hasColdItems,
+    coldItemCount: warning.coldItemCount,
+    coldItems: warning.coldItems,
   };
 }

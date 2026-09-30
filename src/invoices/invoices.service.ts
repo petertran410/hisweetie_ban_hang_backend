@@ -57,6 +57,7 @@ import {
 } from '../common/inventory-log.util';
 import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
+import { mapColdCargoInvoice } from '../common/cold-cargo.util';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { MetaPurchaseOutboxService } from '../meta-purchase/meta-purchase-outbox.service';
@@ -153,7 +154,7 @@ export class InvoicesService {
     user: any,
   ) {
     const parsed = parseDocumentQrPayload(payload);
-    const select = {
+    const baseSelect = {
       id: true,
       code: true,
       branchId: true,
@@ -161,16 +162,35 @@ export class InvoicesService {
       status: true,
       customer: { select: { id: true, name: true } },
     };
+    const invoiceSelect = {
+      ...baseSelect,
+      details: {
+        where: { product: { cargoType: 'COLD' } },
+        select: {
+          productId: true,
+          productCode: true,
+          productName: true,
+          product: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              cargoType: true,
+            },
+          },
+        },
+      },
+    };
 
     const document =
       parsed.kind === 'invoice'
         ? await this.prisma.invoice.findUnique({
             where: { code: parsed.code },
-            select: { ...select, purchaseDate: true },
+            select: { ...invoiceSelect, purchaseDate: true },
           })
         : await this.prisma.consignment.findUnique({
             where: { code: parsed.code },
-            select: { ...select, consignDate: true },
+            select: { ...baseSelect, consignDate: true },
           });
 
     if (!document) throw new NotFoundException('Không tìm thấy chứng từ');
@@ -193,7 +213,7 @@ export class InvoicesService {
             { code: { startsWith: `${version.base}.` } },
           ],
         },
-        select: { ...select, purchaseDate: true },
+        select: { ...invoiceSelect, purchaseDate: true },
       });
       const live = pickLivePackingInvoice(document, family);
       const successor = family.find((item) => item.id === live.id);
@@ -247,6 +267,9 @@ export class InvoicesService {
           ? (resolved as any).purchaseDate
           : (resolved as any).consignDate,
       customer: resolved.customer,
+      ...(parsed.kind === 'invoice'
+        ? mapColdCargoInvoice(resolved as any)
+        : {}),
     };
   }
 
@@ -5459,13 +5482,38 @@ export class InvoicesService {
         grandTotal: true,
         purchaseDate: true,
         customer: { select: { id: true, name: true } },
+        details: {
+          where: { product: { cargoType: 'COLD' } },
+          select: {
+            productId: true,
+            productCode: true,
+            productName: true,
+            product: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                cargoType: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take,
     });
 
     // Trả cùng shape với findAll để frontend khỏi đổi nhiều
-    return { data, total: data.length, page: 1, limit: take };
+    return {
+      data: data.map((invoice) => ({
+        ...invoice,
+        ...mapColdCargoInvoice(invoice),
+        details: undefined,
+      })),
+      total: data.length,
+      page: 1,
+      limit: take,
+    };
   }
 
   /**
