@@ -6,6 +6,9 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import helmet from 'helmet';
 import * as compression from 'compression';
+import { PrismaService } from './prisma/prisma.service';
+import { createPublicationPdfMiddleware } from './upload/publication-pdf.middleware';
+import { selectPublicationDisplayName } from './upload/publication-pdf-title';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -122,6 +125,25 @@ async function bootstrap() {
   if (!existsSync(uploadsPath)) {
     mkdirSync(uploadsPath, { recursive: true });
   }
+
+  // Chrome lấy /Title của PDF làm tên trên thanh xem. File công bố cố ý
+  // mang tên ngẫu nhiên, nên gắn Title = tên gốc lúc trả về. URL không đổi.
+  // Phải đứng trước static, nếu không request bị static phục vụ trước.
+  const prisma = app.get(PrismaService);
+  app.use(
+    createPublicationPdfMiddleware({
+      directory: join(uploadsPath, 'products', 'cong-bo'),
+      findOriginalName: async (storedFilename) => {
+        const documents = await prisma.productDocument.findMany({
+          where: { url: { endsWith: `/${storedFilename}` } },
+          select: { originalName: true },
+        });
+        return selectPublicationDisplayName(
+          documents.map((document) => document.originalName),
+        );
+      },
+    }),
+  );
 
   // Tên file upload là `${timestamp}-${random}${ext}` → không bao giờ bị ghi đè,
   // nên cache vĩnh viễn an toàn. Tránh việc mở lại phiếu cũ phải tải lại ảnh.

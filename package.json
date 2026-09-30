@@ -30,6 +30,7 @@
     "backfill:factory-price-history": "ts-node prisma/seeds/backfill-factory-price-history.ts",
     "backfill:factory-price-history-from-orders": "ts-node prisma/seeds/backfill-factory-price-history-from-orders.ts",
     "backfill:invoice-delivered-at": "ts-node prisma/seeds/backfill-invoice-delivered-at.ts",
+    "backfill:publication-pdf-metadata": "ts-node scripts/backfill-publication-pdf-metadata.ts",
     "seed:debt-tracking-permissions": "ts-node prisma/seeds/add-debt-tracking-permissions.ts",
     "audit:order-supplier-factory": "ts-node prisma/seeds/audit-order-supplier-factory.ts",
     "seed:print-promotion-vars": "ts-node prisma/seeds/add-print-promotion-vars.ts",

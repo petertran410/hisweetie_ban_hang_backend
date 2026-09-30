@@ -6,8 +6,7 @@ import {
 import { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
-import { existsSync } from 'fs';
-import { basename, resolve, sep } from 'path';
+import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductDto,
@@ -475,9 +474,19 @@ export class ProductsService {
           value: pa.value?.value || '',
         }))
       : [];
+    const documents = Array.isArray((product as any).documents)
+      ? (product as any).documents.map((document: any) => ({
+          ...document,
+          originalName: document.originalName
+            ? repairUploadedFilename(document.originalName)
+            : document.originalName,
+        }))
+      : (product as any).documents;
+
     return overlayFactoriesFromMappings({
       ...(product as any),
       attributes,
+      ...(documents !== undefined ? { documents } : {}),
     });
   }
 
@@ -983,52 +992,6 @@ export class ProductsService {
     return this.normalizeProductAttributes({ ...product, inventories });
   }
 
-  async findPublicationDocument(productId: number, documentId: number) {
-    const document = await this.prisma.productDocument.findFirst({
-      where: {
-        id: documentId,
-        productId,
-      },
-    });
-
-    if (!document) {
-      throw new NotFoundException('Không tìm thấy file công bố');
-    }
-
-    const uploadsRoot = resolve(process.cwd(), 'uploads');
-    let relativePath: string;
-
-    try {
-      const parsedUrl = new URL(document.url, 'http://localhost');
-      const uploadsPrefix = '/uploads/';
-
-      if (!parsedUrl.pathname.startsWith(uploadsPrefix)) {
-        throw new Error('Unsupported document URL');
-      }
-
-      relativePath = decodeURIComponent(
-        parsedUrl.pathname.slice(uploadsPrefix.length),
-      );
-    } catch {
-      throw new NotFoundException('Đường dẫn file công bố không hợp lệ');
-    }
-
-    const filePath = resolve(uploadsRoot, relativePath);
-    const isInsideUploads =
-      filePath === uploadsRoot ||
-      filePath.startsWith(`${uploadsRoot}${sep}`);
-
-    if (!isInsideUploads || !existsSync(filePath)) {
-      throw new NotFoundException('Không tìm thấy file công bố trên máy chủ');
-    }
-
-    return {
-      ...document,
-      filePath,
-      fallbackName: basename(filePath),
-    };
-  }
-
   /**
    * Kiểm tra danh sách nhà máy gửi từ form sản phẩm.
    *
@@ -1225,7 +1188,9 @@ export class ProductsService {
           data: documents.map((doc) => ({
             productId: product.id,
             url: doc.url,
-            originalName: doc.originalName ?? null,
+            originalName: doc.originalName
+              ? repairUploadedFilename(doc.originalName)
+              : null,
             mimetype: doc.mimetype ?? null,
             size: doc.size ?? null,
           })),
@@ -1622,7 +1587,9 @@ export class ProductsService {
             data: documents.map((doc) => ({
               productId: id,
               url: doc.url,
-              originalName: doc.originalName ?? null,
+              originalName: doc.originalName
+              ? repairUploadedFilename(doc.originalName)
+              : null,
               mimetype: doc.mimetype ?? null,
               size: doc.size ?? null,
             })),
