@@ -18,6 +18,7 @@ import {
   APPROVAL_BRANCHES,
   APPROVAL_FORM_VERSION,
   APPROVAL_STATUS_ORDER,
+  EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
   RECEIPT_FIELD_IDS,
   RECEIPT_LOCATION_BRANCHES,
@@ -60,9 +61,6 @@ export class ApprovalLifecycleService {
       where: { clientUuid },
     });
     if (existing && existing.instanceCode) return this.serializeRequest(existing);
-    if (existing && existing.status !== 'CREATE_FAILED') {
-      return this.serializeRequest(existing);
-    }
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -398,7 +396,7 @@ export class ApprovalLifecycleService {
     const amount = this.toNumber(
       request.kind === 'RECEIPT'
         ? byId.get(RECEIPT_FIELD_IDS.amount)?.value
-        : byId.get('widget17368415755750001')?.value,
+        : byId.get(EXPENSE_FIELD_IDS.common.amount)?.value,
     );
     if (amount <= 0) throw new BadRequestException('Approval không có số tiền hợp lệ');
 
@@ -407,14 +405,16 @@ export class ApprovalLifecycleService {
         ? byId.get(RECEIPT_FIELD_IDS.date)?.value
         : byId.get(
             request.kind === 'EXPENSE_HN'
-              ? 'widget17399508033270001'
-              : 'widget17399508904720001',
+              ? EXPENSE_FIELD_IDS.HN.from
+              : request.kind === 'EXPENSE_SG'
+                ? EXPENSE_FIELD_IDS.SG.from
+                : EXPENSE_FIELD_IDS.VP.from,
           )?.value;
     const description =
       (request.kind === 'RECEIPT'
         ? this.stringValue(byId.get(RECEIPT_FIELD_IDS.description)?.value)
         : this.stringValue(
-            byId.get('widget17368416610880001')?.value,
+            byId.get(EXPENSE_FIELD_IDS.common.detail)?.value,
           )) || `Approval ${request.instanceCode || request.id}`;
 
     if (request.kind === 'RECEIPT') {
@@ -471,7 +471,7 @@ export class ApprovalLifecycleService {
     let method = 'cash';
     if (request.kind === 'EXPENSE_VP') {
       const vpMethod = this.stringValue(
-        byId.get('widget17700954766870001')?.value,
+        byId.get(EXPENSE_FIELD_IDS.VP.method)?.value,
       );
       if (vpMethod === 'ml65570v-qr4uobqvu9-0') {
         throw new BadRequestException(
@@ -656,7 +656,12 @@ export class ApprovalLifecycleService {
   ) {
     const current = await this.prisma.approvalRequest.findUnique({
       where: { id: requestId },
-      select: { status: true, lastEventAt: true },
+      select: {
+        status: true,
+        lastEventAt: true,
+        sourceType: true,
+        sourceId: true,
+      },
     });
     if (!current) return;
 
@@ -710,9 +715,48 @@ export class ApprovalLifecycleService {
     };
     if (detail) data.detailSnapshot = detail;
 
-    await this.prisma.approvalRequest.update({
-      where: { id: requestId },
-      data,
+    if (
+      current.sourceType !== 'INTERNAL_FINANCE_WEEKLY' ||
+      !current.sourceId
+    ) {
+      await this.prisma.approvalRequest.update({
+        where: { id: requestId },
+        data,
+      });
+      return;
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.approvalRequest.update({
+        where: { id: requestId },
+        data,
+      });
+
+      if (
+        current.sourceType === 'INTERNAL_FINANCE_WEEKLY' &&
+        current.sourceId
+      ) {
+        const batchStatus =
+          status === 'APPROVED'
+            ? 'APPROVED'
+            : status === 'PENDING'
+              ? 'IN_APPROVAL'
+              : 'REJECTED';
+        const entryStatus =
+          status === 'APPROVED'
+            ? 'APPROVED'
+            : status === 'PENDING'
+              ? 'IN_WEEKLY_APPROVAL'
+              : 'REJECTED';
+        await tx.internalFinanceWeeklyBatch.update({
+          where: { id: current.sourceId },
+          data: { status: batchStatus },
+        });
+        await tx.internalFinanceEntry.updateMany({
+          where: { weeklyBatchId: current.sourceId, cashFlowId: null },
+          data: { status: entryStatus },
+        });
+      }
     });
   }
 
@@ -801,14 +845,10 @@ export class ApprovalLifecycleService {
       }
       const periodIds =
         kind === 'EXPENSE_HN'
-          ? {
-              from: 'widget17399508033270001',
-              to: 'widget17399508090490001',
-            }
-          : {
-              from: 'widget17399508904720001',
-              to: 'widget17399508961760001',
-            };
+          ? EXPENSE_FIELD_IDS.HN
+          : kind === 'EXPENSE_SG'
+            ? EXPENSE_FIELD_IDS.SG
+            : EXPENSE_FIELD_IDS.VP;
       this.validateDateRange(
         byId.get(periodIds.from)?.value,
         byId.get(periodIds.to)?.value,
@@ -818,7 +858,9 @@ export class ApprovalLifecycleService {
       throw new BadRequestException('Phiếu Thu phải có branchId của quỹ');
     }
 
-    const amount = this.toNumber(byId.get('widget17368415755750001')?.value);
+    const amount = this.toNumber(
+      byId.get(EXPENSE_FIELD_IDS.common.amount)?.value,
+    );
     const receiptAmount = this.toNumber(
       byId.get(RECEIPT_FIELD_IDS.amount)?.value,
     );
@@ -828,10 +870,10 @@ export class ApprovalLifecycleService {
 
     if (kind === 'EXPENSE_VP') {
       const method = this.stringValue(
-        byId.get('widget17700954766870001')?.value,
+        byId.get(EXPENSE_FIELD_IDS.VP.method)?.value,
       );
       const source = this.stringValue(
-        byId.get('widget17700955853050001')?.value,
+        byId.get(EXPENSE_FIELD_IDS.VP.cashSource)?.value,
       );
       if (!EXPENSE_VP_OPTIONS.methods.has(method)) {
         throw new BadRequestException('Phương thức thanh toán VP không hợp lệ');

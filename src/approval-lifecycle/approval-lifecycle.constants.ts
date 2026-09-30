@@ -28,6 +28,31 @@ export interface ApprovalDefinition {
 
 export const APPROVAL_FORM_VERSION = '2026-09-26.v1';
 
+export const EXPENSE_FIELD_IDS = {
+  common: {
+    amount: 'widget17368415755750001',
+    detail: 'widget17368416610880001',
+    view: 'widget17371739587940001',
+  },
+  HN: {
+    week: 'widget17399397879320001',
+    from: 'widget17399508033270001',
+    to: 'widget17399508090490001',
+  },
+  SG: {
+    week: 'widget17399388386300001',
+    from: 'widget17399508904720001',
+    to: 'widget17399508961760001',
+  },
+  VP: {
+    week: 'widget17399388386300001',
+    from: 'widget17399508904720001',
+    to: 'widget17399508961760001',
+    method: 'widget17700954766870001',
+    cashSource: 'widget17700955853050001',
+  },
+} as const;
+
 export const APPROVAL_DEFINITIONS: Record<
   ApprovalRequestKind,
   ApprovalDefinition
@@ -37,12 +62,12 @@ export const APPROVAL_DEFINITIONS: Record<
     approvalCode: 'E759B9DB-B8EA-4DC6-B309-2E162D94EEF3',
     formVersion: APPROVAL_FORM_VERSION,
     requiredFieldIds: [
-      'widget17399397879320001',
-      'widget17399508033270001',
-      'widget17399508090490001',
-      'widget17368415755750001',
-      'widget17368416610880001',
-      'widget17371739587940001',
+      EXPENSE_FIELD_IDS.HN.week,
+      EXPENSE_FIELD_IDS.HN.from,
+      EXPENSE_FIELD_IDS.HN.to,
+      EXPENSE_FIELD_IDS.common.amount,
+      EXPENSE_FIELD_IDS.common.detail,
+      EXPENSE_FIELD_IDS.common.view,
     ],
   },
   EXPENSE_SG: {
@@ -50,12 +75,12 @@ export const APPROVAL_DEFINITIONS: Record<
     approvalCode: 'AE8660B8-4467-45FE-9878-F3B649372E8C',
     formVersion: APPROVAL_FORM_VERSION,
     requiredFieldIds: [
-      'widget17399388386300001',
-      'widget17399508904720001',
-      'widget17399508961760001',
-      'widget17368415755750001',
-      'widget17368416610880001',
-      'widget17371739587940001',
+      EXPENSE_FIELD_IDS.SG.week,
+      EXPENSE_FIELD_IDS.SG.from,
+      EXPENSE_FIELD_IDS.SG.to,
+      EXPENSE_FIELD_IDS.common.amount,
+      EXPENSE_FIELD_IDS.common.detail,
+      EXPENSE_FIELD_IDS.common.view,
     ],
   },
   EXPENSE_VP: {
@@ -63,13 +88,13 @@ export const APPROVAL_DEFINITIONS: Record<
     approvalCode: 'B06392C2-EE34-486B-AA9C-DB7C53C19142',
     formVersion: APPROVAL_FORM_VERSION,
     requiredFieldIds: [
-      'widget17399388386300001',
-      'widget17399508904720001',
-      'widget17399508961760001',
-      'widget17700954766870001',
-      'widget17368415755750001',
-      'widget17368416610880001',
-      'widget17371739587940001',
+      EXPENSE_FIELD_IDS.VP.week,
+      EXPENSE_FIELD_IDS.VP.from,
+      EXPENSE_FIELD_IDS.VP.to,
+      EXPENSE_FIELD_IDS.VP.method,
+      EXPENSE_FIELD_IDS.common.amount,
+      EXPENSE_FIELD_IDS.common.detail,
+      EXPENSE_FIELD_IDS.common.view,
     ],
   },
   RECEIPT: {
@@ -170,5 +195,5 @@ export const EXPENSE_VP_OPTIONS = {
 export const APPROVAL_BRANCHES = {
   EXPENSE_HN: 6,
   EXPENSE_SG: 1,
-  EXPENSE_VP: new Set([4, 5, 7]),
+  EXPENSE_VP: new Set([4, 7]),
 } as const;

@@ -123,6 +123,13 @@ model User {
   productQualityAttachments                                 ProductQualityAttachment[]        @relation("ProductQualityAttachmentCreator")
   productQualityRoutingConfigs                              ProductQualityRoutingConfig[]
   productQualityDepartmentMembers                           ProductQualityDepartmentMember[]
+  createdInternalFinanceEntries                             InternalFinanceEntry[]             @relation("InternalFinanceEntryCreator")
+  reviewedInternalFinanceEntries                            InternalFinanceEntry[]             @relation("InternalFinanceEntryAccountant")
+  managedInternalFinanceEntries                             InternalFinanceEntry[]             @relation("InternalFinanceEntryManager")
+  issuedInternalFinanceEntries                              InternalFinanceEntry[]             @relation("InternalFinanceEntryCashIssuer")
+  internalFinanceReviews                                    InternalFinanceReview[]             @relation("InternalFinanceReviewUser")
+  createdInternalFinanceBatches                             InternalFinanceWeeklyBatch[]        @relation("InternalFinanceBatchCreator")
+  createdInternalFinanceAttachments                         InternalFinanceAttachment[]
 
   @@map("users")
 }
@@ -351,6 +358,8 @@ model Branch {
   productQualityTickets     ProductQualityTicket[]
   productQualityRoutingConfigs ProductQualityRoutingConfig[]
   productQualityDepartmentMembers ProductQualityDepartmentMember[]
+  internalFinanceEntries    InternalFinanceEntry[]
+  internalFinanceBatches    InternalFinanceWeeklyBatch[]
 
   @@index([updatedAt, id])
   @@map("branches")
@@ -493,6 +502,7 @@ model Customer {
   returnOrders           ReturnOrder[]                   @relation("ReturnOrderCustomer")
   parentReturnOrders     ReturnOrder[]                   @relation("ReturnOrderParentCustomer")
   productQualityTickets  ProductQualityTicket[]
+  internalFinanceEntries InternalFinanceEntry[]           @relation("InternalFinanceEntryCustomer")
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
@@ -1672,6 +1682,7 @@ model Invoice {
   packingHangs           PackingHangInvoice[]
   packingLoadings        PackingLoadingInvoice[]
   packingSlips           PackingSlipInvoice[]
+  internalFinanceLinks   InternalFinanceInvoiceLink[]
   returnOrderDetails     ReturnOrderDetail[]
   returnOrders           ReturnOrder[]
   mergeTargets           InvoiceMerge[]          @relation("InvoiceMergeTarget")
@@ -2161,6 +2172,7 @@ model CashFlow {
   returnOrders              ReturnOrder[]
   supplierReturns           SupplierReturn[]
   approvalRequest            ApprovalRequest?
+  internalFinanceEntry      InternalFinanceEntry?
 
   @@index([branchId, transDate])
   @@index([createdBy, transDate])
@@ -2194,6 +2206,7 @@ model ApprovalRequest {
 
   cashFlow CashFlow?             @relation(fields: [cashFlowId], references: [id])
   events   ApprovalRequestEvent[]
+  weeklyBatch InternalFinanceWeeklyBatch?
 
   @@index([kind, status])
   @@index([status, lastEventAt])
@@ -2219,6 +2232,156 @@ model ApprovalRequestEvent {
   @@index([instanceCode, receivedAt])
   @@index([approvalRequestId, receivedAt])
   @@map("approval_request_events")
+}
+
+model InternalFinanceCodeCounter {
+  id           Int      @id @default(autoincrement())
+  dateKey      String   @unique @db.VarChar(8)
+  nextNumber   Int      @default(1)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("internal_finance_code_counters")
+}
+
+model InternalFinanceEntry {
+  id                    Int       @id @default(autoincrement())
+  code                  String    @unique
+  direction             String    @db.VarChar(16)
+  category              String    @db.VarChar(64)
+  subCategory           String?   @db.VarChar(64)
+  branchId              Int
+  amount                Decimal   @db.Decimal(18, 2)
+  occurredAt            DateTime  @default(now())
+  sourceType            String    @db.VarChar(64)
+  sourceId              String?   @db.VarChar(128)
+  sourceKey             String?   @unique @db.VarChar(255)
+  sourceSnapshot        Json?
+  description           String?
+  evidenceStatus        String    @default("MISSING") @db.VarChar(32)
+  status                String    @default("PENDING_ACCOUNTANT") @db.VarChar(40)
+  requiresEvidence      Boolean   @default(true)
+  exceptionReason       String?
+  exceptionDueAt        DateTime?
+  accountantReviewedBy  Int?
+  accountantReviewedAt  DateTime?
+  managerReviewedBy     Int?
+  managerReviewedAt     DateTime?
+  cashIssued            Boolean   @default(false)
+  cashIssuedAt          DateTime?
+  cashIssuedBy          Int?
+  vehicleName           String?
+  vehicleServiceType    String?
+  vehicleOdo            Decimal?  @db.Decimal(18, 2)
+  vehicleLiters         Decimal?  @db.Decimal(18, 4)
+  vehicleUnitPrice      Decimal?  @db.Decimal(18, 2)
+  vehicleLocation       String?
+  vehicleAnomalyStatus  String?   @db.VarChar(64)
+  customerId            Int?
+  packingSlipId         Int?
+  weeklyBatchId         Int?
+  cashFlowId            Int?      @unique
+  createdBy             Int
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  branch              Branch                     @relation(fields: [branchId], references: [id])
+  customer            Customer?                  @relation("InternalFinanceEntryCustomer", fields: [customerId], references: [id])
+  packingSlip         PackingSlip?               @relation(fields: [packingSlipId], references: [id])
+  weeklyBatch         InternalFinanceWeeklyBatch? @relation(fields: [weeklyBatchId], references: [id])
+  cashFlow            CashFlow?                  @relation(fields: [cashFlowId], references: [id])
+  creator             User                       @relation("InternalFinanceEntryCreator", fields: [createdBy], references: [id])
+  accountantReviewer  User?                      @relation("InternalFinanceEntryAccountant", fields: [accountantReviewedBy], references: [id])
+  managerReviewer     User?                      @relation("InternalFinanceEntryManager", fields: [managerReviewedBy], references: [id])
+  cashIssuer           User?                      @relation("InternalFinanceEntryCashIssuer", fields: [cashIssuedBy], references: [id])
+  attachments         InternalFinanceAttachment[]
+  invoiceLinks        InternalFinanceInvoiceLink[]
+  reviews             InternalFinanceReview[]
+
+  @@index([branchId, occurredAt])
+  @@index([direction, category, status])
+  @@index([subCategory])
+  @@index([branchId, cashIssued])
+  @@index([weeklyBatchId, status])
+  @@index([packingSlipId])
+  @@index([customerId, occurredAt])
+  @@map("internal_finance_entries")
+}
+
+model InternalFinanceAttachment {
+  id        Int                  @id @default(autoincrement())
+  entryId   Int
+  kind      String               @db.VarChar(32)
+  fileUrl   String
+  fileName  String?
+  fileType  String?
+  fileSize  Int?
+  createdBy Int
+  createdAt DateTime             @default(now())
+
+  entry   InternalFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  creator User                 @relation(fields: [createdBy], references: [id])
+
+  @@index([entryId, kind])
+  @@map("internal_finance_attachments")
+}
+
+model InternalFinanceInvoiceLink {
+  id        Int                  @id @default(autoincrement())
+  entryId   Int
+  invoiceId Int
+  amount    Decimal?             @db.Decimal(18, 2)
+  createdAt DateTime             @default(now())
+
+  entry   InternalFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  invoice Invoice              @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([entryId, invoiceId])
+  @@index([invoiceId])
+  @@map("internal_finance_invoice_links")
+}
+
+model InternalFinanceReview {
+  id         Int                  @id @default(autoincrement())
+  entryId    Int
+  role       String               @db.VarChar(32)
+  decision   String               @db.VarChar(32)
+  note       String?
+  reason     String?
+  dueAt      DateTime?
+  reviewerId Int?
+  reviewerNameSnapshot String?
+  createdAt  DateTime             @default(now())
+
+  entry    InternalFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  reviewer User?                @relation("InternalFinanceReviewUser", fields: [reviewerId], references: [id])
+
+  @@index([entryId, role, createdAt])
+  @@map("internal_finance_reviews")
+}
+
+model InternalFinanceWeeklyBatch {
+  id                Int       @id @default(autoincrement())
+  code              String    @unique
+  branchId          Int
+  weekStart         DateTime
+  weekEnd           DateTime
+  totalAmount       Decimal   @db.Decimal(18, 2)
+  status            String    @default("DRAFT") @db.VarChar(40)
+  preparedAt        DateTime?
+  createdBy         Int
+  approvalRequestId Int?      @unique
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  branch         Branch           @relation(fields: [branchId], references: [id])
+  creator        User             @relation("InternalFinanceBatchCreator", fields: [createdBy], references: [id])
+  approvalRequest ApprovalRequest? @relation(fields: [approvalRequestId], references: [id])
+  entries        InternalFinanceEntry[]
+
+  @@unique([branchId, weekStart, weekEnd])
+  @@index([status, weekStart])
+  @@map("internal_finance_weekly_batches")
 }
 
 model Destruction {
@@ -2756,6 +2919,7 @@ model PackingSlip {
   larkExpenseSyncedAt  DateTime?
   cuocNhanHang         Decimal?                 @default(0)
   hasCuocNhanHang      Boolean                  @default(false)
+  internalFinanceEntries InternalFinanceEntry[]
   expenseFiles         PackingSlipExpenseFile[]
   images               PackingSlipImage[]
   invoices             PackingSlipInvoice[]

@@ -71,6 +71,7 @@ export class LarkExpenseSyncService {
   private readonly tableHN: string | null;
   private readonly tableSG: string | null;
   private readonly apiUrl: string;
+  private readonly legacyWriteEnabled: boolean;
 
   constructor(
     private readonly expenseBase: LarkExpenseBaseService,
@@ -84,10 +85,12 @@ export class LarkExpenseSyncService {
       this.config.get<string>('API_URL') ||
       this.config.get<string>('APP_PUBLIC_URL') ||
       'http://localhost:3060';
+    this.legacyWriteEnabled =
+      this.config.get<string>('LEGACY_LARK_EXPENSE_WRITE_ENABLED') === 'true';
   }
 
   isEnabled(): boolean {
-    return this.expenseBase.isEnabled();
+    return this.legacyWriteEnabled && this.expenseBase.isEnabled();
   }
 
   /**
@@ -95,7 +98,7 @@ export class LarkExpenseSyncService {
    * Best-effort: lỗi từng phí không ảnh hưởng phí khác. Lỗi tổng thể chỉ log.
    */
   async syncPackingSlipExpenses(slip: PackingSlipForSync): Promise<void> {
-    if (!this.expenseBase.isEnabled()) return;
+    if (!this.legacyWriteEnabled || !this.expenseBase.isEnabled()) return;
 
     const target = this.resolveTable(slip.branchId);
     if (!target) {

@@ -5,9 +5,16 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { N8nNotifyModule } from '../n8n-notify/n8n-notify.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
+import { InternalFinanceModule } from '../internal-finance/internal-finance.module';
 
 @Module({
-  imports: [PrismaModule, AuditLogsModule, N8nNotifyModule, LarkSyncModule],
+  imports: [
+    PrismaModule,
+    AuditLogsModule,
+    N8nNotifyModule,
+    LarkSyncModule,
+    InternalFinanceModule,
+  ],
   controllers: [PackingSlipsController],
   providers: [PackingSlipsService],
   exports: [PackingSlipsService],

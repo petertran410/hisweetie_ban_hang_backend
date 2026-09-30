@@ -1,6 +1,7 @@
 import {
   Injectable,
   NotFoundException,
+  BadRequestException,
   BadGatewayException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -18,7 +19,6 @@ import {
 } from '../audit-logs/audit-templates';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
-import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import {
   applyPackingToConsignments,
@@ -34,6 +34,8 @@ import {
 } from '../common/packing-status.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
+import { InternalFinanceService } from '../internal-finance/internal-finance.service';
+import { INTERNAL_FINANCE_STATUS } from '../internal-finance/internal-finance.constants';
 
 @Injectable()
 export class PackingSlipsService {
@@ -41,8 +43,8 @@ export class PackingSlipsService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private n8nNotifyService: N8nNotifyService,
-    private larkExpenseSync: LarkExpenseSyncService,
     private larkProductSync: LarkProductSyncService,
+    private internalFinanceService: InternalFinanceService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -356,6 +358,12 @@ export class PackingSlipsService {
         });
       }
 
+      await this.internalFinanceService.syncPackingSlipEntriesInTransaction(
+        tx,
+        created,
+        userId,
+      );
+
       return created;
     });
 
@@ -423,11 +431,6 @@ export class PackingSlipsService {
         .notifyDelivery(fullPackingSlip as any)
         .catch((err) => {
           console.error('notifyDelivery unexpected error:', err);
-        });
-      void this.larkExpenseSync
-        .syncPackingSlipExpenses(fullPackingSlip as any)
-        .catch((err) => {
-          console.error('larkExpenseSync unexpected error:', err);
         });
     } catch (err) {
       console.error(
@@ -565,18 +568,26 @@ export class PackingSlipsService {
         }
       }
 
-      return tx.packingSlip.update({
+      const updatedSlip = await tx.packingSlip.update({
         where: { id },
         data: updateData,
         include: {
           branch: true,
           creator: true,
           expensePayer: true,
-          invoices: { include: { invoice: true } },
+          invoices: { include: { invoice: true, consignment: true } },
           images: true,
           expenseFiles: true,
         },
       });
+
+      await this.internalFinanceService.syncPackingSlipEntriesInTransaction(
+        tx,
+        updatedSlip,
+        userId || 1,
+      );
+
+      return updatedSlip;
     });
 
     // Audit log ngoài transaction
@@ -698,22 +709,14 @@ export class PackingSlipsService {
   }
 
   /**
-   * Gửi lại (đồng bộ) phiếu chi lên Lark Base một cách thủ công.
-   * Logic upsert nằm trong larkExpenseSync.syncPackingSlipExpenses:
-   *   1. Có record_id đã lưu → update.
-   *   2. Chưa có → search theo "Mã Báo Đơn" trên Lark → update nếu thấy.
-   *   3. Không thấy → tạo mới.
-   * CHỜ kết quả để báo lỗi rõ ràng cho người dùng (khác auto fire-and-forget).
+   * Endpoint legacy được giữ để trả thông báo rõ ràng sau khi chuyển sang
+   * Internal Finance và Approval tuần trực tiếp trên POS.
    */
   async resendLarkExpense(id: number) {
-    const fullPackingSlip = await this.findOne(id);
-    if (!this.larkExpenseSync.isEnabled()) {
-      throw new ServiceUnavailableException(
-        'Đồng bộ Lark chưa được cấu hình (LARK_EXPENSE_BASE_TOKEN)',
-      );
-    }
-    await this.larkExpenseSync.syncPackingSlipExpenses(fullPackingSlip as any);
-    return { message: 'Đã đồng bộ phiếu chi lên Lark' };
+    void id;
+    throw new ServiceUnavailableException(
+      'Đồng bộ phiếu chi sang LarkBase cũ đã được vô hiệu hóa; POS hiện chỉ tạo Approval tuần trực tiếp trên Lark.',
+    );
   }
 
   /**
@@ -854,6 +857,47 @@ export class PackingSlipsService {
       await tx.packingSlip.update({
         where: { id },
         data: { cancelledAt: new Date(), cancelledById: userId ?? null },
+      });
+
+      const internalFinanceEntries =
+        await tx.internalFinanceEntry.findMany({
+          where: { packingSlipId: id },
+          select: {
+            id: true,
+            weeklyBatchId: true,
+            cashFlowId: true,
+            cashIssued: true,
+            status: true,
+          },
+        });
+      const lockedEntry = internalFinanceEntries.find(
+        (entry) =>
+          entry.weeklyBatchId ||
+          entry.cashFlowId ||
+          entry.cashIssued ||
+          [
+            INTERNAL_FINANCE_STATUS.POSTING,
+            INTERNAL_FINANCE_STATUS.POSTED,
+          ].includes(entry.status as any),
+      );
+      if (lockedEntry) {
+        throw new BadRequestException(
+          'Không thể hủy báo đơn khi khoản tài chính đã vào batch hoặc đã ghi nhận vào sổ quỹ',
+        );
+      }
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          packingSlipId: id,
+          weeklyBatchId: null,
+          cashFlowId: null,
+          status: {
+            notIn: [
+              INTERNAL_FINANCE_STATUS.REJECTED,
+              INTERNAL_FINANCE_STATUS.CANCELLED,
+            ],
+          },
+        },
+        data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
       });
 
       // Hoàn (lùi) trạng thái hóa đơn về bậc cao nhất còn lại

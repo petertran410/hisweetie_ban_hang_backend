@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCashFlowDto,
@@ -698,6 +698,183 @@ export class CashFlowsService {
         throw error;
       }
     });
+  }
+
+  async createInternalFinanceCashFlow(
+    params: {
+      entryId: number;
+      branchId: number;
+      amount: number;
+      transDate?: string;
+      description?: string;
+      method?: string;
+      isReceipt: boolean;
+    },
+    userId: number,
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id: params.entryId },
+        include: {
+          invoiceLinks: {
+            include: {
+              invoice: {
+                select: {
+                  id: true,
+                  code: true,
+                  customerId: true,
+                  parentCustomerId: true,
+                  grandTotal: true,
+                  debtAmount: true,
+                  paidAmount: true,
+                  status: true,
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!entry) throw new BadRequestException('Không tìm thấy dòng tài chính nội bộ');
+      if (entry.cashFlowId) {
+        const existing = await tx.cashFlow.findUnique({
+          where: { id: entry.cashFlowId },
+        });
+        return { cashFlow: existing, alreadyPosted: true };
+      }
+      if (!this.canPostInternalFinanceEntry(entry)) {
+        throw new BadRequestException('Dòng tài chính chưa đủ điều kiện ghi nhận');
+      }
+      if (entry.branchId !== params.branchId) {
+        throw new BadRequestException('Chi nhánh dòng tài chính không khớp');
+      }
+
+      const claimed = await tx.internalFinanceEntry.updateMany({
+        where: {
+          id: entry.id,
+          cashFlowId: null,
+          status: {
+            in: [
+              'ACCOUNTANT_APPROVED',
+              'APPROVED',
+            ],
+          },
+        },
+        data: { status: 'POSTING' },
+      });
+      if (claimed.count !== 1) {
+        throw new BadRequestException(
+          'Dòng tài chính đang được ghi nhận hoặc đã ghi nhận',
+        );
+      }
+
+      try {
+        const method = params.method || 'cash';
+        const code = await this.generateManualCode(
+          params.isReceipt,
+          method,
+          tx,
+        );
+        const cashFlow = await tx.cashFlow.create({
+          data: {
+            code,
+            branchId: params.branchId,
+            isReceipt: params.isReceipt,
+            amount: params.amount,
+            transDate: params.transDate
+              ? new Date(params.transDate)
+              : new Date(),
+            method,
+            usedForFinancialReporting: 1,
+            description: params.description || entry.description,
+            status: 0,
+            statusValue: params.isReceipt ? 'Đã thanh toán' : 'Đã chi',
+            createdBy: userId,
+            collectorUserId: userId,
+          },
+          include: {
+            branch: { select: { id: true, name: true } },
+          },
+        });
+
+        if (params.isReceipt && entry.invoiceLinks.length > 0) {
+          let remaining = params.amount;
+          for (const link of entry.invoiceLinks) {
+            if (remaining <= 0) break;
+            const invoice = link.invoice;
+            const outstanding = Math.max(
+              0,
+              Number(invoice.debtAmount ?? invoice.grandTotal),
+            );
+            const allocation = Math.min(remaining, outstanding);
+            if (allocation <= 0) continue;
+
+            const paymentCount = await tx.invoicePayment.count({
+              where: { invoiceId: invoice.id },
+            });
+            const payment = await tx.invoicePayment.create({
+              data: {
+                code: `TT${invoice.code}-${paymentCount + 1}`,
+                invoiceId: invoice.id,
+                amount: allocation,
+                paymentDate: params.transDate
+                  ? new Date(params.transDate)
+                  : new Date(),
+                paymentMethod: method,
+                description: `Thu tiền hóa đơn ${invoice.code} từ ${entry.code}`,
+                status: 1,
+                cashFlowId: cashFlow.id,
+              },
+            });
+            const activePayments = await tx.invoicePayment.findMany({
+              where: { invoiceId: invoice.id, status: { not: 2 } },
+              select: { amount: true },
+            });
+            const paidAmount = activePayments.reduce(
+              (sum: number, item: any) => sum + Number(item.amount || 0),
+              0,
+            );
+            const debtAmount = Math.max(
+              0,
+              Number(invoice.grandTotal) - paidAmount,
+            );
+            await tx.invoice.update({
+              where: { id: invoice.id },
+              data: {
+                paidAmount,
+                debtAmount,
+                status:
+                  debtAmount <= 0 && invoice.status === 7 ? 1 : invoice.status,
+                statusValue:
+                  debtAmount <= 0 && invoice.status === 7
+                    ? 'Hoàn thành'
+                    : undefined,
+              },
+            });
+            void payment;
+            remaining -= allocation;
+          }
+        }
+
+        await tx.internalFinanceEntry.update({
+          where: { id: entry.id },
+          data: { status: 'POSTED', cashFlowId: cashFlow.id },
+        });
+        return { cashFlow, alreadyPosted: false };
+      } catch (error) {
+        await tx.internalFinanceEntry.update({
+          where: { id: entry.id },
+          data: { status: entry.status },
+        });
+        throw error;
+      }
+    });
+  }
+
+  private canPostInternalFinanceEntry(entry: any) {
+    return (
+      entry.direction === 'RECEIPT' &&
+      entry.status === 'ACCOUNTANT_APPROVED'
+    );
   }
 
   async findAll(query: CashFlowQueryDto, currentUser?: any) {
