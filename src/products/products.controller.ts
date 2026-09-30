@@ -331,6 +331,7 @@ export class ProductsController {
    */
   @Public()
   @Get(':productId/documents/:documentId/view')
+  @Get(':productId/documents/:documentId/view/:filename')
   async viewPublicationDocument(
     @Param('productId') productId: string,
     @Param('documentId') documentId: string,
