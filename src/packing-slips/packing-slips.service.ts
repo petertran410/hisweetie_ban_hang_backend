@@ -34,6 +34,7 @@ import {
 } from '../common/packing-status.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
+import { buildColdCargoWarning } from '../common/cold-cargo.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -159,6 +160,22 @@ export class PackingSlipsService {
                     name: true,
                   },
                 },
+                details: {
+                  where: { product: { cargoType: 'COLD' } },
+                  select: {
+                    productId: true,
+                    productCode: true,
+                    productName: true,
+                    product: {
+                      select: {
+                        id: true,
+                        code: true,
+                        name: true,
+                        cargoType: true,
+                      },
+                    },
+                  },
+                },
               },
             },
             consignment: {
@@ -195,7 +212,10 @@ export class PackingSlipsService {
       throw new NotFoundException(`Packing slip with ID ${id} not found`);
     }
 
-    return packingSlip;
+    return {
+      ...packingSlip,
+      ...buildColdCargoWarning(packingSlip.invoices),
+    };
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {

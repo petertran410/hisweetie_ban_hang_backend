@@ -31,6 +31,7 @@ import {
 } from '../common/inventory-log.util';
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
+import { buildColdCargoWarning } from '../common/cold-cargo.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -144,6 +145,22 @@ export class PackingHangsService {
                     contactNumber: true,
                   },
                 },
+                details: {
+                  where: { product: { cargoType: 'COLD' } },
+                  select: {
+                    productId: true,
+                    productCode: true,
+                    productName: true,
+                    product: {
+                      select: {
+                        id: true,
+                        code: true,
+                        name: true,
+                        cargoType: true,
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -156,7 +173,10 @@ export class PackingHangsService {
       throw new NotFoundException(`Packing hang with ID ${id} not found`);
     }
 
-    return packingHang;
+    return {
+      ...packingHang,
+      ...buildColdCargoWarning(packingHang.invoices),
+    };
   }
 
   async create(dto: CreatePackingHangDto, userId: number) {
