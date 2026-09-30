@@ -22,6 +22,7 @@ import {
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { AuthService } from '../auth/auth.service';
 import { PermissionCacheService } from '../permission-cache/permission-cache.service';
+import { Public } from '../auth/decorators/public.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
@@ -322,6 +323,44 @@ export class ProductsController {
       .map((s) => Number(s.trim()))
       .filter((n) => !Number.isNaN(n) && n > 0);
     return this.productsService.getConditionSummaryBatch(ids, +branchId);
+  }
+
+  /**
+   * Trả file công bố với tên gốc để PDF Viewer hiển thị đúng tên.
+   * Endpoint public vì thẻ <a> mở tab mới không gửi Bearer token từ frontend.
+   */
+  @Public()
+  @Get(':productId/documents/:documentId/view')
+  async viewPublicationDocument(
+    @Param('productId') productId: string,
+    @Param('documentId') documentId: string,
+    @Res() res: Response,
+  ) {
+    const document = await this.productsService.findPublicationDocument(
+      +productId,
+      +documentId,
+    );
+    const originalName = (document.originalName || document.fallbackName)
+      .replace(/[\r\n]/g, ' ')
+      .trim();
+    const asciiFallback =
+      originalName.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_') ||
+      document.fallbackName;
+    const encodedName = encodeURIComponent(originalName).replace(
+      /['()]/g,
+      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+
+    res.setHeader(
+      'Content-Type',
+      document.mimetype || 'application/octet-stream',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`,
+    );
+
+    return res.sendFile(document.filePath);
   }
 
   @Get(':id')
