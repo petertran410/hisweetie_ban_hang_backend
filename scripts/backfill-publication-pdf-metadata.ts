@@ -9,7 +9,9 @@ import {
 } from '../src/upload/publication-pdf-title';
 
 const prisma = new PrismaClient();
-const uploadsRoot = resolve(process.cwd(), 'uploads');
+const uploadsRoot = resolve(
+  process.env.UPLOADS_ROOT || join(process.cwd(), 'uploads'),
+);
 const publicationRoot = resolve(uploadsRoot, 'products', 'cong-bo');
 
 interface PublicationRow {
@@ -56,6 +58,7 @@ async function main() {
   const mode = options.apply ? 'APPLY' : 'DRY-RUN';
   let updated = 0;
   let skipped = 0;
+  let missing = 0;
   let failed = 0;
 
   console.log(
@@ -121,6 +124,15 @@ async function main() {
         )}${duplicateNote}`,
       );
     } catch (error) {
+      if (isMissingFileError(error)) {
+        missing++;
+        console.log(
+          `SKIP missing file=${basename(target.filePath)} rows=${target.rows
+            .map((row) => row.id)
+            .join(',')}`,
+        );
+        continue;
+      }
       failed++;
       console.error(
         `FAILED file=${basename(target.filePath)}: ${(error as Error).message}`,
@@ -129,9 +141,18 @@ async function main() {
   }
 
   console.log(
-    `[publication-pdf-metadata] done updated=${updated} skipped=${skipped} failed=${failed}`,
+    `[publication-pdf-metadata] done updated=${updated} skipped=${skipped} missing=${missing} failed=${failed}`,
   );
   if (failed > 0) process.exitCode = 1;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code?: string }).code === 'ENOENT'
+  );
 }
 
 function groupPublicationFiles(rows: PublicationRow[]): PublicationFile[] {

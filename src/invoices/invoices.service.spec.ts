@@ -59,6 +59,43 @@ describe('InvoicesService findAll', () => {
   );
 });
 
+describe('InvoicesService cold cargo filter', () => {
+  const createService = () =>
+    new InvoicesService(
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
+
+  it('adds a product cargoType=COLD relation filter when enabled', async () => {
+    const service = createService();
+
+    const where = await (service as any).buildInvoiceListWhere({
+      hasColdItems: true,
+    });
+
+    expect(where.details).toEqual({
+      some: {
+        product: { cargoType: 'COLD' },
+      },
+    });
+  });
+
+  it('does not add a cold relation filter by default', async () => {
+    const service = createService();
+
+    const where = await (service as any).buildInvoiceListWhere({});
+
+    expect(where.details).toBeUndefined();
+  });
+});
+
 describe('InvoicesService delivery reporting', () => {
   const createInvoice = (
     deliveredAt: Date | null,

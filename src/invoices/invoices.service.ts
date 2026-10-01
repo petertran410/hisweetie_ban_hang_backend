@@ -435,6 +435,9 @@ export class InvoicesService {
         mode: 'insensitive',
       };
     }
+    if (query.hasColdItems) {
+      detailsConditions.product = { cargoType: 'COLD' };
+    }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
     }
@@ -818,6 +821,18 @@ export class InvoicesService {
       if (where.purchaseDate?.lte) {
         sqlParams.push(where.purchaseDate.lte);
         sqlConditions.push(`i."purchaseDate" <= $${sqlParams.length}`);
+      }
+      if (where.details?.some?.product?.cargoType === 'COLD') {
+        sqlConditions.push(`
+          EXISTS (
+            SELECT 1
+            FROM invoice_details cold_detail
+            JOIN products cold_product
+              ON cold_product.id = cold_detail."productId"
+            WHERE cold_detail."invoiceId" = i.id
+              AND cold_product."cargo_type" = 'COLD'
+          )
+        `);
       }
       if (where.createdAt?.gte) {
         sqlParams.push(where.createdAt.gte);
@@ -6128,6 +6143,9 @@ export class InvoicesService {
         contains: productNoteSearch,
         mode: 'insensitive',
       };
+    }
+    if (query.hasColdItems) {
+      detailsConditions.product = { cargoType: 'COLD' };
     }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
