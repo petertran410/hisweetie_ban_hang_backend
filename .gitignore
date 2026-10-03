@@ -18,6 +18,10 @@ nginx
 
 POSTGRES-STANDBY-SETUP.md
 
+.codex
+.vscode
+AGENTS.md
+
 /uploads
 
 # Logs

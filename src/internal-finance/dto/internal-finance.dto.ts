@@ -121,6 +121,10 @@ export class InternalFinanceQueryDto {
   search?: string;
 
   @IsOptional()
+  @IsIn(['OPEN', 'POSTED', 'CANCELLED'])
+  receiptStatus?: string;
+
+  @IsOptional()
   @IsInt()
   @Min(1)
   @Type(() => Number)
@@ -386,4 +390,234 @@ export class LarkFinanceImportDto {
   @IsArray()
   @IsIn(LARK_IMPORT_SOURCES, { each: true })
   sources?: string[];
+}
+
+export class WarehouseReceiptCustomerInputDto {
+  @IsInt()
+  @Type(() => Number)
+  customerId: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Type(() => Number)
+  invoiceIds?: number[];
+}
+
+export class CreateWarehouseReceiptDto {
+  @IsInt()
+  @Type(() => Number)
+  branchId: number;
+
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount: number;
+
+  @IsDateString()
+  occurredAt: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsIn(['CUSTOMER', 'WAREHOUSE_SALE'])
+  receiptKind?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WarehouseReceiptCustomerInputDto)
+  customers?: WarehouseReceiptCustomerInputDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InternalFinanceAttachmentDto)
+  attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class UpdateWarehouseReceiptDto {
+  @IsOptional()
+  @IsIn(['CUSTOMER', 'WAREHOUSE_SALE'])
+  receiptKind?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount?: number;
+
+  @IsOptional()
+  @IsDateString()
+  occurredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WarehouseReceiptCustomerInputDto)
+  customers?: WarehouseReceiptCustomerInputDto[];
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InternalFinanceAttachmentDto)
+  attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class WarehouseReceiptInvoiceAllocationDto {
+  @IsInt()
+  @Type(() => Number)
+  invoiceId: number;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  amount: number;
+}
+
+export class WarehouseReceiptCustomerAllocationDto {
+  @IsInt()
+  @Type(() => Number)
+  customerId: number;
+
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount: number;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WarehouseReceiptInvoiceAllocationDto)
+  invoices?: WarehouseReceiptInvoiceAllocationDto[];
+}
+
+export class WarehouseCashImportDto {
+  @IsOptional()
+  @IsBoolean()
+  dryRun?: boolean;
+}
+
+export class PostWarehouseReceiptDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => WarehouseReceiptCustomerAllocationDto)
+  allocations: WarehouseReceiptCustomerAllocationDto[];
+}
+
+export class CancelWarehouseReceiptDto {
+  @IsBoolean()
+  cancelCashFlows: boolean;
+}
+
+export class WarehouseExpenseQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsOptional()
+  @IsString()
+  category?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  @IsIn(['ISSUED', 'NOT_ISSUED'])
+  cashIssued?: string;
+
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page = 1;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  limit = 50;
+}
+
+export class CreateWarehouseExpenseDto {
+  @IsInt()
+  @Type(() => Number)
+  branchId: number;
+
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount: number;
+
+  @IsDateString()
+  occurredAt: string;
+
+  @IsString()
+  description: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InternalFinanceAttachmentDto)
+  attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class UpdateWarehouseExpenseDto {
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount?: number;
+
+  @IsOptional()
+  @IsDateString()
+  occurredAt?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InternalFinanceAttachmentDto)
+  attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class MarkWarehouseExpenseIssuedDto {
+  @IsBoolean()
+  cashIssued: boolean;
 }

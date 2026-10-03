@@ -658,3 +658,40 @@ export function mapLarkRecord(input: {
     skipReason: null,
   };
 }
+
+export const WAREHOUSE_CASH_TABLE_ID = "tblRXEdICUqArAAa";
+export const WAREHOUSE_CASH_CUSTOMER_TABLE_ID = "tblkOaO68UfwvJRd";
+
+export function warehouseCashBranchId(value: unknown): number | null {
+  const label = normalizeLookup(readLarkText(value));
+  if (!label.includes("kho")) return null;
+  if (label.includes("ha noi")) return 6;
+  if (label.includes("sai gon")) return 1;
+  return null;
+}
+
+export function larkLinkRecordIds(value: unknown): string[] {
+  const raw = unwrapLarkValue(value);
+  const ids: string[] = [];
+  const push = (item: unknown) => {
+    if (typeof item === "string" && item) ids.push(item);
+    else if (item && typeof item === "object") {
+      const record = item as Record<string, unknown>;
+      const id = record.id || record.record_id || record.recordId;
+      if (typeof id === "string" && id) ids.push(id);
+      for (const key of ["link_record_ids", "record_ids", "record_id_list"]) {
+        if (Array.isArray(record[key])) record[key].forEach(push);
+      }
+    }
+  };
+  if (Array.isArray(raw)) raw.forEach(push);
+  else push(raw);
+  return [...new Set(ids)];
+}
+
+export function isLarkChecked(value: unknown): boolean {
+  const raw = unwrapLarkValue(value);
+  if (raw === true || raw === 1) return true;
+  const text = normalizeLookup(readLarkText(raw));
+  return text === "true" || text === "co" || text === "x" || text === "yes";
+}

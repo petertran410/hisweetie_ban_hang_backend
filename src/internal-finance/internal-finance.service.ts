@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -9,6 +11,7 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
+import { AuthService } from '../auth/auth.service';
 import {
   EXPENSE_FIELD_IDS,
   type ApprovalFormItem,
@@ -25,20 +28,51 @@ import {
   INTERNAL_FINANCE_STATUS,
   INTERNAL_FINANCE_WEEKLY_STATUS,
   INTERNAL_FINANCE_BRANCH_IDS,
+  WAREHOUSE_CASH_BRANCH_IDS,
 } from './internal-finance.constants';
 import {
   CreateFuelEntryDto,
   CreateManualExpenseDto,
   CreateManualReceiptDto,
   CreateVehicleCareEntryDto,
+  CreateWarehouseReceiptDto,
+  CancelWarehouseReceiptDto,
   AddInternalFinanceAttachmentsDto,
+  CreateWarehouseExpenseDto,
   InternalFinanceQueryDto,
+  MarkWarehouseExpenseIssuedDto,
+  PostWarehouseReceiptDto,
   PrepareWeeklyBatchDto,
   ReviewInternalFinanceDto,
+  UpdateWarehouseReceiptDto,
+  UpdateWarehouseExpenseDto,
+  WarehouseExpenseQueryDto,
 } from './dto';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
+import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 
 type DbClient = PrismaService | any;
+
+const WAREHOUSE_EXPENSE_SCOPES = [
+  { key: 'hn', branchIds: [6] },
+  { key: 'sg', branchIds: [1] },
+  { key: 'vp', branchIds: [4, 7] },
+] as const;
+
+const WAREHOUSE_EXPENSE_CATEGORIES = [
+  INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE,
+  INTERNAL_FINANCE_CATEGORY.FUEL,
+  INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+  INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
+] as const;
+
+type WarehouseExpenseAction =
+  | 'view'
+  | 'create'
+  | 'update'
+  | 'prepare'
+  | 'submit'
+  | 'mark_issued';
 
 @Injectable()
 export class InternalFinanceService {
@@ -48,6 +82,7 @@ export class InternalFinanceService {
     private readonly approvalLifecycle: ApprovalLifecycleService,
     private readonly config: ConfigService,
     private readonly codeService: InternalFinanceCodeService,
+    private readonly authService: AuthService,
   ) {}
 
   async findAll(query: InternalFinanceQueryDto) {
@@ -222,6 +257,691 @@ export class InternalFinanceService {
         include: this.entryInclude(),
       });
     });
+  }
+
+  async listWarehouseReceipts(query: InternalFinanceQueryDto) {
+    const limit = Math.min(query.limit || 50, 100);
+    const page = query.page || 1;
+    const branchIds = (
+      query.branchIds?.length ? query.branchIds : [...WAREHOUSE_CASH_BRANCH_IDS]
+    ).filter((id) =>
+      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(id),
+    );
+    if (!branchIds.length) return { data: [], total: 0, page, limit };
+
+    const conditions: any[] = [
+      { direction: INTERNAL_FINANCE_DIRECTION.RECEIPT },
+      { branchId: { in: branchIds } },
+      { sourceType: { in: ['PACKING_SLIP', 'MANUAL_RECEIPT'] } },
+      {
+        category: {
+          in: [
+            INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT,
+            INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT,
+          ],
+        },
+      },
+    ];
+    if (query.receiptStatus === 'POSTED') {
+      conditions.push({
+        OR: [
+          { status: INTERNAL_FINANCE_STATUS.POSTED },
+          { cashFlowId: { not: null } },
+        ],
+      });
+    } else if (query.receiptStatus === 'CANCELLED') {
+      conditions.push({ status: INTERNAL_FINANCE_STATUS.CANCELLED });
+    } else if (query.receiptStatus === 'OPEN') {
+      conditions.push({
+        cashFlowId: null,
+        status: {
+          notIn: [
+            INTERNAL_FINANCE_STATUS.CANCELLED,
+            INTERNAL_FINANCE_STATUS.REJECTED,
+            INTERNAL_FINANCE_STATUS.POSTED,
+          ],
+        },
+      });
+    }
+    if (query.fromDate || query.toDate) {
+      const occurredAt: Record<string, Date> = {};
+      if (query.fromDate) occurredAt.gte = this.startOfDateString(query.fromDate);
+      if (query.toDate) occurredAt.lt = this.nextDateStart(query.toDate);
+      conditions.push({ occurredAt });
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      conditions.push({
+        OR: [
+          { code: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+          { customer: { name: { contains: search, mode: 'insensitive' } } },
+          { customer: { code: { contains: search, mode: 'insensitive' } } },
+          { packingSlip: { code: { contains: search, mode: 'insensitive' } } },
+          {
+            invoiceLinks: {
+              some: { invoice: { code: { contains: search, mode: 'insensitive' } } },
+            },
+          },
+        ],
+      });
+    }
+
+    const where = { AND: conditions };
+    const [rows, total] = await Promise.all([
+      this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: this.warehouseInclude(),
+      }),
+      this.prisma.internalFinanceEntry.count({ where }),
+    ]);
+    return {
+      data: await this.decorateWarehouseRows(rows),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  async getWarehouseReceipt(id: number) {
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      include: this.warehouseInclude(),
+    });
+    if (!entry || !this.isWarehouseReceipt(entry)) {
+      throw new NotFoundException('Không tìm thấy phiếu thu tiền mặt');
+    }
+    const [decorated] = await this.decorateWarehouseRows([entry]);
+    if (this.isWarehouseSale(decorated)) {
+      return { ...decorated, allocatableInvoices: [] };
+    }
+    const customerIds = this.customerIdsFromEntry(decorated);
+    const allocatableInvoices = customerIds.length
+      ? await this.prisma.invoice.findMany({
+          where: {
+            customerId: { in: customerIds },
+            debtAmount: { gt: 0 },
+            status: { not: INVOICE_STATUS.CANCELLED },
+          },
+          select: {
+            id: true,
+            code: true,
+            customerId: true,
+            debtAmount: true,
+            purchaseDate: true,
+          },
+          orderBy: [{ purchaseDate: 'asc' }, { id: 'asc' }],
+        })
+      : [];
+    return { ...decorated, allocatableInvoices };
+  }
+
+  async listWarehouseExpenses(query: WarehouseExpenseQueryDto, user: any) {
+    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+      user,
+      'view',
+    );
+    if (!allowedBranches.length) {
+      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
+    }
+    if (
+      query.branchId !== undefined &&
+      !allowedBranches.includes(Number(query.branchId))
+    ) {
+      throw new ForbiddenException(
+        'Không có quyền xem phiếu chi của chi nhánh này',
+      );
+    }
+    const page = query.page || 1;
+    const limit = Math.min(query.limit || 50, 100);
+    const branchIds = query.branchId
+      ? [Number(query.branchId)]
+      : allowedBranches;
+    const conditions: any[] = [
+      { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE },
+      { branchId: { in: branchIds } },
+      { category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] } },
+    ];
+    if (query.category) conditions.push({ category: query.category });
+    if (query.status) conditions.push({ status: query.status });
+    if (query.cashIssued === 'ISSUED') {
+      conditions.push({ cashIssued: true });
+    } else if (query.cashIssued === 'NOT_ISSUED') {
+      conditions.push({ cashIssued: false });
+    }
+    if (query.fromDate || query.toDate) {
+      const occurredAt: Record<string, Date> = {};
+      if (query.fromDate) {
+        occurredAt.gte = this.startOfDateString(query.fromDate);
+      }
+      if (query.toDate) {
+        occurredAt.lt = this.nextDateStart(query.toDate);
+      }
+      conditions.push({ occurredAt });
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      conditions.push({
+        OR: [
+          { code: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+          {
+            packingSlip: {
+              code: { contains: search, mode: 'insensitive' },
+            },
+          },
+        ],
+      });
+    }
+
+    const where = { AND: conditions };
+    const [data, total] = await Promise.all([
+      this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: this.warehouseExpenseInclude(),
+      }),
+      this.prisma.internalFinanceEntry.count({ where }),
+    ]);
+    return { data, total, page, limit };
+  }
+
+  async createWarehouseExpense(
+    dto: CreateWarehouseExpenseDto,
+    user: any,
+  ) {
+    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
+    return this.createManualExpense(
+      {
+        branchId: dto.branchId,
+        category: INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
+        amount: dto.amount,
+        occurredAt: dto.occurredAt,
+        description: dto.description.trim(),
+        attachments: dto.attachments,
+      },
+      user.id,
+    );
+  }
+
+  async updateWarehouseExpense(
+    id: number,
+    dto: UpdateWarehouseExpenseDto,
+    user: any,
+  ) {
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      include: { weeklyBatch: true },
+    });
+    if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+      throw new NotFoundException('Không tìm thấy khoản chi');
+    }
+    await this.assertWarehouseExpensePermission(user, entry.branchId, 'update');
+    if (entry.sourceType !== 'MANUAL_EXPENSE') {
+      throw new BadRequestException(
+        'Khoản chi từ báo đơn, xăng dầu hoặc chăm sóc xe phải sửa tại nguồn phát sinh',
+      );
+    }
+    if (
+      entry.cashFlowId ||
+      entry.cashIssued ||
+      entry.weeklyBatchId ||
+      [
+        INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
+        INTERNAL_FINANCE_STATUS.APPROVED,
+        INTERNAL_FINANCE_STATUS.POSTED,
+        INTERNAL_FINANCE_STATUS.REJECTED,
+        INTERNAL_FINANCE_STATUS.CANCELLED,
+      ].includes(entry.status as any)
+    ) {
+      throw new BadRequestException(
+        'Khoản chi đã được tổng hợp hoặc kết thúc, không thể sửa',
+      );
+    }
+    return this.prisma.$transaction(async (tx) =>
+      tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          amount: dto.amount,
+          occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
+          description:
+            dto.description !== undefined
+              ? dto.description.trim()
+              : undefined,
+          evidenceStatus: dto.attachments
+            ? dto.attachments.length
+              ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+              : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
+            : undefined,
+          ...(dto.attachments
+            ? {
+                attachments: {
+                  deleteMany: {},
+                  ...(dto.attachments.length
+                    ? {
+                        create: dto.attachments.map((file) => ({
+                          kind: file.kind || 'EVIDENCE',
+                          fileUrl: file.fileUrl,
+                          fileName: file.fileName,
+                          fileType: file.fileType,
+                          fileSize: file.fileSize,
+                          createdBy: user.id,
+                        })),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        include: this.warehouseExpenseInclude(),
+      }),
+    );
+  }
+
+  async createWarehouseReceipt(dto: CreateWarehouseReceiptDto, userId: number) {
+    this.assertWarehouseBranch(dto.branchId);
+    const sale = dto.receiptKind === 'WAREHOUSE_SALE';
+    const customers = sale
+      ? { customerIds: [] as number[], invoiceIds: [] as number[] }
+      : await this.resolveWarehouseCustomers(dto.customers || []);
+    return this.prisma.$transaction(async (tx) => {
+      const occurredAt = new Date(dto.occurredAt);
+      const code = await this.codeService.nextCode(tx, {
+        direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
+        category: INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT,
+        branchId: dto.branchId,
+        occurredAt,
+      });
+      return tx.internalFinanceEntry.create({
+        data: {
+          code,
+          direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
+          category: INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT,
+          subCategory: sale
+            ? INTERNAL_FINANCE_SUBCATEGORY.WAREHOUSE_ITEM_SALE
+            : INTERNAL_FINANCE_SUBCATEGORY.OTHER,
+          branchId: dto.branchId,
+          amount: dto.amount,
+          occurredAt,
+          sourceType: 'MANUAL_RECEIPT',
+          sourceKey: `MANUAL_RECEIPT:${randomUUID()}`,
+          sourceSnapshot: this.toJson({
+            method: 'cash',
+            note: dto.note || '',
+            customerIds: customers.customerIds,
+            receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
+            manual: true,
+          }),
+          description: dto.description?.trim() || (sale ? 'Bán đồ kho' : 'Thu tiền mặt'),
+          evidenceStatus: dto.attachments?.length
+            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
+          status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+          requiresEvidence: false,
+          customerId: customers.customerIds[0] || null,
+          createdBy: userId,
+          attachments: dto.attachments?.length
+            ? {
+                create: dto.attachments.map((file) => ({
+                  kind: file.kind || 'EVIDENCE',
+                  fileUrl: file.fileUrl,
+                  fileName: file.fileName,
+                  fileType: file.fileType,
+                  fileSize: file.fileSize,
+                  createdBy: userId,
+                })),
+              }
+            : undefined,
+          invoiceLinks: customers.invoiceIds.length
+            ? {
+                create: customers.invoiceIds.map((invoiceId) => ({ invoiceId })),
+              }
+            : undefined,
+        },
+        include: this.warehouseInclude(),
+      });
+    });
+  }
+
+  async updateWarehouseReceipt(
+    id: number,
+    dto: UpdateWarehouseReceiptDto,
+    userId: number,
+  ) {
+    const entry = await this.getOpenWarehouseReceipt(id);
+    const snapshot = this.snapshotOf(entry);
+    const auto = this.isAutoWarehouseReceipt(entry);
+    if (auto) {
+      if (
+        dto.branchId !== undefined ||
+        dto.amount !== undefined ||
+        dto.occurredAt !== undefined ||
+        dto.customers !== undefined ||
+        dto.attachments !== undefined
+      ) {
+        throw new BadRequestException(
+          'Dòng từ báo đơn chỉ sửa được nội dung và ghi chú',
+        );
+      }
+      return this.prisma.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          description:
+            dto.description !== undefined
+              ? dto.description.trim()
+              : entry.description,
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            note: dto.note !== undefined ? dto.note : snapshot.note || '',
+            contentEdited:
+              dto.description !== undefined || Boolean(snapshot.contentEdited),
+            noteEdited: dto.note !== undefined || Boolean(snapshot.noteEdited),
+          }),
+        },
+        include: this.warehouseInclude(),
+      });
+    }
+
+    const branchId = dto.branchId ?? entry.branchId;
+    this.assertWarehouseBranch(branchId);
+    const sale = dto.receiptKind
+      ? dto.receiptKind === 'WAREHOUSE_SALE'
+      : this.isWarehouseSale(entry);
+    const customers = sale
+      ? { customerIds: [] as number[], invoiceIds: [] as number[] }
+      : dto.customers
+        ? await this.resolveWarehouseCustomers(dto.customers)
+        : null;
+    const linkedInvoiceIds = customers?.invoiceIds ?? [];
+    return this.prisma.internalFinanceEntry.update({
+      where: { id },
+      data: {
+        branchId,
+        amount: dto.amount ?? Number(entry.amount),
+        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
+        description:
+          dto.description !== undefined
+            ? dto.description.trim()
+            : entry.description,
+        subCategory: sale
+          ? INTERNAL_FINANCE_SUBCATEGORY.WAREHOUSE_ITEM_SALE
+          : dto.receiptKind === 'CUSTOMER'
+            ? INTERNAL_FINANCE_SUBCATEGORY.OTHER
+            : undefined,
+        customerId: sale
+          ? null
+          : customers
+            ? customers.customerIds[0] || null
+            : entry.customerId,
+        evidenceStatus: dto.attachments
+          ? dto.attachments.length
+            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
+          : undefined,
+        sourceSnapshot: this.toJson({
+          ...snapshot,
+          method: 'cash',
+          note: dto.note !== undefined ? dto.note : snapshot.note || '',
+          customerIds: sale
+            ? []
+            : customers
+              ? customers.customerIds
+              : this.customerIdsFromEntry(entry),
+          receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
+          manual: true,
+        }),
+        ...(sale || customers
+          ? {
+              invoiceLinks: {
+                deleteMany: {},
+                ...(linkedInvoiceIds.length
+                  ? {
+                      create: linkedInvoiceIds.map((invoiceId) => ({
+                        invoiceId,
+                      })),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        ...(dto.attachments
+          ? {
+              attachments: {
+                deleteMany: {},
+                ...(dto.attachments.length
+                  ? {
+                      create: dto.attachments.map((file) => ({
+                        kind: file.kind || 'EVIDENCE',
+                        fileUrl: file.fileUrl,
+                        fileName: file.fileName,
+                        fileType: file.fileType,
+                        fileSize: file.fileSize,
+                        createdBy: userId,
+                      })),
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      },
+      include: this.warehouseInclude(),
+    });
+  }
+
+  async postWarehouseReceipt(
+    id: number,
+    dto: PostWarehouseReceiptDto,
+    userId: number,
+  ) {
+    const entry = await this.getWarehouseReceipt(id);
+    if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED) {
+      throw new BadRequestException('Phiếu thu đã hủy');
+    }
+    if (entry.status === INTERNAL_FINANCE_STATUS.POSTED) {
+      throw new ConflictException('Phiếu thu đã được lập');
+    }
+    const customers = this.customerIdsFromEntry(entry);
+    const sale = this.isWarehouseSale(entry);
+    if (!sale && !customers.length) {
+      throw new BadRequestException('Phiếu thu chưa có khách hàng');
+    }
+    const allocations = sale
+      ? [{ customerId: 0, amount: Number(entry.amount), invoices: [] }]
+      : dto.allocations || [];
+    if (!sale) {
+      await this.validateWarehouseAllocations(entry, allocations, customers);
+    }
+    const snapshot = this.snapshotOf(entry);
+    const posted = this.postedCashFlows(snapshot);
+    const done = new Set(posted.map((item) => Number(item.customerId)));
+    const complete = allocations.every((item) => done.has(item.customerId));
+    if (complete && (entry.cashFlowId || posted.length)) {
+      throw new ConflictException('Phiếu thu đã được lập');
+    }
+
+    if (entry.status === INTERNAL_FINANCE_STATUS.POSTING) {
+      const updatedAt = new Date(entry.updatedAt || 0).getTime();
+      if (Date.now() - updatedAt < 20000) {
+        throw new ConflictException('Phiếu thu đang được lập, vui lòng tải lại');
+      }
+    } else {
+      const claimed = await this.prisma.internalFinanceEntry.updateMany({
+        where: {
+          id,
+          cashFlowId: null,
+          status: {
+            in: [
+              INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+              INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
+              INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+            ],
+          },
+        },
+        data: { status: INTERNAL_FINANCE_STATUS.POSTING },
+      });
+      if (claimed.count !== 1) {
+        throw new ConflictException('Phiếu thu đang được lập hoặc đã lập');
+      }
+    }
+
+    let cashFlowId = entry.cashFlowId || null;
+    if (sale && !entry.cashFlowId) {
+      const created = await this.cashFlowsService.createStandaloneCashReceipt({
+        branchId: entry.branchId,
+        amount: Number(entry.amount),
+        transDate: new Date(entry.occurredAt).toISOString(),
+        description: entry.description || `Thu bán đồ kho ${entry.code}`,
+        userId,
+      });
+      if (!created?.cashFlow?.id) {
+        throw new BadRequestException('Không tạo được phiếu thu');
+      }
+      cashFlowId = created.cashFlow.id;
+      posted.push({
+        id: created.cashFlow.id,
+        code: created.cashFlow.code,
+        customerId: 0,
+        amount: Number(entry.amount),
+      });
+      await this.prisma.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.POSTING,
+          cashFlowId,
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            method: 'cash',
+            postedCashFlows: posted,
+          }),
+        },
+      });
+    }
+    for (const allocation of sale ? [] : allocations) {
+      if (done.has(allocation.customerId)) continue;
+      const invoiceAllocs = (allocation.invoices || [])
+        .filter((item) => Number(item.amount) > 0)
+        .map((item) => ({
+          invoiceId: item.invoiceId,
+          amount: Number(item.amount),
+        }));
+      let result: { cashFlow?: { id: number; code: string } | null };
+      try {
+        result = await this.cashFlowsService.createCustomerPayment(
+          {
+            customerId: allocation.customerId,
+            totalAmount: Number(allocation.amount),
+            branchId: entry.branchId,
+            transDate: new Date(entry.occurredAt).toISOString(),
+            method: 'cash',
+            collectorUserId: userId,
+            description: entry.description || `Thu tiền mặt ${entry.code}`,
+            ...(invoiceAllocs.length
+              ? { allocateToInvoices: true, invoices: invoiceAllocs }
+              : {}),
+          } as any,
+          userId,
+        );
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'Không lập được phiếu thu',
+        );
+      }
+      const cashFlow = result?.cashFlow;
+      if (!cashFlow?.id) {
+        throw new BadRequestException('Không tạo được phiếu thu');
+      }
+      posted.push({
+        id: cashFlow.id,
+        code: cashFlow.code,
+        customerId: allocation.customerId,
+        amount: Number(allocation.amount),
+      });
+      done.add(allocation.customerId);
+      cashFlowId = cashFlowId || cashFlow.id;
+      await this.prisma.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.POSTING,
+          cashFlowId,
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            method: 'cash',
+            postedCashFlows: posted,
+          }),
+        },
+      });
+    }
+
+    return this.prisma.internalFinanceEntry.update({
+      where: { id },
+      data: {
+        status: INTERNAL_FINANCE_STATUS.POSTED,
+        cashFlowId,
+        accountantReviewedBy: entry.accountantReviewedBy || userId,
+        accountantReviewedAt: entry.accountantReviewedAt || new Date(),
+        sourceSnapshot: this.toJson({
+          ...snapshot,
+          method: 'cash',
+          postedCashFlows: posted,
+        }),
+      },
+      include: this.warehouseInclude(),
+    });
+  }
+
+  async cancelWarehouseReceipt(
+    id: number,
+    dto: CancelWarehouseReceiptDto,
+    userId: number,
+  ) {
+    const entry = await this.getWarehouseReceipt(id);
+    if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED) {
+      throw new BadRequestException('Phiếu tiền mặt kho đã hủy');
+    }
+    if (
+      entry.status === INTERNAL_FINANCE_STATUS.REJECTED ||
+      entry.status === INTERNAL_FINANCE_STATUS.POSTING
+    ) {
+      throw new BadRequestException('Không thể hủy phiếu ở trạng thái hiện tại');
+    }
+
+    const snapshot = this.snapshotOf(entry);
+    const cashFlowIds = [
+      ...new Set([
+        ...this.postedCashFlows(snapshot).map((item) => Number(item.id)),
+        ...(entry.cashFlowId ? [Number(entry.cashFlowId)] : []),
+      ]),
+    ]
+      .filter((cashFlowId) => cashFlowId > 0)
+      .sort((a, b) => a - b);
+    const cancelledCashFlows: Array<{ cashFlow: any; updated: any }> = [];
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (dto.cancelCashFlows) {
+        for (const cashFlowId of cashFlowIds) {
+          cancelledCashFlows.push(
+            await this.cashFlowsService.cancelInTransaction(tx, cashFlowId),
+          );
+        }
+      }
+
+      return tx.internalFinanceEntry.update({
+        where: { id },
+        data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
+        include: this.warehouseInclude(),
+      });
+    });
+
+    for (const result of cancelledCashFlows) {
+      await this.cashFlowsService.logCancellation(result, userId);
+    }
+
+    return updated;
   }
 
   async createManualExpense(dto: CreateManualExpenseDto, userId: number) {
@@ -567,6 +1287,44 @@ export class InternalFinanceService {
     dto: PrepareWeeklyBatchDto,
     userId: number,
   ) {
+    return this.prepareWeeklyBatchInternal(dto, userId, {
+      eligibleStatuses: [
+        INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+        INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+      ],
+    });
+  }
+
+  async prepareWarehouseExpenseBatch(
+    dto: PrepareWeeklyBatchDto,
+    user: any,
+  ) {
+    await this.assertWarehouseExpensePermission(
+      user,
+      dto.branchId,
+      'prepare',
+    );
+    return this.prepareWeeklyBatchInternal(dto, user.id, {
+      eligibleStatuses: [
+        INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
+        INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+        INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+        INTERNAL_FINANCE_STATUS.APPROVED,
+        INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+      ],
+      allowedCategories: [...WAREHOUSE_EXPENSE_CATEGORIES],
+    });
+  }
+
+  private async prepareWeeklyBatchInternal(
+    dto: PrepareWeeklyBatchDto,
+    userId: number,
+    options: {
+      eligibleStatuses: string[];
+      allowedCategories?: string[];
+    },
+  ) {
     await this.validateBranch(dto.branchId);
     const weekStart = this.startOfDay(new Date(dto.weekStart));
     const weekEnd = this.endOfDay(new Date(dto.weekEnd));
@@ -574,10 +1332,6 @@ export class InternalFinanceService {
       throw new BadRequestException('Tuần có ngày bắt đầu sau ngày kết thúc');
     }
 
-    const eligibleStatuses = [
-      INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
-      INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
-    ];
     const existing = await this.prisma.internalFinanceWeeklyBatch.findUnique({
       where: {
         branchId_weekStart_weekEnd: {
@@ -609,7 +1363,10 @@ export class InternalFinanceService {
         branchId: dto.branchId,
         direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
         occurredAt: { gte: weekStart, lte: weekEnd },
-        status: { in: eligibleStatuses },
+        status: { in: options.eligibleStatuses },
+        ...(options.allowedCategories?.length
+          ? { category: { in: options.allowedCategories } }
+          : {}),
         cashFlowId: null,
         cashIssued: false,
         OR: existing
@@ -776,21 +1533,106 @@ export class InternalFinanceService {
     return request;
   }
 
-  async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
-    const entry = await this.prisma.internalFinanceEntry.findUnique({
-      where: { id: entryId },
-      include: { weeklyBatch: true },
+  async createWarehouseExpenseApproval(
+    batchId: number,
+    user: any,
+    detailUrl?: string,
+    viewUrl?: string,
+  ) {
+    const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id: batchId },
+      select: { id: true, branchId: true },
     });
-    if (!entry) throw new NotFoundException('Không tìm thấy dòng tài chính');
-    if (entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
-      throw new BadRequestException('Chỉ khoản chi mới có trạng thái Đã chi');
+    if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
+    await this.assertWarehouseExpensePermission(user, batch.branchId, 'submit');
+    return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
+  }
+
+  async listWarehouseExpenseBatches(
+    query: InternalFinanceQueryDto,
+    user: any,
+  ) {
+    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+      user,
+      'view',
+    );
+    if (!allowedBranches.length) {
+      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
     }
-    if (entry.cashFlowId) {
-      throw new BadRequestException(
-        'Dòng tài chính đã có CashFlow và không thể đổi trạng thái Đã chi',
+    const requested = query.branchIds?.length
+      ? query.branchIds.map(Number)
+      : allowedBranches;
+    if (requested.some((branchId) => !allowedBranches.includes(branchId))) {
+      throw new ForbiddenException(
+        'Không có quyền xem phiếu chi của chi nhánh này',
       );
     }
-    if (cashIssued) {
+    return this.findWeeklyBatches({
+      ...query,
+      branchIds: requested,
+    });
+  }
+
+  async getWarehouseExpenseBatch(id: number, user: any) {
+    const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id },
+      select: { id: true, branchId: true },
+    });
+    if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
+    await this.assertWarehouseExpensePermission(user, batch.branchId, 'view');
+    return this.findWeeklyBatch(id);
+  }
+
+  async markWarehouseExpenseIssued(
+    entryId: number,
+    user: any,
+    dto: MarkWarehouseExpenseIssuedDto,
+  ) {
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id: entryId },
+      select: { id: true, branchId: true },
+    });
+    if (!entry) throw new NotFoundException('Không tìm thấy khoản chi');
+    await this.assertWarehouseExpensePermission(
+      user,
+      entry.branchId,
+      'mark_issued',
+    );
+    return this.updateCashIssued(entryId, dto.cashIssued, user.id);
+  }
+
+  async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id: entryId },
+        include: { weeklyBatch: true },
+      });
+      if (!entry) throw new NotFoundException('Không tìm thấy dòng tài chính');
+      if (entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+        throw new BadRequestException('Chỉ khoản chi mới có trạng thái Đã chi');
+      }
+      if (!cashIssued) {
+        if (entry.cashFlowId) {
+          throw new BadRequestException(
+            'Khoản chi đã ghi sổ quỹ và không thể bỏ trạng thái Đã chi',
+          );
+        }
+        return tx.internalFinanceEntry.update({
+          where: { id: entryId },
+          data: {
+            cashIssued: false,
+            cashIssuedAt: null,
+            cashIssuedBy: null,
+          },
+          include: this.entryInclude(),
+        });
+      }
+      if (entry.cashFlowId) {
+        return tx.internalFinanceEntry.findUnique({
+          where: { id: entryId },
+          include: this.entryInclude(),
+        });
+      }
       if (entry.status !== INTERNAL_FINANCE_STATUS.APPROVED) {
         throw new BadRequestException(
           'Chỉ khoản chi đã được Approval tuần duyệt mới được đánh dấu Đã chi',
@@ -800,19 +1642,27 @@ export class InternalFinanceService {
         !entry.weeklyBatch ||
         entry.weeklyBatch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.APPROVED
       ) {
-        throw new BadRequestException(
-          'Batch tuần chưa được Approval duyệt',
-        );
+        throw new BadRequestException('Batch tuần chưa được Approval duyệt');
       }
-    }
-    return this.prisma.internalFinanceEntry.update({
-      where: { id: entryId },
-      data: {
-        cashIssued,
-        cashIssuedAt: cashIssued ? new Date() : null,
-        cashIssuedBy: cashIssued ? userId : null,
-      },
-      include: this.entryInclude(),
+
+      await this.cashFlowsService.createInternalFinanceCashFlowInTransaction(
+        tx,
+        {
+          entryId: entry.id,
+          branchId: entry.branchId,
+          amount: Number(entry.amount),
+          transDate: entry.occurredAt.toISOString(),
+          description: entry.description || entry.code,
+          method: 'cash',
+          isReceipt: false,
+          markCashIssued: true,
+        },
+        userId,
+      );
+      return tx.internalFinanceEntry.findUnique({
+        where: { id: entryId },
+        include: this.entryInclude(),
+      });
     });
   }
 
@@ -1177,7 +2027,16 @@ export class InternalFinanceService {
     }
 
     const cashAmount = Number(packingSlip.cashAmount || 0);
-    if (packingSlip.paymentMethod === 'cash' && cashAmount > 0) {
+    const warehouseBranch = (
+      WAREHOUSE_CASH_BRANCH_IDS as readonly number[]
+    ).includes(Number(packingSlip.branchId));
+    const customerIds = this.packingCustomerIds(packingSlip);
+    if (
+      warehouseBranch &&
+      !packingSlip.cancelledAt &&
+      packingSlip.paymentMethod === 'cash' &&
+      cashAmount > 0
+    ) {
       const sourceKey = `PACKING_SLIP:${packingSlip.id}:CUSTOMER_RECEIPT`;
       activeKeys.push(sourceKey);
       await this.upsertPackingEntry(db, {
@@ -1197,12 +2056,16 @@ export class InternalFinanceService {
           cashAmount,
           invoiceIds,
           orderIds,
+          customerIds,
+          method: 'cash',
         },
         occurredAt: packingSlip.createdAt,
-        customerId,
+        customerId: customerIds[0] ?? customerId,
         invoiceIds,
         attachments: attachmentData,
         userId,
+        preserveUserText: true,
+        reopenIfCancelled: true,
       });
     }
 
@@ -1248,6 +2111,8 @@ export class InternalFinanceService {
       invoiceIds: number[];
       attachments: Array<Record<string, unknown>>;
       userId: number;
+      preserveUserText?: boolean;
+      reopenIfCancelled?: boolean;
     },
   ) {
     const existing = await db.internalFinanceEntry.findUnique({
@@ -1260,13 +2125,23 @@ export class InternalFinanceService {
       data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
     const requiresEvidence = direction === INTERNAL_FINANCE_DIRECTION.EXPENSE;
     if (existing) {
-      if (
-        existing.status !== INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT &&
-        existing.status !== INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED &&
-        existing.status !== INTERNAL_FINANCE_STATUS.PENDING_MANAGER
-      ) {
-        return existing;
-      }
+      if (existing.cashFlowId || existing.cashIssued) return existing;
+      const editableStatuses = [
+        INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
+        INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+        ...(data.reopenIfCancelled
+          ? [INTERNAL_FINANCE_STATUS.CANCELLED]
+          : []),
+      ];
+      if (!editableStatuses.includes(existing.status)) return existing;
+      const previousSnapshot = this.snapshotOf(existing);
+      const keepContent = Boolean(
+        data.preserveUserText && previousSnapshot.contentEdited,
+      );
+      const keepNote = Boolean(
+        data.preserveUserText && previousSnapshot.noteEdited,
+      );
       const nextCode = !String(existing.code || '').startsWith('TCNB-')
         ? await this.codeService.nextCode(db, {
             direction,
@@ -1280,7 +2155,7 @@ export class InternalFinanceService {
         data: {
           ...(nextCode ? { code: nextCode } : {}),
           amount: data.amount,
-          description: data.description,
+          description: keepContent ? existing.description : data.description,
           branchId: data.branchId,
           occurredAt: data.occurredAt || undefined,
           customerId: data.customerId ?? undefined,
@@ -1289,7 +2164,17 @@ export class InternalFinanceService {
           evidenceStatus: requiresEvidence
             ? evidenceStatus
             : INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
-          sourceSnapshot: data.sourceSnapshot,
+          status:
+            existing.status === INTERNAL_FINANCE_STATUS.CANCELLED
+              ? INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT
+              : existing.status,
+          sourceSnapshot: {
+            ...data.sourceSnapshot,
+            ...(keepContent ? { contentEdited: true } : {}),
+            ...(keepNote
+              ? { note: previousSnapshot.note, noteEdited: true }
+              : {}),
+          },
           invoiceLinks: {
             deleteMany: {},
             ...(data.invoiceIds.length
@@ -1355,6 +2240,373 @@ export class InternalFinanceService {
           : undefined,
       },
     });
+  }
+
+  private packingCustomerIds(packingSlip: any): number[] {
+    const ids = new Set<number>();
+    for (const row of packingSlip.invoices || []) {
+      const invoiceCustomer = Number(row.invoice?.customerId);
+      const consignmentCustomer = Number(row.consignment?.customerId);
+      if (invoiceCustomer) ids.add(invoiceCustomer);
+      if (consignmentCustomer) ids.add(consignmentCustomer);
+    }
+    return [...ids];
+  }
+
+  private assertWarehouseBranch(branchId: number) {
+    if (!(WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(branchId)) {
+      throw new BadRequestException('Phiếu thu tiền mặt chỉ dùng cho Kho Hà Nội và Kho Sài Gòn');
+    }
+  }
+
+  private isAutoWarehouseReceipt(entry: { sourceType?: string | null; sourceKey?: string | null }) {
+    return (
+      entry.sourceType === 'PACKING_SLIP' ||
+      String(entry.sourceKey || '').startsWith('PACKING_SLIP:')
+    );
+  }
+
+  private isWarehouseSale(entry: any) {
+    const snapshot = this.snapshotOf(entry || {});
+    return (
+      entry?.subCategory === INTERNAL_FINANCE_SUBCATEGORY.WAREHOUSE_ITEM_SALE ||
+      snapshot.receiptKind === 'WAREHOUSE_SALE'
+    );
+  }
+
+  private isWarehouseReceipt(entry: any) {
+    return (
+      entry?.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT &&
+      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(entry.branchId) &&
+      ['PACKING_SLIP', 'MANUAL_RECEIPT'].includes(entry.sourceType) &&
+      [
+        INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT,
+        INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT,
+      ].includes(entry.category)
+    );
+  }
+
+  private async getOpenWarehouseReceipt(id: number) {
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      include: this.warehouseInclude(),
+    });
+    if (!entry || !this.isWarehouseReceipt(entry)) {
+      throw new NotFoundException('Không tìm thấy phiếu thu tiền mặt');
+    }
+    if (
+      entry.cashFlowId ||
+      entry.status === INTERNAL_FINANCE_STATUS.POSTED ||
+      entry.status === INTERNAL_FINANCE_STATUS.POSTING
+    ) {
+      throw new BadRequestException('Phiếu thu đã lập hoặc đang được lập');
+    }
+    if (
+      entry.status === INTERNAL_FINANCE_STATUS.CANCELLED ||
+      entry.status === INTERNAL_FINANCE_STATUS.REJECTED
+    ) {
+      throw new BadRequestException('Phiếu thu đã hủy');
+    }
+    return entry;
+  }
+
+  private async resolveWarehouseCustomers(
+    customers: Array<{ customerId: number; invoiceIds?: number[] }>,
+  ) {
+    const customerIds = [...new Set(customers.map((item) => item.customerId))];
+    if (!customerIds.length) {
+      throw new BadRequestException('Cần chọn ít nhất một khách hàng');
+    }
+    const found = await this.prisma.customer.findMany({
+      where: { id: { in: customerIds } },
+      select: { id: true },
+    });
+    if (found.length !== customerIds.length) {
+      throw new BadRequestException('Có khách hàng không tồn tại');
+    }
+    const invoiceIds = [
+      ...new Set(customers.flatMap((item) => item.invoiceIds || [])),
+    ];
+    if (!invoiceIds.length) return { customerIds, invoiceIds };
+    const invoices = await this.prisma.invoice.findMany({
+      where: { id: { in: invoiceIds } },
+      select: { id: true, code: true, customerId: true },
+    });
+    if (invoices.length !== invoiceIds.length) {
+      throw new BadRequestException('Có hóa đơn không tồn tại');
+    }
+    for (const invoice of invoices) {
+      if (!customerIds.includes(Number(invoice.customerId))) {
+        throw new BadRequestException(
+          `Hóa đơn ${invoice.code} không thuộc khách hàng đã chọn`,
+        );
+      }
+    }
+    return { customerIds, invoiceIds };
+  }
+
+  private async validateWarehouseAllocations(
+    entry: any,
+    allocations: Array<{
+      customerId: number;
+      amount: number;
+      invoices?: Array<{ invoiceId: number; amount: number }>;
+    }>,
+    customerIds: number[],
+  ) {
+    if (!allocations.length) {
+      throw new BadRequestException('Chưa có phân bổ khách hàng');
+    }
+    const allocationIds = allocations.map((item) => item.customerId);
+    if (new Set(allocationIds).size !== allocationIds.length) {
+      throw new BadRequestException('Mỗi khách hàng chỉ được phân bổ một lần');
+    }
+    if (
+      allocationIds.length !== customerIds.length ||
+      allocationIds.some((id) => !customerIds.includes(id))
+    ) {
+      throw new BadRequestException('Phân bổ phải đúng các khách hàng của phiếu thu');
+    }
+    const cents = (value: number) => Math.round(Number(value) * 100);
+    const total = allocations.reduce((sum, item) => sum + Number(item.amount), 0);
+    if (cents(total) !== cents(Number(entry.amount))) {
+      throw new BadRequestException(
+        `Tổng phân bổ (${total}) phải bằng số tiền mặt (${Number(entry.amount)})`,
+      );
+    }
+    const requestedIds = [
+      ...new Set(
+        allocations.flatMap((allocation) =>
+          (allocation.invoices || [])
+            .filter((item) => Number(item.amount) > 0)
+            .map((item) => item.invoiceId),
+        ),
+      ),
+    ];
+    const invoices = requestedIds.length
+      ? await this.prisma.invoice.findMany({
+          where: {
+            id: { in: requestedIds },
+            debtAmount: { gt: 0 },
+            status: { not: INVOICE_STATUS.CANCELLED },
+          },
+          select: { id: true, code: true, customerId: true, debtAmount: true },
+        })
+      : [];
+    const invoiceById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
+    for (const allocation of allocations) {
+      let invoiceTotal = 0;
+      for (const item of allocation.invoices || []) {
+        if (!(Number(item.amount) > 0)) continue;
+        const invoice = invoiceById.get(item.invoiceId);
+        if (!invoice) {
+          throw new BadRequestException('Hóa đơn không còn nợ hoặc không tồn tại');
+        }
+        if (Number(invoice.customerId) !== allocation.customerId) {
+          throw new BadRequestException(
+            `Hóa đơn ${invoice.code} không thuộc khách hàng được phân bổ`,
+          );
+        }
+        if (cents(item.amount) > cents(Number(invoice.debtAmount))) {
+          throw new BadRequestException(
+            `Số tiền hóa đơn ${invoice.code} vượt quá số còn nợ`,
+          );
+        }
+        invoiceTotal += Number(item.amount);
+      }
+      if (cents(invoiceTotal) > cents(Number(allocation.amount))) {
+        throw new BadRequestException(
+          'Tiền phân bổ hóa đơn vượt quá phần tiền của khách',
+        );
+      }
+    }
+  }
+
+  private customerIdsFromEntry(entry: any): number[] {
+    const snapshot = this.snapshotOf(entry);
+    const fromSnapshot = Array.isArray(snapshot.customerIds)
+      ? snapshot.customerIds.map(Number).filter((id) => id > 0)
+      : [];
+    const fromInvoices = (entry.invoiceLinks || [])
+      .map((link: any) => Number(link.invoice?.customerId))
+      .filter((id: number) => id > 0);
+    const ids = [...fromSnapshot, ...fromInvoices];
+    if (entry.customerId) ids.push(Number(entry.customerId));
+    return [...new Set(ids)];
+  }
+
+  private postedCashFlows(snapshot: Record<string, unknown>) {
+    return Array.isArray(snapshot.postedCashFlows)
+      ? snapshot.postedCashFlows.map((item: any) => ({
+          id: Number(item.id),
+          code: String(item.code || ''),
+          customerId: Number(item.customerId),
+          amount: Number(item.amount || 0),
+        }))
+      : [];
+  }
+
+  private async decorateWarehouseRows(rows: any[]) {
+    const ids = [
+      ...new Set(rows.flatMap((row) => this.customerIdsFromEntry(row))),
+    ];
+    const customers = ids.length
+      ? await this.prisma.customer.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, code: true, name: true },
+        })
+      : [];
+    const byId = new Map(customers.map((customer) => [customer.id, customer]));
+    return rows.map((row) => {
+      const snapshot = this.snapshotOf(row);
+      const posted = this.postedCashFlows(snapshot);
+      const linked = this.customerIdsFromEntry(row)
+        .map((id) => byId.get(id))
+        .filter(Boolean);
+      const customerName =
+        typeof snapshot.customerName === 'string' ? snapshot.customerName.trim() : '';
+      const customers = linked.length
+        ? linked
+        : customerName
+          ? [
+              {
+                id: 0,
+                code:
+                  typeof snapshot.customerCode === 'string'
+                    ? snapshot.customerCode
+                    : null,
+                name: customerName,
+              },
+            ]
+          : [];
+      return {
+        ...row,
+        customers,
+        note: typeof snapshot.note === 'string' ? snapshot.note : '',
+        postedCashFlows: posted.length
+          ? posted
+          : row.cashFlow
+            ? [
+                {
+                  id: row.cashFlow.id,
+                  code: row.cashFlow.code,
+                  customerId: row.customerId,
+                  amount: Number(row.amount),
+                },
+              ]
+            : [],
+      };
+    });
+  }
+
+  private warehouseExpenseScopeForBranch(branchId: number) {
+    return WAREHOUSE_EXPENSE_SCOPES.find((scope) =>
+      (scope.branchIds as readonly number[]).includes(Number(branchId)),
+    );
+  }
+
+  private async allowedWarehouseExpenseBranches(
+    user: any,
+    action: WarehouseExpenseAction,
+  ): Promise<number[]> {
+    if (!user?.id) return [];
+    if (user.roles?.includes('Super Admin')) {
+      return WAREHOUSE_EXPENSE_SCOPES.flatMap((scope) => [...scope.branchIds]);
+    }
+    const branches: number[] = [];
+    for (const scope of WAREHOUSE_EXPENSE_SCOPES) {
+      const permission = `warehouse_expense:${action}_${scope.key}`;
+      for (const branchId of scope.branchIds) {
+        const permissions = await this.authService.getPermissionsForBranch(
+          user.id,
+          branchId,
+        );
+        if (permissions.includes(permission)) {
+          branches.push(branchId);
+        }
+      }
+    }
+    return [...new Set(branches)];
+  }
+
+  private async assertWarehouseExpensePermission(
+    user: any,
+    branchId: number,
+    action: WarehouseExpenseAction,
+  ) {
+    if (user?.roles?.includes('Super Admin')) return;
+    const scope = this.warehouseExpenseScopeForBranch(branchId);
+    if (!scope) {
+      throw new ForbiddenException(
+        'Chi nhánh không thuộc phạm vi phiếu chi kho',
+      );
+    }
+    const permissions = await this.authService.getPermissionsForBranch(
+      user.id,
+      branchId,
+    );
+    if (!permissions.includes(`warehouse_expense:${action}_${scope.key}`)) {
+      throw new ForbiddenException(
+        `Không có quyền ${action} phiếu chi kho cho chi nhánh này`,
+      );
+    }
+  }
+
+  private warehouseExpenseInclude() {
+    return {
+      ...this.entryInclude(),
+      branch: { select: { id: true, name: true } },
+      packingSlip: { select: { id: true, code: true } },
+      weeklyBatch: {
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          approvalRequestId: true,
+          approvalRequest: {
+            select: {
+              id: true,
+              status: true,
+              instanceCode: true,
+              currentNode: true,
+            },
+          },
+        },
+      },
+      cashFlow: { select: { id: true, code: true, status: true } },
+    };
+  }
+
+  private warehouseInclude() {
+    return {
+      branch: { select: { id: true, name: true } },
+      customer: { select: { id: true, code: true, name: true } },
+      packingSlip: { select: { id: true, code: true } },
+      cashFlow: { select: { id: true, code: true, status: true } },
+      attachments: true,
+      invoiceLinks: {
+        include: {
+          invoice: {
+            select: {
+              id: true,
+              code: true,
+              customerId: true,
+              debtAmount: true,
+              grandTotal: true,
+              customer: { select: { id: true, code: true, name: true } },
+            },
+          },
+        },
+      },
+    };
+  }
+
+  private snapshotOf(entry: { sourceSnapshot?: unknown }): Record<string, unknown> {
+    return entry.sourceSnapshot &&
+      typeof entry.sourceSnapshot === 'object' &&
+      !Array.isArray(entry.sourceSnapshot)
+      ? (entry.sourceSnapshot as Record<string, unknown>)
+      : {};
   }
 
   private entryInclude() {

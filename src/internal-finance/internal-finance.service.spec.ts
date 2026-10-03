@@ -18,9 +18,17 @@ describe('InternalFinanceService', () => {
     };
     const cashFlowsService = {
       createInternalFinanceCashFlow: jest.fn(),
+      createInternalFinanceCashFlowInTransaction: jest.fn(),
+      createCustomerPayment: jest.fn(),
+      createStandaloneCashReceipt: jest.fn(),
+      cancelInTransaction: jest.fn(),
+      logCancellation: jest.fn(),
     };
     const approvalLifecycle = {};
     const config = { get: jest.fn() };
+    const authService = {
+      getPermissionsForBranch: jest.fn().mockResolvedValue([]),
+    };
     const codeService = {
       nextCode: jest.fn().mockResolvedValue('TCNB-CHI-HN-20260930-000001'),
     };
@@ -31,9 +39,11 @@ describe('InternalFinanceService', () => {
         approvalLifecycle as any,
         config as any,
         codeService as any,
+        authService as any,
       ),
       prisma,
       cashFlowsService,
+      authService,
     };
   };
 
@@ -71,7 +81,7 @@ describe('InternalFinanceService', () => {
     expect(cashFlowsService.createInternalFinanceCashFlow).not.toHaveBeenCalled();
   });
 
-  it('marks an approved weekly expense as cash issued without creating CashFlow', async () => {
+  it('marks an approved weekly expense as cash issued and creates CashFlow in one transaction', async () => {
     const update = jest.fn().mockResolvedValue({ id: 15, cashIssued: true });
     const { service, prisma, cashFlowsService } = makeService({
       internalFinanceEntry: {
@@ -82,6 +92,11 @@ describe('InternalFinanceService', () => {
           cashFlowId: null,
           cashIssued: false,
           weeklyBatch: { status: 'APPROVED' },
+          branchId: 6,
+          amount: 100,
+          occurredAt: new Date('2026-09-30T00:00:00.000Z'),
+          code: 'TCNB-CHI-HN-20260930-000001',
+          description: 'Chi phí giao hàng',
         }),
         update,
         updateMany: jest.fn(),
@@ -90,17 +105,131 @@ describe('InternalFinanceService', () => {
 
     await service.updateCashIssued(15, true, 7);
 
+    expect(
+      cashFlowsService.createInternalFinanceCashFlowInTransaction,
+    ).toHaveBeenCalledWith(
+      prisma,
+      expect.objectContaining({
+        entryId: 15,
+        branchId: 6,
+        isReceipt: false,
+        markCashIssued: true,
+      }),
+      7,
+    );
+    expect(prisma.internalFinanceEntry.findUnique).toHaveBeenCalled();
+  });
+
+  it('filters warehouse expenses by the branches allowed with warehouse_expense permissions', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const count = jest.fn().mockResolvedValue(0);
+    const { service, authService } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn(),
+        findMany,
+        count,
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    });
+    authService.getPermissionsForBranch.mockImplementation(
+      async (_userId: number, branchId: number) =>
+        branchId === 6 ? ['warehouse_expense:view_hn'] : [],
+    );
+    const user = { id: 7, roles: [], permissions: [] };
+
+    await service.listWarehouseExpenses(
+      { branchId: 6, page: 1, limit: 50 },
+      user,
+    );
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: expect.arrayContaining([
+            { branchId: { in: [6] } },
+            {
+              category: {
+                in: ['DELIVERY_FEE', 'FUEL', 'VEHICLE_CARE', 'OTHER_EXPENSE'],
+              },
+            },
+          ]),
+        },
+      }),
+    );
+    await expect(
+      service.listWarehouseExpenses(
+        { branchId: 1, page: 1, limit: 50 },
+        user,
+      ),
+    ).rejects.toThrow('Không có quyền xem phiếu chi của chi nhánh này');
+  });
+
+  it('requires mark_issued permission before confirming a warehouse expense', async () => {
+    const { service, prisma, authService } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue({ id: 77, branchId: 6 }),
+      },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:mark_issued_hn',
+    ]);
+    const updateCashIssued = jest
+      .spyOn(service, 'updateCashIssued')
+      .mockResolvedValue({ id: 77 } as any);
+
+    await service.markWarehouseExpenseIssued(
+      77,
+      { id: 7, roles: [], permissions: [] },
+      { cashIssued: true },
+    );
+
+    expect(updateCashIssued).toHaveBeenCalledWith(77, true, 7);
+    expect(prisma.internalFinanceEntry.findUnique).toHaveBeenCalledWith({
+      where: { id: 77 },
+      select: { id: true, branchId: true },
+    });
+  });
+
+  it('updates only an open manual warehouse expense', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 88 });
+    const { service, authService } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 88,
+          direction: 'EXPENSE',
+          sourceType: 'MANUAL_EXPENSE',
+          branchId: 6,
+          cashFlowId: null,
+          cashIssued: false,
+          weeklyBatchId: null,
+          status: 'PENDING_ACCOUNTANT',
+        }),
+        update,
+      },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:update_hn',
+    ]);
+
+    await service.updateWarehouseExpense(
+      88,
+      {
+        amount: 250000,
+        description: 'Mua vật tư đóng gói',
+      },
+      { id: 7, roles: [], permissions: [] },
+    );
+
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 15 },
+        where: { id: 88 },
         data: expect.objectContaining({
-          cashIssued: true,
-          cashIssuedBy: 7,
+          amount: 250000,
+          description: 'Mua vật tư đóng gói',
         }),
       }),
     );
-    expect(cashFlowsService.createInternalFinanceCashFlow).not.toHaveBeenCalled();
-    expect(prisma.internalFinanceEntry.findUnique).toHaveBeenCalled();
   });
 
   it('records the default accountant review for a manual cash receipt', async () => {
@@ -298,5 +427,429 @@ describe('InternalFinanceService', () => {
     expect(db.internalFinanceEntry.create).toHaveBeenCalledTimes(3);
     expect(entries.size).toBe(3);
     expect([...entries.values()].every((entry) => entry.occurredAt === packingSlip.createdAt)).toBe(true);
+    const receipt = [...entries.values()].find((entry) => entry.category === 'CUSTOMER_RECEIPT');
+    expect(receipt.sourceSnapshot.customerIds).toEqual([55]);
+  });
+
+  it('does not create a warehouse receipt for transfer, zero cash, or a non-warehouse branch', async () => {
+    const db = memoryFinanceDb();
+    const { service } = makeService();
+    const base = {
+      id: 21,
+      code: 'BD-21',
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+      hasFeeGuiBen: true,
+      feeGuiBen: 10000,
+      hasFeeGrab: false,
+      feeGrab: 0,
+      hasCuocGuiHang: false,
+      cuocGuiHang: 0,
+      hasCuocNhanHang: false,
+      cuocNhanHang: 0,
+      invoices: [{ invoiceId: 1, invoice: { customerId: 8 } }],
+      expenseFiles: [],
+      images: [],
+    };
+
+    await service.syncPackingSlipEntriesInTransaction(db as any, {
+      ...base,
+      branchId: 6,
+      paymentMethod: 'transfer',
+      cashAmount: 50000,
+    }, 7);
+    await service.syncPackingSlipEntriesInTransaction(db as any, {
+      ...base,
+      id: 22,
+      branchId: 4,
+      paymentMethod: 'cash',
+      cashAmount: 50000,
+    }, 7);
+    await service.syncPackingSlipEntriesInTransaction(db as any, {
+      ...base,
+      id: 23,
+      branchId: 1,
+      paymentMethod: 'cash',
+      cashAmount: 0,
+    }, 7);
+
+    expect([...db.entries.values()].some((entry) => entry.category === 'CUSTOMER_RECEIPT')).toBe(false);
+  });
+
+  it('updates an open cash receipt, keeps a posted one, and cancels when cash is removed', async () => {
+    const db = memoryFinanceDb();
+    const { service } = makeService();
+    const slip = {
+      id: 24,
+      code: 'BD-24',
+      branchId: 1,
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+      paymentMethod: 'cash',
+      cashAmount: 80000,
+      hasFeeGuiBen: false,
+      feeGuiBen: 0,
+      hasFeeGrab: false,
+      feeGrab: 0,
+      hasCuocGuiHang: false,
+      cuocGuiHang: 0,
+      hasCuocNhanHang: false,
+      cuocNhanHang: 0,
+      invoices: [{ invoiceId: 3, invoice: { customerId: 9 } }],
+      expenseFiles: [],
+      images: [],
+    };
+    await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7);
+    const receipt = [...db.entries.values()][0];
+    expect(receipt.amount).toBe(80000);
+
+    receipt.description = 'Nội dung đã sửa';
+    receipt.sourceSnapshot = { ...receipt.sourceSnapshot, contentEdited: true };
+    await service.syncPackingSlipEntriesInTransaction(db as any, { ...slip, cashAmount: 90000 }, 7);
+    expect(receipt.amount).toBe(90000);
+    expect(receipt.description).toBe('Nội dung đã sửa');
+
+    const posted = {
+      ...receipt,
+      id: 99,
+      sourceKey: 'PACKING_SLIP:25:CUSTOMER_RECEIPT',
+      status: 'POSTED',
+      cashFlowId: 5,
+      amount: 1000,
+      packingSlipId: 25,
+    };
+    db.entries.set(posted.sourceKey, posted);
+    await service.syncPackingSlipEntriesInTransaction(db as any, {
+      ...slip,
+      id: 25,
+      cashAmount: 50000,
+    }, 7);
+    expect(posted.amount).toBe(1000);
+
+    await service.syncPackingSlipEntriesInTransaction(db as any, {
+      ...slip,
+      paymentMethod: 'transfer',
+      cashAmount: 0,
+    }, 7);
+    expect(receipt.status).toBe('CANCELLED');
+    expect(posted.status).toBe('POSTED');
+  });
+
+  it('rejects an allocation that does not match the cash amount or invoice debt', async () => {
+    const { service, prisma, cashFlowsService } = makeService({
+      customer: { findMany: jest.fn().mockResolvedValue([{ id: 55, code: 'KH', name: 'An' }]) },
+      invoice: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 30, code: 'HD1', customerId: 55, debtAmount: 40000 },
+          { id: 31, code: 'HD2', customerId: 56, debtAmount: 100000 },
+        ]),
+      },
+    });
+    prisma.internalFinanceEntry.findUnique.mockResolvedValue(warehouseEntry());
+    await expect(
+      service.postWarehouseReceipt(4, {
+        allocations: [{ customerId: 55, amount: 50000, invoices: [] }],
+      }, 7),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.postWarehouseReceipt(4, {
+        allocations: [{
+          customerId: 55,
+          amount: 100000,
+          invoices: [{ invoiceId: 30, amount: 50000 }],
+        }],
+      }, 7),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+    await expect(
+      service.postWarehouseReceipt(4, {
+        allocations: [{
+          customerId: 55,
+          amount: 100000,
+          invoices: [{ invoiceId: 31, amount: 10000 }],
+        }],
+      }, 7),
+    ).rejects.toThrow('không thuộc khách hàng');
+    expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+  });
+
+  it('creates one cash receipt per customer and does not create another on retry', async () => {
+    const state = warehouseEntry();
+    const { service, prisma, cashFlowsService } = makeService({
+      customer: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 55, code: 'KH1', name: 'An' },
+          { id: 56, code: 'KH2', name: 'Binh' },
+        ]),
+      },
+      invoice: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 30, code: 'HD1', customerId: 55, debtAmount: 40000 },
+          { id: 31, code: 'HD2', customerId: 56, debtAmount: 70000 },
+        ]),
+      },
+    });
+    state.sourceSnapshot = { customerIds: [55, 56] };
+    state.invoiceLinks = [
+      { invoice: { id: 30, customerId: 55, code: 'HD1', debtAmount: 40000 } },
+      { invoice: { id: 31, customerId: 56, code: 'HD2', debtAmount: 70000 } },
+    ];
+    prisma.internalFinanceEntry.findUnique.mockImplementation(async () => ({ ...state }));
+    prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    cashFlowsService.createCustomerPayment
+      .mockResolvedValueOnce({ cashFlow: { id: 9, code: 'PT000009' } })
+      .mockResolvedValueOnce({ cashFlow: { id: 10, code: 'PT000010' } });
+
+    await service.postWarehouseReceipt(4, {
+      allocations: [
+        { customerId: 55, amount: 40000, invoices: [{ invoiceId: 30, amount: 40000 }] },
+        { customerId: 56, amount: 60000, invoices: [{ invoiceId: 31, amount: 50000 }] },
+      ],
+    }, 7);
+
+    expect(cashFlowsService.createCustomerPayment).toHaveBeenCalledTimes(2);
+    expect(state.status).toBe('POSTED');
+    expect(state.cashFlowId).toBe(9);
+    expect((state.sourceSnapshot as any).postedCashFlows).toHaveLength(2);
+    await expect(
+      service.postWarehouseReceipt(4, {
+        allocations: [
+          { customerId: 55, amount: 40000, invoices: [] },
+          { customerId: 56, amount: 60000, invoices: [] },
+        ],
+      }, 7),
+    ).rejects.toThrow('Phiếu thu đã được lập');
+    expect(cashFlowsService.createCustomerPayment).toHaveBeenCalledTimes(2);
+  });
+
+  it('allocates a customer cash receipt to another unpaid invoice of the same customer', async () => {
+    const state = warehouseEntry();
+    const { service, prisma, cashFlowsService } = makeService({
+      customer: { findMany: jest.fn().mockResolvedValue([{ id: 55, code: 'KH', name: 'An' }]) },
+      invoice: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 99, code: 'HD99', customerId: 55, debtAmount: 100000 },
+        ]),
+      },
+    });
+    prisma.internalFinanceEntry.findUnique.mockImplementation(async () => ({ ...state }));
+    prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    cashFlowsService.createCustomerPayment.mockResolvedValue({
+      cashFlow: { id: 11, code: 'TT000011' },
+    });
+
+    await service.postWarehouseReceipt(4, {
+      allocations: [
+        { customerId: 55, amount: 100000, invoices: [{ invoiceId: 99, amount: 60000 }] },
+      ],
+    }, 7);
+
+    expect(cashFlowsService.createCustomerPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerId: 55,
+        totalAmount: 100000,
+        invoices: [{ invoiceId: 99, amount: 60000 }],
+      }),
+      7,
+    );
+    expect(state.status).toBe('POSTED');
+  });
+
+  it('posts a warehouse item sale without a customer or invoice allocation', async () => {
+    const state = {
+      ...warehouseEntry(),
+      subCategory: 'WAREHOUSE_ITEM_SALE',
+      customerId: null,
+      sourceSnapshot: { receiptKind: 'WAREHOUSE_SALE' },
+      invoiceLinks: [],
+    };
+    const { service, prisma, cashFlowsService } = makeService({
+      customer: { findMany: jest.fn().mockResolvedValue([]) },
+      invoice: { findMany: jest.fn() },
+    });
+    prisma.internalFinanceEntry.findUnique.mockImplementation(async () => ({ ...state }));
+    prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    cashFlowsService.createStandaloneCashReceipt.mockResolvedValue({
+      cashFlow: { id: 12, code: 'TT000012' },
+    });
+
+    await service.postWarehouseReceipt(4, { allocations: [] }, 7);
+
+    expect(cashFlowsService.createStandaloneCashReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ branchId: 6, amount: 100000, userId: 7 }),
+    );
+    expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+    expect(prisma.invoice.findMany).not.toHaveBeenCalled();
+    expect(state.status).toBe('POSTED');
+    expect(state.cashFlowId).toBe(12);
+
+    await expect(
+      service.postWarehouseReceipt(4, { allocations: [] }, 7),
+    ).rejects.toThrow('Phiếu thu đã được lập');
+    expect(cashFlowsService.createStandaloneCashReceipt).toHaveBeenCalledTimes(1);
+    expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+  });
+
+  it('cancels a warehouse receipt without cashflows', async () => {
+    const state = { ...warehouseEntry(), status: 'PENDING_ACCOUNTANT' } as any;
+    const { service, prisma, cashFlowsService } = makeService();
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    jest.spyOn(service, 'getWarehouseReceipt').mockResolvedValue(state);
+
+    const result = await service.cancelWarehouseReceipt(
+      4,
+      { cancelCashFlows: true },
+      7,
+    );
+
+    expect(result.status).toBe('CANCELLED');
+    expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
+    expect(cashFlowsService.logCancellation).not.toHaveBeenCalled();
+  });
+
+  it('keeps linked cashflows when cancelling a posted warehouse receipt', async () => {
+    const state = {
+      ...warehouseEntry(),
+      status: 'POSTED',
+      cashFlowId: 9,
+      sourceSnapshot: {
+        customerIds: [55],
+        postedCashFlows: [
+          { id: 9, code: 'PT000009', customerId: 55, amount: 100000 },
+        ],
+      },
+    } as any;
+    const { service, prisma, cashFlowsService } = makeService();
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    jest.spyOn(service, 'getWarehouseReceipt').mockResolvedValue(state);
+
+    await service.cancelWarehouseReceipt(4, { cancelCashFlows: false }, 7);
+
+    expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
+    expect(state.status).toBe('CANCELLED');
+  });
+
+  it('cancels every linked cashflow when requested', async () => {
+    const state = {
+      ...warehouseEntry(),
+      status: 'POSTED',
+      cashFlowId: 9,
+      sourceSnapshot: {
+        customerIds: [55, 56],
+        postedCashFlows: [
+          { id: 9, code: 'PT000009', customerId: 55, amount: 40000 },
+          { id: 10, code: 'PT000010', customerId: 56, amount: 60000 },
+        ],
+      },
+    } as any;
+    const { service, prisma, cashFlowsService } = makeService();
+    prisma.internalFinanceEntry.update.mockImplementation(async ({ data }: any) => {
+      Object.assign(state, data);
+      return { ...state };
+    });
+    cashFlowsService.cancelInTransaction
+      .mockResolvedValueOnce({ cashFlow: { id: 9 }, updated: { id: 9 } })
+      .mockResolvedValueOnce({ cashFlow: { id: 10 }, updated: { id: 10 } });
+    jest.spyOn(service, 'getWarehouseReceipt').mockResolvedValue(state);
+
+    await service.cancelWarehouseReceipt(4, { cancelCashFlows: true }, 7);
+
+    expect(cashFlowsService.cancelInTransaction).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      9,
+    );
+    expect(cashFlowsService.cancelInTransaction).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      10,
+    );
+    expect(cashFlowsService.logCancellation).toHaveBeenCalledTimes(2);
+    expect(state.status).toBe('CANCELLED');
+  });
+
+  it('rejects cancelling a warehouse receipt twice', async () => {
+    const { service, cashFlowsService } = makeService();
+    jest.spyOn(service, 'getWarehouseReceipt').mockResolvedValue({
+      ...warehouseEntry(),
+      status: 'CANCELLED',
+    } as any);
+
+    await expect(
+      service.cancelWarehouseReceipt(4, { cancelCashFlows: false }, 7),
+    ).rejects.toThrow('đã hủy');
+    expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
   });
 });
+
+function warehouseEntry() {
+  return {
+    id: 4,
+    code: 'TCNB-THU-HN-20261002-000001',
+    direction: 'RECEIPT',
+    category: 'CUSTOMER_RECEIPT',
+    sourceType: 'PACKING_SLIP',
+    sourceKey: 'PACKING_SLIP:9:CUSTOMER_RECEIPT',
+    branchId: 6,
+    amount: 100000,
+    occurredAt: new Date('2026-10-02T00:00:00.000Z'),
+    status: 'PENDING_ACCOUNTANT',
+    cashFlowId: null,
+    customerId: 55,
+    description: 'Thu tiền mặt',
+    updatedAt: new Date('2026-10-01T00:00:00.000Z'),
+    accountantReviewedBy: null,
+    accountantReviewedAt: null,
+    sourceSnapshot: { customerIds: [55] },
+    invoiceLinks: [
+      { invoice: { id: 30, customerId: 55, code: 'HD1', debtAmount: 40000 } },
+    ],
+  };
+}
+
+function memoryFinanceDb() {
+  const entries = new Map<string, any>();
+  return {
+    entries,
+    internalFinanceEntry: {
+      findUnique: jest.fn(({ where }: any) => Promise.resolve(entries.get(where.sourceKey) || null)),
+      create: jest.fn(({ data }: any) => {
+        const entry = { id: entries.size + 1, ...data };
+        entries.set(data.sourceKey, entry);
+        return Promise.resolve(entry);
+      }),
+      update: jest.fn(({ where, data }: any) => {
+        const entry = [...entries.values()].find((item) => item.id === where.id);
+        Object.assign(entry, data);
+        return Promise.resolve(entry);
+      }),
+      updateMany: jest.fn(({ where, data }: any) => {
+        let count = 0;
+        for (const entry of entries.values()) {
+          if (entry.packingSlipId !== where.packingSlipId) continue;
+          if (where.sourceKey?.notIn?.includes(entry.sourceKey)) continue;
+          if (where.status?.in && !where.status.in.includes(entry.status)) continue;
+          Object.assign(entry, data);
+          count += 1;
+        }
+        return Promise.resolve({ count });
+      }),
+    },
+  };
+}

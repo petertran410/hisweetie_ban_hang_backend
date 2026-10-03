@@ -1,9 +1,12 @@
 import {
   classifyTable,
+  isLarkChecked,
+  larkLinkRecordIds,
   mapLarkRecord,
   requiredFieldError,
   readLarkDate,
   selectTablesForSource,
+  warehouseCashBranchId,
 } from './internal-finance-lark-import.mapper';
 
 const base = {
@@ -174,5 +177,14 @@ describe('Lark finance import mapper', () => {
         'tbljYaWkP1tyBjTk',
       ).map((table) => table.tableId),
     ).toEqual(['tbljYaWkP1tyBjTk']);
+  });
+
+  it('maps warehouse cash branches and hides link ids behind customer fields', () => {
+    expect(warehouseCashBranchId(['Kho Hà Nội'])).toBe(6);
+    expect(warehouseCashBranchId(['Kho Sài Gòn'])).toBe(1);
+    expect(warehouseCashBranchId(['Văn Phòng Sài Gòn'])).toBeNull();
+    expect(larkLinkRecordIds([{ id: 'recCustomer' }])).toEqual(['recCustomer']);
+    expect(isLarkChecked(true)).toBe(true);
+    expect(isLarkChecked(false)).toBe(false);
   });
 });

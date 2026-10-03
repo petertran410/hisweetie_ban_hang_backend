@@ -6,8 +6,10 @@ import { UploadService } from '../upload/upload.service';
 import { APPROVAL_DEFINITIONS } from '../approval-lifecycle/approval-lifecycle.constants';
 import {
   INTERNAL_FINANCE_CATEGORY,
+  INTERNAL_FINANCE_DIRECTION,
   INTERNAL_FINANCE_EVIDENCE_STATUS,
   INTERNAL_FINANCE_BRANCH_CODES,
+  INTERNAL_FINANCE_SUBCATEGORY,
   INTERNAL_FINANCE_REVIEW_DECISION,
   INTERNAL_FINANCE_REVIEW_ROLE,
   INTERNAL_FINANCE_STATUS,
@@ -32,6 +34,11 @@ import {
   readLarkPersonAlias,
   readLarkText,
   selectTablesForSource,
+  WAREHOUSE_CASH_CUSTOMER_TABLE_ID,
+  WAREHOUSE_CASH_TABLE_ID,
+  isLarkChecked,
+  larkLinkRecordIds,
+  warehouseCashBranchId,
 } from './internal-finance-lark-import.mapper';
 import {
   LarkFinanceImportClient,
@@ -186,6 +193,234 @@ export class InternalFinanceLarkImportService {
       `[LARK_IMPORT] complete mode=${mode} fetched=${totals.fetched} created=${totals.created} updated=${totals.updated} skipped=${totals.skipped} attachments=${totals.attachmentsDownloaded} attachmentErrors=${totals.attachmentsFailed} durationMs=${Date.now() - startedAt}`,
     );
     return { dryRun, tables: results };
+  }
+
+  async importWarehouseCash(
+    dto: { dryRun?: boolean },
+    userId: number,
+  ) {
+    if (!userId) throw new BadRequestException("Thiếu người thực hiện import");
+    const dryRun = dto.dryRun !== false;
+    const baseToken = this.config.get<string>("LARK_EXPENSE_BASE_TOKEN");
+    if (!baseToken) {
+      throw new BadRequestException("Chưa cấu hình base tiền mặt kho");
+    }
+    const startedAt = Date.now();
+    this.logger.log(
+      `[WAREHOUSE_CASH_IMPORT] start mode=${dryRun ? "DRY_RUN" : "COMMIT"} userId=${userId}`,
+    );
+    const token = await this.lark.getToken();
+    const result = {
+      dryRun,
+      fetched: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      otherBranch: 0,
+      unmatchedCustomers: [] as string[],
+    };
+    const customerCache = new Map<string, { name: string; code: string }>();
+    await this.lark.forEachRecordPage(
+      baseToken,
+      WAREHOUSE_CASH_TABLE_ID,
+      token,
+      async (records, pageInfo) => {
+        const linkIds = [
+          ...new Set(
+            records.flatMap((record) =>
+              larkLinkRecordIds(record.fields["Khách hàng"]),
+            ),
+          ),
+        ].filter((id) => !customerCache.has(id));
+        if (linkIds.length) {
+          const customers = await this.lark.getRecordsByIds(
+            baseToken,
+            WAREHOUSE_CASH_CUSTOMER_TABLE_ID,
+            token,
+            linkIds,
+          );
+          for (const customer of customers) {
+            customerCache.set(customer.recordId, {
+              name: readLarkText(customer.fields["Tên Khách Hàng"]),
+              code: readLarkText(customer.fields["Mã Khách Hàng"]),
+            });
+          }
+        }
+        await this.persistWarehouseCashPage({
+          records,
+          baseToken,
+          dryRun,
+          userId,
+          customerCache,
+          result,
+        });
+        this.logger.log(
+          `[WAREHOUSE_CASH_IMPORT] page=${pageInfo?.page || 0} fetched=${result.fetched} created=${result.created} updated=${result.updated} skipped=${result.skipped}`,
+        );
+      },
+    );
+    this.logger.log(
+      `[WAREHOUSE_CASH_IMPORT] complete fetched=${result.fetched} created=${result.created} updated=${result.updated} skipped=${result.skipped} durationMs=${Date.now() - startedAt}`,
+    );
+    return result;
+  }
+
+  private async persistWarehouseCashPage(input: {
+    records: LarkImportRecord[];
+    baseToken: string;
+    dryRun: boolean;
+    userId: number;
+    customerCache: Map<string, { name: string; code: string }>;
+    result: {
+      fetched: number;
+      created: number;
+      updated: number;
+      skipped: number;
+      otherBranch: number;
+      unmatchedCustomers: string[];
+    };
+  }) {
+    const mapped = input.records.flatMap((record) => {
+      input.result.fetched += 1;
+      const branchId = warehouseCashBranchId(record.fields["Chi nhánh"]);
+      const amount = readLarkNumber(record.fields["Số tiền"]);
+      if (!branchId) {
+        input.result.otherBranch += 1;
+        input.result.skipped += 1;
+        return [];
+      }
+      if (amount === null || amount <= 0) {
+        input.result.skipped += 1;
+        return [];
+      }
+      const linkId = larkLinkRecordIds(record.fields["Khách hàng"])[0];
+      const larkCustomer = linkId ? input.customerCache.get(linkId) : undefined;
+      return [
+        {
+          sourceKey: `LARK_CASH:${input.baseToken}:${WAREHOUSE_CASH_TABLE_ID}:${record.recordId}`,
+          branchId,
+          amount,
+          occurredAt:
+            readLarkDate(record.fields["Ngày thu"]) ||
+            readLarkDate(record.fields["Ngày Tạo"]) ||
+            new Date(),
+          description:
+            readLarkText(record.fields["Nội Dung Thu Tiền"]) ||
+            (larkCustomer?.name ? `Thu tiền mặt ${larkCustomer.name}` : "Thu tiền mặt"),
+          note: readLarkText(record.fields["Ghi chú"]),
+          customerName: larkCustomer?.name || "",
+          customerCode: larkCustomer?.code || "",
+          posted: isLarkChecked(record.fields["Lập phiếu thu"]),
+        },
+      ];
+    });
+    if (!mapped.length) return;
+    const existing = await this.prisma.internalFinanceEntry.findMany({
+      where: { sourceKey: { in: mapped.map((row) => row.sourceKey) } },
+      select: { id: true, sourceKey: true, code: true, cashFlowId: true, status: true },
+    });
+    const existingByKey = new Map(existing.map((row) => [row.sourceKey, row]));
+    const codes = [...new Set(mapped.map((row) => row.customerCode).filter(Boolean))];
+    const names = [...new Set(mapped.map((row) => row.customerName).filter(Boolean))];
+    const posCustomers =
+      codes.length || names.length
+        ? await this.prisma.customer.findMany({
+            where: {
+              OR: [
+                ...(codes.length ? [{ code: { in: codes } }] : []),
+                ...(names.length ? [{ name: { in: names } }] : []),
+              ],
+            },
+            select: { id: true, code: true, name: true },
+          })
+        : [];
+    const byCode = new Map(
+      posCustomers.filter((row) => row.code).map((row) => [row.code, row]),
+    );
+    const byName = new Map<string, typeof posCustomers>();
+    for (const customer of posCustomers) {
+      const key = customer.name.trim().toLowerCase();
+      byName.set(key, [...(byName.get(key) || []), customer]);
+    }
+
+    for (const row of mapped) {
+      const current = existingByKey.get(row.sourceKey);
+      if (current?.cashFlowId || current?.status === INTERNAL_FINANCE_STATUS.POSTING) {
+        input.result.skipped += 1;
+        continue;
+      }
+      const codeMatch = row.customerCode ? byCode.get(row.customerCode) : undefined;
+      const nameMatches = byName.get(row.customerName.trim().toLowerCase()) || [];
+      const matched = codeMatch || (nameMatches.length === 1 ? nameMatches[0] : undefined);
+      if (!matched && row.customerName && !input.result.unmatchedCustomers.includes(row.customerName)) {
+        if (input.result.unmatchedCustomers.length < 15) {
+          input.result.unmatchedCustomers.push(row.customerName);
+        }
+      }
+      if (input.dryRun) {
+        if (current) input.result.updated += 1;
+        else input.result.created += 1;
+        continue;
+      }
+      const status = row.posted
+        ? INTERNAL_FINANCE_STATUS.POSTED
+        : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT;
+      const category = matched
+        ? INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT
+        : INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT;
+      const snapshot = {
+        method: "cash",
+        note: row.note,
+        customerName: row.customerName || undefined,
+        customerCode: row.customerCode || undefined,
+        customerIds: matched ? [matched.id] : [],
+        historicalReceipt: row.posted,
+      };
+      if (current) {
+        await this.prisma.internalFinanceEntry.update({
+          where: { id: current.id },
+          data: {
+            branchId: row.branchId,
+            amount: row.amount,
+            occurredAt: row.occurredAt,
+            description: row.description,
+            customerId: matched?.id || null,
+            category,
+            status: current.status === INTERNAL_FINANCE_STATUS.POSTED ? current.status : status,
+            sourceSnapshot: snapshot,
+          },
+        });
+        input.result.updated += 1;
+      } else {
+        const code = await this.codeService.nextCode(this.prisma, {
+          direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
+          category,
+          branchId: row.branchId,
+          occurredAt: row.occurredAt,
+        });
+        await this.prisma.internalFinanceEntry.create({
+          data: {
+            code,
+            direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
+            category,
+            subCategory: INTERNAL_FINANCE_SUBCATEGORY.OTHER,
+            branchId: row.branchId,
+            amount: row.amount,
+            occurredAt: row.occurredAt,
+            sourceType: "MANUAL_RECEIPT",
+            sourceKey: row.sourceKey,
+            sourceSnapshot: snapshot,
+            description: row.description,
+            evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
+            status,
+            requiresEvidence: false,
+            customerId: matched?.id,
+            createdBy: input.userId,
+          },
+        });
+        input.result.created += 1;
+      }
+    }
   }
 
   private resolveSources(sources?: string[]): LarkImportSource[] {

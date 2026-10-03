@@ -6,6 +6,7 @@ import {
   Patch,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -14,16 +15,25 @@ import { InternalFinanceService } from './internal-finance.service';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
 import {
   CreateApprovalForWeeklyBatchDto,
+  CreateWarehouseExpenseDto,
   LarkFinanceImportDto,
   AddInternalFinanceAttachmentsDto,
   CreateFuelEntryDto,
   CreateManualExpenseDto,
   CreateManualReceiptDto,
   CreateVehicleCareEntryDto,
+  CreateWarehouseReceiptDto,
+  CancelWarehouseReceiptDto,
   InternalFinanceQueryDto,
+  MarkWarehouseExpenseIssuedDto,
+  PostWarehouseReceiptDto,
+  WarehouseCashImportDto,
+  WarehouseExpenseQueryDto,
   PrepareWeeklyBatchDto,
   ReviewInternalFinanceDto,
   UpdateInternalFinanceCashIssuedDto,
+  UpdateWarehouseReceiptDto,
+  UpdateWarehouseExpenseDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -51,6 +61,153 @@ export class InternalFinanceController {
   @ApiOperation({ summary: 'Summarize internal finance entries' })
   summary(@Query() query: InternalFinanceQueryDto) {
     return this.service.getSummary(query);
+  }
+
+  @Get('warehouse-receipts')
+  @RequirePermissions('warehouse_cash:view')
+  @ApiOperation({ summary: 'List warehouse cash receipts' })
+  warehouseReceipts(@Query() query: InternalFinanceQueryDto) {
+    return this.service.listWarehouseReceipts(query);
+  }
+
+  @Get('warehouse-receipts/:id')
+  @RequirePermissions('warehouse_cash:view')
+  @ApiOperation({ summary: 'Get one warehouse cash receipt' })
+  warehouseReceipt(@Param('id', ParseIntPipe) id: number) {
+    return this.service.getWarehouseReceipt(id);
+  }
+
+  @Get('warehouse-expenses')
+  @ApiOperation({ summary: 'List warehouse expense entries' })
+  warehouseExpenses(
+    @Query() query: WarehouseExpenseQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listWarehouseExpenses(query, user);
+  }
+
+  @Post('warehouse-expenses/manual')
+  @ApiOperation({ summary: 'Create a manual warehouse expense' })
+  createWarehouseExpense(
+    @Body() dto: CreateWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.createWarehouseExpense(dto, user);
+  }
+
+  @Patch('warehouse-expenses/:id')
+  @ApiOperation({ summary: 'Update an open manual warehouse expense' })
+  updateWarehouseExpense(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.updateWarehouseExpense(id, dto, user);
+  }
+
+  @Get('warehouse-expenses/weekly-batches')
+  @ApiOperation({ summary: 'List warehouse expense weekly batches' })
+  warehouseExpenseBatches(
+    @Query() query: InternalFinanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listWarehouseExpenseBatches(query, user);
+  }
+
+  @Get('warehouse-expenses/weekly-batches/:id')
+  @ApiOperation({ summary: 'Get a warehouse expense weekly batch' })
+  warehouseExpenseBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.getWarehouseExpenseBatch(id, user);
+  }
+
+  @Post('warehouse-expenses/weekly-batches/prepare')
+  @ApiOperation({ summary: 'Prepare a warehouse expense weekly batch' })
+  prepareWarehouseExpenseBatch(
+    @Body() dto: PrepareWeeklyBatchDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.prepareWarehouseExpenseBatch(dto, user);
+  }
+
+  @Post('warehouse-expenses/weekly-batches/:id/create-approval')
+  @ApiOperation({ summary: 'Create a warehouse expense Lark Approval' })
+  createWarehouseExpenseApproval(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateApprovalForWeeklyBatchDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.createWarehouseExpenseApproval(
+      id,
+      user,
+      dto.detailUrl,
+      dto.viewUrl,
+    );
+  }
+
+  @Patch('warehouse-expenses/:id/mark-issued')
+  @ApiOperation({ summary: 'Mark a warehouse expense as issued and post cash' })
+  markWarehouseExpenseIssued(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: MarkWarehouseExpenseIssuedDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.markWarehouseExpenseIssued(id, user, dto);
+  }
+
+  @Post('warehouse-receipts/lark-import')
+  @RequirePermissions('cash_flows:create')
+  @ApiOperation({ summary: 'Import warehouse cash history without Lark identifiers' })
+  importWarehouseCash(
+    @Body() dto: WarehouseCashImportDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.larkImport.importWarehouseCash(dto, user.id);
+  }
+
+  @Post('warehouse-receipts')
+  @RequirePermissions('warehouse_cash:create')
+  @ApiOperation({ summary: 'Create a manual warehouse cash receipt' })
+  createWarehouseReceipt(
+    @Body() dto: CreateWarehouseReceiptDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.createWarehouseReceipt(dto, user.id);
+  }
+
+  @Patch('warehouse-receipts/:id')
+  @RequirePermissions('warehouse_cash:update')
+  @ApiOperation({ summary: 'Update an open warehouse cash receipt' })
+  updateWarehouseReceipt(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateWarehouseReceiptDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.updateWarehouseReceipt(id, dto, user.id);
+  }
+
+  @Post('warehouse-receipts/:id/post')
+  @RequirePermissions('warehouse_cash:post')
+  @ApiOperation({ summary: 'Allocate and create cash receipts' })
+  postWarehouseReceipt(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: PostWarehouseReceiptDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.postWarehouseReceipt(id, dto, user.id);
+  }
+
+  @Put('warehouse-receipts/:id/cancel')
+  @RequirePermissions('warehouse_cash:cancel')
+  @ApiOperation({ summary: 'Cancel a warehouse cash receipt' })
+  cancelWarehouseReceipt(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelWarehouseReceiptDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cancelWarehouseReceipt(id, dto, user.id);
   }
 
   @Post('receipts/manual')

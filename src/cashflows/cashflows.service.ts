@@ -709,172 +709,203 @@ export class CashFlowsService {
       description?: string;
       method?: string;
       isReceipt: boolean;
+      markCashIssued?: boolean;
     },
     userId: number,
   ) {
-    return this.prisma.$transaction(async (tx) => {
-      const entry = await tx.internalFinanceEntry.findUnique({
-        where: { id: params.entryId },
-        include: {
-          invoiceLinks: {
-            include: {
-              invoice: {
-                select: {
-                  id: true,
-                  code: true,
-                  customerId: true,
-                  parentCustomerId: true,
-                  grandTotal: true,
-                  debtAmount: true,
-                  paidAmount: true,
-                  status: true,
-                },
+    return this.prisma.$transaction((tx) =>
+      this.createInternalFinanceCashFlowInTransaction(tx, params, userId),
+    );
+  }
+
+  async createInternalFinanceCashFlowInTransaction(
+    tx: any,
+    params: {
+      entryId: number;
+      branchId: number;
+      amount: number;
+      transDate?: string;
+      description?: string;
+      method?: string;
+      isReceipt: boolean;
+      markCashIssued?: boolean;
+    },
+    userId: number,
+  ) {
+    const entry = await tx.internalFinanceEntry.findUnique({
+      where: { id: params.entryId },
+      include: {
+        invoiceLinks: {
+          include: {
+            invoice: {
+              select: {
+                id: true,
+                code: true,
+                customerId: true,
+                parentCustomerId: true,
+                grandTotal: true,
+                debtAmount: true,
+                paidAmount: true,
+                status: true,
               },
             },
           },
         },
-      });
-      if (!entry) throw new BadRequestException('Không tìm thấy dòng tài chính nội bộ');
-      if (entry.cashFlowId) {
-        const existing = await tx.cashFlow.findUnique({
-          where: { id: entry.cashFlowId },
-        });
-        return { cashFlow: existing, alreadyPosted: true };
-      }
-      if (!this.canPostInternalFinanceEntry(entry)) {
-        throw new BadRequestException('Dòng tài chính chưa đủ điều kiện ghi nhận');
-      }
-      if (entry.branchId !== params.branchId) {
-        throw new BadRequestException('Chi nhánh dòng tài chính không khớp');
-      }
-
-      const claimed = await tx.internalFinanceEntry.updateMany({
-        where: {
-          id: entry.id,
-          cashFlowId: null,
-          status: {
-            in: [
-              'ACCOUNTANT_APPROVED',
-              'APPROVED',
-            ],
-          },
-        },
-        data: { status: 'POSTING' },
-      });
-      if (claimed.count !== 1) {
-        throw new BadRequestException(
-          'Dòng tài chính đang được ghi nhận hoặc đã ghi nhận',
-        );
-      }
-
-      try {
-        const method = params.method || 'cash';
-        const code = await this.generateManualCode(
-          params.isReceipt,
-          method,
-          tx,
-        );
-        const cashFlow = await tx.cashFlow.create({
-          data: {
-            code,
-            branchId: params.branchId,
-            isReceipt: params.isReceipt,
-            amount: params.amount,
-            transDate: params.transDate
-              ? new Date(params.transDate)
-              : new Date(),
-            method,
-            usedForFinancialReporting: 1,
-            description: params.description || entry.description,
-            status: 0,
-            statusValue: params.isReceipt ? 'Đã thanh toán' : 'Đã chi',
-            createdBy: userId,
-            collectorUserId: userId,
-          },
-          include: {
-            branch: { select: { id: true, name: true } },
-          },
-        });
-
-        if (params.isReceipt && entry.invoiceLinks.length > 0) {
-          let remaining = params.amount;
-          for (const link of entry.invoiceLinks) {
-            if (remaining <= 0) break;
-            const invoice = link.invoice;
-            const outstanding = Math.max(
-              0,
-              Number(invoice.debtAmount ?? invoice.grandTotal),
-            );
-            const allocation = Math.min(remaining, outstanding);
-            if (allocation <= 0) continue;
-
-            const paymentCount = await tx.invoicePayment.count({
-              where: { invoiceId: invoice.id },
-            });
-            const payment = await tx.invoicePayment.create({
-              data: {
-                code: `TT${invoice.code}-${paymentCount + 1}`,
-                invoiceId: invoice.id,
-                amount: allocation,
-                paymentDate: params.transDate
-                  ? new Date(params.transDate)
-                  : new Date(),
-                paymentMethod: method,
-                description: `Thu tiền hóa đơn ${invoice.code} từ ${entry.code}`,
-                status: 1,
-                cashFlowId: cashFlow.id,
-              },
-            });
-            const activePayments = await tx.invoicePayment.findMany({
-              where: { invoiceId: invoice.id, status: { not: 2 } },
-              select: { amount: true },
-            });
-            const paidAmount = activePayments.reduce(
-              (sum: number, item: any) => sum + Number(item.amount || 0),
-              0,
-            );
-            const debtAmount = Math.max(
-              0,
-              Number(invoice.grandTotal) - paidAmount,
-            );
-            await tx.invoice.update({
-              where: { id: invoice.id },
-              data: {
-                paidAmount,
-                debtAmount,
-                status:
-                  debtAmount <= 0 && invoice.status === 7 ? 1 : invoice.status,
-                statusValue:
-                  debtAmount <= 0 && invoice.status === 7
-                    ? 'Hoàn thành'
-                    : undefined,
-              },
-            });
-            void payment;
-            remaining -= allocation;
-          }
-        }
-
-        await tx.internalFinanceEntry.update({
-          where: { id: entry.id },
-          data: { status: 'POSTED', cashFlowId: cashFlow.id },
-        });
-        return { cashFlow, alreadyPosted: false };
-      } catch (error) {
-        await tx.internalFinanceEntry.update({
-          where: { id: entry.id },
-          data: { status: entry.status },
-        });
-        throw error;
-      }
+      },
     });
+    if (!entry)
+      throw new BadRequestException('Không tìm thấy dòng tài chính nội bộ');
+    if (entry.cashFlowId) {
+      const existing = await tx.cashFlow.findUnique({
+        where: { id: entry.cashFlowId },
+      });
+      return { cashFlow: existing, alreadyPosted: true };
+    }
+    if (!this.canPostInternalFinanceEntry(entry)) {
+      throw new BadRequestException(
+        'Dòng tài chính chưa đủ điều kiện ghi nhận',
+      );
+    }
+    if (entry.branchId !== params.branchId) {
+      throw new BadRequestException('Chi nhánh dòng tài chính không khớp');
+    }
+
+    const claimed = await tx.internalFinanceEntry.updateMany({
+      where: {
+        id: entry.id,
+        cashFlowId: null,
+        status: {
+          in:
+            entry.direction === 'RECEIPT'
+              ? ['ACCOUNTANT_APPROVED']
+              : ['APPROVED'],
+        },
+      },
+      data: { status: 'POSTING' },
+    });
+    if (claimed.count !== 1) {
+      throw new BadRequestException(
+        'Dòng tài chính đang được ghi nhận hoặc đã ghi nhận',
+      );
+    }
+
+    try {
+      const method = params.method || 'cash';
+      const code = await this.generateManualCode(
+        params.isReceipt,
+        method,
+        tx,
+      );
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: params.branchId,
+          isReceipt: params.isReceipt,
+          amount: params.amount,
+          transDate: params.transDate
+            ? new Date(params.transDate)
+            : new Date(),
+          method,
+          usedForFinancialReporting: 1,
+          description: params.description || entry.description,
+          status: 0,
+          statusValue: params.isReceipt ? 'Đã thanh toán' : 'Đã chi',
+          createdBy: userId,
+          collectorUserId: userId,
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+        },
+      });
+
+      if (params.isReceipt && entry.invoiceLinks.length > 0) {
+        let remaining = params.amount;
+        for (const link of entry.invoiceLinks) {
+          if (remaining <= 0) break;
+          const invoice = link.invoice;
+          const outstanding = Math.max(
+            0,
+            Number(invoice.debtAmount ?? invoice.grandTotal),
+          );
+          const allocation = Math.min(remaining, outstanding);
+          if (allocation <= 0) continue;
+
+          const paymentCount = await tx.invoicePayment.count({
+            where: { invoiceId: invoice.id },
+          });
+          const payment = await tx.invoicePayment.create({
+            data: {
+              code: `TT${invoice.code}-${paymentCount + 1}`,
+              invoiceId: invoice.id,
+              amount: allocation,
+              paymentDate: params.transDate
+                ? new Date(params.transDate)
+                : new Date(),
+              paymentMethod: method,
+              description: `Thu tiền hóa đơn ${invoice.code} từ ${entry.code}`,
+              status: 1,
+              cashFlowId: cashFlow.id,
+            },
+          });
+          const activePayments = await tx.invoicePayment.findMany({
+            where: { invoiceId: invoice.id, status: { not: 2 } },
+            select: { amount: true },
+          });
+          const paidAmount = activePayments.reduce(
+            (sum: number, item: any) => sum + Number(item.amount || 0),
+            0,
+          );
+          const debtAmount = Math.max(
+            0,
+            Number(invoice.grandTotal) - paidAmount,
+          );
+          await tx.invoice.update({
+            where: { id: invoice.id },
+            data: {
+              paidAmount,
+              debtAmount,
+              status:
+                debtAmount <= 0 && invoice.status === 7 ? 1 : invoice.status,
+              statusValue:
+                debtAmount <= 0 && invoice.status === 7
+                  ? 'Hoàn thành'
+                  : undefined,
+            },
+          });
+          void payment;
+          remaining -= allocation;
+        }
+      }
+
+      await tx.internalFinanceEntry.update({
+        where: { id: entry.id },
+        data: {
+          status: 'POSTED',
+          cashFlowId: cashFlow.id,
+          ...(params.markCashIssued
+            ? {
+                cashIssued: true,
+                cashIssuedAt: new Date(),
+                cashIssuedBy: userId,
+              }
+            : {}),
+        },
+      });
+      return { cashFlow, alreadyPosted: false };
+    } catch (error) {
+      await tx.internalFinanceEntry.update({
+        where: { id: entry.id },
+        data: { status: entry.status },
+      });
+      throw error;
+    }
   }
 
   private canPostInternalFinanceEntry(entry: any) {
-    return (
-      entry.direction === 'RECEIPT' &&
-      entry.status === 'ACCOUNTANT_APPROVED'
-    );
+    if (entry.direction === 'RECEIPT') {
+      return entry.status === 'ACCOUNTANT_APPROVED';
+    }
+    return entry.direction === 'EXPENSE' && entry.status === 'APPROVED';
   }
 
   async findAll(query: CashFlowQueryDto, currentUser?: any) {
@@ -1318,17 +1349,28 @@ export class CashFlowsService {
   }
 
   async cancel(id: number, userId: number) {
-    const result = await this.prisma.$transaction(async (tx) => {
-      const cashFlow = await tx.cashFlow.findUnique({
-        where: { id },
-        include: { branch: { select: { id: true, name: true } } },
-      });
+    const result = await this.prisma.$transaction((tx) =>
+      this.cancelInTransaction(tx, id),
+    );
+    await this.logCancellation(result, userId);
+    return result.updated;
+  }
 
-      if (!cashFlow) {
-        throw new Error('Không tìm thấy phiếu thu/chi');
-      }
+  /**
+   * Hủy cashflow trong transaction của caller.
+   * Dùng cho các luồng cần hủy nhiều phiếu thu atomic (ví dụ tiền mặt kho).
+   */
+  async cancelInTransaction(tx: any, id: number) {
+    const cashFlow = await tx.cashFlow.findUnique({
+      where: { id },
+      include: { branch: { select: { id: true, name: true } } },
+    });
 
-      await tx.$queryRaw`
+    if (!cashFlow) {
+      throw new Error('Không tìm thấy phiếu thu/chi');
+    }
+
+    await tx.$queryRaw`
         SELECT i.id
         FROM invoices i
         WHERE i.id IN (
@@ -1342,7 +1384,7 @@ export class CashFlowsService {
         )
         ORDER BY i.id
         FOR UPDATE OF i
-      `;
+    `;
 
       // ── 1. Tìm các entity liên quan TRƯỚC khi hủy
       const linkedInvoicePayments = await tx.invoicePayment.findMany({
@@ -1658,9 +1700,13 @@ export class CashFlowsService {
         await this.recalcSupplierDebt(sid, tx);
       }
 
-      return { cashFlow, updated };
-    });
+    return { cashFlow, updated };
+  }
 
+  async logCancellation(
+    result: { cashFlow: any; updated: any },
+    userId: number,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, email: true },
@@ -1670,7 +1716,7 @@ export class CashFlowsService {
       actionType: 'DELETE',
       actionCode: 'CASHFLOW_DELETE',
       entityType: 'cashflows',
-      entityId: id.toString(),
+      entityId: String(result.cashFlow.id),
       entityCode: result.cashFlow.code,
       category: getCategoryFromActionCode('CASHFLOW_DELETE'),
       severity: getSeverityFromActionCode('CASHFLOW_DELETE'),
@@ -1684,8 +1730,6 @@ export class CashFlowsService {
       userName: user?.name || user?.email || 'System',
       branchId: result.cashFlow.branchId || undefined,
     });
-
-    return result.updated;
   }
 
   async createPaymentFromInvoice(
@@ -2001,6 +2045,36 @@ export class CashFlowsService {
       purchaseOrderPayments,
       orderSupplierPayments,
     };
+  }
+
+  async createStandaloneCashReceipt(params: {
+    branchId: number;
+    amount: number;
+    transDate?: string;
+    description?: string;
+    userId: number;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      const code = await this.generateManualCode(true, 'cash', tx);
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code,
+          branchId: params.branchId,
+          cashFlowGroupId: 1,
+          isReceipt: true,
+          amount: params.amount,
+          transDate: params.transDate ? new Date(params.transDate) : new Date(),
+          method: 'cash',
+          usedForFinancialReporting: 1,
+          description: params.description || 'Thu bán đồ kho',
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: params.userId,
+          collectorUserId: params.userId,
+        },
+      });
+      return { cashFlow };
+    });
   }
 
   private async generateManualCode(

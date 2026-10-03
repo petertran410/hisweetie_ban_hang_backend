@@ -29,6 +29,7 @@ interface LarkResponse {
   tenant_access_token?: string;
   data?: {
     items?: LarkItem[];
+    records?: LarkItem[];
     has_more?: boolean;
     page_token?: string;
   };
@@ -159,6 +160,34 @@ export class LarkFinanceImportClient {
     return total;
   }
 
+  async getRecordsByIds(
+    baseToken: string,
+    tableId: string,
+    token: string,
+    recordIds: string[],
+  ): Promise<LarkImportRecord[]> {
+    const records: LarkImportRecord[] = [];
+    for (let index = 0; index < recordIds.length; index += 100) {
+      const batch = recordIds.slice(index, index + 100);
+      const response = await this.requestJson({
+        method: "POST",
+        path: `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/batch_get`,
+        token,
+        body: JSON.stringify({ record_ids: batch }),
+      });
+      this.assertOk(response, "Không đọc được khách hàng Lark");
+      const rows = response.data?.records?.length
+        ? response.data.records
+        : response.data?.items || [];
+      for (const item of rows) {
+        const recordId = item.record_id ? String(item.record_id) : "";
+        if (!recordId) continue;
+        records.push({ recordId, fields: item.fields || {} });
+      }
+    }
+    return records;
+  }
+
   async download(url: string, token: string): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const request = https.get(
@@ -267,6 +296,9 @@ function parseLarkResponse(raw: string): LarkResponse {
           : undefined,
       items: Array.isArray(dataRecord.items)
         ? dataRecord.items.filter(isLarkItem)
+        : [],
+      records: Array.isArray(dataRecord.records)
+        ? dataRecord.records.filter(isLarkItem)
         : [],
     },
   };

@@ -8,6 +8,7 @@ import { InternalFinanceService } from './internal-finance.service';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
 import { LarkFinanceImportClient } from './lark-finance-import.client';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { InternalFinanceCodeService } from './internal-finance-code.service';
     CashFlowsModule,
     ApprovalLifecycleModule,
     UploadModule,
+    AuthModule,
   ],
   controllers: [InternalFinanceController],
   providers: [
