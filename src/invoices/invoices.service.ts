@@ -73,6 +73,34 @@ const POS_PREPAID_ORDER_MESSAGE =
 const POS_PREPAID_INVOICE_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 
+const INVOICE_PACKING_CREATOR_PARENT_SELECT = {
+  creator: { select: { id: true, name: true } },
+} as const;
+
+const INVOICE_PACKING_HANG_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingHang: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
+
+const INVOICE_PACKING_LOADING_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingLoading: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
+
+const INVOICE_PACKING_SLIP_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingSlip: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
+
 const INVOICE_LIST_SELECT = {
   id: true,
   code: true,
@@ -131,6 +159,18 @@ const INVOICE_LIST_SELECT = {
       noteForDriver: true,
       partnerDelivery: { select: { id: true, name: true } },
     },
+  },
+  packingHangs: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_HANG_CREATOR_SELECT,
+  },
+  packingLoadings: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_LOADING_CREATOR_SELECT,
+  },
+  packingSlips: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_SLIP_CREATOR_SELECT,
   },
 } as const;
 
@@ -5461,8 +5501,15 @@ export class InvoicesService {
     pageSize?: number;
     search?: string;
     excludeDelivered?: boolean;
+    packingType?: 'giao-hang' | 'dong-hang' | 'loading';
   }) {
-    const { branchId, pageSize = 100, search, excludeDelivered } = query;
+    const {
+      branchId,
+      pageSize = 100,
+      search,
+      excludeDelivered,
+      packingType,
+    } = query;
     const take = Math.min(Math.max(pageSize, 1), 200);
 
     const where: any = {};
@@ -5518,11 +5565,49 @@ export class InvoicesService {
       take,
     });
 
+    const packingCountByInvoiceId = new Map<number, number>();
+    if (packingType && data.length > 0) {
+      const invoiceIds = data.map((invoice) => invoice.id);
+      const rows =
+        packingType === 'giao-hang'
+          ? await this.prisma.packingSlipInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            })
+          : packingType === 'dong-hang'
+            ? await this.prisma.packingHangInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            })
+            : await this.prisma.packingLoadingInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            });
+
+      for (const row of rows) {
+        if (row.invoiceId != null) {
+          packingCountByInvoiceId.set(row.invoiceId, row._count.invoiceId);
+        }
+      }
+    }
+
     // Trả cùng shape với findAll để frontend khỏi đổi nhiều
     return {
       data: data.map((invoice) => ({
         ...invoice,
         ...mapColdCargoInvoice(invoice),
+        ...(packingType
+          ? { packingCount: packingCountByInvoiceId.get(invoice.id) ?? 0 }
+          : {}),
         details: undefined,
       })),
       total: data.length,
