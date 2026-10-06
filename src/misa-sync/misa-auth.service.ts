@@ -50,19 +50,24 @@ export class MisaAuthService {
    * Gọi API để lấy token mới
    */
   private async refreshToken(): Promise<string> {
-    const baseUrl = this.configService.get<string>('MISA_BASE_URL');
-    const appId = this.configService.get<string>('MISA_APP_ID');
+    const baseUrl = this.getBaseUrl();
+    const clientId = this.configService.get<string>('MISA_CLIENT_ID');
     const accessCode = this.configService.get<string>('MISA_ACCESS_CODE');
     const orgCompanyCode = this.configService.get<string>(
       'MISA_ORG_COMPANY_CODE',
     );
 
-    const url = `${baseUrl}/api/oauth/actopen/connect`;
+    if (!clientId || !accessCode || !orgCompanyCode) {
+      throw new Error(
+        'Missing Misa configuration: MISA_CLIENT_ID, MISA_ACCESS_CODE, MISA_ORG_COMPANY_CODE',
+      );
+    }
+
+    const url = `${baseUrl}/amiskt/v1/token`;
 
     const requestBody: MisaConnectRequestDto = {
-      app_id: appId || '',
-      access_code: accessCode || '',
-      org_company_code: orgCompanyCode || '',
+      access_code: accessCode,
+      org_company_code: orgCompanyCode,
     };
 
     this.logger.log('🔐 Requesting new Misa access token...');
@@ -73,13 +78,12 @@ export class MisaAuthService {
         this.httpService.post<MisaConnectResponseDto>(url, requestBody, {
           headers: {
             'Content-Type': 'application/json',
+            ClientID: clientId,
           },
         }),
       );
 
       const data = response.data;
-
-      this.logger.debug(`Raw response: ${JSON.stringify(data)}`);
 
       if (!data.Success) {
         const errorMsg = `Misa connect failed: ${data.ErrorCode} - ${data.ErrorMessage}`;
@@ -106,13 +110,18 @@ export class MisaAuthService {
 
       if (!tokenData?.access_token) {
         this.logger.error(
-          `❌ Token data structure: ${JSON.stringify(tokenData)}`,
+          '❌ Misa token response missing access_token',
         );
         throw new Error('Misa connect response missing access_token');
       }
 
-      const expiresAt = new Date();
-      expiresAt.setHours(expiresAt.getHours() + 12);
+      const parsedExpiresAt = tokenData.expired_time
+        ? new Date(tokenData.expired_time)
+        : null;
+      const expiresAt =
+        parsedExpiresAt && !Number.isNaN(parsedExpiresAt.getTime())
+          ? parsedExpiresAt
+          : new Date(Date.now() + 12 * 60 * 60 * 1000);
 
       this.cachedToken = {
         accessToken: tokenData.access_token,
@@ -133,6 +142,14 @@ export class MisaAuthService {
       this.logger.error(`❌ Failed to get Misa access token: ${error.message}`);
       throw error;
     }
+  }
+
+  private getBaseUrl(): string {
+    return (
+      this.configService
+        .get<string>('MISA_BASE_URL')
+        ?.replace(/\/+$/, '') || 'https://developer.misa.vn/apis'
+    );
   }
 
   /**

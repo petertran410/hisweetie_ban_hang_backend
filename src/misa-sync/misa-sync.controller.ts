@@ -94,6 +94,35 @@ export class MisaSyncController {
     }
   }
 
+  @Post('stocks/sync')
+  @RequirePermissions('vat_invoices:push')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Sync danh sách kho Misa về database' })
+  async syncStocks(): Promise<{
+    success: boolean;
+    message: string;
+    data?: {
+      stocks: number;
+    };
+  }> {
+    this.logger.log('🏪 Manual Misa stock sync triggered');
+
+    try {
+      const stocks = await this.misaDictionaryService.syncStocks();
+      return {
+        success: true,
+        message: 'Stock sync completed',
+        data: { stocks },
+      };
+    } catch (error) {
+      this.logger.error(`❌ Stock sync failed: ${error.message}`);
+      return {
+        success: false,
+        message: error.message,
+      };
+    }
+  }
+
   @Post('voucher/create/:invoiceCode')
   @RequirePermissions('vat_invoices:push')
   @HttpCode(200)
@@ -111,11 +140,16 @@ export class MisaSyncController {
     );
 
     try {
-      return await this.misaVoucherService.createSaleVoucherFromInvoice(
+      const result = await this.misaVoucherService.createSaleVoucherFromInvoice(
         invoiceCode,
         body?.buyerOverride,
         body?.force,
       );
+      return {
+        success: result.success,
+        orgRefId: result.orgRefId,
+        message: result.message,
+      };
     } catch (error) {
       this.logger.error(
         `❌ Create voucher failed for invoice ${invoiceCode}: ${error.message}`,

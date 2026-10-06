@@ -2,7 +2,6 @@
  * Request body để lấy access token từ Misa
  */
 export interface MisaConnectRequestDto {
-  app_id: string;
   access_code: string;
   org_company_code: string;
 }
@@ -17,7 +16,7 @@ export interface MisaTokenDataDto {
 }
 
 /**
- * Response từ API connect
+ * Response từ API token
  */
 export interface MisaConnectResponseDto {
   Success: boolean;

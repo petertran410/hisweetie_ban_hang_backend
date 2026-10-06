@@ -5,19 +5,19 @@ export interface MisaGetDictionaryRequestDto {
   data_type: number;
   skip: number;
   take: number;
-  app_id: string;
-  last_sync_time?: string;
+  last_sync_time?: string | null;
+  branch_id?: string | null;
 }
 
 /**
  * Response chung từ API get_dictionary
- * Lưu ý: Data từ Misa trả về dạng JSON string, không phải array trực tiếp
+ * API OpenAPI mới trả Data trực tiếp dưới dạng mảng object.
  */
 export interface MisaGetDictionaryResponseDto<T> {
   Success: boolean;
   ErrorCode?: string;
   ErrorMessage?: string;
-  Data?: string | T[];
+  Data?: T[];
 }
 
 /**
@@ -61,6 +61,7 @@ export interface MisaStockDto {
   description?: string;
   created_date?: string;
   modified_date?: string;
+  state?: number;
 }
 
 /**
