@@ -17,7 +17,7 @@ export interface MisaGetDictionaryResponseDto<T> {
   Success: boolean;
   ErrorCode?: string;
   ErrorMessage?: string;
-  Data?: T[];
+  Data?: T[] | string | Record<string, unknown>;
 }
 
 /**

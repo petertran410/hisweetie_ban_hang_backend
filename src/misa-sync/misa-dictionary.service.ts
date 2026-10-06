@@ -433,9 +433,8 @@ export class MisaDictionaryService {
     take: number,
   ): Promise<T[]> {
     const baseUrl =
-      this.configService
-        .get<string>('MISA_BASE_URL')
-        ?.replace(/\/+$/, '') || 'https://developer.misa.vn/apis';
+      this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
+      'https://developer.misa.vn/apis';
     const clientId = this.configService.get<string>('MISA_CLIENT_ID');
     const accessToken = await this.misaAuthService.getAccessToken();
 
@@ -479,25 +478,62 @@ export class MisaDictionaryService {
         return [];
       }
 
-      if (!Array.isArray(data.Data)) {
-        throw new Error(
-          `Misa get_dictionary returned invalid Data for data_type=${dataType}`,
-        );
-      }
+      const rawData = data.Data;
+      this.logger.debug(
+        `Misa get_dictionary response data_type=${dataType} ` +
+          `dataKind=${Array.isArray(rawData) ? 'array' : typeof rawData} ` +
+          `keys=${
+            rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+              ? Object.keys(rawData).join(',')
+              : ''
+          }`,
+      );
+      const items = this.parseDictionaryData<T>(rawData, dataType);
 
-      if (data.Data.length > 0) {
+      if (items.length > 0) {
         this.logger.log(
-          `📥 Fetched ${data.Data.length} items for data_type=${dataType} (skip=${skip})`,
+          `📥 Fetched ${items.length} items for data_type=${dataType} (skip=${skip})`,
         );
       }
 
-      return data.Data;
+      return items;
     } catch (error) {
       this.logger.error(
         `❌ Failed to fetch dictionary (type=${dataType}): ${error.message}`,
       );
       throw error;
     }
+  }
+
+  private parseDictionaryData<T>(rawData: unknown, dataType: number): T[] {
+    if (Array.isArray(rawData)) {
+      return rawData as T[];
+    }
+
+    if (typeof rawData === 'string') {
+      try {
+        return this.parseDictionaryData<T>(JSON.parse(rawData), dataType);
+      } catch (error) {
+        throw new Error(
+          `Misa get_dictionary returned invalid JSON Data for data_type=${dataType}`,
+        );
+      }
+    }
+
+    if (rawData && typeof rawData === 'object') {
+      const wrapper = rawData as Record<string, unknown>;
+      const nestedKeys = ['data', 'Data', 'items', 'Items', 'result', 'Result'];
+
+      for (const key of nestedKeys) {
+        if (key in wrapper) {
+          return this.parseDictionaryData<T>(wrapper[key], dataType);
+        }
+      }
+    }
+
+    throw new Error(
+      `Misa get_dictionary returned invalid Data for data_type=${dataType}`,
+    );
   }
 
   /**

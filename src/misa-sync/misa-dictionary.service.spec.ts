@@ -83,4 +83,59 @@ describe('MisaDictionaryService OpenAPI dictionary flow', () => {
     expect(upsert.mock.calls[0][0].update).not.toHaveProperty('isDefault');
     expect(upsert.mock.calls[0][0].create).not.toHaveProperty('isDefault');
   });
+
+  it.each([
+    [
+      'JSON string',
+      JSON.stringify([
+        {
+          dictionary_type: 3,
+          stock_id: 'stock-string',
+          stock_code: 'KHO-STRING',
+          stock_name: 'Kho string',
+        },
+      ]),
+    ],
+    [
+      'wrapper object',
+      {
+        items: [
+          {
+            dictionary_type: 3,
+            stock_id: 'stock-wrapper',
+            stock_code: 'KHO-WRAPPER',
+            stock_name: 'Kho wrapper',
+          },
+        ],
+      },
+    ],
+  ])('normalizes dictionary Data from %s', async (_label, data) => {
+    const post = jest.fn().mockReturnValue(
+      of({
+        data: {
+          Success: true,
+          Data: data as any,
+        },
+      }),
+    );
+    const upsert = jest.fn().mockResolvedValue({});
+    const config = {
+      get: jest.fn((key: string) =>
+        key === 'MISA_BASE_URL'
+          ? 'https://developer.misa.vn/apis'
+          : key === 'MISA_CLIENT_ID'
+            ? 'client-id'
+            : undefined,
+      ),
+    };
+    const service = new MisaDictionaryService(
+      config as any,
+      { post } as any,
+      { misaStock: { upsert } } as any,
+      { getAccessToken: jest.fn().mockResolvedValue('access-token') } as any,
+    );
+
+    await expect(service.syncStocks()).resolves.toBe(1);
+    expect(upsert).toHaveBeenCalledTimes(1);
+  });
 });
