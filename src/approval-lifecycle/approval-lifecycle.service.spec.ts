@@ -41,13 +41,14 @@ describe('ApprovalLifecycleService', () => {
       },
       approvalRequestEvent: {
         create: jest.fn().mockResolvedValue({ id: 1 }),
+        findUnique: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn(),
       },
     };
     const larkClient = {
       tokenManager: {
-        getTenantAccessToken: jest.fn().mockResolvedValue("tenant-token"),
+        getTenantAccessToken: jest.fn().mockResolvedValue('tenant-token'),
       },
       approval: {
         v4: {
@@ -70,13 +71,21 @@ describe('ApprovalLifecycleService', () => {
     const cashFlowsService = {
       createApprovalCashFlow: jest.fn(),
     };
+    const fundLedger = {
+      applyApproval: jest.fn(),
+      lockApproval: jest.fn(),
+      lock: jest.fn(),
+    };
+    (prisma as any).$transaction = jest.fn(async (callback: any) =>
+      callback(prisma),
+    );
     const service = new ApprovalLifecycleService(
       prisma as any,
       { get: jest.fn() } as any,
       larkClient as any,
-      cashFlowsService as any,
+      fundLedger as any,
     );
-    return { service, prisma, larkClient, cashFlowsService };
+    return { service, prisma, larkClient, cashFlowsService, fundLedger };
   }
 
   const hnForm = [
@@ -87,6 +96,115 @@ describe('ApprovalLifecycleService', () => {
     { id: 'widget17368416610880001', type: 'input', value: 'Chi xăng' },
     { id: 'widget17371739587940001', type: 'input', value: 'POS #1' },
   ];
+
+  it('automatically posts an approved fund receipt in the approval-status transaction', async () => {
+    const request = {
+      id: 19,
+      status: 'PENDING',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      sourceId: null,
+      instanceCode: 'fund-19',
+      approvalCode: 'receipt-template',
+      lastEventAt: null,
+    };
+    const f = createService({
+      approvalRequest: {
+        findUnique: jest.fn().mockResolvedValue(request),
+        update: jest.fn().mockResolvedValue({ ...request, status: 'APPROVED' }),
+      },
+    });
+    (f.prisma as any).$transaction = jest.fn(async (callback) =>
+      callback(f.prisma),
+    );
+    await f.service.handleInstanceEvent({
+      instance_code: 'fund-19',
+      approval_code: 'receipt-template',
+      status: 'APPROVED',
+    });
+    expect((f.prisma as any).$transaction).toHaveBeenCalled();
+    expect(f.fundLedger.applyApproval).toHaveBeenCalledWith(
+      f.prisma,
+      expect.objectContaining({
+        id: 19,
+        status: 'APPROVED',
+        sourceType: 'INTERNAL_FUND_RECEIPT',
+      }),
+    );
+    expect(f.cashFlowsService.createApprovalCashFlow).not.toHaveBeenCalled();
+  });
+
+  it('does not let a delayed pending callback overwrite approved status', async () => {
+    const request = {
+      id: 31,
+      status: 'PENDING',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      sourceId: null,
+      instanceCode: 'fund-31',
+      approvalCode: 'receipt-template',
+      lastEventAt: null,
+    };
+    const state = { ...request };
+    const f = createService({
+      approvalRequest: {
+        findUnique: jest.fn().mockResolvedValue(state),
+        update: jest.fn().mockImplementation(async ({ data }) => {
+          Object.assign(state, data);
+          return { ...state };
+        }),
+      },
+    });
+    (f.prisma as any).$transaction = jest.fn(async (callback) =>
+      callback(f.prisma),
+    );
+
+    await f.service.handleInstanceEvent({
+      instance_code: 'fund-31',
+      approval_code: 'receipt-template',
+      status: 'APPROVED',
+      instance_operate_time: '2026-10-06T03:01:00Z',
+    });
+    await f.service.handleInstanceEvent({
+      instance_code: 'fund-31',
+      approval_code: 'receipt-template',
+      status: 'PENDING',
+      instance_operate_time: '2026-10-06T03:00:00Z',
+    });
+
+    expect(state.status).toBe('APPROVED');
+    expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+  });
+
+  it('excludes internal-fund approvals from the legacy approval list', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const count = jest.fn().mockResolvedValue(0);
+    const f = createService({
+      approvalRequest: {
+        findMany,
+        count,
+      },
+    });
+
+    await f.service.findAll({ page: 1, limit: 30 } as any);
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          AND: [
+            {
+              OR: [
+                { sourceType: null },
+                {
+                  sourceType: {
+                    notIn: ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+  });
 
   it('creates a HN approval with the requester open_id and idempotency uuid', async () => {
     const { service, larkClient } = createService();
@@ -417,6 +535,9 @@ describe('ApprovalLifecycleService', () => {
     });
     prisma.approvalRequestEvent = {
       create: jest.fn().mockRejectedValue(duplicate),
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({ id: 1, processedAt: new Date() }),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     };
@@ -449,6 +570,7 @@ describe('ApprovalLifecycleService', () => {
     });
     prisma.approvalRequestEvent = {
       create: jest.fn().mockResolvedValue({ id: 1 }),
+      findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     };
@@ -504,9 +626,11 @@ describe('ApprovalLifecycleService', () => {
           status: 'PENDING',
           lastEventAt: null,
         }),
-        findMany: jest.fn().mockResolvedValue([
-          { id: 8, instanceCode: 'instance-8', status: 'PENDING' },
-        ]),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 8, instanceCode: 'instance-8', status: 'PENDING' },
+          ]),
       },
     });
     larkClient.approval.v4.instance.get.mockResolvedValue({
@@ -621,6 +745,7 @@ describe('ApprovalLifecycleService', () => {
     });
     prisma.approvalRequestEvent = {
       create: jest.fn().mockResolvedValue({ id: 1 }),
+      findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     };
@@ -670,7 +795,7 @@ describe('ApprovalLifecycleService', () => {
         (service as any).prisma,
         { get: jest.fn() } as any,
         {} as any,
-        cashFlowsService as any,
+        { applyApproval: jest.fn() } as any,
       );
 
       await expect(guardedService.postCashFlow(22, 7)).rejects.toBeInstanceOf(
@@ -725,7 +850,7 @@ describe('ApprovalLifecycleService', () => {
     }
   });
 
-  it('posts an approved expense through the atomic CashFlow service', async () => {
+  it('rejects posting an approved internal expense to CashFlow', async () => {
     const { service, prisma } = createService({
       approvalRequest: {
         findUnique: jest.fn().mockResolvedValue({
@@ -768,24 +893,16 @@ describe('ApprovalLifecycleService', () => {
         tokenManager: { getTenantAccessToken: jest.fn() },
         approval: { v4: { instance: {} } },
       } as any,
-      cashFlowsService as any,
+      { applyApproval: jest.fn() } as any,
     );
 
-    const result = await serviceWithCashFlow.postCashFlow(12, 7);
-
-    expect(cashFlowsService.createApprovalCashFlow).toHaveBeenCalledWith(
-      expect.objectContaining({
-        approvalRequestId: 12,
-        branchId: 6,
-        amount: 1500000,
-        isReceipt: false,
-      }),
-      7,
+    await expect(serviceWithCashFlow.postCashFlow(12, 7)).rejects.toThrow(
+      'không tạo CashFlow',
     );
-    expect((result as any).cashFlow?.id).toBe(44);
+    expect(cashFlowsService.createApprovalCashFlow).not.toHaveBeenCalled();
   });
 
-  it('maps an approved internal receipt transfer to two branch cashflows', async () => {
+  it('rejects posting an approved internal transfer to CashFlow', async () => {
     const transferService = {
       createApprovalTransferCashFlows: jest.fn().mockResolvedValue({
         cashFlows: [{ id: 51 }, { id: 52 }],
@@ -841,22 +958,15 @@ describe('ApprovalLifecycleService', () => {
       prisma as any,
       { get: jest.fn() } as any,
       {} as any,
-      transferService as any,
+      { applyApproval: jest.fn() } as any,
     );
 
-    const result = await service.postCashFlow(15, 7);
-
-    expect(transferService.createApprovalTransferCashFlows).toHaveBeenCalledWith(
-      expect.objectContaining({
-        approvalRequestId: 15,
-        sourceBranchId: 6,
-        destinationBranchId: 1,
-        amount: 500000,
-        method: 'transfer',
-      }),
-      7,
+    await expect(service.postCashFlow(15, 7)).rejects.toThrow(
+      'không tạo CashFlow',
     );
-    expect((result as any).cashFlows).toHaveLength(2);
+    expect(
+      transferService.createApprovalTransferCashFlows,
+    ).not.toHaveBeenCalled();
   });
 
   it('returns only approved temporary advances with remaining balance', async () => {
@@ -905,7 +1015,7 @@ describe('ApprovalLifecycleService', () => {
       prisma,
       { get: jest.fn().mockReturnValue('base-token') } as any,
       larkClient as any,
-      {} as any,
+      { applyApproval: jest.fn() } as any,
     );
 
     const result = await service.findTempAdvanceOptions();
@@ -934,6 +1044,7 @@ describe('ApprovalLifecycleService', () => {
     );
     prisma.approvalRequestEvent = {
       create: jest.fn().mockResolvedValue({ id: 1 }),
+      findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     };

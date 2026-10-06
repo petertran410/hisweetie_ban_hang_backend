@@ -43,6 +43,9 @@ export class CreateApprovalRequestDto {
   @Type(() => Number)
   sourceId?: number;
 
+  @IsOptional()
+  metadata?: unknown;
+
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => ApprovalFormItemDto)

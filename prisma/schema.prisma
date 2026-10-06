@@ -130,6 +130,12 @@ model User {
   internalFinanceReviews                                    InternalFinanceReview[]             @relation("InternalFinanceReviewUser")
   createdInternalFinanceBatches                             InternalFinanceWeeklyBatch[]        @relation("InternalFinanceBatchCreator")
   createdInternalFinanceAttachments                         InternalFinanceAttachment[]
+  createdInternalFundTransactions                           InternalFundTransaction[]           @relation("InternalFundTransactionCreator")
+  cancelledInternalFundTransactions                         InternalFundTransaction[]           @relation("InternalFundTransactionCanceller")
+  createdInternalFundTransfers                              InternalFundTransfer[]              @relation("InternalFundTransferCreator")
+  cancelledInternalFundTransfers                            InternalFundTransfer[]              @relation("InternalFundTransferCanceller")
+  createdInternalFundClosings                               InternalFundDailyClosing[]          @relation("InternalFundClosingCreator")
+  closedInternalFundClosings                                InternalFundDailyClosing[]          @relation("InternalFundClosingCloser")
 
   @@map("users")
 }
@@ -360,6 +366,10 @@ model Branch {
   productQualityDepartmentMembers ProductQualityDepartmentMember[]
   internalFinanceEntries    InternalFinanceEntry[]
   internalFinanceBatches    InternalFinanceWeeklyBatch[]
+  internalFundTransactions  InternalFundTransaction[]
+  internalFundSourceTransfers InternalFundTransfer[]       @relation("InternalFundTransferSourceBranch")
+  internalFundDestinationTransfers InternalFundTransfer[]  @relation("InternalFundTransferDestinationBranch")
+  internalFundDailyClosings  InternalFundDailyClosing[]
 
   @@index([updatedAt, id])
   @@map("branches")
@@ -2207,6 +2217,8 @@ model ApprovalRequest {
   cashFlow CashFlow?             @relation(fields: [cashFlowId], references: [id])
   events   ApprovalRequestEvent[]
   weeklyBatch InternalFinanceWeeklyBatch?
+  internalFundTransactions InternalFundTransaction[]
+  internalFundTransfers InternalFundTransfer[]
 
   @@index([kind, status])
   @@index([status, lastEventAt])
@@ -2297,6 +2309,7 @@ model InternalFinanceEntry {
   attachments         InternalFinanceAttachment[]
   invoiceLinks        InternalFinanceInvoiceLink[]
   reviews             InternalFinanceReview[]
+  fundTransaction     InternalFundTransaction?
 
   @@index([branchId, occurredAt])
   @@index([direction, category, status])
@@ -2382,6 +2395,106 @@ model InternalFinanceWeeklyBatch {
   @@unique([branchId, weekStart, weekEnd])
   @@index([status, weekStart])
   @@map("internal_finance_weekly_batches")
+}
+
+model InternalFundTransaction {
+  id                 Int       @id @default(autoincrement())
+  code               String    @unique
+  branchId           Int
+  transactionType    String    @db.VarChar(32)
+  amount             Decimal   @db.Decimal(18, 2)
+  occurredAt         DateTime  @default(now())
+  description        String?
+  sourceType         String    @db.VarChar(64)
+  sourceId           String?   @db.VarChar(128)
+  sourceKey          String    @unique @db.VarChar(255)
+  approvalRequestId  Int?
+  transferId         Int?
+  entryId            Int?      @unique
+  status             String    @default("POSTED") @db.VarChar(24)
+  cancelledAt        DateTime?
+  cancelledBy        Int?
+  cancelReason       String?
+  createdBy          Int
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  branch             Branch                  @relation(fields: [branchId], references: [id])
+  approvalRequest    ApprovalRequest?        @relation(fields: [approvalRequestId], references: [id])
+  transfer           InternalFundTransfer?   @relation(fields: [transferId], references: [id])
+  entry              InternalFinanceEntry?   @relation(fields: [entryId], references: [id])
+  creator            User                    @relation("InternalFundTransactionCreator", fields: [createdBy], references: [id])
+  canceller          User?                   @relation("InternalFundTransactionCanceller", fields: [cancelledBy], references: [id])
+
+  @@index([branchId, occurredAt])
+  @@index([branchId, status])
+  @@index([transactionType, occurredAt])
+  @@index([approvalRequestId])
+  @@index([transferId])
+  @@map("internal_fund_transactions")
+}
+
+model InternalFundTransfer {
+  id                  Int       @id @default(autoincrement())
+  code                String    @unique
+  clientUuid          String    @unique @db.VarChar(64)
+  sourceBranchId      Int
+  destinationBranchId Int
+  amount              Decimal   @db.Decimal(18, 2)
+  occurredAt          DateTime  @default(now())
+  description         String?
+  approvalRequestId   Int?      @unique
+  status              String    @default("PENDING") @db.VarChar(24)
+  cancelledAt         DateTime?
+  cancelledBy         Int?
+  cancelReason        String?
+  createdBy           Int
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  sourceBranch        Branch                  @relation("InternalFundTransferSourceBranch", fields: [sourceBranchId], references: [id])
+  destinationBranch   Branch                  @relation("InternalFundTransferDestinationBranch", fields: [destinationBranchId], references: [id])
+  approvalRequest     ApprovalRequest?        @relation(fields: [approvalRequestId], references: [id])
+  transactions        InternalFundTransaction[]
+  creator             User                    @relation("InternalFundTransferCreator", fields: [createdBy], references: [id])
+  canceller           User?                   @relation("InternalFundTransferCanceller", fields: [cancelledBy], references: [id])
+
+  @@index([sourceBranchId, occurredAt])
+  @@index([destinationBranchId, occurredAt])
+  @@index([status, occurredAt])
+  @@map("internal_fund_transfers")
+}
+
+model InternalFundDailyClosing {
+  id                    Int       @id @default(autoincrement())
+  branchId              Int
+  closingDate           DateTime  @db.Date
+  systemOpeningBalance  Decimal   @db.Decimal(18, 2)
+  systemReceipt         Decimal   @db.Decimal(18, 2)
+  systemExpense         Decimal   @db.Decimal(18, 2)
+  systemClosingBalance  Decimal   @db.Decimal(18, 2)
+  actualOpeningBalance  Decimal?
+  actualReceipt         Decimal?
+  actualExpense         Decimal?
+  actualClosingBalance  Decimal?
+  reconciliationStatus  String    @default("PENDING") @db.VarChar(24)
+  notes                 String?
+  snapshot              Json?
+  log                   Json?
+  createdBy             Int
+  closedBy              Int?
+  closedAt              DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  branch                Branch    @relation(fields: [branchId], references: [id])
+  creator               User      @relation("InternalFundClosingCreator", fields: [createdBy], references: [id])
+  closer                User?     @relation("InternalFundClosingCloser", fields: [closedBy], references: [id])
+
+  @@unique([branchId, closingDate])
+  @@index([branchId, closingDate])
+  @@index([reconciliationStatus, closingDate])
+  @@map("internal_fund_daily_closings")
 }
 
 model Destruction {

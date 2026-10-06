@@ -50,6 +50,11 @@ import {
 } from './dto';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
+import { InternalFundService } from '../internal-fund/internal-fund.service';
+import {
+  fundDateKey,
+  fundDayStart,
+} from '../internal-fund/internal-fund-ledger.service';
 
 type DbClient = PrismaService | any;
 
@@ -83,6 +88,7 @@ export class InternalFinanceService {
     private readonly config: ConfigService,
     private readonly codeService: InternalFinanceCodeService,
     private readonly authService: AuthService,
+    private readonly internalFund: InternalFundService,
   ) {}
 
   async findAll(query: InternalFinanceQueryDto) {
@@ -178,9 +184,7 @@ export class InternalFinanceService {
     const invoiceIds = [...new Set(dto.invoiceIds || [])];
     await this.validateBranch(dto.branchId);
     if (dto.method === 'cash' && !dto.cashSource?.trim()) {
-      throw new BadRequestException(
-        'Phiếu thu tiền mặt phải có nguồn tiền',
-      );
+      throw new BadRequestException('Phiếu thu tiền mặt phải có nguồn tiền');
     }
     let resolvedCustomerId = dto.customerId;
     if (invoiceIds.length > 0) {
@@ -191,7 +195,9 @@ export class InternalFinanceService {
       if (invoices.length !== invoiceIds.length) {
         throw new BadRequestException('Có hóa đơn không tồn tại');
       }
-      const customerIds = new Set(invoices.map((invoice) => invoice.customerId));
+      const customerIds = new Set(
+        invoices.map((invoice) => invoice.customerId),
+      );
       if (customerIds.size > 1) {
         throw new BadRequestException(
           'Các hóa đơn phải thuộc cùng một khách hàng',
@@ -305,7 +311,8 @@ export class InternalFinanceService {
     }
     if (query.fromDate || query.toDate) {
       const occurredAt: Record<string, Date> = {};
-      if (query.fromDate) occurredAt.gte = this.startOfDateString(query.fromDate);
+      if (query.fromDate)
+        occurredAt.gte = this.startOfDateString(query.fromDate);
       if (query.toDate) occurredAt.lt = this.nextDateStart(query.toDate);
       conditions.push({ occurredAt });
     }
@@ -320,7 +327,9 @@ export class InternalFinanceService {
           { packingSlip: { code: { contains: search, mode: 'insensitive' } } },
           {
             invoiceLinks: {
-              some: { invoice: { code: { contains: search, mode: 'insensitive' } } },
+              some: {
+                invoice: { code: { contains: search, mode: 'insensitive' } },
+              },
             },
           },
         ],
@@ -404,6 +413,12 @@ export class InternalFinanceService {
       { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE },
       { branchId: { in: branchIds } },
       { category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] } },
+      {
+        NOT: {
+          branchId: { in: [4, 7] },
+          category: { in: ['DELIVERY_FEE', 'FUEL', 'VEHICLE_CARE'] },
+        },
+      },
     ];
     if (query.category) conditions.push({ category: query.category });
     if (query.status) conditions.push({ status: query.status });
@@ -451,10 +466,7 @@ export class InternalFinanceService {
     return { data, total, page, limit };
   }
 
-  async createWarehouseExpense(
-    dto: CreateWarehouseExpenseDto,
-    user: any,
-  ) {
+  async createWarehouseExpense(dto: CreateWarehouseExpenseDto, user: any) {
     await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
     return this.createManualExpense(
       {
@@ -465,7 +477,7 @@ export class InternalFinanceService {
         description: dto.description.trim(),
         attachments: dto.attachments,
       },
-      user.id,
+      user,
     );
   }
 
@@ -474,45 +486,54 @@ export class InternalFinanceService {
     dto: UpdateWarehouseExpenseDto,
     user: any,
   ) {
-    const entry = await this.prisma.internalFinanceEntry.findUnique({
+    const branchHint = await this.prisma.internalFinanceEntry.findUnique({
       where: { id },
-      include: { weeklyBatch: true },
+      select: { branchId: true },
     });
-    if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
-      throw new NotFoundException('Không tìm thấy khoản chi');
-    }
-    await this.assertWarehouseExpensePermission(user, entry.branchId, 'update');
-    if (entry.sourceType !== 'MANUAL_EXPENSE') {
-      throw new BadRequestException(
-        'Khoản chi từ báo đơn, xăng dầu hoặc chăm sóc xe phải sửa tại nguồn phát sinh',
-      );
-    }
-    if (
-      entry.cashFlowId ||
-      entry.cashIssued ||
-      entry.weeklyBatchId ||
-      [
-        INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
-        INTERNAL_FINANCE_STATUS.APPROVED,
-        INTERNAL_FINANCE_STATUS.POSTED,
-        INTERNAL_FINANCE_STATUS.REJECTED,
-        INTERNAL_FINANCE_STATUS.CANCELLED,
-      ].includes(entry.status as any)
-    ) {
-      throw new BadRequestException(
-        'Khoản chi đã được tổng hợp hoặc kết thúc, không thể sửa',
-      );
-    }
-    return this.prisma.$transaction(async (tx) =>
-      tx.internalFinanceEntry.update({
+    if (!branchHint) throw new NotFoundException('Không tìm thấy khoản chi');
+    await this.assertWarehouseExpensePermission(
+      user,
+      branchHint.branchId,
+      'update',
+    );
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [branchHint.branchId]);
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id },
+        include: { weeklyBatch: true },
+      });
+      if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+        throw new NotFoundException('Không tìm thấy khoản chi');
+      }
+      if (entry.sourceType !== 'MANUAL_EXPENSE') {
+        throw new BadRequestException(
+          'Khoản chi từ báo đơn, xăng dầu hoặc chăm sóc xe phải sửa tại nguồn phát sinh',
+        );
+      }
+      if (
+        entry.cashFlowId ||
+        entry.cashIssued ||
+        entry.weeklyBatchId ||
+        [
+          INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
+          INTERNAL_FINANCE_STATUS.APPROVED,
+          INTERNAL_FINANCE_STATUS.POSTED,
+          INTERNAL_FINANCE_STATUS.REJECTED,
+          INTERNAL_FINANCE_STATUS.CANCELLED,
+        ].includes(entry.status as any)
+      ) {
+        throw new BadRequestException(
+          'Khoản chi đã được tổng hợp hoặc kết thúc, không thể sửa',
+        );
+      }
+      return tx.internalFinanceEntry.update({
         where: { id },
         data: {
           amount: dto.amount,
           occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
           description:
-            dto.description !== undefined
-              ? dto.description.trim()
-              : undefined,
+            dto.description !== undefined ? dto.description.trim() : undefined,
           evidenceStatus: dto.attachments
             ? dto.attachments.length
               ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
@@ -539,8 +560,8 @@ export class InternalFinanceService {
             : {}),
         },
         include: this.warehouseExpenseInclude(),
-      }),
-    );
+      });
+    });
   }
 
   async createWarehouseReceipt(dto: CreateWarehouseReceiptDto, userId: number) {
@@ -577,7 +598,8 @@ export class InternalFinanceService {
             receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
             manual: true,
           }),
-          description: dto.description?.trim() || (sale ? 'Bán đồ kho' : 'Thu tiền mặt'),
+          description:
+            dto.description?.trim() || (sale ? 'Bán đồ kho' : 'Thu tiền mặt'),
           evidenceStatus: dto.attachments?.length
             ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
             : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
@@ -599,7 +621,9 @@ export class InternalFinanceService {
             : undefined,
           invoiceLinks: customers.invoiceIds.length
             ? {
-                create: customers.invoiceIds.map((invoiceId) => ({ invoiceId })),
+                create: customers.invoiceIds.map((invoiceId) => ({
+                  invoiceId,
+                })),
               }
             : undefined,
         },
@@ -767,7 +791,9 @@ export class InternalFinanceService {
     if (entry.status === INTERNAL_FINANCE_STATUS.POSTING) {
       const updatedAt = new Date(entry.updatedAt || 0).getTime();
       if (Date.now() - updatedAt < 20000) {
-        throw new ConflictException('Phiếu thu đang được lập, vui lòng tải lại');
+        throw new ConflictException(
+          'Phiếu thu đang được lập, vui lòng tải lại',
+        );
       }
     } else {
       const claimed = await this.prisma.internalFinanceEntry.updateMany({
@@ -907,7 +933,9 @@ export class InternalFinanceService {
       entry.status === INTERNAL_FINANCE_STATUS.REJECTED ||
       entry.status === INTERNAL_FINANCE_STATUS.POSTING
     ) {
-      throw new BadRequestException('Không thể hủy phiếu ở trạng thái hiện tại');
+      throw new BadRequestException(
+        'Không thể hủy phiếu ở trạng thái hiện tại',
+      );
     }
 
     const snapshot = this.snapshotOf(entry);
@@ -944,7 +972,8 @@ export class InternalFinanceService {
     return updated;
   }
 
-  async createManualExpense(dto: CreateManualExpenseDto, userId: number) {
+  async createManualExpense(dto: CreateManualExpenseDto, user: any) {
+    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
     await this.validateBranch(dto.branchId);
     return this.createManualEntry({
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
@@ -960,11 +989,13 @@ export class InternalFinanceService {
       description: dto.description,
       sourceSnapshot: dto.sourceSnapshot,
       attachments: dto.attachments,
-      userId,
+      userId: user.id,
     });
   }
 
-  async createFuel(dto: CreateFuelEntryDto, userId: number) {
+  async createFuel(dto: CreateFuelEntryDto, user: any) {
+    this.assertWarehouseBranch(dto.branchId);
+    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
     await this.validateBranch(dto.branchId);
     return this.createManualEntry({
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
@@ -991,11 +1022,13 @@ export class InternalFinanceService {
       vehicleLocation: dto.location,
       vehicleAnomalyStatus: dto.anomalyNote,
       attachments: dto.attachments,
-      userId,
+      userId: user.id,
     });
   }
 
-  async createVehicleCare(dto: CreateVehicleCareEntryDto, userId: number) {
+  async createVehicleCare(dto: CreateVehicleCareEntryDto, user: any) {
+    this.assertWarehouseBranch(dto.branchId);
+    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
     await this.validateBranch(dto.branchId);
     return this.createManualEntry({
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
@@ -1020,7 +1053,7 @@ export class InternalFinanceService {
       vehicleLocation: dto.location,
       vehicleAnomalyStatus: dto.anomalyNote,
       attachments: dto.attachments,
-      userId,
+      userId: user.id,
     });
   }
 
@@ -1034,6 +1067,15 @@ export class InternalFinanceService {
       where: { id },
     });
     if (!entry) throw new NotFoundException('Không tìm thấy dòng tài chính');
+    if (entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+      await this.assertWarehouseExpensePermissionByUserId(
+        userId,
+        entry.branchId,
+        'update',
+      );
+    } else {
+      await this.assertCashFlowPermission(userId, entry.branchId, 'update');
+    }
 
     if (role === 'accountant') {
       if (entry.status !== INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT) {
@@ -1066,6 +1108,15 @@ export class InternalFinanceService {
       where: { id },
     });
     if (!entry) throw new NotFoundException('Không tìm thấy dòng tài chính');
+    if (entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+      await this.assertWarehouseExpensePermissionByUserId(
+        userId,
+        entry.branchId,
+        'update',
+      );
+    } else {
+      await this.assertCashFlowPermission(userId, entry.branchId, 'update');
+    }
     if (
       [
         INTERNAL_FINANCE_STATUS.POSTED,
@@ -1158,7 +1209,10 @@ export class InternalFinanceService {
     } else if (query.weeklyApprovalStatus === 'APPROVED') {
       conditions.push({
         status: {
-          in: [INTERNAL_FINANCE_STATUS.APPROVED, INTERNAL_FINANCE_STATUS.POSTED],
+          in: [
+            INTERNAL_FINANCE_STATUS.APPROVED,
+            INTERNAL_FINANCE_STATUS.POSTED,
+          ],
         },
       });
     } else if (query.weeklyApprovalStatus === 'NOT_REQUIRED') {
@@ -1283,10 +1337,7 @@ export class InternalFinanceService {
     return batch;
   }
 
-  async prepareWeeklyBatch(
-    dto: PrepareWeeklyBatchDto,
-    userId: number,
-  ) {
+  async prepareWeeklyBatch(dto: PrepareWeeklyBatchDto, userId: number) {
     return this.prepareWeeklyBatchInternal(dto, userId, {
       eligibleStatuses: [
         INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
@@ -1295,15 +1346,8 @@ export class InternalFinanceService {
     });
   }
 
-  async prepareWarehouseExpenseBatch(
-    dto: PrepareWeeklyBatchDto,
-    user: any,
-  ) {
-    await this.assertWarehouseExpensePermission(
-      user,
-      dto.branchId,
-      'prepare',
-    );
+  async prepareWarehouseExpenseBatch(dto: PrepareWeeklyBatchDto, user: any) {
+    await this.assertWarehouseExpensePermission(user, dto.branchId, 'prepare');
     return this.prepareWeeklyBatchInternal(dto, user.id, {
       eligibleStatuses: [
         INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
@@ -1313,7 +1357,9 @@ export class InternalFinanceService {
         INTERNAL_FINANCE_STATUS.APPROVED,
         INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
       ],
-      allowedCategories: [...WAREHOUSE_EXPENSE_CATEGORIES],
+      allowedCategories: [4, 7].includes(dto.branchId)
+        ? ['OTHER_EXPENSE']
+        : [...WAREHOUSE_EXPENSE_CATEGORIES],
     });
   }
 
@@ -1326,111 +1372,116 @@ export class InternalFinanceService {
     },
   ) {
     await this.validateBranch(dto.branchId);
-    const weekStart = this.startOfDay(new Date(dto.weekStart));
-    const weekEnd = this.endOfDay(new Date(dto.weekEnd));
+    const weekStart = fundDayStart(dto.weekStart);
+    const weekEnd = new Date(
+      fundDayStart(dto.weekEnd).getTime() + 86400000 - 1,
+    );
     if (weekStart > weekEnd) {
       throw new BadRequestException('Tuần có ngày bắt đầu sau ngày kết thúc');
     }
 
-    const existing = await this.prisma.internalFinanceWeeklyBatch.findUnique({
-      where: {
-        branchId_weekStart_weekEnd: {
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [dto.branchId]);
+      const existing = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: {
+          branchId_weekStart_weekEnd: {
+            branchId: dto.branchId,
+            weekStart,
+            weekEnd,
+          },
+        },
+        include: {
+          entries: true,
+          branch: true,
+          approvalRequest: true,
+        },
+      });
+      if (
+        existing &&
+        ![
+          INTERNAL_FINANCE_WEEKLY_STATUS.DRAFT,
+          INTERNAL_FINANCE_WEEKLY_STATUS.READY,
+        ].includes(existing.status as any)
+      ) {
+        throw new BadRequestException(
+          'Batch tuần đã được gửi Approval hoặc đã ghi nhận, không thể chuẩn bị lại',
+        );
+      }
+
+      const entries = await tx.internalFinanceEntry.findMany({
+        where: {
+          branchId: dto.branchId,
+          direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+          occurredAt: { gte: weekStart, lte: weekEnd },
+          status: { in: options.eligibleStatuses },
+          ...(options.allowedCategories?.length
+            ? { category: { in: options.allowedCategories } }
+            : {}),
+          cashFlowId: null,
+          cashIssued: false,
+          OR: existing
+            ? [{ weeklyBatchId: null }, { weeklyBatchId: existing.id }]
+            : [{ weeklyBatchId: null }],
+        },
+        select: { id: true, amount: true },
+      });
+      if (entries.length === 0) {
+        if (existing) return existing;
+        throw new BadRequestException(
+          'Không có khoản chi đủ điều kiện để tổng hợp tuần',
+        );
+      }
+
+      const totalAmount = entries.reduce(
+        (sum, entry) => sum + Number(entry.amount),
+        0,
+      );
+      const calendarStart = new Date(`${fundDateKey(weekStart)}T00:00:00Z`);
+      const code = `TCNB-TUAN-${
+        INTERNAL_FINANCE_BRANCH_CODES[dto.branchId] || `B${dto.branchId}`
+      }-${calendarStart.getUTCFullYear()}-W${String(
+        this.isoWeek(calendarStart),
+      ).padStart(2, '0')}-${fundDateKey(weekStart)}-${fundDateKey(weekEnd)}`;
+
+      const batch = await tx.internalFinanceWeeklyBatch.upsert({
+        where: {
+          branchId_weekStart_weekEnd: {
+            branchId: dto.branchId,
+            weekStart,
+            weekEnd,
+          },
+        },
+        create: {
+          code,
           branchId: dto.branchId,
           weekStart,
           weekEnd,
+          totalAmount,
+          status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
+          preparedAt: new Date(),
+          createdBy: userId,
+          entries: {
+            connect: entries.map((entry) => ({ id: entry.id })),
+          },
         },
-      },
-      include: {
-        entries: true,
-        branch: true,
-        approvalRequest: true,
-      },
-    });
-    if (
-      existing &&
-      ![
-        INTERNAL_FINANCE_WEEKLY_STATUS.DRAFT,
-        INTERNAL_FINANCE_WEEKLY_STATUS.READY,
-      ].includes(existing.status as any)
-    ) {
-      throw new BadRequestException(
-        'Batch tuần đã được gửi Approval hoặc đã ghi nhận, không thể chuẩn bị lại',
-      );
-    }
-
-    const entries = await this.prisma.internalFinanceEntry.findMany({
-      where: {
-        branchId: dto.branchId,
-        direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
-        occurredAt: { gte: weekStart, lte: weekEnd },
-        status: { in: options.eligibleStatuses },
-        ...(options.allowedCategories?.length
-          ? { category: { in: options.allowedCategories } }
-          : {}),
-        cashFlowId: null,
-        cashIssued: false,
-        OR: existing
-          ? [{ weeklyBatchId: null }, { weeklyBatchId: existing.id }]
-          : [{ weeklyBatchId: null }],
-      },
-      select: { id: true, amount: true },
-    });
-    if (entries.length === 0) {
-      if (existing) return existing;
-      throw new BadRequestException(
-        'Không có khoản chi đủ điều kiện để tổng hợp tuần',
-      );
-    }
-
-    const totalAmount = entries.reduce(
-      (sum, entry) => sum + Number(entry.amount),
-      0,
-    );
-    const code = `TCNB-TUAN-${
-      INTERNAL_FINANCE_BRANCH_CODES[dto.branchId] || `B${dto.branchId}`
-    }-${weekStart.getUTCFullYear()}-W${String(this.isoWeek(weekStart)).padStart(
-      2,
-      '0',
-    )}`;
-
-    const batch = await this.prisma.internalFinanceWeeklyBatch.upsert({
-      where: {
-        branchId_weekStart_weekEnd: {
-          branchId: dto.branchId,
-          weekStart,
-          weekEnd,
+        update: {
+          totalAmount,
+          preparedAt: new Date(),
+          status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
+          entries: {
+            set: entries.map((entry) => ({ id: entry.id })),
+          },
         },
-      },
-      create: {
-        code,
-        branchId: dto.branchId,
-        weekStart,
-        weekEnd,
-        totalAmount,
-        status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
-        preparedAt: new Date(),
-        createdBy: userId,
-        entries: {
-          connect: entries.map((entry) => ({ id: entry.id })),
-        },
-      },
-      update: {
-        totalAmount,
-        preparedAt: new Date(),
-        status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
-        entries: {
-          connect: entries.map((entry) => ({ id: entry.id })),
-        },
-      },
-      include: { entries: true, branch: true },
-    });
+        include: { entries: true, branch: true },
+      });
 
-    await this.prisma.internalFinanceEntry.updateMany({
-      where: { id: { in: entries.map((entry) => entry.id) } },
-      data: { status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL },
-    });
+      await tx.internalFinanceEntry.updateMany({
+        where: { id: { in: entries.map((entry) => entry.id) } },
+        data: { status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL },
+      });
 
-    return batch;
+      return batch;
+    });
   }
 
   async createWeeklyApproval(
@@ -1457,9 +1508,9 @@ export class InternalFinanceService {
         : batch.branchId === 1
           ? 'EXPENSE_SG'
           : 'EXPENSE_VP';
-    const from = this.dateOnly(batch.weekStart);
-    const to = this.dateOnly(batch.weekEnd);
-    const week = String(this.isoWeek(batch.weekStart));
+    const from = fundDateKey(batch.weekStart);
+    const to = fundDateKey(batch.weekEnd);
+    const week = String(this.isoWeek(new Date(`${from}T00:00:00Z`)));
     const ids =
       kind === 'EXPENSE_HN'
         ? EXPENSE_FIELD_IDS.HN
@@ -1498,39 +1549,71 @@ export class InternalFinanceService {
           type: 'radioV2',
           value:
             batch.branchId === 7
-              ? 'ml657iu1-n0lwb9zjbi-0'
+              ? 'ml657iu1-n0lwb0zjbi-0'
               : 'ml657iu1-7mvb2xfgje6-0',
         },
       );
     }
 
-    const request = await this.approvalLifecycle.create(
-      {
-        kind,
-        branchId: batch.branchId,
-        clientUuid: `INTERNAL_FINANCE_WEEK:${batch.branchId}:${this.dateKey(batch.weekStart)}`,
-        sourceType: 'INTERNAL_FINANCE_WEEKLY',
-        sourceId: batch.id,
-        form,
-      },
-      userId,
-    );
+    await this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [batch.branchId]);
+      const claimed = await tx.internalFinanceWeeklyBatch.updateMany({
+        where: {
+          id: batch.id,
+          status: 'READY',
+          approvalRequestId: null,
+          updatedAt: batch.updatedAt,
+        },
+        data: { status: 'IN_APPROVAL' },
+      });
+      if (claimed.count !== 1)
+        throw new ConflictException('Batch đã thay đổi hoặc đang gửi Approval');
+      await tx.internalFinanceEntry.updateMany({
+        where: { weeklyBatchId: batch.id, status: 'READY_FOR_WEEKLY_APPROVAL' },
+        data: { status: 'IN_WEEKLY_APPROVAL' },
+      });
+    });
 
-    await this.prisma.$transaction([
-      this.prisma.internalFinanceWeeklyBatch.update({
+    try {
+      const request = await this.approvalLifecycle.create(
+        {
+          kind,
+          branchId: batch.branchId,
+          clientUuid: `INTERNAL_FINANCE_WEEK:${batch.branchId}:${from}:${to}`,
+          sourceType: 'INTERNAL_FINANCE_WEEKLY',
+          sourceId: batch.id,
+          form,
+        },
+        userId,
+      );
+
+      await this.prisma.internalFinanceWeeklyBatch.update({
         where: { id: batch.id },
         data: {
           approvalRequestId: request.id,
-          status: INTERNAL_FINANCE_WEEKLY_STATUS.IN_APPROVAL,
         },
-      }),
-      this.prisma.internalFinanceEntry.updateMany({
-        where: { weeklyBatchId: batch.id },
-        data: { status: INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL },
-      }),
-    ]);
+      });
 
-    return request;
+      return request;
+    } catch (error) {
+      await this.prisma.$transaction(async (tx) => {
+        await this.internalFund.lockBranch(tx, [batch.branchId]);
+        const reset = await tx.internalFinanceWeeklyBatch.updateMany({
+          where: {
+            id: batch.id,
+            status: 'IN_APPROVAL',
+            approvalRequestId: null,
+          },
+          data: { status: 'READY' },
+        });
+        if (reset.count === 1)
+          await tx.internalFinanceEntry.updateMany({
+            where: { weeklyBatchId: batch.id, status: 'IN_WEEKLY_APPROVAL' },
+            data: { status: 'READY_FOR_WEEKLY_APPROVAL' },
+          });
+      });
+      throw error;
+    }
   }
 
   async createWarehouseExpenseApproval(
@@ -1548,10 +1631,7 @@ export class InternalFinanceService {
     return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
   }
 
-  async listWarehouseExpenseBatches(
-    query: InternalFinanceQueryDto,
-    user: any,
-  ) {
+  async listWarehouseExpenseBatches(query: InternalFinanceQueryDto, user: any) {
     const allowedBranches = await this.allowedWarehouseExpenseBranches(
       user,
       'view',
@@ -1602,68 +1682,7 @@ export class InternalFinanceService {
   }
 
   async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const entry = await tx.internalFinanceEntry.findUnique({
-        where: { id: entryId },
-        include: { weeklyBatch: true },
-      });
-      if (!entry) throw new NotFoundException('Không tìm thấy dòng tài chính');
-      if (entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
-        throw new BadRequestException('Chỉ khoản chi mới có trạng thái Đã chi');
-      }
-      if (!cashIssued) {
-        if (entry.cashFlowId) {
-          throw new BadRequestException(
-            'Khoản chi đã ghi sổ quỹ và không thể bỏ trạng thái Đã chi',
-          );
-        }
-        return tx.internalFinanceEntry.update({
-          where: { id: entryId },
-          data: {
-            cashIssued: false,
-            cashIssuedAt: null,
-            cashIssuedBy: null,
-          },
-          include: this.entryInclude(),
-        });
-      }
-      if (entry.cashFlowId) {
-        return tx.internalFinanceEntry.findUnique({
-          where: { id: entryId },
-          include: this.entryInclude(),
-        });
-      }
-      if (entry.status !== INTERNAL_FINANCE_STATUS.APPROVED) {
-        throw new BadRequestException(
-          'Chỉ khoản chi đã được Approval tuần duyệt mới được đánh dấu Đã chi',
-        );
-      }
-      if (
-        !entry.weeklyBatch ||
-        entry.weeklyBatch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.APPROVED
-      ) {
-        throw new BadRequestException('Batch tuần chưa được Approval duyệt');
-      }
-
-      await this.cashFlowsService.createInternalFinanceCashFlowInTransaction(
-        tx,
-        {
-          entryId: entry.id,
-          branchId: entry.branchId,
-          amount: Number(entry.amount),
-          transDate: entry.occurredAt.toISOString(),
-          description: entry.description || entry.code,
-          method: 'cash',
-          isReceipt: false,
-          markCashIssued: true,
-        },
-        userId,
-      );
-      return tx.internalFinanceEntry.findUnique({
-        where: { id: entryId },
-        include: this.entryInclude(),
-      });
-    });
+    return this.internalFund.postExpenseEntry(entryId, userId, cashIssued);
   }
 
   async normalizeLegacyCodes() {
@@ -1718,28 +1737,9 @@ export class InternalFinanceService {
         'Khoản chi phải được ghi nhận theo batch Approval tuần',
       );
     }
-    const snapshot =
-      entry.sourceSnapshot &&
-      typeof entry.sourceSnapshot === 'object' &&
-      !Array.isArray(entry.sourceSnapshot)
-        ? (entry.sourceSnapshot as Record<string, unknown>)
-        : {};
-    const receiptMethod =
-      snapshot.method === 'transfer' ? 'transfer' : 'cash';
-    return this.cashFlowsService.createInternalFinanceCashFlow(
-      {
-        entryId: entry.id,
-        branchId: entry.branchId,
-        amount: Number(entry.amount),
-        transDate: entry.occurredAt.toISOString(),
-        description: entry.description || entry.code,
-        method:
-          entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT
-            ? receiptMethod
-            : 'cash',
-        isReceipt: entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT,
-      },
-      userId,
+    void userId;
+    throw new BadRequestException(
+      'Phiếu thu nội bộ dùng Approval tại Quỹ nội bộ; thu khách dùng Tiền mặt kho',
     );
   }
 
@@ -1821,49 +1821,82 @@ export class InternalFinanceService {
     });
   }
 
-  private async reviewAsAccountant(entry: any, dto: ReviewInternalFinanceDto, userId: number) {
+  private async reviewAsAccountant(
+    entry: any,
+    dto: ReviewInternalFinanceDto,
+    userId: number,
+  ) {
     if (dto.decision === INTERNAL_FINANCE_REVIEW_DECISION.MARK_MISSING) {
       if (!dto.reason) {
-        throw new BadRequestException(
-          'Ghi nhận thiếu chứng từ phải có lý do',
-        );
+        throw new BadRequestException('Ghi nhận thiếu chứng từ phải có lý do');
       }
-      return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT, dto, {
-        evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
-        status:
-          entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE
-            ? INTERNAL_FINANCE_STATUS.PENDING_MANAGER
-            : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
-      });
+      return this.applyReview(
+        entry,
+        userId,
+        INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+        dto,
+        {
+          evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
+          status:
+            entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE
+              ? INTERNAL_FINANCE_STATUS.PENDING_MANAGER
+              : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        },
+      );
     }
     if (dto.decision === INTERNAL_FINANCE_REVIEW_DECISION.REJECT) {
-      return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT, dto, {
-        status: INTERNAL_FINANCE_STATUS.REJECTED,
-      });
+      return this.applyReview(
+        entry,
+        userId,
+        INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+        dto,
+        {
+          status: INTERNAL_FINANCE_STATUS.REJECTED,
+        },
+      );
     }
     if (dto.decision !== INTERNAL_FINANCE_REVIEW_DECISION.APPROVE) {
       throw new BadRequestException('Kế toán chỉ được xác nhận hoặc từ chối');
     }
-    if (entry.requiresEvidence && entry.evidenceStatus === INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING) {
+    if (
+      entry.requiresEvidence &&
+      entry.evidenceStatus === INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
+    ) {
       throw new BadRequestException('Khoản chi đang thiếu chứng từ');
     }
-    return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT, dto, {
-      status:
-        entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT
-          ? INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED
-          : INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
-      evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
-    });
+    return this.applyReview(
+      entry,
+      userId,
+      INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+      dto,
+      {
+        status:
+          entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT
+            ? INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED
+            : INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+        evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
+      },
+    );
   }
 
-  private async reviewAsManager(entry: any, dto: ReviewInternalFinanceDto, userId: number) {
+  private async reviewAsManager(
+    entry: any,
+    dto: ReviewInternalFinanceDto,
+    userId: number,
+  ) {
     if (!entry.accountantReviewedBy) {
       throw new BadRequestException('Khoản này chưa được kế toán kiểm tra');
     }
     if (dto.decision === INTERNAL_FINANCE_REVIEW_DECISION.REJECT) {
-      return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.MANAGER, dto, {
-        status: INTERNAL_FINANCE_STATUS.REJECTED,
-      });
+      return this.applyReview(
+        entry,
+        userId,
+        INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+        dto,
+        {
+          status: INTERNAL_FINANCE_STATUS.REJECTED,
+        },
+      );
     }
     if (dto.decision === INTERNAL_FINANCE_REVIEW_DECISION.EXCEPTION_APPROVE) {
       if (
@@ -1875,25 +1908,39 @@ export class InternalFinanceService {
           'Duyệt ngoại lệ phải có trạng thái thiếu chứng từ, lý do và hạn bổ sung',
         );
       }
-      return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.MANAGER, dto, {
-        status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
-        evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.EXCEPTION_APPROVED,
-        exceptionReason: dto.reason,
-        exceptionDueAt: dto.dueAt ? new Date(dto.dueAt) : null,
-      });
+      return this.applyReview(
+        entry,
+        userId,
+        INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+        dto,
+        {
+          status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+          evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.EXCEPTION_APPROVED,
+          exceptionReason: dto.reason,
+          exceptionDueAt: dto.dueAt ? new Date(dto.dueAt) : null,
+        },
+      );
     }
     if (dto.decision !== INTERNAL_FINANCE_REVIEW_DECISION.APPROVE) {
-      throw new BadRequestException('Quản lý chỉ được duyệt, duyệt ngoại lệ hoặc từ chối');
+      throw new BadRequestException(
+        'Quản lý chỉ được duyệt, duyệt ngoại lệ hoặc từ chối',
+      );
     }
     if (entry.evidenceStatus === INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING) {
       throw new BadRequestException(
         'Khoản chi thiếu chứng từ phải dùng Duyệt ngoại lệ',
       );
     }
-    return this.applyReview(entry, userId, INTERNAL_FINANCE_REVIEW_ROLE.MANAGER, dto, {
-      status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
-      evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
-    });
+    return this.applyReview(
+      entry,
+      userId,
+      INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+      dto,
+      {
+        status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+        evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
+      },
+    );
   }
 
   private async applyReview(
@@ -1931,7 +1978,9 @@ export class InternalFinanceService {
   }
 
   private async validateBranch(branchId: number) {
-    if (!(INTERNAL_FINANCE_BRANCH_IDS as readonly number[]).includes(branchId)) {
+    if (
+      !(INTERNAL_FINANCE_BRANCH_IDS as readonly number[]).includes(branchId)
+    ) {
       throw new BadRequestException(
         `Chi nhánh ${branchId} không thuộc phạm vi tài chính nội bộ`,
       );
@@ -1959,6 +2008,7 @@ export class InternalFinanceService {
     ) {
       return;
     }
+    await this.internalFund.lockBranch(db, [Number(packingSlip.branchId)]);
     const files = packingSlip.expenseFiles || [];
     const images = packingSlip.images || [];
     const attachmentData = [
@@ -1981,9 +2031,8 @@ export class InternalFinanceService {
       .map((row: any) => row.invoice?.orderId)
       .filter(Boolean);
     const customerId =
-      (packingSlip.invoices || []).find(
-        (row: any) => row.invoice?.customerId,
-      )?.invoice?.customerId ??
+      (packingSlip.invoices || []).find((row: any) => row.invoice?.customerId)
+        ?.invoice?.customerId ??
       (packingSlip.invoices || []).find(
         (row: any) => row.consignment?.customerId,
       )?.consignment?.customerId ??
@@ -1997,6 +2046,7 @@ export class InternalFinanceService {
     ] as const;
 
     for (const [category, enabled, rawAmount] of expenseItems) {
+      if (![1, 6].includes(Number(packingSlip.branchId))) continue;
       const amount = Number(rawAmount || 0);
       if (!enabled || amount <= 0) continue;
       const sourceKey = `PACKING_SLIP:${packingSlip.id}:${category}`;
@@ -2072,6 +2122,11 @@ export class InternalFinanceService {
     await db.internalFinanceEntry.updateMany({
       where: {
         packingSlipId: packingSlip.id,
+        cashIssued: false,
+        OR: [
+          { direction: 'RECEIPT' },
+          { direction: 'EXPENSE', weeklyBatchId: null },
+        ],
         sourceKey: { notIn: activeKeys.length ? activeKeys : ['__none__'] },
         status: {
           in: [
@@ -2121,18 +2176,21 @@ export class InternalFinanceService {
     const evidenceStatus = data.attachments.length
       ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
       : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING;
-    const direction =
-      data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
+    const direction = data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
     const requiresEvidence = direction === INTERNAL_FINANCE_DIRECTION.EXPENSE;
     if (existing) {
-      if (existing.cashFlowId || existing.cashIssued) return existing;
+      if (
+        existing.cashFlowId ||
+        existing.cashIssued ||
+        (direction === INTERNAL_FINANCE_DIRECTION.EXPENSE &&
+          existing.weeklyBatchId)
+      )
+        return existing;
       const editableStatuses = [
         INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
         INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
         INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
-        ...(data.reopenIfCancelled
-          ? [INTERNAL_FINANCE_STATUS.CANCELLED]
-          : []),
+        ...(data.reopenIfCancelled ? [INTERNAL_FINANCE_STATUS.CANCELLED] : []),
       ];
       if (!editableStatuses.includes(existing.status)) return existing;
       const previousSnapshot = this.snapshotOf(existing);
@@ -2255,11 +2313,16 @@ export class InternalFinanceService {
 
   private assertWarehouseBranch(branchId: number) {
     if (!(WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(branchId)) {
-      throw new BadRequestException('Phiếu thu tiền mặt chỉ dùng cho Kho Hà Nội và Kho Sài Gòn');
+      throw new BadRequestException(
+        'Phiếu thu tiền mặt chỉ dùng cho Kho Hà Nội và Kho Sài Gòn',
+      );
     }
   }
 
-  private isAutoWarehouseReceipt(entry: { sourceType?: string | null; sourceKey?: string | null }) {
+  private isAutoWarehouseReceipt(entry: {
+    sourceType?: string | null;
+    sourceKey?: string | null;
+  }) {
     return (
       entry.sourceType === 'PACKING_SLIP' ||
       String(entry.sourceKey || '').startsWith('PACKING_SLIP:')
@@ -2277,7 +2340,9 @@ export class InternalFinanceService {
   private isWarehouseReceipt(entry: any) {
     return (
       entry?.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT &&
-      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(entry.branchId) &&
+      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(
+        entry.branchId,
+      ) &&
       ['PACKING_SLIP', 'MANUAL_RECEIPT'].includes(entry.sourceType) &&
       [
         INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT,
@@ -2365,10 +2430,15 @@ export class InternalFinanceService {
       allocationIds.length !== customerIds.length ||
       allocationIds.some((id) => !customerIds.includes(id))
     ) {
-      throw new BadRequestException('Phân bổ phải đúng các khách hàng của phiếu thu');
+      throw new BadRequestException(
+        'Phân bổ phải đúng các khách hàng của phiếu thu',
+      );
     }
     const cents = (value: number) => Math.round(Number(value) * 100);
-    const total = allocations.reduce((sum, item) => sum + Number(item.amount), 0);
+    const total = allocations.reduce(
+      (sum, item) => sum + Number(item.amount),
+      0,
+    );
     if (cents(total) !== cents(Number(entry.amount))) {
       throw new BadRequestException(
         `Tổng phân bổ (${total}) phải bằng số tiền mặt (${Number(entry.amount)})`,
@@ -2393,14 +2463,18 @@ export class InternalFinanceService {
           select: { id: true, code: true, customerId: true, debtAmount: true },
         })
       : [];
-    const invoiceById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
+    const invoiceById = new Map(
+      invoices.map((invoice) => [invoice.id, invoice]),
+    );
     for (const allocation of allocations) {
       let invoiceTotal = 0;
       for (const item of allocation.invoices || []) {
         if (!(Number(item.amount) > 0)) continue;
         const invoice = invoiceById.get(item.invoiceId);
         if (!invoice) {
-          throw new BadRequestException('Hóa đơn không còn nợ hoặc không tồn tại');
+          throw new BadRequestException(
+            'Hóa đơn không còn nợ hoặc không tồn tại',
+          );
         }
         if (Number(invoice.customerId) !== allocation.customerId) {
           throw new BadRequestException(
@@ -2464,7 +2538,9 @@ export class InternalFinanceService {
         .map((id) => byId.get(id))
         .filter(Boolean);
       const customerName =
-        typeof snapshot.customerName === 'string' ? snapshot.customerName.trim() : '';
+        typeof snapshot.customerName === 'string'
+          ? snapshot.customerName.trim()
+          : '';
       const customers = linked.length
         ? linked
         : customerName
@@ -2521,12 +2597,53 @@ export class InternalFinanceService {
           user.id,
           branchId,
         );
-        if (permissions.includes(permission)) {
+        const fundAction = this.internalFundExpenseAction(action);
+        if (
+          permissions.includes(permission) ||
+          permissions.includes(`internal_fund:${fundAction}_${scope.key}`)
+        ) {
           branches.push(branchId);
         }
       }
     }
     return [...new Set(branches)];
+  }
+
+  private async assertWarehouseExpensePermissionByUserId(
+    userId: number,
+    branchId: number,
+    action: WarehouseExpenseAction,
+  ) {
+    const profile = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        userRoles: { select: { role: { select: { name: true } } } },
+      },
+    });
+    await this.assertWarehouseExpensePermission(
+      {
+        id: userId,
+        roles: profile?.userRoles.map((row) => row.role.name) || [],
+      },
+      branchId,
+      action,
+    );
+  }
+
+  private async assertCashFlowPermission(
+    userId: number,
+    branchId: number,
+    action: 'view' | 'create' | 'update',
+  ) {
+    const permissions = await this.authService.getPermissionsForBranch(
+      userId,
+      branchId,
+    );
+    if (!permissions.includes(`cash_flows:${action}`)) {
+      throw new ForbiddenException(
+        `Không có quyền cash_flows:${action} cho chi nhánh này`,
+      );
+    }
   }
 
   private async assertWarehouseExpensePermission(
@@ -2545,16 +2662,29 @@ export class InternalFinanceService {
       user.id,
       branchId,
     );
-    if (!permissions.includes(`warehouse_expense:${action}_${scope.key}`)) {
+    if (
+      !permissions.includes(`warehouse_expense:${action}_${scope.key}`) &&
+      !permissions.includes(
+        `internal_fund:${this.internalFundExpenseAction(action)}_${scope.key}`,
+      )
+    ) {
       throw new ForbiddenException(
         `Không có quyền ${action} phiếu chi kho cho chi nhánh này`,
       );
     }
   }
 
+  private internalFundExpenseAction(action: WarehouseExpenseAction) {
+    if (action === 'create') return 'create_expense';
+    if (action === 'update') return 'adjust';
+    if (action === 'prepare' || action === 'submit') return 'submit_approval';
+    return action;
+  }
+
   private warehouseExpenseInclude() {
     return {
       ...this.entryInclude(),
+      fundTransaction: { select: { id: true, code: true, status: true } },
       branch: { select: { id: true, name: true } },
       packingSlip: { select: { id: true, code: true } },
       weeklyBatch: {
@@ -2601,7 +2731,9 @@ export class InternalFinanceService {
     };
   }
 
-  private snapshotOf(entry: { sourceSnapshot?: unknown }): Record<string, unknown> {
+  private snapshotOf(entry: {
+    sourceSnapshot?: unknown;
+  }): Record<string, unknown> {
     return entry.sourceSnapshot &&
       typeof entry.sourceSnapshot === 'object' &&
       !Array.isArray(entry.sourceSnapshot)
@@ -2626,7 +2758,9 @@ export class InternalFinanceService {
     };
   }
 
-  private toJson(value?: Record<string, unknown>): Prisma.InputJsonValue | undefined {
+  private toJson(
+    value?: Record<string, unknown>,
+  ): Prisma.InputJsonValue | undefined {
     return value
       ? (JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue)
       : undefined;

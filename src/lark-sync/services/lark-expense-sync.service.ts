@@ -85,8 +85,8 @@ export class LarkExpenseSyncService {
       this.config.get<string>('API_URL') ||
       this.config.get<string>('APP_PUBLIC_URL') ||
       'http://localhost:3060';
-    this.legacyWriteEnabled =
-      this.config.get<string>('LEGACY_LARK_EXPENSE_WRITE_ENABLED') === 'true';
+    // Expense operations are owned by POS; never write new finance records to Base.
+    this.legacyWriteEnabled = false;
   }
 
   isEnabled(): boolean {

@@ -159,7 +159,9 @@ export class InternalFinanceController {
 
   @Post('warehouse-receipts/lark-import')
   @RequirePermissions('cash_flows:create')
-  @ApiOperation({ summary: 'Import warehouse cash history without Lark identifiers' })
+  @ApiOperation({
+    summary: 'Import warehouse cash history without Lark identifiers',
+  })
   importWarehouseCash(
     @Body() dto: WarehouseCashImportDto,
     @CurrentUser() user: any,
@@ -221,20 +223,18 @@ export class InternalFinanceController {
   }
 
   @Post('expenses/manual')
-  @RequirePermissions('cash_flows:create')
   @ApiOperation({ summary: 'Create a manual internal expense' })
   createManualExpense(
     @Body() dto: CreateManualExpenseDto,
     @CurrentUser() user: any,
   ) {
-    return this.service.createManualExpense(dto, user.id);
+    return this.service.createManualExpense(dto, user);
   }
 
   @Post('vehicle/fuel')
-  @RequirePermissions('cash_flows:create')
   @ApiOperation({ summary: 'Create a fuel entry' })
   createFuel(@Body() dto: CreateFuelEntryDto, @CurrentUser() user: any) {
-    return this.service.createFuel(dto, user.id);
+    return this.service.createFuel(dto, user);
   }
 
   @Post('lark-import')
@@ -247,17 +247,15 @@ export class InternalFinanceController {
   }
 
   @Post('vehicle-care')
-  @RequirePermissions('cash_flows:create')
   @ApiOperation({ summary: 'Create a vehicle care entry' })
   createVehicleCare(
     @Body() dto: CreateVehicleCareEntryDto,
     @CurrentUser() user: any,
   ) {
-    return this.service.createVehicleCare(dto, user.id);
+    return this.service.createVehicleCare(dto, user);
   }
 
   @Post(':id/review/:role')
-  @RequirePermissions('cash_flows:update')
   @ApiOperation({ summary: 'Review an internal finance entry' })
   review(
     @Param('id', ParseIntPipe) id: number,
@@ -269,7 +267,6 @@ export class InternalFinanceController {
   }
 
   @Post(':id/accountant-review')
-  @RequirePermissions('cash_flows:update')
   @ApiOperation({ summary: 'Review an internal finance entry as accountant' })
   accountantReview(
     @Param('id', ParseIntPipe) id: number,
@@ -280,7 +277,6 @@ export class InternalFinanceController {
   }
 
   @Post(':id/manager-review')
-  @RequirePermissions('cash_flows:update')
   @ApiOperation({ summary: 'Review an internal finance entry as manager' })
   managerReview(
     @Param('id', ParseIntPipe) id: number,
@@ -291,7 +287,6 @@ export class InternalFinanceController {
   }
 
   @Post(':id/attachments')
-  @RequirePermissions('cash_flows:update')
   @ApiOperation({
     summary: 'Add evidence attachments to an internal finance entry',
   })
@@ -311,8 +306,9 @@ export class InternalFinanceController {
   }
 
   @Patch(':id/cash-issued')
-  @RequirePermissions('cash_flows:update')
-  @ApiOperation({ summary: 'Mark an expense as cash issued without creating CashFlow' })
+  @ApiOperation({
+    summary: 'Mark an expense as cash issued without creating CashFlow',
+  })
   updateCashIssued(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateInternalFinanceCashIssuedDto,

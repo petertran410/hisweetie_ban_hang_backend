@@ -92,6 +92,7 @@ import { PublicApiModule } from './public-api/public-api.module';
 import { CustomerDemandModule } from './customer-demand/customer-demand.module';
 import { ProductQualityModule } from './product-quality/product-quality.module';
 import { InternalFinanceModule } from './internal-finance/internal-finance.module';
+import { InternalFundModule } from './internal-fund/internal-fund.module';
 
 @Module({
   controllers: [HealthController],
@@ -196,6 +197,7 @@ import { InternalFinanceModule } from './internal-finance/internal-finance.modul
     CustomerDemandModule,
     ProductQualityModule,
     InternalFinanceModule,
+    InternalFundModule,
   ],
   providers: [
     {

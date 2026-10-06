@@ -12,7 +12,6 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
-import { CashFlowsService } from '../cashflows/cashflows.service';
 import {
   APPROVAL_DEFINITIONS,
   APPROVAL_BRANCHES,
@@ -29,6 +28,7 @@ import {
 } from './approval-lifecycle.constants';
 import type { CreateApprovalRequestDto } from './dto/create-approval-request.dto';
 import type { ApprovalRequestQueryDto } from './dto/approval-request-query.dto';
+import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
 
 type ApprovalEvent = {
   approval_code?: string;
@@ -46,7 +46,7 @@ export class ApprovalLifecycleService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     @Inject(LARK_CLIENT) private readonly larkClient: lark.Client,
-    private readonly cashFlowsService: CashFlowsService,
+    private readonly fundLedger: InternalFundLedgerService,
   ) {}
 
   async create(dto: CreateApprovalRequestDto, userId: number) {
@@ -60,7 +60,8 @@ export class ApprovalLifecycleService {
     const existing = await this.prisma.approvalRequest.findUnique({
       where: { clientUuid },
     });
-    if (existing && existing.instanceCode) return this.serializeRequest(existing);
+    if (existing && existing.instanceCode)
+      return this.serializeRequest(existing);
 
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -100,7 +101,11 @@ export class ApprovalLifecycleService {
     }
     this.validateForm(kind, form, dto.branchId);
     const formSnapshot = JSON.parse(
-      JSON.stringify({ version: APPROVAL_FORM_VERSION, form }),
+      JSON.stringify({
+        version: APPROVAL_FORM_VERSION,
+        form,
+        ...(dto.metadata !== undefined ? { metadata: dto.metadata } : {}),
+      }),
     ) as Prisma.InputJsonValue;
 
     const request = existing
@@ -174,22 +179,47 @@ export class ApprovalLifecycleService {
       where: { id },
       include: { events: { orderBy: { receivedAt: 'desc' }, take: 20 } },
     });
-    if (!request) throw new NotFoundException('Không tìm thấy yêu cầu Approval');
+    if (!request)
+      throw new NotFoundException('Không tìm thấy yêu cầu Approval');
+    if (
+      ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'].includes(
+        request.sourceType || '',
+      )
+    ) {
+      throw new BadRequestException(
+        'Approval quỹ nội bộ phải được xem tại module Quỹ nội bộ',
+      );
+    }
     return this.serializeRequest(request);
   }
 
   async findAll(query: ApprovalRequestQueryDto) {
     const page = query.page || 1;
-    const limit = query.limit || 20;
-    const where: any = {};
+    const limit = query.limit || 30;
+    const where: any = {
+      AND: [
+        {
+          OR: [
+            { sourceType: null },
+            {
+              sourceType: {
+                notIn: ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'],
+              },
+            },
+          ],
+        },
+      ],
+    };
     if (query.kind) where.kind = query.kind;
     if (query.status) where.status = query.status;
     if (query.branchId) where.branchId = query.branchId;
     if (query.search) {
-      where.OR = [
-        { clientUuid: { contains: query.search, mode: 'insensitive' } },
-        { instanceCode: { contains: query.search, mode: 'insensitive' } },
-      ];
+      where.AND.push({
+        OR: [
+          { clientUuid: { contains: query.search, mode: 'insensitive' } },
+          { instanceCode: { contains: query.search, mode: 'insensitive' } },
+        ],
+      });
     }
 
     const [rows, total] = await Promise.all([
@@ -276,19 +306,14 @@ export class ApprovalLifecycleService {
           item.value &&
           item.remaining < 0 &&
           (!needle ||
-            `${item.label} ${item.content}`
-              .toLowerCase()
-              .includes(needle)),
+            `${item.label} ${item.content}`.toLowerCase().includes(needle)),
       )
       .slice(0, 50);
 
     return { data: items };
   }
 
-  async uploadFile(
-    file: Express.Multer.File | undefined,
-    type: string,
-  ) {
+  async uploadFile(file: Express.Multer.File | undefined, type: string) {
     if (!file?.buffer?.length) {
       throw new BadRequestException('Thiếu file Approval');
     }
@@ -342,156 +367,16 @@ export class ApprovalLifecycleService {
   }
 
   async linkCashFlow(id: number, cashFlowId: number) {
-    const request = await this.prisma.approvalRequest.findUnique({
-      where: { id },
-    });
-    if (!request) throw new NotFoundException('Không tìm thấy yêu cầu Approval');
-    if (request.status !== 'APPROVED') {
-      throw new BadRequestException(
-        'Chỉ được liên kết dòng tiền sau khi Approval đã được duyệt',
-      );
-    }
-    if (request.cashFlowId) {
-      if (request.cashFlowId === cashFlowId) return this.serializeRequest(request);
-      throw new BadRequestException('Approval đã được liên kết với dòng tiền khác');
-    }
-
-    const cashFlow = await this.prisma.cashFlow.findUnique({
-      where: { id: cashFlowId },
-      select: { id: true, branchId: true },
-    });
-    if (!cashFlow) throw new NotFoundException('Không tìm thấy dòng tiền');
-    if (request.branchId && request.branchId !== cashFlow.branchId) {
-      throw new BadRequestException(
-        'Chi nhánh của Approval không khớp chi nhánh dòng tiền',
-      );
-    }
-
-    const updated = await this.prisma.approvalRequest.update({
-      where: { id },
-      data: { cashFlowId },
-    });
-    return this.serializeRequest(updated);
+    void id;
+    void cashFlowId;
+    throw new BadRequestException('Approval nội bộ không liên kết CashFlow');
   }
 
   async postCashFlow(id: number, userId: number) {
-    const request = await this.prisma.approvalRequest.findUnique({
-      where: { id },
-    });
-    if (!request) throw new NotFoundException('Không tìm thấy yêu cầu Approval');
-    if (request.status !== 'APPROVED') {
-      throw new BadRequestException(
-        'Chỉ được ghi nhận tiền sau khi Approval đã được duyệt',
-      );
-    }
-    if (!request.branchId) {
-      throw new BadRequestException('Approval chưa có branchId');
-    }
-
-    const snapshot = request.formSnapshot as any;
-    const form = Array.isArray(snapshot?.form) ? snapshot.form : [];
-    const byId = new Map<string, any>(
-      form.map((item: any) => [item.id, item]),
-    );
-    const amount = this.toNumber(
-      request.kind === 'RECEIPT'
-        ? byId.get(RECEIPT_FIELD_IDS.amount)?.value
-        : byId.get(EXPENSE_FIELD_IDS.common.amount)?.value,
-    );
-    if (amount <= 0) throw new BadRequestException('Approval không có số tiền hợp lệ');
-
-    const dateValue =
-      request.kind === 'RECEIPT'
-        ? byId.get(RECEIPT_FIELD_IDS.date)?.value
-        : byId.get(
-            request.kind === 'EXPENSE_HN'
-              ? EXPENSE_FIELD_IDS.HN.from
-              : request.kind === 'EXPENSE_SG'
-                ? EXPENSE_FIELD_IDS.SG.from
-                : EXPENSE_FIELD_IDS.VP.from,
-          )?.value;
-    const description =
-      (request.kind === 'RECEIPT'
-        ? this.stringValue(byId.get(RECEIPT_FIELD_IDS.description)?.value)
-        : this.stringValue(
-            byId.get(EXPENSE_FIELD_IDS.common.detail)?.value,
-          )) || `Approval ${request.instanceCode || request.id}`;
-
-    if (request.kind === 'RECEIPT') {
-      const receiptMethod =
-        this.stringValue(byId.get(RECEIPT_FIELD_IDS.method)?.value) ===
-        RECEIPT_OPTIONS.methods.cash
-          ? 'cash'
-          : 'transfer';
-      const classification = this.stringValue(
-        byId.get(RECEIPT_FIELD_IDS.classification)?.value,
-      );
-      if (classification === RECEIPT_OPTIONS.classifications.internalTransfer) {
-        const sourceBranchId =
-          RECEIPT_LOCATION_BRANCHES.from[
-            this.stringValue(byId.get(RECEIPT_FIELD_IDS.from)?.value) as keyof typeof RECEIPT_LOCATION_BRANCHES.from
-          ];
-        const destinationBranchId =
-          RECEIPT_LOCATION_BRANCHES.to[
-            this.stringValue(byId.get(RECEIPT_FIELD_IDS.to)?.value) as keyof typeof RECEIPT_LOCATION_BRANCHES.to
-          ];
-        if (!sourceBranchId || !destinationBranchId) {
-          throw new BadRequestException(
-            'Phiếu Thu chuyển tiền nội bộ chưa map được chi nhánh',
-          );
-        }
-        return this.cashFlowsService.createApprovalTransferCashFlows(
-          {
-            approvalRequestId: id,
-            sourceBranchId,
-            destinationBranchId,
-            amount,
-            transDate: dateValue ? String(dateValue) : undefined,
-            description,
-            method: receiptMethod,
-          },
-          userId,
-        );
-      }
-
-      return this.cashFlowsService.createApprovalCashFlow(
-        {
-          approvalRequestId: id,
-          branchId: request.branchId,
-          amount,
-          transDate: dateValue ? String(dateValue) : undefined,
-          description,
-          method: receiptMethod,
-          isReceipt: true,
-        },
-        userId,
-      );
-    }
-
-    let method = 'cash';
-    if (request.kind === 'EXPENSE_VP') {
-      const vpMethod = this.stringValue(
-        byId.get(EXPENSE_FIELD_IDS.VP.method)?.value,
-      );
-      if (vpMethod === 'ml65570v-qr4uobqvu9-0') {
-        throw new BadRequestException(
-          'Phiếu Chi VP chuyển khoản không làm giảm quỹ tiền mặt',
-        );
-      }
-      method = 'cash';
-    }
-
-    return this.cashFlowsService.createApprovalCashFlow(
-      {
-        approvalRequestId: id,
-        branchId: request.branchId,
-        amount,
-        transDate: dateValue ? String(dateValue) : undefined,
-        description,
-        method,
-        isReceipt: false,
-      },
-      userId,
+    void id;
+    void userId;
+    throw new BadRequestException(
+      'Approval nội bộ ghi nhận tại Quỹ nội bộ, không tạo CashFlow',
     );
   }
 
@@ -500,7 +385,9 @@ export class ApprovalLifecycleService {
     const approvalCode = String(event.approval_code || '').trim();
     const status = this.parseStatus(event.status);
     if (!instanceCode || !approvalCode || !status) {
-      this.logger.warn('Bỏ qua approval event thiếu instance_code/approval_code/status');
+      this.logger.warn(
+        'Bỏ qua approval event thiếu instance_code/approval_code/status',
+      );
       return;
     }
 
@@ -523,7 +410,14 @@ export class ApprovalLifecycleService {
           })
         : null);
 
-    let storedEvent: { id: number };
+    if (
+      matchedRequest?.approvalCode &&
+      matchedRequest.approvalCode !== approvalCode
+    ) {
+      throw new BadRequestException('Approval code không khớp yêu cầu POS');
+    }
+
+    let storedEvent: { id: number; processedAt?: Date | null };
     try {
       storedEvent = await this.prisma.approvalRequestEvent.create({
         data: {
@@ -535,11 +429,21 @@ export class ApprovalLifecycleService {
           instanceOperateTime: operationTime,
           payload: event as any,
         },
-        select: { id: true },
+        select: { id: true, processedAt: true },
       });
     } catch (error: any) {
-      if (error?.code === 'P2002') return;
-      throw error;
+      if (error?.code === 'P2002') {
+        const existingEvent = await this.prisma.approvalRequestEvent.findUnique(
+          {
+            where: { eventKey },
+            select: { id: true, processedAt: true },
+          },
+        );
+        if (!existingEvent || existingEvent.processedAt) return;
+        storedEvent = existingEvent;
+      } else {
+        throw error;
+      }
     }
 
     if (!matchedRequest) {
@@ -654,40 +558,28 @@ export class ApprovalLifecycleService {
     knownDetail?: any,
     eventUuid?: string,
   ) {
-    const current = await this.prisma.approvalRequest.findUnique({
+    const hint = await this.prisma.approvalRequest.findUnique({
       where: { id: requestId },
-      select: {
-        status: true,
-        lastEventAt: true,
-        sourceType: true,
-        sourceId: true,
-      },
+      select: { status: true, lastEventAt: true },
     });
-    if (!current) return;
-
+    if (!hint) return;
     if (
       eventTime &&
-      current.lastEventAt &&
-      eventTime.getTime() < current.lastEventAt.getTime()
+      hint.lastEventAt &&
+      eventTime.getTime() < hint.lastEventAt.getTime()
     ) {
       return;
     }
-
-    const currentRank =
-      APPROVAL_STATUS_ORDER[current.status as ApprovalInstanceStatus] || 0;
+    const hintRank =
+      APPROVAL_STATUS_ORDER[hint.status as ApprovalInstanceStatus] || 0;
     const nextRank = APPROVAL_STATUS_ORDER[status] || 0;
-    if (current.status === 'REVERTED') return;
+    if (hint.status === 'REVERTED') return;
+    if (status === 'REVERTED' && hint.status !== 'APPROVED') return;
+    if (nextRank < hintRank) return;
     if (
-      status === 'REVERTED' &&
-      current.status !== 'APPROVED'
-    ) {
-      return;
-    }
-    if (nextRank < currentRank) return;
-    if (
-      nextRank === currentRank &&
-      current.status !== status &&
-      current.status !== 'PENDING'
+      nextRank === hintRank &&
+      hint.status !== status &&
+      hint.status !== 'PENDING'
     ) {
       return;
     }
@@ -703,39 +595,85 @@ export class ApprovalLifecycleService {
         );
       }
     }
-    const currentNode = this.getCurrentNode(detail);
-    const completedAt =
-      status === 'PENDING' ? undefined : eventTime || new Date();
-    const data: any = {
-      status,
-      currentNode,
-      lastEventUuid: eventUuid,
-      lastEventAt: eventTime || new Date(),
-      completedAt,
-    };
-    if (detail) data.detailSnapshot = detail;
-
-    if (
-      current.sourceType !== 'INTERNAL_FINANCE_WEEKLY' ||
-      !current.sourceId
-    ) {
-      await this.prisma.approvalRequest.update({
-        where: { id: requestId },
-        data,
-      });
-      return;
-    }
-
     await this.prisma.$transaction(async (tx) => {
+      await this.fundLedger.lockApproval(tx, requestId);
+      const current = await tx.approvalRequest.findUnique({
+        where: { id: requestId },
+        select: {
+          status: true,
+          lastEventAt: true,
+          sourceType: true,
+          sourceId: true,
+        },
+      });
+      if (!current) return;
+
+      if (
+        eventTime &&
+        current.lastEventAt &&
+        eventTime.getTime() < current.lastEventAt.getTime()
+      ) {
+        return;
+      }
+
+      const currentRank =
+        APPROVAL_STATUS_ORDER[current.status as ApprovalInstanceStatus] || 0;
+      const nextRank = APPROVAL_STATUS_ORDER[status] || 0;
+      if (current.status === 'REVERTED') return;
+      if (status === 'REVERTED' && current.status !== 'APPROVED') return;
+      if (nextRank < currentRank) return;
+      if (
+        nextRank === currentRank &&
+        current.status !== status &&
+        current.status !== 'PENDING'
+      ) {
+        return;
+      }
+
+      const data: any = {
+        status,
+        currentNode: this.getCurrentNode(detail),
+        lastEventUuid: eventUuid,
+        lastEventAt: eventTime || new Date(),
+        completedAt: status === 'PENDING' ? undefined : eventTime || new Date(),
+        ...(detail ? { detailSnapshot: detail } : {}),
+      };
+
+      if (
+        ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'].includes(
+          current.sourceType || '',
+        )
+      ) {
+        const updated = await tx.approvalRequest.update({
+          where: { id: requestId },
+          data,
+        });
+        await this.fundLedger.applyApproval(tx, updated);
+        return;
+      }
+
+      if (
+        current.sourceType !== 'INTERNAL_FINANCE_WEEKLY' ||
+        !current.sourceId
+      ) {
+        await tx.approvalRequest.update({
+          where: { id: requestId },
+          data,
+        });
+        return;
+      }
+
+      const batch = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: { id: current.sourceId },
+        select: { branchId: true },
+      });
+      if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
       await tx.approvalRequest.update({
         where: { id: requestId },
         data,
       });
 
-      if (
-        current.sourceType === 'INTERNAL_FINANCE_WEEKLY' &&
-        current.sourceId
-      ) {
+      if (batch) {
         const batchStatus =
           status === 'APPROVED'
             ? 'APPROVED'
@@ -753,7 +691,11 @@ export class ApprovalLifecycleService {
           data: { status: batchStatus },
         });
         await tx.internalFinanceEntry.updateMany({
-          where: { weeklyBatchId: current.sourceId, cashFlowId: null },
+          where: {
+            weeklyBatchId: current.sourceId,
+            cashFlowId: null,
+            cashIssued: false,
+          },
           data: { status: entryStatus },
         });
       }
@@ -864,7 +806,10 @@ export class ApprovalLifecycleService {
     const receiptAmount = this.toNumber(
       byId.get(RECEIPT_FIELD_IDS.amount)?.value,
     );
-    if ((kind !== 'RECEIPT' && amount <= 0) || (kind === 'RECEIPT' && receiptAmount <= 0)) {
+    if (
+      (kind !== 'RECEIPT' && amount <= 0) ||
+      (kind === 'RECEIPT' && receiptAmount <= 0)
+    ) {
       throw new BadRequestException('Số tiền Approval phải lớn hơn 0');
     }
 
@@ -917,7 +862,11 @@ export class ApprovalLifecycleService {
     );
     const method = this.stringValue(byId.get(RECEIPT_FIELD_IDS.method)?.value);
 
-    if (!Object.values(RECEIPT_OPTIONS.classifications).includes(classification as any)) {
+    if (
+      !Object.values(RECEIPT_OPTIONS.classifications).includes(
+        classification as any,
+      )
+    ) {
       throw new BadRequestException('Phân loại Phiếu Thu không hợp lệ');
     }
     if (!Object.values(RECEIPT_OPTIONS.methods).includes(method as any)) {
@@ -938,9 +887,7 @@ export class ApprovalLifecycleService {
           'Phiếu Thu chuyển tiền nội bộ phải có Nơi đi và Nơi nhận',
         );
       }
-      const from = this.stringValue(
-        byId.get(RECEIPT_FIELD_IDS.from)?.value,
-      );
+      const from = this.stringValue(byId.get(RECEIPT_FIELD_IDS.from)?.value);
       const to = this.stringValue(byId.get(RECEIPT_FIELD_IDS.to)?.value);
       const sourceBranchId =
         RECEIPT_LOCATION_BRANCHES.from[
@@ -967,7 +914,9 @@ export class ApprovalLifecycleService {
         byId.get(RECEIPT_FIELD_IDS.cashSource)?.value,
       );
       if (!RECEIPT_OPTIONS.cashSources.has(source)) {
-        throw new BadRequestException('Phiếu Thu tiền mặt phải có Nguồn Tiền Mặt');
+        throw new BadRequestException(
+          'Phiếu Thu tiền mặt phải có Nguồn Tiền Mặt',
+        );
       }
     }
 
@@ -980,9 +929,7 @@ export class ApprovalLifecycleService {
       );
     }
 
-    if (
-      !this.parseDateOnly(byId.get(RECEIPT_FIELD_IDS.date)?.value)
-    ) {
+    if (!this.parseDateOnly(byId.get(RECEIPT_FIELD_IDS.date)?.value)) {
       throw new BadRequestException('Ngày thu không hợp lệ');
     }
   }

@@ -13,10 +13,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApprovalLifecycleService } from './approval-lifecycle.service';
-import {
-  CreateApprovalRequestDto,
-  LinkApprovalCashFlowDto,
-} from './dto/create-approval-request.dto';
+import { LinkApprovalCashFlowDto } from './dto/create-approval-request.dto';
 import { ApprovalRequestQueryDto } from './dto/approval-request-query.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -28,13 +25,6 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @Controller('approval-requests')
 export class ApprovalLifecycleController {
   constructor(private readonly service: ApprovalLifecycleService) {}
-
-  @Post()
-  @RequirePermissions('cash_flows:create')
-  @ApiOperation({ summary: 'Create a POS-linked Lark Approval request' })
-  create(@Body() dto: CreateApprovalRequestDto, @CurrentUser() user: any) {
-    return this.service.create(dto, user.id);
-  }
 
   @Post('upload-file')
   @UseInterceptors(
@@ -74,7 +64,9 @@ export class ApprovalLifecycleController {
 
   @Post(':id/link-cashflow')
   @RequirePermissions('cash_flows:update')
-  @ApiOperation({ summary: 'Link an approved Approval to an existing CashFlow' })
+  @ApiOperation({
+    summary: 'Link an approved Approval to an existing CashFlow',
+  })
   linkCashFlow(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: LinkApprovalCashFlowDto,
