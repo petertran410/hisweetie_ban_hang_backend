@@ -12,7 +12,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { RequireAnyPermission } from '../auth/decorators/permissions.decorator';
-import { MisaCallbackRequestDto } from './dto';
+import { MisaCallbackDataDto, MisaCallbackRequestDto } from './dto';
 import { MisaBulkVoucherRequestDto, MisaCreateVoucherRequestDto } from './dto';
 import { MisaDictionaryService } from './misa-dictionary.service';
 import { MisaVoucherService } from './misa-voucher.service';
@@ -252,10 +252,9 @@ export class MisaSyncController {
   async handleCallback(
     @Body() body: MisaCallbackRequestDto,
   ): Promise<{ success: boolean; message: string }> {
-    this.logger.log(`📩 Received Misa callback: ${JSON.stringify(body)}`);
-
     try {
-      if (!body.data || !Array.isArray(body.data)) {
+      const callbackItems = this.parseMisaCallbackData(body.data);
+      if (!callbackItems) {
         this.logger.warn('⚠️ Invalid callback data format');
         return {
           success: false,
@@ -263,20 +262,35 @@ export class MisaSyncController {
         };
       }
 
-      for (const item of body.data) {
+      this.logger.log(
+        `📩 Received Misa callback dataType=${body.data_type ?? '(unknown)'} ` +
+          `orgCompanyCode=${body.org_company_code ?? '(unknown)'} ` +
+          `items=${callbackItems.length}`,
+      );
+
+      for (const item of callbackItems) {
+        if (!item.org_refid) {
+          this.logger.warn('⚠️ Ignoring Misa callback item without org_refid');
+          continue;
+        }
+
+        const status =
+          item.status || (item.success === true ? 'success' : 'failed');
+        const errorMessage = item.error_message || body.error_message;
+
         await this.misaVoucherService.handleMisaCallback(
           item.org_refid,
-          item.status,
+          status,
           item.voucher_id,
           item.voucher_no,
           item.error_code,
-          item.error_message,
+          errorMessage,
         );
       }
 
       return {
         success: true,
-        message: `Processed ${body.data.length} callback(s)`,
+        message: `Processed ${callbackItems.length} callback(s)`,
       };
     } catch (error) {
       this.logger.error(`❌ Error processing Misa callback: ${error.message}`);
@@ -284,6 +298,21 @@ export class MisaSyncController {
         success: false,
         message: error.message,
       };
+    }
+  }
+
+  private parseMisaCallbackData(
+    data: string | MisaCallbackDataDto[],
+  ): MisaCallbackDataDto[] | null {
+    if (Array.isArray(data)) return data;
+    if (typeof data !== 'string' || data.trim() === '') return null;
+
+    try {
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? (parsed as MisaCallbackDataDto[]) : null;
+    } catch (error) {
+      this.logger.warn('⚠️ Failed to parse Misa callback data JSON string');
+      return null;
     }
   }
 

@@ -99,19 +99,14 @@ export class MisaAuthService {
       if (typeof data.Data === 'string') {
         try {
           tokenData = JSON.parse(data.Data) as MisaTokenDataDto;
-          this.logger.debug(
-            `Parsed Data from string: ${JSON.stringify(tokenData)}`,
-          );
         } catch (parseError) {
-          this.logger.error(`❌ Failed to parse Data as JSON: ${data.Data}`);
+          this.logger.error('❌ Failed to parse Misa token response Data');
           throw new Error('Misa connect response Data is not valid JSON');
         }
       }
 
       if (!tokenData?.access_token) {
-        this.logger.error(
-          '❌ Misa token response missing access_token',
-        );
+        this.logger.error('❌ Misa token response missing access_token');
         throw new Error('Misa connect response missing access_token');
       }
 
@@ -146,9 +141,8 @@ export class MisaAuthService {
 
   private getBaseUrl(): string {
     return (
-      this.configService
-        .get<string>('MISA_BASE_URL')
-        ?.replace(/\/+$/, '') || 'https://developer.misa.vn/apis'
+      this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
+      'https://developer.misa.vn/apis'
     );
   }
 

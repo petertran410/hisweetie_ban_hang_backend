@@ -133,11 +133,14 @@ export interface MisaSaveVoucherResponseDto {
  */
 export interface MisaCallbackDataDto {
   org_refid: string;
-  status: 'success' | 'failed';
+  success?: boolean;
+  status?: 'success' | 'failed';
   voucher_id?: string;
   voucher_no?: string;
   error_code?: string;
   error_message?: string;
+  session_id?: string;
+  voucher_type?: number;
   created_date?: string;
 }
 
@@ -146,7 +149,12 @@ export interface MisaCallbackDataDto {
  */
 export interface MisaCallbackRequestDto {
   app_id?: string;
-  data: MisaCallbackDataDto[];
+  success?: boolean;
+  error_message?: string;
+  signature?: string;
+  data_type?: number;
+  org_company_code?: string;
+  data: string | MisaCallbackDataDto[];
 }
 
 /**
