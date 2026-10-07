@@ -807,6 +807,20 @@ export class InternalUseService {
       throw new BadRequestException('Internal use voucher already cancelled');
     }
 
+    if (internalUse.status === 2) {
+      const activeReturnCount = await this.prisma.internalUseReturn.count({
+        where: {
+          internalUseId: id,
+          status: { not: 3 },
+        },
+      });
+      if (activeReturnCount > 0) {
+        throw new BadRequestException(
+          'Không thể hủy phiếu xuất dùng nội bộ đã có phiếu trả chưa hủy',
+        );
+      }
+    }
+
     const description = dto.cancelReason
       ? `${internalUse.description ? internalUse.description + ' | ' : ''}Lý do hủy: ${dto.cancelReason}`
       : internalUse.description;

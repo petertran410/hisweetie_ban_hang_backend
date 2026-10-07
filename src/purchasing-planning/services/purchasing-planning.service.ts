@@ -72,6 +72,7 @@ const DEMAND_LOG_TYPES = new Set([
   'CONSIGNMENT_OUT',
   'RETURN_IN',
   'CONSIGNMENT_RETURN_IN',
+  'INTERNAL_USE_RETURN_IN',
 ]);
 const SOURCE_LABEL: Record<string, string> = {
   GLOBAL: 'Mặc định toàn hệ thống',

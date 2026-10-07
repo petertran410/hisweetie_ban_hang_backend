@@ -58,6 +58,8 @@ model User {
   updatedIngredients                                        Ingredient[]                      @relation("IngredientUpdater")
   createdInternalUses                                       InternalUse[]                     @relation("InternalUseCreator")
   usedInternalUses                                          InternalUse[]                     @relation("InternalUseUser")
+  createdInternalUseReturns                                 InternalUseReturn[]              @relation("InternalUseReturnCreator")
+  receivedInternalUseReturns                                InternalUseReturn[]              @relation("InternalUseReturnReceiver")
   createdInventoryChecks                                    InventoryCheck[]                  @relation("InventoryCheckCreator")
   inventoryLogs                                             InventoryLog[]                    @relation("InventoryLogUser")
   createdInventoryPromoChecks                               InventoryPromoCheck[]             @relation("InventoryPromoCheckCreator")
@@ -318,6 +320,7 @@ model Branch {
   customers                 Customer[]
   destructions              Destruction[]
   internalUses              InternalUse[]
+  internalUseReturns        InternalUseReturn[]
   inventories               Inventory[]
   inventoryChecks           InventoryCheck[]
   inventoryDailySnapshots   InventoryDailySnapshot[]
@@ -772,6 +775,7 @@ model Product {
   factory_products               factory_products[]
   planningTrends                 PlanningTrend[]
   internalUseDetails             InternalUseDetail[]
+  internalUseReturnDetails        InternalUseReturnDetail[]
   inventories                    Inventory[]
   inventoryCheckDetails          InventoryCheckDetail[]
   inventoryDailySnapshots        InventoryDailySnapshot[]
@@ -2228,6 +2232,7 @@ model InternalUse {
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   details       InternalUseDetail[]
+  returns       InternalUseReturn[]
   branch        Branch              @relation(fields: [branchId], references: [id])
   creator       User                @relation("InternalUseCreator", fields: [createdById], references: [id])
   purpose       InternalUsePurpose  @relation(fields: [purposeId], references: [id])
@@ -2254,9 +2259,70 @@ model InternalUseDetail {
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt
   internalUse    InternalUse @relation(fields: [internalUseId], references: [id], onDelete: Cascade)
+  returnDetails  InternalUseReturnDetail[]
   product        Product     @relation(fields: [productId], references: [id])
 
   @@map("internal_use_details")
+}
+
+model InternalUseReturn {
+  id                    Int                       @id @default(autoincrement())
+  code                  String                    @unique
+  internalUseId         Int
+  branchId              Int
+  status                Int                       @default(1)
+  statusValue           String?
+  totalRequestQuantity  Decimal                   @default(0)
+  totalConfirmedQuantity Decimal                  @default(0)
+  note                  String?
+  createdBy             Int
+  createdByName         String?
+  receivedById          Int?
+  receivedByName        String?
+  receivedAt            DateTime?
+  createdAt             DateTime                  @default(now())
+  updatedAt             DateTime                  @updatedAt
+  details               InternalUseReturnDetail[]
+  internalUse           InternalUse              @relation(fields: [internalUseId], references: [id])
+  branch                Branch                   @relation(fields: [branchId], references: [id])
+  creator               User                     @relation("InternalUseReturnCreator", fields: [createdBy], references: [id])
+  receivedBy            User?                    @relation("InternalUseReturnReceiver", fields: [receivedById], references: [id])
+
+  @@index([internalUseId])
+  @@index([branchId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("internal_use_returns")
+}
+
+model InternalUseReturnDetail {
+  id                    Int              @id @default(autoincrement())
+  internalUseReturnId   Int
+  internalUseDetailId   Int
+  productId             Int
+  productCode           String
+  productName           String
+  unit                  String?
+  issuedQuantity        Decimal
+  sourceConditionType   String           @default("normal")
+  sourceSoldExpiryDate  DateTime?
+  requestQuantity       Decimal
+  confirmedQuantity     Decimal           @default(0)
+  goodQuantity          Decimal           @default(0)
+  damagedQuantity       Decimal           @default(0)
+  nearExpiryQuantity    Decimal           @default(0)
+  nearExpiryDate        DateTime?
+  note                  String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  internalUseReturn     InternalUseReturn @relation(fields: [internalUseReturnId], references: [id], onDelete: Cascade)
+  internalUseDetail     InternalUseDetail @relation(fields: [internalUseDetailId], references: [id])
+  product               Product          @relation(fields: [productId], references: [id])
+
+  @@index([internalUseReturnId])
+  @@index([internalUseDetailId])
+  @@index([productId])
+  @@map("internal_use_return_details")
 }
 
 model InternalUsePurpose {
