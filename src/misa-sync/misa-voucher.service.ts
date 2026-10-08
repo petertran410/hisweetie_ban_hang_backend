@@ -10,13 +10,51 @@ import { computeLineVat } from './misa-vat.util';
 import {
   MisaSaveVoucherRequestDto,
   MisaSaVoucherDto,
-  MisaSaVoucherDetailDto,
   MisaSaveVoucherResponseDto,
   MisaDeleteVoucherRequestDto,
   MisaDeleteVoucherResponseDto,
   MisaSaInvoiceDetailDto,
   MisaBuyerOverrideDto,
 } from './dto';
+
+const MISA_STOCK_CODE_BY_POS_BRANCH_ID: Record<number, string> = {
+  1: 'KHOHCM',
+  6: 'KHO1',
+};
+
+type MisaFailureStage =
+  | 'invoice_not_found'
+  | 'cancelled'
+  | 'already_synced'
+  | 'missing_misa_code'
+  | 'missing_inventory_item'
+  | 'missing_stock'
+  | 'build_payload'
+  | 'misa_request'
+  | 'misa_rejected';
+
+type MisaVoucherResult = {
+  success: boolean;
+  orgRefId: string | null;
+  message: string;
+  stage?: MisaFailureStage;
+};
+
+class MisaVoucherStageError extends Error {
+  constructor(
+    public readonly stage: MisaFailureStage,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MisaVoucherStageError';
+  }
+}
+
+type MisaInvoiceBuildDetail = MisaSaInvoiceDetailDto & {
+  unit_price_after_tax?: number;
+  cost_account?: string;
+  is_promotion?: boolean;
+};
 
 @Injectable()
 export class MisaVoucherService {
@@ -44,7 +82,11 @@ export class MisaVoucherService {
     invoiceCode: string,
     buyerOverride?: MisaBuyerOverrideDto,
     force = false,
-  ): Promise<{ success: boolean; orgRefId: string | null; message: string }> {
+  ): Promise<MisaVoucherResult> {
+    let invoiceId: number | null = null;
+    let branchId: number | null | undefined;
+    let orgRefId: string | null = null;
+
     this.logger.log(
       `🧾 Creating Misa voucher for invoice code: ${invoiceCode}${
         force ? ' (force re-push)' : ''
@@ -65,7 +107,6 @@ export class MisaVoucherService {
                   misa_code: true,
                   misa_name: true,
                   misa_unit: true,
-                  isCommerce: true,
                 },
               },
             },
@@ -87,19 +128,32 @@ export class MisaVoucherService {
       });
 
       if (!invoice) {
+        this.logFailure(
+          'invoice_not_found',
+          invoiceCode,
+          null,
+          undefined,
+          `Invoice not found: ${invoiceCode}`,
+        );
         return {
           success: false,
           orgRefId: null,
           message: `Invoice not found: ${invoiceCode}`,
+          stage: 'invoice_not_found',
         };
       }
 
+      invoiceId = invoice.id;
+      branchId = invoice.branchId;
+
       if (invoice.status === 2) {
-        this.logger.log(`⏭️ Skipping cancelled invoice ${invoice.code}`);
+        const message = `Invoice ${invoice.code} is cancelled`;
+        this.logFailure('cancelled', invoice.code, null, branchId, message);
         return {
           success: false,
           orgRefId: null,
-          message: `Invoice ${invoice.code} is cancelled`,
+          message,
+          stage: 'cancelled',
         };
       }
 
@@ -107,10 +161,19 @@ export class MisaVoucherService {
         !force &&
         (invoice.misaSyncStatus === 'SYNCED' || invoice.misaOrgRefId)
       ) {
+        const message = `Invoice already sent to Misa: ${invoice.code}`;
+        this.logFailure(
+          'already_synced',
+          invoice.code,
+          invoice.misaOrgRefId,
+          branchId,
+          message,
+        );
         return {
           success: false,
           orgRefId: invoice.misaOrgRefId,
-          message: `Invoice already sent to Misa: ${invoice.code}`,
+          message,
+          stage: 'already_synced',
         };
       }
 
@@ -125,7 +188,7 @@ export class MisaVoucherService {
           .join(', ');
 
         this.logger.warn(
-          `⚠️ Invoice ${invoice.code} has products without misa_code: ${productCodes}. Skipping...`,
+          `⚠️ [stage=missing_misa_code] Invoice ${invoice.code} has ${productsWithoutMisaCode.length} product(s) without misa_code. Skipping...`,
         );
 
         await this.prismaService.invoice.update({
@@ -140,10 +203,11 @@ export class MisaVoucherService {
           success: false,
           orgRefId: null,
           message: `Invoice ${invoice.code} skipped: products without misa_code`,
+          stage: 'missing_misa_code',
         };
       }
 
-      const orgRefId = invoice.misaOrgRefId || randomUUID();
+      orgRefId = invoice.misaOrgRefId || randomUUID();
       const voucherPayload = await this.buildVoucherPayload(
         invoice,
         orgRefId,
@@ -151,10 +215,19 @@ export class MisaVoucherService {
       );
 
       if (!voucherPayload) {
+        const message = `Failed to build voucher payload for invoice: ${invoice.code}`;
+        this.logFailure(
+          'build_payload',
+          invoice.code,
+          orgRefId,
+          branchId,
+          message,
+        );
         return {
           success: false,
-          orgRefId: null,
-          message: `Failed to build voucher payload for invoice: ${invoice.code}`,
+          orgRefId,
+          message,
+          stage: 'build_payload',
         };
       }
 
@@ -164,15 +237,13 @@ export class MisaVoucherService {
         await this.prismaService.invoice.update({
           where: { id: invoice.id },
           data: {
-            misaSyncStatus: 'SYNCED',
+            misaSyncStatus: 'PENDING',
             misaOrgRefId: orgRefId,
             misaSyncedAt: new Date(),
             misaSyncRetries: { increment: 1 },
+            misaConfirmed: false,
+            misaCallbackReceivedAt: null,
             misaErrorMessage: null,
-            // Force re-push: chờ callback Misa xác nhận lại từ đầu.
-            ...(force
-              ? { misaConfirmed: false, misaCallbackReceivedAt: null }
-              : {}),
           },
         });
       } else {
@@ -190,32 +261,42 @@ export class MisaVoucherService {
         success: result.success,
         orgRefId,
         message: result.message,
+        ...(result.stage ? { stage: result.stage } : {}),
       };
     } catch (error) {
+      const stage: MisaFailureStage =
+        error instanceof MisaVoucherStageError ? error.stage : 'build_payload';
+      const message = error.message;
+      this.logFailure(stage, invoiceCode, orgRefId, branchId, message);
+
       this.logger.error(
-        `❌ Error creating Misa voucher for invoice ${invoiceCode}: ${error.message}`,
+        `❌ Error creating Misa voucher for invoice ${invoiceCode}: ${this.truncateLogValue(message)}`,
       );
 
-      const invoice = await this.prismaService.invoice.findUnique({
-        where: { code: invoiceCode },
-        select: { id: true },
-      });
+      const persistedInvoice =
+        invoiceId != null
+          ? { id: invoiceId }
+          : await this.prismaService.invoice.findUnique({
+              where: { code: invoiceCode },
+              select: { id: true },
+            });
 
-      if (invoice) {
+      if (persistedInvoice) {
         await this.prismaService.invoice.update({
-          where: { id: invoice.id },
+          where: { id: persistedInvoice.id },
           data: {
             misaSyncStatus: 'FAILED',
             misaSyncRetries: { increment: 1 },
-            misaErrorMessage: error.message,
+            misaErrorMessage: message,
           },
         });
       }
 
       return {
         success: false,
-        orgRefId: null,
-        message: error.message,
+        orgRefId,
+        message,
+        stage,
       };
     }
   }
@@ -225,40 +306,19 @@ export class MisaVoucherService {
     orgRefId: string,
     buyerOverride?: MisaBuyerOverrideDto,
   ): Promise<MisaSaveVoucherRequestDto | null> {
-    const appId = this.configService.get<string>('MISA_APP_ID');
     const orgCompanyCode = this.configService.get<string>(
       'MISA_ORG_COMPANY_CODE',
     );
     const branchId = this.configService.get<string>('MISA_BRANCH_ID');
 
-    const isHcmBranch = invoice.branchId === 1;
-
-    const STOCK_HCM = {
-      stockId: '012e030c-5815-4bb1-b7fc-2fc0fa295a34',
-      stockCode: 'KHOHCM',
-      stockName: 'KHO HỒ CHÍ MINH',
-    };
-
-    const STOCK_COMMERCE = {
-      stockId: 'fb817711-7803-4948-8e1e-ea57ebe37240',
-      stockCode: 'KHO1',
-      stockName: 'KHO 1 - HÀNG THƯƠNG MẠI',
-    };
-
-    const STOCK_IMPORT = {
-      stockId: '7efaa69c-e382-4a3d-932a-e2982464aa01',
-      stockCode: 'KHONK',
-      stockName: 'KHO NHẬP KHẨU',
-    };
+    const misaStock = await this.resolveMisaStock(invoice.branchId);
 
     const employeeId = invoice.customer?.misaEmployeeId?.trim() || '';
     const employeeCode = invoice.customer?.misaEmployeeCode?.trim() || '';
     const employeeName = invoice.customer?.misaEmployeeName?.trim() || '';
 
     if (employeeCode) {
-      this.logger.log(
-        `✅ Employee mapped for invoice ${invoice.code}: [${employeeCode}] ${employeeName}`,
-      );
+      this.logger.log(`✅ Employee mapping found for invoice ${invoice.code}`);
     } else {
       this.logger.warn(
         `⚠️ No employee mapped for customer of invoice ${invoice.code}`,
@@ -287,11 +347,11 @@ export class MisaVoucherService {
       if (matchedByTax) {
         matchedAccountObject = matchedByTax;
         this.logger.log(
-          `✅ Matched MisaAccountObject by companyTaxCode: ${customerTaxIdentifier} → ${matchedByTax.accountObjectCode}`,
+          `✅ Matched MisaAccountObject by companyTaxCode for invoice ${invoice.code}`,
         );
       } else {
         this.logger.log(
-          `ℹ️ No MisaAccountObject found for companyTaxCode: ${customerTaxIdentifier}, using Customer info`,
+          `ℹ️ No MisaAccountObject found by companyTaxCode for invoice ${invoice.code}, using customer info`,
         );
       }
     }
@@ -318,17 +378,14 @@ export class MisaVoucherService {
       resolvedBuyerName = overrideBuyerName!;
       resolvedBuyerTaxCode = overrideTaxCode!;
       resolvedBuyerAddress = overrideBuyerAddress!;
-      this.logger.log(
-        `📝 Áp dụng thông tin người mua nhập tay cho hóa đơn ${invoice.code}: ` +
-          `MST=${resolvedBuyerTaxCode}, tên=${resolvedBuyerName}`,
-      );
+      this.logger.log(`📝 Applied buyer override for invoice ${invoice.code}`);
     }
 
-    const details: MisaSaVoucherDetailDto[] = [];
+    const details: MisaInvoiceBuildDetail[] = [];
+    let missingInventoryItemCount = 0;
     let totalSaleAmount = 0;
     const totalDiscountAmount = 0;
     let totalVatAmount = 0;
-    let totalAmount = 0;
 
     for (let i = 0; i < invoice.details.length; i++) {
       const detail = invoice.details[i];
@@ -344,8 +401,9 @@ export class MisaVoucherService {
         );
 
       if (!inventoryItem) {
+        missingInventoryItemCount++;
         this.logger.warn(
-          `⚠️ Inventory item not found for misa_code: ${product.misa_code}`,
+          `⚠️ [stage=missing_inventory_item] Inventory item not found for invoice ${invoice.code}`,
         );
         continue;
       }
@@ -368,7 +426,6 @@ export class MisaVoucherService {
 
       totalSaleAmount += amountBeforeTax;
       totalVatAmount += vatAmount;
-      totalAmount += amountAfterTax;
 
       details.push({
         inventory_item_id: inventoryItem.inventoryItemId,
@@ -410,21 +467,9 @@ export class MisaVoucherService {
           matchedAccountObject?.accountObjectCode || undefined,
         account_object_name: resolvedBuyerName || undefined,
 
-        stock_id: isHcmBranch
-          ? STOCK_HCM.stockId
-          : product.isCommerce
-            ? STOCK_COMMERCE.stockId
-            : STOCK_IMPORT.stockId,
-        stock_code: isHcmBranch
-          ? STOCK_HCM.stockCode
-          : product.isCommerce
-            ? STOCK_COMMERCE.stockCode
-            : STOCK_IMPORT.stockCode,
-        stock_name: isHcmBranch
-          ? STOCK_HCM.stockName
-          : product.isCommerce
-            ? STOCK_COMMERCE.stockName
-            : STOCK_IMPORT.stockName,
+        stock_id: misaStock.stockId,
+        stock_code: misaStock.stockCode,
+        stock_name: misaStock.stockName,
 
         sort_order: i + 1,
         exchange_rate_operator: '*',
@@ -434,8 +479,14 @@ export class MisaVoucherService {
     }
 
     if (details.length === 0) {
-      this.logger.error('❌ No valid details for voucher');
-      return null;
+      const stage: MisaFailureStage =
+        missingInventoryItemCount > 0
+          ? 'missing_inventory_item'
+          : 'build_payload';
+      throw new MisaVoucherStageError(
+        stage,
+        `No valid details for voucher: ${invoice.code}`,
+      );
     }
 
     const expectedTotalVat = Math.trunc(
@@ -506,34 +557,25 @@ export class MisaVoucherService {
     }));
 
     const now = new Date();
-    // Ngày chứng từ (refdate) và ngày hạch toán (posted_date) đều lấy theo thời
-    // điểm đẩy lên Misa (now). Bỏ logic dời ngày sang hôm sau trước đây.
-    const postedDate = this.formatDateForMisa(now);
-    const refDate = this.formatDateForMisa(now);
-    const inRefOrder = this.formatDateForMisa(invoice.purchaseDate);
+    const invoiceDate = this.formatDateForMisa(now);
     const createdDate = this.formatDateForMisa(now);
     const customerAddress = resolvedBuyerAddress;
 
     const voucher: MisaSaVoucherDto = {
       voucher_type: this.VOUCHER_TYPE,
       org_refid: orgRefId,
+      org_refcode: orgRefId,
       org_refno: invoice.code,
+      inv_refid: orgRefId,
+      in_outward_refid: orgRefId,
       org_reftype: null,
       org_reftype_name: 'Chứng từ bán hàng hóa, dịch vụ trong nước',
       branch_id: branchId || '',
       reftype: this.REFTYPE,
-      posted_date: postedDate,
-      refdate: refDate,
+      reftype_name: 'Hóa đơn bán hàng hóa, dịch vụ trong nước',
+      posted_date: invoiceDate,
+      refdate: invoiceDate,
       is_sale_with_outward: true,
-
-      total_sale_amount_oc: totalSaleAmount,
-      total_sale_amount: totalSaleAmount,
-      total_amount_oc: totalAmount,
-      total_amount: totalAmount,
-      total_discount_amount_oc: totalDiscountAmount,
-      total_discount_amount: totalDiscountAmount,
-      total_vat_amount_oc: totalVatAmount,
-      total_vat_amount: totalVatAmount,
 
       account_object_id: matchedAccountObject?.accountObjectId,
       account_object_code:
@@ -553,9 +595,18 @@ export class MisaVoucherService {
       include_invoice: 1,
       journal_memo: `Bán hàng - ${invoice.code}`,
 
+      total_sale_amount_oc: totalSaleAmount,
+      total_sale_amount: totalSaleAmount,
+      total_amount_oc: totalSaleAmount + totalVatAmount,
+      total_amount: totalSaleAmount + totalVatAmount,
+      total_discount_amount_oc: totalDiscountAmount,
+      total_discount_amount: totalDiscountAmount,
+      total_vat_amount_oc: totalVatAmount,
+      total_vat_amount: totalVatAmount,
+
       sa_invoice: {
         reftype: 3560,
-        inv_date: postedDate,
+        inv_date: invoiceDate,
         inv_type_id: 1,
         branch_id: branchId || '',
         account_object_id: matchedAccountObject?.accountObjectId,
@@ -575,8 +626,8 @@ export class MisaVoucherService {
         buyer: '',
         total_sale_amount_oc: totalSaleAmount,
         total_sale_amount: totalSaleAmount,
-        total_amount_oc: totalAmount,
-        total_amount: totalAmount,
+        total_amount_oc: totalSaleAmount + totalVatAmount,
+        total_amount: totalSaleAmount + totalVatAmount,
         total_discount_amount_oc: totalDiscountAmount,
         total_discount_amount: totalDiscountAmount,
         total_vat_amount_oc: totalVatAmount,
@@ -585,11 +636,14 @@ export class MisaVoucherService {
       },
 
       in_outward: {
+        refid: orgRefId,
         branch_id: branchId || '',
         reftype: this.OUTWARD_REFTYPE,
-        posted_date: postedDate,
-        refdate: refDate,
-        in_reforder: inRefOrder,
+        reftype_name: 'Xuất kho bán hàng',
+        posted_date: invoiceDate,
+        refdate: invoiceDate,
+        in_reforder: this.formatDateForMisa(invoice.purchaseDate),
+        refno_finance: invoice.code,
         account_object_id: matchedAccountObject?.accountObjectId,
         account_object_code:
           matchedAccountObject?.accountObjectCode || customerTaxIdentifier,
@@ -601,18 +655,56 @@ export class MisaVoucherService {
         journal_memo: `Xuất kho bán hàng - ${invoice.code}`,
       },
 
+      detail: details,
+
       created_date: createdDate,
       created_by: this.DEFAULT_CREATED_BY,
       modified_date: createdDate,
       modified_by: this.DEFAULT_CREATED_BY,
-      detail: details,
     };
 
     return {
-      app_id: appId || '',
       org_company_code: orgCompanyCode || '',
       voucher: [voucher],
     };
+  }
+
+  private async resolveMisaStock(branchId: number | null | undefined): Promise<{
+    stockId: string;
+    stockCode: string;
+    stockName: string;
+  }> {
+    const stockCode = branchId
+      ? MISA_STOCK_CODE_BY_POS_BRANCH_ID[branchId]
+      : undefined;
+
+    if (!stockCode) {
+      throw new MisaVoucherStageError(
+        'missing_stock',
+        `Chưa cấu hình kho Misa cho chi nhánh POS ${branchId ?? '(trống)'}`,
+      );
+    }
+
+    const stock = await this.prismaService.misaStock.findFirst({
+      where: {
+        stockCode,
+        inactive: false,
+      },
+      select: {
+        stockId: true,
+        stockCode: true,
+        stockName: true,
+      },
+    });
+
+    if (!stock) {
+      throw new MisaVoucherStageError(
+        'missing_stock',
+        `Không tìm thấy kho Misa đang hoạt động với mã ${stockCode} cho chi nhánh POS ${branchId}`,
+      );
+    }
+
+    return stock;
   }
 
   private formatDateForMisa(date: Date): string {
@@ -626,27 +718,31 @@ export class MisaVoucherService {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
-  private async sendVoucherToMisa(
-    payload: MisaSaveVoucherRequestDto,
-  ): Promise<{ success: boolean; message: string }> {
-    const baseUrl = this.configService.get<string>('MISA_BASE_URL');
-    const accessToken = await this.misaAuthService.getAccessToken();
-    const url = `${baseUrl}/apir/sync/actopen/save`;
+  private async sendVoucherToMisa(payload: MisaSaveVoucherRequestDto): Promise<{
+    success: boolean;
+    message: string;
+    stage?: MisaFailureStage;
+  }> {
+    const baseUrl =
+      this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
+      'https://developer.misa.vn/apis';
+    const clientId = this.configService.get<string>('MISA_CLIENT_ID');
+    const url = `${baseUrl}/amiskt/v1/save`;
 
     const orgRefId = payload.voucher?.[0]?.org_refid;
     const orgRefNo = payload.voucher?.[0]?.org_refno;
 
-    // Log full payload gửi đi để soi khi MISA xử lý bất đồng bộ (Success chỉ
-    // nghĩa là đã vào hàng đợi, chưa chắc sinh được chứng từ).
-    this.logger.debug(
-      `📤 Misa save payload [${orgRefNo} / ${orgRefId}]: ${JSON.stringify(payload)}`,
-    );
-
     try {
+      if (!clientId) {
+        throw new Error('Missing Misa configuration: MISA_CLIENT_ID');
+      }
+
+      const accessToken = await this.misaAuthService.getAccessToken();
       const response = await firstValueFrom(
         this.httpService.post<MisaSaveVoucherResponseDto>(url, payload, {
           headers: {
             'Content-Type': 'application/json',
+            ClientID: clientId,
             'X-MISA-AccessToken': accessToken,
           },
         }),
@@ -654,10 +750,12 @@ export class MisaVoucherService {
 
       const data = response.data;
 
-      // Log nguyên văn response MISA (Success/ErrorCode/ErrorMessage/Data) —
-      // Data thường chứa message hàng đợi, giúp đối soát với callback sau này.
       this.logger.log(
-        `📥 Misa save response [${orgRefNo} / ${orgRefId}]: ${JSON.stringify(data)}`,
+        `📥 Misa save response invoice=${orgRefNo} orgRefId=${orgRefId} ` +
+          `httpStatus=${response.status} success=${data.Success} ` +
+          `errorCode=${this.truncateLogValue(data.ErrorCode)} ` +
+          `errorMessage="${this.truncateLogValue(data.ErrorMessage)}" ` +
+          `data="${this.truncateLogValue(data.Data)}"`,
       );
 
       if (data.Success) {
@@ -668,27 +766,60 @@ export class MisaVoucherService {
       }
 
       this.logger.error(
-        `❌ Misa rejected voucher [${orgRefNo} / ${orgRefId}]: ${data.ErrorCode} - ${data.ErrorMessage}`,
+        `❌ [stage=misa_rejected] Misa rejected voucher invoice=${orgRefNo} ` +
+          `orgRefId=${orgRefId} errorCode=${this.truncateLogValue(data.ErrorCode)} ` +
+          `errorMessage="${this.truncateLogValue(data.ErrorMessage)}"`,
       );
       return {
         success: false,
-        message: `${data.ErrorCode}: ${data.ErrorMessage}`,
+        message:
+          [data.ErrorCode, data.ErrorMessage].filter(Boolean).join(': ') ||
+          'Misa rejected voucher',
+        stage: 'misa_rejected',
       };
-    } catch (error) {
-      // Lỗi HTTP (timeout, 4xx/5xx) — log cả response body nếu có.
+    } catch (error: any) {
       const respData = error.response?.data;
+      const status = error.response?.status ?? 'unknown';
+      const message = respData
+        ? `${error.message}: ${this.truncateLogValue(respData)}`
+        : error.message;
+
       this.logger.error(
-        `❌ Misa save HTTP error [${orgRefNo} / ${orgRefId}]: ${error.message}${
-          respData ? ` | body: ${JSON.stringify(respData)}` : ''
-        }`,
+        `❌ [stage=misa_request] Misa save request failed invoice=${orgRefNo} ` +
+          `orgRefId=${orgRefId} httpStatus=${status} ` +
+          `error="${this.truncateLogValue(error.message)}" ` +
+          `responseBody="${this.truncateLogValue(respData)}"`,
       );
       return {
         success: false,
-        message: respData
-          ? `${error.message}: ${JSON.stringify(respData)}`
-          : error.message,
+        message,
+        stage: 'misa_request',
       };
     }
+  }
+
+  private logFailure(
+    stage: MisaFailureStage,
+    invoiceCode: string,
+    orgRefId: string | null,
+    branchId: number | null | undefined,
+    message: string,
+  ): void {
+    this.logger.warn(
+      `⚠️ [stage=${stage}] Misa invoice failed invoice=${invoiceCode} ` +
+        `orgRefId=${orgRefId ?? '(none)'} branchId=${branchId ?? '(none)'} ` +
+        `message="${this.truncateLogValue(message)}"`,
+    );
+  }
+
+  private truncateLogValue(value: unknown, maxLength = 500): string {
+    if (value === undefined || value === null) return '';
+
+    const text =
+      typeof value === 'string'
+        ? value
+        : JSON.stringify(value) || String(value);
+    return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
   }
 
   async handleMisaCallback(
@@ -713,6 +844,16 @@ export class MisaVoucherService {
     }
 
     if (status === 'success') {
+      if (
+        invoice.misaSyncStatus === 'SYNCED' &&
+        invoice.misaConfirmed === true
+      ) {
+        this.logger.log(
+          `⏭️ Ignoring duplicate successful Misa callback for invoice ${invoice.code}`,
+        );
+        return;
+      }
+
       await this.prismaService.invoice.update({
         where: { id: invoice.id },
         data: {
@@ -729,18 +870,32 @@ export class MisaVoucherService {
       return;
     }
 
+    const callbackError = `${errorCode || 'MisaError'}: ${
+      errorMessage || 'Misa processing failed'
+    }`;
+    if (
+      invoice.misaSyncStatus === 'FAILED' &&
+      invoice.misaConfirmed === false &&
+      invoice.misaErrorMessage === callbackError
+    ) {
+      this.logger.log(
+        `⏭️ Ignoring duplicate failed Misa callback for invoice ${invoice.code}`,
+      );
+      return;
+    }
+
     await this.prismaService.invoice.update({
       where: { id: invoice.id },
       data: {
         misaSyncStatus: 'FAILED',
         misaCallbackReceivedAt: new Date(),
         misaConfirmed: false,
-        misaErrorMessage: `${errorCode}: ${errorMessage}`,
+        misaErrorMessage: callbackError,
       },
     });
 
     this.logger.error(
-      `❌ Invoice ${invoice.code} failed to sync to Misa: ${errorCode} - ${errorMessage}`,
+      `❌ Invoice ${invoice.code} failed to sync to Misa: ${callbackError}`,
     );
   }
 
@@ -777,8 +932,15 @@ export class MisaVoucherService {
     }> = [];
     let successCount = 0;
     let failedCount = 0;
+    const failureSummary = new Map<MisaFailureStage, number>();
 
-    for (const invoiceCode of invoiceCodes) {
+    for (let index = 0; index < invoiceCodes.length; index++) {
+      const invoiceCode = invoiceCodes[index];
+      const startedAt = Date.now();
+      this.logger.log(
+        `📦 Misa bulk invoice start ${index + 1}/${invoiceCodes.length} invoice=${invoiceCode}`,
+      );
+
       try {
         const result = await this.createSaleVoucherFromInvoice(
           invoiceCode,
@@ -793,11 +955,31 @@ export class MisaVoucherService {
         });
         if (result.success) {
           successCount++;
+          this.logger.log(
+            `✅ Misa bulk invoice done ${index + 1}/${invoiceCodes.length} ` +
+              `invoice=${invoiceCode} durationMs=${Date.now() - startedAt}`,
+          );
         } else {
           failedCount++;
+          const stage = result.stage || 'build_payload';
+          failureSummary.set(stage, (failureSummary.get(stage) || 0) + 1);
+          this.logger.warn(
+            `⚠️ Misa bulk invoice failed ${index + 1}/${invoiceCodes.length} ` +
+              `invoice=${invoiceCode} stage=${stage} ` +
+              `durationMs=${Date.now() - startedAt} ` +
+              `message="${this.truncateLogValue(result.message)}"`,
+          );
         }
-      } catch (error) {
+      } catch (error: any) {
         failedCount++;
+        const stage: MisaFailureStage = 'build_payload';
+        failureSummary.set(stage, (failureSummary.get(stage) || 0) + 1);
+        this.logger.error(
+          `❌ Misa bulk invoice exception ${index + 1}/${invoiceCodes.length} ` +
+            `invoice=${invoiceCode} stage=${stage} ` +
+            `durationMs=${Date.now() - startedAt} ` +
+            `message="${this.truncateLogValue(error.message)}"`,
+        );
         results.push({
           invoiceCode,
           success: false,
@@ -811,9 +993,16 @@ export class MisaVoucherService {
       `📦 Bulk push done: ${successCount} success, ${failedCount} failed / ${invoiceCodes.length} total`,
     );
 
+    if (failureSummary.size > 0) {
+      const summary = [...failureSummary.entries()]
+        .map(([stage, count]) => `${stage}=${count}`)
+        .join(', ');
+      this.logger.warn(`📊 Misa bulk failure summary: ${summary}`);
+    }
+
     return {
       success: failedCount === 0,
-      message: `Đã đẩy ${successCount}/${invoiceCodes.length} hóa đơn lên Misa thành công`,
+      message: `Đã gửi ${successCount}/${invoiceCodes.length} hóa đơn vào hàng đợi Misa`,
       total: invoiceCodes.length,
       successCount,
       failedCount,
@@ -918,16 +1107,21 @@ export class MisaVoucherService {
   private async sendDeleteVoucherToMisa(
     orgRefId: string,
   ): Promise<{ success: boolean; message: string }> {
-    const baseUrl = this.configService.get<string>('MISA_BASE_URL');
-    const appId = this.configService.get<string>('MISA_APP_ID');
+    const baseUrl =
+      this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
+      'https://developer.misa.vn/apis';
+    const clientId = this.configService.get<string>('MISA_CLIENT_ID');
     const orgCompanyCode = this.configService.get<string>(
       'MISA_ORG_COMPANY_CODE',
     );
     const accessToken = await this.misaAuthService.getAccessToken();
-    const url = `${baseUrl}/apir/sync/actopen/delete`;
+    const url = `${baseUrl}/amiskt/v1/delete`;
+
+    if (!clientId) {
+      throw new Error('Missing Misa configuration: MISA_CLIENT_ID');
+    }
 
     const payload: MisaDeleteVoucherRequestDto = {
-      app_id: appId || '',
       org_company_code: orgCompanyCode || '',
       voucher: [
         {
@@ -942,6 +1136,7 @@ export class MisaVoucherService {
         this.httpService.delete<MisaDeleteVoucherResponseDto>(url, {
           headers: {
             'Content-Type': 'application/json',
+            ClientID: clientId,
             'X-MISA-AccessToken': accessToken,
           },
           data: payload,

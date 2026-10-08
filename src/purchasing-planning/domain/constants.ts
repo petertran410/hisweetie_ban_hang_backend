@@ -47,4 +47,5 @@ export const INCLUDED_DEMAND_TYPES = new Set([
 export const RETURN_DEMAND_TYPES = new Set([
   'RETURN_IN',
   'CONSIGNMENT_RETURN_IN',
+  'INTERNAL_USE_RETURN_IN',
 ]);

@@ -3,6 +3,8 @@ import { join } from 'path';
 import { existsSync, unlinkSync, mkdirSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import convert from 'heic-convert';
+import { repairUploadedFilename } from '../common/uploaded-filename.util';
+import { stampPdfTitle } from './publication-pdf-title';
 
 const HEIC_MIMES = new Set([
   'image/heic',
@@ -189,6 +191,7 @@ export class UploadService {
     originalname: string,
     mimetype: string,
     subfolder?: string,
+    originalNameOverride?: string,
   ): Promise<{
     filename: string;
     url: string;
@@ -196,6 +199,23 @@ export class UploadService {
     mimetype: string;
     originalname: string;
   }> {
+    const displayName = repairUploadedFilename(
+      originalNameOverride || originalname,
+    );
+    let fileBuffer = buffer;
+    if (
+      subfolder === 'products/cong-bo' &&
+      mimetype.toLowerCase() === 'application/pdf'
+    ) {
+      try {
+        fileBuffer = Buffer.from(await stampPdfTitle(buffer, displayName));
+      } catch (error) {
+        this.logger.warn(
+          `Không gắn được tên PDF ${displayName}: ${(error as Error).message}. Lưu nguyên bản.`,
+        );
+      }
+    }
+
     const timestamp = Date.now();
     const randomName = Array(16)
       .fill(null)
@@ -213,7 +233,7 @@ export class UploadService {
 
     const filePath = join(uploadDir, filename);
     try {
-      await writeFile(filePath, buffer);
+      await writeFile(filePath, fileBuffer);
     } catch (err) {
       this.logger.error(
         `Ghi file thất bại ${filePath}: ${(err as Error).message}`,
@@ -225,9 +245,9 @@ export class UploadService {
     return {
       filename,
       url: this.getFileUrl(filename, subfolder),
-      size: buffer.length,
+      size: fileBuffer.length,
       mimetype,
-      originalname,
+      originalname: displayName,
     };
   }
 

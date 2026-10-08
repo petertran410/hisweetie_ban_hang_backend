@@ -47,6 +47,7 @@ import { NoteTemplatesModule } from './note-templates/note-templates.module';
 import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { InternalUseModule } from './internal-use/internal-use.module';
+import { InternalUseReturnsModule } from './internal-use-returns/internal-use-returns.module';
 import { SupplierGroupsModule } from './supplier-groups/supplier-groups.module';
 import { OrderSuppliersModule } from './order-suppliers/order-suppliers.module';
 import { VehicleShipmentsModule } from './vehicle-shipments/vehicle-shipments.module';
@@ -159,6 +160,7 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
     ProductionsModule,
     DestructionsModule,
     InternalUseModule,
+    InternalUseReturnsModule,
     SupplierGroupsModule,
     OrderSuppliersModule,
     VehicleShipmentsModule,

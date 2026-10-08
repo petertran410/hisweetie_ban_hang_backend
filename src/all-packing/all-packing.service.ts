@@ -2,6 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AllPackingQueryDto } from './dto/all-packing-query.dto';
 import { searchCustomerIds } from '../common/customer-search.util';
+import {
+  buildColdCargoWarning,
+  summarizeColdCargoWarning,
+  type ColdCargoWarning,
+} from '../common/cold-cargo.util';
 
 const PACKING_SLIP_LIST_SELECT = {
   id: true,
@@ -229,8 +234,19 @@ export class AllPackingService {
         }),
         this.prisma.packingSlip.count({ where: whereSlips }),
       ]);
+      const coldWarnings = await this.getColdWarningsByPackingItems(
+        items.map((item) => ({
+          key: `giao-hang:${item.id}`,
+          invoices: item.invoices,
+        })),
+      );
       return {
-        data: items.map((item) => this.mapPackingSlip(item)),
+        data: items.map((item) =>
+          this.mapPackingSlip(
+            item,
+            coldWarnings.get(`giao-hang:${item.id}`),
+          ),
+        ),
         total,
       };
     }
@@ -254,8 +270,19 @@ export class AllPackingService {
         }),
         this.prisma.packingHang.count({ where: whereHangs }),
       ]);
+      const coldWarnings = await this.getColdWarningsByPackingItems(
+        items.map((item) => ({
+          key: `dong-hang:${item.id}`,
+          invoices: item.invoices,
+        })),
+      );
       return {
-        data: items.map((item) => this.mapPackingHang(item)),
+        data: items.map((item) =>
+          this.mapPackingHang(
+            item,
+            coldWarnings.get(`dong-hang:${item.id}`),
+          ),
+        ),
         total,
       };
     }
@@ -279,8 +306,19 @@ export class AllPackingService {
         }),
         this.prisma.packingLoading.count({ where: whereLoadings }),
       ]);
+      const coldWarnings = await this.getColdWarningsByPackingItems(
+        items.map((item) => ({
+          key: `loading:${item.id}`,
+          invoices: item.invoices,
+        })),
+      );
       return {
-        data: items.map((item) => this.mapPackingLoading(item)),
+        data: items.map((item) =>
+          this.mapPackingLoading(
+            item,
+            coldWarnings.get(`loading:${item.id}`),
+          ),
+        ),
         total,
       };
     }
@@ -399,14 +437,47 @@ export class AllPackingService {
         : [],
     ]);
 
+    const coldWarnings = await this.getColdWarningsByPackingItems([
+      ...pageSlips.map((item) => ({
+        key: `giao-hang:${item.id}`,
+        invoices: item.invoices,
+      })),
+      ...pageHangs.map((item) => ({
+        key: `dong-hang:${item.id}`,
+        invoices: item.invoices,
+      })),
+      ...pageLoadings.map((item) => ({
+        key: `loading:${item.id}`,
+        invoices: item.invoices,
+      })),
+    ]);
+
     const slipMap = new Map(
-      pageSlips.map((s) => [s.id, this.mapPackingSlip(s)] as [number, any]),
+      pageSlips.map(
+        (s) =>
+          [s.id, this.mapPackingSlip(s, coldWarnings.get(`giao-hang:${s.id}`))] as [
+            number,
+            any,
+          ],
+      ),
     );
     const hangMap = new Map(
-      pageHangs.map((h) => [h.id, this.mapPackingHang(h)] as [number, any]),
+      pageHangs.map(
+        (h) =>
+          [h.id, this.mapPackingHang(h, coldWarnings.get(`dong-hang:${h.id}`))] as [
+            number,
+            any,
+          ],
+      ),
     );
     const loadingMap = new Map(
-      pageLoadings.map((l) => [l.id, this.mapPackingLoading(l)] as [number, any]),
+      pageLoadings.map(
+        (l) =>
+          [l.id, this.mapPackingLoading(l, coldWarnings.get(`loading:${l.id}`))] as [
+            number,
+            any,
+          ],
+      ),
     );
 
     const paginatedData = pageKeys
@@ -420,11 +491,18 @@ export class AllPackingService {
     return { data: paginatedData, total };
   }
 
-  private mapPackingSlip(item: any) {
+  private mapPackingSlip(
+    item: any,
+    coldWarning: Pick<ColdCargoWarning, 'hasColdItems' | 'coldItemCount'> = {
+      hasColdItems: false,
+      coldItemCount: 0,
+    },
+  ) {
     const imageCount = item._count?.images ?? 0;
     const expenseFileCount = item._count?.expenseFiles ?? 0;
     return {
       ...item,
+      ...coldWarning,
       type: 'giao-hang' as const,
       imageCount,
       expenseFileCount,
@@ -435,10 +513,17 @@ export class AllPackingService {
     };
   }
 
-  private mapPackingHang(item: any) {
+  private mapPackingHang(
+    item: any,
+    coldWarning: Pick<ColdCargoWarning, 'hasColdItems' | 'coldItemCount'> = {
+      hasColdItems: false,
+      coldItemCount: 0,
+    },
+  ) {
     const imageCount = item._count?.images ?? 0;
     return {
       ...item,
+      ...coldWarning,
       type: 'dong-hang' as const,
       imageCount,
       expenseFileCount: 0,
@@ -447,16 +532,95 @@ export class AllPackingService {
     };
   }
 
-  private mapPackingLoading(item: any) {
+  private mapPackingLoading(
+    item: any,
+    coldWarning: Pick<ColdCargoWarning, 'hasColdItems' | 'coldItemCount'> = {
+      hasColdItems: false,
+      coldItemCount: 0,
+    },
+  ) {
     const imageCount = item._count?.images ?? 0;
     return {
       ...item,
+      ...coldWarning,
       type: 'loading' as const,
       imageCount,
       expenseFileCount: 0,
       images: Array.from({ length: imageCount }, (_, i) => ({ id: i })),
       expenseFiles: [],
     };
+  }
+
+  private async getColdWarningsByPackingItems(
+    items: Array<{ key: string; invoices?: readonly any[] | null }>,
+  ) {
+    const invoiceIds = [
+      ...new Set(
+        items.flatMap((item) =>
+          (Array.isArray(item.invoices) ? item.invoices : [])
+            .map((entry) => Number(entry?.invoice?.id))
+            .filter((id) => Number.isInteger(id) && id > 0),
+        ),
+      ),
+    ];
+
+    const coldDetails =
+      invoiceIds.length > 0
+        ? await this.prisma.invoiceDetail.findMany({
+            where: {
+              invoiceId: { in: invoiceIds },
+              product: { cargoType: 'COLD' },
+            },
+            select: {
+              invoiceId: true,
+              productId: true,
+              productCode: true,
+              productName: true,
+              product: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  cargoType: true,
+                },
+              },
+            },
+          })
+        : [];
+
+    const detailsByInvoice = new Map<number, any[]>();
+    for (const detail of coldDetails) {
+      const details = detailsByInvoice.get(detail.invoiceId) || [];
+      details.push(detail);
+      detailsByInvoice.set(detail.invoiceId, details);
+    }
+
+    const warnings = new Map<
+      string,
+      Pick<ColdCargoWarning, 'hasColdItems' | 'coldItemCount'>
+    >();
+
+    for (const item of items) {
+      const hydratedInvoices = (Array.isArray(item.invoices)
+        ? item.invoices
+        : []
+      ).map((entry) => {
+        if (!entry?.invoice) return entry;
+        return {
+          ...entry,
+          invoice: {
+            ...entry.invoice,
+            details: detailsByInvoice.get(entry.invoice.id) || [],
+          },
+        };
+      });
+      warnings.set(
+        item.key,
+        summarizeColdCargoWarning(buildColdCargoWarning(hydratedInvoices)),
+      );
+    }
+
+    return warnings;
   }
 
   private buildWhereSlips(

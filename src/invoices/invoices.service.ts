@@ -57,6 +57,7 @@ import {
 } from '../common/inventory-log.util';
 import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
+import { mapColdCargoInvoice } from '../common/cold-cargo.util';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { MetaPurchaseOutboxService } from '../meta-purchase/meta-purchase-outbox.service';
@@ -71,6 +72,34 @@ const POS_PREPAID_ORDER_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
+
+const INVOICE_PACKING_CREATOR_PARENT_SELECT = {
+  creator: { select: { id: true, name: true } },
+} as const;
+
+const INVOICE_PACKING_HANG_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingHang: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
+
+const INVOICE_PACKING_LOADING_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingLoading: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
+
+const INVOICE_PACKING_SLIP_CREATOR_SELECT = {
+  id: true,
+  createdAt: true,
+  packingSlip: {
+    select: INVOICE_PACKING_CREATOR_PARENT_SELECT,
+  },
+} as const;
 
 const INVOICE_LIST_SELECT = {
   id: true,
@@ -131,6 +160,18 @@ const INVOICE_LIST_SELECT = {
       partnerDelivery: { select: { id: true, name: true } },
     },
   },
+  packingHangs: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_HANG_CREATOR_SELECT,
+  },
+  packingLoadings: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_LOADING_CREATOR_SELECT,
+  },
+  packingSlips: {
+    orderBy: { createdAt: 'asc' },
+    select: INVOICE_PACKING_SLIP_CREATOR_SELECT,
+  },
 } as const;
 
 @Injectable()
@@ -153,7 +194,7 @@ export class InvoicesService {
     user: any,
   ) {
     const parsed = parseDocumentQrPayload(payload);
-    const select = {
+    const baseSelect = {
       id: true,
       code: true,
       branchId: true,
@@ -161,16 +202,35 @@ export class InvoicesService {
       status: true,
       customer: { select: { id: true, name: true } },
     };
+    const invoiceSelect = {
+      ...baseSelect,
+      details: {
+        where: { product: { cargoType: 'COLD' } },
+        select: {
+          productId: true,
+          productCode: true,
+          productName: true,
+          product: {
+            select: {
+              id: true,
+              code: true,
+              name: true,
+              cargoType: true,
+            },
+          },
+        },
+      },
+    };
 
     const document =
       parsed.kind === 'invoice'
         ? await this.prisma.invoice.findUnique({
             where: { code: parsed.code },
-            select: { ...select, purchaseDate: true },
+            select: { ...invoiceSelect, purchaseDate: true },
           })
         : await this.prisma.consignment.findUnique({
             where: { code: parsed.code },
-            select: { ...select, consignDate: true },
+            select: { ...baseSelect, consignDate: true },
           });
 
     if (!document) throw new NotFoundException('Không tìm thấy chứng từ');
@@ -193,7 +253,7 @@ export class InvoicesService {
             { code: { startsWith: `${version.base}.` } },
           ],
         },
-        select: { ...select, purchaseDate: true },
+        select: { ...invoiceSelect, purchaseDate: true },
       });
       const live = pickLivePackingInvoice(document, family);
       const successor = family.find((item) => item.id === live.id);
@@ -247,6 +307,9 @@ export class InvoicesService {
           ? (resolved as any).purchaseDate
           : (resolved as any).consignDate,
       customer: resolved.customer,
+      ...(parsed.kind === 'invoice'
+        ? mapColdCargoInvoice(resolved as any)
+        : {}),
     };
   }
 
@@ -411,6 +474,9 @@ export class InvoicesService {
         contains: productNoteSearch,
         mode: 'insensitive',
       };
+    }
+    if (query.hasColdItems) {
+      detailsConditions.product = { cargoType: 'COLD' };
     }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
@@ -795,6 +861,18 @@ export class InvoicesService {
       if (where.purchaseDate?.lte) {
         sqlParams.push(where.purchaseDate.lte);
         sqlConditions.push(`i."purchaseDate" <= $${sqlParams.length}`);
+      }
+      if (where.details?.some?.product?.cargoType === 'COLD') {
+        sqlConditions.push(`
+          EXISTS (
+            SELECT 1
+            FROM invoice_details cold_detail
+            JOIN products cold_product
+              ON cold_product.id = cold_detail."productId"
+            WHERE cold_detail."invoiceId" = i.id
+              AND cold_product."cargo_type" = 'COLD'
+          )
+        `);
       }
       if (where.createdAt?.gte) {
         sqlParams.push(where.createdAt.gte);
@@ -5423,8 +5501,15 @@ export class InvoicesService {
     pageSize?: number;
     search?: string;
     excludeDelivered?: boolean;
+    packingType?: 'giao-hang' | 'dong-hang' | 'loading';
   }) {
-    const { branchId, pageSize = 100, search, excludeDelivered } = query;
+    const {
+      branchId,
+      pageSize = 100,
+      search,
+      excludeDelivered,
+      packingType,
+    } = query;
     const take = Math.min(Math.max(pageSize, 1), 200);
 
     const where: any = {};
@@ -5459,13 +5544,76 @@ export class InvoicesService {
         grandTotal: true,
         purchaseDate: true,
         customer: { select: { id: true, name: true } },
+        details: {
+          where: { product: { cargoType: 'COLD' } },
+          select: {
+            productId: true,
+            productCode: true,
+            productName: true,
+            product: {
+              select: {
+                id: true,
+                code: true,
+                name: true,
+                cargoType: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
       take,
     });
 
+    const packingCountByInvoiceId = new Map<number, number>();
+    if (packingType && data.length > 0) {
+      const invoiceIds = data.map((invoice) => invoice.id);
+      const rows =
+        packingType === 'giao-hang'
+          ? await this.prisma.packingSlipInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            })
+          : packingType === 'dong-hang'
+            ? await this.prisma.packingHangInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            })
+            : await this.prisma.packingLoadingInvoice.groupBy({
+              by: ['invoiceId'],
+              where: {
+                invoiceId: { in: invoiceIds },
+              },
+              _count: { invoiceId: true },
+            });
+
+      for (const row of rows) {
+        if (row.invoiceId != null) {
+          packingCountByInvoiceId.set(row.invoiceId, row._count.invoiceId);
+        }
+      }
+    }
+
     // Trả cùng shape với findAll để frontend khỏi đổi nhiều
-    return { data, total: data.length, page: 1, limit: take };
+    return {
+      data: data.map((invoice) => ({
+        ...invoice,
+        ...mapColdCargoInvoice(invoice),
+        ...(packingType
+          ? { packingCount: packingCountByInvoiceId.get(invoice.id) ?? 0 }
+          : {}),
+        details: undefined,
+      })),
+      total: data.length,
+      page: 1,
+      limit: take,
+    };
   }
 
   /**
@@ -6080,6 +6228,9 @@ export class InvoicesService {
         contains: productNoteSearch,
         mode: 'insensitive',
       };
+    }
+    if (query.hasColdItems) {
+      detailsConditions.product = { cargoType: 'COLD' };
     }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };

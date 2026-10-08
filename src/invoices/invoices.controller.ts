@@ -93,12 +93,15 @@ export class InvoicesController {
     @Query('pageSize') pageSize?: string,
     @Query('search') search?: string,
     @Query('excludeDelivered') excludeDelivered?: string,
+    @Query('packingType')
+    packingType?: 'giao-hang' | 'dong-hang' | 'loading',
   ) {
     return this.invoicesService.findForPacking({
       branchId: branchId ? +branchId : undefined,
       pageSize: pageSize ? +pageSize : 100,
       search,
       excludeDelivered: excludeDelivered === 'true' || excludeDelivered === '1',
+      packingType,
     });
   }
 
@@ -144,7 +147,7 @@ export class InvoicesController {
   }
 
   @Get('export-detail/columns')
-  @RequirePermissions('invoices:view')
+  @RequirePermissions('invoices:export')
   @ApiOperation({ summary: 'Lấy catalog cột export chi tiết' })
   getDetailColumns() {
     return this.invoicesService.getDetailColumns();
@@ -228,7 +231,7 @@ export class InvoicesController {
   }
 
   @Get('export')
-  @RequirePermissions('invoices:view')
+  @RequirePermissions('invoices:export')
   @ApiOperation({ summary: 'Xuất Excel hóa đơn tổng quan' })
   async exportOverview(@Query() query: InvoiceQueryDto, @Res() res: Response) {
     const ts = Date.now();
@@ -244,7 +247,7 @@ export class InvoicesController {
   }
 
   @Get('export-detail')
-  @RequirePermissions('invoices:view')
+  @RequirePermissions('invoices:export')
   @ApiOperation({ summary: 'Xuất Excel hóa đơn chi tiết' })
   async exportDetail(
     @Query() query: InvoiceQueryDto,

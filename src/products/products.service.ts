@@ -6,6 +6,7 @@ import {
 import { Response } from 'express';
 import { Prisma } from '@prisma/client';
 import * as ExcelJS from 'exceljs';
+import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateProductDto,
@@ -473,9 +474,19 @@ export class ProductsService {
           value: pa.value?.value || '',
         }))
       : [];
+    const documents = Array.isArray((product as any).documents)
+      ? (product as any).documents.map((document: any) => ({
+          ...document,
+          originalName: document.originalName
+            ? repairUploadedFilename(document.originalName)
+            : document.originalName,
+        }))
+      : (product as any).documents;
+
     return overlayFactoriesFromMappings({
       ...(product as any),
       attributes,
+      ...(documents !== undefined ? { documents } : {}),
     });
   }
 
@@ -1177,7 +1188,9 @@ export class ProductsService {
           data: documents.map((doc) => ({
             productId: product.id,
             url: doc.url,
-            originalName: doc.originalName ?? null,
+            originalName: doc.originalName
+              ? repairUploadedFilename(doc.originalName)
+              : null,
             mimetype: doc.mimetype ?? null,
             size: doc.size ?? null,
           })),
@@ -1574,7 +1587,9 @@ export class ProductsService {
             data: documents.map((doc) => ({
               productId: id,
               url: doc.url,
-              originalName: doc.originalName ?? null,
+              originalName: doc.originalName
+              ? repairUploadedFilename(doc.originalName)
+              : null,
               mimetype: doc.mimetype ?? null,
               size: doc.size ?? null,
             })),

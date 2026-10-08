@@ -9,6 +9,7 @@ import {
   Param,
   Query,
   Logger,
+  Body,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { UploadService } from './upload.service';
@@ -200,6 +201,7 @@ export class UploadController {
   async uploadAnyFiles(
     @UploadedFiles() files: Express.Multer.File[],
     @Query('subfolder') subfolder?: string,
+    @Body('originalNames') originalNames?: string | string[],
   ) {
     if (!files || files.length === 0) {
       throw new BadRequestException('At least one file is required');
@@ -213,6 +215,7 @@ export class UploadController {
       originalname: string;
     }[] = [];
     const errors: { originalname: string; reason: string }[] = [];
+    const clientOriginalNames = parseOriginalNames(originalNames);
 
     // Xử lý song song (xem ghi chú ở uploadImages).
     type FileSettled = {
@@ -226,7 +229,7 @@ export class UploadController {
       error?: { originalname: string; reason: string };
     };
     const settled = await Promise.all(
-      files.map(async (file): Promise<FileSettled> => {
+      files.map(async (file, index): Promise<FileSettled> => {
         if (!ALLOWED_FILE_MIMES.has(file.mimetype.toLowerCase())) {
           return {
             error: {
@@ -242,6 +245,7 @@ export class UploadController {
             file.originalname,
             file.mimetype,
             subfolder,
+            clientOriginalNames[index],
           );
           return { item: result };
         } catch (err) {
@@ -264,4 +268,23 @@ export class UploadController {
 
     return { items, errors };
   }
+}
+
+function parseOriginalNames(value?: string | string[]): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((name): name is string => typeof name === 'string');
+  }
+
+  if (!value) return [];
+
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((name): name is string => typeof name === 'string');
+    }
+  } catch {
+    // Fall back to the single value for clients that send one file name.
+  }
+
+  return [value];
 }

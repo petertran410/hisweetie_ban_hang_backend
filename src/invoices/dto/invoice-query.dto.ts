@@ -263,6 +263,12 @@ export class InvoiceQueryDto {
   @IsBoolean()
   orphanedPacking?: boolean;
 
+  // Chỉ lấy hóa đơn có ít nhất một sản phẩm hàng lạnh (Product.cargoType=COLD).
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasColdItems?: boolean;
+
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()

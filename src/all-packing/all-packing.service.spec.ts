@@ -20,6 +20,9 @@ describe('AllPackingService', () => {
         findMany: jest.fn(),
         count: jest.fn(),
       },
+      invoiceDetail: {
+        findMany: jest.fn(),
+      },
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -116,5 +119,58 @@ describe('AllPackingService', () => {
     expect(res.data[1].id).toBe(20);
     expect(res.data[1].type).toBe('dong-hang');
     expect(prisma.packingLoading.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks a packing row when one linked invoice contains cold cargo', async () => {
+    prisma.packingSlip.findMany.mockResolvedValue([
+      {
+        id: 99,
+        code: 'BD000099',
+        createdAt: new Date('2026-09-12T13:00:00Z'),
+        invoices: [
+          {
+            id: 1,
+            invoice: { id: 501, code: 'HD000501' },
+          },
+        ],
+        _count: { images: 0, expenseFiles: 0 },
+      },
+    ]);
+    prisma.packingSlip.count.mockResolvedValue(1);
+    prisma.invoiceDetail.findMany.mockResolvedValue([
+      {
+        invoiceId: 501,
+        productId: 700,
+        productCode: 'COLD-700',
+        productName: 'Sản phẩm lạnh',
+        product: {
+          id: 700,
+          code: 'COLD-700',
+          name: 'Sản phẩm lạnh',
+          cargoType: 'COLD',
+        },
+      },
+    ]);
+
+    const res = await service.findAll({
+      type: 'giao-hang',
+      pageSize: 15,
+      currentItem: 0,
+    });
+
+    expect(res.data[0]).toEqual(
+      expect.objectContaining({
+        hasColdItems: true,
+        coldItemCount: 1,
+      }),
+    );
+    expect(prisma.invoiceDetail.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          invoiceId: { in: [501] },
+          product: { cargoType: 'COLD' },
+        }),
+      }),
+    );
   });
 });

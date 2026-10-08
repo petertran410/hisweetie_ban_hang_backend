@@ -859,6 +859,14 @@ export class ReturnOrdersService {
   ) {
     const touchedProductIds = new Set<number>();
     const result = await this.prisma.$transaction(async (tx) => {
+      // Khóa phiếu trước khi đọc trạng thái để hai request xác nhận đồng thời
+      // không cùng đi qua bước kiểm tra và ghi kho hai lần.
+      await tx.$queryRaw`
+        SELECT id FROM "return_orders"
+        WHERE id = ${id}
+        FOR UPDATE
+      `;
+
       const returnOrder = await tx.returnOrder.findUnique({
         where: { id },
         include: {
@@ -1173,7 +1181,7 @@ export class ReturnOrdersService {
       });
 
       return this.findOne(id);
-    });
+    }, { timeout: 15_000 });
 
     for (const productId of touchedProductIds) {
       this.larkProductSync.enqueueSync(productId);

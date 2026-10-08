@@ -432,17 +432,22 @@ export class MisaDictionaryService {
     skip: number,
     take: number,
   ): Promise<T[]> {
-    const baseUrl = this.configService.get<string>('MISA_BASE_URL');
-    const appId = this.configService.get<string>('MISA_APP_ID');
+    const baseUrl =
+      this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
+      'https://developer.misa.vn/apis';
+    const clientId = this.configService.get<string>('MISA_CLIENT_ID');
     const accessToken = await this.misaAuthService.getAccessToken();
 
-    const url = `${baseUrl}/apir/sync/actopen/get_dictionary`;
+    if (!clientId) {
+      throw new Error('Missing Misa configuration: MISA_CLIENT_ID');
+    }
+
+    const url = `${baseUrl}/amiskt/v1/get_dictionary`;
 
     const requestBody: MisaGetDictionaryRequestDto = {
       data_type: dataType,
       skip,
       take,
-      app_id: appId || '',
     };
 
     try {
@@ -453,6 +458,7 @@ export class MisaDictionaryService {
           {
             headers: {
               'Content-Type': 'application/json',
+              ClientID: clientId,
               'X-MISA-AccessToken': accessToken,
             },
           },
@@ -462,39 +468,27 @@ export class MisaDictionaryService {
       const data = response.data;
 
       if (!data.Success) {
-        this.logger.error(
-          `❌ Misa get_dictionary failed: ${data.ErrorCode} - ${data.ErrorMessage}`,
+        throw new Error(
+          `Misa get_dictionary failed: ${data.ErrorCode || 'UnknownError'} - ${data.ErrorMessage || 'Unknown error'}`,
         );
-        return [];
       }
-
-      let items: T[] = [];
 
       if (!data.Data) {
         this.logger.warn(`⚠️ No data returned for data_type=${dataType}`);
         return [];
       }
 
-      if (typeof data.Data === 'string') {
-        try {
-          items = JSON.parse(data.Data) as T[];
-          this.logger.debug(
-            `Parsed Data from string for data_type=${dataType}, count: ${items.length}`,
-          );
-        } catch (parseError) {
-          this.logger.error(
-            `❌ Failed to parse Data as JSON for data_type=${dataType}: ${parseError.message}`,
-          );
-          return [];
-        }
-      } else if (Array.isArray(data.Data)) {
-        items = data.Data;
-      } else {
-        this.logger.warn(
-          `⚠️ Unexpected Data format for data_type=${dataType}: ${typeof data.Data}`,
-        );
-        return [];
-      }
+      const rawData = data.Data;
+      this.logger.debug(
+        `Misa get_dictionary response data_type=${dataType} ` +
+          `dataKind=${Array.isArray(rawData) ? 'array' : typeof rawData} ` +
+          `keys=${
+            rawData && typeof rawData === 'object' && !Array.isArray(rawData)
+              ? Object.keys(rawData).join(',')
+              : ''
+          }`,
+      );
+      const items = this.parseDictionaryData<T>(rawData, dataType);
 
       if (items.length > 0) {
         this.logger.log(
@@ -507,8 +501,39 @@ export class MisaDictionaryService {
       this.logger.error(
         `❌ Failed to fetch dictionary (type=${dataType}): ${error.message}`,
       );
-      return [];
+      throw error;
     }
+  }
+
+  private parseDictionaryData<T>(rawData: unknown, dataType: number): T[] {
+    if (Array.isArray(rawData)) {
+      return rawData as T[];
+    }
+
+    if (typeof rawData === 'string') {
+      try {
+        return this.parseDictionaryData<T>(JSON.parse(rawData), dataType);
+      } catch (error) {
+        throw new Error(
+          `Misa get_dictionary returned invalid JSON Data for data_type=${dataType}`,
+        );
+      }
+    }
+
+    if (rawData && typeof rawData === 'object') {
+      const wrapper = rawData as Record<string, unknown>;
+      const nestedKeys = ['data', 'Data', 'items', 'Items', 'result', 'Result'];
+
+      for (const key of nestedKeys) {
+        if (key in wrapper) {
+          return this.parseDictionaryData<T>(wrapper[key], dataType);
+        }
+      }
+    }
+
+    throw new Error(
+      `Misa get_dictionary returned invalid Data for data_type=${dataType}`,
+    );
   }
 
   /**

@@ -64,6 +64,8 @@ interface PackingSlipForNotify {
   hasCuocNhanHang?: boolean;
   cuocNhanHang?: any;
   note?: string | null;
+  hasColdItems?: boolean;
+  coldItemCount?: number;
   invoices?: PackingSlipInvoice[];
   images?: PackingSlipImage[];
 }
@@ -319,6 +321,10 @@ export class N8nNotifyService {
         note: ps.note ?? null,
         imageUrls,
         invoices,
+        coldCargoWarning: {
+          hasColdItems: ps.hasColdItems === true,
+          coldItemCount: Math.max(0, Number(ps.coldItemCount) || 0),
+        },
       },
     };
   }

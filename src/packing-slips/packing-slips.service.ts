@@ -36,6 +36,7 @@ import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
 import { InternalFinanceService } from '../internal-finance/internal-finance.service';
 import { INTERNAL_FINANCE_STATUS } from '../internal-finance/internal-finance.constants';
+import { buildColdCargoWarning } from '../common/cold-cargo.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -161,6 +162,22 @@ export class PackingSlipsService {
                     name: true,
                   },
                 },
+                details: {
+                  where: { product: { cargoType: 'COLD' } },
+                  select: {
+                    productId: true,
+                    productCode: true,
+                    productName: true,
+                    product: {
+                      select: {
+                        id: true,
+                        code: true,
+                        name: true,
+                        cargoType: true,
+                      },
+                    },
+                  },
+                },
               },
             },
             consignment: {
@@ -197,7 +214,10 @@ export class PackingSlipsService {
       throw new NotFoundException(`Packing slip with ID ${id} not found`);
     }
 
-    return packingSlip;
+    return {
+      ...packingSlip,
+      ...buildColdCargoWarning(packingSlip.invoices),
+    };
   }
 
   async create(dto: CreatePackingSlipDto, userId: number) {
@@ -859,17 +879,16 @@ export class PackingSlipsService {
         data: { cancelledAt: new Date(), cancelledById: userId ?? null },
       });
 
-      const internalFinanceEntries =
-        await tx.internalFinanceEntry.findMany({
-          where: { packingSlipId: id },
-          select: {
-            id: true,
-            weeklyBatchId: true,
-            cashFlowId: true,
-            cashIssued: true,
-            status: true,
-          },
-        });
+      const internalFinanceEntries = await tx.internalFinanceEntry.findMany({
+        where: { packingSlipId: id },
+        select: {
+          id: true,
+          weeklyBatchId: true,
+          cashFlowId: true,
+          cashIssued: true,
+          status: true,
+        },
+      });
       const lockedEntry = internalFinanceEntries.find(
         (entry) =>
           entry.weeklyBatchId ||
