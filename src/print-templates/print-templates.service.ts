@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { createDocumentQrPayload } from '../common/document-qr.util';
+import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
 
 @Injectable()
@@ -275,6 +276,10 @@ export class PrintTemplatesService {
           Ma_Don_Hang: inv.code || '',
         };
       }
+      case 'warehouse_export':
+        return await this.mapWarehouseExport(
+          await this.loadInvoiceForWarehouseExport(entityId),
+        );
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
@@ -315,6 +320,45 @@ export class PrintTemplatesService {
       },
     });
     if (!entity) throw new NotFoundException('Invoice not found');
+    return entity;
+  }
+
+  // Phiếu xuất kho in theo hóa đơn thực tế: cần thêm mã đơn hàng để đối chiếu
+  // (hóa đơn gộp lấy mã đơn của các hóa đơn nguồn).
+  private async loadInvoiceForWarehouseExport(id: number) {
+    const entity = await this.prisma.invoice.findUnique({
+      where: { id },
+      include: {
+        customer: {
+          include: {
+            addresses: {
+              where: { isDefault: true },
+              take: 1,
+            },
+          },
+        },
+        soldBy: true,
+        creator: true,
+        branch: true,
+        delivery: true,
+        order: { select: { id: true, code: true } },
+        mergeTargets: {
+          include: { sources: { select: { sourceOrderCode: true } } },
+        },
+        details: {
+          include: {
+            product: true,
+            promotion: { select: { code: true, name: true } },
+          },
+        },
+      },
+    });
+    if (!entity) throw new NotFoundException('Invoice not found');
+    if (entity.status === INVOICE_STATUS.CANCELLED) {
+      throw new BadRequestException(
+        'Hóa đơn đã hủy, không thể in phiếu xuất kho',
+      );
+    }
     return entity;
   }
 
@@ -724,6 +768,61 @@ export class PrintTemplatesService {
         Number(inv.grandTotal || 0),
       ),
       items: (inv.details || []).map((i: any) => this.mapItem(i)),
+    };
+  }
+
+  // Phiếu xuất kho: số liệu lấy hoàn toàn từ chi tiết hóa đơn (không lấy từ
+  // đơn đặt hàng) và không kèm biến tiền.
+  private async mapWarehouseExport(inv: any) {
+    const exportDate = inv.deliveredAt || inv.purchaseDate;
+    const details: any[] = inv.details || [];
+    const orderCodes = inv.order?.code
+      ? [inv.order.code]
+      : Array.from(
+          new Set<string>(
+            (inv.mergeTargets || [])
+              .flatMap((m: any) => m.sources || [])
+              .map((s: any) => s.sourceOrderCode)
+              .filter(Boolean),
+          ),
+        );
+    const totalQuantity = details.reduce(
+      (sum, d) => sum + Number(d.quantity || 0),
+      0,
+    );
+
+    return {
+      ...this.storeVars(inv.branch),
+      ...this.dateVars(exportDate),
+      ...this.customerVars(inv.customer, inv.delivery),
+      ...this.staffVars(inv.soldBy, inv.creator),
+      ...this.deliveryVars(inv.delivery, inv.customer),
+      ...(await this.documentQrVars('invoice', inv.code)),
+      So_Phieu_Xuat_Kho: inv.code ? `PXK-${inv.code}` : '',
+      Ma_Hoa_Don: inv.code || '',
+      Ma_Don_Hang: orderCodes.join(', '),
+      Ngay_Xuat_Kho: exportDate
+        ? new Date(exportDate).toLocaleDateString('vi-VN')
+        : '',
+      Ngay_Hoa_Don: inv.purchaseDate
+        ? new Date(inv.purchaseDate).toLocaleDateString('vi-VN')
+        : '',
+      Kho_Xuat: inv.branch?.name || '',
+      Ghi_Chu: inv.description || '',
+      Tong_So_Luong: Number(totalQuantity.toFixed(3)),
+      Tong_So_Mat_Hang: details.length,
+      items: details.map((i: any, index: number) => {
+        const item = this.mapItem(i);
+        return {
+          STT: index + 1,
+          Ma_Hang: item.Ma_Hang,
+          Ten_Hang_Hoa: item.Ten_Hang_Hoa,
+          Don_Vi_Tinh: item.Don_Vi_Tinh,
+          So_Luong: item.So_Luong,
+          Ghi_Chu_Hang_Hoa: item.Ghi_Chu_Hang_Hoa,
+          NSX: item.NSX,
+        };
+      }),
     };
   }
 
