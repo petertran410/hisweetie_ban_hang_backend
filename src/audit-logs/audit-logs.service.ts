@@ -28,39 +28,47 @@ export class AuditLogsService {
     metadata?: any;
   }) {
     try {
-      return await this.prisma.auditLog.create({
-        data: {
-          actionType: data.actionType,
-          actionCode: data.actionCode,
-          entityType: data.entityType,
-          entityId: data.entityId,
-          entityCode: data.entityCode,
-          category: data.category,
-          severity: data.severity || 'info',
+      // Audit log không cần chờ bản dự phòng xác nhận (synchronous replication):
+      // tắt chờ cho RIÊNG lần ghi này để không cộng thêm độ trễ commit vào
+      // thao tác nghiệp vụ. Mất vài dòng audit cuối khi máy chủ DB sập là chấp
+      // nhận được; dữ liệu nghiệp vụ không bị ảnh hưởng.
+      const [, auditLog] = await this.prisma.$transaction([
+        this.prisma.$executeRaw`SET LOCAL synchronous_commit = off`,
+        this.prisma.auditLog.create({
+          data: {
+            actionType: data.actionType,
+            actionCode: data.actionCode,
+            entityType: data.entityType,
+            entityId: data.entityId,
+            entityCode: data.entityCode,
+            category: data.category,
+            severity: data.severity || 'info',
 
-          snapshot: data.snapshot
-            ? JSON.parse(JSON.stringify(data.snapshot))
-            : undefined,
-          changes: data.changes
-            ? JSON.parse(JSON.stringify(data.changes))
-            : undefined,
+            snapshot: data.snapshot
+              ? JSON.parse(JSON.stringify(data.snapshot))
+              : undefined,
+            changes: data.changes
+              ? JSON.parse(JSON.stringify(data.changes))
+              : undefined,
 
-          message: data.message,
-          messageTemplate: data.messageTemplate,
-          messageParams: data.messageParams,
+            message: data.message,
+            messageTemplate: data.messageTemplate,
+            messageParams: data.messageParams,
 
-          userId: data.userId,
-          userName: data.userName,
-          branchId: data.branchId,
-          branchName: data.branchName,
+            userId: data.userId,
+            userName: data.userName,
+            branchId: data.branchId,
+            branchName: data.branchName,
 
-          ipAddress: data.ipAddress,
-          userAgent: data.userAgent,
-          requestId: data.requestId,
+            ipAddress: data.ipAddress,
+            userAgent: data.userAgent,
+            requestId: data.requestId,
 
-          metadata: data.metadata,
-        },
-      });
+            metadata: data.metadata,
+          },
+        }),
+      ]);
+      return auditLog;
     } catch (error) {
       // KHÔNG throw — audit log không được làm sập nghiệp vụ và không đưa
       // lỗi ra UI. Chỉ ghi log server-side với đủ context để dev debug khi

@@ -131,13 +131,51 @@ export async function recalcConditionBucketsForPairs(
     branchId: number | null | undefined;
   }>,
 ): Promise<void> {
-  const seen = new Set<string>();
+  const byBranch = new Map<number, Set<number>>();
   for (const p of pairs) {
     if (p.productId == null || p.branchId == null) continue;
-    const key = `${p.productId}|${p.branchId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await recalcConditionBuckets(tx, p.productId, p.branchId);
+    let ids = byBranch.get(p.branchId);
+    if (!ids) byBranch.set(p.branchId, (ids = new Set()));
+    ids.add(p.productId);
+  }
+
+  // Theo lô từng chi nhánh: 1 query sổ cái + 1 query tồn kho cho mọi sản phẩm.
+  for (const [branchId, idSet] of byBranch) {
+    const ids = Array.from(idSet).sort((a, b) => a - b);
+    const totalsByProduct = await computeBucketTotalsBatch(tx, ids, branchId);
+    const inventories = await tx.inventory.findMany({
+      where: { productId: { in: ids }, branchId },
+      select: {
+        productId: true,
+        damagedQuantity: true,
+        nearExpiryQuantity: true,
+        promoQuantity: true,
+      },
+    });
+    const invByProduct = new Map<number, any>(
+      inventories.map((inv: any) => [inv.productId, inv]),
+    );
+
+    for (const productId of ids) {
+      const inv = invByProduct.get(productId);
+      const totals = totalsByProduct[productId];
+      if (!inv || !totals) continue;
+      if (
+        Number(inv.damagedQuantity) === totals.damaged &&
+        Number(inv.nearExpiryQuantity) === totals.nearExpiry &&
+        Number(inv.promoQuantity) === totals.promo
+      ) {
+        continue;
+      }
+      await tx.inventory.update({
+        where: { productId_branchId: { productId, branchId } },
+        data: {
+          damagedQuantity: totals.damaged,
+          nearExpiryQuantity: totals.nearExpiry,
+          promoQuantity: totals.promo,
+        },
+      });
+    }
   }
 }
 
