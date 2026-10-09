@@ -171,6 +171,7 @@ describe('InvoicesService delivery reporting', () => {
     };
     const prisma = {
       invoice: { findUnique: jest.fn().mockResolvedValue(currentInvoice) },
+      user: tx.user,
       $transaction: jest.fn((callback) => callback(tx)),
     };
     (tx as any).$queryRaw = jest.fn().mockResolvedValue([{ id: 1 }]);

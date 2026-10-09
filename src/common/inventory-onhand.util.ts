@@ -178,14 +178,72 @@ export async function recalcOnHandForPairs(
     branchId: number | null | undefined;
   }>,
 ): Promise<void> {
-  const seen = new Set<string>();
+  const byBranch = new Map<number, Set<number>>();
   for (const p of pairs) {
     if (p.productId == null || p.branchId == null) continue;
-    const key = `${p.productId}|${p.branchId}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await recalcStockAuditChain(tx, p.productId, p.branchId);
+    let ids = byBranch.get(p.branchId);
+    if (!ids) byBranch.set(p.branchId, (ids = new Set()));
+    ids.add(p.productId);
   }
+  for (const [branchId, ids] of byBranch) {
+    await recalcStockAuditChainBatch(tx, Array.from(ids), branchId);
+  }
+}
+
+interface ChainLog extends RefLog {
+  id: number;
+  quantity: any;
+  transactionType?: string | null;
+}
+
+// auditId → thông tin dòng phiếu kiểm của 1 sản phẩm.
+type AuditDetailMap = Map<
+  number,
+  { actualQuantity: number; costAtCheck: number; detailId: number }
+>;
+
+// Duyệt xuôi thẻ kho (đã sắp theo thời gian) của 1 sản phẩm, re-anchor delta
+// phiếu kiểm khi lệch. Trả về running cuối (= onHand).
+async function reanchorAuditChain(
+  tx: any,
+  logs: ChainLog[],
+  activeKeys: Set<string>,
+  detailMap: AuditDetailMap,
+): Promise<number> {
+  let running = 0;
+  for (const log of logs) {
+    if (!isLogActive(log, activeKeys)) continue; // bỏ phiếu/đơn đã hủy
+
+    const isAuditAnchor =
+      log.transactionType === 'STOCK_AUDIT' &&
+      log.refType === 'stock_audit' &&
+      log.refId &&
+      detailMap.has(log.refId);
+
+    if (isAuditAnchor) {
+      const info = detailMap.get(log.refId as number)!;
+      const newDelta = info.actualQuantity - running;
+
+      if (newDelta !== Number(log.quantity)) {
+        await tx.inventoryLog.update({
+          where: { id: log.id },
+          data: { quantity: newDelta },
+        });
+        await tx.stockAuditDetail.update({
+          where: { id: info.detailId },
+          data: {
+            systemQuantity: running,
+            difference: newDelta,
+            differenceValue: newDelta * info.costAtCheck,
+          },
+        });
+      }
+      running = info.actualQuantity;
+    } else {
+      running += Number(log.quantity);
+    }
+  }
+  return running;
 }
 
 // ====================================================================
@@ -236,10 +294,7 @@ export async function recalcStockAuditChain(
         .map((l: any) => l.refId as number),
     ),
   ];
-  const detailMap = new Map<
-    number,
-    { actualQuantity: number; costAtCheck: number; detailId: number }
-  >();
+  const detailMap: AuditDetailMap = new Map();
   if (auditIds.length > 0) {
     const details = await tx.stockAuditDetail.findMany({
       where: { stockAuditId: { in: auditIds }, productId },
@@ -259,39 +314,7 @@ export async function recalcStockAuditChain(
     }
   }
 
-  let running = 0;
-  for (const log of logs) {
-    if (!isLogActive(log, activeKeys)) continue; // bỏ phiếu/đơn đã hủy
-
-    const isAuditAnchor =
-      log.transactionType === 'STOCK_AUDIT' &&
-      log.refType === 'stock_audit' &&
-      log.refId &&
-      detailMap.has(log.refId);
-
-    if (isAuditAnchor) {
-      const info = detailMap.get(log.refId as number)!;
-      const newDelta = info.actualQuantity - running;
-
-      if (newDelta !== Number(log.quantity)) {
-        await tx.inventoryLog.update({
-          where: { id: log.id },
-          data: { quantity: newDelta },
-        });
-        await tx.stockAuditDetail.update({
-          where: { id: info.detailId },
-          data: {
-            systemQuantity: running,
-            difference: newDelta,
-            differenceValue: newDelta * info.costAtCheck,
-          },
-        });
-      }
-      running = info.actualQuantity;
-    } else {
-      running += Number(log.quantity);
-    }
-  }
+  const running = await reanchorAuditChain(tx, logs, activeKeys, detailMap);
 
   // onHand = running cuối (đã khớp Σ active log sau khi re-anchor).
   const inv = await tx.inventory.findUnique({
@@ -306,4 +329,111 @@ export async function recalcStockAuditChain(
     });
   }
   return running;
+}
+
+// Bản THEO LÔ của recalcStockAuditChain cho nhiều sản phẩm cùng 1 chi nhánh:
+// gom log / chứng từ active / dòng phiếu kiểm / tồn kho mỗi loại 1 query thay
+// vì lặp lại cho từng sản phẩm. Kết quả giống hệt gọi recalcStockAuditChain
+// từng cặp.
+export async function recalcStockAuditChainBatch(
+  tx: any,
+  productIds: number[],
+  branchId: number,
+): Promise<void> {
+  // Sắp theo productId để mọi transaction khóa dòng tồn kho cùng thứ tự.
+  const ids = [...new Set(productIds)].sort((a, b) => a - b);
+  if (ids.length === 0) return;
+
+  const logs = await tx.inventoryLog.findMany({
+    where: { productId: { in: ids }, branchId },
+    orderBy: [{ transactionDate: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+    select: {
+      id: true,
+      productId: true,
+      quantity: true,
+      refType: true,
+      refId: true,
+      transactionType: true,
+    },
+  });
+
+  const activeKeys = await getActiveLogKeys(tx, logs);
+
+  const logsByProduct = new Map<number, ChainLog[]>();
+  const auditIds = new Set<number>();
+  for (const l of logs) {
+    let list = logsByProduct.get(l.productId);
+    if (!list) logsByProduct.set(l.productId, (list = []));
+    list.push(l);
+    if (
+      l.transactionType === 'STOCK_AUDIT' &&
+      l.refType === 'stock_audit' &&
+      l.refId
+    ) {
+      auditIds.add(l.refId);
+    }
+  }
+
+  const detailsByProduct = new Map<number, AuditDetailMap>();
+  if (auditIds.size > 0) {
+    const details = await tx.stockAuditDetail.findMany({
+      where: {
+        stockAuditId: { in: Array.from(auditIds) },
+        productId: { in: ids },
+      },
+      select: {
+        id: true,
+        productId: true,
+        stockAuditId: true,
+        actualQuantity: true,
+        costAtCheck: true,
+      },
+    });
+    for (const d of details) {
+      let map = detailsByProduct.get(d.productId);
+      if (!map) detailsByProduct.set(d.productId, (map = new Map()));
+      map.set(d.stockAuditId, {
+        actualQuantity: Number(d.actualQuantity),
+        costAtCheck: Number(d.costAtCheck),
+        detailId: d.id,
+      });
+    }
+  }
+
+  const inventories = await tx.inventory.findMany({
+    where: { productId: { in: ids }, branchId },
+    select: {
+      productId: true,
+      onHand: true,
+      totalWeight: true,
+      product: { select: { weight: true } },
+    },
+  });
+  const invByProduct = new Map<number, any>(
+    inventories.map((inv: any) => [inv.productId, inv]),
+  );
+
+  for (const productId of ids) {
+    const running = await reanchorAuditChain(
+      tx,
+      logsByProduct.get(productId) || [],
+      activeKeys,
+      detailsByProduct.get(productId) || new Map(),
+    );
+
+    const inv = invByProduct.get(productId);
+    if (!inv) continue;
+    const weight = inv.product?.weight ? Number(inv.product.weight) : 0;
+    const totalWeight = weight * running;
+    if (
+      Number(inv.onHand) === running &&
+      Number(inv.totalWeight) === totalWeight
+    ) {
+      continue;
+    }
+    await tx.inventory.update({
+      where: { productId_branchId: { productId, branchId } },
+      data: { onHand: running, totalWeight },
+    });
+  }
 }

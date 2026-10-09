@@ -44,6 +44,16 @@ export class InvoiceQueryDto {
   customerIds?: number[];
 
   @IsOptional()
+  @IsArray()
+  @Transform(({ value }) => {
+    if (typeof value === 'string')
+      return value.split(',').map(Number).filter(Boolean);
+    if (Array.isArray(value)) return value.map(Number);
+    return value;
+  })
+  customerGroupIds?: number[];
+
+  @IsOptional()
   @IsInt()
   @Type(() => Number)
   branchId?: number;

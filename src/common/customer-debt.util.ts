@@ -2,6 +2,7 @@ interface RecalcDebtOptions {
   excludeReturnOrderId?: number; // bỏ 1 RO đang chuyển trạng thái khỏi cấn trừ
   extraDebtOffset?: number; // cộng thêm cấn trừ thủ công (RO hiện tại sắp sang status 4)
   totalPurchased?: number; // ghi luôn totalPurchased (cho invoices.service)
+  syncTotalPurchased?: boolean; // ghi totalPurchased = Σ grandTotal HĐ chưa hủy (đã tính sẵn ở đây)
 }
 
 /**
@@ -31,17 +32,14 @@ export async function recalcCustomerDebt(
   customerId: number,
   opts: RecalcDebtOptions = {},
 ): Promise<number> {
-  const invoices = await tx.invoice.findMany({
+  const invoiceSum = await tx.invoice.aggregate({
     where: { customerId, status: { notIn: [2] } },
-    select: { grandTotal: true },
+    _sum: { grandTotal: true },
   });
-  const totalGrandTotal = invoices.reduce(
-    (s: number, inv: any) => s + Number(inv.grandTotal),
-    0,
-  );
+  const totalGrandTotal = Number(invoiceSum._sum.grandTotal || 0);
 
   // THU — loại TTTUHD; GIỮ CB (nợ đầu kỳ)
-  const cashFlowsReceipt = await tx.cashFlow.findMany({
+  const receiptSum = await tx.cashFlow.aggregate({
     where: {
       partnerId: customerId,
       partnerType: 'C',
@@ -49,30 +47,24 @@ export async function recalcCustomerDebt(
       status: { not: 2 },
       NOT: [{ code: { startsWith: 'TTTUHD' } }],
     },
-    select: { amount: true },
+    _sum: { amount: true },
   });
-  const totalCashFlowReceived = cashFlowsReceipt.reduce(
-    (s: number, cf: any) => s + Number(cf.amount),
-    0,
-  );
+  const totalCashFlowReceived = Number(receiptSum._sum.amount || 0);
 
   // CHI — GIỮ CB
-  const cashFlowsPaidOut = await tx.cashFlow.findMany({
+  const paidOutSum = await tx.cashFlow.aggregate({
     where: {
       partnerId: customerId,
       partnerType: 'C',
       isReceipt: false,
       status: { not: 2 },
     },
-    select: { amount: true },
+    _sum: { amount: true },
   });
-  const totalCashFlowPaidOut = cashFlowsPaidOut.reduce(
-    (s: number, cf: any) => s + Number(cf.amount),
-    0,
-  );
+  const totalCashFlowPaidOut = Number(paidOutSum._sum.amount || 0);
 
   // Cấn trừ trả hàng (đầy đủ 3 trạng thái)
-  const debtOffsets = await tx.returnOrder.findMany({
+  const offsetSum = await tx.returnOrder.aggregate({
     where: {
       customerId,
       ...(opts.excludeReturnOrderId
@@ -84,11 +76,10 @@ export async function recalcCustomerDebt(
         { status: 4, refundType: 'cash_refund' },
       ],
     },
-    select: { refundAmount: true },
+    _sum: { refundAmount: true },
   });
   const totalDebtOffsets =
-    debtOffsets.reduce((s: number, ro: any) => s + Number(ro.refundAmount), 0) +
-    (opts.extraDebtOffset || 0);
+    Number(offsetSum._sum.refundAmount || 0) + (opts.extraDebtOffset || 0);
 
   const totalDebt =
     totalGrandTotal -
@@ -101,7 +92,9 @@ export async function recalcCustomerDebt(
     data:
       opts.totalPurchased !== undefined
         ? { totalDebt, totalPurchased: opts.totalPurchased }
-        : { totalDebt },
+        : opts.syncTotalPurchased
+          ? { totalDebt, totalPurchased: totalGrandTotal }
+          : { totalDebt },
   });
 
   // Đẩy lên Lark (fire-and-forget). Bọc try/catch để không bao giờ ảnh hưởng

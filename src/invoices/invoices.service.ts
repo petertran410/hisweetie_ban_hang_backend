@@ -68,6 +68,10 @@ import {
 } from '../common/debt-delivery.util';
 
 const POS_PAYMENT_EPSILON = 1;
+
+// Transaction hóa đơn làm nhiều việc (trừ/hoàn kho, recalc thẻ kho, công nợ)
+// → mặc định 5s của Prisma không đủ khi phải chờ khóa dòng tồn kho.
+const INVOICE_TX_OPTIONS = { timeout: 30000, maxWait: 10000 };
 const POS_PREPAID_ORDER_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
@@ -395,6 +399,7 @@ export class InvoicesService {
     const {
       search,
       customerIds,
+      customerGroupIds,
       branchId,
       branchIds,
       statusIds,
@@ -491,6 +496,15 @@ export class InvoicesService {
             ),
           }
         : { in: customerIds };
+    }
+
+    if (customerGroupIds?.length) {
+      where.customer = {
+        ...(where.customer || {}),
+        customerGroupDetails: {
+          some: { customerGroupId: { in: customerGroupIds } },
+        },
+      };
     }
 
     if (query.parentCustomerId) {
@@ -712,9 +726,15 @@ export class InvoicesService {
     // Invoice không có trả hàng đã được tính trong aggregate gốc.
     const returnInvoiceIds = [...returnGroupsByInvoice.keys()];
     const BATCH_SIZE = 5000;
-    for (let offset = 0; offset < returnInvoiceIds.length; offset += BATCH_SIZE) {
+    for (
+      let offset = 0;
+      offset < returnInvoiceIds.length;
+      offset += BATCH_SIZE
+    ) {
       const batch = await this.prisma.invoice.findMany({
-        where: { id: { in: returnInvoiceIds.slice(offset, offset + BATCH_SIZE) } },
+        where: {
+          id: { in: returnInvoiceIds.slice(offset, offset + BATCH_SIZE) },
+        },
         select: {
           id: true,
           grandTotal: true,
@@ -1964,7 +1984,8 @@ export class InvoicesService {
                   productCode: item.productCode,
                   productName: item.productName,
                   quantity: item.quantity,
-                  quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+                  quantityUnit:
+                    item.quantityUnit === 'carton' ? 'carton' : 'base',
                   conversionValueSnapshot:
                     Number(item.conversionValueSnapshot) > 0
                       ? Number(item.conversionValueSnapshot)
@@ -2102,11 +2123,20 @@ export class InvoicesService {
           actorUser?.name || actorUser?.email,
         );
 
-        for (const item of effectiveItems) {
+        // Lấy giá vốn 1 lần cho mọi dòng và gom thẻ kho để ghi 1 lượt (tránh N+1).
+        // Duyệt theo productId để các transaction khóa dòng tồn kho cùng thứ tự.
+        const costSnapshots = await this.loadInventoryCostSnapshots(
+          tx,
+          effectiveItems.map((item) => item.productId),
+          dto.branchId!,
+        );
+        const saleLogRows: Prisma.InventoryLogCreateManyInput[] = [];
+        const itemsByProduct = [...effectiveItems].sort(
+          (a, b) => a.productId - b.productId,
+        );
+        for (const item of itemsByProduct) {
           const condition = item.conditionType || 'normal';
-          const invSnapshot = await tx.inventory.findFirst({
-            where: { productId: item.productId, branchId: dto.branchId },
-          });
+          const invSnapshot = costSnapshots.get(item.productId);
 
           await this.validateConditionQuantity(
             tx,
@@ -2126,29 +2156,27 @@ export class InvoicesService {
           });
           touchedProductIds.add(item.productId);
 
-          await tx.inventoryLog.create({
-            data: {
-              productId: item.productId,
-              productCode: item.productCode || '',
-              productName: item.productName || '',
-              branchId: dto.branchId!,
-              branchName: branch?.name || '',
-              transactionType: 'SALE',
-              refCode: invoice.code,
-              refType: 'invoice',
-              refId: invoice.id,
-              quantity: -Number(item.quantity),
-              costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
-              transactionPrice: Number(item.price),
-              partnerId: dto.customerId || null,
-              partnerName: customer?.name,
-              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
-              // KHÔNG theo "Thời gian tạo" (createdAt). Đồng nhất với nhánh
-              // sửa hóa đơn (.xx) và khớp ý thiết kế schema (transactionDate
-              // là ngày phát sinh giao dịch, hỗ trợ lùi ngày khi backdate).
-              transactionDate: invoice.purchaseDate,
-              ...buildInventoryLogBase(logActor),
-            },
+          saleLogRows.push({
+            productId: item.productId,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            branchId: dto.branchId!,
+            branchName: branch?.name || '',
+            transactionType: 'SALE',
+            refCode: invoice.code,
+            refType: 'invoice',
+            refId: invoice.id,
+            quantity: -Number(item.quantity),
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+            transactionPrice: Number(item.price),
+            partnerId: dto.customerId || null,
+            partnerName: customer?.name,
+            // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+            // KHÔNG theo "Thời gian tạo" (createdAt). Đồng nhất với nhánh
+            // sửa hóa đơn (.xx) và khớp ý thiết kế schema (transactionDate
+            // là ngày phát sinh giao dịch, hỗ trợ lùi ngày khi backdate).
+            transactionDate: invoice.purchaseDate,
+            ...buildInventoryLogBase(logActor),
           });
 
           // Sổ cái loại tồn: trừ bucket (damaged/near_expiry/PROMO) khi bán.
@@ -2161,6 +2189,9 @@ export class InvoicesService {
             transactionDate: invoice.purchaseDate,
             costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
           });
+        }
+        if (saleLogRows.length > 0) {
+          await tx.inventoryLog.createMany({ data: saleLogRows });
         }
 
         // Recalc cache bucket từ sổ cái cho mọi sản phẩm vừa bán.
@@ -2303,7 +2334,9 @@ export class InvoicesService {
     return result;
   }
 
-  async validateMerge(sourceInvoiceIds: number[]): Promise<{ valid: boolean; errors: string[] }> {
+  async validateMerge(
+    sourceInvoiceIds: number[],
+  ): Promise<{ valid: boolean; errors: string[] }> {
     const sourceIds = [...new Set(sourceInvoiceIds.map(Number))];
     const errors: string[] = [];
 
@@ -2382,7 +2415,9 @@ export class InvoicesService {
       throw new BadRequestException('Cần chọn ít nhất hai hóa đơn để gộp');
     }
     if (!sourceIds.includes(Number(dto.representativeInvoiceId))) {
-      throw new BadRequestException('Hóa đơn đại diện phải nằm trong danh sách đã chọn');
+      throw new BadRequestException(
+        'Hóa đơn đại diện phải nằm trong danh sách đã chọn',
+      );
     }
 
     const touchedProductIds = new Set<number>();
@@ -2454,14 +2489,26 @@ export class InvoicesService {
       if (invoices.some((invoice) => invoice.branchId !== branchId)) {
         throw new BadRequestException('Các hóa đơn phải cùng chi nhánh');
       }
-      if (invoices.some((invoice) => (invoice.customerId ?? null) !== customerId)) {
+      if (
+        invoices.some((invoice) => (invoice.customerId ?? null) !== customerId)
+      ) {
         throw new BadRequestException('Các hóa đơn phải cùng khách hàng');
       }
       if (!branchId) {
         throw new BadRequestException('Hóa đơn chưa có chi nhánh');
       }
 
-      const sourceNotes = new Map<number, { id: number; code: string; note: string; date: Date; orderId: number | null; orderCode: string | null }>();
+      const sourceNotes = new Map<
+        number,
+        {
+          id: number;
+          code: string;
+          note: string;
+          date: Date;
+          orderId: number | null;
+          orderCode: string | null;
+        }
+      >();
       for (const invoice of invoices) {
         const nested = invoice.mergeTargets.flatMap((merge) =>
           merge.sources.map((item) => ({
@@ -2473,32 +2520,39 @@ export class InvoicesService {
             orderCode: item.sourceOrderCode ?? null,
           })),
         );
-        const snapshots = nested.length > 0
-          ? nested
-          : [{
-              id: invoice.id,
-              code: invoice.code,
-              note: invoice.description?.trim() || '',
-              date: invoice.purchaseDate,
-              orderId: invoice.orderId ?? null,
-              orderCode: invoice.order?.code ?? null,
-            }];
+        const snapshots =
+          nested.length > 0
+            ? nested
+            : [
+                {
+                  id: invoice.id,
+                  code: invoice.code,
+                  note: invoice.description?.trim() || '',
+                  date: invoice.purchaseDate,
+                  orderId: invoice.orderId ?? null,
+                  orderCode: invoice.order?.code ?? null,
+                },
+              ];
         for (const snapshot of snapshots) {
-          if (!sourceNotes.has(snapshot.id)) sourceNotes.set(snapshot.id, snapshot);
+          if (!sourceNotes.has(snapshot.id))
+            sourceNotes.set(snapshot.id, snapshot);
         }
       }
       const orderedNotes = [...sourceNotes.values()].sort(
-        (a, b) => a.date.getTime() - b.date.getTime() || a.code.localeCompare(b.code),
+        (a, b) =>
+          a.date.getTime() - b.date.getTime() || a.code.localeCompare(b.code),
       );
       const descriptionParts = [
         `Hóa đơn được gộp từ: ${orderedNotes.map((item) => item.code).join(', ')}`,
       ];
       const notes = orderedNotes.filter((item) => item.note);
       if (notes.length > 0) {
-        descriptionParts.push([
-          'Ghi chú hóa đơn gốc:',
-          ...notes.map((item) => `- ${item.code}: ${item.note}`),
-        ].join('\n'));
+        descriptionParts.push(
+          [
+            'Ghi chú hóa đơn gốc:',
+            ...notes.map((item) => `- ${item.code}: ${item.note}`),
+          ].join('\n'),
+        );
       }
 
       const detailData = invoices.flatMap((invoice) =>
@@ -2522,35 +2576,70 @@ export class InvoicesService {
           soldExpiryDate: detail.soldExpiryDate,
         })),
       );
-      const totalAmount = detailData.reduce((sum, item) => sum + Number(item.totalPrice), 0);
-      const discount = invoices.reduce((sum, invoice) => sum + Number(invoice.discount), 0);
-      const shippingFee = invoices.reduce((sum, invoice) => sum + Number(invoice.shippingFee), 0);
+      const totalAmount = detailData.reduce(
+        (sum, item) => sum + Number(item.totalPrice),
+        0,
+      );
+      const discount = invoices.reduce(
+        (sum, invoice) => sum + Number(invoice.discount),
+        0,
+      );
+      const shippingFee = invoices.reduce(
+        (sum, invoice) => sum + Number(invoice.shippingFee),
+        0,
+      );
       const grandTotal = totalAmount - discount + shippingFee;
       const activePayments = invoices.flatMap((invoice) =>
         invoice.payments.filter((payment) => payment.status !== 2),
       );
-      const paidAmount = activePayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
+      const paidAmount = activePayments.reduce(
+        (sum, payment) => sum + Number(payment.amount),
+        0,
+      );
       const debtAmount = grandTotal - paidAmount;
 
-      const slipIds = [...new Set(invoices.flatMap((invoice) => invoice.packingSlips.map((row) => row.packingSlipId)))];
-      const hangIds = [...new Set(invoices.flatMap((invoice) => invoice.packingHangs.map((row) => row.packingHangId)))];
-      const loadingIds = [...new Set(invoices.flatMap((invoice) => invoice.packingLoadings.map((row) => row.packingLoadingId)))];
-      const firstSlip = slipIds.length > 0
-        ? await tx.packingSlip.findFirst({
-            where: { id: { in: slipIds }, cancelledAt: null },
-            orderBy: { createdAt: 'asc' },
-            select: { createdAt: true },
-          })
-        : null;
-      const status = slipIds.length > 0
-        ? INVOICE_STATUS.DELIVERED
-        : loadingIds.length > 0
-          ? INVOICE_STATUS.LOADING
-          : hangIds.length > 0
-            ? INVOICE_STATUS.PACKED
-            : debtAmount <= 0 && invoices.every((invoice) => invoice.status === INVOICE_STATUS.COMPLETED)
-              ? INVOICE_STATUS.COMPLETED
-              : INVOICE_STATUS.PROCESSING;
+      const slipIds = [
+        ...new Set(
+          invoices.flatMap((invoice) =>
+            invoice.packingSlips.map((row) => row.packingSlipId),
+          ),
+        ),
+      ];
+      const hangIds = [
+        ...new Set(
+          invoices.flatMap((invoice) =>
+            invoice.packingHangs.map((row) => row.packingHangId),
+          ),
+        ),
+      ];
+      const loadingIds = [
+        ...new Set(
+          invoices.flatMap((invoice) =>
+            invoice.packingLoadings.map((row) => row.packingLoadingId),
+          ),
+        ),
+      ];
+      const firstSlip =
+        slipIds.length > 0
+          ? await tx.packingSlip.findFirst({
+              where: { id: { in: slipIds }, cancelledAt: null },
+              orderBy: { createdAt: 'asc' },
+              select: { createdAt: true },
+            })
+          : null;
+      const status =
+        slipIds.length > 0
+          ? INVOICE_STATUS.DELIVERED
+          : loadingIds.length > 0
+            ? INVOICE_STATUS.LOADING
+            : hangIds.length > 0
+              ? INVOICE_STATUS.PACKED
+              : debtAmount <= 0 &&
+                  invoices.every(
+                    (invoice) => invoice.status === INVOICE_STATUS.COMPLETED,
+                  )
+                ? INVOICE_STATUS.COMPLETED
+                : INVOICE_STATUS.PROCESSING;
 
       const code = await this.generateSafeInvoiceCode(tx);
       const target = await tx.invoice.create({
@@ -2581,7 +2670,13 @@ export class InvoicesService {
           customerDebtSnapshot: null,
           details: { create: detailData },
           ...(representative.delivery
-            ? { delivery: { create: { ...this.copyInvoiceDelivery(representative.delivery) } } }
+            ? {
+                delivery: {
+                  create: {
+                    ...this.copyInvoiceDelivery(representative.delivery),
+                  },
+                },
+              }
             : {}),
         },
         include: { details: true, payments: true, delivery: true },
@@ -2598,31 +2693,62 @@ export class InvoicesService {
         });
       }
 
-      const actorUser = await tx.user.findUnique({ where: { id: userId }, select: { name: true, email: true } });
-      const actor = buildInventoryLogActor(userId, actorUser?.name || actorUser?.email);
-      const branch = await tx.branch.findUnique({ where: { id: branchId }, select: { name: true } });
+      const actorUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const actor = buildInventoryLogActor(
+        userId,
+        actorUser?.name || actorUser?.email,
+      );
+      const branch = await tx.branch.findUnique({
+        where: { id: branchId },
+        select: { name: true },
+      });
       for (const invoice of invoices) {
         for (const detail of invoice.details) {
           if (detail.productId == null) continue;
           await tx.inventory.updateMany({
             where: { productId: detail.productId, branchId },
-            data: this.buildInventoryRestoreData(Number(detail.quantity), detail.conditionType, { isGift: detail.isGift }),
+            data: this.buildInventoryRestoreData(
+              Number(detail.quantity),
+              detail.conditionType,
+              { isGift: detail.isGift },
+            ),
           });
           touchedProductIds.add(detail.productId);
         }
         await tx.invoice.update({
           where: { id: invoice.id },
-          data: { status: INVOICE_STATUS.CANCELLED, statusValue: getStatusLabel(INVOICE_STATUS.CANCELLED), paidAmount: 0, debtAmount: 0 },
+          data: {
+            status: INVOICE_STATUS.CANCELLED,
+            statusValue: getStatusLabel(INVOICE_STATUS.CANCELLED),
+            paidAmount: 0,
+            debtAmount: 0,
+          },
         });
       }
       for (const detail of target.details) {
         if (detail.productId == null) continue;
         const condition = detail.conditionType || 'normal';
-        await this.validateConditionQuantity(tx, detail.productId, branchId, Number(detail.quantity), condition, detail.soldExpiryDate);
-        const inventory = await tx.inventory.findFirst({ where: { productId: detail.productId, branchId } });
+        await this.validateConditionQuantity(
+          tx,
+          detail.productId,
+          branchId,
+          Number(detail.quantity),
+          condition,
+          detail.soldExpiryDate,
+        );
+        const inventory = await tx.inventory.findFirst({
+          where: { productId: detail.productId, branchId },
+        });
         await tx.inventory.updateMany({
           where: { productId: detail.productId, branchId },
-          data: this.buildInventoryDeductData(Number(detail.quantity), condition, { isGift: detail.isGift }),
+          data: this.buildInventoryDeductData(
+            Number(detail.quantity),
+            condition,
+            { isGift: detail.isGift },
+          ),
         });
         await tx.inventoryLog.create({
           data: {
@@ -2647,15 +2773,58 @@ export class InvoicesService {
       }
 
       // Chuyển relation active theo từng document, rồi tạo duy nhất một row target.
-      await tx.packingSlipInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingSlipId: { in: slipIds } } });
-      await tx.packingHangInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingHangId: { in: hangIds } } });
-      await tx.packingLoadingInvoice.deleteMany({ where: { invoiceId: { in: sourceInvoices }, packingLoadingId: { in: loadingIds } } });
-      if (slipIds.length) await tx.packingSlipInvoice.createMany({ data: slipIds.map((packingSlipId) => ({ packingSlipId, invoiceId: target.id })) });
-      if (hangIds.length) await tx.packingHangInvoice.createMany({ data: hangIds.map((packingHangId) => ({ packingHangId, invoiceId: target.id })) });
-      if (loadingIds.length) await tx.packingLoadingInvoice.createMany({ data: loadingIds.map((packingLoadingId) => ({ packingLoadingId, invoiceId: target.id })) });
+      await tx.packingSlipInvoice.deleteMany({
+        where: {
+          invoiceId: { in: sourceInvoices },
+          packingSlipId: { in: slipIds },
+        },
+      });
+      await tx.packingHangInvoice.deleteMany({
+        where: {
+          invoiceId: { in: sourceInvoices },
+          packingHangId: { in: hangIds },
+        },
+      });
+      await tx.packingLoadingInvoice.deleteMany({
+        where: {
+          invoiceId: { in: sourceInvoices },
+          packingLoadingId: { in: loadingIds },
+        },
+      });
+      if (slipIds.length)
+        await tx.packingSlipInvoice.createMany({
+          data: slipIds.map((packingSlipId) => ({
+            packingSlipId,
+            invoiceId: target.id,
+          })),
+        });
+      if (hangIds.length)
+        await tx.packingHangInvoice.createMany({
+          data: hangIds.map((packingHangId) => ({
+            packingHangId,
+            invoiceId: target.id,
+          })),
+        });
+      if (loadingIds.length)
+        await tx.packingLoadingInvoice.createMany({
+          data: loadingIds.map((packingLoadingId) => ({
+            packingLoadingId,
+            invoiceId: target.id,
+          })),
+        });
 
-      await recalcConditionBucketsForPairs(tx, detailData.filter((item) => item.productId != null).map((item) => ({ productId: item.productId!, branchId })));
-      await recalcOnHandForPairs(tx, detailData.filter((item) => item.productId != null).map((item) => ({ productId: item.productId!, branchId })));
+      await recalcConditionBucketsForPairs(
+        tx,
+        detailData
+          .filter((item) => item.productId != null)
+          .map((item) => ({ productId: item.productId!, branchId })),
+      );
+      await recalcOnHandForPairs(
+        tx,
+        detailData
+          .filter((item) => item.productId != null)
+          .map((item) => ({ productId: item.productId!, branchId })),
+      );
       if (customerId) await recalcCustomerDebt(tx, customerId);
 
       const merge = await tx.invoiceMerge.create({
@@ -2666,7 +2835,9 @@ export class InvoicesService {
           reason: dto.reason,
           sources: {
             create: orderedNotes.map((item) => {
-              const source = invoices.find((invoice) => invoice.code === item.code);
+              const source = invoices.find(
+                (invoice) => invoice.code === item.code,
+              );
               return {
                 sourceInvoiceId: item.id,
                 sourceCode: item.code,
@@ -2689,8 +2860,23 @@ export class InvoicesService {
         entityCode: target.code,
         category: getCategoryFromActionCode('INVOICE_MERGE'),
         severity: getSeverityFromActionCode('INVOICE_MERGE'),
-        snapshot: { targetInvoiceId: target.id, targetInvoiceCode: target.code, sourceInvoiceIds: sourceIds, sourceInvoiceCodes: invoices.map((invoice) => invoice.code), description: target.description, slipIds, hangIds, loadingIds, paymentIds: activePayments.map((payment) => payment.id) },
-        message: renderAuditMessage('INVOICE_MERGE', { invoiceCode: target.code, sourceInvoiceCodes: invoices.map((invoice) => invoice.code).join(', ') }),
+        snapshot: {
+          targetInvoiceId: target.id,
+          targetInvoiceCode: target.code,
+          sourceInvoiceIds: sourceIds,
+          sourceInvoiceCodes: invoices.map((invoice) => invoice.code),
+          description: target.description,
+          slipIds,
+          hangIds,
+          loadingIds,
+          paymentIds: activePayments.map((payment) => payment.id),
+        },
+        message: renderAuditMessage('INVOICE_MERGE', {
+          invoiceCode: target.code,
+          sourceInvoiceCodes: invoices
+            .map((invoice) => invoice.code)
+            .join(', '),
+        }),
         messageTemplate: 'INVOICE_MERGE',
         userId,
         userName: actorUser?.name || actorUser?.email || 'System',
@@ -2702,14 +2888,24 @@ export class InvoicesService {
         include: { details: true, payments: true, delivery: true },
       });
       return { invoice, merge };
-    });
+    }, INVOICE_TX_OPTIONS);
 
-    for (const productId of touchedProductIds) this.larkProductSync.enqueueSync(productId);
+    for (const productId of touchedProductIds)
+      this.larkProductSync.enqueueSync(productId);
     return result;
   }
 
   private copyInvoiceDelivery(delivery: any) {
-    const { id, invoiceId, createdAt, updatedAt, invoice, location, partnerDelivery, ...data } = delivery;
+    const {
+      id,
+      invoiceId,
+      createdAt,
+      updatedAt,
+      invoice,
+      location,
+      partnerDelivery,
+      ...data
+    } = delivery;
     return data;
   }
 
@@ -2726,6 +2922,17 @@ export class InvoicesService {
     // sau khi transaction commit (fire-and-forget).
     let affectedPackingSlipIds: number[] = [];
     const touchedProductIds = new Set<number>();
+
+    // Tra người thao tác TRƯỚC transaction và ghi audit log SAU khi commit:
+    // cả hai đều chạy ngoài `tx`, nếu gọi trong transaction sẽ phải xin thêm
+    // connection thứ 2 trong lúc transaction đang giữ khóa.
+    const actingUser = userId
+      ? await this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { name: true, email: true },
+        })
+      : null;
+    const pendingAuditLogs: Parameters<AuditLogsService['create']>[0][] = [];
 
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM invoices WHERE id = ${id} FOR UPDATE`;
@@ -2757,10 +2964,7 @@ export class InvoicesService {
           dto.items,
         );
 
-        const userName = await this.prisma.user.findUnique({
-          where: { id: userId },
-          select: { name: true },
-        });
+        const userName = actingUser;
 
         // Actor cho InventoryLog nhánh versioning (.xx). userId optional →
         // guard tránh truyền undefined. Truy vết ai xuất kho cho hóa đơn sửa.
@@ -2769,7 +2973,7 @@ export class InvoicesService {
           userName?.name,
         );
 
-        await this.auditLogsService.create({
+        pendingAuditLogs.push({
           actionType: 'DELETE',
           actionCode: 'INVOICE_CANCEL',
           entityType: 'invoices',
@@ -2788,11 +2992,12 @@ export class InvoicesService {
         });
 
         for (const oldDetail of currentInvoice.details) {
+          // Không có productId → where chỉ còn branchId, sẽ cộng tồn cho MỌI
+          // sản phẩm của chi nhánh.
+          if (oldDetail.productId == null) continue;
           await tx.inventory.updateMany({
             where: {
-              ...(oldDetail.productId != null && {
-                productId: oldDetail.productId,
-              }),
+              productId: oldDetail.productId,
               branchId: currentInvoice.branchId || 1,
             },
             data: this.buildInventoryRestoreData(
@@ -2988,7 +3193,8 @@ export class InvoicesService {
                 productCode: item.productCode,
                 productName: item.productName,
                 quantity: item.quantity,
-                quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+                quantityUnit:
+                  item.quantityUnit === 'carton' ? 'carton' : 'base',
                 conversionValueSnapshot:
                   Number(item.conversionValueSnapshot) > 0
                     ? Number(item.conversionValueSnapshot)
@@ -3104,13 +3310,19 @@ export class InvoicesService {
           });
         }
 
-        for (const item of effectiveItems) {
-          const invSnapshot = await tx.inventory.findFirst({
-            where: {
-              productId: item.productId,
-              branchId: newInvoice.branchId || 1,
-            },
-          });
+        // Lấy giá vốn 1 lần cho mọi dòng và gom thẻ kho để ghi 1 lượt (tránh N+1).
+        // Duyệt theo productId để các transaction khóa dòng tồn kho cùng thứ tự.
+        const costSnapshots = await this.loadInventoryCostSnapshots(
+          tx,
+          effectiveItems.map((item) => item.productId),
+          newInvoice.branchId || 1,
+        );
+        const saleLogRows: Prisma.InventoryLogCreateManyInput[] = [];
+        const itemsByProduct = [...effectiveItems].sort(
+          (a, b) => a.productId - b.productId,
+        );
+        for (const item of itemsByProduct) {
+          const invSnapshot = costSnapshots.get(item.productId);
 
           const condition = item.conditionType || 'normal';
           await this.validateConditionQuantity(
@@ -3133,30 +3345,28 @@ export class InvoicesService {
           });
           touchedProductIds.add(item.productId);
 
-          await tx.inventoryLog.create({
-            data: {
-              productId: item.productId,
-              productCode: item.productCode || '',
-              productName: item.productName || '',
-              branchId: newInvoice.branchId || 1,
-              branchName: newInvoice.branch?.name || '',
-              transactionType: 'SALE',
-              refCode: newInvoice.code,
-              refType: 'invoice',
-              refId: newInvoice.id,
-              quantity: -Number(item.quantity),
-              costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
-              transactionPrice: Number(item.price),
-              partnerId: newInvoice.customerId || null,
-              partnerName: newInvoice.customer?.name || null,
-              // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
-              // KHÔNG theo "Thời gian tạo" (createdAt). Hóa đơn .xx kế thừa
-              // purchaseDate của hóa đơn gốc (dòng 1788) → transactionDate cũng
-              // phải kế thừa tương ứng, nếu không thẻ kho sẽ nhảy về thời điểm
-              // sửa (= createdAt) thay vì ngày bán gốc.
-              transactionDate: newInvoice.purchaseDate,
-              ...buildInventoryLogBase(versioningLogActor),
-            },
+          saleLogRows.push({
+            productId: item.productId,
+            productCode: item.productCode || '',
+            productName: item.productName || '',
+            branchId: newInvoice.branchId || 1,
+            branchName: newInvoice.branch?.name || '',
+            transactionType: 'SALE',
+            refCode: newInvoice.code,
+            refType: 'invoice',
+            refId: newInvoice.id,
+            quantity: -Number(item.quantity),
+            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+            transactionPrice: Number(item.price),
+            partnerId: newInvoice.customerId || null,
+            partnerName: newInvoice.customer?.name || null,
+            // Thẻ kho phải lấy theo "Thời gian" (purchaseDate) của hóa đơn,
+            // KHÔNG theo "Thời gian tạo" (createdAt). Hóa đơn .xx kế thừa
+            // purchaseDate của hóa đơn gốc (dòng 1788) → transactionDate cũng
+            // phải kế thừa tương ứng, nếu không thẻ kho sẽ nhảy về thời điểm
+            // sửa (= createdAt) thay vì ngày bán gốc.
+            transactionDate: newInvoice.purchaseDate,
+            ...buildInventoryLogBase(versioningLogActor),
           });
 
           // Sổ cái loại tồn cho HĐ .xx.
@@ -3169,6 +3379,9 @@ export class InvoicesService {
             transactionDate: newInvoice.purchaseDate,
             costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
           });
+        }
+        if (saleLogRows.length > 0) {
+          await tx.inventoryLog.createMany({ data: saleLogRows });
         }
 
         // Ghi log KM mới + tăng usageCount cho HĐ .xx.
@@ -3224,7 +3437,7 @@ export class InvoicesService {
           ? `\nThông tin giao hàng:\n- Người nhận: ${deliveryInfo.receiver || ''}\n- Phí giao hàng: ${'price' in deliveryInfo ? deliveryInfo.price || 0 : 0}\n- Thu hộ tiền hàng: ${deliveryInfo.noteForDriver ? 'Có' : 'Không'}\n- Trạng thái giao: Chờ xử lý`
           : '';
 
-        await this.auditLogsService.create({
+        pendingAuditLogs.push({
           actionType: 'POST',
           actionCode: 'INVOICE_CREATE_FROM_CANCELLED',
           entityType: 'invoices',
@@ -3302,11 +3515,12 @@ export class InvoicesService {
           }
 
           for (const detail of currentInvoice.details) {
+            // Không có productId → where chỉ còn branchId, sẽ cộng tồn cho
+            // MỌI sản phẩm của chi nhánh.
+            if (detail.productId == null) continue;
             await tx.inventory.updateMany({
               where: {
-                ...(detail.productId != null && {
-                  productId: detail.productId,
-                }),
+                productId: detail.productId,
                 branchId: currentInvoice.branchId,
               },
               data: this.buildInventoryRestoreData(
@@ -3692,12 +3906,9 @@ export class InvoicesService {
       }
 
       if (dto.status !== INVOICE_STATUS.CANCELLED) {
-        const updatingUser = await tx.user.findUnique({
-          where: { id: userId },
-          select: { name: true, email: true },
-        });
+        const updatingUser = actingUser;
 
-        await this.auditLogsService.create({
+        pendingAuditLogs.push({
           actionType: 'PUT',
           actionCode: 'INVOICE_UPDATE',
           entityType: 'invoices',
@@ -3718,12 +3929,9 @@ export class InvoicesService {
         // Nhánh hủy hóa đơn đơn giản (chỉ đổi status, không versioning).
         // Trước đây bị bỏ qua → không có vết audit khi hủy. Bổ sung INVOICE_CANCEL
         // để truy vết ai hủy hóa đơn.
-        const cancellingUser = await tx.user.findUnique({
-          where: { id: userId },
-          select: { name: true, email: true },
-        });
+        const cancellingUser = actingUser;
 
-        await this.auditLogsService.create({
+        pendingAuditLogs.push({
           actionType: 'PUT',
           actionCode: 'INVOICE_CANCEL',
           entityType: 'invoices',
@@ -3743,7 +3951,11 @@ export class InvoicesService {
       }
 
       return updatedInvoice;
-    });
+    }, INVOICE_TX_OPTIONS);
+
+    for (const auditLog of pendingAuditLogs) {
+      await this.auditLogsService.create(auditLog);
+    }
 
     // Sau khi commit: gửi lại tin nhắn Zalo cho các phiếu giao hàng đã được
     // repoint sang hóa đơn mới (versioning). Fire-and-forget, không chặn response.
@@ -3773,20 +3985,22 @@ export class InvoicesService {
     }
   }
 
+  private async loadInventoryCostSnapshots(
+    tx: any,
+    productIds: number[],
+    branchId: number,
+  ): Promise<Map<number, { cost: any }>> {
+    const rows = await tx.inventory.findMany({
+      where: { productId: { in: [...new Set(productIds)] }, branchId },
+      select: { productId: true, cost: true },
+    });
+    return new Map(rows.map((r: any) => [r.productId, { cost: r.cost }]));
+  }
+
   private async updateCustomerTotals(customerId: number, tx: any) {
-    const invoices = await tx.invoice.findMany({
-      where: { customerId, status: { notIn: [INVOICE_STATUS.CANCELLED] } },
-      select: { grandTotal: true },
-    });
-    const totalPurchased = invoices.reduce(
-      (sum: number, inv: any) => sum + Number(inv.grandTotal),
-      0,
-    );
-    await tx.customer.update({
-      where: { id: customerId },
-      data: { totalPurchased },
-    });
-    await recalcCustomerDebt(tx, customerId);
+    // totalPurchased = Σ grandTotal HĐ chưa hủy — recalcCustomerDebt đã tính
+    // đúng tổng này nên ghi luôn, không đọc lại danh sách hóa đơn.
+    await recalcCustomerDebt(tx, customerId, { syncTotalPurchased: true });
   }
 
   /**
@@ -3855,9 +4069,9 @@ export class InvoicesService {
             : POS_PREPAID_INVOICE_MESSAGE
         } Đã thanh toán: ${Math.round(input.paidAmount).toLocaleString(
           'vi-VN',
-        )} đ (gồm trả trước chưa phân bổ: ${Math.round(advanceCredit).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(input.grandTotal).toLocaleString(
-          'vi-VN',
-        )} đ.`,
+        )} đ (gồm trả trước chưa phân bổ: ${Math.round(advanceCredit).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(
+          input.grandTotal,
+        ).toLocaleString('vi-VN')} đ.`,
       );
     }
   }
@@ -4019,7 +4233,9 @@ export class InvoicesService {
               productName: item.productName,
               quantity: item.remainingQuantity,
               quantityUnit: item.quantityUnit || 'base',
-              conversionValueSnapshot: Number(item.conversionValueSnapshot || 1),
+              conversionValueSnapshot: Number(
+                item.conversionValueSnapshot || 1,
+              ),
               price: Number(item.price),
               discount: Number(item.discount),
               discountRatio: Number(item.discountRatio),
@@ -4391,10 +4607,19 @@ export class InvoicesService {
       });
 
       const touchedProductIds = new Set<number>();
-      for (const item of effectiveItems) {
-        const invSnapshot = await tx.inventory.findFirst({
-          where: { productId: item.productId, branchId: order.branchId },
-        });
+      // Lấy giá vốn 1 lần cho mọi dòng và gom thẻ kho để ghi 1 lượt (tránh N+1).
+      // Duyệt theo productId để các transaction khóa dòng tồn kho cùng thứ tự.
+      const costSnapshots = await this.loadInventoryCostSnapshots(
+        tx,
+        effectiveItems.map((item) => item.productId),
+        order.branchId,
+      );
+      const saleLogRows: Prisma.InventoryLogCreateManyInput[] = [];
+      const itemsByProduct = [...effectiveItems].sort(
+        (a, b) => a.productId - b.productId,
+      );
+      for (const item of itemsByProduct) {
+        const invSnapshot = costSnapshots.get(item.productId);
 
         const condition = item.conditionType || 'normal';
         await this.validateConditionQuantity(
@@ -4414,24 +4639,22 @@ export class InvoicesService {
         });
         touchedProductIds.add(item.productId);
 
-        await tx.inventoryLog.create({
-          data: {
-            productId: item.productId,
-            productCode: item.productCode || '',
-            productName: item.productName || '',
-            branchId: order.branchId,
-            branchName: branch?.name || '',
-            transactionType: 'SALE',
-            refCode: invoice.code,
-            refType: 'invoice',
-            refId: invoice.id,
-            quantity: -Number(item.quantity),
-            costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
-            transactionPrice: Number(item.price),
-            partnerId: order.customerId || null,
-            partnerName: order.customer?.name || null,
-            ...buildInventoryLogBase(fromOrderLogActor),
-          },
+        saleLogRows.push({
+          productId: item.productId,
+          productCode: item.productCode || '',
+          productName: item.productName || '',
+          branchId: order.branchId,
+          branchName: branch?.name || '',
+          transactionType: 'SALE',
+          refCode: invoice.code,
+          refType: 'invoice',
+          refId: invoice.id,
+          quantity: -Number(item.quantity),
+          costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
+          transactionPrice: Number(item.price),
+          partnerId: order.customerId || null,
+          partnerName: order.customer?.name || null,
+          ...buildInventoryLogBase(fromOrderLogActor),
         });
 
         // Sổ cái loại tồn khi xuất HĐ từ đơn hàng.
@@ -4444,6 +4667,9 @@ export class InvoicesService {
           transactionDate: invoice.purchaseDate,
           costPrice: invSnapshot ? Number(invSnapshot.cost) : 0,
         });
+      }
+      if (saleLogRows.length > 0) {
+        await tx.inventoryLog.createMany({ data: saleLogRows });
       }
 
       // Ghi log KM + tăng usageCount (HĐ "tiếp quản" tracking từ order).
@@ -4640,7 +4866,7 @@ export class InvoicesService {
           order: { select: { code: true } },
         },
       });
-    });
+    }, INVOICE_TX_OPTIONS);
   }
 
   /**
@@ -4819,8 +5045,7 @@ export class InvoicesService {
       const grandTotal = totalAmount - discountForThisInvoice + shippingFee;
       const debtAmount = grandTotal - totalPaid;
 
-      const consignmentPaymentMethod =
-        dto.paymentNoteType || dto.paymentType;
+      const consignmentPaymentMethod = dto.paymentNoteType || dto.paymentType;
 
       this.assertCustomerInvoiceCanBeCreated({
         policy: consignment.customer?.debtPolicy,
@@ -5066,7 +5291,7 @@ export class InvoicesService {
           consignment: { select: { code: true } },
         },
       });
-    });
+    }, INVOICE_TX_OPTIONS);
   }
 
   /**
@@ -5520,10 +5745,7 @@ export class InvoicesService {
     // hóa đơn đã giao hoặc đã hoàn thành.
     const excludedStatuses: number[] = [INVOICE_STATUS.CANCELLED];
     if (excludeDelivered) {
-      excludedStatuses.push(
-        INVOICE_STATUS.DELIVERED,
-        INVOICE_STATUS.COMPLETED,
-      );
+      excludedStatuses.push(INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED);
     }
     where.status = { notIn: excludedStatuses };
 
@@ -5580,19 +5802,19 @@ export class InvoicesService {
             })
           : packingType === 'dong-hang'
             ? await this.prisma.packingHangInvoice.groupBy({
-              by: ['invoiceId'],
-              where: {
-                invoiceId: { in: invoiceIds },
-              },
-              _count: { invoiceId: true },
-            })
+                by: ['invoiceId'],
+                where: {
+                  invoiceId: { in: invoiceIds },
+                },
+                _count: { invoiceId: true },
+              })
             : await this.prisma.packingLoadingInvoice.groupBy({
-              by: ['invoiceId'],
-              where: {
-                invoiceId: { in: invoiceIds },
-              },
-              _count: { invoiceId: true },
-            });
+                by: ['invoiceId'],
+                where: {
+                  invoiceId: { in: invoiceIds },
+                },
+                _count: { invoiceId: true },
+              });
 
       for (const row of rows) {
         if (row.invoiceId != null) {
@@ -6156,6 +6378,7 @@ export class InvoicesService {
     const {
       search,
       customerIds,
+      customerGroupIds,
       branchId,
       branchIds,
       statusIds,
@@ -6245,6 +6468,14 @@ export class InvoicesService {
             ),
           }
         : { in: customerIds };
+    }
+    if (customerGroupIds?.length) {
+      where.customer = {
+        ...(where.customer || {}),
+        customerGroupDetails: {
+          some: { customerGroupId: { in: customerGroupIds } },
+        },
+      };
     }
     if (branchIds?.length) {
       where.branchId = { in: branchIds };

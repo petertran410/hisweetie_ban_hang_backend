@@ -31,6 +31,12 @@ import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
 
+// Cùng giá trị với INVOICE_TX_OPTIONS: mặc định 5s của Prisma không đủ khi
+// đơn nhiều dòng có khuyến mãi và pool đang bận.
+const ORDER_TX_OPTIONS = { timeout: 30000, maxWait: 10000 };
+
+type PendingAuditLog = Parameters<AuditLogsService['create']>[0];
+
 const ORDER_LIST_SELECT = {
   id: true,
   code: true,
@@ -500,7 +506,10 @@ export class OrdersService {
   }
 
   async create(dto: CreateOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    // Audit log ghi SAU khi commit (chạy ngoài `tx` → không giữ thêm connection
+    // trong lúc transaction đang mở).
+    const pendingAuditLogs: PendingAuditLog[] = [];
+    const result = await this.prisma.$transaction(async (tx) => {
       const warnings: string[] = [];
       const orderStatusString = dto.orderStatus || 'pending';
       const orderStatusNumber = convertStatusStringToNumber(orderStatusString);
@@ -513,76 +522,80 @@ export class OrdersService {
       // Re-validate khuyến mãi: BE sinh lại dòng gift / discount (authoritative)
       const promo = await this.processOrderPromotions(tx, dto);
 
-      const itemsData = await Promise.all(
-        promo.effectiveItems.map(async (item) => {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-          });
-          if (!product) throw new Error(`Product ${item.productId} not found`);
-
-          const inventory = await tx.inventory.findUnique({
-            where: {
-              productId_branchId: {
-                productId: item.productId,
-                branchId: branchId,
-              },
-            },
-          });
-
-          if (!inventory || Number(inventory.onHand) < item.quantity) {
-            warnings.push(
-              `Sản phẩm ${product.name} không đủ tồn kho (Có: ${inventory?.onHand || 0}, Cần: ${item.quantity})`,
-            );
-          }
-
-          const isGift = item.isGift || item.lineType === 'gift';
-          const itemDiscount = isGift ? 0 : item.discount || 0;
-          const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
-          const unitPrice = isGift ? 0 : item.unitPrice;
-          const totalPrice =
-            (unitPrice - itemDiscount) * item.quantity -
-            (unitPrice * item.quantity * itemDiscountRatio) / 100;
-          const appliedPrice =
-            unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
-
-          return {
-            productId: item.productId,
-            productCode: product.code,
-            productName: product.name,
-            quantity: item.quantity,
-            quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
-            conversionValueSnapshot:
-              Number(item.conversionValueSnapshot) > 0
-                ? Number(item.conversionValueSnapshot)
-                : Number(product.conversionValue || 1),
-            price: unitPrice,
-            appliedPrice: appliedPrice,
-            discount: itemDiscount,
-            discountRatio: itemDiscountRatio,
-            totalPrice: totalPrice,
-            note: item.note || null,
-            serialNumbers: item.serialNumbers || null,
-            conditionType: item.conditionType || 'normal',
-            soldExpiryDate: item.soldExpiryDate
-              ? new Date(item.soldExpiryDate)
-              : null,
-            lineType: item.lineType || 'normal',
-            isGift: isGift,
-            promotionId: item.promotionId ?? null,
-          };
+      // Tra sản phẩm + tồn kho 1 lần cho mọi dòng (tránh N+1).
+      const productIds = [
+        ...new Set(promo.effectiveItems.map((item) => item.productId)),
+      ];
+      const [products, inventories] = [
+        await tx.product.findMany({ where: { id: { in: productIds } } }),
+        await tx.inventory.findMany({
+          where: { productId: { in: productIds }, branchId },
         }),
+      ];
+      const productById = new Map(products.map((p) => [p.id, p]));
+      const inventoryByProduct = new Map(
+        inventories.map((inv) => [inv.productId, inv]),
       );
+
+      const itemsData = promo.effectiveItems.map((item) => {
+        const product = productById.get(item.productId);
+        if (!product) throw new Error(`Product ${item.productId} not found`);
+
+        const inventory = inventoryByProduct.get(item.productId);
+
+        if (!inventory || Number(inventory.onHand) < item.quantity) {
+          warnings.push(
+            `Sản phẩm ${product.name} không đủ tồn kho (Có: ${inventory?.onHand || 0}, Cần: ${item.quantity})`,
+          );
+        }
+
+        const isGift = item.isGift || item.lineType === 'gift';
+        const itemDiscount = isGift ? 0 : item.discount || 0;
+        const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
+        const unitPrice = isGift ? 0 : item.unitPrice;
+        const totalPrice =
+          (unitPrice - itemDiscount) * item.quantity -
+          (unitPrice * item.quantity * itemDiscountRatio) / 100;
+        const appliedPrice =
+          unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
+
+        return {
+          productId: item.productId,
+          productCode: product.code,
+          productName: product.name,
+          quantity: item.quantity,
+          quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+          conversionValueSnapshot:
+            Number(item.conversionValueSnapshot) > 0
+              ? Number(item.conversionValueSnapshot)
+              : Number(product.conversionValue || 1),
+          price: unitPrice,
+          appliedPrice: appliedPrice,
+          discount: itemDiscount,
+          discountRatio: itemDiscountRatio,
+          totalPrice: totalPrice,
+          note: item.note || null,
+          serialNumbers: item.serialNumbers || null,
+          conditionType: item.conditionType || 'normal',
+          soldExpiryDate: item.soldExpiryDate
+            ? new Date(item.soldExpiryDate)
+            : null,
+          lineType: item.lineType || 'normal',
+          isGift: isGift,
+          promotionId: item.promotionId ?? null,
+        };
+      });
 
       let priceBook: any = null;
 
       if (dto.priceBookId && dto.priceBookId > 0) {
         // User chọn bảng giá cụ thể từ dropdown
-        priceBook = await this.prisma.priceBook.findFirst({
+        priceBook = await tx.priceBook.findFirst({
           where: { id: dto.priceBookId, isActive: true },
         });
       } else if (dto.priceBookId === undefined || dto.priceBookId === null) {
         // Frontend cũ không gửi field này → auto-detect (backward compatible)
-        const applicablePriceBooks = await this.prisma.priceBook.findMany({
+        const applicablePriceBooks = await tx.priceBook.findMany({
           where: {
             isActive: true,
             OR: [
@@ -613,7 +626,7 @@ export class OrdersService {
       }
       // dto.priceBookId === 0 → "Bảng giá chung" → priceBook giữ null → lưu basePrice
 
-      const orderCode = await this.generateCode();
+      const orderCode = await this.generateCode(tx);
 
       const orderSubtotal = itemsData.reduce(
         (sum, it) => sum + Number(it.totalPrice),
@@ -712,7 +725,7 @@ export class OrdersService {
         select: { name: true, email: true },
       });
 
-      await this.auditLogsService.create({
+      pendingAuditLogs.push({
         actionType: 'POST',
         actionCode: 'ORDER_CREATE',
         entityType: 'orders',
@@ -736,11 +749,43 @@ export class OrdersService {
       // }
 
       return { order: finalOrder, warnings };
-    });
+    }, ORDER_TX_OPTIONS);
+
+    await this.flushAuditLogs(pendingAuditLogs);
+    return result;
+  }
+
+  private async flushAuditLogs(logs: PendingAuditLog[]) {
+    for (const log of logs) {
+      await this.auditLogsService.create(log);
+    }
+  }
+
+  // Hoàn usageCount cho các KM đã áp: gom theo promotionId, mỗi KM 1 lệnh.
+  private async revertPromotionUsage(
+    tx: any,
+    logs: Array<{ promotionId: number }>,
+  ) {
+    const countByPromotion = new Map<number, number>();
+    for (const lg of logs) {
+      countByPromotion.set(
+        lg.promotionId,
+        (countByPromotion.get(lg.promotionId) || 0) + 1,
+      );
+    }
+    for (const [promotionId, count] of countByPromotion) {
+      await tx.promotion.updateMany({
+        where: { id: promotionId },
+        data: { usageCount: { decrement: count } },
+      });
+    }
   }
 
   async update(id: number, dto: UpdateOrderDto, user: any) {
+    const pendingAuditLogs: PendingAuditLog[] = [];
     const result = await this.prisma.$transaction(async (tx) => {
+      // Khóa đơn để 2 người sửa/hủy cùng lúc chạy lần lượt, không ghi đè nhau.
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
       const existingOrder = await tx.order.findUnique({
         where: { id },
         include: {
@@ -782,12 +827,7 @@ export class OrdersService {
           select: { id: true, promotionId: true },
         });
         if (oldLogs.length > 0) {
-          for (const lg of oldLogs) {
-            await tx.promotion.updateMany({
-              where: { id: lg.promotionId },
-              data: { usageCount: { decrement: 1 } },
-            });
-          }
+          await this.revertPromotionUsage(tx, oldLogs);
           await tx.invoicePromotionLog.deleteMany({
             where: { orderId: id, status: 'applied' },
           });
@@ -803,52 +843,56 @@ export class OrdersService {
         });
         promoExtraDiscount = promo.extraDiscount;
 
-        const itemsData = await Promise.all(
-          promo.effectiveItems.map(async (item) => {
-            const product = await tx.product.findUnique({
-              where: { id: item.productId },
-            });
-            if (!product)
-              throw new Error(`Product ${item.productId} not found`);
+        const products = await tx.product.findMany({
+          where: {
+            id: {
+              in: [...new Set(promo.effectiveItems.map((i) => i.productId))],
+            },
+          },
+        });
+        const productById = new Map(products.map((p) => [p.id, p]));
 
-            const isGift = item.isGift || item.lineType === 'gift';
-            const itemDiscount = isGift ? 0 : item.discount || 0;
-            const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
-            const unitPrice = isGift ? 0 : item.unitPrice;
-            const totalPrice =
-              (unitPrice - itemDiscount) * item.quantity -
-              (unitPrice * item.quantity * itemDiscountRatio) / 100;
-            const appliedPrice =
-              unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
+        const itemsData = promo.effectiveItems.map((item) => {
+          const product = productById.get(item.productId);
+          if (!product) throw new Error(`Product ${item.productId} not found`);
 
-            return {
-              orderId: id,
-              productId: item.productId,
-              productCode: product.code,
-              productName: product.name,
-              quantity: item.quantity,
-              quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
-              conversionValueSnapshot:
-                Number(item.conversionValueSnapshot) > 0
-                  ? Number(item.conversionValueSnapshot)
-                  : Number(product.conversionValue || 1),
-              price: unitPrice,
-              appliedPrice: appliedPrice,
-              discount: itemDiscount,
-              discountRatio: itemDiscountRatio,
-              totalPrice: totalPrice,
-              note: item.note || null,
-              serialNumbers: item.serialNumbers || null,
-              conditionType: item.conditionType || 'normal',
-              soldExpiryDate: item.soldExpiryDate
-                ? new Date(item.soldExpiryDate)
-                : null,
-              lineType: item.lineType || 'normal',
-              isGift: isGift,
-              promotionId: item.promotionId ?? null,
-            };
-          }),
-        );
+          const isGift = item.isGift || item.lineType === 'gift';
+          const itemDiscount = isGift ? 0 : item.discount || 0;
+          const itemDiscountRatio = isGift ? 0 : item.discountRatio || 0;
+          const unitPrice = isGift ? 0 : item.unitPrice;
+          const totalPrice =
+            (unitPrice - itemDiscount) * item.quantity -
+            (unitPrice * item.quantity * itemDiscountRatio) / 100;
+          const appliedPrice =
+            unitPrice - itemDiscount - (unitPrice * itemDiscountRatio) / 100;
+
+          return {
+            orderId: id,
+            productId: item.productId,
+            productCode: product.code,
+            productName: product.name,
+            quantity: item.quantity,
+            quantityUnit: item.quantityUnit === 'carton' ? 'carton' : 'base',
+            conversionValueSnapshot:
+              Number(item.conversionValueSnapshot) > 0
+                ? Number(item.conversionValueSnapshot)
+                : Number(product.conversionValue || 1),
+            price: unitPrice,
+            appliedPrice: appliedPrice,
+            discount: itemDiscount,
+            discountRatio: itemDiscountRatio,
+            totalPrice: totalPrice,
+            note: item.note || null,
+            serialNumbers: item.serialNumbers || null,
+            conditionType: item.conditionType || 'normal',
+            soldExpiryDate: item.soldExpiryDate
+              ? new Date(item.soldExpiryDate)
+              : null,
+            lineType: item.lineType || 'normal',
+            isGift: isGift,
+            promotionId: item.promotionId ?? null,
+          };
+        });
 
         await tx.orderItem.createMany({
           data: itemsData,
@@ -1068,7 +1112,7 @@ export class OrdersService {
 
       const allChanges = [...fieldChanges, ...itemChanges];
 
-      await this.auditLogsService.create({
+      pendingAuditLogs.push({
         actionType: 'PUT',
         actionCode: 'ORDER_UPDATE',
         entityType: 'orders',
@@ -1105,7 +1149,9 @@ export class OrdersService {
           priceBook: true,
         },
       });
-    });
+    }, ORDER_TX_OPTIONS);
+
+    await this.flushAuditLogs(pendingAuditLogs);
 
     // Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group HN/SG mỗi khi đơn được
     // lưu ở trạng thái "Đã xác nhận" (status = 5). Chạy ngoài transaction,
@@ -1744,25 +1790,23 @@ export class OrdersService {
 
     if (order.status === 4) return;
 
-    const invoices = await tx.invoice.findMany({
-      where: {
-        orderId,
-        status: { not: 2 },
-      },
-      include: { details: true },
-    });
+    const activeInvoiceWhere = { orderId, status: { not: 2 } };
+    const invoiceCount = await tx.invoice.count({ where: activeInvoiceWhere });
 
-    if (invoices.length === 0) {
+    if (invoiceCount === 0) {
       return;
     }
 
-    const invoicedQty: Record<number, number> = {};
-    invoices.forEach((inv: any) => {
-      inv.details.forEach((d: any) => {
-        invoicedQty[d.productId] =
-          (invoicedQty[d.productId] || 0) + Number(d.quantity);
-      });
+    // Cộng SL đã xuất theo sản phẩm ngay trong DB thay vì tải toàn bộ chi tiết.
+    const invoicedRows = await tx.invoiceDetail.groupBy({
+      by: ['productId'],
+      where: { invoice: activeInvoiceWhere },
+      _sum: { quantity: true },
     });
+    const invoicedQty: Record<number, number> = {};
+    for (const row of invoicedRows) {
+      invoicedQty[row.productId] = Number(row._sum.quantity || 0);
+    }
 
     let isFullyInvoiced = true;
     for (const item of order.items) {
@@ -1805,9 +1849,14 @@ export class OrdersService {
     }
   }
 
-  private async generateCode(): Promise<string> {
-    const lastOrder = await this.prisma.order.findFirst({
+  private async generateCode(tx: any): Promise<string> {
+    // Mã = id lớn nhất + 1 → 2 người tạo đơn cùng lúc sẽ ra trùng mã (code là
+    // @unique nên 1 bên lỗi). Khóa advisory theo transaction để sinh mã lần
+    // lượt; khóa tự nhả khi commit/rollback.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('orders.generateCode'))`;
+    const lastOrder = await tx.order.findFirst({
       orderBy: { id: 'desc' },
+      select: { id: true },
     });
 
     const nextId = lastOrder ? lastOrder.id + 1 : 1;
@@ -1815,7 +1864,9 @@ export class OrdersService {
   }
 
   async cancelOrder(id: number, dto: CancelOrderDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+    const pendingAuditLogs: PendingAuditLog[] = [];
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
       const order = await tx.order.findUnique({
         where: { id },
         include: {
@@ -1875,7 +1926,7 @@ export class OrdersService {
 
         // Audit log từng payment (giữ nguyên message ORDER_PAYMENT_DELETE)
         for (const payment of order.payments) {
-          await this.auditLogsService.create({
+          pendingAuditLogs.push({
             actionType: 'DELETE',
             actionCode: 'ORDER_PAYMENT_DELETE',
             entityType: 'order_payment',
@@ -1928,12 +1979,7 @@ export class OrdersService {
         select: { id: true, promotionId: true },
       });
       if (promoLogs.length > 0) {
-        for (const lg of promoLogs) {
-          await tx.promotion.updateMany({
-            where: { id: lg.promotionId },
-            data: { usageCount: { decrement: 1 } },
-          });
-        }
+        await this.revertPromotionUsage(tx, promoLogs);
         await tx.invoicePromotionLog.updateMany({
           where: { orderId: id, status: 'applied' },
           data: { status: 'reverted' },
@@ -1941,7 +1987,7 @@ export class OrdersService {
       }
 
       // Log audit hủy đơn hàng
-      await this.auditLogsService.create({
+      pendingAuditLogs.push({
         actionType: 'PUT',
         actionCode: 'ORDER_CANCEL',
         entityType: 'orders',
@@ -1961,7 +2007,10 @@ export class OrdersService {
       });
 
       return { message: 'Hủy đơn hàng thành công' };
-    });
+    }, ORDER_TX_OPTIONS);
+
+    await this.flushAuditLogs(pendingAuditLogs);
+    return result;
   }
 
   private recalculateCustomerDebt(customerId: number, tx: any) {
