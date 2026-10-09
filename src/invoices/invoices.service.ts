@@ -3953,9 +3953,13 @@ export class InvoicesService {
       return updatedInvoice;
     }, INVOICE_TX_OPTIONS);
 
-    for (const auditLog of pendingAuditLogs) {
-      await this.auditLogsService.create(auditLog);
-    }
+    // Không chờ ghi audit: response trả về ngay khi hóa đơn đã lưu xong.
+    // AuditLogsService.create tự nuốt lỗi nên không cần catch.
+    void (async () => {
+      for (const auditLog of pendingAuditLogs) {
+        await this.auditLogsService.create(auditLog);
+      }
+    })();
 
     // Sau khi commit: gửi lại tin nhắn Zalo cho các phiếu giao hàng đã được
     // repoint sang hóa đơn mới (versioning). Fire-and-forget, không chặn response.

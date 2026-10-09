@@ -751,14 +751,18 @@ export class OrdersService {
       return { order: finalOrder, warnings };
     }, ORDER_TX_OPTIONS);
 
-    await this.flushAuditLogs(pendingAuditLogs);
+    this.flushAuditLogs(pendingAuditLogs);
     return result;
   }
 
-  private async flushAuditLogs(logs: PendingAuditLog[]) {
-    for (const log of logs) {
-      await this.auditLogsService.create(log);
-    }
+  // Ghi audit sau commit, KHÔNG chờ: response trả về ngay khi nghiệp vụ đã
+  // lưu xong. AuditLogsService.create tự nuốt lỗi nên không cần catch.
+  private flushAuditLogs(logs: PendingAuditLog[]): void {
+    void (async () => {
+      for (const log of logs) {
+        await this.auditLogsService.create(log);
+      }
+    })();
   }
 
   // Hoàn usageCount cho các KM đã áp: gom theo promotionId, mỗi KM 1 lệnh.
@@ -1151,7 +1155,7 @@ export class OrdersService {
       });
     }, ORDER_TX_OPTIONS);
 
-    await this.flushAuditLogs(pendingAuditLogs);
+    this.flushAuditLogs(pendingAuditLogs);
 
     // Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group HN/SG mỗi khi đơn được
     // lưu ở trạng thái "Đã xác nhận" (status = 5). Chạy ngoài transaction,
@@ -2009,7 +2013,7 @@ export class OrdersService {
       return { message: 'Hủy đơn hàng thành công' };
     }, ORDER_TX_OPTIONS);
 
-    await this.flushAuditLogs(pendingAuditLogs);
+    this.flushAuditLogs(pendingAuditLogs);
     return result;
   }
 

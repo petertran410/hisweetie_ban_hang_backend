@@ -254,6 +254,7 @@ describe('OrdersService cancelOrder', () => {
     const { tx, auditLogs, service } = setup(jest.fn().mockResolvedValue({}));
 
     await service.cancelOrder(1, { cancelPayments: true } as any, 9);
+    await new Promise((resolve) => setImmediate(resolve)); // audit ghi nền
 
     expect(tx.$queryRaw).toHaveBeenCalledTimes(1);
     expect(tx.promotion.updateMany.mock.calls.map((c: any) => c[0])).toEqual([
