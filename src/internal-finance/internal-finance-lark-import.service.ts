@@ -1,9 +1,11 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import { APPROVAL_DEFINITIONS } from '../approval-lifecycle/approval-lifecycle.constants';
+import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
 import {
   INTERNAL_FINANCE_CATEGORY,
   INTERNAL_FINANCE_DIRECTION,
@@ -18,6 +20,7 @@ import {
 import { InternalFinanceCodeService } from './internal-finance-code.service';
 import {
   LARK_IMPORT_SOURCES,
+  LARK_IMPORT_EXPENSE_SOURCES,
   LARK_APPROVAL_TABLE_FALLBACKS,
   LARK_VEHICLE_BASE_FALLBACK,
   PROTECTED_IMPORT_STATUSES,
@@ -57,6 +60,7 @@ export interface LarkImportTableResult {
   skipped: number;
   attachmentsDownloaded: number;
   attachmentsFailed: number;
+  pendingAttachments: number;
   unmatchedInvoices: string[];
   error?: string;
   sampleErrors: string[];
@@ -65,6 +69,41 @@ export interface LarkImportTableResult {
 export interface LarkFinanceImportResult {
   dryRun: boolean;
   tables: LarkImportTableResult[];
+  attachments: {
+    total: number;
+    downloaded: number;
+    failed: number;
+  };
+  fundTransactions: number;
+}
+
+export type LarkImportJobPhase =
+  | 'IDLE'
+  | 'QUEUED'
+  | 'DATA'
+  | 'TRANSACTIONS'
+  | 'ATTACHMENTS'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export interface LarkImportJobStatus {
+  runId: string | null;
+  running: boolean;
+  dryRun: boolean;
+  phase: LarkImportJobPhase;
+  sources: string[];
+  startedAt: string | null;
+  finishedAt: string | null;
+  fetched: number;
+  created: number;
+  updated: number;
+  skipped: number;
+  fundTransactions: number;
+  attachmentsTotal: number;
+  attachmentsDownloaded: number;
+  attachmentsFailed: number;
+  error: string | null;
+  result: LarkFinanceImportResult | null;
 }
 
 const FINANCE_SOURCES = new Set<LarkImportSource>([
@@ -87,9 +126,20 @@ type ResolvedLarkUsers = {
   managerName?: string;
 };
 
+interface LarkImportRunState {
+  pendingEntryIds: Set<number>;
+  cashIssuedEntryIds: Set<number>;
+  attachmentTotal: number;
+  attachmentDownloaded: number;
+  attachmentFailures: string[];
+  vehicleIndex: Set<string>;
+}
+
 @Injectable()
 export class InternalFinanceLarkImportService {
   private readonly logger = new Logger(InternalFinanceLarkImportService.name);
+  private job: LarkImportJobStatus | null = null;
+  private jobPromise: Promise<void> | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -97,11 +147,133 @@ export class InternalFinanceLarkImportService {
     private readonly uploadService: UploadService,
     private readonly lark: LarkFinanceImportClient,
     private readonly codeService: InternalFinanceCodeService,
+    private readonly fundLedger: InternalFundLedgerService,
   ) {}
+
+  /**
+   * Nhận lệnh đồng bộ rồi trả về ngay. Toàn bộ việc đọc Lark và tải chứng từ
+   * chạy tiếp trong process, không giữ connection của nginx/frontend.
+   */
+  startImport(
+    dto: { dryRun?: boolean; sources?: string[] },
+    userId: number,
+  ): LarkImportJobStatus {
+    if (!userId) throw new BadRequestException('Thiếu người thực hiện import');
+    if (this.jobPromise) return this.getImportStatus();
+
+    const dryRun = dto.dryRun !== false;
+    const sources = this.resolveSources(dto.sources);
+    this.job = {
+      runId: randomUUID(),
+      running: true,
+      dryRun,
+      phase: 'QUEUED',
+      sources,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      fetched: 0,
+      created: 0,
+      updated: 0,
+      skipped: 0,
+      fundTransactions: 0,
+      attachmentsTotal: 0,
+      attachmentsDownloaded: 0,
+      attachmentsFailed: 0,
+      error: null,
+      result: null,
+    };
+    this.jobPromise = this.runJob({ dryRun, sources }, userId);
+    return this.getImportStatus();
+  }
+
+  getImportStatus(): LarkImportJobStatus {
+    if (!this.job) {
+      return {
+        runId: null,
+        running: false,
+        dryRun: true,
+        phase: 'IDLE',
+        sources: [],
+        startedAt: null,
+        finishedAt: null,
+        fetched: 0,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+        fundTransactions: 0,
+        attachmentsTotal: 0,
+        attachmentsDownloaded: 0,
+        attachmentsFailed: 0,
+        error: null,
+        result: null,
+      };
+    }
+    return this.job;
+  }
+
+  private async runJob(
+    dto: { dryRun?: boolean; sources?: string[] },
+    userId: number,
+  ) {
+    try {
+      const result = await this.importHistory(dto, userId, {
+        onPhase: (phase) => this.patchJob({ phase }),
+        onProgress: (patch) => this.patchJob(patch),
+      });
+      const totals = result.tables.reduce(
+        (sum, table) => ({
+          fetched: sum.fetched + table.fetched,
+          created: sum.created + table.created,
+          updated: sum.updated + table.updated,
+          skipped: sum.skipped + table.skipped,
+          attachmentsDownloaded:
+            sum.attachmentsDownloaded + table.attachmentsDownloaded,
+          attachmentsFailed:
+            sum.attachmentsFailed + table.attachmentsFailed,
+        }),
+        {
+          fetched: 0,
+          created: 0,
+          updated: 0,
+          skipped: 0,
+          attachmentsDownloaded: 0,
+          attachmentsFailed: 0,
+        },
+      );
+      this.patchJob({
+        ...totals,
+        phase: 'COMPLETED',
+        running: false,
+        finishedAt: new Date().toISOString(),
+        result,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Đồng bộ Lark thất bại';
+      this.logger.error(`[LARK_IMPORT] job failed error=${message}`);
+      this.patchJob({
+        phase: 'FAILED',
+        running: false,
+        finishedAt: new Date().toISOString(),
+        error: message,
+      });
+    } finally {
+      this.jobPromise = null;
+    }
+  }
+
+  private patchJob(patch: Partial<LarkImportJobStatus>) {
+    if (!this.job) return;
+    this.job = { ...this.job, ...patch };
+  }
 
   async importHistory(
     dto: { dryRun?: boolean; sources?: string[] },
     userId: number,
+    progress?: {
+      onPhase?: (phase: LarkImportJobPhase) => void;
+      onProgress?: (patch: Partial<LarkImportJobStatus>) => void;
+    },
   ): Promise<LarkFinanceImportResult> {
     if (!userId) throw new BadRequestException('Thiếu người thực hiện import');
     const dryRun = dto.dryRun !== false;
@@ -126,7 +298,23 @@ export class InternalFinanceLarkImportService {
     );
     const results: LarkImportTableResult[] = [];
 
-    for (const source of sources) {
+    // Bảng xe nhập trước để có khoá đối chiếu cho dòng xăng/chăm sóc xe nằm
+    // trong bảng tổng hợp phiếu chi.
+    const orderedSources = [...sources].sort(
+      (a, b) => sourcePriority(a) - sourcePriority(b),
+    );
+    const runState: LarkImportRunState = {
+      pendingEntryIds: new Set<number>(),
+      cashIssuedEntryIds: new Set<number>(),
+      attachmentTotal: 0,
+      attachmentDownloaded: 0,
+      attachmentFailures: [],
+      vehicleIndex: await this.loadVehicleIndex(),
+    };
+    progress?.onPhase?.('DATA');
+    let fundTransactions = 0;
+
+    for (const source of orderedSources) {
       this.logger.log(`[LARK_IMPORT] source start source=${source}`);
       const baseToken = FINANCE_SOURCES.has(source) ? financeBase : vehicleBase;
       const listed = FINANCE_SOURCES.has(source)
@@ -164,10 +352,37 @@ export class InternalFinanceLarkImportService {
           token,
           dryRun,
           userId,
+          runState,
         });
         results.push(tableResult);
         this.logTableSummary(tableResult, mode);
+        progress?.onProgress?.({
+          fetched: results.reduce((sum, row) => sum + row.fetched, 0),
+          created: results.reduce((sum, row) => sum + row.created, 0),
+          updated: results.reduce((sum, row) => sum + row.updated, 0),
+          skipped: results.reduce((sum, row) => sum + row.skipped, 0),
+          attachmentsTotal: runState.attachmentTotal,
+        });
       }
+    }
+
+    if (!dryRun && runState.cashIssuedEntryIds.size) {
+      progress?.onPhase?.('TRANSACTIONS');
+      fundTransactions = await this.finalizeImportedExpenseTransactions(
+        [...runState.cashIssuedEntryIds],
+        userId,
+      );
+      progress?.onProgress?.({ fundTransactions });
+    }
+
+    if (!dryRun) {
+      progress?.onPhase?.('ATTACHMENTS');
+      await this.importPendingAttachments({
+        userId,
+        pendingEntryIds: runState.pendingEntryIds,
+        runState,
+        onProgress: progress?.onProgress,
+      });
     }
 
     const totals = results.reduce(
@@ -176,23 +391,26 @@ export class InternalFinanceLarkImportService {
         created: summary.created + table.created,
         updated: summary.updated + table.updated,
         skipped: summary.skipped + table.skipped,
-        attachmentsDownloaded:
-          summary.attachmentsDownloaded + table.attachmentsDownloaded,
-        attachmentsFailed: summary.attachmentsFailed + table.attachmentsFailed,
+        pendingAttachments:
+          summary.pendingAttachments + table.pendingAttachments,
       }),
       {
         fetched: 0,
         created: 0,
         updated: 0,
         skipped: 0,
-        attachmentsDownloaded: 0,
-        attachmentsFailed: 0,
+        pendingAttachments: 0,
       },
     );
+    const attachments = {
+      total: runState.attachmentTotal || totals.pendingAttachments,
+      downloaded: runState.attachmentDownloaded,
+      failed: runState.attachmentFailures.length,
+    };
     this.logger.log(
-      `[LARK_IMPORT] complete mode=${mode} fetched=${totals.fetched} created=${totals.created} updated=${totals.updated} skipped=${totals.skipped} attachments=${totals.attachmentsDownloaded} attachmentErrors=${totals.attachmentsFailed} durationMs=${Date.now() - startedAt}`,
+      `[LARK_IMPORT] complete mode=${mode} fetched=${totals.fetched} created=${totals.created} updated=${totals.updated} skipped=${totals.skipped} attachments=${attachments.downloaded}/${attachments.total} attachmentErrors=${attachments.failed} fundTransactions=${fundTransactions} durationMs=${Date.now() - startedAt}`,
     );
-    return { dryRun, tables: results };
+    return { dryRun, tables: results, attachments, fundTransactions };
   }
 
   async importWarehouseCash(
@@ -345,7 +563,10 @@ export class InternalFinanceLarkImportService {
 
     for (const row of mapped) {
       const current = existingByKey.get(row.sourceKey);
-      if (current?.cashFlowId || current?.status === INTERNAL_FINANCE_STATUS.POSTING) {
+      if (
+        current?.cashFlowId ||
+        current?.status === INTERNAL_FINANCE_STATUS.POSTING
+      ) {
         input.result.skipped += 1;
         continue;
       }
@@ -424,7 +645,7 @@ export class InternalFinanceLarkImportService {
   }
 
   private resolveSources(sources?: string[]): LarkImportSource[] {
-    if (!sources?.length) return [...LARK_IMPORT_SOURCES];
+    if (!sources?.length) return [...LARK_IMPORT_EXPENSE_SOURCES];
     const unknown = sources.filter(
       (source) => !LARK_IMPORT_SOURCES.includes(source as LarkImportSource),
     );
@@ -484,6 +705,7 @@ export class InternalFinanceLarkImportService {
       skipped: 0,
       attachmentsDownloaded: 0,
       attachmentsFailed: 0,
+      pendingAttachments: 0,
       unmatchedInvoices: [],
       ...(error ? { error } : {}),
       sampleErrors: error ? [error] : ['Không tìm thấy bảng, đã bỏ qua'],
@@ -497,6 +719,7 @@ export class InternalFinanceLarkImportService {
     token: string;
     dryRun: boolean;
     userId: number;
+    runState: LarkImportRunState;
   }): Promise<LarkImportTableResult> {
     if (
       input.source === 'APPROVAL_HN' ||
@@ -837,6 +1060,7 @@ export class InternalFinanceLarkImportService {
           branchId: row.branchId,
           direction: 'EXPENSE',
           occurredAt: { gte: row.weekStart, lte: row.weekEnd },
+          sourceType: { not: 'LARK_IMPORT' },
           OR: [{ weeklyBatchId: null }, { weeklyBatchId: batch.id }],
           cashFlowId: null,
         },
@@ -912,6 +1136,7 @@ export class InternalFinanceLarkImportService {
       userId: number;
       branchId: number;
       result: LarkImportTableResult;
+      runState: LarkImportRunState;
     },
   ) {
     const mapped: MappedLarkEntry[] = [];
@@ -952,14 +1177,41 @@ export class InternalFinanceLarkImportService {
     const slipIds = await this.matchSlips(mapped);
     const customerIds = await this.matchCustomers(mapped);
     const larkUsers = await this.resolveLarkUsers(mapped);
+    const packingEntryKeys = await this.loadPackingEntryKeys(mapped, slipIds);
+    const isVehicleSource =
+      input.source === 'FUEL' || input.source === 'VEHICLE_CARE';
 
     for (const entry of mapped) {
       const current = existingByKey.get(entry.sourceKey);
+
+      // Không nhập lại cước báo đơn mà POS đã sinh khi lưu phiếu giao hàng.
+      if (entry.category === INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE) {
+        const packingKey = packingEntryKey(entry, slipIds);
+        if (packingKey && packingEntryKeys.has(packingKey)) {
+          input.result.skipped += 1;
+          continue;
+        }
+      }
+
+      // Bảng tổng hợp phiếu chi có thể chứa lại dòng xăng/chăm sóc xe đã nhập
+      // từ bảng xe. Bỏ dòng trùng theo chi nhánh, ngày, số tiền và tên xe.
+      const mappedVehicle = vehicleNameOf(entry);
+      if (!isVehicleSource && mappedVehicle) {
+        const key = vehicleKey(
+          entry.branchId,
+          entry.occurredAt,
+          entry.amount,
+          mappedVehicle,
+        );
+        if (input.runState.vehicleIndex.has(key)) {
+          input.result.skipped += 1;
+          continue;
+        }
+      }
+
       if (
-        current &&
-        (current.cashFlowId ||
-          current.cashIssued ||
-          PROTECTED_IMPORT_STATUSES.has(current.status))
+        current?.cashFlowId ||
+        current?.status === INTERNAL_FINANCE_STATUS.POSTING
       ) {
         input.result.skipped += 1;
         continue;
@@ -972,21 +1224,50 @@ export class InternalFinanceLarkImportService {
         (matchedInvoices.length || customerIds.get(entry.customerName || ''))
           ? INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT
           : entry.category;
+      const importedTokens = readImportedTokens(current?.sourceSnapshot);
+      const importedSet = new Set(importedTokens);
+      const pendingAttachments = entry.attachments
+        .filter((file) => !importedSet.has(file.fileToken))
+        .map((file) => ({
+          token: file.fileToken,
+          name: file.name,
+          type: file.type,
+          url: file.url,
+          tmpUrl: file.tmpUrl,
+        }));
+      if (pendingAttachments.length) {
+        input.result.pendingAttachments += pendingAttachments.length;
+      }
       if (input.dryRun) {
         if (current) input.result.updated += 1;
         else input.result.created += 1;
         continue;
       }
+
+      // Dòng đã vào batch hoặc đã chi thì giữ nguyên, chỉ bổ sung giao dịch quỹ
+      // nếu lần nhập trước đã đánh dấu Đã chi nhưng chưa ghi sổ.
+      if (
+        current &&
+        (current.cashIssued || PROTECTED_IMPORT_STATUSES.has(current.status))
+      ) {
+        if (
+          current.cashIssued &&
+          entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE
+        ) {
+          input.runState.cashIssuedEntryIds.add(current.id);
+        }
+        // Dòng cũ vẫn giữ nguyên, nhưng file còn thiếu được tải lại ở pha 2.
+        if (pendingAttachments.length) {
+          input.runState.pendingEntryIds.add(current.id);
+          input.runState.attachmentTotal += pendingAttachments.length;
+        }
+        input.result.skipped += 1;
+        continue;
+      }
       try {
-        const savedFiles = await this.downloadAttachments(
-          entry,
-          current,
-          input,
-        );
-        const evidenceStatus =
-          savedFiles.length || currentHasFiles(current)
-            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
-            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING;
+        const evidenceStatus = importedTokens.length
+          ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+          : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING;
         const snapshot = {
           ...entry.sourceSnapshot,
           importedByUserId: input.userId,
@@ -995,12 +1276,8 @@ export class InternalFinanceLarkImportService {
           unmatchedInvoiceCodes: entry.invoiceCodes.filter(
             (code) => !invoiceIds.has(code),
           ),
-          importedFileTokens: Array.from(
-            new Set([
-              ...readImportedTokens(current?.sourceSnapshot),
-              ...savedFiles.map((file) => file.token),
-            ]),
-          ),
+          importedFileTokens: importedTokens,
+          pendingAttachments,
           missingDate: !entry.occurredAt,
         };
         const data = await this.entryData({
@@ -1014,8 +1291,9 @@ export class InternalFinanceLarkImportService {
           packingSlipId: entry.slipCode
             ? slipIds.get(entry.slipCode) || null
             : null,
-          attachments: savedFiles,
+          attachments: [],
         });
+        let savedId: number;
         if (current) {
           await this.prisma.internalFinanceEntry.update({
             where: { id: current.id },
@@ -1035,15 +1313,37 @@ export class InternalFinanceLarkImportService {
                 deleteMany: { note: { startsWith: 'Lark import:' } },
                 ...(data.reviews ? { create: data.reviews.create } : {}),
               },
-              attachments: savedFiles.length
-                ? { create: data.attachments?.create }
-                : undefined,
             },
           });
+          savedId = current.id;
           input.result.updated += 1;
         } else {
-          await this.prisma.internalFinanceEntry.create({ data });
+          const created = await this.prisma.internalFinanceEntry.create({
+            data,
+          });
+          savedId = created.id;
           input.result.created += 1;
+        }
+        if (pendingAttachments.length) {
+          input.runState.pendingEntryIds.add(savedId);
+          input.runState.attachmentTotal += pendingAttachments.length;
+          input.result.pendingAttachments += pendingAttachments.length;
+        }
+        if (isVehicleSource && mappedVehicle) {
+          input.runState.vehicleIndex.add(
+            vehicleKey(
+              entry.branchId,
+              entry.occurredAt,
+              entry.amount,
+              mappedVehicle,
+            ),
+          );
+        }
+        if (
+          entry.cashIssued &&
+          entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE
+        ) {
+          input.runState.cashIssuedEntryIds.add(savedId);
         }
       } catch (error) {
         input.result.skipped += 1;
@@ -1198,78 +1498,272 @@ export class InternalFinanceLarkImportService {
     return { byEntry, unmatchedByEntry };
   }
 
-  private async downloadAttachments(
-    entry: MappedLarkEntry,
-    current: { sourceSnapshot: Prisma.JsonValue | null } | undefined,
-    input: {
-      token: string;
-      userId: number;
-      result: LarkImportTableResult;
-    },
-  ) {
-    const previous = new Set(readImportedTokens(current?.sourceSnapshot));
-    const saved: Array<{
-      token: string;
-      fileUrl: string;
-      fileName?: string;
-      fileType?: string;
-      fileSize?: number;
-      kind: string;
-      createdBy: number;
-    }> = [];
-    for (const attachment of entry.attachments) {
-      if (previous.has(attachment.fileToken)) {
-        saved.push({
-          token: attachment.fileToken,
-          fileUrl: '',
-          kind: 'EVIDENCE',
-          createdBy: input.userId,
-        });
-        continue;
-      }
-      const url =
-        attachment.url ||
-        attachment.tmpUrl ||
-        `https://open.larksuite.com/open-apis/drive/v1/medias/${attachment.fileToken}/download`;
-      try {
-        const buffer = await this.lark.download(url, input.token);
-        const stored = await this.uploadService.saveFile(
-          buffer,
-          attachment.name || `${attachment.fileToken}.bin`,
-          attachment.type || 'application/octet-stream',
-          'internal-finance',
-        );
-        saved.push({
-          token: attachment.fileToken,
-          fileUrl: stored.url,
-          fileName: attachment.name,
-          fileType: attachment.type,
-          fileSize: stored.size,
-          kind: 'EVIDENCE',
-          createdBy: input.userId,
-        });
-        previous.add(attachment.fileToken);
-        input.result.attachmentsDownloaded += 1;
-        if (
-          input.result.attachmentsDownloaded === 1 ||
-          input.result.attachmentsDownloaded % 25 === 0
-        ) {
+  /**
+   * Pha 2: tải chứng từ đã lưu trong snapshot từng khoản. Mỗi file tải xong
+   * được ghi ngay vào attachment và giải phóng khỏi snapshot, nên lỗi một file
+   * không ảnh hưởng các file còn lại và lần chạy sau tiếp tục phần còn thiếu.
+   */
+  private async importPendingAttachments(input: {
+    userId: number;
+    pendingEntryIds: Set<number>;
+    runState: LarkImportRunState;
+    onProgress?: (patch: Partial<LarkImportJobStatus>) => void;
+  }) {
+    const failures: string[] = [];
+    if (!input.pendingEntryIds.size) {
+      return { failures };
+    }
+    const token = await this.lark.getToken();
+    const entries = await this.prisma.internalFinanceEntry.findMany({
+      where: { id: { in: [...input.pendingEntryIds] } },
+      select: { id: true, sourceSnapshot: true },
+    });
+    for (const entry of entries) {
+      const snapshot = asSnapshotRecord(entry.sourceSnapshot);
+      const pending = readPendingAttachments(snapshot);
+      if (!pending.length) continue;
+      const remaining: typeof pending = [];
+      for (const file of pending) {
+        const url =
+          file.url ||
+          file.tmpUrl ||
+          `https://open.larksuite.com/open-apis/drive/v1/medias/${file.token}/download`;
+        try {
+          const buffer = await this.lark.download(url, token);
+          const stored = await this.uploadService.saveFile(
+            buffer,
+            file.name || `${file.token}.bin`,
+            file.type || 'application/octet-stream',
+            'internal-finance',
+          );
+          await this.prisma.internalFinanceAttachment.create({
+            data: {
+              entryId: entry.id,
+              kind: 'EVIDENCE',
+              fileUrl: stored.url,
+              fileName: file.name,
+              fileType: file.type,
+              fileSize: stored.size,
+              createdBy: input.userId,
+            },
+          });
+          input.runState.attachmentDownloaded += 1;
           this.logger.log(
-            `[LARK_IMPORT] attachments downloaded=${input.result.attachmentsDownloaded} failed=${input.result.attachmentsFailed}`,
+            `[LARK_IMPORT] attachment downloaded entry=${entry.id} downloaded=${input.runState.attachmentDownloaded} failed=${input.runState.attachmentFailures.length}`,
+          );
+        } catch (error) {
+          remaining.push(file);
+          const message =
+            error instanceof Error ? error.message : 'Không tải được chứng từ';
+          input.runState.attachmentFailures.push(message);
+          failures.push(message);
+          this.logger.warn(
+            `[LARK_IMPORT] attachment failed entry=${entry.id} name=${file.name || file.token}`,
           );
         }
-      } catch (error) {
-        input.result.attachmentsFailed += 1;
-        this.logger.warn(
-          `[LARK_IMPORT] attachment failed name=${attachment.name || attachment.fileToken} failed=${input.result.attachmentsFailed}`,
-        );
-        this.pushError(
-          input.result,
-          error instanceof Error ? error.message : 'Không tải được chứng từ',
-        );
+        input.onProgress?.({
+          attachmentsTotal: input.runState.attachmentTotal,
+          attachmentsDownloaded: input.runState.attachmentDownloaded,
+          attachmentsFailed: input.runState.attachmentFailures.length,
+        });
       }
+      const importedTokens = new Set(
+        readImportedTokens(snapshot as Prisma.JsonValue),
+      );
+      for (const file of pending) {
+        if (!remaining.some((item) => item.token === file.token)) {
+          importedTokens.add(file.token);
+        }
+      }
+      await this.prisma.internalFinanceEntry.update({
+        where: { id: entry.id },
+        data: {
+          evidenceStatus:
+            importedTokens.size > 0
+              ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+              : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
+          sourceSnapshot: {
+            ...snapshot,
+            importedFileTokens: [...importedTokens],
+            pendingAttachments: remaining,
+          } as Prisma.InputJsonValue,
+        },
+      });
     }
-    return saved.filter((file) => file.fileUrl);
+    return { failures };
+  }
+
+  /**
+   * Dòng Lark đã tick Đã chi được ghi một giao dịch quỹ nội bộ, không tạo hay
+   * liên kết CashFlow. Giao dịch thiếu được bổ sung khi chạy lại.
+   */
+  private async finalizeImportedExpenseTransactions(
+    entryIds: number[],
+    userId: number,
+  ) {
+    if (!entryIds.length) return 0;
+    const entries = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        id: { in: entryIds },
+        direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+        cashIssued: true,
+        cashFlowId: null,
+      },
+      select: {
+        id: true,
+        code: true,
+        branchId: true,
+        amount: true,
+        occurredAt: true,
+        description: true,
+      },
+    });
+    const byBranch = new Map<number, typeof entries>();
+    for (const entry of entries) {
+      byBranch.set(entry.branchId, [
+        ...(byBranch.get(entry.branchId) || []),
+        entry,
+      ]);
+    }
+    let created = 0;
+    for (const [branchId, rows] of byBranch) {
+      created += await this.createExpenseTransactions(branchId, rows, userId);
+    }
+    if (created) {
+      this.logger.log(
+        `[LARK_IMPORT] fund transactions created=${created} branches=${byBranch.size}`,
+      );
+    }
+    return created;
+  }
+
+  /**
+   * Một transaction tương tác của Prisma mặc định đóng sau 5 giây. Lịch sử một
+   * kho có thể hàng nghìn dòng, nên ghi theo cụm để transaction không bị đóng
+   * giữa chừng. Khóa sourceKey vẫn chặn giao dịch trùng khi chạy lại.
+   */
+  private async createExpenseTransactions(
+    branchId: number,
+    rows: Array<{
+      id: number;
+      code: string;
+      branchId: number;
+      amount: Prisma.Decimal | number;
+      occurredAt: Date;
+      description: string | null;
+    }>,
+    userId: number,
+  ) {
+    const chunkSize = 80;
+    let created = 0;
+    for (let index = 0; index < rows.length; index += chunkSize) {
+      const chunk = rows.slice(index, index + chunkSize);
+      const sourceKeys = chunk.map((row) => `EXPENSE:${row.id}`);
+      const existing = await this.prisma.internalFundTransaction.findMany({
+        where: { sourceKey: { in: sourceKeys } },
+        select: { sourceKey: true },
+      });
+      const existingKeys = new Set(existing.map((row) => row.sourceKey));
+      const missing = chunk.filter(
+        (row) => !existingKeys.has(`EXPENSE:${row.id}`),
+      );
+      if (!missing.length) continue;
+      const chunkCreated = await this.prisma.$transaction(
+        async (tx) => {
+          await this.fundLedger.lock(tx, [branchId]);
+          let count = 0;
+          let earliest: Date | null = null;
+          for (const row of missing) {
+            try {
+              await tx.internalFundTransaction.create({
+                data: {
+                  code: this.fundLedger.code('CHI'),
+                  sourceKey: `EXPENSE:${row.id}`,
+                  branchId: row.branchId,
+                  entryId: row.id,
+                  transactionType: 'EXPENSE',
+                  amount: row.amount,
+                  occurredAt: row.occurredAt,
+                  description: row.description || row.code,
+                  sourceType: 'INTERNAL_FINANCE_ENTRY',
+                  sourceId: String(row.id),
+                  status: 'POSTED',
+                  createdBy: userId,
+                },
+              });
+            } catch (error) {
+              if (
+                error instanceof Prisma.PrismaClientKnownRequestError &&
+                error.code === 'P2002'
+              ) {
+                continue;
+              }
+              throw error;
+            }
+            count += 1;
+            if (!earliest || row.occurredAt < earliest) earliest = row.occurredAt;
+          }
+          if (earliest && count > 0) {
+            await this.fundLedger.invalidateClosings(tx, branchId, earliest);
+          }
+          return count;
+        },
+        { maxWait: 10_000, timeout: 30_000 },
+      );
+      created += chunkCreated;
+    }
+    return created;
+  }
+
+  private async loadVehicleIndex() {
+    const rows = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+        category: { in: ['FUEL', 'VEHICLE_CARE'] },
+        status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
+      },
+      select: {
+        branchId: true,
+        amount: true,
+        occurredAt: true,
+        vehicleName: true,
+      },
+    });
+    const index = new Set<string>();
+    for (const row of rows) {
+      if (!row.vehicleName) continue;
+      index.add(
+        vehicleKey(
+          row.branchId,
+          row.occurredAt,
+          Number(row.amount),
+          row.vehicleName,
+        ),
+      );
+    }
+    return index;
+  }
+
+  private async loadPackingEntryKeys(
+    entries: MappedLarkEntry[],
+    slipIds: Map<string, number>,
+  ) {
+    const keys = entries
+      .filter(
+        (entry) => entry.category === INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE,
+      )
+      .map((entry) => packingEntryKey(entry, slipIds))
+      .filter((key): key is string => Boolean(key));
+    if (!keys.length) return new Set<string>();
+    const existing = await this.prisma.internalFinanceEntry.findMany({
+      where: { sourceKey: { in: [...new Set(keys)] } },
+      select: { sourceKey: true },
+    });
+    return new Set(
+      existing
+        .map((row) => row.sourceKey)
+        .filter((key): key is string => Boolean(key)),
+    );
   }
 
   private async entryData(input: {
@@ -1329,6 +1823,9 @@ export class InternalFinanceLarkImportService {
       requiresEvidence: input.entry.direction === 'EXPENSE',
       cashIssued: input.entry.cashIssued,
       cashIssuedAt: input.entry.cashIssued ? occurredAt : undefined,
+      ...(input.entry.cashIssued
+        ? { cashIssuer: { connect: { id: input.userId } } }
+        : {}),
       creator: {
         connect: { id: input.resolvedUsers?.creatorId || input.userId },
       },
@@ -1477,10 +1974,78 @@ function normalizePersonName(value: string | null | undefined) {
   return value?.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase() || '';
 }
 
-function currentHasFiles(
-  current: { sourceSnapshot: Prisma.JsonValue | null } | undefined,
+type PendingAttachment = {
+  token: string;
+  name?: string;
+  type?: string;
+  url?: string;
+  tmpUrl?: string;
+};
+
+function asSnapshotRecord(
+  snapshot: Prisma.JsonValue | null | undefined,
+): Record<string, unknown> {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot))
+    return {};
+  return snapshot as Record<string, unknown>;
+}
+
+function readPendingAttachments(
+  snapshot: Record<string, unknown>,
+): PendingAttachment[] {
+  const pending = snapshot.pendingAttachments;
+  if (!Array.isArray(pending)) return [];
+  return pending.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    const token = asString(row.token);
+    if (!token) return [];
+    return [
+      {
+        token,
+        name: asString(row.name) || undefined,
+        type: asString(row.type) || undefined,
+        url: asString(row.url) || undefined,
+        tmpUrl: asString(row.tmpUrl) || undefined,
+      },
+    ];
+  });
+}
+
+function asString(value: unknown) {
+  return typeof value === 'string' ? value : '';
+}
+
+function sourcePriority(source: LarkImportSource) {
+  if (source === 'FUEL') return 0;
+  if (source === 'VEHICLE_CARE') return 1;
+  return 2;
+}
+
+function vehicleKey(
+  branchId: number,
+  occurredAt: Date | null | undefined,
+  amount: number,
+  vehicleName: string,
 ) {
-  return readImportedTokens(current?.sourceSnapshot).length > 0;
+  const date = occurredAt ? new Date(occurredAt) : new Date();
+  const vietnamTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+  const day = vietnamTime.toISOString().slice(0, 10);
+  return `${branchId}|${day}|${Number(amount).toFixed(2)}|${normalizeText(
+    vehicleName,
+  )}`;
+}
+
+function vehicleNameOf(entry: MappedLarkEntry) {
+  const vehicle = entry.sourceSnapshot.vehicle;
+  return typeof vehicle === 'string' && vehicle.trim() ? vehicle : null;
+}
+
+function packingEntryKey(entry: MappedLarkEntry, slipIds: Map<string, number>) {
+  if (!entry.slipCode) return null;
+  const slipId = slipIds.get(entry.slipCode);
+  if (!slipId) return null;
+  return `PACKING_SLIP:${slipId}:${entry.subCategory}`;
 }
 
 function readImportedTokens(snapshot: Prisma.JsonValue | null | undefined) {

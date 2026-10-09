@@ -73,7 +73,7 @@ describe('Lark finance import mapper', () => {
     expect(fuel).toMatchObject({
       category: 'FUEL',
       branchId: 6,
-      amount: 20000,
+      amount: 200000,
     });
     expect(care).toMatchObject({ category: 'VEHICLE_CARE', branchId: 1 });
   });
@@ -130,9 +130,11 @@ describe('Lark finance import mapper', () => {
     expect(entry?.code).toBe('');
 
     expect(classifyTable('Giao Dịch Tiền Mặt - Kho')).toBe('ROLLUP');
+    expect(classifyTable('Approval PHIẾU CHI kho HN')).toBeNull();
     expect(
       selectTablesForSource('EXPENSE_HN', [
         { tableId: 'rollup', name: 'Giao Dịch Tiền Mặt - Kho' },
+        { tableId: 'approval', name: 'Approval PHIẾU CHI kho HN' },
         { tableId: 'hn', name: 'Tổng hợp phiếu chi kho HN' },
       ]).map((table) => table.tableId),
     ).toEqual(['hn']);

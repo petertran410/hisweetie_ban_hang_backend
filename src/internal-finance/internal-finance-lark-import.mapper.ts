@@ -19,6 +19,18 @@ export const LARK_IMPORT_SOURCES = [
   'APPROVAL_VP',
 ] as const;
 
+/**
+ * Nhóm nguồn dùng cho phiếu chi kho + xe cộ. Bỏ phiếu thu, tạm ứng lương và
+ * các bảng Approval để không nhập trùng Approval tuần.
+ */
+export const LARK_IMPORT_EXPENSE_SOURCES = [
+  'FUEL',
+  'VEHICLE_CARE',
+  'EXPENSE_HN',
+  'EXPENSE_SG',
+  'EXPENSE_VP',
+] as const;
+
 export type LarkImportSource = (typeof LARK_IMPORT_SOURCES)[number];
 
 export const LARK_VEHICLE_BASE_FALLBACK = 'L0QqbLrGnaDW1csc8p0lieM3g9f';
@@ -36,7 +48,7 @@ export const PROTECTED_IMPORT_STATUSES = new Set<string>([
 
 const MONEY_FIELDS = ['Số tiền', 'Thành tiền', 'Tổng tiền'];
 const UNIT_PRICE_FIELDS = ['ĐƠN GIÁ', 'Đơn giá'];
-const QUANTITY_FIELDS = ['Số lượng'];
+const QUANTITY_FIELDS = ['Số lượng', 'Số lít', 'Số lit'];
 const DATE_FIELDS = [
   'Năm-Tháng',
   'NĂM/THÁNG/NGÀY',
@@ -130,6 +142,8 @@ export function classifyTable(
 ): LarkImportSource | 'ROLLUP' | null {
   const normalized = normalizeLookup(name);
   if (normalized.includes('giao dich tien mat')) return 'ROLLUP';
+  // Bảng "Approval PHIẾU CHI ..." chỉ lưu tuần duyệt, không phải từng khoản chi.
+  if (normalized.includes('approval')) return null;
   if (normalized.includes('cham soc')) return 'VEHICLE_CARE';
   if (normalized.includes('xang')) return 'FUEL';
   if (normalized.includes('tam ung')) return 'SALARY_ADVANCE';

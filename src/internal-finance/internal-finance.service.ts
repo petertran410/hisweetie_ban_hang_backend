@@ -1417,6 +1417,8 @@ export class InternalFinanceService {
           ...(options.allowedCategories?.length
             ? { category: { in: options.allowedCategories } }
             : {}),
+          // Khoản nhập lịch sử từ Lark chỉ để hiển thị, không tổng hợp lại.
+          sourceType: { not: 'LARK_IMPORT' },
           cashFlowId: null,
           cashIssued: false,
           OR: existing

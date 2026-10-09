@@ -240,10 +240,18 @@ export class InternalFinanceController {
   @Post('lark-import')
   @RequirePermissions('cash_flows:create')
   @ApiOperation({
-    summary: 'Import historical Lark finance records without posting cash',
+    summary:
+      'Queue a background Lark finance import and return its progress immediately',
   })
   importFromLark(@Body() dto: LarkFinanceImportDto, @CurrentUser() user: any) {
-    return this.larkImport.importHistory(dto, user.id);
+    return this.larkImport.startImport(dto, user.id);
+  }
+
+  @Get('lark-import/status')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Get the current Lark finance import progress' })
+  larkImportStatus() {
+    return this.larkImport.getImportStatus();
   }
 
   @Post('vehicle-care')
