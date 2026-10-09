@@ -74,6 +74,7 @@ const POS_PREPAID_INVOICE_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 
 const INVOICE_PACKING_CREATOR_PARENT_SELECT = {
+  createdAt: true,
   creator: { select: { id: true, name: true } },
 } as const;
 
