@@ -155,6 +155,149 @@ describe('Lark finance import mapper', () => {
     expect(entry?.occurredAt?.getDate()).toBe(29);
   });
 
+  it('uses the real date column instead of the month label of HN/SG expense tables', () => {
+    const entry = mapLarkRecord({
+      ...base,
+      source: 'EXPENSE_HN',
+      fields: {
+        'Năm-Tháng': [{ text: '2026-10', type: 'text' }],
+        'NĂM/THÁNG/NGÀY': 1791526189247,
+        'THÀNH TIỀN': { type: 2, value: [50000] },
+        'NỘI DUNG': 'Phí gửi bến - NLPC Mạnh Thư',
+      },
+    }).entry;
+    expect(entry?.occurredAt?.getTime()).toBe(1791526189247);
+  });
+
+  it('leaves the date empty when a table only has a month label', () => {
+    const entry = mapLarkRecord({
+      ...base,
+      source: 'EXPENSE_HN',
+      fields: {
+        'Năm-Tháng': [{ text: '2026-10', type: 'text' }],
+        'Số tiền': 50000,
+      },
+    }).entry;
+    expect(entry?.occurredAt).toBeNull();
+  });
+
+  it('maps expense item, quantity x unit price, note, payer and the vehicle link text', () => {
+    const entry = mapLarkRecord({
+      ...base,
+      source: 'EXPENSE_HN',
+      fields: {
+        'NĂM/THÁNG/NGÀY': 1791368871000,
+        'Số lượng': '2',
+        'ĐƠN GIÁ': '375000',
+        'THÀNH TIỀN': { type: 2, value: [750000] },
+        'NỘI DUNG': 'Xăng xe',
+        'GHI CHÚ': 'đổ đầy bình',
+        'Khoản Mục': 'Xăng xe: oto, xe tại kho',
+        'Người Chi': [{ id: 'ou_1', name: 'Đào Huy Sáng' }],
+        'Liên Kết Xăng Dầu': [
+          {
+            record_ids: ['recFuel'],
+            text: 'Xăng - 29D - 223.09 - Xăng - 2026/10/07',
+            type: 'text',
+          },
+        ],
+        'Liên Kết Chăm Sóc Xe': [{ record_ids: null, text: null, type: 'text' }],
+      },
+    }).entry;
+    expect(entry).toMatchObject({
+      expenseItem: 'Xăng xe: oto, xe tại kho',
+      quantity: 2,
+      unitPrice: 375000,
+      amount: 750000,
+      description: 'Xăng xe',
+      note: 'đổ đầy bình',
+      larkPayer: { id: 'ou_1', name: 'Đào Huy Sáng' },
+    });
+    expect(entry?.twinTexts).toEqual([
+      'Xăng - 29D - 223.09 - Xăng - 2026/10/07',
+      'đổ đầy bình',
+    ]);
+  });
+
+  it('imports a vehicle care row with its cost, vehicle, services, due date and photo kinds', () => {
+    const entry = mapLarkRecord({
+      ...base,
+      tableId: 'tblCareHN',
+      tableName: 'KHO HN - Chăm sóc xe',
+      source: 'VEHICLE_CARE',
+      fields: {
+        'Chọn xe': '29D - 223.09 - Xăng',
+        'Loại dịch vụ': ['Đăng kiểm xe', 'Sửa chữa'],
+        'Chi phí (VNĐ)': '100000',
+        'Hạn đăng kiểm/ bảo hiểm': 1798650000000,
+        ODO: '58726',
+        'Ghi chú': 'thay ống dẫn xăng',
+        'Thời gian': 1791369267000,
+        'Hình ảnh': [{ file_token: 'img1', name: 'a.jpg' }],
+        'Hóa đơn': [{ file_token: 'inv1', name: 'b.jpg' }],
+        'Created By': { id: 'ou_1', name: 'Đào Huy Sáng' },
+      },
+    }).entry;
+    expect(entry).toMatchObject({
+      category: 'VEHICLE_CARE',
+      amount: 100000,
+      vehicleLabel: '29D - 223.09 - Xăng',
+      serviceTypes: ['Đăng kiểm xe', 'Sửa chữa'],
+      description: 'Đăng kiểm xe, Sửa chữa - 29D - 223.09 - Xăng',
+      note: 'thay ống dẫn xăng',
+      expenseItem: 'Sửa chữa, bảo dưỡng; oto xe máy',
+      larkCreator: { id: 'ou_1', name: 'Đào Huy Sáng' },
+      twinTexts: [],
+    });
+    expect(entry?.dueAt?.getTime()).toBe(1798650000000);
+    expect(
+      entry?.attachments.map((file) => [file.fileToken, file.kind]).sort(),
+    ).toEqual([
+      ['img1', 'PHOTO'],
+      ['inv1', 'INVOICE'],
+    ]);
+  });
+
+  it('imports a fuel row with the pump meter photo and the Lark location address', () => {
+    const entry = mapLarkRecord({
+      ...base,
+      tableId: 'tblFuelSG',
+      tableName: 'KHO SG - Xăng dầu',
+      defaultBranchId: 1,
+      source: 'FUEL',
+      fields: {
+        'Chọn xe': '31M - 522.18',
+        'Thành tiền': '500000',
+        'Đơn giá': '28250',
+        'Số lít': 17.699,
+        ODO: '12938',
+        'Thời gian': 1791526663000,
+        'Địa điểm': {
+          address: '231 Đ. Phan Anh',
+          full_address: '231 Đ. Phan Anh, Bình Trị Đông, Hồ Chí Minh',
+          name: '',
+        },
+        'Đồng hồ cây xăng': [{ file_token: 'pump1', name: 'pump.jpg' }],
+        'Lái xe': { id: 'ou_2', name: 'Nguyễn Lâm Ngọc Tiền' },
+      },
+    }).entry;
+    expect(entry).toMatchObject({
+      category: 'FUEL',
+      branchId: 1,
+      amount: 500000,
+      vehicleLabel: '31M - 522.18',
+      description: 'Xăng dầu - 31M - 522.18',
+      expenseItem: 'Xăng xe: oto, xe tại kho',
+      larkCreator: { id: 'ou_2', name: 'Nguyễn Lâm Ngọc Tiền' },
+    });
+    expect(entry?.sourceSnapshot.location).toBe(
+      '231 Đ. Phan Anh, Bình Trị Đông, Hồ Chí Minh',
+    );
+    expect(entry?.attachments).toEqual([
+      expect.objectContaining({ fileToken: 'pump1', kind: 'PUMP_METER' }),
+    ]);
+  });
+
   it('stops a table when the money field is absent', () => {
     expect(requiredFieldError(['Nội dung', 'Ngày'], 'FUEL')).toMatch(
       /thiếu field số tiền/i,

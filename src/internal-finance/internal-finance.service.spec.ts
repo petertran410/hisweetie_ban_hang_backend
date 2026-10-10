@@ -39,6 +39,16 @@ describe('InternalFinanceService', () => {
     const codeService = {
       nextCode: jest.fn().mockResolvedValue('TCNB-CHI-HN-20260930-000001'),
     };
+    const vehicles = {
+      assertPermission: jest.fn(),
+      allowedBranches: jest.fn().mockResolvedValue([6, 1]),
+      requireForBranch: jest.fn().mockResolvedValue({
+        id: 3,
+        branchId: 6,
+        label: '29D - 223.09 - Xăng',
+      }),
+      fuelMetrics: jest.fn().mockResolvedValue(new Map()),
+    };
     return {
       service: new InternalFinanceService(
         prisma as any,
@@ -48,8 +58,10 @@ describe('InternalFinanceService', () => {
         codeService as any,
         authService as any,
         internalFund as any,
+        vehicles as any,
       ),
       prisma,
+      vehicles,
       cashFlowsService,
       authService,
       internalFund,
@@ -556,6 +568,154 @@ describe('InternalFinanceService', () => {
       (entry) => entry.category === 'CUSTOMER_RECEIPT',
     );
     expect(receipt.sourceSnapshot.customerIds).toEqual([55]);
+    const expenses = [...entries.values()].filter(
+      (entry) => entry.category === 'DELIVERY_FEE',
+    );
+    expect(expenses.every((entry) => entry.payerId === 9)).toBe(true);
+    expect(
+      expenses.every((entry) => entry.expenseItem?.startsWith('Cước gửi hàng')),
+    ).toBe(true);
+    expect(receipt.payerId).toBeUndefined();
+  });
+
+  it('computes the amount of a manual warehouse expense from quantity and unit price', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 91 });
+    const { service, authService } = makeService({
+      branch: {
+        findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+      },
+      internalFinanceEntry: { create },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:create_hn',
+    ]);
+
+    await service.createWarehouseExpense(
+      {
+        branchId: 6,
+        occurredAt: '2026-10-09T00:00:00+07:00',
+        description: 'Băng keo',
+        quantity: 12,
+        unitPrice: 15000,
+        expenseItem:
+          'Mua bao bì, CCDC phục vụ đóng gói hàng hóa: carton, xốp, băng keo...',
+      },
+      { id: 7, roles: [], permissions: [] },
+    );
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          amount: 180000,
+          quantity: 12,
+          unitPrice: 15000,
+          payerId: 7,
+        }),
+      }),
+    );
+    await expect(
+      service.createWarehouseExpense(
+        {
+          branchId: 6,
+          occurredAt: '2026-10-09T00:00:00+07:00',
+          description: 'Thiếu đơn giá',
+          quantity: 2,
+        },
+        { id: 7, roles: [], permissions: [] },
+      ),
+    ).rejects.toThrow('số lượng và đơn giá');
+  });
+
+  it('creates a fuel entry linked to a vehicle and derives liters from the unit price', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 92 });
+    const { service, vehicles } = makeService({
+      branch: {
+        findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+      },
+      internalFinanceEntry: { create },
+    });
+    const user = { id: 7, roles: [], permissions: [] };
+
+    await service.createFuel(
+      {
+        branchId: 6,
+        vehicleId: 3,
+        occurredAt: '2026-10-07T08:00:00+07:00',
+        amount: 750000,
+        unitPrice: 27180,
+        odo: 58674,
+      },
+      user,
+    );
+
+    expect(vehicles.assertPermission).toHaveBeenCalledWith(user, 6, 'create');
+    expect(vehicles.requireForBranch).toHaveBeenCalledWith(3, 6);
+    const data = create.mock.calls[0][0].data;
+    expect(data).toEqual(
+      expect.objectContaining({
+        category: 'FUEL',
+        vehicleId: 3,
+        vehicleName: '29D - 223.09 - Xăng',
+        vehicleOdo: 58674,
+        payerId: 7,
+        expenseItem: 'Xăng xe: oto, xe tại kho',
+      }),
+    );
+    expect(data.vehicleLiters).toBeCloseTo(27.5938, 4);
+  });
+
+  it('blocks editing or cancelling a vehicle entry already in a weekly batch', async () => {
+    const update = jest.fn();
+    const locked = {
+      id: 93,
+      direction: 'EXPENSE',
+      category: 'FUEL',
+      sourceType: 'FUEL',
+      branchId: 6,
+      cashFlowId: null,
+      cashIssued: false,
+      weeklyBatchId: 12,
+      status: 'READY_FOR_WEEKLY_APPROVAL',
+    };
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue(locked),
+        update,
+      },
+    });
+    const user = { id: 7, roles: [], permissions: [] };
+
+    await expect(
+      service.updateVehicleEntry(93, { amount: 500000 }, user),
+    ).rejects.toThrow('đã được tổng hợp');
+    await expect(service.cancelVehicleEntry(93, user)).rejects.toThrow(
+      'đã được tổng hợp',
+    );
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a Lark-imported row as an editable vehicle entry', async () => {
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 94,
+          direction: 'EXPENSE',
+          category: 'FUEL',
+          sourceType: 'LARK_IMPORT',
+          branchId: 6,
+          status: 'PENDING_ACCOUNTANT',
+        }),
+        update: jest.fn(),
+      },
+    });
+
+    await expect(
+      service.updateVehicleEntry(
+        94,
+        { amount: 1 },
+        { id: 7, roles: [], permissions: [] },
+      ),
+    ).rejects.toThrow('Không tìm thấy phiếu xe');
   });
 
   it('does not create a warehouse receipt for transfer, zero cash, or a non-warehouse branch', async () => {

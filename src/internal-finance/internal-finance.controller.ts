@@ -34,6 +34,8 @@ import {
   UpdateInternalFinanceCashIssuedDto,
   UpdateWarehouseReceiptDto,
   UpdateWarehouseExpenseDto,
+  UpdateVehicleEntryDto,
+  VehicleEntryQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -263,6 +265,34 @@ export class InternalFinanceController {
     return this.service.createVehicleCare(dto, user);
   }
 
+  @Get('vehicle-entries')
+  @ApiOperation({ summary: 'List fuel or vehicle care entries with metrics' })
+  vehicleEntries(
+    @Query() query: VehicleEntryQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listVehicleEntries(query, user);
+  }
+
+  @Patch('vehicle-entries/:id')
+  @ApiOperation({ summary: 'Update an open fuel or vehicle care entry' })
+  updateVehicleEntry(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateVehicleEntryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.updateVehicleEntry(id, dto, user);
+  }
+
+  @Put('vehicle-entries/:id/cancel')
+  @ApiOperation({ summary: 'Cancel an open fuel or vehicle care entry' })
+  cancelVehicleEntry(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cancelVehicleEntry(id, user);
+  }
+
   @Post(':id/review/:role')
   @ApiOperation({ summary: 'Review an internal finance entry' })
   review(
@@ -323,6 +353,16 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.updateCashIssued(id, dto.cashIssued, user.id);
+  }
+
+  @Post('maintenance/backfill-expense-metadata')
+  @RequirePermissions('cash_flows:update')
+  @ApiOperation({
+    summary:
+      'Fill payer, expense item and vehicle links on existing expenses (dry-run by default)',
+  })
+  backfillExpenseMetadata(@Body() dto: WarehouseCashImportDto) {
+    return this.service.backfillExpenseMetadata(dto.dryRun !== false);
   }
 
   @Post('maintenance/normalize-codes')

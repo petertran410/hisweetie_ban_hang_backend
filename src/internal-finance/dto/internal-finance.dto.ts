@@ -1,4 +1,5 @@
 import {
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
   IsDateString,
@@ -16,7 +17,9 @@ import {
   INTERNAL_FINANCE_CATEGORY,
   INTERNAL_FINANCE_DIRECTION,
   INTERNAL_FINANCE_REVIEW_DECISION,
+  WAREHOUSE_EXPENSE_ITEMS,
 } from '../internal-finance.constants';
+import { VEHICLE_SERVICE_TYPES } from '../../vehicles/vehicles.constants';
 import { LARK_IMPORT_SOURCES } from '../internal-finance-lark-import.mapper';
 
 export class InternalFinanceAttachmentDto {
@@ -221,8 +224,9 @@ export class CreateFuelEntryDto {
   @Type(() => Number)
   branchId: number;
 
-  @IsString()
-  vehicle: string;
+  @IsInt()
+  @Type(() => Number)
+  vehicleId: number;
 
   @IsDateString()
   occurredAt: string;
@@ -232,7 +236,7 @@ export class CreateFuelEntryDto {
   location?: string;
 
   @IsNumber()
-  @Min(0)
+  @Min(0.01)
   @Type(() => Number)
   amount: number;
 
@@ -255,18 +259,13 @@ export class CreateFuelEntryDto {
   odo?: number;
 
   @IsOptional()
-  @IsNumber()
-  @Min(0)
+  @IsInt()
   @Type(() => Number)
-  consumptionLimit?: number;
+  payerId?: number;
 
   @IsOptional()
   @IsString()
-  anomalyNote?: string;
-
-  @IsOptional()
-  @IsString()
-  description?: string;
+  note?: string;
 
   @IsOptional()
   @IsArray()
@@ -280,11 +279,14 @@ export class CreateVehicleCareEntryDto {
   @Type(() => Number)
   branchId: number;
 
-  @IsString()
-  vehicle: string;
+  @IsInt()
+  @Type(() => Number)
+  vehicleId: number;
 
-  @IsString()
-  serviceType: string;
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsIn(VEHICLE_SERVICE_TYPES, { each: true })
+  serviceTypes: string[];
 
   @IsOptional()
   @IsString()
@@ -294,7 +296,7 @@ export class CreateVehicleCareEntryDto {
   occurredAt: string;
 
   @IsNumber()
-  @Min(0)
+  @Min(0.01)
   @Type(() => Number)
   amount: number;
 
@@ -305,22 +307,141 @@ export class CreateVehicleCareEntryDto {
   odo?: number;
 
   @IsOptional()
-  @IsString()
-  anomalyNote?: string;
-
-  @IsOptional()
   @IsDateString()
   dueAt?: string;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  payerId?: number;
+
+  @IsOptional()
   @IsString()
-  description?: string;
+  note?: string;
 
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => InternalFinanceAttachmentDto)
   attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class UpdateVehicleEntryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  vehicleId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsIn(VEHICLE_SERVICE_TYPES, { each: true })
+  serviceTypes?: string[];
+
+  @IsOptional()
+  @IsString()
+  location?: string;
+
+  @IsOptional()
+  @IsDateString()
+  occurredAt?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  @Type(() => Number)
+  amount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  unitPrice?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  liters?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  odo?: number | null;
+
+  @IsOptional()
+  @IsDateString()
+  dueAt?: string | null;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  payerId?: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => InternalFinanceAttachmentDto)
+  attachments?: InternalFinanceAttachmentDto[];
+}
+
+export class VehicleEntryQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+
+  @IsIn([
+    INTERNAL_FINANCE_CATEGORY.FUEL,
+    INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+  ])
+  category: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  vehicleId?: number;
+
+  @IsOptional()
+  @IsIn(VEHICLE_SERVICE_TYPES)
+  serviceType?: string;
+
+  @IsOptional()
+  @IsIn(['NORMAL', 'ABNORMAL'])
+  check?: string;
+
+  @IsOptional()
+  @IsString()
+  status?: string;
+
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page = 1;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  limit = 50;
 }
 
 export class ReviewInternalFinanceDto {
@@ -548,6 +669,20 @@ export class WarehouseExpenseQueryDto {
   cashIssued?: string;
 
   @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  payerId?: number;
+
+  @IsOptional()
+  @IsString()
+  expenseItem?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  vehicleId?: number;
+
+  @IsOptional()
   @IsDateString()
   fromDate?: string;
 
@@ -577,16 +712,43 @@ export class CreateWarehouseExpenseDto {
   @Type(() => Number)
   branchId: number;
 
+  // Bỏ trống khi nhập Số lượng × Đơn giá.
+  @IsOptional()
   @IsNumber()
   @Min(0.01)
   @Type(() => Number)
-  amount: number;
+  amount?: number;
 
   @IsDateString()
   occurredAt: string;
 
   @IsString()
   description: string;
+
+  @IsOptional()
+  @IsIn(WAREHOUSE_EXPENSE_ITEMS)
+  expenseItem?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.0001)
+  @Type(() => Number)
+  quantity?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  unitPrice?: number;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  payerId?: number;
 
   @IsOptional()
   @IsArray()
@@ -609,6 +771,31 @@ export class UpdateWarehouseExpenseDto {
   @IsOptional()
   @IsString()
   description?: string;
+
+  @IsOptional()
+  @IsIn(WAREHOUSE_EXPENSE_ITEMS)
+  expenseItem?: string;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.0001)
+  @Type(() => Number)
+  quantity?: number | null;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  unitPrice?: number | null;
+
+  @IsOptional()
+  @IsString()
+  note?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  payerId?: number;
 
   @IsOptional()
   @IsArray()

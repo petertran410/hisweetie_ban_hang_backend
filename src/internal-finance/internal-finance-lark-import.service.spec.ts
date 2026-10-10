@@ -31,6 +31,9 @@ describe('InternalFinanceLarkImportService', () => {
           storedEntries.set(row.id, row);
           return row;
         }),
+        findUnique: jest.fn(
+          async (args: any) => storedEntries.get(args.where.id) || null,
+        ),
         update: jest.fn(async (args: any) => {
           const current = storedEntries.get(args.where.id) || {
             id: args.where.id,
@@ -51,6 +54,14 @@ describe('InternalFinanceLarkImportService', () => {
       customer: { findMany: jest.fn().mockResolvedValue([]) },
       cashFlow: { create: jest.fn() },
       internalFinanceWeeklyBatch: { create: jest.fn() },
+      vehicle: {
+        findMany: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn(async (args: any) => ({
+          id: 31,
+          label: args.create.label,
+        })),
+      },
+      user: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides.prisma,
     };
     prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
@@ -245,6 +256,147 @@ describe('InternalFinanceLarkImportService', () => {
         data: expect.objectContaining({ evidenceStatus: 'MISSING' }),
       }),
     );
+  });
+
+  const vehicleLark = (twinFields: Record<string, unknown> = {}) => ({
+    listTables: jest.fn(async (base: string) =>
+      base === 'finance-base'
+        ? tables
+        : [{ tableId: 'fuel', name: 'KHO HN - Xăng dầu' }],
+    ),
+    listFieldNames: jest.fn(async (_base: string, tableId: string) =>
+      tableId === 'fuel' ? ['Chọn xe', 'Số tiền'] : ['THÀNH TIỀN', 'NỘI DUNG'],
+    ),
+    forEachRecordPage: jest.fn(
+      async (_base: string, tableId: string, _token: string, onPage: any) => {
+        const page = { page: 1, pageRecords: 1, totalFetched: 1, hasMore: false };
+        if (tableId === 'fuel') {
+          await onPage(
+            [
+              {
+                recordId: 'recFuel',
+                fields: {
+                  'Chọn xe': '29D - 223.09 - Xăng',
+                  'Số tiền': '750000',
+                  'Đơn giá': '27180',
+                  'Số lít': 27.594,
+                  ODO: '58674',
+                  'Thời gian': 1791368871000,
+                  'Lái xe': { id: 'ou_1', name: 'Đào Huy Sáng' },
+                },
+              },
+            ],
+            page,
+          );
+          return 1;
+        }
+        if (tableId !== 'hn') return 0;
+        await onPage(
+          [
+            {
+              recordId: 'recTwin',
+              fields: {
+                'NĂM/THÁNG/NGÀY': 1791368871000,
+                'THÀNH TIỀN': { type: 2, value: [750000] },
+                'NỘI DUNG': 'Xăng xe',
+                'Khoản Mục': 'Xăng xe: oto, xe tại kho',
+                'Người Chi': [{ id: 'ou_2', name: 'Dương Tuấn Anh' }],
+                'Kế Toán Kho': true,
+                'Quản Lý Kho': true,
+                'Đã Chi': true,
+                'Liên Kết Xăng Dầu': [
+                  {
+                    record_ids: ['recFuel'],
+                    text: 'Xăng - 29D - 223.09 - Xăng - 2026/10/07',
+                    type: 'text',
+                  },
+                ],
+                ...twinFields,
+              },
+            },
+          ],
+          page,
+        );
+        return 1;
+      },
+    ),
+  });
+  const larkUsers = [
+    { id: 5, name: 'Đào Huy Sáng', larkUserId: 'ou_1' },
+    { id: 6, name: 'Dương Tuấn Anh', larkUserId: 'ou_2' },
+  ];
+
+  it('links a fuel row to its vehicle and treats the driver as the payer', async () => {
+    const { service, prisma } = makeService({ lark: vehicleLark() });
+    prisma.user.findMany.mockResolvedValue(larkUsers);
+
+    const result = await service.importHistory(
+      { dryRun: false, sources: ['FUEL'] },
+      7,
+    );
+
+    expect(result.tables[0]).toMatchObject({ created: 1, skipped: 0 });
+    expect(prisma.vehicle.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          branchId: 6,
+          label: '29D - 223.09 - Xăng',
+          plate: '29D - 223.09',
+          fuelType: 'GASOLINE',
+          vehicleType: 'CAR',
+        }),
+      }),
+    );
+    expect(prisma.internalFinanceEntry.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          category: 'FUEL',
+          vehicle: { connect: { id: 31 } },
+          payer: { connect: { id: 5 } },
+          vehicleName: '29D - 223.09 - Xăng',
+          expenseItem: 'Xăng xe: oto, xe tại kho',
+        }),
+      }),
+    );
+  });
+
+  it('merges the expense-table twin of a fuel row instead of creating a second expense', async () => {
+    const { service, prisma, storedEntries } = makeService({
+      lark: vehicleLark(),
+    });
+    prisma.user.findMany.mockResolvedValue(larkUsers);
+
+    const result = await service.importHistory(
+      { dryRun: false, sources: ['EXPENSE_HN', 'FUEL'] },
+      7,
+    );
+
+    expect(prisma.internalFinanceEntry.create).toHaveBeenCalledTimes(1);
+    const expenseTable = result.tables.find(
+      (table: any) => table.source === 'EXPENSE_HN',
+    );
+    expect(expenseTable).toMatchObject({ created: 0, skipped: 1 });
+    expect(storedEntries.size).toBe(1);
+    expect([...storedEntries.values()][0]).toMatchObject({
+      category: 'FUEL',
+      payerId: 6,
+      status: 'APPROVED',
+      cashIssued: true,
+    });
+  });
+
+  it('keeps a twin that differs in amount as its own expense', async () => {
+    const { service, prisma } = makeService({
+      lark: vehicleLark({ 'THÀNH TIỀN': { type: 2, value: [700000] } }),
+    });
+    prisma.user.findMany.mockResolvedValue(larkUsers);
+
+    await service.importHistory(
+      { dryRun: false, sources: ['EXPENSE_HN', 'FUEL'] },
+      7,
+    );
+
+    expect(prisma.internalFinanceEntry.create).toHaveBeenCalledTimes(2);
   });
 
   it('maps an Approval week record into a branch batch with Lark serial dates', () => {

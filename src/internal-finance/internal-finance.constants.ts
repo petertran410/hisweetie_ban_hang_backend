@@ -86,3 +86,33 @@ export const POSTABLE_INTERNAL_FINANCE_STATUSES = new Set([
   INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
   INTERNAL_FINANCE_STATUS.APPROVED,
 ]);
+
+// Khoản mục mặc định của các phiếu chi tự sinh (theo cột "Khoản mục" trên Lark).
+export const WAREHOUSE_EXPENSE_ITEM = {
+  DELIVERY: 'Cước gửi hàng cho khách: cước chành xe, ship nội thành',
+  FUEL: 'Xăng xe: oto, xe tại kho',
+  VEHICLE_CARE: 'Sửa chữa, bảo dưỡng; oto xe máy',
+  OTHER: 'Khác',
+} as const;
+
+export const WAREHOUSE_EXPENSE_ITEMS = [
+  'Chi phí tiền lương CBNV',
+  'Cước chuyển phát nhanh tài liệu, chứng từ - đơn hàng bán lẻ',
+  'Chi phí điện sinh hoạt',
+  'Điện nước',
+  'Cước điện thoại di động',
+  'Chi phí nước uống, nước sinh hoạt',
+  'Chi phí văn phòng phẩm, đồ dùng văn phòng',
+  'Mua sắm CCDC, thiết bị văn phòng',
+  'Chi phí sửa chữa thiết bị văn phòng',
+  'Mua sắm TSCĐ',
+  'Cước đường bộ, vé gửi xe:',
+  WAREHOUSE_EXPENSE_ITEM.VEHICLE_CARE,
+  WAREHOUSE_EXPENSE_ITEM.FUEL,
+  'Chi phí ngoại giao ( xử lý )',
+  'Chi phí bốc xếp hàng hóa tại kho',
+  WAREHOUSE_EXPENSE_ITEM.DELIVERY,
+  'Mua bao bì, CCDC phục vụ đóng gói hàng hóa: carton, xốp, băng keo...',
+  'Thanh toán công nợ NCC',
+  WAREHOUSE_EXPENSE_ITEM.OTHER,
+] as const;

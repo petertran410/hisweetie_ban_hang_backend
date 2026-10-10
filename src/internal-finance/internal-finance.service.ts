@@ -29,6 +29,7 @@ import {
   INTERNAL_FINANCE_WEEKLY_STATUS,
   INTERNAL_FINANCE_BRANCH_IDS,
   WAREHOUSE_CASH_BRANCH_IDS,
+  WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
 import {
   CreateFuelEntryDto,
@@ -46,15 +47,23 @@ import {
   ReviewInternalFinanceDto,
   UpdateWarehouseReceiptDto,
   UpdateWarehouseExpenseDto,
+  UpdateVehicleEntryDto,
+  VehicleEntryQueryDto,
   WarehouseExpenseQueryDto,
 } from './dto';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import { InternalFundService } from '../internal-fund/internal-fund.service';
 import {
+  fundClosingDate,
   fundDateKey,
   fundDayStart,
 } from '../internal-fund/internal-fund-ledger.service';
+import { VehiclesService } from '../vehicles/vehicles.service';
+import {
+  VEHICLE_CHECK,
+  VEHICLE_SERVICE_TYPES,
+} from '../vehicles/vehicles.constants';
 
 type DbClient = PrismaService | any;
 
@@ -89,6 +98,7 @@ export class InternalFinanceService {
     private readonly codeService: InternalFinanceCodeService,
     private readonly authService: AuthService,
     private readonly internalFund: InternalFundService,
+    private readonly vehicles: VehiclesService,
   ) {}
 
   async findAll(query: InternalFinanceQueryDto) {
@@ -311,9 +321,8 @@ export class InternalFinanceService {
     }
     if (query.fromDate || query.toDate) {
       const occurredAt: Record<string, Date> = {};
-      if (query.fromDate)
-        occurredAt.gte = this.startOfDateString(query.fromDate);
-      if (query.toDate) occurredAt.lt = this.nextDateStart(query.toDate);
+      if (query.fromDate) occurredAt.gte = fundDayStart(query.fromDate);
+      if (query.toDate) occurredAt.lt = this.nextFundDayStart(query.toDate);
       conditions.push({ occurredAt });
     }
     if (query.search?.trim()) {
@@ -427,13 +436,16 @@ export class InternalFinanceService {
     } else if (query.cashIssued === 'NOT_ISSUED') {
       conditions.push({ cashIssued: false });
     }
+    if (query.payerId) conditions.push({ payerId: query.payerId });
+    if (query.expenseItem) conditions.push({ expenseItem: query.expenseItem });
+    if (query.vehicleId) conditions.push({ vehicleId: query.vehicleId });
     if (query.fromDate || query.toDate) {
       const occurredAt: Record<string, Date> = {};
       if (query.fromDate) {
-        occurredAt.gte = this.startOfDateString(query.fromDate);
+        occurredAt.gte = fundDayStart(query.fromDate);
       }
       if (query.toDate) {
-        occurredAt.lt = this.nextDateStart(query.toDate);
+        occurredAt.lt = this.nextFundDayStart(query.toDate);
       }
       conditions.push({ occurredAt });
     }
@@ -443,6 +455,8 @@ export class InternalFinanceService {
         OR: [
           { code: { contains: search, mode: 'insensitive' } },
           { description: { contains: search, mode: 'insensitive' } },
+          { note: { contains: search, mode: 'insensitive' } },
+          { vehicleName: { contains: search, mode: 'insensitive' } },
           {
             packingSlip: {
               code: { contains: search, mode: 'insensitive' },
@@ -468,17 +482,30 @@ export class InternalFinanceService {
 
   async createWarehouseExpense(dto: CreateWarehouseExpenseDto, user: any) {
     await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
-    return this.createManualExpense(
-      {
-        branchId: dto.branchId,
-        category: INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
-        amount: dto.amount,
-        occurredAt: dto.occurredAt,
-        description: dto.description.trim(),
-        attachments: dto.attachments,
-      },
-      user,
+    await this.validateBranch(dto.branchId);
+    const money = this.resolveExpenseAmount(
+      dto.amount,
+      dto.quantity,
+      dto.unitPrice,
     );
+    await this.assertPayer(dto.payerId);
+    return this.createManualEntry({
+      direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+      category: INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
+      subCategory: INTERNAL_FINANCE_SUBCATEGORY.OTHER,
+      branchId: dto.branchId,
+      amount: money.amount,
+      occurredAt: dto.occurredAt,
+      sourceType: 'MANUAL_EXPENSE',
+      description: dto.description.trim(),
+      attachments: dto.attachments,
+      expenseItem: dto.expenseItem,
+      quantity: money.quantity,
+      unitPrice: money.unitPrice,
+      note: dto.note?.trim() || undefined,
+      payerId: dto.payerId ?? user.id,
+      userId: user.id,
+    });
   }
 
   async updateWarehouseExpense(
@@ -510,27 +537,32 @@ export class InternalFinanceService {
           'Khoản chi từ báo đơn, xăng dầu hoặc chăm sóc xe phải sửa tại nguồn phát sinh',
         );
       }
-      if (
-        entry.cashFlowId ||
-        entry.cashIssued ||
-        entry.weeklyBatchId ||
-        [
-          INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
-          INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
-          INTERNAL_FINANCE_STATUS.APPROVED,
-          INTERNAL_FINANCE_STATUS.POSTED,
-          INTERNAL_FINANCE_STATUS.REJECTED,
-          INTERNAL_FINANCE_STATUS.CANCELLED,
-        ].includes(entry.status as any)
-      ) {
-        throw new BadRequestException(
-          'Khoản chi đã được tổng hợp hoặc kết thúc, không thể sửa',
-        );
-      }
+      this.assertExpenseOpenForEdit(entry);
+      const touchesMoney =
+        dto.amount !== undefined ||
+        dto.quantity !== undefined ||
+        dto.unitPrice !== undefined;
+      const money = touchesMoney
+        ? this.resolveExpenseAmount(
+            dto.amount ?? Number(entry.amount),
+            dto.quantity !== undefined
+              ? dto.quantity
+              : numberOrNull(entry.quantity),
+            dto.unitPrice !== undefined
+              ? dto.unitPrice
+              : numberOrNull(entry.unitPrice),
+          )
+        : null;
+      await this.assertPayer(dto.payerId);
       return tx.internalFinanceEntry.update({
         where: { id },
         data: {
-          amount: dto.amount,
+          amount: money?.amount,
+          quantity: money ? money.quantity : undefined,
+          unitPrice: money ? money.unitPrice : undefined,
+          expenseItem: dto.expenseItem,
+          note: dto.note !== undefined ? dto.note.trim() || null : undefined,
+          payerId: dto.payerId,
           occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
           description:
             dto.description !== undefined ? dto.description.trim() : undefined,
@@ -994,9 +1026,14 @@ export class InternalFinanceService {
   }
 
   async createFuel(dto: CreateFuelEntryDto, user: any) {
-    this.assertWarehouseBranch(dto.branchId);
-    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
+    await this.vehicles.assertPermission(user, dto.branchId, 'create');
     await this.validateBranch(dto.branchId);
+    const vehicle = await this.vehicles.requireForBranch(
+      dto.vehicleId,
+      dto.branchId,
+    );
+    await this.assertPayer(dto.payerId);
+    const liters = fuelLiters(dto.amount, dto.unitPrice, dto.liters);
     return this.createManualEntry({
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
       category: INTERNAL_FINANCE_CATEGORY.FUEL,
@@ -1005,31 +1042,39 @@ export class InternalFinanceService {
       amount: dto.amount,
       occurredAt: dto.occurredAt,
       sourceType: 'FUEL',
-      description: dto.description || `Xăng dầu - ${dto.vehicle}`,
+      description: `Xăng dầu - ${vehicle.label}`,
       sourceSnapshot: {
-        vehicle: dto.vehicle,
+        vehicle: vehicle.label,
         location: dto.location,
         unitPrice: dto.unitPrice,
-        liters: dto.liters,
+        liters: liters ?? undefined,
         odo: dto.odo,
-        consumptionLimit: dto.consumptionLimit,
-        anomalyNote: dto.anomalyNote,
       },
-      vehicleName: dto.vehicle,
+      vehicleId: vehicle.id,
+      vehicleName: vehicle.label,
       vehicleOdo: dto.odo,
-      vehicleLiters: dto.liters,
+      vehicleLiters: liters ?? undefined,
       vehicleUnitPrice: dto.unitPrice,
-      vehicleLocation: dto.location,
-      vehicleAnomalyStatus: dto.anomalyNote,
+      vehicleLocation: dto.location?.trim() || undefined,
+      expenseItem: WAREHOUSE_EXPENSE_ITEM.FUEL,
+      note: dto.note?.trim() || undefined,
+      payerId: dto.payerId ?? user.id,
       attachments: dto.attachments,
       userId: user.id,
+      include: this.vehicleEntryInclude(),
     });
   }
 
   async createVehicleCare(dto: CreateVehicleCareEntryDto, user: any) {
-    this.assertWarehouseBranch(dto.branchId);
-    await this.assertWarehouseExpensePermission(user, dto.branchId, 'create');
+    await this.vehicles.assertPermission(user, dto.branchId, 'create');
     await this.validateBranch(dto.branchId);
+    const vehicle = await this.vehicles.requireForBranch(
+      dto.vehicleId,
+      dto.branchId,
+    );
+    await this.assertPayer(dto.payerId);
+    const serviceTypes = Array.from(new Set(dto.serviceTypes));
+    const serviceLabel = serviceTypes.join(', ');
     return this.createManualEntry({
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
       category: INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
@@ -1038,23 +1083,506 @@ export class InternalFinanceService {
       amount: dto.amount,
       occurredAt: dto.occurredAt,
       sourceType: 'VEHICLE_CARE',
-      description: dto.description || `${dto.serviceType} - ${dto.vehicle}`,
+      description: `${serviceLabel} - ${vehicle.label}`,
       sourceSnapshot: {
-        vehicle: dto.vehicle,
-        serviceType: dto.serviceType,
+        vehicle: vehicle.label,
+        serviceType: serviceLabel,
         location: dto.location,
         odo: dto.odo,
-        dueAt: dto.dueAt,
-        anomalyNote: dto.anomalyNote,
+        dueAt: dto.dueAt ? fundDateKey(dto.dueAt) : undefined,
       },
-      vehicleName: dto.vehicle,
-      vehicleServiceType: dto.serviceType,
+      vehicleId: vehicle.id,
+      vehicleName: vehicle.label,
+      vehicleServiceType: serviceLabel,
+      vehicleServiceTypes: serviceTypes,
+      vehicleDueAt: dto.dueAt ? fundClosingDate(dto.dueAt) : undefined,
       vehicleOdo: dto.odo,
-      vehicleLocation: dto.location,
-      vehicleAnomalyStatus: dto.anomalyNote,
+      vehicleLocation: dto.location?.trim() || undefined,
+      expenseItem: WAREHOUSE_EXPENSE_ITEM.VEHICLE_CARE,
+      note: dto.note?.trim() || undefined,
+      payerId: dto.payerId ?? user.id,
       attachments: dto.attachments,
       userId: user.id,
+      include: this.vehicleEntryInclude(),
     });
+  }
+
+  async listVehicleEntries(query: VehicleEntryQueryDto, user: any) {
+    const allowed = await this.vehicles.allowedBranches(user, ['view']);
+    if (!allowed.length) {
+      throw new ForbiddenException('Không có quyền xem phiếu xe');
+    }
+    if (query.branchId !== undefined && !allowed.includes(query.branchId)) {
+      throw new ForbiddenException(
+        'Không có quyền xem phiếu xe của chi nhánh này',
+      );
+    }
+    const page = query.page || 1;
+    const limit = Math.min(query.limit || 50, 100);
+    const branchIds = query.branchId ? [query.branchId] : allowed;
+    const isFuel = query.category === INTERNAL_FINANCE_CATEGORY.FUEL;
+    const conditions: any[] = [
+      { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE },
+      { category: query.category },
+      { branchId: { in: branchIds } },
+      // Phiếu đã hủy chỉ hiện khi lọc đúng trạng thái đó.
+      query.status
+        ? { status: query.status }
+        : { status: { not: INTERNAL_FINANCE_STATUS.CANCELLED } },
+    ];
+    if (query.vehicleId) conditions.push({ vehicleId: query.vehicleId });
+    if (query.serviceType) {
+      conditions.push({ vehicleServiceTypes: { has: query.serviceType } });
+    }
+    if (query.fromDate || query.toDate) {
+      const occurredAt: Record<string, Date> = {};
+      if (query.fromDate) occurredAt.gte = fundDayStart(query.fromDate);
+      if (query.toDate) occurredAt.lt = this.nextFundDayStart(query.toDate);
+      conditions.push({ occurredAt });
+    }
+    if (query.search?.trim()) {
+      const search = query.search.trim();
+      conditions.push({
+        OR: [
+          { code: { contains: search, mode: 'insensitive' } },
+          { vehicleName: { contains: search, mode: 'insensitive' } },
+          { vehicleLocation: { contains: search, mode: 'insensitive' } },
+          { note: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+        ],
+      });
+    }
+    if (query.check && isFuel) {
+      const vehicleIds = query.vehicleId
+        ? [query.vehicleId]
+        : (
+            await this.prisma.vehicle.findMany({
+              where: { branchId: { in: branchIds } },
+              select: { id: true },
+            })
+          ).map((vehicle) => vehicle.id);
+      const metrics = await this.vehicles.fuelMetrics(vehicleIds);
+      const matched: number[] = [];
+      for (const [entryId, item] of metrics) {
+        const checks = [item.consumptionCheck, item.costCheck];
+        const abnormal = checks.includes(VEHICLE_CHECK.ABNORMAL);
+        const normal = checks.includes(VEHICLE_CHECK.NORMAL);
+        if (
+          query.check === VEHICLE_CHECK.ABNORMAL
+            ? abnormal
+            : normal && !abnormal
+        ) {
+          matched.push(entryId);
+        }
+      }
+      conditions.push({ id: { in: matched } });
+    }
+
+    const where = { AND: conditions };
+    const [rows, total] = await Promise.all([
+      this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: this.vehicleEntryInclude(),
+      }),
+      this.prisma.internalFinanceEntry.count({ where }),
+    ]);
+    if (!isFuel) return { data: rows, total, page, limit };
+
+    const metrics = await this.vehicles.fuelMetrics(
+      rows.map((row: any) => row.vehicleId).filter(Boolean),
+    );
+    return {
+      data: rows.map((row: any) => ({
+        ...row,
+        metrics: metrics.get(row.id) || null,
+      })),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  async updateVehicleEntry(id: number, dto: UpdateVehicleEntryDto, user: any) {
+    const branchHint = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      select: { branchId: true },
+    });
+    if (!branchHint) throw new NotFoundException('Không tìm thấy phiếu xe');
+    await this.vehicles.assertPermission(user, branchHint.branchId, 'update');
+    await this.assertPayer(dto.payerId);
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [branchHint.branchId]);
+      const entry = await tx.internalFinanceEntry.findUnique({ where: { id } });
+      this.assertVehicleEntry(entry);
+      this.assertExpenseOpenForEdit(entry);
+
+      const isFuel = entry.category === INTERNAL_FINANCE_CATEGORY.FUEL;
+      const vehicle =
+        dto.vehicleId !== undefined && dto.vehicleId !== entry.vehicleId
+          ? await this.vehicles.requireForBranch(dto.vehicleId, entry.branchId)
+          : null;
+      const vehicleLabel = vehicle?.label ?? entry.vehicleName ?? '';
+      const serviceTypes =
+        !isFuel && dto.serviceTypes
+          ? Array.from(new Set(dto.serviceTypes))
+          : null;
+      const serviceLabel = serviceTypes
+        ? serviceTypes.join(', ')
+        : entry.vehicleServiceType || '';
+      const amount = dto.amount ?? Number(entry.amount);
+      const unitPrice =
+        dto.unitPrice !== undefined
+          ? dto.unitPrice
+          : numberOrNull(entry.vehicleUnitPrice);
+      const fuelChanged =
+        dto.amount !== undefined ||
+        dto.unitPrice !== undefined ||
+        dto.liters !== undefined;
+      const liters =
+        isFuel && fuelChanged
+          ? fuelLiters(amount, unitPrice, dto.liters)
+          : undefined;
+      const snapshot = this.snapshotOf(entry);
+
+      return tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          amount: dto.amount,
+          occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
+          ...(vehicle
+            ? { vehicleId: vehicle.id, vehicleName: vehicle.label }
+            : {}),
+          vehicleOdo: dto.odo,
+          vehicleLocation:
+            dto.location !== undefined
+              ? dto.location.trim() || null
+              : undefined,
+          ...(isFuel
+            ? { vehicleUnitPrice: dto.unitPrice, vehicleLiters: liters }
+            : {
+                ...(serviceTypes
+                  ? {
+                      vehicleServiceTypes: serviceTypes,
+                      vehicleServiceType: serviceLabel,
+                    }
+                  : {}),
+                vehicleDueAt:
+                  dto.dueAt === undefined
+                    ? undefined
+                    : dto.dueAt
+                      ? fundClosingDate(dto.dueAt)
+                      : null,
+              }),
+          note: dto.note !== undefined ? dto.note.trim() || null : undefined,
+          payerId: dto.payerId,
+          description: isFuel
+            ? `Xăng dầu - ${vehicleLabel}`
+            : `${serviceLabel} - ${vehicleLabel}`,
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            vehicle: vehicleLabel,
+            ...(isFuel ? {} : { serviceType: serviceLabel }),
+            ...(dto.location !== undefined ? { location: dto.location } : {}),
+            ...(dto.odo !== undefined ? { odo: dto.odo } : {}),
+            ...(isFuel && dto.unitPrice !== undefined
+              ? { unitPrice: dto.unitPrice }
+              : {}),
+            ...(liters !== undefined ? { liters } : {}),
+            ...(!isFuel && dto.dueAt !== undefined
+              ? { dueAt: dto.dueAt ? fundDateKey(dto.dueAt) : null }
+              : {}),
+          }),
+          ...(dto.attachments
+            ? {
+                evidenceStatus: dto.attachments.length
+                  ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+                  : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
+                attachments: {
+                  deleteMany: {},
+                  ...(dto.attachments.length
+                    ? {
+                        create: dto.attachments.map((file) => ({
+                          kind: file.kind || 'EVIDENCE',
+                          fileUrl: file.fileUrl,
+                          fileName: file.fileName,
+                          fileType: file.fileType,
+                          fileSize: file.fileSize,
+                          createdBy: user.id,
+                        })),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        include: this.vehicleEntryInclude(),
+      });
+    });
+  }
+
+  async cancelVehicleEntry(id: number, user: any) {
+    const branchHint = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      select: { branchId: true },
+    });
+    if (!branchHint) throw new NotFoundException('Không tìm thấy phiếu xe');
+    await this.vehicles.assertPermission(user, branchHint.branchId, 'update');
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [branchHint.branchId]);
+      const entry = await tx.internalFinanceEntry.findUnique({ where: { id } });
+      this.assertVehicleEntry(entry);
+      this.assertExpenseOpenForEdit(entry);
+      return tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.CANCELLED,
+          sourceSnapshot: this.toJson({
+            ...this.snapshotOf(entry),
+            cancelledBy: user.id,
+            cancelledAt: new Date().toISOString(),
+          }),
+        },
+        include: this.vehicleEntryInclude(),
+      });
+    });
+  }
+
+  /**
+   * Điền các cột mô tả mới (người chi, khoản mục, xe) cho dữ liệu có từ trước.
+   * Không đụng số tiền hay trạng thái; cặp phiếu xe nhập đôi chỉ được báo cáo.
+   */
+  async backfillExpenseMetadata(dryRun = true) {
+    const expense = { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE };
+    const packingRows = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        ...expense,
+        payerId: null,
+        sourceType: 'PACKING_SLIP',
+        packingSlip: { expensePayerId: { not: null } },
+      },
+      select: { id: true, packingSlip: { select: { expensePayerId: true } } },
+    });
+    const creatorPayerWhere = {
+      ...expense,
+      payerId: null,
+      sourceType: { in: ['FUEL', 'VEHICLE_CARE', 'MANUAL_EXPENSE'] },
+    };
+    const itemDefaults = [
+      [INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE, WAREHOUSE_EXPENSE_ITEM.DELIVERY],
+      [INTERNAL_FINANCE_CATEGORY.FUEL, WAREHOUSE_EXPENSE_ITEM.FUEL],
+      [
+        INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+        WAREHOUSE_EXPENSE_ITEM.VEHICLE_CARE,
+      ],
+    ] as const;
+
+    const vehicleRows = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        ...expense,
+        vehicleId: null,
+        category: {
+          in: [
+            INTERNAL_FINANCE_CATEGORY.FUEL,
+            INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+          ],
+        },
+      },
+      select: {
+        id: true,
+        branchId: true,
+        category: true,
+        vehicleName: true,
+        vehicleServiceType: true,
+        vehicleServiceTypes: true,
+        sourceSnapshot: true,
+      },
+    });
+    const vehicles = await this.prisma.vehicle.findMany({
+      select: { id: true, branchId: true, label: true },
+    });
+    const vehicleByKey = new Map(
+      vehicles.map((vehicle) => [
+        `${vehicle.branchId}|${normalizeLabel(vehicle.label)}`,
+        vehicle,
+      ]),
+    );
+    const vehicleLinks = new Map<number, { label: string; ids: number[] }>();
+    const unmatchedVehicles = new Map<string, number>();
+    const serviceTypeFixes: Array<{ id: number; types: string[] }> = [];
+    for (const row of vehicleRows) {
+      const snapshot = this.snapshotOf(row);
+      const fields = this.snapshotOf({ sourceSnapshot: snapshot.fields });
+      const label = String(
+        row.vehicleName || snapshot.vehicle || fields['Chọn xe'] || '',
+      ).trim();
+      if (label) {
+        const vehicle = vehicleByKey.get(
+          `${row.branchId}|${normalizeLabel(label)}`,
+        );
+        if (vehicle) {
+          const link = vehicleLinks.get(vehicle.id) || {
+            label: vehicle.label,
+            ids: [],
+          };
+          link.ids.push(row.id);
+          vehicleLinks.set(vehicle.id, link);
+        } else {
+          const key = `${row.branchId} | ${label}`;
+          unmatchedVehicles.set(key, (unmatchedVehicles.get(key) || 0) + 1);
+        }
+      }
+      if (
+        row.category === INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE &&
+        !row.vehicleServiceTypes.length &&
+        row.vehicleServiceType
+      ) {
+        const types = row.vehicleServiceType
+          .split(',')
+          .map((item) => item.trim())
+          .filter((item) =>
+            (VEHICLE_SERVICE_TYPES as readonly string[]).includes(item),
+          );
+        if (types.length) serviceTypeFixes.push({ id: row.id, types });
+      }
+    }
+
+    const duplicates = await this.findDuplicateVehicleExpenses();
+    const report = {
+      dryRun,
+      payerFromPackingSlip: packingRows.length,
+      payerFromCreator: await this.prisma.internalFinanceEntry.count({
+        where: creatorPayerWhere,
+      }),
+      expenseItemDefaults: await this.prisma.internalFinanceEntry.count({
+        where: {
+          ...expense,
+          expenseItem: null,
+          category: { in: itemDefaults.map(([category]) => category) },
+        },
+      }),
+      vehicleLinked: Array.from(vehicleLinks.values()).reduce(
+        (sum, link) => sum + link.ids.length,
+        0,
+      ),
+      serviceTypesFilled: serviceTypeFixes.length,
+      unmatchedVehicles: Array.from(unmatchedVehicles, ([label, count]) => ({
+        label,
+        count,
+      })),
+      duplicateVehicleExpenses: {
+        count: duplicates.length,
+        sample: duplicates.slice(0, 50),
+      },
+    };
+    if (dryRun) return report;
+
+    for (const row of packingRows) {
+      await this.prisma.internalFinanceEntry.update({
+        where: { id: row.id },
+        data: { payerId: row.packingSlip?.expensePayerId },
+      });
+    }
+    await this.prisma.$executeRaw`
+      UPDATE internal_finance_entries
+      SET "payerId" = "createdBy"
+      WHERE "payerId" IS NULL
+        AND direction = 'EXPENSE'
+        AND "sourceType" IN ('FUEL', 'VEHICLE_CARE', 'MANUAL_EXPENSE')`;
+    for (const [category, expenseItem] of itemDefaults) {
+      await this.prisma.internalFinanceEntry.updateMany({
+        where: { ...expense, expenseItem: null, category },
+        data: { expenseItem },
+      });
+    }
+    for (const [vehicleId, link] of vehicleLinks) {
+      await this.prisma.internalFinanceEntry.updateMany({
+        where: { id: { in: link.ids } },
+        data: { vehicleId, vehicleName: link.label },
+      });
+    }
+    for (const fix of serviceTypeFixes) {
+      await this.prisma.internalFinanceEntry.update({
+        where: { id: fix.id },
+        data: { vehicleServiceTypes: fix.types },
+      });
+    }
+    return report;
+  }
+
+  /**
+   * Dòng nhập từ bảng "Tổng hợp phiếu chi" trùng với một phiếu xe (cùng chi
+   * nhánh, ngày VN, số tiền) — hai bản của cùng một khoản chi trên Lark.
+   */
+  private async findDuplicateVehicleExpenses() {
+    const vehicleCategories = [
+      INTERNAL_FINANCE_CATEGORY.FUEL,
+      INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+    ];
+    const active = {
+      direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+      status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
+    };
+    const select = {
+      id: true,
+      code: true,
+      branchId: true,
+      amount: true,
+      occurredAt: true,
+      description: true,
+    };
+    const [vehicleEntries, candidates] = await Promise.all([
+      this.prisma.internalFinanceEntry.findMany({
+        where: { ...active, category: { in: vehicleCategories } },
+        select,
+      }),
+      this.prisma.internalFinanceEntry.findMany({
+        where: {
+          ...active,
+          sourceType: 'LARK_IMPORT',
+          category: { notIn: vehicleCategories },
+          OR: [
+            {
+              expenseItem: {
+                in: [
+                  WAREHOUSE_EXPENSE_ITEM.FUEL,
+                  WAREHOUSE_EXPENSE_ITEM.VEHICLE_CARE,
+                ],
+              },
+            },
+            { description: { contains: 'xăng', mode: 'insensitive' } },
+            { description: { contains: 'dầu xe', mode: 'insensitive' } },
+          ],
+        },
+        select,
+      }),
+    ]);
+    const keyOf = (row: { branchId: number; occurredAt: Date; amount: any }) =>
+      `${row.branchId}|${fundDateKey(row.occurredAt)}|${Number(row.amount).toFixed(2)}`;
+    const byKey = new Map<string, typeof vehicleEntries>();
+    for (const row of vehicleEntries) {
+      const list = byKey.get(keyOf(row)) || [];
+      list.push(row);
+      byKey.set(keyOf(row), list);
+    }
+    const pairs: Array<Record<string, unknown>> = [];
+    for (const row of candidates) {
+      const twin = byKey.get(keyOf(row))?.shift();
+      if (!twin) continue;
+      pairs.push({
+        expenseId: row.id,
+        expenseCode: row.code,
+        vehicleEntryId: twin.id,
+        vehicleEntryCode: twin.code,
+        branchId: row.branchId,
+        date: fundDateKey(row.occurredAt),
+        amount: Number(row.amount),
+        description: row.description,
+      });
+    }
+    return pairs;
   }
 
   async review(
@@ -1236,10 +1764,10 @@ export class InternalFinanceService {
     if (query.fromDate || query.toDate) {
       const occurredAt: Record<string, Date> = {};
       if (query.fromDate) {
-        occurredAt.gte = this.startOfDateString(query.fromDate);
+        occurredAt.gte = fundDayStart(query.fromDate);
       }
       if (query.toDate) {
-        occurredAt.lt = this.nextDateStart(query.toDate);
+        occurredAt.lt = this.nextFundDayStart(query.toDate);
       }
       conditions.push({ occurredAt });
     }
@@ -1324,6 +1852,8 @@ export class InternalFinanceService {
             branch: { select: { id: true, name: true } },
             packingSlip: { select: { id: true, code: true } },
             cashIssuer: { select: { id: true, name: true } },
+            payer: { select: { id: true, name: true } },
+            vehicle: { select: { id: true, label: true, plate: true } },
             attachments: true,
             invoiceLinks: {
               include: { invoice: { select: { id: true, code: true } } },
@@ -1768,7 +2298,15 @@ export class InternalFinanceService {
     vehicleLiters?: number;
     vehicleUnitPrice?: number;
     vehicleLocation?: string;
-    vehicleAnomalyStatus?: string;
+    vehicleId?: number;
+    vehicleDueAt?: Date;
+    vehicleServiceTypes?: string[];
+    payerId?: number;
+    expenseItem?: string;
+    quantity?: number | null;
+    unitPrice?: number | null;
+    note?: string;
+    include?: Record<string, unknown>;
     userId: number;
   }) {
     return this.prisma.$transaction(async (tx) => {
@@ -1803,7 +2341,14 @@ export class InternalFinanceService {
           vehicleLiters: input.vehicleLiters,
           vehicleUnitPrice: input.vehicleUnitPrice,
           vehicleLocation: input.vehicleLocation,
-          vehicleAnomalyStatus: input.vehicleAnomalyStatus,
+          vehicleId: input.vehicleId,
+          vehicleDueAt: input.vehicleDueAt,
+          vehicleServiceTypes: input.vehicleServiceTypes,
+          payerId: input.payerId,
+          expenseItem: input.expenseItem,
+          quantity: input.quantity ?? undefined,
+          unitPrice: input.unitPrice ?? undefined,
+          note: input.note,
           createdBy: input.userId,
           attachments: input.attachments?.length
             ? {
@@ -1818,9 +2363,90 @@ export class InternalFinanceService {
               }
             : undefined,
         },
-        include: this.entryInclude(),
+        include: input.include || this.entryInclude(),
       });
     });
+  }
+
+  private resolveExpenseAmount(
+    amount?: number | null,
+    quantity?: number | null,
+    unitPrice?: number | null,
+  ) {
+    if ((quantity == null) !== (unitPrice == null)) {
+      throw new BadRequestException('Cần nhập cả số lượng và đơn giá');
+    }
+    const hasLine = quantity != null && unitPrice != null;
+    const total = hasLine
+      ? Math.round((quantity as number) * (unitPrice as number) * 100) / 100
+      : amount;
+    if (!total || total <= 0) {
+      throw new BadRequestException('Số tiền khoản chi phải lớn hơn 0');
+    }
+    return {
+      amount: total,
+      quantity: hasLine ? quantity : null,
+      unitPrice: hasLine ? unitPrice : null,
+    };
+  }
+
+  private async assertPayer(payerId?: number | null) {
+    if (!payerId) return;
+    const payer = await this.prisma.user.findUnique({
+      where: { id: payerId },
+      select: { id: true },
+    });
+    if (!payer) throw new BadRequestException('Không tìm thấy người chi');
+  }
+
+  /** Khoản chi còn sửa/hủy được: chưa vào batch tuần, chưa chi, chưa kết thúc. */
+  private assertExpenseOpenForEdit(entry: any) {
+    if (
+      entry.cashFlowId ||
+      entry.cashIssued ||
+      entry.weeklyBatchId ||
+      [
+        INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+        INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
+        INTERNAL_FINANCE_STATUS.APPROVED,
+        INTERNAL_FINANCE_STATUS.POSTED,
+        INTERNAL_FINANCE_STATUS.REJECTED,
+        INTERNAL_FINANCE_STATUS.CANCELLED,
+      ].includes(entry.status)
+    ) {
+      throw new BadRequestException(
+        'Khoản chi đã được tổng hợp hoặc kết thúc, không thể sửa',
+      );
+    }
+  }
+
+  private assertVehicleEntry(entry: any): asserts entry {
+    if (
+      !entry ||
+      entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE ||
+      !['FUEL', 'VEHICLE_CARE'].includes(entry.sourceType)
+    ) {
+      // Dòng nhập từ Lark (LARK_IMPORT) chỉ để đối chiếu, không sửa tại đây.
+      throw new NotFoundException('Không tìm thấy phiếu xe có thể chỉnh sửa');
+    }
+  }
+
+  private vehicleEntryInclude() {
+    return {
+      branch: { select: { id: true, name: true } },
+      creator: { select: { id: true, name: true } },
+      payer: { select: { id: true, name: true } },
+      vehicle: {
+        select: {
+          id: true,
+          label: true,
+          plate: true,
+          driver: { select: { id: true, name: true } },
+        },
+      },
+      weeklyBatch: { select: { id: true, code: true, status: true } },
+      attachments: true,
+    };
   }
 
   private async reviewAsAccountant(
@@ -2070,6 +2696,8 @@ export class InternalFinanceService {
           invoiceIds,
           orderIds,
         },
+        payerId: packingSlip.expensePayerId ?? null,
+        expenseItem: WAREHOUSE_EXPENSE_ITEM.DELIVERY,
         occurredAt: packingSlip.createdAt,
         customerId,
         invoiceIds,
@@ -2168,6 +2796,8 @@ export class InternalFinanceService {
       invoiceIds: number[];
       attachments: Array<Record<string, unknown>>;
       userId: number;
+      payerId?: number | null;
+      expenseItem?: string;
       preserveUserText?: boolean;
       reopenIfCancelled?: boolean;
     },
@@ -2219,6 +2849,8 @@ export class InternalFinanceService {
           branchId: data.branchId,
           occurredAt: data.occurredAt || undefined,
           customerId: data.customerId ?? undefined,
+          payerId: data.payerId,
+          expenseItem: data.expenseItem,
           subCategory: data.subCategory || data.category,
           requiresEvidence,
           evidenceStatus: requiresEvidence
@@ -2285,6 +2917,8 @@ export class InternalFinanceService {
         status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
         requiresEvidence,
         createdBy: data.userId,
+        payerId: data.payerId ?? undefined,
+        expenseItem: data.expenseItem,
         packingSlipId: data.packingSlipId,
         customerId: data.customerId ?? undefined,
         invoiceLinks: data.invoiceIds.length
@@ -2748,6 +3382,8 @@ export class InternalFinanceService {
       branch: { select: { id: true, name: true } },
       customer: { select: { id: true, code: true, name: true } },
       cashIssuer: { select: { id: true, name: true } },
+      payer: { select: { id: true, name: true } },
+      vehicle: { select: { id: true, label: true, plate: true } },
       attachments: true,
       invoiceLinks: {
         include: { invoice: { select: { id: true, code: true } } },
@@ -2801,6 +3437,11 @@ export class InternalFinanceService {
     return new Date(Date.UTC(year, month - 1, day, 0, 0, 0, 0));
   }
 
+  /** Đầu ngày kế tiếp theo giờ Việt Nam, khớp cách cắt ngày của batch tuần. */
+  private nextFundDayStart(value: string) {
+    return new Date(fundDayStart(value).getTime() + 86400000);
+  }
+
   private nextDateStart(value: string) {
     const date = this.startOfDateString(value);
     date.setUTCDate(date.getUTCDate() + 1);
@@ -2833,4 +3474,30 @@ export class InternalFinanceService {
     ).replace(/\/$/, '');
     return `${base}/tai-chinh/approval-tuan?batchId=${batchId}`;
   }
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+/** Số lít = Số tiền / Đơn giá khi người nhập không ghi số lít (như công thức Lark). */
+function fuelLiters(
+  amount: number,
+  unitPrice?: number | null,
+  liters?: number | null,
+): number | null {
+  if (liters != null) return liters;
+  if (!unitPrice || unitPrice <= 0) return null;
+  return Math.round((amount / unitPrice) * 10000) / 10000;
+}
+
+function normalizeLabel(value: string): string {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
 }

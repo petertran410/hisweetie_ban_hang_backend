@@ -5,7 +5,10 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { UploadService } from '../upload/upload.service';
 import { APPROVAL_DEFINITIONS } from '../approval-lifecycle/approval-lifecycle.constants';
-import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
+import {
+  InternalFundLedgerService,
+  fundClosingDate,
+} from '../internal-fund/internal-fund-ledger.service';
 import {
   INTERNAL_FINANCE_CATEGORY,
   INTERNAL_FINANCE_DIRECTION,
@@ -30,6 +33,7 @@ import {
   type MappedLarkEntry,
   defaultBranchForSource,
   mapLarkRecord,
+  normalizeLookup,
   requiredFieldError,
   readLarkDate,
   readLarkAlias,
@@ -119,6 +123,7 @@ const FINANCE_SOURCES = new Set<LarkImportSource>([
 
 type ResolvedLarkUsers = {
   creatorId?: number;
+  payerId?: number;
   accountantId?: number;
   managerId?: number;
   creatorName?: string;
@@ -132,8 +137,13 @@ interface LarkImportRunState {
   attachmentTotal: number;
   attachmentDownloaded: number;
   attachmentFailures: string[];
-  vehicleIndex: Set<string>;
+  /** Khoá chi nhánh|ngày|số tiền|xe → id phiếu xe (0 khi chạy thử). */
+  vehicleIndex: Map<string, number>;
+  /** Xe đã biết theo `${branchId}|${tên chuẩn hoá}`; id = 0 khi chạy thử. */
+  vehicles: Map<string, VehicleRef>;
 }
+
+type VehicleRef = { id: number; label: string };
 
 @Injectable()
 export class InternalFinanceLarkImportService {
@@ -310,6 +320,7 @@ export class InternalFinanceLarkImportService {
       attachmentDownloaded: 0,
       attachmentFailures: [],
       vehicleIndex: await this.loadVehicleIndex(),
+      vehicles: await this.loadVehicles(),
     };
     progress?.onPhase?.('DATA');
     let fundTransactions = 0;
@@ -1195,19 +1206,44 @@ export class InternalFinanceLarkImportService {
 
       // Bảng tổng hợp phiếu chi có thể chứa lại dòng xăng/chăm sóc xe đã nhập
       // từ bảng xe. Bỏ dòng trùng theo chi nhánh, ngày, số tiền và tên xe.
-      const mappedVehicle = vehicleNameOf(entry);
-      if (!isVehicleSource && mappedVehicle) {
-        const key = vehicleKey(
-          entry.branchId,
-          entry.occurredAt,
-          entry.amount,
-          mappedVehicle,
-        );
-        if (input.runState.vehicleIndex.has(key)) {
+      const mappedVehicle = isVehicleSource
+        ? entry.vehicleLabel
+        : this.twinVehicleLabel(input.runState, entry);
+      const vehicleIndexKey = mappedVehicle
+        ? vehicleKey(
+            entry.branchId,
+            entry.occurredAt,
+            entry.amount,
+            mappedVehicle,
+          )
+        : null;
+      if (!isVehicleSource && vehicleIndexKey) {
+        const twinId = input.runState.vehicleIndex.get(vehicleIndexKey);
+        if (twinId !== undefined) {
+          // Bản trùng đã nằm trong DB từ lần nhập trước thì giữ nguyên cả hai;
+          // endpoint backfill báo cáo cặp này để người dùng quyết định.
+          if (!current && twinId && !input.dryRun) {
+            await this.transferTwinState(
+              twinId,
+              entry,
+              larkUsers.byEntry.get(entry.sourceKey),
+              input,
+            );
+          }
           input.result.skipped += 1;
           continue;
         }
       }
+      const vehicleRef =
+        isVehicleSource && entry.vehicleLabel
+          ? await this.ensureVehicle(
+              input.runState,
+              entry.branchId,
+              entry.vehicleLabel,
+              input.userId,
+              input.dryRun,
+            )
+          : null;
 
       if (
         current?.cashFlowId ||
@@ -1230,6 +1266,7 @@ export class InternalFinanceLarkImportService {
         .filter((file) => !importedSet.has(file.fileToken))
         .map((file) => ({
           token: file.fileToken,
+          kind: file.kind,
           name: file.name,
           type: file.type,
           url: file.url,
@@ -1239,6 +1276,9 @@ export class InternalFinanceLarkImportService {
         input.result.pendingAttachments += pendingAttachments.length;
       }
       if (input.dryRun) {
+        if (isVehicleSource && vehicleIndexKey) {
+          input.runState.vehicleIndex.set(vehicleIndexKey, current?.id || 0);
+        }
         if (current) input.result.updated += 1;
         else input.result.created += 1;
         continue;
@@ -1260,6 +1300,21 @@ export class InternalFinanceLarkImportService {
         if (pendingAttachments.length) {
           input.runState.pendingEntryIds.add(current.id);
           input.runState.attachmentTotal += pendingAttachments.length;
+        }
+        // Chỉ bổ sung cột mô tả mới; tiền, trạng thái và snapshot giữ nguyên.
+        const descriptive = this.descriptiveData(
+          entry,
+          larkUsers.byEntry.get(entry.sourceKey),
+          vehicleRef,
+        );
+        if (Object.keys(descriptive).length) {
+          await this.prisma.internalFinanceEntry.update({
+            where: { id: current.id },
+            data: descriptive,
+          });
+        }
+        if (isVehicleSource && vehicleIndexKey) {
+          input.runState.vehicleIndex.set(vehicleIndexKey, current.id);
         }
         input.result.skipped += 1;
         continue;
@@ -1292,6 +1347,7 @@ export class InternalFinanceLarkImportService {
             ? slipIds.get(entry.slipCode) || null
             : null,
           attachments: [],
+          vehicleId: vehicleRef?.id || null,
         });
         let savedId: number;
         if (current) {
@@ -1329,15 +1385,8 @@ export class InternalFinanceLarkImportService {
           input.runState.attachmentTotal += pendingAttachments.length;
           input.result.pendingAttachments += pendingAttachments.length;
         }
-        if (isVehicleSource && mappedVehicle) {
-          input.runState.vehicleIndex.add(
-            vehicleKey(
-              entry.branchId,
-              entry.occurredAt,
-              entry.amount,
-              mappedVehicle,
-            ),
-          );
+        if (isVehicleSource && vehicleIndexKey) {
+          input.runState.vehicleIndex.set(vehicleIndexKey, savedId);
         }
         if (
           entry.cashIssued &&
@@ -1481,10 +1530,12 @@ export class InternalFinanceLarkImportService {
       };
 
       const creator = resolve('creator', entry.larkCreator);
+      const payer = resolve('payer', entry.larkPayer);
       const accountant = resolve('accountant', entry.larkAccountant);
       const manager = resolve('manager', entry.larkManager);
       byEntry.set(entry.sourceKey, {
         ...(creator ? { creatorId: creator.id, creatorName: creator.name || undefined } : {}),
+        ...(payer ? { payerId: payer.id } : {}),
         ...(accountant
           ? { accountantId: accountant.id, accountantName: accountant.name || undefined }
           : {}),
@@ -1539,7 +1590,7 @@ export class InternalFinanceLarkImportService {
           await this.prisma.internalFinanceAttachment.create({
             data: {
               entryId: entry.id,
-              kind: 'EVIDENCE',
+              kind: file.kind || 'EVIDENCE',
               fileUrl: stored.url,
               fileName: file.name,
               fileType: file.type,
@@ -1723,25 +1774,185 @@ export class InternalFinanceLarkImportService {
         status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
       },
       select: {
+        id: true,
         branchId: true,
         amount: true,
         occurredAt: true,
         vehicleName: true,
       },
     });
-    const index = new Set<string>();
+    const index = new Map<string, number>();
     for (const row of rows) {
       if (!row.vehicleName) continue;
-      index.add(
+      index.set(
         vehicleKey(
           row.branchId,
           row.occurredAt,
           Number(row.amount),
           row.vehicleName,
         ),
+        row.id,
       );
     }
     return index;
+  }
+
+  private async loadVehicles() {
+    const rows = await this.prisma.vehicle.findMany({
+      select: { id: true, branchId: true, label: true },
+    });
+    return new Map<string, VehicleRef>(
+      rows.map((row) => [
+        vehicleRefKey(row.branchId, row.label),
+        { id: row.id, label: row.label },
+      ]),
+    );
+  }
+
+  /** Xe trong "Chọn xe" của Lark; chưa có trong danh sách xe thì tạo mới. */
+  private async ensureVehicle(
+    runState: LarkImportRunState,
+    branchId: number,
+    label: string,
+    userId: number,
+    dryRun: boolean,
+  ): Promise<VehicleRef> {
+    const key = vehicleRefKey(branchId, label);
+    const known = runState.vehicles.get(key);
+    if (known && (known.id || dryRun)) return known;
+    if (dryRun) {
+      const ref = { id: 0, label };
+      runState.vehicles.set(key, ref);
+      return ref;
+    }
+    const lower = label.toLowerCase();
+    const created = await this.prisma.vehicle.upsert({
+      where: { branchId_label: { branchId, label } },
+      update: {},
+      create: {
+        branchId,
+        label,
+        plate: label
+          .replace(/\s*-\s*(xăng|dầu)\s*$/i, '')
+          .replace(/\s*\(xe máy\)\s*$/i, '')
+          .trim(),
+        vehicleType: lower.includes('xe máy') ? 'MOTORBIKE' : 'CAR',
+        fuelType: /-\s*dầu\s*$/i.test(label)
+          ? 'DIESEL'
+          : /-\s*xăng\s*$/i.test(label)
+            ? 'GASOLINE'
+            : null,
+        createdBy: userId,
+      },
+      select: { id: true, label: true },
+    });
+    this.logger.log(
+      `[LARK_IMPORT] vehicle ready branchId=${branchId} label="${created.label}" id=${created.id}`,
+    );
+    runState.vehicles.set(key, created);
+    return created;
+  }
+
+  /**
+   * Dòng ở bảng tổng hợp phiếu chi trỏ tới một phiếu xe qua cột liên kết (HN)
+   * hoặc ghi chú (SG); cả hai đều chứa nguyên tên xe.
+   */
+  private twinVehicleLabel(
+    runState: LarkImportRunState,
+    entry: MappedLarkEntry,
+  ): string | null {
+    if (!entry.twinTexts.length) return null;
+    const text = normalizeLookup(entry.twinTexts.join(' '));
+    let best: string | null = null;
+    for (const [key, vehicle] of runState.vehicles) {
+      if (!key.startsWith(`${entry.branchId}|`)) continue;
+      const label = normalizeLookup(vehicle.label);
+      if (!label || !text.includes(label)) continue;
+      if (!best || label.length > normalizeLookup(best).length) {
+        best = vehicle.label;
+      }
+    }
+    return best;
+  }
+
+  private descriptiveData(
+    entry: MappedLarkEntry,
+    resolvedUsers: ResolvedLarkUsers | undefined,
+    vehicle: VehicleRef | null,
+  ): Prisma.InternalFinanceEntryUncheckedUpdateInput {
+    const payerId = payerIdOf(entry, resolvedUsers);
+    return {
+      ...(payerId ? { payerId } : {}),
+      ...(vehicle?.id
+        ? { vehicleId: vehicle.id, vehicleName: vehicle.label }
+        : {}),
+      ...(entry.expenseItem ? { expenseItem: entry.expenseItem } : {}),
+      ...(entry.quantity !== null && entry.unitPrice !== null
+        ? { quantity: entry.quantity, unitPrice: entry.unitPrice }
+        : {}),
+      ...(entry.note ? { note: entry.note } : {}),
+      ...(entry.dueAt ? { vehicleDueAt: fundClosingDate(entry.dueAt) } : {}),
+      ...(entry.serviceTypes.length
+        ? {
+            vehicleServiceTypes: entry.serviceTypes,
+            vehicleServiceType: entry.serviceTypes.join(', '),
+          }
+        : {}),
+    };
+  }
+
+  /**
+   * Phiếu xe trên Lark chỉ có số liệu vận hành; người chi, duyệt và "Đã chi"
+   * nằm ở dòng song sinh trong bảng tổng hợp phiếu chi. Chuyển phần đó sang
+   * phiếu xe thay vì tạo thêm một khoản chi thứ hai.
+   */
+  private async transferTwinState(
+    vehicleEntryId: number,
+    entry: MappedLarkEntry,
+    resolvedUsers: ResolvedLarkUsers | undefined,
+    input: { userId: number; runState: LarkImportRunState },
+  ) {
+    const target = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id: vehicleEntryId },
+      select: { id: true, status: true, cashIssued: true, cashFlowId: true },
+    });
+    if (!target || target.cashFlowId) return;
+    const locked =
+      target.cashIssued || PROTECTED_IMPORT_STATUSES.has(target.status);
+    const reviewedAt = entry.occurredAt || new Date();
+    await this.prisma.internalFinanceEntry.update({
+      where: { id: target.id },
+      data: {
+        ...(resolvedUsers?.payerId ? { payerId: resolvedUsers.payerId } : {}),
+        ...(locked
+          ? {}
+          : {
+              status: entry.status,
+              ...(entry.accountantTicked && resolvedUsers?.accountantId
+                ? {
+                    accountantReviewedBy: resolvedUsers.accountantId,
+                    accountantReviewedAt: reviewedAt,
+                  }
+                : {}),
+              ...(entry.managerTicked && resolvedUsers?.managerId
+                ? {
+                    managerReviewedBy: resolvedUsers.managerId,
+                    managerReviewedAt: reviewedAt,
+                  }
+                : {}),
+              ...(entry.cashIssued
+                ? {
+                    cashIssued: true,
+                    cashIssuedAt: reviewedAt,
+                    cashIssuedBy: input.userId,
+                  }
+                : {}),
+            }),
+      },
+    });
+    if (entry.cashIssued && !locked) {
+      input.runState.cashIssuedEntryIds.add(target.id);
+    }
   }
 
   private async loadPackingEntryKeys(
@@ -1784,6 +1995,7 @@ export class InternalFinanceLarkImportService {
       kind: string;
       createdBy: number;
     }>;
+    vehicleId?: number | null;
   }): Promise<Prisma.InternalFinanceEntryCreateInput> {
     const reviews = this.reviewRows(
       input.entry,
@@ -1829,6 +2041,24 @@ export class InternalFinanceLarkImportService {
       creator: {
         connect: { id: input.resolvedUsers?.creatorId || input.userId },
       },
+      ...(input.vehicleId
+        ? { vehicle: { connect: { id: input.vehicleId } } }
+        : {}),
+      ...(payerIdOf(input.entry, input.resolvedUsers)
+        ? {
+            payer: {
+              connect: { id: payerIdOf(input.entry, input.resolvedUsers) },
+            },
+          }
+        : {}),
+      expenseItem: input.entry.expenseItem ?? undefined,
+      quantity: input.entry.quantity ?? undefined,
+      unitPrice: input.entry.unitPrice ?? undefined,
+      note: input.entry.note ?? undefined,
+      vehicleDueAt: input.entry.dueAt
+        ? fundClosingDate(input.entry.dueAt)
+        : undefined,
+      vehicleServiceTypes: input.entry.serviceTypes,
       vehicleName:
         typeof snapshot.vehicle === 'string' ? snapshot.vehicle : undefined,
       vehicleServiceType:
@@ -1976,6 +2206,7 @@ function normalizePersonName(value: string | null | undefined) {
 
 type PendingAttachment = {
   token: string;
+  kind?: string;
   name?: string;
   type?: string;
   url?: string;
@@ -2003,6 +2234,7 @@ function readPendingAttachments(
     return [
       {
         token,
+        kind: asString(row.kind) || undefined,
         name: asString(row.name) || undefined,
         type: asString(row.type) || undefined,
         url: asString(row.url) || undefined,
@@ -2036,9 +2268,20 @@ function vehicleKey(
   )}`;
 }
 
-function vehicleNameOf(entry: MappedLarkEntry) {
-  const vehicle = entry.sourceSnapshot.vehicle;
-  return typeof vehicle === 'string' && vehicle.trim() ? vehicle : null;
+function vehicleRefKey(branchId: number, label: string) {
+  return `${branchId}|${normalizeLookup(label)}`;
+}
+
+/** Phiếu xe trên Lark không có cột người chi: người tạo phiếu là người chi. */
+function payerIdOf(
+  entry: MappedLarkEntry,
+  resolvedUsers?: ResolvedLarkUsers,
+): number | undefined {
+  if (resolvedUsers?.payerId) return resolvedUsers.payerId;
+  const isVehicleEntry =
+    entry.category === INTERNAL_FINANCE_CATEGORY.FUEL ||
+    entry.category === INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE;
+  return isVehicleEntry ? resolvedUsers?.creatorId : undefined;
 }
 
 function packingEntryKey(entry: MappedLarkEntry, slipIds: Map<string, number>) {

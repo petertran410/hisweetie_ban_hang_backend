@@ -4,7 +4,9 @@ import {
   INTERNAL_FINANCE_EVIDENCE_STATUS,
   INTERNAL_FINANCE_STATUS,
   INTERNAL_FINANCE_SUBCATEGORY,
+  WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
+import { VEHICLE_ATTACHMENT_KIND } from '../vehicles/vehicles.constants';
 
 export const LARK_IMPORT_SOURCES = [
   'EXPENSE_HN',
@@ -46,24 +48,34 @@ export const PROTECTED_IMPORT_STATUSES = new Set<string>([
   INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
 ]);
 
-const MONEY_FIELDS = ['Số tiền', 'Thành tiền', 'Tổng tiền'];
+const MONEY_FIELDS = [
+  'Số tiền',
+  'Thành tiền',
+  'Tổng tiền',
+  'Chi phí (VNĐ)',
+  'Chi phí',
+];
 const UNIT_PRICE_FIELDS = ['ĐƠN GIÁ', 'Đơn giá'];
 const QUANTITY_FIELDS = ['Số lượng', 'Số lít', 'Số lit'];
+// Cột ngày thật đứng trước; "Năm-Tháng" chỉ dùng khi nó chứa đủ ngày/tháng/năm.
 const DATE_FIELDS = [
-  'Năm-Tháng',
   'NĂM/THÁNG/NGÀY',
   'Ngày',
   'Ngày chi',
   'Ngày thu',
   'Thời gian',
+  'Năm-Tháng',
 ];
-const CONTENT_FIELDS = [
+const PRIMARY_CONTENT_FIELDS = [
   'NỘI DUNG',
   'Nội dung',
   'Nội dung thu',
   'Diễn giải',
-  'Ghi chú',
 ];
+const NOTE_FIELDS = ['GHI CHÚ', 'Ghi chú'];
+const CONTENT_FIELDS = [...PRIMARY_CONTENT_FIELDS, ...NOTE_FIELDS];
+const LINE_QUANTITY_FIELDS = ['Số lượng'];
+const DUE_FIELDS = ['Hạn đăng kiểm/ bảo hiểm', 'Hạn đăng kiểm', 'Hạn bảo hiểm'];
 const CATEGORY_FIELDS = ['Khoản Mục', 'Khoản mục', 'Khoản mục chi'];
 const DEPARTMENT_FIELDS = ['Phòng ban', 'Chi nhánh'];
 const SLIP_FIELDS = ['Mã Báo Đơn', 'Mã báo đơn'];
@@ -74,8 +86,15 @@ const CUSTOMER_FIELDS = [
   'Người nộp',
   'Người nộp tiền',
 ];
-const FILE_FIELDS = ['Chứng từ', 'Hóa đơn', 'Hình ảnh', 'Tệp đính kèm', 'File'];
-const VEHICLE_FIELDS = ['Xe', 'Biển số', 'Phương tiện'];
+const FILE_FIELDS = [
+  'Chứng từ',
+  'Hóa đơn',
+  'Hình ảnh',
+  'Đồng hồ cây xăng',
+  'Tệp đính kèm',
+  'File',
+];
+const VEHICLE_FIELDS = ['Chọn xe', 'Xe', 'Biển số', 'Phương tiện'];
 const LOCATION_FIELDS = ['Địa điểm', 'Nơi đổ', 'Cây xăng'];
 const ODO_FIELDS = ['ODO', 'Số km', 'Công tơ mét'];
 const LITER_FIELDS = ['Số lít', 'Số lit'];
@@ -90,6 +109,7 @@ export interface LarkTableRef {
 
 export interface LarkAttachmentRef {
   fileToken: string;
+  kind?: string;
   name?: string;
   type?: string;
   url?: string;
@@ -124,6 +144,15 @@ export interface MappedLarkEntry {
   larkAccountant: LarkPersonRef | null;
   larkManager: LarkPersonRef | null;
   attachments: LarkAttachmentRef[];
+  expenseItem: string | null;
+  quantity: number | null;
+  unitPrice: number | null;
+  note: string | null;
+  vehicleLabel: string | null;
+  serviceTypes: string[];
+  dueAt: Date | null;
+  /** Chữ ở cột liên kết/ghi chú, dùng để nhận ra dòng trùng với một phiếu xe. */
+  twinTexts: string[];
   sourceSnapshot: Record<string, unknown>;
 }
 
@@ -427,6 +456,7 @@ function readAttachments(fields: Record<string, unknown>): LarkAttachmentRef[] {
       if (!fileToken) continue;
       found.push({
         fileToken,
+        kind: attachmentKind(name),
         name: textValue(file.name),
         type: textValue(file.type),
         url: textValue(file.url),
@@ -435,6 +465,67 @@ function readAttachments(fields: Record<string, unknown>): LarkAttachmentRef[] {
     }
   }
   return found;
+}
+
+function attachmentKind(fieldName: string): string {
+  const normalized = normalizeLookup(fieldName);
+  if (normalized.includes('dong ho')) return VEHICLE_ATTACHMENT_KIND.PUMP_METER;
+  if (normalized.includes('hoa don')) return VEHICLE_ATTACHMENT_KIND.INVOICE;
+  if (normalized.includes('hinh anh')) return VEHICLE_ATTACHMENT_KIND.PHOTO;
+  return VEHICLE_ATTACHMENT_KIND.EVIDENCE;
+}
+
+function dateFrom(fields: Record<string, unknown>): Date | null {
+  const keys = fieldMap(fields);
+  for (const alias of DATE_FIELDS) {
+    const key = keys.get(normalizeLookup(alias));
+    if (!key) continue;
+    const raw = unwrapLarkValue(fields[key]);
+    if (raw === undefined || raw === null || raw === '') continue;
+    // "2026-10" là nhãn tháng của công thức Lark, không phải ngày phát sinh.
+    if (typeof raw !== 'number' && /^\d{4}-\d{1,2}$/.test(readLarkText(raw))) {
+      continue;
+    }
+    const date = readDate(raw);
+    if (date) return date;
+  }
+  return null;
+}
+
+function readLarkList(value: unknown): string[] {
+  const raw = unwrapLarkValue(value);
+  const items = Array.isArray(raw)
+    ? raw.map((item) => readLarkText(item))
+    : readLarkText(raw).split(',');
+  return Array.from(
+    new Set(items.map((item) => item.trim()).filter(Boolean)),
+  );
+}
+
+/** Field kiểu Location của Lark trả object {address, full_address, name...}. */
+function readLocation(value: unknown): string {
+  const raw = unwrapLarkValue(value);
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    return (
+      textValue(record.full_address) ||
+      textValue(record.address) ||
+      textValue(record.name) ||
+      ''
+    ).trim();
+  }
+  return readLarkText(raw);
+}
+
+function twinTextsFrom(fields: Record<string, unknown>): string[] {
+  const texts: string[] = [];
+  for (const [name, value] of Object.entries(fields)) {
+    if (normalizeLookup(name).includes('lien ket')) {
+      texts.push(readLarkText(value));
+    }
+  }
+  texts.push(readLarkText(readAlias(fields, NOTE_FIELDS)));
+  return texts.filter(Boolean);
 }
 
 function readPersonRefs(value: unknown): LarkPersonRef[] {
@@ -587,16 +678,43 @@ export function mapLarkRecord(input: {
             : category === INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE
               ? deliverySubCategory(input.fields)
               : INTERNAL_FINANCE_SUBCATEGORY.OTHER;
+  const isVehicleSource =
+    input.source === 'FUEL' || input.source === 'VEHICLE_CARE';
+  const isExpenseTable = input.source.startsWith('EXPENSE_');
   const vehicle = readLarkText(readAlias(input.fields, VEHICLE_FIELDS));
-  const serviceType = readLarkText(readAlias(input.fields, SERVICE_FIELDS));
-  const description =
-    content || [vehicle, serviceType].filter(Boolean).join(' - ') || null;
+  const serviceTypes = readLarkList(readAlias(input.fields, SERVICE_FIELDS));
+  const serviceType = serviceTypes.join(', ');
+  const primaryContent = readLarkText(
+    readAlias(input.fields, PRIMARY_CONTENT_FIELDS),
+  );
+  const noteText = readLarkText(readAlias(input.fields, NOTE_FIELDS));
+  const description = isVehicleSource
+    ? [input.source === 'FUEL' ? 'Xăng dầu' : serviceType, vehicle]
+        .filter(Boolean)
+        .join(' - ') || null
+    : content || [vehicle, serviceType].filter(Boolean).join(' - ') || null;
+  // Bảng không có cột nội dung thì ghi chú đã thành nội dung, không lặp lại.
+  const note = isVehicleSource || primaryContent ? noteText || null : null;
+  const expenseItem = isVehicleSource
+    ? input.source === 'FUEL'
+      ? WAREHOUSE_EXPENSE_ITEM.FUEL
+      : WAREHOUSE_EXPENSE_ITEM.VEHICLE_CARE
+    : readLarkText(readAlias(input.fields, CATEGORY_FIELDS)).trim() || null;
+  const lineQuantity = isExpenseTable
+    ? readLarkNumber(readAlias(input.fields, LINE_QUANTITY_FIELDS))
+    : null;
+  const lineUnitPrice = isExpenseTable
+    ? readLarkNumber(readAlias(input.fields, UNIT_PRICE_FIELDS))
+    : null;
+  const hasLine = lineQuantity !== null && lineUnitPrice !== null;
+  const dueAt = readDate(readAlias(input.fields, DUE_FIELDS));
   const larkCreator = readPersonAlias(input.fields, [
     'Người Tạo',
     'Người tạo phiếu',
     'Created By',
     'Created By 2',
     'Created by',
+    'Lái xe',
   ]);
   const larkPayer = readPersonAlias(input.fields, PAYER_FIELDS);
   const larkAccountant = readPersonAlias(input.fields, [
@@ -619,7 +737,7 @@ export function mapLarkRecord(input: {
       subCategory,
       branchId,
       amount,
-      occurredAt: readDate(readAlias(input.fields, DATE_FIELDS)),
+      occurredAt: dateFrom(input.fields),
       description,
       status,
       evidenceStatus: attachments.length
@@ -637,10 +755,17 @@ export function mapLarkRecord(input: {
       larkAccountant,
       larkManager,
       attachments,
+      expenseItem,
+      quantity: hasLine ? lineQuantity : null,
+      unitPrice: hasLine ? lineUnitPrice : null,
+      note,
+      vehicleLabel: vehicle || null,
+      serviceTypes,
+      dueAt,
+      twinTexts: isVehicleSource ? [] : twinTextsFrom(input.fields),
       sourceSnapshot: {
         vehicle: vehicle || undefined,
-        location:
-          readLarkText(readAlias(input.fields, LOCATION_FIELDS)) || undefined,
+        location: readLocation(readAlias(input.fields, LOCATION_FIELDS)) || undefined,
         odo: readLarkText(readAlias(input.fields, ODO_FIELDS)) || undefined,
         unitPrice:
           readLarkText(readAlias(input.fields, UNIT_PRICE_FIELDS)) || undefined,

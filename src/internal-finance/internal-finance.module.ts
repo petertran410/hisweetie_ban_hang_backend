@@ -11,6 +11,7 @@ import { InternalFinanceCodeService } from './internal-finance-code.service';
 import { AuthModule } from '../auth/auth.module';
 import { InternalFundModule } from '../internal-fund/internal-fund.module';
 import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.module';
+import { VehiclesModule } from '../vehicles/vehicles.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.
     AuthModule,
     InternalFundModule,
     InternalFundLedgerModule,
+    VehiclesModule,
   ],
   controllers: [InternalFinanceController],
   providers: [

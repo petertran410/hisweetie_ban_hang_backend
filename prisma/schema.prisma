@@ -129,6 +129,9 @@ model User {
   reviewedInternalFinanceEntries                            InternalFinanceEntry[]             @relation("InternalFinanceEntryAccountant")
   managedInternalFinanceEntries                             InternalFinanceEntry[]             @relation("InternalFinanceEntryManager")
   issuedInternalFinanceEntries                              InternalFinanceEntry[]             @relation("InternalFinanceEntryCashIssuer")
+  paidInternalFinanceEntries                                InternalFinanceEntry[]             @relation("InternalFinanceEntryPayer")
+  drivenVehicles                                            Vehicle[]                          @relation("VehicleDriver")
+  createdVehicles                                           Vehicle[]                          @relation("VehicleCreator")
   internalFinanceReviews                                    InternalFinanceReview[]             @relation("InternalFinanceReviewUser")
   createdInternalFinanceBatches                             InternalFinanceWeeklyBatch[]        @relation("InternalFinanceBatchCreator")
   createdInternalFinanceAttachments                         InternalFinanceAttachment[]
@@ -368,6 +371,7 @@ model Branch {
   productQualityRoutingConfigs ProductQualityRoutingConfig[]
   productQualityDepartmentMembers ProductQualityDepartmentMember[]
   internalFinanceEntries    InternalFinanceEntry[]
+  vehicles                  Vehicle[]
   internalFinanceBatches    InternalFinanceWeeklyBatch[]
   internalFundTransactions  InternalFundTransaction[]
   internalFundSourceTransfers InternalFundTransfer[]       @relation("InternalFundTransferSourceBranch")
@@ -2293,6 +2297,14 @@ model InternalFinanceEntry {
   vehicleUnitPrice      Decimal?  @db.Decimal(18, 2)
   vehicleLocation       String?
   vehicleAnomalyStatus  String?   @db.VarChar(64)
+  vehicleId             Int?
+  vehicleDueAt          DateTime? @db.Date
+  vehicleServiceTypes   String[]  @default([])
+  payerId               Int?
+  expenseItem           String?   @db.VarChar(255)
+  quantity              Decimal?  @db.Decimal(18, 4)
+  unitPrice             Decimal?  @db.Decimal(18, 2)
+  note                  String?
   customerId            Int?
   packingSlipId         Int?
   weeklyBatchId         Int?
@@ -2301,6 +2313,8 @@ model InternalFinanceEntry {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
+  vehicle             Vehicle?                   @relation(fields: [vehicleId], references: [id])
+  payer               User?                      @relation("InternalFinanceEntryPayer", fields: [payerId], references: [id])
   branch              Branch                     @relation(fields: [branchId], references: [id])
   customer            Customer?                  @relation("InternalFinanceEntryCustomer", fields: [customerId], references: [id])
   packingSlip         PackingSlip?               @relation(fields: [packingSlipId], references: [id])
@@ -2322,7 +2336,36 @@ model InternalFinanceEntry {
   @@index([weeklyBatchId, status])
   @@index([packingSlipId])
   @@index([customerId, occurredAt])
+  @@index([vehicleId, vehicleOdo])
+  @@index([payerId])
   @@map("internal_finance_entries")
+}
+
+model Vehicle {
+  id                  Int      @id @default(autoincrement())
+  branchId            Int
+  label               String   @db.VarChar(128)
+  plate               String   @db.VarChar(64)
+  vehicleType         String   @default("CAR") @db.VarChar(16)
+  fuelType            String?  @db.VarChar(16)
+  driverId            Int?
+  costPerKmMin        Decimal? @db.Decimal(18, 2)
+  costPerKmMax        Decimal? @db.Decimal(18, 2)
+  oilChangeIntervalKm Int?
+  isActive            Boolean  @default(true)
+  note                String?
+  createdBy           Int
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  branch  Branch                 @relation(fields: [branchId], references: [id])
+  driver  User?                  @relation("VehicleDriver", fields: [driverId], references: [id])
+  creator User                   @relation("VehicleCreator", fields: [createdBy], references: [id])
+  entries InternalFinanceEntry[]
+
+  @@unique([branchId, label])
+  @@index([branchId, isActive])
+  @@map("vehicles")
 }
 
 model InternalFinanceAttachment {
