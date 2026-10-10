@@ -728,6 +728,12 @@ export class ProductQueryDto {
   @IsString()
   stockStatus?: string;
 
+  // Lọc mã có hàng bục rách / cận date (theo chi nhánh đang chọn nếu có).
+  // 'any' = có bục rách HOẶC cận date.
+  @IsOptional()
+  @IsIn(['damaged', 'nearExpiry', 'any'])
+  conditionStatus?: 'damaged' | 'nearExpiry' | 'any';
+
   @IsOptional()
   @IsInt()
   @Type(() => Number)

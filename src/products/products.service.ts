@@ -222,6 +222,33 @@ export class ProductsService {
     }, 0);
   }
 
+  /**
+   * Điều kiện lọc mã có hàng bục rách / cận date (đọc cache Inventory, giống
+   * cột hiển thị ở danh sách). Scope theo chi nhánh nếu có, không thì bất kỳ
+   * chi nhánh nào. Dùng chung cho findAll và exportProducts.
+   */
+  private buildConditionWhere(
+    conditionStatus: 'damaged' | 'nearExpiry' | 'any' | undefined,
+    branchId?: number,
+    branchIds?: number[],
+  ) {
+    if (!conditionStatus) return null;
+    const scope = branchIds?.length
+      ? { branchId: { in: branchIds } }
+      : branchId
+        ? { branchId }
+        : {};
+    const damaged = {
+      inventories: { some: { ...scope, damagedQuantity: { gt: 0 } } },
+    };
+    const nearExpiry = {
+      inventories: { some: { ...scope, nearExpiryQuantity: { gt: 0 } } },
+    };
+    if (conditionStatus === 'damaged') return damaged;
+    if (conditionStatus === 'nearExpiry') return nearExpiry;
+    return { OR: [damaged, nearExpiry] };
+  }
+
   async findAll(query: ProductQueryDto) {
     const {
       page = 1,
@@ -240,6 +267,7 @@ export class ProductsService {
       middleNames,
       childNames,
       stockStatus,
+      conditionStatus,
       tradeMarkId,
       tradeMarkIds,
       isDirectSale,
@@ -317,6 +345,13 @@ export class ProductsService {
     } else if (stockStatus === 'outstock') {
       where.inventories = { every: { onHand: { lte: 0 } } };
     }
+
+    const conditionWhere = this.buildConditionWhere(
+      conditionStatus,
+      branchId,
+      branchIds,
+    );
+    if (conditionWhere) where.AND = [conditionWhere];
 
     // ── Filter theo nhà máy ──────────────────────────────────────────────────
     // Nguồn duy nhất là mapping `factory_products` (1 SP gắn được nhiều NM).
@@ -579,6 +614,7 @@ export class ProductsService {
       middleNames,
       childNames,
       stockStatus,
+      conditionStatus,
       tradeMarkId,
       tradeMarkIds,
       isDirectSale,
@@ -647,6 +683,12 @@ export class ProductsService {
     } else if (stockStatus === 'outstock') {
       where.inventories = { every: { onHand: { lte: 0 } } };
     }
+
+    const conditionWhere = this.buildConditionWhere(
+      conditionStatus,
+      branchId,
+    );
+    if (conditionWhere) where.AND = [conditionWhere];
 
     let inventoriesInclude: any = { include: { branch: true } };
     if (branchId) {
