@@ -367,7 +367,11 @@ export class TransfersService {
     return where;
   }
 
-  async exportTransfers(query: TransferQueryDto, res: Response): Promise<void> {
+  async exportTransfers(
+    query: TransferQueryDto,
+    res: Response,
+    hidePrices = false,
+  ): Promise<void> {
     const where = this.buildTransferWhere(query);
 
     const STATUS_LABEL: Record<number, string> = {
@@ -402,7 +406,9 @@ export class TransfersService {
       { header: 'Giá trị nhận', key: 'totalReceive', width: 16 },
       { header: 'Ghi chú', key: 'note', width: 30 },
       { header: 'Trạng thái', key: 'status', width: 14 },
-    ];
+    ].filter(
+      (c) => !hidePrices || !['totalTransfer', 'totalReceive'].includes(c.key),
+    );
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -477,6 +483,7 @@ export class TransfersService {
   async exportTransfersDetail(
     query: TransferQueryDto,
     res: Response,
+    hidePrices = false,
   ): Promise<void> {
     const where = this.buildTransferWhere(query);
 
@@ -510,7 +517,7 @@ export class TransfersService {
       { header: 'SL nhận', key: 'receivedQuantity', width: 12 },
       { header: 'Đơn giá', key: 'sendPrice', width: 14 },
       { header: 'Thành tiền', key: 'lineTotal', width: 16 },
-    ];
+    ].filter((c) => !hidePrices || !['sendPrice', 'lineTotal'].includes(c.key));
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -618,6 +625,7 @@ export class TransfersService {
   }
 
   async create(dto: CreateTransferDto, userId: number) {
+    await this.fillMissingPrices(dto.fromBranchId, dto.transferDetails);
     const [fromBranch, toBranch, user] = await Promise.all([
       this.prisma.branch.findUnique({ where: { id: dto.fromBranchId } }),
       this.prisma.branch.findUnique({ where: { id: dto.toBranchId } }),
@@ -754,6 +762,13 @@ export class TransfersService {
 
   async update(id: number, dto: UpdateTransferDto, userId?: number) {
     const currentTransfer = await this.findOne(id);
+    if (dto.transferDetails) {
+      await this.fillMissingPrices(
+        dto.fromBranchId ?? currentTransfer.fromBranchId,
+        dto.transferDetails,
+        currentTransfer.details,
+      );
+    }
     const newStatus =
       dto.status !== undefined ? dto.status : currentTransfer.status;
 
@@ -1340,6 +1355,40 @@ export class TransfersService {
         itemCount: t._count.details,
       })),
     };
+  }
+
+  /**
+   * Dòng không có đơn giá (client thiếu quyền xem giá nên không biết giá):
+   * - sửa phiếu: giữ đơn giá đang lưu của sản phẩm đó (existingDetails);
+   * - còn lại → mặc định = giá vốn tại chi nhánh chuyển.
+   * Dòng đã có giá (kể cả 0 do người dùng tự nhập) giữ nguyên.
+   */
+  private async fillMissingPrices(
+    fromBranchId: number,
+    details: { productId: number; price?: number }[],
+    existingDetails: { productId: number; sendPrice: any }[] = [],
+  ) {
+    const existingPrice = new Map(
+      existingDetails.map((d) => [d.productId, Number(d.sendPrice)]),
+    );
+    for (const d of details) {
+      if (d.price == null && existingPrice.has(d.productId)) {
+        d.price = existingPrice.get(d.productId);
+      }
+    }
+    const missing = details.filter((d) => d.price == null);
+    if (missing.length === 0) return;
+    const inventories = await this.prisma.inventory.findMany({
+      where: {
+        branchId: fromBranchId,
+        productId: { in: missing.map((d) => d.productId) },
+      },
+      select: { productId: true, cost: true },
+    });
+    const costMap = new Map(
+      inventories.map((inv) => [inv.productId, Number(inv.cost) || 0]),
+    );
+    for (const d of missing) d.price = costMap.get(d.productId) ?? 0;
   }
 
   private async generateTransferCode(db: any = this.prisma): Promise<string> {

@@ -161,6 +161,57 @@ describe('PrintTemplatesService', () => {
     });
   });
 
+  describe('blankPriceVars', () => {
+    it('để trống biến giá của phiếu chuyển, giữ nguyên biến khác', () => {
+      const service = createService() as any;
+      const data = service.mapTransfer({
+        code: 'TRF1',
+        totalTransfer: 100000,
+        totalReceive: 100000,
+        details: [
+          {
+            productCode: 'SP1',
+            sendQuantity: 2,
+            sendPrice: 50000,
+            totalTransfer: 100000,
+          },
+        ],
+      });
+
+      service.blankPriceVars(data, 'transfer');
+
+      expect(data.Tong_Tien_Chuyen).toBe('');
+      expect(data.Ma_Chuyen_Hang).toBe('TRF1');
+      expect(data.items[0]).toMatchObject({
+        Ma_Hang: 'SP1',
+        So_Luong: 2,
+        Don_Gia: '',
+        Thanh_Tien: '',
+      });
+    });
+
+    it('để trống giá vốn / giá trị của phiếu xuất dùng nội bộ', () => {
+      const service = createService() as any;
+      const data = service.mapInternalUse({
+        totalValue: 90000,
+        details: [
+          { productName: 'Trà đào', quantity: 3, cost: 30000, value: 90000 },
+        ],
+      });
+
+      service.blankPriceVars(data, 'internal_use');
+
+      expect(data.Tong_Gia_Tri).toBe('');
+      expect(data.Tong_Gia_Tri_Bang_Chu).toBe('');
+      expect(data.items[0]).toMatchObject({
+        So_Luong: 3,
+        Gia_Von: '',
+        Gia_Tri_Xuat: '',
+        Thanh_Tien: '',
+      });
+    });
+  });
+
   describe('shipping fee print variables', () => {
     const baseEntity = {
       code: '',

@@ -165,6 +165,19 @@ export class ProductsController {
       });
     }
 
+    // Hàng sản xuất: strip giá vốn thành phần trong từng công thức
+    if (!canViewCost && Array.isArray(product.formulas)) {
+      for (const f of product.formulas) {
+        for (const c of f.components || []) {
+          if (c?.componentProduct?.inventories) {
+            c.componentProduct.inventories = c.componentProduct.inventories.map(
+              (inv: any) => ({ ...inv, cost: undefined }),
+            );
+          }
+        }
+      }
+    }
+
     return product;
   }
 

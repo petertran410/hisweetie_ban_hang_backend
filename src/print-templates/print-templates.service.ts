@@ -217,6 +217,7 @@ export class PrintTemplatesService {
     templateId: number,
     entityId: number,
     entityType?: string,
+    hidePriceFor: string[] = [],
   ) {
     const template = await this.prisma.printTemplate.findUnique({
       where: { id: templateId },
@@ -225,6 +226,9 @@ export class PrintTemplatesService {
 
     const resolvedType = entityType ?? template.templateFor;
     const data = await this.loadEntityData(resolvedType, entityId);
+    if (hidePriceFor.includes(resolvedType)) {
+      this.blankPriceVars(data, resolvedType);
+    }
 
     // ← Dùng template.templateFor (ví dụ 'delivery') thay vì resolvedType ('invoice_delivery')
     // để getItemVariableKeys query đúng bảng variables
@@ -235,6 +239,35 @@ export class PrintTemplatesService {
     );
 
     return { content, data };
+  }
+
+  /** Biến giá của từng loại phiếu — để trống khi user thiếu quyền xem giá. */
+  private static readonly PRICE_VARS: Record<
+    string,
+    { header: string[]; item: string[] }
+  > = {
+    transfer: {
+      header: ['Tong_Tien_Chuyen', 'Tong_Tien_Nhan'],
+      item: [
+        'Don_Gia',
+        'Don_Gia_Sau_Chiet_Khau',
+        'Thanh_Tien',
+        'Thanh_Tien_Nhan',
+      ],
+    },
+    internal_use: {
+      header: ['Tong_Gia_Tri', 'Tong_Gia_Tri_Bang_Chu'],
+      item: ['Gia_Von', 'Gia_Tri_Xuat', 'Thanh_Tien'],
+    },
+  };
+
+  private blankPriceVars(data: any, entityType: string) {
+    const vars = PrintTemplatesService.PRICE_VARS[entityType];
+    if (!vars || !data) return;
+    for (const k of vars.header) data[k] = '';
+    for (const item of data.items || []) {
+      for (const k of vars.item) item[k] = '';
+    }
   }
 
   private async loadEntityData(

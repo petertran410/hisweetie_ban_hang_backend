@@ -4,6 +4,15 @@ import { PrismaService } from '../prisma/prisma.service';
 
 export type RangeKey = 'today' | 'yesterday' | 'week' | 'month';
 export type FinRangeKey = 'd7' | 'm30' | 'all';
+// Mốc thời gian của So sánh chi nhánh (khớp PeriodKey phía frontend).
+export type PeriodKey =
+  | 'today'
+  | 'yesterday'
+  | 'd7'
+  | 'd30'
+  | 'thisWeek'
+  | 'thisMonth'
+  | 'lastMonth';
 export type TopMetric = 'rev' | 'qty' | 'profit';
 export type CategoryDimension = 'parent' | 'middle' | 'child';
 
@@ -70,6 +79,41 @@ export class DashboardService {
     const elapsed = now.getTime() - start.getTime();
     const prevEnd = new Date(prevStart.getTime() + elapsed);
     return { start, end: now, prevStart, prevEnd };
+  }
+
+  /** Khoảng thời gian [start, end] cho các mốc PeriodKey. */
+  private getPeriodWindow(period: PeriodKey): { start: Date; end: Date } {
+    const now = new Date();
+    switch (period) {
+      case 'today':
+      case 'yesterday':
+        return this.getRangeWindow(period);
+      case 'd7':
+        return this.getRangeWindow('week');
+      case 'thisMonth':
+        return this.getRangeWindow('month');
+      case 'd30': {
+        const start = new Date(now);
+        start.setDate(start.getDate() - 29);
+        start.setHours(0, 0, 0, 0);
+        return { start, end: now };
+      }
+      case 'thisWeek': {
+        // Tuần bắt đầu từ thứ Hai.
+        const start = new Date(now);
+        start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+        start.setHours(0, 0, 0, 0);
+        return { start, end: now };
+      }
+      case 'lastMonth': {
+        const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const end = new Date(now.getFullYear(), now.getMonth(), 1);
+        end.setMilliseconds(-1);
+        return { start, end };
+      }
+      default:
+        return this.getRangeWindow('week');
+    }
   }
 
   /** where clause chung cho Order, có lọc branch nếu truyền. */
@@ -630,14 +674,14 @@ export class DashboardService {
    * Trả { labels, branches: [{ id, name, data[] }] }.
    */
   async getBranchComparison(
-    range: RangeKey = 'week',
+    period: PeriodKey = 'd7',
     metric: 'rev' | 'profit' = 'rev',
   ) {
-    const w = this.getRangeWindow(range);
+    const w = this.getPeriodWindow(period);
     const trunc =
-      range === 'today' || range === 'yesterday'
+      period === 'today' || period === 'yesterday'
         ? 'hour'
-        : range === 'week'
+        : period === 'd7' || period === 'thisWeek'
           ? 'day'
           : 'week';
 
@@ -670,12 +714,15 @@ export class DashboardService {
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today' || range === 'yesterday')
-        return String(dt.getHours()).padStart(2, '0');
-      if (range === 'week') {
+      if (trunc === 'hour') return String(dt.getHours()).padStart(2, '0');
+      if (trunc === 'day') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
-      return `Tuần ${Math.ceil(dt.getDate() / 7)}`;
+      // Bucket tuần: nhãn = ngày thứ Hai đầu tuần (dd/MM) — tránh trùng nhãn
+      // khi khoảng thời gian vắt qua 2 tháng (vd 30 ngày).
+      return `${String(dt.getDate()).padStart(2, '0')}/${String(
+        dt.getMonth() + 1,
+      ).padStart(2, '0')}`;
     };
 
     const labelSet: string[] = [];

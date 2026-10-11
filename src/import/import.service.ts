@@ -6,6 +6,7 @@ import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.
 import * as ExcelJS from 'exceljs';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { replaceDefaultFormulaComponents } from '../products/product-formulas.util';
 
 /**
  * Thông tin người thao tác để gắn vào audit log và enqueue sync.
@@ -992,11 +993,9 @@ export class ImportService {
       where: { code: { in: codes } },
       select: { id: true, code: true },
     });
-    const productMap = new Map(products.map((p) => [p.code, p.id]));
-
-    await client.productComponent.deleteMany({
-      where: { comboProductId: productId },
-    });
+    const productMap = new Map<string, number>(
+      products.map((p) => [p.code, p.id]),
+    );
 
     const createData = components
       .filter((c) => productMap.has(c.code))
@@ -1006,6 +1005,21 @@ export class ImportService {
         quantity: c.quantity,
         inputMode: c.inputMode,
       }));
+
+    // Hàng sản xuất: file Excel chỉ có 1 danh sách → thay công thức mặc định,
+    // giữ nguyên các công thức khác.
+    const product = await client.product.findUnique({
+      where: { id: productId },
+      select: { type: true },
+    });
+    if (product?.type === 4) {
+      await replaceDefaultFormulaComponents(client, productId, createData);
+      return;
+    }
+
+    await client.productComponent.deleteMany({
+      where: { comboProductId: productId },
+    });
 
     if (createData.length > 0) {
       await client.productComponent.createMany({ data: createData });

@@ -42,6 +42,14 @@ import {
   overlayFactoriesFromMappings,
   replaceProductMappings,
 } from '../common/factory-mapping.util';
+import {
+  DEFAULT_COMPONENTS_WHERE,
+  FORMULAS_INCLUDE,
+  defaultFormulaComponents,
+  normalizeFormulas,
+  replaceDefaultFormulaComponents,
+  saveProductFormulas,
+} from './product-formulas.util';
 
 @Injectable()
 export class ProductsService {
@@ -358,12 +366,14 @@ export class ProductsService {
         orderBy: { id: 'asc' as const },
       },
       comboComponents: {
+        where: DEFAULT_COMPONENTS_WHERE,
         include: {
           componentProduct: {
             include: { images: true, inventories: true },
           },
         },
       },
+      formulas: FORMULAS_INCLUDE,
       ...FACTORY_PRODUCTS_INCLUDE,
     };
 
@@ -889,6 +899,7 @@ export class ProductsService {
           images: true,
           inventories: inventoriesInclude,
           comboComponents: {
+            where: DEFAULT_COMPONENTS_WHERE,
             include: {
               componentProduct: {
                 include: { images: true, inventories: true },
@@ -949,6 +960,7 @@ export class ProductsService {
           include: { branch: true },
         },
         comboComponents: {
+          where: DEFAULT_COMPONENTS_WHERE,
           include: {
             componentProduct: {
               include: {
@@ -958,6 +970,7 @@ export class ProductsService {
             },
           },
         },
+        formulas: FORMULAS_INCLUDE,
         attributes: {
           include: { value: { include: { definition: true } } },
           orderBy: { id: 'asc' },
@@ -1046,7 +1059,8 @@ export class ProductsService {
       publicationLocation,
       publicationDate,
       publicationLink,
-      components,
+      components: rawComponents,
+      formulas,
       initialInventory,
       branchId,
       costScope,
@@ -1068,6 +1082,13 @@ export class ProductsService {
       attributes,
       ...productData
     } = dto;
+
+    // Hàng sản xuất gửi nhiều công thức → giá vốn tính theo công thức mặc định.
+    const normalizedFormulas =
+      dto.type === 4 && formulas ? normalizeFormulas(formulas) : undefined;
+    const components = normalizedFormulas
+      ? defaultFormulaComponents(normalizedFormulas)
+      : rawComponents;
 
     await this.validateFactoryMappings(factoryMappings);
 
@@ -1311,20 +1332,25 @@ export class ProductsService {
         await tx.inventory.createMany({ data: inventoryData });
       }
 
-      if (
-        !dto.manualCostOverride &&
+      if (normalizedFormulas) {
+        await saveProductFormulas(tx, product.id, normalizedFormulas);
+      } else if (
         (dto.type === 1 || dto.type === 4) &&
         components &&
         components.length > 0
       ) {
-        await tx.productComponent.createMany({
-          data: components.map((comp) => ({
-            comboProductId: product.id,
-            componentProductId: comp.componentProductId,
-            quantity: comp.quantity,
-            inputMode: comp.inputMode ?? 'gram',
-          })),
-        });
+        if (dto.type === 4) {
+          await replaceDefaultFormulaComponents(tx, product.id, components);
+        } else {
+          await tx.productComponent.createMany({
+            data: components.map((comp) => ({
+              comboProductId: product.id,
+              componentProductId: comp.componentProductId,
+              quantity: comp.quantity,
+              inputMode: comp.inputMode ?? 'gram',
+            })),
+          });
+        }
       }
 
       if (userId) {
@@ -1372,12 +1398,14 @@ export class ProductsService {
             include: { branch: true },
           },
           comboComponents: {
+            where: DEFAULT_COMPONENTS_WHERE,
             include: {
               componentProduct: {
                 include: { images: true },
               },
             },
           },
+          formulas: FORMULAS_INCLUDE,
           attributes: {
             include: { value: { include: { definition: true } } },
             orderBy: { id: 'asc' },
@@ -1425,7 +1453,8 @@ export class ProductsService {
       publicationLocation,
       publicationDate,
       publicationLink,
-      components,
+      components: rawComponents,
+      formulas,
       initialInventory,
       branchId,
       costScope,
@@ -1447,6 +1476,14 @@ export class ProductsService {
       attributes,
       ...productData
     } = dto;
+
+    const productType = dto.type ?? currentProduct.type;
+    // Hàng sản xuất gửi nhiều công thức → giá vốn tính theo công thức mặc định.
+    const normalizedFormulas =
+      productType === 4 && formulas ? normalizeFormulas(formulas) : undefined;
+    const components = normalizedFormulas
+      ? defaultFormulaComponents(normalizedFormulas)
+      : rawComponents;
 
     await this.validateFactoryMappings(factoryMappings);
 
@@ -1930,7 +1967,12 @@ export class ProductsService {
         }
       }
 
-      if (components !== undefined) {
+      if (normalizedFormulas) {
+        await saveProductFormulas(tx, id, normalizedFormulas);
+      } else if (components !== undefined && productType === 4) {
+        // Client cũ gửi 1 danh sách → chỉ thay công thức mặc định.
+        await replaceDefaultFormulaComponents(tx, id, components);
+      } else if (components !== undefined) {
         await tx.productComponent.deleteMany({
           where: { comboProductId: id },
         });
@@ -2018,12 +2060,14 @@ export class ProductsService {
             include: { branch: true },
           },
           comboComponents: {
+            where: DEFAULT_COMPONENTS_WHERE,
             include: {
               componentProduct: {
                 include: { images: true },
               },
             },
           },
+          formulas: FORMULAS_INCLUDE,
           attributes: {
             include: { value: { include: { definition: true } } },
             orderBy: { id: 'asc' },
