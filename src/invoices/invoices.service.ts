@@ -1314,7 +1314,10 @@ export class InvoicesService {
         },
         payments: true,
         paymentNotes: { orderBy: { createdAt: 'desc' } },
-        delivery: true,
+        // Tên đối tác giao hàng — điền "Nhà xe" khi in tem A6.
+        delivery: {
+          include: { partnerDelivery: { select: { id: true, name: true } } },
+        },
         _count: { select: { returnOrders: true } },
         returnOrders: {
           where: { code: { startsWith: 'TH' } },
