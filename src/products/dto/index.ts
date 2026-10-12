@@ -64,6 +64,26 @@ export class ComponentDto {
   inputMode?: string;
 }
 
+/** Công thức thành phần của hàng sản xuất (type 4). */
+export class ProductFormulaDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  id?: number;
+
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ComponentDto)
+  components: ComponentDto[];
+}
+
 export class ProductComponentDto {
   @IsNumber()
   @Type(() => Number)
@@ -366,6 +386,13 @@ export class CreateProductDto {
   @ValidateNested({ each: true })
   @Type(() => ComponentDto)
   components?: ComponentDto[];
+
+  // Hàng sản xuất: nhiều công thức (thay cho `components`).
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => ProductFormulaDto)
+  formulas?: ProductFormulaDto[];
 
   @IsOptional()
   @IsNumber()
@@ -727,6 +754,12 @@ export class ProductQueryDto {
   @IsOptional()
   @IsString()
   stockStatus?: string;
+
+  // Lọc mã có hàng bục rách / cận date (theo chi nhánh đang chọn nếu có).
+  // 'any' = có bục rách HOẶC cận date.
+  @IsOptional()
+  @IsIn(['damaged', 'nearExpiry', 'any'])
+  conditionStatus?: 'damaged' | 'nearExpiry' | 'any';
 
   @IsOptional()
   @IsInt()

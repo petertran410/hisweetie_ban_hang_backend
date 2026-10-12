@@ -3,6 +3,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { SyncKiotApiService } from '../sync-kiot-api.service';
 import { BaseSyncService } from './base-sync.service';
 import { LarkProductSyncService } from '../../lark-sync/services/lark-product-sync.service';
+import {
+  DEFAULT_COMPONENTS_WHERE,
+  replaceDefaultFormulaComponents,
+} from '../../products/product-formulas.util';
 
 @Injectable()
 export class SyncProductService extends BaseSyncService {
@@ -123,11 +127,13 @@ export class SyncProductService extends BaseSyncService {
     comboProductId: number,
     formulas: any[],
   ): Promise<void> {
-    await this.prisma.productComponent.deleteMany({
-      where: { comboProductId },
-    });
-
-    if (!formulas.length) return;
+    if (!formulas.length) {
+      // Chỉ xoá công thức mặc định — giữ các công thức tự tạo trong hệ thống.
+      await this.prisma.productComponent.deleteMany({
+        where: { comboProductId, ...DEFAULT_COMPONENTS_WHERE },
+      });
+      return;
+    }
 
     const materialCodes = [
       ...new Set(
@@ -177,9 +183,10 @@ export class SyncProductService extends BaseSyncService {
       });
     }
 
-    if (rows.length) {
-      await this.prisma.productComponent.createMany({ data: rows });
-    }
+    // Sản phẩm có công thức Kiot là hàng sản xuất → ghi vào công thức mặc định.
+    await this.prisma.$transaction((tx) =>
+      replaceDefaultFormulaComponents(tx, comboProductId, rows),
+    );
   }
 
   // ───────────────────────────────────────────────────────────────────

@@ -81,6 +81,8 @@ export class PermissionsGuard implements CanActivate {
     } else {
       permissions = user.permissions || [];
     }
+    // Lưu lại để controller tái dùng (requestHasPermission) — tránh query lại.
+    request.effectivePermissions = permissions;
 
     if (hasRequired) {
       const ok = requiredPermissions.every((p) => permissions.includes(p));

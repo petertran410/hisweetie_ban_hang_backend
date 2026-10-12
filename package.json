@@ -44,6 +44,8 @@
     "seed:customers-sale-pic-permission": "ts-node prisma/seeds/add-customers-sale-pic-permission.ts",
     "seed:suppliers-export": "ts-node prisma/seeds/add-suppliers-export-permission.ts",
     "seed:transfers-export": "ts-node prisma/seeds/add-transfers-export-permission.ts",
+    "seed:warehouse-cost-price": "ts-node prisma/seeds/add-warehouse-cost-price-permissions.ts",
+    "seed:product-formulas": "ts-node prisma/seeds/backfill-product-formulas.ts",
     "seed:transfer-planning-permissions": "ts-node prisma/seeds/add-transfer-planning-permissions.ts",
     "seed:orders-export": "ts-node prisma/seeds/add-orders-export-permission.ts",
     "seed:price-books-export": "ts-node prisma/seeds/add-price-books-export-permission.ts",

@@ -15,6 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RenderPreviewDto } from './dto';
+import { requestHasPermission } from '../auth/request-permissions';
 
 @ApiTags('Print Templates')
 @ApiBearerAuth()
@@ -56,11 +57,23 @@ export class PrintTemplatesController {
 
   @Post('preview')
   @RequirePermissions('print_templates:view')
-  renderPreview(@Body() dto: RenderPreviewDto) {
+  renderPreview(@Body() dto: RenderPreviewDto, @Req() req: any) {
+    // Loại phiếu cần ẩn giá theo quyền của user (khớp ẩn giá trên màn hình).
+    const hidePriceFor: string[] = [];
+    if (!requestHasPermission(req, 'transfers:view_cost_price')) {
+      hidePriceFor.push('transfer');
+    }
+    if (
+      !requestHasPermission(req, 'internal-use:view_cost_price') ||
+      !requestHasPermission(req, 'products:view_cost_price')
+    ) {
+      hidePriceFor.push('internal_use');
+    }
     return this.printTemplatesService.renderPreview(
       dto.templateId,
       dto.entityId,
       dto.entityType,
+      hidePriceFor,
     );
   }
 

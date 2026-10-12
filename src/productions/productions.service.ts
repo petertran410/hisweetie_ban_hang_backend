@@ -6,6 +6,7 @@ import {
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 import {
   CreateProductionDto,
   UpdateProductionDto,
@@ -18,6 +19,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
+import { DEFAULT_COMPONENTS_WHERE } from '../products/product-formulas.util';
 import {
   buildInventoryLogActor,
   buildInventoryLogBase,
@@ -226,6 +228,7 @@ export class ProductionsService {
       { header: 'Mã thành phẩm', key: 'productCode', width: 16 },
       { header: 'Tên thành phẩm', key: 'productName', width: 30 },
       { header: 'SL thành phẩm', key: 'quantity', width: 12 },
+      { header: 'Công thức', key: 'formulaName', width: 18 },
       { header: 'Mã nguyên liệu', key: 'componentCode', width: 16 },
       { header: 'Tên nguyên liệu', key: 'componentName', width: 30 },
       { header: 'SL nguyên liệu (g)', key: 'actualGrams', width: 16 },
@@ -268,6 +271,7 @@ export class ProductionsService {
           productCode: p.productCode || '',
           productName: p.productName || '',
           quantity: Number(p.quantity) || 0,
+          formulaName: p.formulaName || '',
         };
 
         if (!p.components.length) {
@@ -317,14 +321,11 @@ export class ProductionsService {
   }
 
   async create(dto: CreateProductionDto, userId: number) {
-    const product = await this.prisma.product.findUnique({
-      where: { id: dto.productId },
-      include: {
-        comboComponents: {
-          include: { componentProduct: true },
-        },
-      },
-    });
+    const { product, formula } = await this.loadProductWithFormula(
+      this.prisma,
+      dto.productId,
+      dto.formulaId,
+    );
 
     if (!product) throw new NotFoundException('Product not found');
     if (product.type !== 4) {
@@ -390,6 +391,8 @@ export class ProductionsService {
           manufacturedDate: dto.manufacturedDate
             ? new Date(dto.manufacturedDate)
             : new Date(),
+          formulaId: formula?.id ?? null,
+          formulaName: formula?.name ?? null,
         },
       });
 
@@ -437,6 +440,7 @@ export class ProductionsService {
                 weightInGrams > 0
                   ? c.actualGrams / weightInGrams
                   : c.actualGrams,
+              inputMode: comp?.inputMode ?? null,
             };
           }),
         );
@@ -480,18 +484,42 @@ export class ProductionsService {
       updateData.autoDeductComponents = dto.autoDeductComponents;
     }
 
+    // Chỉ đổi công thức khi phiếu còn tạm; còn lại dùng công thức đã lưu.
+    const formulaChanged =
+      dto.formulaId !== undefined &&
+      dto.formulaId !== production.formulaId &&
+      production.status === 1;
+    const formulaId = formulaChanged ? dto.formulaId : production.formulaId;
+
     return await this.prisma.$transaction(async (tx) => {
+      if (
+        production.status === 1 &&
+        (formulaChanged || dto.quantity !== undefined)
+      ) {
+        const { product, formula } = await this.loadProductWithFormula(
+          tx,
+          production.productId,
+          formulaId,
+        );
+        if (formulaChanged) {
+          updateData.formulaId = formula?.id ?? null;
+          updateData.formulaName = formula?.name ?? null;
+        }
+        updateData.totalCost = await this.calculateTotalCost(
+          product?.comboComponents ?? [],
+          production.sourceBranchId,
+          Number(dto.quantity ?? production.quantity),
+        );
+      }
+
       // ── Lưu components khi lưu tạm (status 1) ──────────────────────
       // Chỉ lưu data, KHÔNG xử lý tồn kho
       if (dto.status !== 2 && dto.components && dto.components.length > 0) {
-        const productForDraft = await tx.product.findUnique({
-          where: { id: production.productId },
-          include: {
-            comboComponents: {
-              include: { componentProduct: true },
-            },
-          },
-        });
+        const { product: productForDraft } = await this.loadProductWithFormula(
+          tx,
+          production.productId,
+          formulaId,
+        );
 
         if (productForDraft) {
           await tx.productionComponent.deleteMany({
@@ -520,6 +548,7 @@ export class ProductionsService {
                 weightInGrams > 0
                   ? c.actualGrams / weightInGrams
                   : c.actualGrams,
+              inputMode: comp?.inputMode ?? null,
             };
           });
 
@@ -533,14 +562,11 @@ export class ProductionsService {
       // Trường hợp 1: Phiếu tạm (1) → Hoàn thành (2)
       // Xử lý tồn kho + lưu components
       if (dto.status === 2 && production.status !== 2) {
-        const product = await tx.product.findUnique({
-          where: { id: production.productId },
-          include: {
-            comboComponents: {
-              include: { componentProduct: true },
-            },
-          },
-        });
+        const { product } = await this.loadProductWithFormula(
+          tx,
+          production.productId,
+          formulaId,
+        );
 
         if (product && updateData.autoDeductComponents !== false) {
           // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
@@ -601,6 +627,7 @@ export class ProductionsService {
                   weightInGrams > 0
                     ? c.actualGrams / weightInGrams
                     : c.actualGrams,
+                inputMode: comp?.inputMode ?? null,
               };
             }),
           );
@@ -611,14 +638,11 @@ export class ProductionsService {
 
       // Trường hợp 2: Hoàn thành (2) → Hủy (3)
       if (dto.status === 3 && production.status === 2) {
-        const product = await tx.product.findUnique({
-          where: { id: production.productId },
-          include: {
-            comboComponents: {
-              include: { componentProduct: true },
-            },
-          },
-        });
+        const { product } = await this.loadProductWithFormula(
+          tx,
+          production.productId,
+          production.formulaId,
+        );
 
         if (product && production.autoDeductComponents) {
           // LOG-TRUTH: đổi status → 3 (CANCELLED) TRƯỚC để active-finder loại
@@ -635,6 +659,7 @@ export class ProductionsService {
             product,
             production.sourceBranchId,
             production.destinationBranchId,
+            production.components,
           );
         }
       }
@@ -682,9 +707,13 @@ export class ProductionsService {
     const production = await this.prisma.production.findUnique({
       where: { id },
       include: {
+        components: true,
         product: {
           include: {
-            comboComponents: { include: { componentProduct: true } },
+            comboComponents: {
+              where: DEFAULT_COMPONENTS_WHERE,
+              include: { componentProduct: true },
+            },
           },
         },
       },
@@ -708,9 +737,16 @@ export class ProductionsService {
             branchId: production.destinationBranchId,
           },
         ];
-        for (const comp of production.product.comboComponents) {
+        // Snapshot thành phần đã xuất + công thức mặc định hiện tại.
+        const componentIds = new Set([
+          ...production.components.map((c) => c.componentProductId),
+          ...production.product.comboComponents.map(
+            (c) => c.componentProductId,
+          ),
+        ]);
+        for (const componentProductId of componentIds) {
           affectedPairs.push({
-            productId: comp.componentProductId,
+            productId: componentProductId,
             branchId: production.sourceBranchId,
           });
         }
@@ -965,17 +1001,53 @@ export class ProductionsService {
     product: any,
     sourceBranchId: number,
     destinationBranchId: number,
+    snapshotComponents: { componentProductId: number }[] = [],
   ) {
     const affectedPairs: { productId: number; branchId: number }[] = [
       { productId: product.id, branchId: destinationBranchId },
     ];
-    for (const comp of product.comboComponents) {
+    // Thành phần đã xuất lưu trên phiếu (snapshot) + công thức hiện tại — để
+    // không bỏ sót khi công thức đã bị sửa sau khi sản xuất.
+    const componentIds = new Set([
+      ...snapshotComponents.map((c) => c.componentProductId),
+      ...product.comboComponents.map((c: any) => c.componentProductId),
+    ]);
+    for (const componentProductId of componentIds) {
       affectedPairs.push({
-        productId: comp.componentProductId,
+        productId: componentProductId,
         branchId: sourceBranchId,
       });
     }
     await recalcOnHandForPairs(tx, affectedPairs);
+  }
+
+  /**
+   * Nạp thành phẩm với `comboComponents` = thành phần của công thức đã chọn
+   * (không chọn → công thức mặc định). Logic tính chi phí / trừ kho phía sau
+   * đều đọc product.comboComponents nên giữ nguyên.
+   */
+  private async loadProductWithFormula(
+    db: Prisma.TransactionClient,
+    productId: number,
+    formulaId?: number | null,
+  ) {
+    const product = await db.product.findUnique({
+      where: { id: productId },
+      include: {
+        comboComponents: {
+          where: formulaId ? { formulaId } : DEFAULT_COMPONENTS_WHERE,
+          include: { componentProduct: true },
+        },
+        formulas: {
+          where: formulaId ? { id: formulaId } : { isDefault: true },
+          select: { id: true, name: true },
+        },
+      },
+    });
+    if (product && formulaId && product.formulas.length === 0) {
+      throw new BadRequestException('Công thức không thuộc sản phẩm này');
+    }
+    return { product, formula: product?.formulas[0] ?? null };
   }
 
   private buildProductionSnapshot(production: any, components?: any[]) {
@@ -993,6 +1065,7 @@ export class ProductionsService {
       autoDeductComponents: production.autoDeductComponents,
       manufacturedDate: production.manufacturedDate,
       createdByName: production.createdByName,
+      formulaName: production.formulaName,
       // Bổ sung danh sách nguyên liệu đã xuất (comboComponents) để truy vết
       // trực tiếp trên audit log (trước đây chỉ có thành phẩm → không biết xuất
       // bao nhiêu nguyên liệu A, B, C). Lấy từ production.components (include)

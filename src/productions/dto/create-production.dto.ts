@@ -67,4 +67,10 @@ export class CreateProductionDto {
   @ValidateNested({ each: true })
   @Type(() => ProductionComponentDto)
   components?: ProductionComponentDto[];
+
+  // Công thức thành phần đã chọn (bỏ trống → công thức mặc định).
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  formulaId?: number;
 }

@@ -811,6 +811,7 @@ model Product {
   priceBookDetails               PriceBookDetail[]
   attributes                     ProductAttribute[]
   comboComponents                ProductComponent[]             @relation("ComboComponents")
+  formulas                       ProductFormula[]
   componentOf                    ProductComponent[]             @relation("ComponentOf")
   documents                      ProductDocument[]
   images                         ProductImage[]
@@ -854,11 +855,33 @@ model ProductComponent {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
   inputMode          String   @default("gram")
+  // Công thức của hàng sản xuất (type 4). Combo (type 1) để null.
+  formulaId          Int?
   comboProduct       Product  @relation("ComboComponents", fields: [comboProductId], references: [id], onDelete: Cascade)
   componentProduct   Product  @relation("ComponentOf", fields: [componentProductId], references: [id], onDelete: Cascade)
+  formula            ProductFormula? @relation(fields: [formulaId], references: [id], onDelete: Cascade)
 
-  @@unique([comboProductId, componentProductId])
+  @@unique([comboProductId, formulaId, componentProductId])
+  @@index([formulaId])
   @@map("product_components")
+}
+
+/// Công thức thành phần của hàng sản xuất — 1 sản phẩm có nhiều công thức,
+/// đúng 1 công thức isDefault (dùng tính giá vốn sản phẩm).
+model ProductFormula {
+  id          Int                @id @default(autoincrement())
+  productId   Int
+  name        String
+  isDefault   Boolean            @default(false)
+  sortOrder   Int                @default(0)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  product     Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  components  ProductComponent[]
+  productions Production[]
+
+  @@index([productId])
+  @@map("product_formulas")
 }
 
 model AttributeDefinition {
@@ -988,9 +1011,13 @@ model Production {
   createdByName         String
   autoDeductComponents  Boolean               @default(true)
   manufacturedDate      DateTime?
+  // Công thức đã chọn khi sản xuất (snapshot tên để giữ lịch sử).
+  formulaId             Int?
+  formulaName           String?
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   components            ProductionComponent[]
+  formula               ProductFormula?       @relation(fields: [formulaId], references: [id], onDelete: SetNull)
   creator               User                  @relation("ProductionCreator", fields: [createdById], references: [id])
   destinationBranch     Branch                @relation("ProductionDestination", fields: [destinationBranchId], references: [id])
   product               Product               @relation(fields: [productId], references: [id])
@@ -1013,6 +1040,7 @@ model ProductionComponent {
   formulaGrams       Decimal    @db.Decimal(18, 4)
   actualGrams        Decimal    @db.Decimal(18, 4)
   unitsDeducted      Decimal    @db.Decimal(18, 4)
+  inputMode          String?
   componentProduct   Product    @relation(fields: [componentProductId], references: [id])
   production         Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
 

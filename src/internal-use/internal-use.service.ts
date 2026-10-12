@@ -211,6 +211,7 @@ export class InternalUseService {
   async exportInternalUses(
     query: InternalUseQueryDto,
     res: Response,
+    hidePrices = false,
   ): Promise<void> {
     const where = this.buildInternalUseWhere(query);
 
@@ -236,7 +237,7 @@ export class InternalUseService {
       { header: 'Tổng giá trị', key: 'totalValue', width: 18 },
       { header: 'Ghi chú', key: 'description', width: 30 },
       { header: 'Trạng thái', key: 'status', width: 14 },
-    ];
+    ].filter((c) => !hidePrices || c.key !== 'totalValue');
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -298,6 +299,7 @@ export class InternalUseService {
   async exportInternalUsesDetail(
     query: InternalUseQueryDto,
     res: Response,
+    hidePrices = false,
   ): Promise<void> {
     const where = this.buildInternalUseWhere(query);
 
@@ -322,9 +324,9 @@ export class InternalUseService {
       { header: 'NSX', key: 'soldExpiryDate', width: 12 },
       { header: 'ĐVT', key: 'unit', width: 10 },
       { header: 'Số lượng xuất', key: 'quantity', width: 14 },
-      { header: 'Giá vốn', key: 'cost', width: 14 },
+      { header: 'Đơn giá', key: 'cost', width: 14 },
       { header: 'Thành tiền', key: 'lineTotal', width: 16 },
-    ];
+    ].filter((c) => !hidePrices || !['cost', 'lineTotal'].includes(c.key));
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };

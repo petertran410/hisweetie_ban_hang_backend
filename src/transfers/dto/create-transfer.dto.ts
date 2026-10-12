@@ -23,7 +23,10 @@ export class TransferDetailDto {
   @IsOptional()
   receivedQuantity?: number;
 
+  // Client được bỏ trống → service điền giá vốn tại chi nhánh chuyển
+  // (fillMissingPrices) trước khi dùng, nên phía sau luôn là number.
   @IsNumber()
+  @IsOptional()
   price: number;
 }
 
