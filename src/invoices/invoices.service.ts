@@ -481,6 +481,9 @@ export class InvoicesService {
         mode: 'insensitive',
       };
     }
+    if (query.hasShippingFee) {
+      where.shippingFee = { gt: 0 };
+    }
     if (query.hasColdItems) {
       detailsConditions.product = { cargoType: 'COLD' };
     }
@@ -1314,7 +1317,10 @@ export class InvoicesService {
         },
         payments: true,
         paymentNotes: { orderBy: { createdAt: 'desc' } },
-        delivery: true,
+        // Tên đối tác giao hàng — điền "Nhà xe" khi in tem A6.
+        delivery: {
+          include: { partnerDelivery: { select: { id: true, name: true } } },
+        },
         _count: { select: { returnOrders: true } },
         returnOrders: {
           where: { code: { startsWith: 'TH' } },
@@ -6512,6 +6518,9 @@ export class InvoicesService {
         mode: 'insensitive',
       };
     }
+    if (query.hasShippingFee) {
+      where.shippingFee = { gt: 0 };
+    }
     if (query.hasColdItems) {
       detailsConditions.product = { cargoType: 'COLD' };
     }
@@ -6698,6 +6707,7 @@ export class InvoicesService {
       { key: 'description', header: 'Ghi chú', width: 22 },
       { key: 'totalAmount', header: 'Tổng tiền hàng', width: 16 },
       { key: 'discount', header: 'Giảm giá HĐ', width: 14 },
+      { key: 'shippingFee', header: 'Phí ship', width: 14 },
       { key: 'grandTotal', header: 'Khách cần trả', width: 16 },
       { key: 'paidAmount', header: 'Khách đã trả', width: 16 },
       { key: 'cashPayment', header: 'Tiền mặt', width: 14 },
@@ -6752,6 +6762,7 @@ export class InvoicesService {
       { header: 'Ghi chú', key: 'description', width: 22 },
       { header: 'Tổng tiền hàng', key: 'totalAmount', width: 16 },
       { header: 'Giảm giá', key: 'discount', width: 14 },
+      { header: 'Phí ship', key: 'shippingFee', width: 14 },
       { header: 'Khách cần trả', key: 'grandTotal', width: 16 },
       { header: 'Khách đã trả', key: 'paidAmount', width: 16 },
       { header: 'Còn nợ', key: 'debtAmount', width: 14 },
@@ -6784,6 +6795,7 @@ export class InvoicesService {
           createdAt: true,
           totalAmount: true,
           discount: true,
+          shippingFee: true,
           grandTotal: true,
           paidAmount: true,
           debtAmount: true,
@@ -6847,6 +6859,7 @@ export class InvoicesService {
             description: inv.description ?? '',
             totalAmount: Number(inv.totalAmount),
             discount: Number(inv.discount),
+            shippingFee: Number(inv.shippingFee ?? 0),
             grandTotal: Number(inv.grandTotal),
             paidAmount: Number(inv.paidAmount),
             debtAmount: Number(inv.debtAmount),
@@ -6919,6 +6932,7 @@ export class InvoicesService {
           updatedAt: true,
           totalAmount: true,
           discount: true,
+          shippingFee: true,
           grandTotal: true,
           paidAmount: true,
           debtAmount: true,
@@ -7029,6 +7043,7 @@ export class InvoicesService {
           description: inv.description ?? '',
           totalAmount: Number(inv.totalAmount),
           discount: Number(inv.discount),
+          shippingFee: Number(inv.shippingFee ?? 0),
           grandTotal: Number(inv.grandTotal),
           paidAmount: Number(inv.paidAmount),
           cashPayment: payMap.cash,

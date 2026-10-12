@@ -279,6 +279,12 @@ export class InvoiceQueryDto {
   @IsBoolean()
   hasColdItems?: boolean;
 
+  // Chỉ lấy hóa đơn có phí ship (shippingFee > 0).
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasShippingFee?: boolean;
+
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()
