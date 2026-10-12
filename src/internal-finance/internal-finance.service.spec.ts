@@ -49,7 +49,12 @@ describe('InternalFinanceService', () => {
       }),
       fuelMetrics: jest.fn().mockResolvedValue(new Map()),
     };
+    const fundLedger = {
+      postSystemTransaction: jest.fn().mockResolvedValue({ id: 1 }),
+      cancelBySource: jest.fn().mockResolvedValue(null),
+    };
     return {
+      fundLedger,
       service: new InternalFinanceService(
         prisma as any,
         cashFlowsService as any,
@@ -59,6 +64,7 @@ describe('InternalFinanceService', () => {
         authService as any,
         internalFund as any,
         vehicles as any,
+        fundLedger as any,
       ),
       prisma,
       vehicles,
@@ -908,7 +914,7 @@ describe('InternalFinanceService', () => {
 
   it('creates one cash receipt per customer and does not create another on retry', async () => {
     const state = warehouseEntry();
-    const { service, prisma, cashFlowsService } = makeService({
+    const { service, prisma, cashFlowsService, fundLedger } = makeService({
       customer: {
         findMany: jest.fn().mockResolvedValue([
           { id: 55, code: 'KH1', name: 'An' },
@@ -963,6 +969,16 @@ describe('InternalFinanceService', () => {
     expect(cashFlowsService.createCustomerPayment).toHaveBeenCalledTimes(2);
     expect(state.status).toBe('POSTED');
     expect(state.cashFlowId).toBe(9);
+    expect(fundLedger.postSystemTransaction).toHaveBeenCalledTimes(1);
+    expect(fundLedger.postSystemTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        transactionType: 'RECEIPT',
+        sourceType: 'WAREHOUSE_CASH_RECEIPT',
+        sourceKey: 'WAREHOUSE_RECEIPT:4',
+        entryId: 4,
+      }),
+    );
     expect((state.sourceSnapshot as any).postedCashFlows).toHaveLength(2);
     await expect(
       service.postWarehouseReceipt(
@@ -1113,7 +1129,7 @@ describe('InternalFinanceService', () => {
         ],
       },
     } as any;
-    const { service, prisma, cashFlowsService } = makeService();
+    const { service, prisma, cashFlowsService, fundLedger } = makeService();
     prisma.internalFinanceEntry.update.mockImplementation(
       async ({ data }: any) => {
         Object.assign(state, data);
@@ -1125,6 +1141,7 @@ describe('InternalFinanceService', () => {
     await service.cancelWarehouseReceipt(4, { cancelCashFlows: false }, 7);
 
     expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
+    expect(fundLedger.cancelBySource).not.toHaveBeenCalled();
     expect(state.status).toBe('CANCELLED');
   });
 
@@ -1141,7 +1158,7 @@ describe('InternalFinanceService', () => {
         ],
       },
     } as any;
-    const { service, prisma, cashFlowsService } = makeService();
+    const { service, prisma, cashFlowsService, fundLedger } = makeService();
     prisma.internalFinanceEntry.update.mockImplementation(
       async ({ data }: any) => {
         Object.assign(state, data);
@@ -1166,6 +1183,12 @@ describe('InternalFinanceService', () => {
       10,
     );
     expect(cashFlowsService.logCancellation).toHaveBeenCalledTimes(2);
+    expect(fundLedger.cancelBySource).toHaveBeenCalledWith(
+      expect.anything(),
+      'WAREHOUSE_RECEIPT:4',
+      7,
+      expect.any(String),
+    );
     expect(state.status).toBe('CANCELLED');
   });
 

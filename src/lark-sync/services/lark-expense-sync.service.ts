@@ -85,8 +85,9 @@ export class LarkExpenseSyncService {
       this.config.get<string>('API_URL') ||
       this.config.get<string>('APP_PUBLIC_URL') ||
       'http://localhost:3060';
-    // Expense operations are owned by POS; never write new finance records to Base.
-    this.legacyWriteEnabled = false;
+    // Đang chạy song song POS và Lark nên vẫn ghi phí báo đơn lên Base.
+    // Khi ngừng song song: gỡ lệnh gọi trong PackingSlipsService.
+    this.legacyWriteEnabled = true;
   }
 
   isEnabled(): boolean {

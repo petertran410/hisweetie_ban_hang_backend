@@ -19,6 +19,8 @@ import {
   APPROVAL_STATUS_ORDER,
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
+  PAYMENT_VOUCHER,
+  readPaymentVoucherCash,
   RECEIPT_FIELD_IDS,
   RECEIPT_LOCATION_BRANCHES,
   RECEIPT_OPTIONS,
@@ -203,7 +205,11 @@ export class ApprovalLifecycleService {
             { sourceType: null },
             {
               sourceType: {
-                notIn: ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'],
+                notIn: [
+                  'INTERNAL_FUND_RECEIPT',
+                  'INTERNAL_FUND_TRANSFER',
+                  PAYMENT_VOUCHER.sourceType,
+                ],
               },
             },
           ],
@@ -446,6 +452,14 @@ export class ApprovalLifecycleService {
       }
     }
 
+    if (!matchedRequest && approvalCode === this.paymentVoucherCode()) {
+      const ingestedId = await this.ingestPaymentVoucher(instanceCode);
+      if (ingestedId) {
+        await this.replayOrphanEvents(ingestedId, instanceCode);
+        return;
+      }
+    }
+
     if (!matchedRequest) {
       await this.prisma.approvalRequestEvent.update({
         where: { id: storedEvent.id },
@@ -476,6 +490,66 @@ export class ApprovalLifecycleService {
         },
       });
       throw error;
+    }
+  }
+
+  private paymentVoucherCode() {
+    return (
+      this.config.get<string>('LARK_PAYMENT_VOUCHER_APPROVAL_CODE') ||
+      PAYMENT_VOUCHER.approvalCode
+    );
+  }
+
+  /**
+   * Nhận đơn PHIẾU CHI tạo trực tiếp trên Lark. Chỉ lưu đơn chi tiền mặt từ
+   * một trong các quỹ nội bộ; đơn khác trả null để sự kiện bị bỏ qua như cũ.
+   */
+  private async ingestPaymentVoucher(instanceCode: string) {
+    const detail: any = await this.getInstance(instanceCode);
+    let form: ApprovalFormItem[] = [];
+    try {
+      form = JSON.parse(detail?.form || '[]');
+    } catch {
+      form = [];
+    }
+    const cash = readPaymentVoucherCash(form);
+    if (!cash) return null;
+    const requester = detail?.open_id
+      ? await this.prisma.user.findFirst({
+          where: { larkUserId: String(detail.open_id) },
+          select: { id: true },
+        })
+      : null;
+    // Người đề xuất PHIẾU CHI luôn có tài khoản POS; 1 chỉ là chốt an toàn.
+    const createdById = requester?.id || 1;
+    try {
+      const created = await this.prisma.approvalRequest.create({
+        data: {
+          kind: PAYMENT_VOUCHER.kind,
+          approvalCode: this.paymentVoucherCode(),
+          instanceCode,
+          clientUuid: `LARK:${instanceCode}`,
+          status: 'PENDING',
+          sourceType: PAYMENT_VOUCHER.sourceType,
+          branchId: cash.branchId,
+          createdById,
+          formSnapshot: {
+            version: 'lark',
+            form,
+            metadata: { ...cash, serialNumber: detail?.serial_number || null },
+          } as unknown as Prisma.InputJsonValue,
+          detailSnapshot: detail as Prisma.InputJsonValue,
+        },
+        select: { id: true },
+      });
+      return created.id;
+    } catch (error: any) {
+      if (error?.code !== 'P2002') throw error;
+      const existing = await this.prisma.approvalRequest.findUnique({
+        where: { instanceCode },
+        select: { id: true },
+      });
+      return existing?.id || null;
     }
   }
 
@@ -649,6 +723,15 @@ export class ApprovalLifecycleService {
           data,
         });
         await this.fundLedger.applyApproval(tx, updated);
+        return;
+      }
+
+      if (current.sourceType === PAYMENT_VOUCHER.sourceType) {
+        const updated = await tx.approvalRequest.update({
+          where: { id: requestId },
+          data,
+        });
+        await this.fundLedger.applyPaymentVoucher(tx, updated);
         return;
       }
 

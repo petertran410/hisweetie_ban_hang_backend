@@ -3631,6 +3631,11 @@ model SepayTransaction {
   confirmedById        Int?      @map("confirmed_by_id")
   hiddenAt             DateTime? @map("hidden_at")
   hiddenById           Int?      @map("hidden_by_id")
+  // Kho nộp tiền mặt về tài khoản công ty: trừ quỹ nội bộ của kho này.
+  fundDepositBranchId  Int?      @map("fund_deposit_branch_id")
+  fundTransactionId    Int?      @map("fund_transaction_id")
+  fundDepositAt        DateTime? @map("fund_deposit_at")
+  fundDepositById      Int?      @map("fund_deposit_by_id")
 
   @@index([transactionDate])
   @@index([accountNumber])

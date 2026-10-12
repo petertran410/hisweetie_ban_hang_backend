@@ -13,6 +13,7 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InternalFinanceService } from './internal-finance.service';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
+import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
 import {
   CreateApprovalForWeeklyBatchDto,
   CreateWarehouseExpenseDto,
@@ -49,6 +50,7 @@ export class InternalFinanceController {
   constructor(
     private readonly service: InternalFinanceService,
     private readonly larkImport: InternalFinanceLarkImportService,
+    private readonly fundHistory: InternalFundHistorySyncService,
   ) {}
 
   @Get()
@@ -247,6 +249,22 @@ export class InternalFinanceController {
   })
   importFromLark(@Body() dto: LarkFinanceImportDto, @CurrentUser() user: any) {
     return this.larkImport.startImport(dto, user.id);
+  }
+
+  @Post('fund-history/sync')
+  @RequirePermissions('cash_flows:create')
+  @ApiOperation({
+    summary: 'Đồng bộ toàn bộ bút toán sổ quỹ lịch sử vào quỹ nội bộ (chạy nền)',
+  })
+  syncFundHistory(@CurrentUser() user: any) {
+    return this.fundHistory.start(user.id);
+  }
+
+  @Get('fund-history/sync/status')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Tiến độ đồng bộ sổ quỹ lịch sử' })
+  fundHistoryStatus() {
+    return this.fundHistory.getStatus();
   }
 
   @Get('lark-import/status')

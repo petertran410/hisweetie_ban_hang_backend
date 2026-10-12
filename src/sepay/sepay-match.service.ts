@@ -21,6 +21,11 @@ import {
 import { DEBT_RULE_TYPE } from '../debt-tracking/debt-tracking.constants';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
 import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-close.service';
+import { InternalFundService } from '../internal-fund/internal-fund.service';
+import {
+  FUND_SOURCE_TYPE,
+  InternalFundLedgerService,
+} from '../internal-fund/internal-fund-ledger.service';
 
 /**
  * Trạng thái đối soát của 1 giao dịch Sepay (suy ra on-read, KHÔNG lưu cột status):
@@ -29,6 +34,9 @@ import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-clo
  *   - completed:  đã tạo phiếu thu (thủ công) HOẶC trùng sepayId với webhook
  */
 export type SepayMatchStatus = 'processing' | 'assigned' | 'completed';
+
+// Kho được phép nộp tiền mặt về tài khoản công ty.
+const FUND_DEPOSIT_BRANCH_IDS = [6, 1];
 
 export interface SepayMatchCustomer {
   id: number;
@@ -42,7 +50,9 @@ export interface SepayMatchCustomer {
 export interface SepayMatchInfo {
   status: SepayMatchStatus;
   // Nguồn hoàn thành: 'webhook' (tự động) | 'manual' (kế toán tạo) | null
-  completedSource: 'webhook' | 'manual' | null;
+  completedSource: 'webhook' | 'manual' | 'fund_deposit' | null;
+  // Có khi giao dịch là kho nộp tiền mặt (đã trừ quỹ nội bộ của kho).
+  fundDeposit?: { branchId: number; fundTransactionId: number | null } | null;
   // Danh sách khách gắn với giao dịch (webhook: 1 khách; thủ công: 1..n khách)
   customers: SepayMatchCustomer[];
   // Mã hóa đơn/đơn hàng (nếu hoàn thành qua webhook)
@@ -84,6 +94,8 @@ export class SepayMatchService {
     private readonly cashFlowsService: CashFlowsService,
     private readonly orderPaymentsService: OrderPaymentsService,
     private readonly debtTicketAutoClose: DebtTicketAutoCloseService,
+    private readonly internalFund: InternalFundService,
+    private readonly fundLedger: InternalFundLedgerService,
   ) {}
 
   /**
@@ -139,7 +151,13 @@ export class SepayMatchService {
       }),
       this.prisma.sepayTransaction.findMany({
         where: { id: { in: txIds } },
-        select: { id: true, amountIn: true, suggestedOrderId: true },
+        select: {
+          id: true,
+          amountIn: true,
+          suggestedOrderId: true,
+          fundDepositBranchId: true,
+          fundTransactionId: true,
+        },
       }),
     ]);
 
@@ -149,6 +167,8 @@ export class SepayMatchService {
         {
           amountIn: Number(t.amountIn),
           suggestedOrderId: t.suggestedOrderId,
+          fundDepositBranchId: t.fundDepositBranchId,
+          fundTransactionId: t.fundTransactionId,
         },
       ] as const),
     );
@@ -280,6 +300,19 @@ export class SepayMatchService {
         (txMeta?.suggestedOrderId &&
           suggestedOrderMap.get(txMeta.suggestedOrderId)) ||
         null;
+      if (txMeta?.fundDepositBranchId) {
+        result.set(tx.sepayId, {
+          status: 'completed',
+          completedSource: 'fund_deposit',
+          customers: [],
+          refCode: null,
+          fundDeposit: {
+            branchId: txMeta.fundDepositBranchId,
+            fundTransactionId: txMeta.fundTransactionId,
+          },
+        });
+        continue;
+      }
       if (allocs.length === 0) {
         result.set(tx.sepayId, {
           status: 'processing',
@@ -356,6 +389,82 @@ export class SepayMatchService {
   }
 
   /** Lấy 1 giao dịch + allocations + match info (dùng nội bộ cho assign/confirm guard). */
+  /**
+   * Kho nộp tiền mặt về tài khoản công ty: ghi 1 khoản chi vào quỹ nội bộ của kho.
+   */
+  async markFundDeposit(id: number, branchId: number, userId: number) {
+    if (!FUND_DEPOSIT_BRANCH_IDS.includes(branchId))
+      throw new BadRequestException('Chỉ kho Hà Nội hoặc Sài Gòn nộp tiền');
+    await this.internalFund.assertPermission(userId, branchId, 'create_expense');
+    const { tx, match } = await this.getTxWithMatch(id);
+    if (Number(tx.amountIn) <= 0)
+      throw new BadRequestException('Chỉ đánh dấu được giao dịch tiền vào');
+    if (match.status !== 'processing')
+      throw new ConflictException('Giao dịch đã được xử lý');
+    await this.prisma.$transaction(async (db) => {
+      const row = await this.fundLedger.postSystemTransaction(db, {
+        branchId,
+        transactionType: 'EXPENSE',
+        codeKind: 'CHI',
+        amount: tx.amountIn,
+        occurredAt: tx.transactionDate || new Date(),
+        description: tx.transactionContent || 'Kho nộp tiền về tài khoản công ty',
+        sourceType: FUND_SOURCE_TYPE.SEPAY_FUND_DEPOSIT,
+        sourceKey: this.fundDepositKey(id),
+        sourceId: String(id),
+        userId,
+        assertOpen: true,
+      });
+      await db.sepayTransaction.update({
+        where: { id },
+        data: {
+          fundDepositBranchId: branchId,
+          fundTransactionId: row.id,
+          fundDepositAt: new Date(),
+          fundDepositById: userId,
+        },
+      });
+    });
+    return (await this.getTxWithMatch(id)).match;
+  }
+
+  async unmarkFundDeposit(id: number, userId: number) {
+    const tx = await this.prisma.sepayTransaction.findUnique({ where: { id } });
+    if (!tx) throw new NotFoundException('Không tìm thấy giao dịch Sepay');
+    if (!tx.fundDepositBranchId)
+      throw new BadRequestException('Giao dịch chưa đánh dấu kho nộp tiền');
+    const branchId = tx.fundDepositBranchId;
+    await this.internalFund.assertPermission(userId, branchId, 'cancel');
+    await this.prisma.$transaction(async (db) => {
+      await this.fundLedger.lock(db, [branchId]);
+      await this.fundLedger.assertOpen(
+        db,
+        branchId,
+        tx.transactionDate || new Date(),
+      );
+      await this.fundLedger.cancelBySource(
+        db,
+        this.fundDepositKey(id),
+        userId,
+        'Bỏ đánh dấu kho nộp tiền',
+      );
+      await db.sepayTransaction.update({
+        where: { id },
+        data: {
+          fundDepositBranchId: null,
+          fundTransactionId: null,
+          fundDepositAt: null,
+          fundDepositById: null,
+        },
+      });
+    });
+    return (await this.getTxWithMatch(id)).match;
+  }
+
+  private fundDepositKey(id: number) {
+    return `SEPAY_DEPOSIT:${id}`;
+  }
+
   private async getTxWithMatch(id: number) {
     const tx = await this.prisma.sepayTransaction.findUnique({ where: { id } });
     if (!tx) throw new NotFoundException('Không tìm thấy giao dịch Sepay');

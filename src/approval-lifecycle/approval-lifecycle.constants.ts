@@ -197,3 +197,63 @@ export const APPROVAL_BRANCHES = {
   EXPENSE_SG: 1,
   EXPENSE_VP: new Set([4, 7]),
 } as const;
+
+// Đơn "PHIẾU CHI" tạo trực tiếp trên Lark. POS không tạo loại này, chỉ nhận về
+// để trừ quỹ nội bộ khi đơn chi tiền mặt được duyệt.
+export const PAYMENT_VOUCHER = {
+  kind: 'PAYMENT_VOUCHER',
+  sourceType: 'LARK_PAYMENT_VOUCHER',
+  approvalCode: '2A4BC15D-09F4-44FB-8B51-FD3174D5963B',
+  fieldIds: {
+    method: 'widget17321753417610001',
+    cashSource: 'widget17643292059530001',
+    amount: 'widget17321752802850001',
+    cashAmount: 'widget17643300136400001',
+    description: 'widget17321750170610001',
+  },
+  // Theo chữ của lựa chọn "Nguồn Tiền Mặt"; nguồn khác (CHDT, không chi tiền mặt) bỏ qua.
+  cashSourceBranches: {
+    'Tiền Mặt Kho HN': 6,
+    'Tiền Mặt Kho SG': 1,
+    'Tiền Mặt Văn Phòng HN': 4,
+    'Tiền Mặt Văn Phòng HCM': 7,
+  } as Record<string, number>,
+} as const;
+
+export interface PaymentVoucherCash {
+  branchId: number;
+  amount: number;
+  cashSource: string;
+  method: string;
+  description: string;
+}
+
+/** Phần tiền mặt chi từ quỹ nội bộ của một đơn PHIẾU CHI; null nếu đơn không dùng quỹ. */
+export function readPaymentVoucherCash(
+  form: ApprovalFormItem[],
+): PaymentVoucherCash | null {
+  const value = (id: string) => form.find((item) => item.id === id)?.value;
+  const text = (id: string) => String(value(id) ?? '').trim();
+  const cashSource = text(PAYMENT_VOUCHER.fieldIds.cashSource);
+  const branchId = PAYMENT_VOUCHER.cashSourceBranches[cashSource];
+  if (!branchId) return null;
+  const method = text(PAYMENT_VOUCHER.fieldIds.method);
+  const lower = method.toLowerCase();
+  // Thanh toán thuần tiền mặt lấy tổng tiền; thanh toán hỗn hợp lấy riêng "Số tiền mặt".
+  const cashOnly = lower.includes('tiền mặt') && !lower.includes('chuyển khoản');
+  const amount = Number(
+    value(
+      cashOnly
+        ? PAYMENT_VOUCHER.fieldIds.amount
+        : PAYMENT_VOUCHER.fieldIds.cashAmount,
+    ) ?? 0,
+  );
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return {
+    branchId,
+    amount,
+    cashSource,
+    method,
+    description: text(PAYMENT_VOUCHER.fieldIds.description),
+  };
+}

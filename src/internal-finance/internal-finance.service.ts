@@ -58,6 +58,8 @@ import {
   fundClosingDate,
   fundDateKey,
   fundDayStart,
+  FUND_SOURCE_TYPE,
+  InternalFundLedgerService,
 } from '../internal-fund/internal-fund-ledger.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import {
@@ -99,6 +101,7 @@ export class InternalFinanceService {
     private readonly authService: AuthService,
     private readonly internalFund: InternalFundService,
     private readonly vehicles: VehiclesService,
+    private readonly fundLedger: InternalFundLedgerService,
   ) {}
 
   async findAll(query: InternalFinanceQueryDto) {
@@ -935,21 +938,41 @@ export class InternalFinanceService {
       });
     }
 
-    return this.prisma.internalFinanceEntry.update({
-      where: { id },
-      data: {
-        status: INTERNAL_FINANCE_STATUS.POSTED,
-        cashFlowId,
-        accountantReviewedBy: entry.accountantReviewedBy || userId,
-        accountantReviewedAt: entry.accountantReviewedAt || new Date(),
-        sourceSnapshot: this.toJson({
-          ...snapshot,
-          method: 'cash',
-          postedCashFlows: posted,
-        }),
-      },
-      include: this.warehouseInclude(),
+    // Tiền thu tại kho vào quỹ nội bộ cùng lúc phiếu chuyển sang "Đã lập".
+    return this.prisma.$transaction(async (tx) => {
+      await this.fundLedger.postSystemTransaction(tx, {
+        branchId: entry.branchId,
+        transactionType: 'RECEIPT',
+        codeKind: 'THU',
+        amount: entry.amount,
+        occurredAt: new Date(entry.occurredAt),
+        description: entry.description || entry.code,
+        sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
+        sourceKey: this.warehouseReceiptFundKey(id),
+        sourceId: String(id),
+        entryId: id,
+        userId,
+      });
+      return tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.POSTED,
+          cashFlowId,
+          accountantReviewedBy: entry.accountantReviewedBy || userId,
+          accountantReviewedAt: entry.accountantReviewedAt || new Date(),
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            method: 'cash',
+            postedCashFlows: posted,
+          }),
+        },
+        include: this.warehouseInclude(),
+      });
     });
+  }
+
+  private warehouseReceiptFundKey(entryId: number) {
+    return `WAREHOUSE_RECEIPT:${entryId}`;
   }
 
   async cancelWarehouseReceipt(
@@ -988,6 +1011,16 @@ export class InternalFinanceService {
             await this.cashFlowsService.cancelInTransaction(tx, cashFlowId),
           );
         }
+      }
+
+      // Giữ phiếu thu công nợ thì tiền vẫn ở quỹ; hủy kèm (hoặc chưa có phiếu thu) thì rút khỏi quỹ.
+      if (dto.cancelCashFlows || !cashFlowIds.length) {
+        await this.fundLedger.cancelBySource(
+          tx,
+          this.warehouseReceiptFundKey(id),
+          userId,
+          'Hủy phiếu tiền mặt kho',
+        );
       }
 
       return tx.internalFinanceEntry.update({

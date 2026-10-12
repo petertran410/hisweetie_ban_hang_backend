@@ -24,6 +24,8 @@ describe('SepayMatchService order candidates', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
+      {} as any,
     );
     jest
       .spyOn(service as any, 'getTxWithMatch')
@@ -150,5 +152,94 @@ describe('SepayMatchService order candidates', () => {
       ),
     ).rejects.toThrow(ConflictException);
     expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('SepayMatchService warehouse fund deposit', () => {
+  const setup = (status = 'processing', amountIn = 5_000_000) => {
+    const tx: any = {
+      id: 8,
+      sepayId: 'tx-8',
+      amountIn,
+      transactionDate: new Date('2026-10-05T03:00:00Z'),
+      transactionContent: 'KHO HN NOP TIEN',
+      fundDepositBranchId: null,
+    };
+    const prisma: any = {
+      sepayTransaction: {
+        findUnique: jest.fn(async () => tx),
+        update: jest.fn(async ({ data }: any) => Object.assign(tx, data)),
+      },
+      $transaction: jest.fn(async (fn: any) => fn(prisma)),
+    };
+    const internalFund = { assertPermission: jest.fn() };
+    const fundLedger = {
+      postSystemTransaction: jest.fn().mockResolvedValue({ id: 77 }),
+      cancelBySource: jest.fn(),
+      lock: jest.fn(),
+      assertOpen: jest.fn(),
+    };
+    const service = new SepayMatchService(
+      prisma,
+      {} as any,
+      {} as any,
+      {} as any,
+      internalFund as any,
+      fundLedger as any,
+    );
+    jest
+      .spyOn(service as any, 'getTxWithMatch')
+      .mockResolvedValue({ tx, match: { status } });
+    return { service, prisma, tx, internalFund, fundLedger };
+  };
+
+  it('posts one fund expense for the warehouse and links it to the bank transaction', async () => {
+    const f = setup();
+    await f.service.markFundDeposit(8, 6, 3);
+    expect(f.internalFund.assertPermission).toHaveBeenCalledWith(
+      3,
+      6,
+      'create_expense',
+    );
+    expect(f.fundLedger.postSystemTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        branchId: 6,
+        transactionType: 'EXPENSE',
+        sourceType: 'SEPAY_FUND_DEPOSIT',
+        sourceKey: 'SEPAY_DEPOSIT:8',
+        assertOpen: true,
+      }),
+    );
+    expect(f.tx).toMatchObject({ fundDepositBranchId: 6, fundTransactionId: 77 });
+  });
+
+  it('rejects non-warehouse branches and transactions already handled', async () => {
+    await expect(setup().service.markFundDeposit(8, 4, 3)).rejects.toThrow(
+      'Hà Nội hoặc Sài Gòn',
+    );
+    const f = setup('completed');
+    await expect(f.service.markFundDeposit(8, 6, 3)).rejects.toThrow(
+      ConflictException,
+    );
+    expect(f.fundLedger.postSystemTransaction).not.toHaveBeenCalled();
+  });
+
+  it('cancels the fund row and clears the mark when undone', async () => {
+    const f = setup();
+    f.tx.fundDepositBranchId = 1;
+    f.tx.fundTransactionId = 77;
+    await f.service.unmarkFundDeposit(8, 3);
+    expect(f.internalFund.assertPermission).toHaveBeenCalledWith(3, 1, 'cancel');
+    expect(f.fundLedger.cancelBySource).toHaveBeenCalledWith(
+      expect.anything(),
+      'SEPAY_DEPOSIT:8',
+      3,
+      expect.any(String),
+    );
+    expect(f.tx).toMatchObject({
+      fundDepositBranchId: null,
+      fundTransactionId: null,
+    });
   });
 });

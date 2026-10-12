@@ -25,6 +25,7 @@ import {
   fundClosingDate,
   fundDateKey,
   fundDayStart,
+  FUND_SOURCE_TYPE,
   InternalFundLedgerService,
 } from './internal-fund-ledger.service';
 import {
@@ -717,6 +718,16 @@ export class InternalFundService {
     });
     if (!row) throw new NotFoundException('Không tìm thấy giao dịch');
     if (row.transferId) return this.cancelTransfer(row.transferId, dto, userId);
+    if (row.sourceType === FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT)
+      throw new BadRequestException(
+        'Giao dịch thu tiền khách: hãy hủy phiếu tại Tiền mặt kho',
+      );
+    if (row.sourceType === FUND_SOURCE_TYPE.SEPAY_FUND_DEPOSIT)
+      throw new BadRequestException(
+        'Giao dịch kho nộp tiền: hãy bỏ đánh dấu tại Biến động số dư',
+      );
+    if (row.sourceType === FUND_SOURCE_TYPE.LEDGER_HISTORY)
+      throw new BadRequestException('Bút toán lịch sử chỉ đọc, không hủy được');
     await this.assertPermission(userId, row.branchId, 'cancel');
     const adjust = await this.has(userId, row.branchId, 'adjust');
     if (!dto.reason.trim()) throw new BadRequestException('Cần lý do hủy');
@@ -728,6 +739,22 @@ export class InternalFundService {
       if (!current || current.status !== 'POSTED')
         throw new BadRequestException('Giao dịch đã hủy');
       await this.ledger.assertOpen(tx, row.branchId, row.occurredAt, adjust);
+      // Khoản chi POS: trả về "chưa chi" và nhả khóa để bấm Đã chi lại được.
+      // Khoản nhập từ Lark giữ nguyên khóa để lần nhập sau không tự ghi lại.
+      const entry =
+        current.transactionType === 'EXPENSE' && current.entryId
+          ? await tx.internalFinanceEntry.findUnique({
+              where: { id: current.entryId },
+              select: { id: true, sourceType: true },
+            })
+          : null;
+      if (entry && entry.sourceType !== 'LARK_IMPORT') {
+        await tx.internalFinanceEntry.update({
+          where: { id: entry.id },
+          data: { cashIssued: false, cashIssuedAt: null, cashIssuedBy: null },
+        });
+        return this.ledger.releaseCancelled(tx, current, userId, dto.reason);
+      }
       if (adjust)
         await this.ledger.invalidateClosings(tx, row.branchId, row.occurredAt);
       return tx.internalFundTransaction.update({
@@ -752,6 +779,8 @@ export class InternalFundService {
     });
     if (!row) throw new NotFoundException('Không tìm thấy giao dịch');
     await this.assertPermission(userId, row.branchId, 'adjust');
+    if (row.sourceType === FUND_SOURCE_TYPE.LEDGER_HISTORY)
+      throw new BadRequestException('Bút toán lịch sử chỉ đọc, không sửa được');
     // Approval amount is immutable. Corrections cancel the original and submit a new request.
     if (
       dto.amount !== undefined ||

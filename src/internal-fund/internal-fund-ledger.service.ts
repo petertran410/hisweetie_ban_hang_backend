@@ -30,6 +30,31 @@ interface FundApprovalData {
   formSnapshot?: unknown;
 }
 
+export const FUND_SOURCE_TYPE = {
+  WAREHOUSE_CASH_RECEIPT: 'WAREHOUSE_CASH_RECEIPT',
+  SEPAY_FUND_DEPOSIT: 'SEPAY_FUND_DEPOSIT',
+  LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
+  // Bút toán lịch sử đồng bộ từ sổ quỹ cũ: chỉ đọc trên POS.
+  LEDGER_HISTORY: 'LEDGER_HISTORY',
+} as const;
+
+export interface SystemFundTransactionInput {
+  branchId: number;
+  transactionType: 'RECEIPT' | 'EXPENSE';
+  codeKind: string;
+  amount: Prisma.Decimal | number | string;
+  occurredAt: Date;
+  description?: string | null;
+  sourceType: string;
+  sourceKey: string;
+  sourceId?: string;
+  entryId?: number;
+  approvalRequestId?: number;
+  userId: number;
+  assertOpen?: boolean;
+  adjust?: boolean;
+}
+
 @Injectable()
 export class InternalFundLedgerService {
   // All fund mutations and closings share branch locks to prevent close/post races.
@@ -266,6 +291,124 @@ export class InternalFundLedgerService {
     });
     // Late approvals preserve the captured closing and flag it for reconciliation.
     await this.invalidateClosings(tx, request.branchId, date);
+  }
+
+  // Ghi quỹ cho nguồn không qua Approval của POS (tiền mặt kho, Sepay, đơn Lark).
+  async postSystemTransaction(
+    tx: Prisma.TransactionClient,
+    input: SystemFundTransactionInput,
+  ) {
+    await this.lock(tx, [input.branchId]);
+    const existing = await tx.internalFundTransaction.findUnique({
+      where: { sourceKey: input.sourceKey },
+    });
+    if (existing) return existing;
+    const amount = new Prisma.Decimal(String(input.amount));
+    if (!amount.isPositive())
+      throw new BadRequestException('Số tiền ghi quỹ phải lớn hơn 0');
+    if (input.assertOpen)
+      await this.assertOpen(
+        tx,
+        input.branchId,
+        input.occurredAt,
+        input.adjust,
+      );
+    const row = await tx.internalFundTransaction.create({
+      data: {
+        code: this.code(input.codeKind),
+        sourceKey: input.sourceKey,
+        branchId: input.branchId,
+        transactionType: input.transactionType,
+        amount,
+        occurredAt: input.occurredAt,
+        description: input.description || '',
+        sourceType: input.sourceType,
+        sourceId: input.sourceId,
+        entryId: input.entryId,
+        approvalRequestId: input.approvalRequestId,
+        status: 'POSTED',
+        createdBy: input.userId,
+      },
+    });
+    await this.invalidateClosings(tx, input.branchId, input.occurredAt);
+    return row;
+  }
+
+  // Đơn PHIẾU CHI tạo trên Lark: duyệt thì trừ quỹ, thu hồi sau duyệt thì hủy.
+  async applyPaymentVoucher(
+    tx: Prisma.TransactionClient,
+    request: {
+      id: number;
+      status: string;
+      branchId: number | null;
+      createdById: number;
+      completedAt: Date | null;
+      formSnapshot: unknown;
+    },
+  ) {
+    const key = `PAYMENT_VOUCHER:${request.id}`;
+    if (request.status === 'REVERTED') {
+      await this.cancelBySource(
+        tx,
+        key,
+        request.createdById,
+        'Đơn PHIẾU CHI bị thu hồi trên Lark',
+      );
+      return;
+    }
+    if (request.status !== 'APPROVED') return;
+    const cash = (request.formSnapshot as { metadata?: any } | null)?.metadata;
+    if (!request.branchId || !cash?.amount)
+      throw new BadRequestException('Đơn PHIẾU CHI thiếu quỹ hoặc số tiền mặt');
+    await this.postSystemTransaction(tx, {
+      branchId: request.branchId,
+      transactionType: 'EXPENSE',
+      codeKind: 'CHI',
+      amount: cash.amount,
+      occurredAt: request.completedAt || new Date(),
+      description: cash.description || 'Phiếu chi Lark',
+      sourceType: FUND_SOURCE_TYPE.LARK_PAYMENT_VOUCHER,
+      sourceKey: key,
+      sourceId: String(request.id),
+      approvalRequestId: request.id,
+      userId: request.createdById,
+    });
+  }
+
+  // Hủy và nhả sourceKey/entryId để nguồn có thể ghi quỹ lại.
+  async cancelBySource(
+    tx: Prisma.TransactionClient,
+    sourceKey: string,
+    userId: number,
+    reason: string,
+  ) {
+    const row = await tx.internalFundTransaction.findUnique({
+      where: { sourceKey },
+    });
+    if (!row) return null;
+    await this.lock(tx, [row.branchId]);
+    return this.releaseCancelled(tx, row, userId, reason);
+  }
+
+  async releaseCancelled(
+    tx: Prisma.TransactionClient,
+    row: { id: number; branchId: number; occurredAt: Date; sourceKey: string },
+    userId: number,
+    reason: string,
+  ) {
+    const updated = await tx.internalFundTransaction.update({
+      where: { id: row.id },
+      data: {
+        status: 'CANCELLED',
+        cancelledAt: new Date(),
+        cancelledBy: userId,
+        cancelReason: reason,
+        entryId: null,
+        sourceKey: `${row.sourceKey}:CANCELLED:${row.id}`,
+      },
+    });
+    await this.invalidateClosings(tx, row.branchId, row.occurredAt);
+    return updated;
   }
 
   async balance(tx: Prisma.TransactionClient, branchId: number, date: string) {

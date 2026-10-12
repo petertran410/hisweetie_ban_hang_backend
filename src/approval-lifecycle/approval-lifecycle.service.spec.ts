@@ -73,6 +73,7 @@ describe('ApprovalLifecycleService', () => {
     };
     const fundLedger = {
       applyApproval: jest.fn(),
+      applyPaymentVoucher: jest.fn(),
       lockApproval: jest.fn(),
       lock: jest.fn(),
     };
@@ -195,7 +196,11 @@ describe('ApprovalLifecycleService', () => {
                 { sourceType: null },
                 {
                   sourceType: {
-                    notIn: ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'],
+                    notIn: [
+                      'INTERNAL_FUND_RECEIPT',
+                      'INTERNAL_FUND_TRANSFER',
+                      'LARK_PAYMENT_VOUCHER',
+                    ],
                   },
                 },
               ],
@@ -1064,5 +1069,115 @@ describe('ApprovalLifecycleService', () => {
         }),
       }),
     );
+  });
+  describe('Lark-created PHIẾU CHI', () => {
+    const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
+    const voucherForm = (method: string, source: string, cashAmount?: number) => [
+      { id: 'widget17321753417610001', type: 'radioV2', value: method },
+      { id: 'widget17643292059530001', type: 'radioV2', value: source },
+      { id: 'widget17321752802850001', type: 'amount', value: 9000000 },
+      { id: 'widget17321750170610001', type: 'input', value: 'Mua bìa' },
+      ...(cashAmount
+        ? [{ id: 'widget17643300136400001', type: 'amount', value: cashAmount }]
+        : []),
+    ];
+    function voucherService(form: any[]) {
+      const requests: any[] = [];
+      const events: any[] = [];
+      const f = createService({
+        approvalRequest: {
+          findUnique: jest.fn(
+            async ({ where }: any) =>
+              requests.find(
+                (row) =>
+                  row.id === where.id ||
+                  (where.instanceCode && row.instanceCode === where.instanceCode),
+              ) || null,
+          ),
+          create: jest.fn(async ({ data }: any) => {
+            const row = { id: 50, lastEventAt: null, ...data };
+            requests.push(row);
+            return row;
+          }),
+          update: jest.fn(async ({ where, data }: any) =>
+            Object.assign(
+              requests.find((row) => row.id === where.id),
+              data,
+            ),
+          ),
+        },
+      });
+      (f.prisma.user as any).findFirst = jest.fn().mockResolvedValue({ id: 9 });
+      f.prisma.approvalRequestEvent = {
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: events.length + 1, ...data };
+          events.push(row);
+          return row;
+        }),
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn(async () =>
+          events.filter((row) => !row.approvalRequestId),
+        ),
+        update: jest.fn(async ({ where, data }: any) =>
+          Object.assign(
+            events.find((row) => row.id === where.id),
+            data,
+          ),
+        ),
+        updateMany: jest.fn(),
+      } as any;
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: {
+          status: 'APPROVED',
+          open_id: 'ou_requester',
+          serial_number: '202610010012',
+          form: JSON.stringify(form),
+        },
+      });
+      return { ...f, requests, events };
+    }
+    const approvedEvent = {
+      approval_code: voucherCode,
+      instance_code: 'D2688DAB',
+      status: 'APPROVED',
+      instance_operate_time: '1791183142626',
+    };
+
+    it('ingests an approved cash voucher and posts it to the warehouse fund', async () => {
+      const f = voucherService(voucherForm('Tiền Mặt', 'Tiền Mặt Kho HN'));
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.requests[0]).toMatchObject({
+        kind: 'PAYMENT_VOUCHER',
+        sourceType: 'LARK_PAYMENT_VOUCHER',
+        clientUuid: 'LARK:D2688DAB',
+        branchId: 6,
+        createdById: 9,
+        status: 'APPROVED',
+      });
+      expect(f.requests[0].formSnapshot.metadata).toMatchObject({
+        amount: 9000000,
+        description: 'Mua bìa',
+      });
+      expect(f.fundLedger.applyPaymentVoucher).toHaveBeenCalledTimes(1);
+      expect(f.events[0].approvalRequestId).toBe(50);
+    });
+
+    it('uses only the cash part of a mixed transfer-and-cash voucher', async () => {
+      const f = voucherService(
+        voucherForm('Chuyển Khoản (Công Ty + Tiền Mặt)', 'Tiền Mặt Kho SG', 33088000),
+      );
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.requests[0]).toMatchObject({ branchId: 1 });
+      expect(f.requests[0].formSnapshot.metadata.amount).toBe(33088000);
+    });
+
+    it('ignores vouchers that do not take cash from an internal fund', async () => {
+      const f = voucherService(voucherForm('Tiền Mặt', 'Không Chi Tiền Mặt'));
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.requests).toHaveLength(0);
+      expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
+      expect(f.events[0].error).toContain('Không tìm thấy approval request');
+    });
   });
 });

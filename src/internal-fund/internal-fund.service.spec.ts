@@ -195,6 +195,84 @@ describe('Internal fund ledger', () => {
     expect(f.prisma.cashFlow.create).not.toHaveBeenCalled();
   });
 
+  it('returns a cancelled expense to not-issued so it can be issued again', async () => {
+    const f = fixture();
+    const first = await f.service.postExpenseEntry(12, 7, true);
+    expect(f.entry.cashIssued).toBe(true);
+    await f.service.cancelTransaction(
+      f.transactions[0].id,
+      { reason: 'Ghi nhầm' },
+      7,
+    );
+    expect(f.entry).toMatchObject({ cashIssued: false, cashIssuedAt: null });
+    expect(f.transactions[0]).toMatchObject({
+      status: 'CANCELLED',
+      entryId: null,
+      sourceKey: 'EXPENSE:12:CANCELLED:1',
+    });
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.transactions).toHaveLength(2);
+    expect(f.transactions[1]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      status: 'POSTED',
+      entryId: 12,
+    });
+    expect(first).toBeDefined();
+  });
+
+  it('keeps the key of a cancelled Lark-imported expense so re-import cannot repost it', async () => {
+    const f = fixture();
+    f.entry.sourceType = 'LARK_IMPORT';
+    await f.service.postExpenseEntry(12, 7, true);
+    await f.service.cancelTransaction(1, { reason: 'Sai' }, 7);
+    expect(f.transactions[0]).toMatchObject({
+      status: 'CANCELLED',
+      sourceKey: 'EXPENSE:12',
+    });
+    expect(f.entry.cashIssued).toBe(true);
+  });
+
+  it('refuses to cancel warehouse-cash and bank-deposit rows from the fund screen', async () => {
+    const f = fixture();
+    f.transactions.push(
+      { id: 1, branchId: 6, status: 'POSTED', sourceType: 'WAREHOUSE_CASH_RECEIPT', sourceKey: 'a' },
+      { id: 2, branchId: 6, status: 'POSTED', sourceType: 'SEPAY_FUND_DEPOSIT', sourceKey: 'b' },
+    );
+    await expect(
+      f.service.cancelTransaction(1, { reason: 'x' }, 7),
+    ).rejects.toThrow('Tiền mặt kho');
+    await expect(
+      f.service.cancelTransaction(2, { reason: 'x' }, 7),
+    ).rejects.toThrow('Biến động số dư');
+  });
+
+  it('posts an approved Lark payment voucher once and cancels it when reverted', async () => {
+    const f = fixture();
+    const request = {
+      id: 50,
+      status: 'APPROVED',
+      branchId: 6,
+      createdById: 7,
+      completedAt: new Date('2026-10-05T03:00:00Z'),
+      formSnapshot: { metadata: { amount: 9000000, description: 'Mua bìa' } },
+    };
+    await f.ledger.applyPaymentVoucher(f.prisma, request);
+    await f.ledger.applyPaymentVoucher(f.prisma, request);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'EXPENSE',
+      sourceType: 'LARK_PAYMENT_VOUCHER',
+      sourceKey: 'PAYMENT_VOUCHER:50',
+      branchId: 6,
+      approvalRequestId: 50,
+    });
+    await f.ledger.applyPaymentVoucher(f.prisma, {
+      ...request,
+      status: 'REVERTED',
+    });
+    expect(f.transactions[0].status).toBe('CANCELLED');
+  });
+
   it('writes a receipt automatically and replay is idempotent even after cancellation', async () => {
     const f = fixture();
     const request = {
