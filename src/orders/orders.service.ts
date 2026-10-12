@@ -379,7 +379,11 @@ export class OrdersService {
             (it.lineType || 'normal') === 'normal' &&
             (it.conditionType || 'normal') === 'normal' &&
             it.promotionId == null &&
-            matchedIds.includes(it.productId)
+            matchedIds.includes(it.productId) &&
+            // Opt-in theo TỪNG dòng: dòng user đã bỏ KM không bị stamp lại chỉ
+            // vì cùng mã SP với dòng khác đang tham gia.
+            (it.enabledPromotionIds === undefined ||
+              it.enabledPromotionIds.includes(r.promotionId))
           ) {
             it.promotionId = r.promotionId;
           }

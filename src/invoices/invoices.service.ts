@@ -1689,7 +1689,11 @@ export class InvoicesService {
             it.lineType === 'normal' &&
             (it.conditionType || 'normal') === 'normal' &&
             it.promotionId == null &&
-            matchedIds.includes(it.productId)
+            matchedIds.includes(it.productId) &&
+            // Opt-in theo TỪNG dòng: dòng user đã bỏ KM không bị stamp lại chỉ
+            // vì cùng mã SP với dòng khác đang tham gia.
+            (it.enabledPromotionIds === undefined ||
+              it.enabledPromotionIds.includes(r.promotionId))
           ) {
             it.promotionId = r.promotionId;
           }
@@ -3698,6 +3702,54 @@ export class InvoicesService {
           inPlacePromoLogs = promo.logs;
         }
 
+        // Sửa tại chỗ vẫn có thể đổi dòng nào tham gia KM (bật/tắt KM theo dòng)
+        // → ghi lại log PROMO của HĐ cho khớp promotionId mới, nếu không tồn KM
+        // giữ nguyên phần trừ của dòng đã bị bỏ khỏi chương trình.
+        inPlaceItems = await this.markPromoStockDeductionItems(
+          tx,
+          inPlaceItems,
+        );
+        const inPlacePromoLogWhere = {
+          refType: 'invoice',
+          refId: id,
+          bucket: BUCKET_PROMO,
+          transactionType: 'SALE_OUT',
+        };
+        const inPlaceOldPromoStockLogs = await tx.stockConditionLog.findMany({
+          where: inPlacePromoLogWhere,
+          select: { productId: true, costPrice: true, createdByName: true },
+        });
+        const inPlaceOldCostByProduct = new Map<number, number>(
+          inPlaceOldPromoStockLogs.map((l) => [
+            l.productId,
+            Number(l.costPrice),
+          ]),
+        );
+        await tx.stockConditionLog.deleteMany({ where: inPlacePromoLogWhere });
+        for (const item of inPlaceItems) {
+          if ((item.conditionType || 'normal') !== 'normal') continue;
+          await this.writeSaleConditionLog(tx, {
+            item,
+            branchId: currentInvoice.branchId || 1,
+            branchName: currentInvoice.branch?.name || '',
+            invoiceCode: currentInvoice.code,
+            invoiceId: id,
+            transactionDate: currentInvoice.purchaseDate,
+            costPrice: inPlaceOldCostByProduct.get(item.productId) ?? 0,
+            createdByName: inPlaceOldPromoStockLogs[0]?.createdByName ?? null,
+          });
+        }
+        await recalcConditionBucketsForPairs(tx, [
+          ...currentInvoice.details.map((d) => ({
+            productId: d.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+          ...inPlaceItems.map((item) => ({
+            productId: item.productId,
+            branchId: currentInvoice.branchId || 1,
+          })),
+        ]);
+
         const totalAmount = inPlaceItems.reduce(
           (sum, item) => sum + item.totalPrice,
           0,
@@ -4311,8 +4363,11 @@ export class InvoicesService {
             promotionId = Number(enabled[0]);
           }
         }
+        // FE gửi enabledPromotionIds (kể cả []) = đã nói rõ dòng này có tham gia
+        // KM hay không → không kế thừa stamp của đơn gốc theo mã SP.
         if (
           (promotionId == null || Number.isNaN(promotionId)) &&
+          !Array.isArray(item.enabledPromotionIds) &&
           item.productId != null &&
           orderNormalPromoByProduct.has(item.productId)
         ) {
