@@ -150,7 +150,6 @@ export class InternalFundService {
     const actions: InternalFundPermissionAction[] = [
       'view',
       'create_receipt',
-      'create_expense',
       'transfer',
       'submit_approval',
       'mark_issued',
@@ -702,10 +701,6 @@ export class InternalFundService {
     if (row.sourceType === FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT)
       throw new BadRequestException(
         'Giao dịch thu tiền khách: hãy hủy phiếu tại Tiền mặt kho',
-      );
-    if (row.sourceType === FUND_SOURCE_TYPE.SEPAY_FUND_DEPOSIT)
-      throw new BadRequestException(
-        'Giao dịch kho nộp tiền: hãy bỏ đánh dấu tại Biến động số dư',
       );
     if (row.sourceType === FUND_SOURCE_TYPE.LEDGER_HISTORY)
       throw new BadRequestException('Bút toán lịch sử chỉ đọc, không hủy được');

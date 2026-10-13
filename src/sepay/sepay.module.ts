@@ -12,8 +12,6 @@ import { CashFlowsModule } from '../cashflows/cashflows.module';
 import { AuthModule } from '../auth/auth.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { DebtTicketsModule } from '../debt-tickets/debt-tickets.module';
-import { InternalFundModule } from '../internal-fund/internal-fund.module';
-import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.module';
 
 @Module({
   imports: [
@@ -25,8 +23,6 @@ import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.
     AuthModule,
     NotificationsModule,
     DebtTicketsModule,
-    InternalFundModule,
-    InternalFundLedgerModule,
     HttpModule.register({ timeout: 120000, maxRedirects: 5 }),
   ],
   controllers: [SepayController],

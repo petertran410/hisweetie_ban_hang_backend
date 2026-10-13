@@ -16,6 +16,7 @@
 import { PrismaClient } from '@prisma/client';
 import {
   removeBranchSuffixedPermissions,
+  removePermissions,
   upsertFinancePermissions,
   type PermissionSeed,
 } from './lib/finance-permissions';
@@ -42,7 +43,6 @@ const PERMISSIONS: PermissionSeed[] = [
   ...group('internal_fund', [
     ['view', 'Xem quỹ nội bộ'],
     ['create_receipt', 'Tạo phiếu thu quỹ'],
-    ['create_expense', 'Ghi nhận kho nộp tiền qua chuyển khoản'],
     ['transfer', 'Chuyển tiền giữa các quỹ'],
     ['submit_approval', 'Gửi duyệt phiếu thu / chuyển tiền trên Lark'],
     ['mark_issued', 'Xác nhận đã chi'],
@@ -62,10 +62,13 @@ const PERMISSIONS: PermissionSeed[] = [
 
 async function main() {
   console.log(`🌱 Upsert ${PERMISSIONS.length} quyền cho luồng thu chi kho...`);
-  const removed = await removeBranchSuffixedPermissions(prisma, [
-    'warehouse_expense',
-    'internal_fund',
-  ]);
+  const removed =
+    (await removeBranchSuffixedPermissions(prisma, [
+      'warehouse_expense',
+      'internal_fund',
+    ])) +
+    // Quyền của nút "Kho nộp tiền" đã bỏ ở trang Biến động số dư.
+    (await removePermissions(prisma, ['internal_fund:create_expense']));
   const { created, updated } = await upsertFinancePermissions(
     prisma,
     PERMISSIONS,

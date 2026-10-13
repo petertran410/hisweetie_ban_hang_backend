@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import {
   APPROVAL_DEFINITIONS,
+  RECEIPT_CASH_SOURCE_BY_BRANCH,
   RECEIPT_FIELD_IDS,
   RECEIPT_LOCATION_BRANCHES,
   RECEIPT_OPTIONS,
@@ -16,12 +17,7 @@ export const INTERNAL_FUND_TEMPLATES = {
   PHIEU_THU: APPROVAL_DEFINITIONS.RECEIPT,
 };
 
-const sources: Record<number, string> = {
-  6: 'mmix7h92-hukohb4on6-0',
-  1: 'mmix7h92-vnvw9s8fgxd-0',
-  4: 'mmix6zt5-jloc41vsx8k-1',
-  7: 'mmix6zt5-9oxlpayncdg-3',
-};
+const sources = RECEIPT_CASH_SOURCE_BY_BRANCH;
 
 const sourceLabels: Record<string, string> = {
   'mmix7h92-hukohb4on6-0': 'Quỹ tiền mặt Kho Hà Nội',

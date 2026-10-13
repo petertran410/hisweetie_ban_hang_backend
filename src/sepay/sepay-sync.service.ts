@@ -402,7 +402,6 @@ export class SepaySyncService {
                s2.reference_number, s2.transaction_content, s2.transaction_date
         FROM sepay_transactions s2
         WHERE s2.amount_in > 0
-          AND s2.fund_deposit_branch_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM sepay_allocations sa
             WHERE sa.sepay_transaction_id = s2.id
@@ -420,7 +419,6 @@ export class SepaySyncService {
         LIMIT 1
       ) latest ON TRUE
       WHERE st.amount_in > 0
-        AND st.fund_deposit_branch_id IS NULL
         AND NOT EXISTS (
           SELECT 1 FROM sepay_allocations sa
           WHERE sa.sepay_transaction_id = st.id

@@ -1127,7 +1127,11 @@ describe('ApprovalLifecycleService', () => {
   });
   describe('Lark-created PHIẾU CHI', () => {
     const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
-    const voucherForm = (method: string, source: string, cashAmount?: number) => [
+    const voucherForm = (
+      method: string,
+      source: string,
+      cashAmount?: number,
+    ) => [
       { id: 'widget17321753417610001', type: 'radioV2', value: method },
       { id: 'widget17643292059530001', type: 'radioV2', value: source },
       { id: 'widget17321752802850001', type: 'amount', value: 9000000 },
@@ -1146,7 +1150,8 @@ describe('ApprovalLifecycleService', () => {
               requests.find(
                 (row) =>
                   row.id === where.id ||
-                  (where.instanceCode && row.instanceCode === where.instanceCode),
+                  (where.instanceCode &&
+                    row.instanceCode === where.instanceCode),
               ) || null,
           ),
           create: jest.fn(async ({ data }: any) => {
@@ -1220,7 +1225,11 @@ describe('ApprovalLifecycleService', () => {
 
     it('uses only the cash part of a mixed transfer-and-cash voucher', async () => {
       const f = voucherService(
-        voucherForm('Chuyển Khoản (Công Ty + Tiền Mặt)', 'Tiền Mặt Kho SG', 33088000),
+        voucherForm(
+          'Chuyển Khoản (Công Ty + Tiền Mặt)',
+          'Tiền Mặt Kho SG',
+          33088000,
+        ),
       );
       await f.service.handleInstanceEvent(approvedEvent);
       expect(f.requests[0]).toMatchObject({ branchId: 1 });
@@ -1233,6 +1242,204 @@ describe('ApprovalLifecycleService', () => {
       expect(f.requests).toHaveLength(0);
       expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
       expect(f.events[0].error).toContain('Không tìm thấy approval request');
+    });
+  });
+  describe('Lark-created PHIẾU THU', () => {
+    const receiptCode = '09CFDCE2-D026-44C7-A94C-8C6B02660BA1';
+    // Dạng form Lark trả về: `value` là chữ, `option.key` là mã lựa chọn.
+    const pick = (id: string, text: string, key: string) => ({
+      id,
+      type: 'radioV2',
+      value: text,
+      option: { key, text },
+    });
+    const common = (method = 'md9r0rqr-tlntv5zjg8-1') => [
+      pick('widget17321728506550001', 'Tiền mặt', method),
+      {
+        id: 'widget17321631178550001',
+        type: 'date',
+        value: '2026-10-08T17:00:00Z',
+      },
+      { id: 'widget17321629138780001', type: 'amount', value: 270000000 },
+      {
+        id: 'widget17321628654580001',
+        type: 'textarea',
+        value: 'kho nộp tiền',
+      },
+    ];
+    const transferForm = (to = 'msmnlsb8-5t1nguy4lg2-0', method?: string) => [
+      pick(
+        'widget17321740179360001',
+        'Chuyển tiền nội bộ',
+        'miior6p8-s0rjayqbcv-1',
+      ),
+      pick('widget17863314165550001', 'Kho Hà Nội', 'msmnlqej-t6tk3qikgcm-0'),
+      pick('widget17863314190270001', 'Văn Phòng Hà Nội', to),
+      ...common(method),
+    ];
+    const otherReceiptForm = [
+      pick('widget17321740179360001', 'Khác', 'm3qzoq6o-9zz1b70wu0s-0'),
+      pick(
+        'widget17730449889490001',
+        'Quỹ tiền mặt Kho Sài Gòn',
+        'mmix7h92-vnvw9s8fgxd-0',
+      ),
+      ...common(),
+    ];
+    function receiptService(form: any[]) {
+      const requests: any[] = [];
+      const transfers: any[] = [];
+      const events: any[] = [];
+      const f = createService({
+        approvalRequest: {
+          findUnique: jest.fn(
+            async ({ where }: any) =>
+              requests.find(
+                (row) =>
+                  row.id === where.id ||
+                  (where.instanceCode &&
+                    row.instanceCode === where.instanceCode),
+              ) || null,
+          ),
+          create: jest.fn(async ({ data }: any) => {
+            if (requests.some((row) => row.instanceCode === data.instanceCode))
+              throw Object.assign(new Error('unique'), { code: 'P2002' });
+            const row = { id: 60, lastEventAt: null, ...data };
+            requests.push(row);
+            return row;
+          }),
+          update: jest.fn(async ({ where, data }: any) =>
+            Object.assign(
+              requests.find((row) => row.id === where.id),
+              data,
+            ),
+          ),
+        },
+      });
+      (f.prisma.user as any).findFirst = jest.fn().mockResolvedValue({ id: 9 });
+      (f.prisma as any).internalFundTransfer = {
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: 4, ...data };
+          transfers.push(row);
+          return row;
+        }),
+        update: jest.fn(async ({ data }: any) =>
+          Object.assign(transfers[0], data),
+        ),
+      };
+      (f.fundLedger as any).code = jest.fn().mockReturnValue('QF-CHUYEN-test');
+      f.prisma.approvalRequestEvent = {
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: events.length + 1, ...data };
+          events.push(row);
+          return row;
+        }),
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn(async () =>
+          events.filter((row) => !row.approvalRequestId),
+        ),
+        update: jest.fn(async ({ where, data }: any) =>
+          Object.assign(
+            events.find((row) => row.id === where.id),
+            data,
+          ),
+        ),
+        updateMany: jest.fn(),
+      } as any;
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: {
+          status: 'APPROVED',
+          open_id: 'ou_requester',
+          serial_number: '202610090006',
+          form: JSON.stringify(form),
+        },
+      });
+      return { ...f, requests, transfers, events };
+    }
+    const approvedEvent = {
+      approval_code: receiptCode,
+      instance_code: 'PT-0001',
+      status: 'APPROVED',
+      instance_operate_time: '1791183142626',
+    };
+
+    it('turns a warehouse-to-office cash receipt into one fund transfer posted on approval', async () => {
+      const f = receiptService(transferForm());
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.transfers[0]).toMatchObject({
+        clientUuid: 'LARK:PT-0001',
+        sourceBranchId: 6,
+        destinationBranchId: 4,
+        amount: 270000000,
+        description: 'kho nộp tiền',
+        createdBy: 9,
+        approvalRequestId: 60,
+      });
+      expect(f.transfers[0].occurredAt.toISOString()).toBe(
+        '2026-10-08T17:00:00.000Z',
+      );
+      expect(f.requests[0]).toMatchObject({
+        kind: 'RECEIPT',
+        sourceType: 'INTERNAL_FUND_TRANSFER',
+        sourceId: 4,
+        branchId: 6,
+        clientUuid: 'LARK:PT-0001',
+        status: 'APPROVED',
+      });
+      // Ghi hai chiều do sổ quỹ đảm nhiệm, giống đơn chuyển tiền tạo từ POS.
+      expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+      expect(f.fundLedger.applyApproval.mock.calls[0][1]).toMatchObject({
+        sourceType: 'INTERNAL_FUND_TRANSFER',
+        status: 'APPROVED',
+      });
+
+      // Sự kiện lặp lại không tạo lệnh chuyển thứ hai.
+      await f.service.handleInstanceEvent({ ...approvedEvent, uuid: 'again' });
+      expect(f.transfers).toHaveLength(1);
+      expect(f.requests).toHaveLength(1);
+    });
+
+    it('turns a cash "other" receipt into a fund receipt of the chosen fund', async () => {
+      const f = receiptService(otherReceiptForm);
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.transfers).toHaveLength(0);
+      expect(f.requests[0]).toMatchObject({
+        sourceType: 'INTERNAL_FUND_RECEIPT',
+        branchId: 1,
+        createdById: 9,
+      });
+      expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+    });
+
+    it('records a bank-transfer receipt the same way: only the two places matter', async () => {
+      const f = receiptService(
+        transferForm('msmnlsb8-5t1nguy4lg2-0', '$i18n-m3sj1xiv-4ru39bef6i-1'),
+      );
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.transfers[0]).toMatchObject({
+        sourceBranchId: 6,
+        destinationBranchId: 4,
+        amount: 270000000,
+      });
+      expect(f.requests[0]).toMatchObject({
+        sourceType: 'INTERNAL_FUND_TRANSFER',
+        status: 'APPROVED',
+      });
+      expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores receipts whose places are not two different POS funds', async () => {
+      const unknownPlace = receiptService(transferForm('noi-khac'));
+      await unknownPlace.service.handleInstanceEvent(approvedEvent);
+      const sameFund = receiptService(transferForm('msmnlsb8-4p1ddn0lzf4-0'));
+      await sameFund.service.handleInstanceEvent(approvedEvent);
+      for (const f of [unknownPlace, sameFund]) {
+        expect(f.requests).toHaveLength(0);
+        expect(f.transfers).toHaveLength(0);
+        expect(f.fundLedger.applyApproval).not.toHaveBeenCalled();
+        expect(f.events[0].error).toContain('Không tìm thấy approval request');
+      }
     });
   });
 });

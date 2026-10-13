@@ -52,6 +52,24 @@ export async function removeBranchSuffixedPermissions(
       select: { id: true, name: true, action: true },
     })
   ).filter((permission) => /_(hn|sg|vp)$/.test(permission.action));
+  return deletePermissions(prisma, stale);
+}
+
+/** Xóa các quyền không còn dùng theo tên, kèm liên kết vai trò / user. */
+export async function removePermissions(prisma: PrismaClient, names: string[]) {
+  return deletePermissions(
+    prisma,
+    await prisma.permission.findMany({
+      where: { name: { in: names } },
+      select: { id: true, name: true },
+    }),
+  );
+}
+
+async function deletePermissions(
+  prisma: PrismaClient,
+  stale: Array<{ id: number; name: string }>,
+) {
   if (!stale.length) return 0;
   const permissionId = { in: stale.map((permission) => permission.id) };
   await prisma.$transaction([
@@ -62,6 +80,6 @@ export async function removeBranchSuffixedPermissions(
     prisma.permission.deleteMany({ where: { id: permissionId } }),
   ]);
   for (const permission of stale)
-    console.log(`  🗑  Đã xóa quyền kiểu cũ "${permission.name}".`);
+    console.log(`  🗑  Đã xóa quyền không còn dùng "${permission.name}".`);
   return stale.length;
 }

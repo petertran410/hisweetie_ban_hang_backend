@@ -31,7 +31,6 @@ import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
 import {
   AssignCustomersDto,
   ConfirmReceiptDto,
-  FundDepositDto,
   OrderCandidateQueryDto,
   SelectOrderDto,
 } from './dto/sepay-match.dto';
@@ -308,31 +307,6 @@ export class SepayController {
       dto,
       user?.id || 1,
     );
-  }
-
-  /**
-   * Đánh dấu giao dịch là kho nộp tiền mặt về tài khoản công ty (trừ quỹ nội bộ của kho).
-   */
-  @Post('transactions/:id/fund-deposit')
-  @RequirePermissions('sepay:assign')
-  @ApiOperation({ summary: 'Đánh dấu kho nộp tiền, ghi chi quỹ nội bộ' })
-  async markFundDeposit(
-    @Param('id') id: string,
-    @Body() dto: FundDepositDto,
-    @CurrentUser() user: any,
-  ) {
-    return this.sepayMatchService.markFundDeposit(
-      Number(id),
-      dto.branchId,
-      user.id,
-    );
-  }
-
-  @Delete('transactions/:id/fund-deposit')
-  @RequirePermissions('sepay:assign')
-  @ApiOperation({ summary: 'Bỏ đánh dấu kho nộp tiền, hủy giao dịch quỹ' })
-  async unmarkFundDeposit(@Param('id') id: string, @CurrentUser() user: any) {
-    return this.sepayMatchService.unmarkFundDeposit(Number(id), user.id);
   }
 
   /**

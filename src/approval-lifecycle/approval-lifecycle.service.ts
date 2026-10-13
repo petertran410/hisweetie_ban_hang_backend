@@ -20,6 +20,7 @@ import {
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
   PAYMENT_VOUCHER,
+  readFundReceipt,
   readPaymentVoucherCash,
   RECEIPT_FIELD_IDS,
   RECEIPT_LOCATION_BRANCHES,
@@ -460,6 +461,17 @@ export class ApprovalLifecycleService {
       }
     }
 
+    if (
+      !matchedRequest &&
+      approvalCode === APPROVAL_DEFINITIONS.RECEIPT.approvalCode
+    ) {
+      const ingestedId = await this.ingestFundReceipt(instanceCode);
+      if (ingestedId) {
+        await this.replayOrphanEvents(ingestedId, instanceCode);
+        return;
+      }
+    }
+
     if (!matchedRequest) {
       await this.prisma.approvalRequestEvent.update({
         where: { id: storedEvent.id },
@@ -544,6 +556,98 @@ export class ApprovalLifecycleService {
       });
       return created.id;
     } catch (error: any) {
+      if (error?.code !== 'P2002') throw error;
+      const existing = await this.prisma.approvalRequest.findUnique({
+        where: { instanceCode },
+        select: { id: true },
+      });
+      return existing?.id || null;
+    }
+  }
+
+  /**
+   * Nhận đơn PHIẾU THU tạo trực tiếp trên Lark. Đơn chuyển tiền giữa hai quỹ
+   * thành một lệnh chuyển quỹ (duyệt xong ghi "chuyển đi" ở quỹ nguồn và
+   * "chuyển đến" ở quỹ đích); đơn thu tiền mặt vào một quỹ thành phiếu thu quỹ.
+   * Đơn không liên quan quỹ tiền mặt trả null để sự kiện bị bỏ qua như cũ.
+   */
+  private async ingestFundReceipt(instanceCode: string) {
+    const detail: any = await this.getInstance(instanceCode);
+    let form: ApprovalFormItem[] = [];
+    try {
+      form = JSON.parse(detail?.form || '[]');
+    } catch {
+      form = [];
+    }
+    const receipt = readFundReceipt(form);
+    if (!receipt) return null;
+    const requester = detail?.open_id
+      ? await this.prisma.user.findFirst({
+          where: { larkUserId: String(detail.open_id) },
+          select: { id: true },
+        })
+      : null;
+    // Người đề xuất luôn có tài khoản POS; 1 chỉ là chốt an toàn.
+    const createdById = requester?.id || 1;
+    const clientUuid = `LARK:${instanceCode}`;
+    const base = {
+      kind: APPROVAL_DEFINITIONS.RECEIPT.kind,
+      approvalCode: APPROVAL_DEFINITIONS.RECEIPT.approvalCode,
+      instanceCode,
+      clientUuid,
+      status: 'PENDING',
+      createdById,
+      formSnapshot: {
+        version: 'lark',
+        form,
+        metadata: { serialNumber: detail?.serial_number || null },
+      } as unknown as Prisma.InputJsonValue,
+      detailSnapshot: detail as Prisma.InputJsonValue,
+    };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        if (receipt.kind === 'RECEIPT') {
+          const created = await tx.approvalRequest.create({
+            data: {
+              ...base,
+              sourceType: 'INTERNAL_FUND_RECEIPT',
+              branchId: receipt.branchId,
+            },
+            select: { id: true },
+          });
+          return created.id;
+        }
+        const transfer = await tx.internalFundTransfer.create({
+          data: {
+            clientUuid,
+            code: this.fundLedger.code('CHUYEN'),
+            sourceBranchId: receipt.sourceBranchId,
+            destinationBranchId: receipt.destinationBranchId,
+            amount: receipt.amount,
+            occurredAt: receipt.occurredAt,
+            description: receipt.description,
+            status: 'PENDING',
+            createdBy: createdById,
+          },
+          select: { id: true },
+        });
+        const created = await tx.approvalRequest.create({
+          data: {
+            ...base,
+            sourceType: 'INTERNAL_FUND_TRANSFER',
+            sourceId: transfer.id,
+            branchId: receipt.sourceBranchId,
+          },
+          select: { id: true },
+        });
+        await tx.internalFundTransfer.update({
+          where: { id: transfer.id },
+          data: { approvalRequestId: created.id },
+        });
+        return created.id;
+      });
+    } catch (error: any) {
+      // Hai sự kiện về cùng lúc: đơn đã được tạo ở lần kia.
       if (error?.code !== 'P2002') throw error;
       const existing = await this.prisma.approvalRequest.findUnique({
         where: { instanceCode },

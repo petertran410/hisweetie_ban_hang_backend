@@ -32,7 +32,6 @@ interface FundApprovalData {
 
 export const FUND_SOURCE_TYPE = {
   WAREHOUSE_CASH_RECEIPT: 'WAREHOUSE_CASH_RECEIPT',
-  SEPAY_FUND_DEPOSIT: 'SEPAY_FUND_DEPOSIT',
   LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
   // Bút toán lịch sử đồng bộ từ sổ quỹ cũ: chỉ đọc trên POS.
   LEDGER_HISTORY: 'LEDGER_HISTORY',

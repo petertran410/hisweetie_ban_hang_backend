@@ -172,10 +172,7 @@ export const RECEIPT_LOCATION_BRANCHES = {
 } as const;
 
 export const EXPENSE_VP_OPTIONS = {
-  methods: new Set([
-    'ml65570v-ih3r0g47mu-0',
-    'ml65570v-qr4uobqvu9-0',
-  ]),
+  methods: new Set(['ml65570v-ih3r0g47mu-0', 'ml65570v-qr4uobqvu9-0']),
   cashMethod: 'ml65570v-ih3r0g47mu-0',
   cashSources: new Set([
     'ml657iu1-7mvb2xfgje6-0',
@@ -240,7 +237,8 @@ export function readPaymentVoucherCash(
   const method = text(PAYMENT_VOUCHER.fieldIds.method);
   const lower = method.toLowerCase();
   // Thanh toán thuần tiền mặt lấy tổng tiền; thanh toán hỗn hợp lấy riêng "Số tiền mặt".
-  const cashOnly = lower.includes('tiền mặt') && !lower.includes('chuyển khoản');
+  const cashOnly =
+    lower.includes('tiền mặt') && !lower.includes('chuyển khoản');
   const amount = Number(
     value(
       cashOnly
@@ -255,5 +253,102 @@ export function readPaymentVoucherCash(
     cashSource,
     method,
     description: text(PAYMENT_VOUCHER.fieldIds.description),
+  };
+}
+
+/** Nguồn quỹ tiền mặt trên form PHIẾU THU ứng với quỹ của từng chi nhánh. */
+export const RECEIPT_CASH_SOURCE_BY_BRANCH: Record<number, string> = {
+  6: 'mmix7h92-hukohb4on6-0',
+  1: 'mmix7h92-vnvw9s8fgxd-0',
+  4: 'mmix6zt5-jloc41vsx8k-1',
+  7: 'mmix6zt5-9oxlpayncdg-3',
+};
+
+export type FundReceiptFromLark =
+  | {
+      kind: 'TRANSFER';
+      sourceBranchId: number;
+      destinationBranchId: number;
+      amount: number;
+      occurredAt: Date;
+      description: string;
+    }
+  | {
+      kind: 'RECEIPT';
+      branchId: number;
+      amount: number;
+      occurredAt: Date;
+      description: string;
+    };
+
+/**
+ * Đọc đơn PHIẾU THU tạo trực tiếp trên Lark.
+ * - Có nơi đi và nơi nhận đều là quỹ của POS (khác nhau): chuyển quỹ, bất kể
+ *   hình thức thu (tiền mặt hay chuyển khoản) và phân loại.
+ * - Không có cặp nơi đi / nơi nhận hợp lệ: chỉ nhận đơn thu tiền mặt loại
+ *   "khác" / hoàn tạm ứng có chọn nguồn quỹ.
+ * Đơn khác trả null để bỏ qua.
+ */
+export function readFundReceipt(
+  form: ApprovalFormItem[],
+): FundReceiptFromLark | null {
+  const item = (id: string) =>
+    form.find((row) => row.id === id) as
+      | (ApprovalFormItem & { option?: { key?: string } })
+      | undefined;
+  // Lark trả lựa chọn dạng chữ ở `value` và mã lựa chọn ở `option.key`.
+  const choice = (id: string) =>
+    String(item(id)?.option?.key ?? item(id)?.value ?? '').trim();
+  const amount = Number(item(RECEIPT_FIELD_IDS.amount)?.value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const rawDate = item(RECEIPT_FIELD_IDS.date)?.value;
+  const occurredAt = rawDate ? new Date(String(rawDate)) : new Date();
+  if (Number.isNaN(occurredAt.getTime())) return null;
+  const description = String(
+    item(RECEIPT_FIELD_IDS.description)?.value ?? '',
+  ).trim();
+
+  const sourceBranchId = (
+    RECEIPT_LOCATION_BRANCHES.from as Record<string, number>
+  )[choice(RECEIPT_FIELD_IDS.from)];
+  const destinationBranchId = (
+    RECEIPT_LOCATION_BRANCHES.to as Record<string, number>
+  )[choice(RECEIPT_FIELD_IDS.to)];
+  if (
+    sourceBranchId &&
+    destinationBranchId &&
+    sourceBranchId !== destinationBranchId
+  ) {
+    return {
+      kind: 'TRANSFER',
+      sourceBranchId,
+      destinationBranchId,
+      amount,
+      occurredAt,
+      description: description || 'Chuyển tiền nội bộ',
+    };
+  }
+
+  if (choice(RECEIPT_FIELD_IDS.method) !== RECEIPT_OPTIONS.methods.cash)
+    return null;
+  const classification = choice(RECEIPT_FIELD_IDS.classification);
+  if (
+    classification !== RECEIPT_OPTIONS.classifications.other &&
+    classification !== RECEIPT_OPTIONS.classifications.refundAdvance
+  )
+    return null;
+  const cashSource = choice(RECEIPT_FIELD_IDS.cashSource);
+  const branchId = Number(
+    Object.entries(RECEIPT_CASH_SOURCE_BY_BRANCH).find(
+      ([, source]) => source === cashSource,
+    )?.[0],
+  );
+  if (!branchId) return null;
+  return {
+    kind: 'RECEIPT',
+    branchId,
+    amount,
+    occurredAt,
+    description: description || 'Thu quỹ nội bộ',
   };
 }

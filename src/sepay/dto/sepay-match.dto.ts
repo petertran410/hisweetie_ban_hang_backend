@@ -108,11 +108,3 @@ export class ConfirmReceiptDto {
   @Type(() => AllocationItemDto)
   allocations!: AllocationItemDto[];
 }
-
-/** Đánh dấu giao dịch là kho nộp tiền mặt về tài khoản công ty. */
-export class FundDepositDto {
-  /** Kho nộp tiền: 6 = Hà Nội, 1 = Sài Gòn. */
-  @IsInt()
-  @Type(() => Number)
-  branchId!: number;
-}

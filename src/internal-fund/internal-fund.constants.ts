@@ -30,7 +30,6 @@ export interface InternalFundActor {
 export type InternalFundPermissionAction =
   | 'view'
   | 'create_receipt'
-  | 'create_expense'
   | 'transfer'
   | 'submit_approval'
   | 'mark_issued'

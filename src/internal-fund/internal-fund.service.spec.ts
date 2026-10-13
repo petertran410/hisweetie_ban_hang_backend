@@ -105,7 +105,6 @@ function fixture() {
   const actions = [
     'view',
     'create_receipt',
-    'create_expense',
     'transfer',
     'submit_approval',
     'mark_issued',
@@ -314,30 +313,18 @@ describe('Internal fund ledger', () => {
     expect(f.entry.cashIssued).toBe(true);
   });
 
-  it('refuses to cancel warehouse-cash and bank-deposit rows from the fund screen', async () => {
+  it('refuses to cancel warehouse-cash rows from the fund screen', async () => {
     const f = fixture();
-    f.transactions.push(
-      {
-        id: 1,
-        branchId: 6,
-        status: 'POSTED',
-        sourceType: 'WAREHOUSE_CASH_RECEIPT',
-        sourceKey: 'a',
-      },
-      {
-        id: 2,
-        branchId: 6,
-        status: 'POSTED',
-        sourceType: 'SEPAY_FUND_DEPOSIT',
-        sourceKey: 'b',
-      },
-    );
+    f.transactions.push({
+      id: 1,
+      branchId: 6,
+      status: 'POSTED',
+      sourceType: 'WAREHOUSE_CASH_RECEIPT',
+      sourceKey: 'a',
+    });
     await expect(
       f.service.cancelTransaction(1, { reason: 'x' }, 7),
     ).rejects.toThrow('Tiền mặt kho');
-    await expect(
-      f.service.cancelTransaction(2, { reason: 'x' }, 7),
-    ).rejects.toThrow('Biến động số dư');
   });
 
   it('posts an approved Lark payment voucher once and cancels it when reverted', async () => {
@@ -392,6 +379,46 @@ describe('Internal fund ledger', () => {
       status: 'CANCELLED',
     });
     expect(f.prisma.cashFlow.create).not.toHaveBeenCalled();
+  });
+
+  it('posts a Lark-created cash receipt on the form date (Vietnam day)', async () => {
+    const f = fixture();
+    const request = {
+      id: 61,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      branchId: 1,
+      createdById: 9,
+      // Form do Lark trả về: ngày dạng ISO, lựa chọn là chữ kèm option.key.
+      formSnapshot: {
+        version: 'lark',
+        form: [
+          { id: RECEIPT_FIELD_IDS.amount, type: 'amount', value: 1500000 },
+          {
+            id: RECEIPT_FIELD_IDS.date,
+            type: 'date',
+            value: '2026-10-08T17:00:00Z',
+          },
+          {
+            id: RECEIPT_FIELD_IDS.description,
+            type: 'textarea',
+            value: 'Thu khác',
+          },
+        ],
+      },
+    };
+    await f.ledger.applyApproval(f.prisma, request);
+    await f.ledger.applyApproval(f.prisma, request);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'RECEIPT',
+      branchId: 1,
+      sourceKey: 'RECEIPT:61',
+      description: 'Thu khác',
+      createdBy: 9,
+    });
+    expect(String(f.transactions[0].amount)).toBe('1500000');
+    expect(f.transactions[0].occurredAt).toEqual(fundDayStart('2026-10-09'));
   });
 
   it('creates both transfer legs with the same group and never CashFlow', async () => {
