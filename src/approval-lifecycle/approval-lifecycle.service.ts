@@ -748,9 +748,10 @@ export class ApprovalLifecycleService {
 
       const batch = await tx.internalFinanceWeeklyBatch.findUnique({
         where: { id: current.sourceId },
-        select: { branchId: true },
+        select: { branchId: true, createdBy: true },
       });
       if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
+      const wasApproved = current.status === 'APPROVED';
       await tx.approvalRequest.update({
         where: { id: requestId },
         data,
@@ -781,6 +782,28 @@ export class ApprovalLifecycleService {
           },
           data: { status: entryStatus },
         });
+        // Kho: Approval duyệt thì tự ghi quỹ + tick Đã chi; bị thu hồi thì rút lại.
+        if ([1, 6].includes(batch.branchId)) {
+          if (status === 'APPROVED') {
+            await this.fundLedger.issueApprovedBatch(
+              tx,
+              current.sourceId,
+              requestId,
+              batch.createdBy,
+            );
+          } else if (wasApproved) {
+            await this.fundLedger.revertApprovedBatch(
+              tx,
+              current.sourceId,
+              requestId,
+              batch.createdBy,
+            );
+            await tx.internalFinanceEntry.updateMany({
+              where: { weeklyBatchId: current.sourceId, cashIssued: false },
+              data: { status: entryStatus },
+            });
+          }
+        }
       }
     });
   }

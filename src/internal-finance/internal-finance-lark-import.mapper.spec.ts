@@ -112,9 +112,12 @@ describe('Lark finance import mapper', () => {
       fields: { 'Số tiền': 10, 'Trạng thái': 'Từ chối' },
     }).entry;
 
-    expect(approved).toMatchObject({ status: 'APPROVED', branchId: 7 });
+    expect(approved).toMatchObject({
+      status: 'MANAGER_APPROVED',
+      branchId: 7,
+    });
     expect(accountantOnly).toMatchObject({
-      status: 'ACCOUNTANT_APPROVED',
+      status: 'PENDING_ACCOUNTANT',
       branchId: 4,
     });
     expect(rejected?.status).toBe('REJECTED');

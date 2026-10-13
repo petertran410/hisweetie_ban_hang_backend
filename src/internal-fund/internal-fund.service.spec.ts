@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { FinanceAccessService } from '../auth/finance-access.service';
 import { InternalFundService } from './internal-fund.service';
 import {
   InternalFundLedgerService,
@@ -36,9 +37,13 @@ function fixture() {
   };
   const prisma: any = {
     user: {
-      findUnique: jest
-        .fn()
-        .mockResolvedValue({ larkUserId: 'ou_user', userRoles: [] }),
+      findUnique: jest.fn().mockResolvedValue({
+        larkUserId: 'ou_user',
+        branchId: null,
+        // User của test được truy cập cả 4 chi nhánh tài chính.
+        userBranches: [6, 1, 4, 7].map((branchId) => ({ branchId })),
+        userRoles: [],
+      }),
     },
     $executeRaw: jest.fn(),
     $transaction: jest.fn(async (fn: any) => fn(prisma)),
@@ -111,17 +116,19 @@ function fixture() {
   ];
   const auth: any = {
     getPermissionsForBranch: jest.fn(async (_: number, id: number) =>
-      actions.map(
-        (action) =>
-          `internal_fund:${action}_${id === 6 ? 'hn' : id === 1 ? 'sg' : 'vp'}`,
-      ),
+      actions.map((action) => `internal_fund:${action}`),
     ),
   };
   const approval: any = {
     create: jest.fn().mockResolvedValue({ id: 10, status: 'PENDING' }),
   };
   const ledger = new InternalFundLedgerService();
-  const service = new InternalFundService(prisma, auth, approval, ledger);
+  const service = new InternalFundService(
+    prisma,
+    new FinanceAccessService(prisma, auth),
+    approval,
+    ledger,
+  );
   return {
     service,
     prisma,
@@ -186,6 +193,79 @@ describe('Internal fund ledger', () => {
     },
   );
 
+  it('issues an expense outside weekly approval only with a reason', async () => {
+    const f = fixture();
+    f.entry.status = 'PENDING_ACCOUNTANT';
+    f.entry.code = 'TCNB-CHI-1';
+    f.entry.weeklyBatch = null;
+    await expect(f.service.postExpenseEntry(12, 7, true, '  ')).rejects.toThrow(
+      'cần nhập lý do',
+    );
+    await f.service.postExpenseEntry(12, 7, true, 'Chi gấp cho xe');
+    expect(f.transactions[0]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      approvalRequestId: undefined,
+      description: 'TCNB-CHI-1 (Lý do: Chi gấp cho xe)',
+    });
+    expect(f.entry).toMatchObject({
+      cashIssued: true,
+      cashIssuedReason: 'Chi gấp cho xe',
+    });
+  });
+
+  it('pulls an entry out of a not-yet-sent batch on manual issue and refuses a batch in approval', async () => {
+    const f = fixture();
+    f.entry.status = 'READY_FOR_WEEKLY_APPROVAL';
+    f.entry.weeklyBatchId = 3;
+    f.entry.weeklyBatch = { id: 3, status: 'IN_APPROVAL' };
+    await expect(
+      f.service.postExpenseEntry(12, 7, true, 'Chi gấp'),
+    ).rejects.toThrow('đang chờ duyệt');
+    f.entry.weeklyBatch = { id: 3, status: 'READY' };
+    f.prisma.internalFinanceEntry.aggregate = jest.fn().mockResolvedValue({
+      _sum: { amount: new Prisma.Decimal(50000) },
+      _count: { _all: 1 },
+    });
+    f.prisma.internalFinanceWeeklyBatch = {
+      update: jest.fn(),
+      delete: jest.fn(),
+    };
+    await f.service.postExpenseEntry(12, 7, true, 'Chi gấp');
+    expect(f.entry.weeklyBatchId).toBeNull();
+    expect(f.prisma.internalFinanceWeeklyBatch.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { totalAmount: new Prisma.Decimal(50000) },
+    });
+    expect(f.transactions).toHaveLength(1);
+  });
+
+  it('auto-issues every entry of an approved batch once and reverts them', async () => {
+    const f = fixture();
+    f.entry.code = 'TCNB-CHI-1';
+    f.prisma.internalFinanceEntry.findMany = jest.fn(async () =>
+      f.entry.cashIssued ? [] : [f.entry],
+    );
+    expect(await f.ledger.issueApprovedBatch(f.prisma, 3, 55, 9)).toBe(1);
+    expect(await f.ledger.issueApprovedBatch(f.prisma, 3, 55, 9)).toBe(0);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      approvalRequestId: 55,
+      createdBy: 9,
+      entryId: 12,
+    });
+    expect(f.entry).toMatchObject({ cashIssued: true, cashIssuedBy: 9 });
+
+    f.prisma.internalFundTransaction.findMany.mockResolvedValue([
+      { ...f.transactions[0] },
+    ]);
+    await f.ledger.revertApprovedBatch(f.prisma, 3, 55, 9);
+    expect(f.transactions[0]).toMatchObject({
+      status: 'CANCELLED',
+      entryId: null,
+    });
+    expect(f.entry.cashIssued).toBe(false);
+  });
+
   it('does not re-post legacy cash issued or CashFlow-linked expenses', async () => {
     const f = fixture();
     f.entry.cashFlowId = 22;
@@ -224,6 +304,8 @@ describe('Internal fund ledger', () => {
     const f = fixture();
     f.entry.sourceType = 'LARK_IMPORT';
     await f.service.postExpenseEntry(12, 7, true);
+    // Giao dịch do lần nhập ghi (không phải thao tác trên POS).
+    f.entry.posManagedAt = null;
     await f.service.cancelTransaction(1, { reason: 'Sai' }, 7);
     expect(f.transactions[0]).toMatchObject({
       status: 'CANCELLED',
@@ -235,8 +317,20 @@ describe('Internal fund ledger', () => {
   it('refuses to cancel warehouse-cash and bank-deposit rows from the fund screen', async () => {
     const f = fixture();
     f.transactions.push(
-      { id: 1, branchId: 6, status: 'POSTED', sourceType: 'WAREHOUSE_CASH_RECEIPT', sourceKey: 'a' },
-      { id: 2, branchId: 6, status: 'POSTED', sourceType: 'SEPAY_FUND_DEPOSIT', sourceKey: 'b' },
+      {
+        id: 1,
+        branchId: 6,
+        status: 'POSTED',
+        sourceType: 'WAREHOUSE_CASH_RECEIPT',
+        sourceKey: 'a',
+      },
+      {
+        id: 2,
+        branchId: 6,
+        status: 'POSTED',
+        sourceType: 'SEPAY_FUND_DEPOSIT',
+        sourceKey: 'b',
+      },
     );
     await expect(
       f.service.cancelTransaction(1, { reason: 'x' }, 7),
@@ -362,14 +456,14 @@ describe('Internal fund ledger', () => {
       closedAt: new Date(),
     });
     f.auth.getPermissionsForBranch.mockResolvedValue([
-      'internal_fund:mark_issued_hn',
+      'internal_fund:mark_issued',
     ]);
     await expect(f.service.postExpenseEntry(12, 7, true)).rejects.toThrow(
       'chốt sổ',
     );
     f.auth.getPermissionsForBranch.mockResolvedValue([
-      'internal_fund:mark_issued_hn',
-      'internal_fund:adjust_hn',
+      'internal_fund:mark_issued',
+      'internal_fund:adjust',
     ]);
     await f.service.postExpenseEntry(12, 7, true);
     expect(f.prisma.internalFundDailyClosing.updateMany).toHaveBeenCalledWith(
@@ -433,7 +527,7 @@ describe('Internal fund ledger', () => {
     const f = fixture();
     f.auth.getPermissionsForBranch.mockImplementation(
       async (_: number, id: number) =>
-        id === 6 ? ['internal_fund:view_hn', 'internal_fund:cancel_hn'] : [],
+        id === 6 ? ['internal_fund:view', 'internal_fund:cancel'] : [],
     );
     await expect(
       f.service.listTransactions(
@@ -450,7 +544,7 @@ describe('Internal fund ledger', () => {
   it('requires submit and transfer permissions before any Lark request', async () => {
     const f = fixture();
     f.auth.getPermissionsForBranch.mockResolvedValue([
-      'internal_fund:create_receipt_hn',
+      'internal_fund:create_receipt',
     ]);
     await expect(
       f.service.createReceiptApproval(

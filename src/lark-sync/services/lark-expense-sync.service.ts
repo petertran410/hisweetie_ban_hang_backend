@@ -85,13 +85,20 @@ export class LarkExpenseSyncService {
       this.config.get<string>('API_URL') ||
       this.config.get<string>('APP_PUBLIC_URL') ||
       'http://localhost:3060';
-    // Đang chạy song song POS và Lark nên vẫn ghi phí báo đơn lên Base.
-    // Khi ngừng song song: gỡ lệnh gọi trong PackingSlipsService.
+    // Ghi phí báo đơn lên Base cho tới khi "Chốt chuyển đổi" (xem cutoverDone).
     this.legacyWriteEnabled = true;
   }
 
   isEnabled(): boolean {
     return this.legacyWriteEnabled && this.expenseBase.isEnabled();
+  }
+
+  // Sau khi chốt chuyển đổi, POS là sổ chính và không ghi sang Base nữa.
+  private async cutoverDone(): Promise<boolean> {
+    const settings = await this.prisma.settings.findFirst({
+      select: { financeCutoverAt: true },
+    });
+    return Boolean(settings?.financeCutoverAt);
   }
 
   /**
@@ -100,6 +107,7 @@ export class LarkExpenseSyncService {
    */
   async syncPackingSlipExpenses(slip: PackingSlipForSync): Promise<void> {
     if (!this.legacyWriteEnabled || !this.expenseBase.isEnabled()) return;
+    if (await this.cutoverDone()) return;
 
     const target = this.resolveTable(slip.branchId);
     if (!target) {

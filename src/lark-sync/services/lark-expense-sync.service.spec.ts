@@ -14,13 +14,17 @@ describe('Expense Base writes during the POS/Lark parallel run', () => {
         key === 'LARK_EXPENSE_TABLE_HN' ? 'tblHN' : undefined,
       ),
     };
+    const prisma = {
+      packingSlip: { update: jest.fn() },
+      settings: { findFirst: jest.fn().mockResolvedValue(null) },
+    };
     const service = new LarkExpenseSyncService(
       base as any,
       {} as any,
       config as any,
-      { packingSlip: { update: jest.fn() } } as any,
+      prisma as any,
     );
-    return { service, base };
+    return { service, base, prisma };
   };
   const slip = {
     id: 1,
@@ -48,5 +52,15 @@ describe('Expense Base writes during the POS/Lark parallel run', () => {
     await service.syncPackingSlipExpenses(slip);
     expect(base.createRecord).toHaveBeenCalledTimes(1);
     expect(base.createRecord.mock.calls[0][0]).toBe('tblHN');
+  });
+
+  it('stops writing to the expense Base once the cutover is locked', async () => {
+    const { service, base, prisma } = make();
+    prisma.settings.findFirst.mockResolvedValue({
+      financeCutoverAt: new Date(),
+    });
+    await service.syncPackingSlipExpenses(slip);
+    expect(base.createRecord).not.toHaveBeenCalled();
+    expect(base.searchRecordsByField).not.toHaveBeenCalled();
   });
 });

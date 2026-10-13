@@ -6,6 +6,14 @@ import type { LarkTableRef } from './internal-finance-lark-import.mapper';
 export interface LarkImportRecord {
   recordId: string;
   fields: Record<string, unknown>;
+  /** Thời điểm tạo / sửa cuối của dòng trên nguồn. */
+  createdAt?: Date | null;
+  modifiedAt?: Date | null;
+}
+
+function recordTime(value: unknown): Date | null {
+  const millis = Number(value);
+  return Number.isFinite(millis) && millis > 0 ? new Date(millis) : null;
 }
 
 export interface LarkRecordPageInfo {
@@ -21,6 +29,8 @@ interface LarkItem {
   field_name?: string;
   record_id?: string;
   fields?: Record<string, unknown>;
+  created_time?: number;
+  last_modified_time?: number;
 }
 
 interface LarkResponse {
@@ -142,6 +152,8 @@ export class LarkFinanceImportClient {
           {
             recordId: item.record_id,
             fields: item.fields || {},
+            createdAt: recordTime(item.created_time),
+            modifiedAt: recordTime(item.last_modified_time),
           },
         ];
       });
@@ -170,17 +182,17 @@ export class LarkFinanceImportClient {
     for (let index = 0; index < recordIds.length; index += 100) {
       const batch = recordIds.slice(index, index + 100);
       const response = await this.requestJson({
-        method: "POST",
+        method: 'POST',
         path: `/open-apis/bitable/v1/apps/${baseToken}/tables/${tableId}/records/batch_get`,
         token,
         body: JSON.stringify({ record_ids: batch }),
       });
-      this.assertOk(response, "Không đọc được khách hàng Lark");
+      this.assertOk(response, 'Không đọc được khách hàng Lark');
       const rows = response.data?.records?.length
         ? response.data.records
         : response.data?.items || [];
       for (const item of rows) {
-        const recordId = item.record_id ? String(item.record_id) : "";
+        const recordId = item.record_id ? String(item.record_id) : '';
         if (!recordId) continue;
         records.push({ recordId, fields: item.fields || {} });
       }

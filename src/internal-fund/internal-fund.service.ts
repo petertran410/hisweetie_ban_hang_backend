@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuthService } from '../auth/auth.service';
+import { FinanceAccessService } from '../auth/finance-access.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
 import {
   INTERNAL_FUND_SCOPE_BRANCHES,
@@ -37,36 +37,25 @@ import {
 export class InternalFundService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly authService: AuthService,
+    private readonly access_: FinanceAccessService,
     private readonly approvalLifecycle: ApprovalLifecycleService,
     private readonly ledger: InternalFundLedgerService,
   ) {}
 
-  private scope(branchId: number) {
-    return Object.entries(INTERNAL_FUND_SCOPE_BRANCHES).find(([, ids]) =>
+  private isFundBranch(branchId: number) {
+    return Object.values(INTERNAL_FUND_SCOPE_BRANCHES).some((ids) =>
       (ids as readonly number[]).includes(branchId),
-    )?.[0];
+    );
   }
 
+  // Quyền theo vai trò × chi nhánh; chi nhánh phải thuộc danh sách của user.
   private async has(
     userId: number,
     branchId: number,
     action: InternalFundPermissionAction,
   ) {
-    const scope = this.scope(branchId);
-    if (!scope) return false;
-    const permissions = await this.authService.getPermissionsForBranch(
-      userId,
-      branchId,
-    );
-    if (permissions.includes(`internal_fund:${action}_${scope}`)) return true;
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { userRoles: { select: { role: { select: { name: true } } } } },
-    });
-    return (
-      user?.userRoles.some((row) => row.role.name === 'Super Admin') || false
-    );
+    if (!this.isFundBranch(branchId)) return false;
+    return this.access_.can(userId, branchId, `internal_fund:${action}`);
   }
 
   async assertPermission(
@@ -158,37 +147,22 @@ export class InternalFundService {
 
   async access(user: InternalFundActor) {
     const result: Record<number, string[]> = {};
-    const profile = await this.prisma.user.findUnique({
-      where: { id: user.id },
-      select: { userRoles: { select: { role: { select: { name: true } } } } },
-    });
-    const superAdmin = profile?.userRoles.some(
-      (row) => row.role.name === 'Super Admin',
-    );
+    const actions: InternalFundPermissionAction[] = [
+      'view',
+      'create_receipt',
+      'create_expense',
+      'transfer',
+      'submit_approval',
+      'mark_issued',
+      'mark_received',
+      'close',
+      'cancel',
+      'adjust',
+    ];
     for (const id of Object.values(INTERNAL_FUND_SCOPE_BRANCHES).flat()) {
       result[id] = [];
-      const permissions = await this.authService.getPermissionsForBranch(
-        user.id,
-        id,
-      );
-      for (const action of [
-        'view',
-        'create_receipt',
-        'create_expense',
-        'transfer',
-        'submit_approval',
-        'mark_issued',
-        'mark_received',
-        'close',
-        'cancel',
-        'adjust',
-      ] as InternalFundPermissionAction[]) {
-        if (
-          superAdmin ||
-          permissions.includes(`internal_fund:${action}_${this.scope(id)}`)
-        )
-          result[id].push(action);
-      }
+      for (const action of actions)
+        if (await this.has(user.id, id, action)) result[id].push(action);
     }
     return result;
   }
@@ -548,18 +522,25 @@ export class InternalFundService {
     });
   }
 
-  async postExpenseEntry(id: number, userId: number, issued: boolean) {
+  async postExpenseEntry(
+    id: number,
+    userId: number,
+    issued: boolean,
+    reason?: string,
+  ) {
     const entry = await this.prisma.internalFinanceEntry.findUnique({
       where: { id },
     });
     if (!entry || entry.direction !== 'EXPENSE')
       throw new NotFoundException('Không tìm thấy khoản chi');
-    const legacyScope = this.scope(entry.branchId);
-    const permissions = await this.authService.getPermissionsForBranch(
-      userId,
-      entry.branchId,
-    );
-    if (!permissions.includes(`warehouse_expense:mark_issued_${legacyScope}`)) {
+    // Đã chi: quyền của trang Phiếu chi kho, hoặc quyền xác nhận chi của quỹ.
+    if (
+      !(await this.access_.can(
+        userId,
+        entry.branchId,
+        'warehouse_expense:mark_issued',
+      ))
+    ) {
       await this.assertPermission(userId, entry.branchId, 'mark_issued');
     }
     if (!issued)
@@ -568,7 +549,7 @@ export class InternalFundService {
       );
     const adjust = await this.has(userId, entry.branchId, 'adjust');
     await this.prisma.$transaction((tx) =>
-      this.ledger.issueExpense(tx, entry, userId, adjust),
+      this.ledger.issueExpense(tx, entry, userId, adjust, reason),
     );
     return this.prisma.internalFinanceEntry.findUnique({
       where: { id },
@@ -745,13 +726,18 @@ export class InternalFundService {
         current.transactionType === 'EXPENSE' && current.entryId
           ? await tx.internalFinanceEntry.findUnique({
               where: { id: current.entryId },
-              select: { id: true, sourceType: true },
+              select: { id: true, sourceType: true, posManagedAt: true },
             })
           : null;
-      if (entry && entry.sourceType !== 'LARK_IMPORT') {
+      if (entry && (entry.sourceType !== 'LARK_IMPORT' || entry.posManagedAt)) {
         await tx.internalFinanceEntry.update({
           where: { id: entry.id },
-          data: { cashIssued: false, cashIssuedAt: null, cashIssuedBy: null },
+          data: {
+            cashIssued: false,
+            cashIssuedAt: null,
+            cashIssuedBy: null,
+            cashIssuedReason: null,
+          },
         });
         return this.ledger.releaseCancelled(tx, current, userId, dto.reason);
       }

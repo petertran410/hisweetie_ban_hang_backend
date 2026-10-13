@@ -669,6 +669,10 @@ export class WarehouseExpenseQueryDto {
   cashIssued?: string;
 
   @IsOptional()
+  @IsIn(['CHECKED', 'UNCHECKED'])
+  checkStatus?: string;
+
+  @IsOptional()
   @IsInt()
   @Type(() => Number)
   payerId?: number;
@@ -807,4 +811,16 @@ export class UpdateWarehouseExpenseDto {
 export class MarkWarehouseExpenseIssuedDto {
   @IsBoolean()
   cashIssued: boolean;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
+}
+
+export class CheckWarehouseExpenseDto {
+  @IsIn(['manager', 'accountant'])
+  role: 'manager' | 'accountant';
+
+  @IsBoolean()
+  checked: boolean;
 }

@@ -1,11 +1,17 @@
 import { BadRequestException } from '@nestjs/common';
+import { FinanceAccessService } from '../auth/finance-access.service';
 import { InternalFinanceService } from './internal-finance.service';
 
 describe('InternalFinanceService', () => {
   const makeService = (overrides: any = {}) => {
     const prisma = {
       user: {
-        findUnique: jest.fn().mockResolvedValue({ userRoles: [] }),
+        // User mặc định của test thuộc cả hai kho, không phải Super Admin.
+        findUnique: jest.fn().mockResolvedValue({
+          branchId: null,
+          userBranches: [{ branchId: 6 }, { branchId: 1 }],
+          userRoles: [],
+        }),
       },
       internalFinanceEntry: {
         findUnique: jest.fn(),
@@ -52,6 +58,7 @@ describe('InternalFinanceService', () => {
     const fundLedger = {
       postSystemTransaction: jest.fn().mockResolvedValue({ id: 1 }),
       cancelBySource: jest.fn().mockResolvedValue(null),
+      detachFromBatch: jest.fn(),
     };
     return {
       fundLedger,
@@ -61,7 +68,7 @@ describe('InternalFinanceService', () => {
         approvalLifecycle as any,
         config as any,
         codeService as any,
-        authService as any,
+        new FinanceAccessService(prisma as any, authService as any),
         internalFund as any,
         vehicles as any,
         fundLedger as any,
@@ -222,7 +229,7 @@ describe('InternalFinanceService', () => {
     });
     authService.getPermissionsForBranch.mockImplementation(
       async (_userId: number, branchId: number) =>
-        branchId === 6 ? ['warehouse_expense:view_hn'] : [],
+        branchId === 6 ? ['warehouse_expense:view'] : [],
     );
     const user = { id: 7, roles: [], permissions: [] };
 
@@ -251,29 +258,251 @@ describe('InternalFinanceService', () => {
   });
 
   it('requires mark_issued permission before confirming a warehouse expense', async () => {
-    const { service, prisma, authService } = makeService({
+    const { service, prisma, authService, internalFund } = makeService({
       internalFinanceEntry: {
         findUnique: jest.fn().mockResolvedValue({ id: 77, branchId: 6 }),
       },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:mark_issued_hn',
+      'warehouse_expense:mark_issued',
     ]);
-    const updateCashIssued = jest
-      .spyOn(service, 'updateCashIssued')
-      .mockResolvedValue({ id: 77 } as any);
-
     await service.markWarehouseExpenseIssued(
       77,
       { id: 7, roles: [], permissions: [] },
-      { cashIssued: true },
+      { cashIssued: true, reason: 'Chi gấp' },
     );
 
-    expect(updateCashIssued).toHaveBeenCalledWith(77, true, 7);
+    expect(internalFund.postExpenseEntry).toHaveBeenCalledWith(
+      77,
+      7,
+      true,
+      'Chi gấp',
+    );
     expect(prisma.internalFinanceEntry.findUnique).toHaveBeenCalledWith({
       where: { id: 77 },
       select: { id: true, branchId: true },
     });
+  });
+
+  it('ticks manager and accountant checks independently and derives the status', async () => {
+    const entry: any = {
+      id: 77,
+      branchId: 6,
+      direction: 'EXPENSE',
+      sourceType: 'PACKING_SLIP',
+      status: 'PENDING_ACCOUNTANT',
+      cashIssued: false,
+      cashFlowId: null,
+      weeklyBatchId: null,
+      weeklyBatch: null,
+      managerReviewedBy: null,
+      accountantReviewedBy: null,
+    };
+    const { service, authService, fundLedger } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn(async () => entry),
+        update: jest.fn(async ({ data }: any) => Object.assign(entry, data)),
+      },
+      internalFinanceReview: { create: jest.fn() },
+    });
+    const user = { id: 7, roles: [] };
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:check_manager',
+    ]);
+    await expect(
+      service.checkWarehouseExpense(77, user, {
+        role: 'accountant',
+        checked: true,
+      }),
+    ).rejects.toThrow('Không có quyền');
+    await service.checkWarehouseExpense(77, user, {
+      role: 'manager',
+      checked: true,
+    });
+    expect(entry).toMatchObject({
+      managerReviewedBy: 7,
+      status: 'PENDING_ACCOUNTANT',
+    });
+
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:check_accountant',
+    ]);
+    await service.checkWarehouseExpense(
+      77,
+      { id: 8, roles: [] },
+      {
+        role: 'accountant',
+        checked: true,
+      },
+    );
+    expect(entry).toMatchObject({
+      managerReviewedBy: 7,
+      accountantReviewedBy: 8,
+      status: 'MANAGER_APPROVED',
+    });
+
+    // Đã vào batch chưa gửi: bỏ tick thì rút khỏi batch.
+    entry.weeklyBatchId = 3;
+    entry.weeklyBatch = { id: 3, status: 'READY' };
+    await service.checkWarehouseExpense(
+      77,
+      { id: 8, roles: [] },
+      {
+        role: 'accountant',
+        checked: false,
+      },
+    );
+    expect(fundLedger.detachFromBatch).toHaveBeenCalled();
+    expect(entry).toMatchObject({
+      accountantReviewedBy: null,
+      status: 'PENDING_ACCOUNTANT',
+    });
+
+    entry.weeklyBatch = { id: 3, status: 'IN_APPROVAL' };
+    await expect(
+      service.checkWarehouseExpense(
+        77,
+        { id: 8, roles: [] },
+        {
+          role: 'accountant',
+          checked: true,
+        },
+      ),
+    ).rejects.toThrow('đã gửi Approval tuần');
+  });
+
+  it('prepares a warehouse batch only from entries ticked by both roles', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service, authService } = makeService({
+      branch: {
+        findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+      },
+      internalFinanceWeeklyBatch: {
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+      internalFinanceEntry: { findMany },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:prepare',
+    ]);
+    await expect(
+      service.prepareWarehouseExpenseBatch(
+        { branchId: 6, weekStart: '2026-10-05', weekEnd: '2026-10-11' },
+        { id: 7, roles: [] },
+      ),
+    ).rejects.toThrow('Không có khoản chi đủ điều kiện');
+    expect(findMany.mock.calls[0][0].where).toMatchObject({
+      status: { in: ['MANAGER_APPROVED', 'READY_FOR_WEEKLY_APPROVAL'] },
+      managerReviewedAt: { not: null },
+      accountantReviewedAt: { not: null },
+    });
+    // Dòng đồng bộ về cũng được gom khi đã đủ hai tick.
+    expect(findMany.mock.calls[0][0].where.sourceType).toBeUndefined();
+  });
+
+  it('cancels packing-slip entries, asking about cashflows only when a receipt exists', async () => {
+    const receipt: any = {
+      id: 1,
+      direction: 'RECEIPT',
+      status: 'POSTED',
+      cashFlowId: 40,
+      sourceSnapshot: {},
+    };
+    const fee: any = {
+      id: 2,
+      direction: 'EXPENSE',
+      status: 'READY_FOR_WEEKLY_APPROVAL',
+      weeklyBatchId: 3,
+      weeklyBatch: { id: 3, status: 'READY' },
+    };
+    const update = jest.fn();
+    const { service, prisma, cashFlowsService, fundLedger } = makeService({
+      internalFinanceEntry: {
+        findMany: jest.fn().mockResolvedValue([receipt, fee]),
+        update,
+      },
+    });
+    cashFlowsService.cancelInTransaction.mockResolvedValue({ cashFlow: {} });
+    expect(await service.packingSlipCancelCheck(9)).toEqual({
+      receiptCashFlowCount: 1,
+      blockedReason: null,
+    });
+    await expect(
+      service.cancelPackingSlipEntriesInTransaction(
+        prisma as any,
+        { id: 9, branchId: 6 },
+        7,
+      ),
+    ).rejects.toThrow('cần chọn hủy kèm hay giữ phiếu thu');
+    const cancelled = await service.cancelPackingSlipEntriesInTransaction(
+      prisma as any,
+      { id: 9, branchId: 6 },
+      7,
+      true,
+    );
+    expect(cancelled).toHaveLength(1);
+    expect(cashFlowsService.cancelInTransaction).toHaveBeenCalledWith(
+      prisma,
+      40,
+    );
+    expect(fundLedger.cancelBySource).toHaveBeenCalled();
+    expect(fundLedger.detachFromBatch).toHaveBeenCalledWith(prisma, fee);
+    expect(update).toHaveBeenCalledTimes(2);
+
+    fee.weeklyBatch.status = 'IN_APPROVAL';
+    expect((await service.packingSlipCancelCheck(9)).blockedReason).toContain(
+      'đã gửi Approval tuần',
+    );
+  });
+
+  it('keeps a user assigned to one warehouse out of the other warehouse', async () => {
+    const { service, prisma, authService, internalFund } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue({ id: 77, branchId: 1 }),
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+      },
+    });
+    // Vai trò có đủ quyền, nhưng user chỉ được truy cập Kho Hà Nội (6).
+    prisma.user.findUnique.mockResolvedValue({
+      branchId: 6,
+      userBranches: [{ branchId: 6 }],
+      userRoles: [],
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:view',
+      'warehouse_expense:mark_issued',
+      'warehouse_expense:check_manager',
+      'warehouse_cash:view',
+      'warehouse_cash:post',
+      'cash_flows:view',
+    ]);
+    const user = { id: 7 };
+
+    await service.listWarehouseExpenses({ page: 1, limit: 50 }, user);
+    const where = prisma.internalFinanceEntry.findMany.mock.calls[0][0].where;
+    expect(where.AND).toEqual(
+      expect.arrayContaining([{ branchId: { in: [6] } }]),
+    );
+    await expect(
+      service.listWarehouseExpenses({ branchId: 1, page: 1, limit: 50 }, user),
+    ).rejects.toThrow('Không có quyền xem phiếu chi của chi nhánh này');
+    await expect(
+      service.markWarehouseExpenseIssued(77, user, { cashIssued: true }),
+    ).rejects.toThrow('Không có quyền mark_issued');
+    await expect(
+      service.checkWarehouseExpense(77, user, {
+        role: 'manager',
+        checked: true,
+      }),
+    ).rejects.toThrow('Không có quyền check_manager');
+    expect(internalFund.postExpenseEntry).not.toHaveBeenCalled();
+
+    expect(await service.warehouseCashBranches(user, 'view')).toEqual([6]);
+    await expect(
+      service.assertWarehouseCashEntry(user, 'post', 77),
+    ).rejects.toThrow('Không có quyền post tiền mặt kho');
+    expect(await service.financeViewBranches(user)).toEqual([6]);
   });
 
   it('updates only an open manual warehouse expense', async () => {
@@ -294,7 +523,7 @@ describe('InternalFinanceService', () => {
       },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:update_hn',
+      'warehouse_expense:update',
     ]);
 
     await service.updateWarehouseExpense(
@@ -338,7 +567,7 @@ describe('InternalFinanceService', () => {
       },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:update_hn',
+      'warehouse_expense:update',
     ]);
 
     await expect(
@@ -405,7 +634,7 @@ describe('InternalFinanceService', () => {
   it('requires a reason and due date for a missing-evidence exception', async () => {
     const { service, prisma, authService } = makeService();
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:update_hn',
+      'warehouse_expense:update',
     ]);
     prisma.internalFinanceEntry.findUnique.mockResolvedValue({
       id: 11,
@@ -455,7 +684,7 @@ describe('InternalFinanceService', () => {
   it('closes an evidence exception when attachments are added', async () => {
     const { service, prisma, authService } = makeService();
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:update_hn',
+      'warehouse_expense:update',
     ]);
     prisma.internalFinanceEntry.findUnique.mockResolvedValue({
       id: 12,
@@ -593,7 +822,7 @@ describe('InternalFinanceService', () => {
       internalFinanceEntry: { create },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:create_hn',
+      'warehouse_expense:create',
     ]);
 
     await service.createWarehouseExpense(
@@ -1095,6 +1324,40 @@ describe('InternalFinanceService', () => {
     expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
   });
 
+  it('does not credit the fund again when posting a receipt synced from the cash ledger', async () => {
+    const state = {
+      ...warehouseEntry(),
+      subCategory: 'WAREHOUSE_ITEM_SALE',
+      customerId: null,
+      sourceKey: 'LARK_CASH:base:tbl:rec1',
+      sourceSnapshot: { receiptKind: 'WAREHOUSE_SALE' },
+      invoiceLinks: [],
+    };
+    const { service, prisma, cashFlowsService, fundLedger } = makeService({
+      customer: { findMany: jest.fn().mockResolvedValue([]) },
+      invoice: { findMany: jest.fn() },
+    });
+    prisma.internalFinanceEntry.findUnique.mockImplementation(async () => ({
+      ...state,
+    }));
+    prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+    prisma.internalFinanceEntry.update.mockImplementation(
+      async ({ data }: any) => {
+        Object.assign(state, data);
+        return { ...state };
+      },
+    );
+    cashFlowsService.createStandaloneCashReceipt.mockResolvedValue({
+      cashFlow: { id: 12, code: 'TT000012' },
+    });
+
+    await service.postWarehouseReceipt(4, { allocations: [] }, 7);
+
+    expect(state.status).toBe('POSTED');
+    expect((state as any).posManagedAt).toBeInstanceOf(Date);
+    expect(fundLedger.postSystemTransaction).not.toHaveBeenCalled();
+  });
+
   it('cancels a warehouse receipt without cashflows', async () => {
     const state = { ...warehouseEntry(), status: 'PENDING_ACCOUNTANT' } as any;
     const { service, prisma, cashFlowsService } = makeService();
@@ -1112,7 +1375,7 @@ describe('InternalFinanceService', () => {
       7,
     );
 
-    expect(result.status).toBe('CANCELLED');
+    expect(result!.status).toBe('CANCELLED');
     expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
     expect(cashFlowsService.logCancellation).not.toHaveBeenCalled();
   });

@@ -1,4 +1,7 @@
-import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
+import {
+  attachmentCutoff,
+  InternalFinanceLarkImportService,
+} from './internal-finance-lark-import.service';
 
 describe('InternalFinanceLarkImportService', () => {
   const tables = [
@@ -64,6 +67,7 @@ describe('InternalFinanceLarkImportService', () => {
       user: { findMany: jest.fn().mockResolvedValue([]) },
       ...overrides.prisma,
     };
+    prisma.$executeRaw = jest.fn();
     prisma.$transaction = jest.fn(async (fn: any) => fn(prisma));
     const uploadService = {
       saveFile: jest.fn().mockResolvedValue({
@@ -79,28 +83,31 @@ describe('InternalFinanceLarkImportService', () => {
         .mockResolvedValue(['Số tiền', 'Nội dung', 'Chứng từ']),
       forEachRecordPage: jest.fn(async (_base, tableId, _token, onPage) => {
         if (tableId !== 'hn') return 0;
-        await onPage([
-          {
-            recordId: 'rec1',
-            fields: {
-              'Số tiền': 100000,
-              'Nội dung': 'Phí Grab HD128738',
-              'Chứng từ': [
-                {
-                  file_token: 'file1',
-                  name: 'bill.jpg',
-                  url: 'https://lark/file1',
-                },
-              ],
+        await onPage(
+          [
+            {
+              recordId: 'rec1',
+              fields: {
+                'Số tiền': 100000,
+                'Nội dung': 'Phí Grab HD128738',
+                'Chứng từ': [
+                  {
+                    file_token: 'file1',
+                    name: 'bill.jpg',
+                    url: 'https://lark/file1',
+                  },
+                ],
+              },
             },
+            { recordId: 'rec0', fields: { 'Số tiền': 0 } },
+          ],
+          {
+            page: 1,
+            pageRecords: 2,
+            totalFetched: 2,
+            hasMore: false,
           },
-          { recordId: 'rec0', fields: { 'Số tiền': 0 } },
-        ], {
-          page: 1,
-          pageRecords: 2,
-          totalFetched: 2,
-          hasMore: false,
-        });
+        );
         return 2;
       }),
       download: jest.fn().mockResolvedValue(Buffer.from('file')),
@@ -211,6 +218,67 @@ describe('InternalFinanceLarkImportService', () => {
     expect(prisma.cashFlow.create).not.toHaveBeenCalled();
   });
 
+  it('keeps a checkbox tick even when no reviewer person is attached', async () => {
+    const { service, prisma } = makeService({
+      lark: {
+        forEachRecordPage: jest.fn(async (_base, tableId, _token, onPage) => {
+          if (tableId !== 'hn') return 0;
+          await onPage(
+            [
+              {
+                recordId: 'rec1',
+                createdAt: new Date('2026-09-20T02:00:00Z'),
+                modifiedAt: new Date('2026-09-21T03:00:00Z'),
+                fields: {
+                  'Số tiền': 50000,
+                  'Nội dung': 'Phí gửi bến',
+                  'Kế Toán Kho': true,
+                  'Quản Lý Kho': true,
+                },
+              },
+            ],
+            { page: 1, pageRecords: 1, totalFetched: 1, hasMore: false },
+          );
+          return 1;
+        }),
+      },
+    });
+    await service.importHistory({ dryRun: false, sources: ['EXPENSE_HN'] }, 7);
+    const created = prisma.internalFinanceEntry.create.mock.calls[0][0].data;
+    expect(created.status).toBe('MANAGER_APPROVED');
+    // Ngày tạo / sửa cuối lấy theo dòng nguồn; trống ngày chi thì dùng ngày tạo.
+    expect(created.createdAt).toEqual(new Date('2026-09-20T02:00:00Z'));
+    expect(created.updatedAt).toEqual(new Date('2026-09-21T03:00:00Z'));
+    expect(created.occurredAt).toEqual(new Date('2026-09-20T02:00:00Z'));
+    expect(created.accountantReviewedAt).toBeInstanceOf(Date);
+    expect(created.managerReviewedAt).toBeInstanceOf(Date);
+    expect(created.accountantReviewer).toBeUndefined();
+  });
+
+  it('does not overwrite a row that was continued on POS', async () => {
+    const { service, prisma } = makeService();
+    prisma.internalFinanceEntry.findMany.mockResolvedValue([
+      {
+        id: 9,
+        sourceKey: 'LARK:finance-base:hn:rec1',
+        status: 'MANAGER_APPROVED',
+        cashFlowId: null,
+        cashIssued: false,
+        posManagedAt: new Date(),
+        sourceSnapshot: { importedFileTokens: ['file1'] },
+      },
+    ]);
+    const result = await service.importHistory(
+      { dryRun: false, sources: ['EXPENSE_HN'] },
+      7,
+    );
+    expect(result.tables[0]).toMatchObject({ created: 0, updated: 0 });
+    for (const call of prisma.internalFinanceEntry.update.mock.calls) {
+      expect(call[0].data.status).toBeUndefined();
+      expect(call[0].data.amount).toBeUndefined();
+    }
+  });
+
   it('does not overwrite an entry that already posted to CashFlow', async () => {
     const { service, prisma } = makeService();
     const postedRow = {
@@ -223,8 +291,7 @@ describe('InternalFinanceLarkImportService', () => {
       sourceSnapshot: null,
     };
     prisma.internalFinanceEntry.findMany.mockImplementation(
-      async (args: any = {}) =>
-        args?.where?.sourceKey?.in ? [postedRow] : [],
+      async (args: any = {}) => (args?.where?.sourceKey?.in ? [postedRow] : []),
     );
 
     const posted = await service.importHistory(
@@ -269,7 +336,12 @@ describe('InternalFinanceLarkImportService', () => {
     ),
     forEachRecordPage: jest.fn(
       async (_base: string, tableId: string, _token: string, onPage: any) => {
-        const page = { page: 1, pageRecords: 1, totalFetched: 1, hasMore: false };
+        const page = {
+          page: 1,
+          pageRecords: 1,
+          totalFetched: 1,
+          hasMore: false,
+        };
         if (tableId === 'fuel') {
           await onPage(
             [
@@ -380,7 +452,7 @@ describe('InternalFinanceLarkImportService', () => {
     expect([...storedEntries.values()][0]).toMatchObject({
       category: 'FUEL',
       payerId: 6,
-      status: 'APPROVED',
+      status: 'MANAGER_APPROVED',
       cashIssued: true,
     });
   });
@@ -417,9 +489,7 @@ describe('InternalFinanceLarkImportService', () => {
           'Số tiền': '105000',
           'Trạng thái duyệt': ['Approved'],
           instance_code_1: 'INSTANCE-1',
-          'Người tạo phiếu': [
-            { id: 'ou_creator', name: 'Người tạo' },
-          ],
+          'Người tạo phiếu': [{ id: 'ou_creator', name: 'Người tạo' }],
         },
       },
     });
@@ -435,6 +505,151 @@ describe('InternalFinanceLarkImportService', () => {
     });
     expect(row.weekStart.getUTCFullYear()).toBe(2025);
     expect(row.weekStart.getUTCDate()).toBe(4);
+  });
+
+  it('imports only weeks already sent for approval and attaches their expenses', async () => {
+    const weekRow = (recordId: string, week: number, extra: any) => ({
+      recordId,
+      fields: {
+        'Tuần chi': week,
+        'Năm chi': '2026',
+        'Ngày bắt đầu': Date.UTC(2026, 9, 5),
+        'Ngày kết thúc': Date.UTC(2026, 9, 10),
+        'Số tiền': 500000,
+        ...extra,
+      },
+    });
+    const batchUpsert = jest.fn().mockResolvedValue({
+      id: 3,
+      code: 'TCNB-TUAN-HN-2026-W41',
+      approvalRequestId: null,
+    });
+    const entryUpdateMany = jest.fn();
+    const entryFindMany = jest.fn().mockResolvedValue([{ id: 11 }, { id: 12 }]);
+    const { service, prisma } = makeService({
+      prisma: {
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          upsert: batchUpsert,
+          update: jest.fn(),
+        },
+        approvalRequest: {
+          findUnique: jest.fn(),
+          upsert: jest.fn().mockResolvedValue({ id: 70 }),
+        },
+        approvalRequestEvent: { upsert: jest.fn() },
+      },
+      lark: {
+        listTables: jest
+          .fn()
+          .mockResolvedValue([
+            { tableId: 'tbljYaWkP1tyBjTk', name: 'Approval PHIẾU CHI kho HN' },
+          ]),
+        listFieldNames: jest
+          .fn()
+          .mockResolvedValue([
+            'Tuần chi',
+            'Năm chi',
+            'Ngày bắt đầu',
+            'Ngày kết thúc',
+            'Số tiền',
+            'Trạng thái duyệt',
+            'instance_code_1',
+          ]),
+        forEachRecordPage: jest.fn(async (_base, _table, _token, onPage) => {
+          await onPage(
+            [
+              weekRow('recA', 41, {
+                'Trạng thái duyệt': 'Approved',
+                instance_code_1: 'INST-41',
+              }),
+              weekRow('recB', 42, {}),
+            ],
+            { page: 1, pageRecords: 2, totalFetched: 2, hasMore: false },
+          );
+          return 2;
+        }),
+      },
+    });
+    prisma.internalFinanceEntry.findMany = entryFindMany;
+    prisma.internalFinanceEntry.updateMany = entryUpdateMany;
+
+    const result = await service.importHistory(
+      { dryRun: false, sources: ['APPROVAL_HN'] },
+      7,
+    );
+
+    expect(result.tables[0]).toMatchObject({ created: 1, skipped: 1 });
+    expect(batchUpsert).toHaveBeenCalledTimes(1);
+    expect(batchUpsert.mock.calls[0][0].create).toMatchObject({
+      code: 'TCNB-TUAN-HN-2026-W41',
+      status: 'APPROVED',
+    });
+    const where = entryFindMany.mock.calls.at(-1)[0].where;
+    expect(where.sourceType).toBeUndefined();
+    expect(where.OR).toEqual([
+      { weeklyBatchId: null, posManagedAt: null },
+      { weeklyBatchId: 3 },
+    ]);
+    // Gắn tuần bằng SQL để không đổi ngày cập nhật của phiếu.
+    expect(entryUpdateMany).not.toHaveBeenCalled();
+    const [sql, ...values] = prisma.$executeRaw.mock.calls.at(-1);
+    expect(sql.join('?')).toContain('"weeklyBatchId" = ?, status = ?');
+    expect(values).toEqual([3, 'APPROVED', [11, 12]]);
+  });
+
+  it('downloads documents only for the last month and never twice after an interrupted run', async () => {
+    expect(
+      attachmentCutoff(new Date('2026-10-13T00:00:00Z')).toISOString(),
+    ).toBe('2026-09-13T00:00:00.000Z');
+    const file = (token: string) => ({
+      token,
+      name: `${token}.jpg`,
+      kind: 'EVIDENCE',
+    });
+    const entry: any = {
+      id: 5,
+      sourceSnapshot: { pendingAttachments: [file('a'), file('b')] },
+    };
+    const { service, prisma, lark, uploadService } = makeService();
+    prisma.internalFinanceEntry.findMany = jest.fn().mockResolvedValue([entry]);
+    prisma.internalFinanceEntry.findUnique = jest.fn(async () => entry);
+    prisma.internalFinanceEntry.update = jest.fn(async ({ data }: any) =>
+      Object.assign(entry, data),
+    );
+    // File thứ hai lỗi mạng: file đầu vẫn phải được đánh dấu đã tải ngay.
+    lark.download
+      .mockResolvedValueOnce(Buffer.from('a'))
+      .mockRejectedValueOnce(new Error('mất mạng'));
+    const run = () =>
+      (service as any).importPendingAttachments({
+        userId: 7,
+        pendingEntryIds: new Set([5]),
+        runState: {
+          attachmentTotal: 2,
+          attachmentDownloaded: 0,
+          attachmentFailures: [],
+        },
+      });
+
+    await run();
+    const where = prisma.internalFinanceEntry.findMany.mock.calls[0][0].where;
+    expect(where.occurredAt.gte).toBeInstanceOf(Date);
+    expect(entry.sourceSnapshot).toMatchObject({
+      importedFileTokens: ['a'],
+      pendingAttachments: [file('b')],
+    });
+    expect(prisma.internalFinanceAttachment.create).toHaveBeenCalledTimes(1);
+
+    lark.download.mockResolvedValue(Buffer.from('b'));
+    await run();
+    await run();
+    expect(prisma.internalFinanceAttachment.create).toHaveBeenCalledTimes(2);
+    expect(uploadService.saveFile).toHaveBeenCalledTimes(2);
+    expect(entry.sourceSnapshot).toMatchObject({
+      importedFileTokens: ['a', 'b'],
+      pendingAttachments: [],
+    });
   });
 
   it('creates one internal fund transaction for an already-issued entry without CashFlow', async () => {
@@ -540,11 +755,14 @@ describe('InternalFinanceLarkImportService', () => {
     prisma.packingSlip.findMany.mockResolvedValue([
       { id: 25, code: 'BD00025' },
     ]);
-    prisma.internalFinanceEntry.findMany.mockImplementation(async (args: any) => {
-      const where = args?.where || {};
-      if (where.sourceKey?.in) return [{ sourceKey: 'PACKING_SLIP:25:FEE_GRAB' }];
-      return [];
-    });
+    prisma.internalFinanceEntry.findMany.mockImplementation(
+      async (args: any) => {
+        const where = args?.where || {};
+        if (where.sourceKey?.in)
+          return [{ sourceKey: 'PACKING_SLIP:25:FEE_GRAB' }];
+        return [];
+      },
+    );
     lark.forEachRecordPage.mockImplementation(
       async (_base: string, tableId: string, _token: string, onPage: any) => {
         if (tableId !== 'hn') return 0;

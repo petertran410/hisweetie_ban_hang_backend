@@ -42,6 +42,8 @@ interface LedgerRow {
   description: string;
   status: 'POSTED' | 'CANCELLED';
   linkedExpenseIds: string[];
+  createdAt: Date | null;
+  modifiedAt: Date | null;
 }
 
 /**
@@ -52,6 +54,7 @@ interface LedgerRow {
 @Injectable()
 export class InternalFundHistorySyncService {
   private readonly logger = new Logger(InternalFundHistorySyncService.name);
+  private current: Promise<void> | null = null;
   private status: FundHistorySyncStatus = {
     running: false,
     startedAt: null,
@@ -90,7 +93,7 @@ export class InternalFundHistorySyncService {
       skipped: 0,
       error: null,
     };
-    void this.run(baseToken, userId)
+    this.current = this.run(baseToken, userId)
       .catch((error: any) => {
         this.status.error = error?.message || 'Đồng bộ sổ quỹ thất bại';
         this.logger.error(`[FUND_HISTORY] ${this.status.error}`);
@@ -99,6 +102,13 @@ export class InternalFundHistorySyncService {
         this.status.running = false;
         this.status.finishedAt = new Date().toISOString();
       });
+    return this.getStatus();
+  }
+
+  /** Chạy đồng bộ và chờ xong; dùng cho luồng đồng bộ gộp. */
+  async runAndWait(userId: number): Promise<FundHistorySyncStatus> {
+    this.start(userId);
+    await this.current;
     return this.getStatus();
   }
 
@@ -181,6 +191,8 @@ export class InternalFundHistorySyncService {
         ...this.recordIds(fields['Phiếu Chi HN']),
         ...this.recordIds(fields['Phiếu Chi SG']),
       ],
+      createdAt: record.createdAt ?? null,
+      modifiedAt: record.modifiedAt ?? record.createdAt ?? null,
     };
   }
 
@@ -265,6 +277,8 @@ export class InternalFundHistorySyncService {
           status: row.status,
           cancelledAt: row.status === 'CANCELLED' ? new Date() : null,
           createdBy: userId,
+          ...(row.createdAt ? { createdAt: row.createdAt } : {}),
+          ...(row.modifiedAt ? { updatedAt: row.modifiedAt } : {}),
         });
         touch(row.branchId, row.occurredAt);
         continue;
@@ -306,6 +320,7 @@ export class InternalFundHistorySyncService {
               description: row.description,
               status: row.status,
               cancelledAt: row.status === 'CANCELLED' ? new Date() : null,
+              ...(row.modifiedAt ? { updatedAt: row.modifiedAt } : {}),
             },
           });
           this.status.updated += 1;

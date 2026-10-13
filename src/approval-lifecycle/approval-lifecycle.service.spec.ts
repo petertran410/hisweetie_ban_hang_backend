@@ -622,6 +622,61 @@ describe('ApprovalLifecycleService', () => {
     expect(cashFlowsService.createApprovalCashFlow).not.toHaveBeenCalled();
   });
 
+  it('auto-issues every warehouse expense when the weekly approval is approved, and reverts on recall', async () => {
+    const request: any = {
+      id: 7,
+      instanceCode: 'instance-7',
+      status: 'PENDING',
+      lastEventAt: null,
+      sourceType: 'INTERNAL_FINANCE_WEEKLY',
+      sourceId: 4,
+    };
+    const { service, prisma, fundLedger } = createService({
+      approvalRequest: {
+        findUnique: jest.fn(async () => request),
+        update: jest.fn(async ({ data }: any) => Object.assign(request, data)),
+      },
+    });
+    (prisma as any).internalFinanceWeeklyBatch = {
+      findUnique: jest.fn().mockResolvedValue({ branchId: 6, createdBy: 9 }),
+      update: jest.fn(),
+    };
+    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (fundLedger as any).issueApprovedBatch = jest.fn();
+    (fundLedger as any).revertApprovedBatch = jest.fn();
+    const event = {
+      approval_code: 'E759B9DB-B8EA-4DC6-B309-2E162D94EEF3',
+      instance_code: 'instance-7',
+    };
+
+    await service.handleInstanceEvent({
+      ...event,
+      status: 'APPROVED',
+      instance_operate_time: '1790440000000',
+      uuid: 'approved',
+    });
+    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
+      prisma,
+      4,
+      7,
+      9,
+    );
+    expect((fundLedger as any).revertApprovedBatch).not.toHaveBeenCalled();
+
+    await service.handleInstanceEvent({
+      ...event,
+      status: 'REVERTED',
+      instance_operate_time: '1790440001000',
+      uuid: 'reverted',
+    });
+    expect((fundLedger as any).revertApprovedBatch).toHaveBeenCalledWith(
+      prisma,
+      4,
+      7,
+      9,
+    );
+  });
+
   it('reconciles a pending request when the webhook was missed', async () => {
     const { service, prisma, larkClient } = createService({
       approvalRequest: {

@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { AuthService } from '../auth/auth.service';
+import { FinanceAccessService } from '../auth/finance-access.service';
 import { fundDayStart } from '../internal-fund/internal-fund-ledger.service';
 import {
   CreateVehicleDto,
@@ -37,7 +37,7 @@ const ALL_ACTIONS: VehiclePermissionAction[] = [
 export class VehiclesService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly authService: AuthService,
+    private readonly access: FinanceAccessService,
   ) {}
 
   scopeForBranch(branchId: number) {
@@ -46,32 +46,17 @@ export class VehiclesService {
     );
   }
 
-  /** Chi nhánh mà user có ít nhất một trong các quyền `vehicles:{action}_{scope}`. */
+  /** Chi nhánh kho mà user được truy cập và có ít nhất một quyền `vehicles:{action}`. */
   async allowedBranches(
     user: any,
     actions: VehiclePermissionAction[],
   ): Promise<number[]> {
     if (!user?.id) return [];
-    if (user.roles?.includes('Super Admin')) {
-      return VEHICLE_SCOPES.flatMap((scope) => [...scope.branchIds]);
-    }
-    const branches: number[] = [];
-    for (const scope of VEHICLE_SCOPES) {
-      for (const branchId of scope.branchIds) {
-        const permissions = await this.authService.getPermissionsForBranch(
-          user.id,
-          branchId,
-        );
-        if (
-          actions.some((action) =>
-            permissions.includes(`vehicles:${action}_${scope.key}`),
-          )
-        ) {
-          branches.push(branchId);
-        }
-      }
-    }
-    return branches;
+    return this.access.branchesFor(
+      user,
+      actions.map((action) => `vehicles:${action}`),
+      VEHICLE_SCOPES.flatMap((scope) => [...scope.branchIds]),
+    );
   }
 
   async assertPermission(
@@ -79,18 +64,12 @@ export class VehiclesService {
     branchId: number,
     action: VehiclePermissionAction,
   ) {
-    const scope = this.scopeForBranch(branchId);
-    if (!scope) {
+    if (!this.scopeForBranch(branchId)) {
       throw new ForbiddenException(
         'Chi nhánh không thuộc phạm vi xe cộ của kho',
       );
     }
-    if (user?.roles?.includes('Super Admin')) return;
-    const permissions = await this.authService.getPermissionsForBranch(
-      user.id,
-      branchId,
-    );
-    if (!permissions.includes(`vehicles:${action}_${scope.key}`)) {
+    if (!(await this.access.can(user, branchId, `vehicles:${action}`))) {
       throw new ForbiddenException(
         `Không có quyền ${action} xe cộ cho chi nhánh này`,
       );

@@ -1,98 +1,48 @@
 // prisma/seeds/add-vehicle-permissions.ts
 //
-// Mục đích: CHỈ upsert các quyền cho tính năng "Xe cộ" (xăng dầu, chăm sóc xe,
-// danh sách xe) ở /tai-chinh/xe-co. File không xóa/reset dữ liệu và không tự
-// gán quyền cho role/user. Chạy lại nhiều lần vẫn an toàn (idempotent).
+// Mục đích: upsert các quyền cho tính năng "Xe cộ" (xăng dầu, chăm sóc xe,
+// danh sách xe) ở /tai-chinh/xe-co, đồng thời xóa các quyền kiểu cũ có hậu tố
+// chi nhánh (vehicles:view_hn, vehicles:view_sg, ...).
 //
-// Quyền (hn = Kho Hà Nội, sg = Kho Sài Gòn):
-//   vehicles:view_hn     vehicles:view_sg
-//   vehicles:create_hn   vehicles:create_sg
-//   vehicles:update_hn   vehicles:update_sg
-//   vehicles:manage_hn   vehicles:manage_sg
+// Quyền KHÔNG gắn chi nhánh trong tên. User làm được việc X ở kho B khi B thuộc
+// danh sách chi nhánh của user và vai trò của user tại B có quyền X.
+//
+// File không tự gán quyền cho role/user. Chạy lại nhiều lần vẫn an toàn.
 //
 // Cách chạy:
 //   yarn seed:vehicles
-// Hoặc:
-//   npx ts-node prisma/seeds/add-vehicle-permissions.ts
-//
-// Sau khi chạy, hãy gán quyền cho role/user qua giao diện phân quyền.
 
 import { PrismaClient } from '@prisma/client';
+import {
+  removeBranchSuffixedPermissions,
+  upsertFinancePermissions,
+} from './lib/finance-permissions';
 
 const prisma = new PrismaClient();
 
-const SCOPES = [
-  { key: 'hn', label: 'Kho Hà Nội' },
-  { key: 'sg', label: 'Kho Sài Gòn' },
-] as const;
-
-const ACTIONS = [
-  {
-    key: 'view',
-    description: 'Xem phiếu xăng dầu, chăm sóc xe và danh sách xe',
-  },
-  { key: 'create', description: 'Tạo phiếu xăng dầu, chăm sóc xe' },
-  { key: 'update', description: 'Sửa, hủy phiếu xăng dầu, chăm sóc xe' },
-  { key: 'manage', description: 'Thêm, sửa, ngừng dùng xe trong danh sách xe' },
-] as const;
-
-const PERMISSIONS = SCOPES.flatMap((scope) =>
-  ACTIONS.map((action) => ({
-    name: `vehicles:${action.key}_${scope.key}`,
-    resource: 'vehicles',
-    action: `${action.key}_${scope.key}`,
-    description: `${action.description} - ${scope.label}`,
-  })),
-);
+const PERMISSIONS = [
+  ['view', 'Xem phiếu xăng dầu, chăm sóc xe và danh sách xe'],
+  ['create', 'Tạo phiếu xăng dầu, chăm sóc xe'],
+  ['update', 'Sửa, hủy phiếu xăng dầu, chăm sóc xe'],
+  ['manage', 'Thêm, sửa, ngừng dùng xe trong danh sách xe'],
+].map(([action, description]) => ({
+  resource: 'vehicles',
+  action,
+  description,
+}));
 
 async function main() {
   console.log(`🌱 Upsert ${PERMISSIONS.length} quyền cho Xe cộ...`);
-
-  let created = 0;
-  let updated = 0;
-
-  for (const permission of PERMISSIONS) {
-    const existing = await prisma.permission.findUnique({
-      where: { name: permission.name },
-    });
-
-    if (existing) {
-      await prisma.permission.update({
-        where: { name: permission.name },
-        data: {
-          resource: permission.resource,
-          action: permission.action,
-          scope: 'all',
-          category: 'Tài chính',
-          description: permission.description,
-        },
-      });
-      updated += 1;
-      console.log(`  ↷ Đã cập nhật "${permission.name}" (id=${existing.id}).`);
-      continue;
-    }
-
-    const createdPermission = await prisma.permission.create({
-      data: {
-        name: permission.name,
-        resource: permission.resource,
-        action: permission.action,
-        scope: 'all',
-        category: 'Tài chính',
-        description: permission.description,
-      },
-    });
-    created += 1;
-    console.log(
-      `  ✅ Đã tạo "${createdPermission.name}" (id=${createdPermission.id}).`,
-    );
-  }
-
-  console.log(
-    `📊 Tổng kết: tạo mới ${created}, cập nhật ${updated}, tổng cộng ${PERMISSIONS.length} quyền.`,
+  const removed = await removeBranchSuffixedPermissions(prisma, ['vehicles']);
+  const { created, updated } = await upsertFinancePermissions(
+    prisma,
+    PERMISSIONS,
   );
   console.log(
-    '👉 Seed này không tự gán quyền. Hãy gán quyền cho role/user qua giao diện phân quyền.',
+    `📊 Tổng kết: tạo mới ${created}, cập nhật ${updated}, xóa quyền kiểu cũ ${removed}.`,
+  );
+  console.log(
+    '👉 Seed này không tự gán quyền. Hãy gán quyền cho vai trò theo từng chi nhánh qua giao diện phân quyền.',
   );
 }
 

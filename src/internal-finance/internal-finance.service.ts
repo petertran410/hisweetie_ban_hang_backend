@@ -11,7 +11,10 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
-import { AuthService } from '../auth/auth.service';
+import {
+  FinanceAccessService,
+  type FinanceActor,
+} from '../auth/finance-access.service';
 import {
   EXPENSE_FIELD_IDS,
   type ApprovalFormItem,
@@ -38,6 +41,7 @@ import {
   CreateVehicleCareEntryDto,
   CreateWarehouseReceiptDto,
   CancelWarehouseReceiptDto,
+  CheckWarehouseExpenseDto,
   AddInternalFinanceAttachmentsDto,
   CreateWarehouseExpenseDto,
   InternalFinanceQueryDto,
@@ -88,7 +92,11 @@ type WarehouseExpenseAction =
   | 'update'
   | 'prepare'
   | 'submit'
-  | 'mark_issued';
+  | 'mark_issued'
+  | 'check_manager'
+  | 'check_accountant';
+
+type WarehouseCashAction = 'view' | 'create' | 'update' | 'post' | 'cancel';
 
 @Injectable()
 export class InternalFinanceService {
@@ -98,7 +106,7 @@ export class InternalFinanceService {
     private readonly approvalLifecycle: ApprovalLifecycleService,
     private readonly config: ConfigService,
     private readonly codeService: InternalFinanceCodeService,
-    private readonly authService: AuthService,
+    private readonly access: FinanceAccessService,
     private readonly internalFund: InternalFundService,
     private readonly vehicles: VehiclesService,
     private readonly fundLedger: InternalFundLedgerService,
@@ -129,6 +137,8 @@ export class InternalFinanceService {
           },
           cashFlow: { select: { id: true, code: true, status: true } },
           cashIssuer: { select: { id: true, name: true } },
+          managerReviewer: { select: { id: true, name: true } },
+          accountantReviewer: { select: { id: true, name: true } },
           attachments: true,
           invoiceLinks: {
             include: {
@@ -157,7 +167,22 @@ export class InternalFinanceService {
 
   async getSummary(query: InternalFinanceQueryDto) {
     const where: any = this.buildEntryWhere(query);
-    const conditions = Array.isArray(where.AND) ? where.AND : [];
+    // Phiếu đã hủy / bị từ chối không tính vào tổng.
+    const conditions = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      ...(query.status
+        ? []
+        : [
+            {
+              status: {
+                notIn: [
+                  INTERNAL_FINANCE_STATUS.CANCELLED,
+                  INTERNAL_FINANCE_STATUS.REJECTED,
+                ],
+              },
+            },
+          ]),
+    ];
     const withCondition = (condition: any) =>
       conditions.length ? { AND: [...conditions, condition] } : condition;
     const [receipt, expense, posted, missingEvidence] = await Promise.all([
@@ -438,6 +463,16 @@ export class InternalFinanceService {
       conditions.push({ cashIssued: true });
     } else if (query.cashIssued === 'NOT_ISSUED') {
       conditions.push({ cashIssued: false });
+    }
+    if (query.checkStatus === 'CHECKED') {
+      conditions.push({
+        managerReviewedAt: { not: null },
+        accountantReviewedAt: { not: null },
+      });
+    } else if (query.checkStatus === 'UNCHECKED') {
+      conditions.push({
+        OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+      });
     }
     if (query.payerId) conditions.push({ payerId: query.payerId });
     if (query.expenseItem) conditions.push({ expenseItem: query.expenseItem });
@@ -940,23 +975,26 @@ export class InternalFinanceService {
 
     // Tiền thu tại kho vào quỹ nội bộ cùng lúc phiếu chuyển sang "Đã lập".
     return this.prisma.$transaction(async (tx) => {
-      await this.fundLedger.postSystemTransaction(tx, {
-        branchId: entry.branchId,
-        transactionType: 'RECEIPT',
-        codeKind: 'THU',
-        amount: entry.amount,
-        occurredAt: new Date(entry.occurredAt),
-        description: entry.description || entry.code,
-        sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
-        sourceKey: this.warehouseReceiptFundKey(id),
-        sourceId: String(id),
-        entryId: id,
-        userId,
-      });
+      // Dòng đồng bộ về đã có bút toán trong sổ quỹ lịch sử, không cộng lần hai.
+      if (!String(entry.sourceKey || '').startsWith('LARK_CASH:'))
+        await this.fundLedger.postSystemTransaction(tx, {
+          branchId: entry.branchId,
+          transactionType: 'RECEIPT',
+          codeKind: 'THU',
+          amount: entry.amount,
+          occurredAt: new Date(entry.occurredAt),
+          description: entry.description || entry.code,
+          sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
+          sourceKey: this.warehouseReceiptFundKey(id),
+          sourceId: String(id),
+          entryId: id,
+          userId,
+        });
       return tx.internalFinanceEntry.update({
         where: { id },
         data: {
           status: INTERNAL_FINANCE_STATUS.POSTED,
+          posManagedAt: new Date(),
           cashFlowId,
           accountantReviewedBy: entry.accountantReviewedBy || userId,
           accountantReviewedAt: entry.accountantReviewedAt || new Date(),
@@ -993,36 +1031,16 @@ export class InternalFinanceService {
       );
     }
 
-    const snapshot = this.snapshotOf(entry);
-    const cashFlowIds = [
-      ...new Set([
-        ...this.postedCashFlows(snapshot).map((item) => Number(item.id)),
-        ...(entry.cashFlowId ? [Number(entry.cashFlowId)] : []),
-      ]),
-    ]
-      .filter((cashFlowId) => cashFlowId > 0)
-      .sort((a, b) => a - b);
     const cancelledCashFlows: Array<{ cashFlow: any; updated: any }> = [];
-
     const updated = await this.prisma.$transaction(async (tx) => {
-      if (dto.cancelCashFlows) {
-        for (const cashFlowId of cashFlowIds) {
-          cancelledCashFlows.push(
-            await this.cashFlowsService.cancelInTransaction(tx, cashFlowId),
-          );
-        }
-      }
-
-      // Giữ phiếu thu công nợ thì tiền vẫn ở quỹ; hủy kèm (hoặc chưa có phiếu thu) thì rút khỏi quỹ.
-      if (dto.cancelCashFlows || !cashFlowIds.length) {
-        await this.fundLedger.cancelBySource(
+      cancelledCashFlows.push(
+        ...(await this.cancelWarehouseReceiptCore(
           tx,
-          this.warehouseReceiptFundKey(id),
+          entry,
+          dto.cancelCashFlows,
           userId,
-          'Hủy phiếu tiền mặt kho',
-        );
-      }
-
+        )),
+      );
       return tx.internalFinanceEntry.update({
         where: { id },
         data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
@@ -1030,11 +1048,159 @@ export class InternalFinanceService {
       });
     });
 
-    for (const result of cancelledCashFlows) {
-      await this.cashFlowsService.logCancellation(result, userId);
-    }
+    await this.logCancelledCashFlows(cancelledCashFlows, userId);
 
     return updated;
+  }
+
+  private receiptCashFlowIds(entry: any): number[] {
+    return [
+      ...new Set([
+        ...this.postedCashFlows(this.snapshotOf(entry)).map((item) =>
+          Number(item.id),
+        ),
+        ...(entry.cashFlowId ? [Number(entry.cashFlowId)] : []),
+      ]),
+    ]
+      .filter((cashFlowId) => cashFlowId > 0)
+      .sort((a, b) => a - b);
+  }
+
+  private async cancelWarehouseReceiptCore(
+    tx: Prisma.TransactionClient,
+    entry: any,
+    cancelCashFlows: boolean,
+    userId: number,
+  ) {
+    const cashFlowIds = this.receiptCashFlowIds(entry);
+    const cancelled: Array<{ cashFlow: any; updated: any }> = [];
+    if (cancelCashFlows) {
+      for (const cashFlowId of cashFlowIds) {
+        cancelled.push(
+          await this.cashFlowsService.cancelInTransaction(tx, cashFlowId),
+        );
+      }
+    }
+    // Giữ phiếu thu công nợ thì tiền vẫn ở quỹ; hủy kèm (hoặc chưa có phiếu thu) thì rút khỏi quỹ.
+    if (cancelCashFlows || !cashFlowIds.length) {
+      await this.fundLedger.cancelBySource(
+        tx,
+        this.warehouseReceiptFundKey(entry.id),
+        userId,
+        'Hủy phiếu tiền mặt kho',
+      );
+    }
+    await tx.internalFinanceEntry.update({
+      where: { id: entry.id },
+      data: {
+        status: INTERNAL_FINANCE_STATUS.CANCELLED,
+        posManagedAt: new Date(),
+      },
+    });
+    return cancelled;
+  }
+
+  async logCancelledCashFlows(
+    results: Array<{ cashFlow: any; updated: any }>,
+    userId: number,
+  ) {
+    for (const result of results) {
+      await this.cashFlowsService.logCancellation(result, userId);
+    }
+  }
+
+  private async openPackingSlipEntries(db: DbClient, packingSlipId: number) {
+    return db.internalFinanceEntry.findMany({
+      where: {
+        packingSlipId,
+        status: {
+          notIn: [
+            INTERNAL_FINANCE_STATUS.REJECTED,
+            INTERNAL_FINANCE_STATUS.CANCELLED,
+          ],
+        },
+      },
+      include: { weeklyBatch: { select: { id: true, status: true } } },
+      orderBy: { id: 'asc' },
+    });
+  }
+
+  private packingSlipCancelBlock(entries: any[]): string | null {
+    for (const entry of entries) {
+      if (entry.direction === INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+        if (entry.cashIssued || entry.cashFlowId)
+          return 'Không thể hủy báo đơn: khoản phí của báo đơn đã được ghi Đã chi';
+        if (
+          entry.weeklyBatch &&
+          entry.weeklyBatch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.READY
+        )
+          return 'Không thể hủy báo đơn: khoản phí của báo đơn đã gửi Approval tuần';
+      } else if (entry.status === INTERNAL_FINANCE_STATUS.POSTING) {
+        return 'Phiếu thu của báo đơn đang được lập, vui lòng thử lại sau';
+      }
+    }
+    return null;
+  }
+
+  // Cho màn báo đơn biết có cần hỏi "hủy kèm phiếu thu" trước khi hủy không.
+  async packingSlipCancelCheck(packingSlipId: number) {
+    const entries = await this.openPackingSlipEntries(
+      this.prisma,
+      packingSlipId,
+    );
+    return {
+      receiptCashFlowCount: entries
+        .filter(
+          (entry: any) =>
+            entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT,
+        )
+        .reduce(
+          (sum: number, entry: any) =>
+            sum + this.receiptCashFlowIds(entry).length,
+          0,
+        ),
+      blockedReason: this.packingSlipCancelBlock(entries),
+    };
+  }
+
+  async cancelPackingSlipEntriesInTransaction(
+    tx: Prisma.TransactionClient,
+    packingSlip: { id: number; branchId: number },
+    userId: number,
+    cancelCashFlows?: boolean,
+  ) {
+    await this.internalFund.lockBranch(tx, [Number(packingSlip.branchId)]);
+    const entries = await this.openPackingSlipEntries(tx, packingSlip.id);
+    const blocked = this.packingSlipCancelBlock(entries);
+    if (blocked) throw new BadRequestException(blocked);
+    const cancelled: Array<{ cashFlow: any; updated: any }> = [];
+    for (const entry of entries) {
+      if (entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT) {
+        if (
+          this.receiptCashFlowIds(entry).length &&
+          cancelCashFlows === undefined
+        ) {
+          throw new BadRequestException(
+            'Báo đơn đã có phiếu thu; cần chọn hủy kèm hay giữ phiếu thu',
+          );
+        }
+        cancelled.push(
+          ...(await this.cancelWarehouseReceiptCore(
+            tx,
+            entry,
+            Boolean(cancelCashFlows),
+            userId,
+          )),
+        );
+        continue;
+      }
+      if (entry.weeklyBatchId) await this.fundLedger.detachFromBatch(tx, entry);
+      await tx.internalFinanceEntry.update({
+        where: { id: entry.id },
+        data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
+      });
+    }
+    return cancelled;
   }
 
   async createManualExpense(dto: CreateManualExpenseDto, user: any) {
@@ -1911,6 +2077,17 @@ export class InternalFinanceService {
 
   async prepareWarehouseExpenseBatch(dto: PrepareWeeklyBatchDto, user: any) {
     await this.assertWarehouseExpensePermission(user, dto.branchId, 'prepare');
+    // Kho: chỉ gom phiếu đã được cả quản lý kho và kế toán kho tick.
+    if (this.isWarehouseBranch(dto.branchId)) {
+      return this.prepareWeeklyBatchInternal(dto, user.id, {
+        eligibleStatuses: [
+          INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+          INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+        ],
+        allowedCategories: [...WAREHOUSE_EXPENSE_CATEGORIES],
+        requireBothChecks: true,
+      });
+    }
     return this.prepareWeeklyBatchInternal(dto, user.id, {
       eligibleStatuses: [
         INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
@@ -1932,6 +2109,7 @@ export class InternalFinanceService {
     options: {
       eligibleStatuses: string[];
       allowedCategories?: string[];
+      requireBothChecks?: boolean;
     },
   ) {
     await this.validateBranch(dto.branchId);
@@ -1980,10 +2158,16 @@ export class InternalFinanceService {
           ...(options.allowedCategories?.length
             ? { category: { in: options.allowedCategories } }
             : {}),
-          // Khoản nhập lịch sử từ Lark chỉ để hiển thị, không tổng hợp lại.
-          sourceType: { not: 'LARK_IMPORT' },
           cashFlowId: null,
           cashIssued: false,
+          // Kho: dòng đồng bộ về cũng gom được khi đã đủ hai tick. Chi nhánh
+          // khác giữ nguyên: khoản nhập lịch sử chỉ để hiển thị.
+          ...(options.requireBothChecks
+            ? {
+                managerReviewedAt: { not: null },
+                accountantReviewedAt: { not: null },
+              }
+            : { sourceType: { not: 'LARK_IMPORT' } }),
           OR: existing
             ? [{ weeklyBatchId: null }, { weeklyBatchId: existing.id }]
             : [{ weeklyBatchId: null }],
@@ -1991,7 +2175,20 @@ export class InternalFinanceService {
         select: { id: true, amount: true },
       });
       if (entries.length === 0) {
-        if (existing) return existing;
+        if (existing && !options.requireBothChecks) return existing;
+        if (existing) {
+          // Không còn phiếu đủ điều kiện: trả các phiếu cũ về trước khi gom.
+          await tx.internalFinanceEntry.updateMany({
+            where: { weeklyBatchId: existing.id },
+            data: {
+              weeklyBatchId: null,
+              status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+            },
+          });
+          await tx.internalFinanceWeeklyBatch.delete({
+            where: { id: existing.id },
+          });
+        }
         throw new BadRequestException(
           'Không có khoản chi đủ điều kiện để tổng hợp tuần',
         );
@@ -2042,7 +2239,10 @@ export class InternalFinanceService {
 
       await tx.internalFinanceEntry.updateMany({
         where: { id: { in: entries.map((entry) => entry.id) } },
-        data: { status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          posManagedAt: new Date(),
+        },
       });
 
       return batch;
@@ -2243,11 +2443,127 @@ export class InternalFinanceService {
       entry.branchId,
       'mark_issued',
     );
-    return this.updateCashIssued(entryId, dto.cashIssued, user.id);
+    return this.internalFund.postExpenseEntry(
+      entryId,
+      user.id,
+      dto.cashIssued,
+      dto.reason,
+    );
   }
 
   async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
     return this.internalFund.postExpenseEntry(entryId, userId, cashIssued);
+  }
+
+  // Tick kiểm tra của quản lý kho / kế toán kho: độc lập, không cần thứ tự.
+  async checkWarehouseExpense(
+    entryId: number,
+    user: any,
+    dto: CheckWarehouseExpenseDto,
+  ) {
+    const hint = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id: entryId },
+      select: { branchId: true },
+    });
+    if (!hint) throw new NotFoundException('Không tìm thấy khoản chi');
+    if (!this.isWarehouseBranch(hint.branchId)) {
+      throw new BadRequestException(
+        'Tick kiểm tra chỉ áp dụng cho phiếu chi kho',
+      );
+    }
+    const manager = dto.role === 'manager';
+    await this.assertWarehouseExpensePermission(
+      user,
+      hint.branchId,
+      manager ? 'check_manager' : 'check_accountant',
+    );
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [hint.branchId]);
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id: entryId },
+        include: { weeklyBatch: { select: { id: true, status: true } } },
+      });
+      if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+        throw new NotFoundException('Không tìm thấy khoản chi');
+      }
+      if (
+        entry.cashIssued ||
+        entry.cashFlowId ||
+        [
+          INTERNAL_FINANCE_STATUS.CANCELLED,
+          INTERNAL_FINANCE_STATUS.REJECTED,
+        ].includes(entry.status as any)
+      ) {
+        throw new BadRequestException(
+          'Khoản chi đã chi hoặc đã hủy, không thể đổi tick kiểm tra',
+        );
+      }
+      if (
+        entry.weeklyBatch &&
+        entry.weeklyBatch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.READY
+      ) {
+        throw new BadRequestException(
+          'Khoản chi đã gửi Approval tuần, không thể đổi tick kiểm tra',
+        );
+      }
+      // Tick tính theo thời điểm kiểm tra: dòng đồng bộ về có tick nhưng có thể
+      // không kèm người.
+      const now = new Date();
+      const managerAt = manager
+        ? dto.checked
+          ? now
+          : null
+        : entry.managerReviewedAt;
+      const accountantAt = manager
+        ? entry.accountantReviewedAt
+        : dto.checked
+          ? now
+          : null;
+      const both = Boolean(managerAt && accountantAt);
+      // Bỏ tick khi phiếu đã nằm trong batch chưa gửi: rút khỏi batch.
+      if (!both && entry.weeklyBatchId) {
+        await this.fundLedger.detachFromBatch(tx, entry);
+      }
+      await tx.internalFinanceReview.create({
+        data: {
+          entryId,
+          role: manager
+            ? INTERNAL_FINANCE_REVIEW_ROLE.MANAGER
+            : INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+          decision: dto.checked
+            ? INTERNAL_FINANCE_REVIEW_DECISION.APPROVE
+            : 'UNCHECK',
+          reviewerId: user.id,
+        },
+      });
+      return tx.internalFinanceEntry.update({
+        where: { id: entryId },
+        data: {
+          posManagedAt: now,
+          ...(manager
+            ? {
+                managerReviewedBy: dto.checked ? user.id : null,
+                managerReviewedAt: managerAt,
+              }
+            : {
+                accountantReviewedBy: dto.checked ? user.id : null,
+                accountantReviewedAt: accountantAt,
+              }),
+          status: both
+            ? entry.weeklyBatchId
+              ? INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
+              : INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
+            : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        },
+        include: this.warehouseExpenseInclude(),
+      });
+    });
+  }
+
+  private isWarehouseBranch(branchId: number) {
+    return (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(
+      Number(branchId),
+    );
   }
 
   async normalizeLegacyCodes() {
@@ -2796,6 +3112,7 @@ export class InternalFinanceService {
             INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
             INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
             INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+            INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
           ],
         },
       },
@@ -2855,9 +3172,14 @@ export class InternalFinanceService {
         INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
         INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
         INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+        INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
         ...(data.reopenIfCancelled ? [INTERNAL_FINANCE_STATUS.CANCELLED] : []),
       ];
       if (!editableStatuses.includes(existing.status)) return existing;
+      // Đổi số tiền sau khi đã tick kiểm tra thì phải kiểm tra lại.
+      const recheck =
+        existing.status === INTERNAL_FINANCE_STATUS.MANAGER_APPROVED &&
+        Number(existing.amount) !== Number(data.amount);
       const previousSnapshot = this.snapshotOf(existing);
       const keepContent = Boolean(
         data.preserveUserText && previousSnapshot.contentEdited,
@@ -2890,9 +3212,17 @@ export class InternalFinanceService {
             ? evidenceStatus
             : INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
           status:
-            existing.status === INTERNAL_FINANCE_STATUS.CANCELLED
+            existing.status === INTERNAL_FINANCE_STATUS.CANCELLED || recheck
               ? INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT
               : existing.status,
+          ...(recheck
+            ? {
+                managerReviewedBy: null,
+                managerReviewedAt: null,
+                accountantReviewedBy: null,
+                accountantReviewedAt: null,
+              }
+            : {}),
           sourceSnapshot: {
             ...data.sourceSnapshot,
             ...(keepContent ? { contentEdited: true } : {}),
@@ -3250,32 +3580,17 @@ export class InternalFinanceService {
     );
   }
 
+  // Quyền theo vai trò × chi nhánh; chi nhánh phải thuộc danh sách của user.
   private async allowedWarehouseExpenseBranches(
     user: any,
     action: WarehouseExpenseAction,
   ): Promise<number[]> {
     if (!user?.id) return [];
-    if (user.roles?.includes('Super Admin')) {
-      return WAREHOUSE_EXPENSE_SCOPES.flatMap((scope) => [...scope.branchIds]);
-    }
-    const branches: number[] = [];
-    for (const scope of WAREHOUSE_EXPENSE_SCOPES) {
-      const permission = `warehouse_expense:${action}_${scope.key}`;
-      for (const branchId of scope.branchIds) {
-        const permissions = await this.authService.getPermissionsForBranch(
-          user.id,
-          branchId,
-        );
-        const fundAction = this.internalFundExpenseAction(action);
-        if (
-          permissions.includes(permission) ||
-          permissions.includes(`internal_fund:${fundAction}_${scope.key}`)
-        ) {
-          branches.push(branchId);
-        }
-      }
-    }
-    return [...new Set(branches)];
+    return this.access.branchesFor(
+      user,
+      `warehouse_expense:${action}`,
+      WAREHOUSE_EXPENSE_SCOPES.flatMap((scope) => [...scope.branchIds]),
+    );
   }
 
   private async assertWarehouseExpensePermissionByUserId(
@@ -3283,20 +3598,7 @@ export class InternalFinanceService {
     branchId: number,
     action: WarehouseExpenseAction,
   ) {
-    const profile = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        userRoles: { select: { role: { select: { name: true } } } },
-      },
-    });
-    await this.assertWarehouseExpensePermission(
-      {
-        id: userId,
-        roles: profile?.userRoles.map((row) => row.role.name) || [],
-      },
-      branchId,
-      action,
-    );
+    await this.assertWarehouseExpensePermission(userId, branchId, action);
   }
 
   private async assertCashFlowPermission(
@@ -3304,11 +3606,7 @@ export class InternalFinanceService {
     branchId: number,
     action: 'view' | 'create' | 'update',
   ) {
-    const permissions = await this.authService.getPermissionsForBranch(
-      userId,
-      branchId,
-    );
-    if (!permissions.includes(`cash_flows:${action}`)) {
+    if (!(await this.access.can(userId, branchId, `cash_flows:${action}`))) {
       throw new ForbiddenException(
         `Không có quyền cash_flows:${action} cho chi nhánh này`,
       );
@@ -3316,26 +3614,17 @@ export class InternalFinanceService {
   }
 
   private async assertWarehouseExpensePermission(
-    user: any,
+    user: FinanceActor,
     branchId: number,
     action: WarehouseExpenseAction,
   ) {
-    if (user?.roles?.includes('Super Admin')) return;
-    const scope = this.warehouseExpenseScopeForBranch(branchId);
-    if (!scope) {
+    if (!this.warehouseExpenseScopeForBranch(branchId)) {
       throw new ForbiddenException(
         'Chi nhánh không thuộc phạm vi phiếu chi kho',
       );
     }
-    const permissions = await this.authService.getPermissionsForBranch(
-      user.id,
-      branchId,
-    );
     if (
-      !permissions.includes(`warehouse_expense:${action}_${scope.key}`) &&
-      !permissions.includes(
-        `internal_fund:${this.internalFundExpenseAction(action)}_${scope.key}`,
-      )
+      !(await this.access.can(user, branchId, `warehouse_expense:${action}`))
     ) {
       throw new ForbiddenException(
         `Không có quyền ${action} phiếu chi kho cho chi nhánh này`,
@@ -3343,16 +3632,65 @@ export class InternalFinanceService {
     }
   }
 
-  private internalFundExpenseAction(action: WarehouseExpenseAction) {
-    if (action === 'create') return 'create_expense';
-    if (action === 'update') return 'adjust';
-    if (action === 'prepare' || action === 'submit') return 'submit_approval';
-    return action;
+  /** Kho mà user được xem / thao tác tiền mặt kho. */
+  async warehouseCashBranches(user: FinanceActor, action: WarehouseCashAction) {
+    return this.access.branchesFor(
+      user,
+      `warehouse_cash:${action}`,
+      WAREHOUSE_CASH_BRANCH_IDS,
+    );
+  }
+
+  async assertWarehouseCash(
+    user: FinanceActor,
+    action: WarehouseCashAction,
+    branchId: number,
+  ) {
+    if (!(await this.access.can(user, branchId, `warehouse_cash:${action}`))) {
+      throw new ForbiddenException(
+        `Không có quyền ${action} tiền mặt kho cho chi nhánh này`,
+      );
+    }
+  }
+
+  /** Kiểm quyền theo chi nhánh của chính phiếu tiền mặt kho. */
+  async assertWarehouseCashEntry(
+    user: FinanceActor,
+    action: WarehouseCashAction,
+    entryId: number,
+  ) {
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id: entryId },
+      select: { branchId: true },
+    });
+    if (!entry) throw new NotFoundException('Không tìm thấy phiếu tiền mặt');
+    await this.assertWarehouseCash(user, action, entry.branchId);
+  }
+
+  /** Chi nhánh user được xem ở trang Tài chính nội bộ. */
+  async financeViewBranches(user: FinanceActor) {
+    return this.access.branchesFor(
+      user,
+      'cash_flows:view',
+      INTERNAL_FINANCE_BRANCH_IDS,
+    );
+  }
+
+  financeAccessSummary(user: FinanceActor) {
+    return this.access.summary(user);
+  }
+
+  async assertSuperAdmin(user: FinanceActor) {
+    if (!(await this.access.isSuperAdmin(user)))
+      throw new ForbiddenException('Chỉ Super Admin được đồng bộ dữ liệu');
   }
 
   private warehouseExpenseInclude() {
     return {
       ...this.entryInclude(),
+      creator: { select: { id: true, name: true } },
+      managerReviewer: { select: { id: true, name: true } },
+      accountantReviewer: { select: { id: true, name: true } },
       fundTransaction: { select: { id: true, code: true, status: true } },
       branch: { select: { id: true, name: true } },
       packingSlip: { select: { id: true, code: true } },

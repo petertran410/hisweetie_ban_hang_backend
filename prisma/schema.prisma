@@ -2077,6 +2077,8 @@ model Settings {
   misaDictionaryCronEnabled        Boolean  @default(false) @map("misa_dictionary_cron_enabled")
   /// Cron mỗi ngày 23h30 đồng bộ trạng thái HĐ với Documenso (phòng webhook miss).
   contractDocumensoSyncCronEnabled Boolean  @default(true) @map("contract_documenso_sync_cron_enabled")
+  /// Thời điểm chốt chuyển sổ tài chính nội bộ sang POS: khóa đồng bộ dữ liệu cũ.
+  financeCutoverAt                 DateTime? @map("finance_cutover_at")
 
   @@map("settings")
 }
@@ -2318,6 +2320,8 @@ model InternalFinanceEntry {
   cashIssued            Boolean   @default(false)
   cashIssuedAt          DateTime?
   cashIssuedBy          Int?
+  cashIssuedReason      String?
+  posManagedAt          DateTime?
   vehicleName           String?
   vehicleServiceType    String?
   vehicleOdo            Decimal?  @db.Decimal(18, 2)

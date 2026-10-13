@@ -150,6 +150,12 @@ export class InternalFinanceLarkImportService {
   private readonly logger = new Logger(InternalFinanceLarkImportService.name);
   private job: LarkImportJobStatus | null = null;
   private jobPromise: Promise<void> | null = null;
+  private exclusive = false;
+
+  /** Luồng đồng bộ gộp giữ quyền chạy để nút đồng bộ riêng lẻ không chạy chồng. */
+  setExclusive(value: boolean) {
+    this.exclusive = value;
+  }
 
   constructor(
     private readonly prisma: PrismaService,
@@ -170,6 +176,8 @@ export class InternalFinanceLarkImportService {
   ): LarkImportJobStatus {
     if (!userId) throw new BadRequestException('Thiếu người thực hiện import');
     if (this.jobPromise) return this.getImportStatus();
+    if (this.exclusive)
+      throw new BadRequestException('Đang đồng bộ dữ liệu, vui lòng chờ');
 
     const dryRun = dto.dryRun !== false;
     const sources = this.resolveSources(dto.sources);
@@ -238,8 +246,7 @@ export class InternalFinanceLarkImportService {
           skipped: sum.skipped + table.skipped,
           attachmentsDownloaded:
             sum.attachmentsDownloaded + table.attachmentsDownloaded,
-          attachmentsFailed:
-            sum.attachmentsFailed + table.attachmentsFailed,
+          attachmentsFailed: sum.attachmentsFailed + table.attachmentsFailed,
         }),
         {
           fetched: 0,
@@ -278,7 +285,7 @@ export class InternalFinanceLarkImportService {
   }
 
   async importHistory(
-    dto: { dryRun?: boolean; sources?: string[] },
+    dto: { dryRun?: boolean; sources?: string[]; skipAttachments?: boolean },
     userId: number,
     progress?: {
       onPhase?: (phase: LarkImportJobPhase) => void;
@@ -386,7 +393,8 @@ export class InternalFinanceLarkImportService {
       progress?.onProgress?.({ fundTransactions });
     }
 
-    if (!dryRun) {
+    // Luồng đồng bộ gộp tải chứng từ ở bước cuối để không chặn dữ liệu.
+    if (!dryRun && !dto.skipAttachments) {
       progress?.onPhase?.('ATTACHMENTS');
       await this.importPendingAttachments({
         userId,
@@ -424,19 +432,16 @@ export class InternalFinanceLarkImportService {
     return { dryRun, tables: results, attachments, fundTransactions };
   }
 
-  async importWarehouseCash(
-    dto: { dryRun?: boolean },
-    userId: number,
-  ) {
-    if (!userId) throw new BadRequestException("Thiếu người thực hiện import");
+  async importWarehouseCash(dto: { dryRun?: boolean }, userId: number) {
+    if (!userId) throw new BadRequestException('Thiếu người thực hiện import');
     const dryRun = dto.dryRun !== false;
-    const baseToken = this.config.get<string>("LARK_EXPENSE_BASE_TOKEN");
+    const baseToken = this.config.get<string>('LARK_EXPENSE_BASE_TOKEN');
     if (!baseToken) {
-      throw new BadRequestException("Chưa cấu hình base tiền mặt kho");
+      throw new BadRequestException('Chưa cấu hình base tiền mặt kho');
     }
     const startedAt = Date.now();
     this.logger.log(
-      `[WAREHOUSE_CASH_IMPORT] start mode=${dryRun ? "DRY_RUN" : "COMMIT"} userId=${userId}`,
+      `[WAREHOUSE_CASH_IMPORT] start mode=${dryRun ? 'DRY_RUN' : 'COMMIT'} userId=${userId}`,
     );
     const token = await this.lark.getToken();
     const result = {
@@ -457,7 +462,7 @@ export class InternalFinanceLarkImportService {
         const linkIds = [
           ...new Set(
             records.flatMap((record) =>
-              larkLinkRecordIds(record.fields["Khách hàng"]),
+              larkLinkRecordIds(record.fields['Khách hàng']),
             ),
           ),
         ].filter((id) => !customerCache.has(id));
@@ -470,8 +475,8 @@ export class InternalFinanceLarkImportService {
           );
           for (const customer of customers) {
             customerCache.set(customer.recordId, {
-              name: readLarkText(customer.fields["Tên Khách Hàng"]),
-              code: readLarkText(customer.fields["Mã Khách Hàng"]),
+              name: readLarkText(customer.fields['Tên Khách Hàng']),
+              code: readLarkText(customer.fields['Mã Khách Hàng']),
             });
           }
         }
@@ -511,8 +516,8 @@ export class InternalFinanceLarkImportService {
   }) {
     const mapped = input.records.flatMap((record) => {
       input.result.fetched += 1;
-      const branchId = warehouseCashBranchId(record.fields["Chi nhánh"]);
-      const amount = readLarkNumber(record.fields["Số tiền"]);
+      const branchId = warehouseCashBranchId(record.fields['Chi nhánh']);
+      const amount = readLarkNumber(record.fields['Số tiền']);
       if (!branchId) {
         input.result.otherBranch += 1;
         input.result.skipped += 1;
@@ -522,7 +527,7 @@ export class InternalFinanceLarkImportService {
         input.result.skipped += 1;
         return [];
       }
-      const linkId = larkLinkRecordIds(record.fields["Khách hàng"])[0];
+      const linkId = larkLinkRecordIds(record.fields['Khách hàng'])[0];
       const larkCustomer = linkId ? input.customerCache.get(linkId) : undefined;
       return [
         {
@@ -530,27 +535,42 @@ export class InternalFinanceLarkImportService {
           branchId,
           amount,
           occurredAt:
-            readLarkDate(record.fields["Ngày thu"]) ||
-            readLarkDate(record.fields["Ngày Tạo"]) ||
+            readLarkDate(record.fields['Ngày thu']) ||
+            readLarkDate(record.fields['Ngày Tạo']) ||
             new Date(),
           description:
-            readLarkText(record.fields["Nội Dung Thu Tiền"]) ||
-            (larkCustomer?.name ? `Thu tiền mặt ${larkCustomer.name}` : "Thu tiền mặt"),
-          note: readLarkText(record.fields["Ghi chú"]),
-          customerName: larkCustomer?.name || "",
-          customerCode: larkCustomer?.code || "",
-          posted: isLarkChecked(record.fields["Lập phiếu thu"]),
+            readLarkText(record.fields['Nội Dung Thu Tiền']) ||
+            (larkCustomer?.name
+              ? `Thu tiền mặt ${larkCustomer.name}`
+              : 'Thu tiền mặt'),
+          note: readLarkText(record.fields['Ghi chú']),
+          customerName: larkCustomer?.name || '',
+          customerCode: larkCustomer?.code || '',
+          posted: isLarkChecked(record.fields['Lập phiếu thu']),
+          createdAt: record.createdAt ?? null,
+          modifiedAt: record.modifiedAt ?? record.createdAt ?? null,
         },
       ];
     });
     if (!mapped.length) return;
     const existing = await this.prisma.internalFinanceEntry.findMany({
       where: { sourceKey: { in: mapped.map((row) => row.sourceKey) } },
-      select: { id: true, sourceKey: true, code: true, cashFlowId: true, status: true },
+      select: {
+        id: true,
+        sourceKey: true,
+        code: true,
+        cashFlowId: true,
+        status: true,
+        posManagedAt: true,
+      },
     });
     const existingByKey = new Map(existing.map((row) => [row.sourceKey, row]));
-    const codes = [...new Set(mapped.map((row) => row.customerCode).filter(Boolean))];
-    const names = [...new Set(mapped.map((row) => row.customerName).filter(Boolean))];
+    const codes = [
+      ...new Set(mapped.map((row) => row.customerCode).filter(Boolean)),
+    ];
+    const names = [
+      ...new Set(mapped.map((row) => row.customerName).filter(Boolean)),
+    ];
     const posCustomers =
       codes.length || names.length
         ? await this.prisma.customer.findMany({
@@ -576,15 +596,24 @@ export class InternalFinanceLarkImportService {
       const current = existingByKey.get(row.sourceKey);
       if (
         current?.cashFlowId ||
+        current?.posManagedAt ||
         current?.status === INTERNAL_FINANCE_STATUS.POSTING
       ) {
         input.result.skipped += 1;
         continue;
       }
-      const codeMatch = row.customerCode ? byCode.get(row.customerCode) : undefined;
-      const nameMatches = byName.get(row.customerName.trim().toLowerCase()) || [];
-      const matched = codeMatch || (nameMatches.length === 1 ? nameMatches[0] : undefined);
-      if (!matched && row.customerName && !input.result.unmatchedCustomers.includes(row.customerName)) {
+      const codeMatch = row.customerCode
+        ? byCode.get(row.customerCode)
+        : undefined;
+      const nameMatches =
+        byName.get(row.customerName.trim().toLowerCase()) || [];
+      const matched =
+        codeMatch || (nameMatches.length === 1 ? nameMatches[0] : undefined);
+      if (
+        !matched &&
+        row.customerName &&
+        !input.result.unmatchedCustomers.includes(row.customerName)
+      ) {
         if (input.result.unmatchedCustomers.length < 15) {
           input.result.unmatchedCustomers.push(row.customerName);
         }
@@ -601,7 +630,7 @@ export class InternalFinanceLarkImportService {
         ? INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT
         : INTERNAL_FINANCE_CATEGORY.MANUAL_RECEIPT;
       const snapshot = {
-        method: "cash",
+        method: 'cash',
         note: row.note,
         customerName: row.customerName || undefined,
         customerCode: row.customerCode || undefined,
@@ -618,8 +647,13 @@ export class InternalFinanceLarkImportService {
             description: row.description,
             customerId: matched?.id || null,
             category,
-            status: current.status === INTERNAL_FINANCE_STATUS.POSTED ? current.status : status,
+            status:
+              current.status === INTERNAL_FINANCE_STATUS.POSTED
+                ? current.status
+                : status,
             sourceSnapshot: snapshot,
+            ...(row.createdAt ? { createdAt: row.createdAt } : {}),
+            ...(row.modifiedAt ? { updatedAt: row.modifiedAt } : {}),
           },
         });
         input.result.updated += 1;
@@ -639,7 +673,7 @@ export class InternalFinanceLarkImportService {
             branchId: row.branchId,
             amount: row.amount,
             occurredAt: row.occurredAt,
-            sourceType: "MANUAL_RECEIPT",
+            sourceType: 'MANUAL_RECEIPT',
             sourceKey: row.sourceKey,
             sourceSnapshot: snapshot,
             description: row.description,
@@ -648,6 +682,8 @@ export class InternalFinanceLarkImportService {
             requiresEvidence: false,
             customerId: matched?.id,
             createdBy: input.userId,
+            ...(row.createdAt ? { createdAt: row.createdAt } : {}),
+            ...(row.modifiedAt ? { updatedAt: row.modifiedAt } : {}),
           },
         });
         input.result.created += 1;
@@ -774,7 +810,13 @@ export class InternalFinanceLarkImportService {
             branchId,
             result,
           });
-          this.logPageProgress(input.source, input.table, pageInfo, result, input.dryRun);
+          this.logPageProgress(
+            input.source,
+            input.table,
+            pageInfo,
+            result,
+            input.dryRun,
+          );
         },
       );
     } catch (error) {
@@ -832,7 +874,10 @@ export class InternalFinanceLarkImportService {
         'Trạng thái duyệt',
       ];
       const missing = required.filter(
-        (field) => !fieldNames.some((name) => normalizeText(name) === normalizeText(field)),
+        (field) =>
+          !fieldNames.some(
+            (name) => normalizeText(name) === normalizeText(field),
+          ),
       );
       if (missing.length) {
         result.error = `Bảng Approval thiếu field: ${missing.join(', ')}`;
@@ -856,20 +901,16 @@ export class InternalFinanceLarkImportService {
               kind,
               record,
             });
-            if (!row) {
+            // Tuần chưa gửi duyệt để POS tự gom, không nhập về.
+            if (!row || row.status === INTERNAL_FINANCE_WEEKLY_STATUS.READY) {
               result.skipped += 1;
               continue;
             }
-            const existing = await this.prisma.internalFinanceWeeklyBatch.findUnique({
-              where: {
-                branchId_weekStart_weekEnd: {
-                  branchId: row.branchId,
-                  weekStart: row.weekStart,
-                  weekEnd: row.weekEnd,
-                },
-              },
-              select: { id: true, approvalRequestId: true },
-            });
+            const existing =
+              await this.prisma.internalFinanceWeeklyBatch.findUnique({
+                where: { code: this.importedBatchCode(row) },
+                select: { id: true, approvalRequestId: true },
+              });
             if (input.dryRun) {
               if (existing) result.updated += 1;
               else result.created += 1;
@@ -889,7 +930,13 @@ export class InternalFinanceLarkImportService {
               );
             }
           }
-          this.logPageProgress(input.source, input.table, pageInfo, result, input.dryRun);
+          this.logPageProgress(
+            input.source,
+            input.table,
+            pageInfo,
+            result,
+            input.dryRun,
+          );
         },
       );
     } catch (error) {
@@ -912,18 +959,10 @@ export class InternalFinanceLarkImportService {
     record: LarkImportRecord;
   }) {
     const fields = input.record.fields;
-    const week = readLarkNumber(
-      readLarkAlias(fields, ['Tuần chi', 'Tuần']),
-    );
-    const year = readLarkNumber(
-      readLarkAlias(fields, ['Năm chi', 'Năm']),
-    );
-    const weekStart = readLarkDate(
-      readLarkAlias(fields, ['Ngày bắt đầu']),
-    );
-    const weekEnd = readLarkDate(
-      readLarkAlias(fields, ['Ngày kết thúc']),
-    );
+    const week = readLarkNumber(readLarkAlias(fields, ['Tuần chi', 'Tuần']));
+    const year = readLarkNumber(readLarkAlias(fields, ['Năm chi', 'Năm']));
+    const weekStart = readLarkDate(readLarkAlias(fields, ['Ngày bắt đầu']));
+    const weekEnd = readLarkDate(readLarkAlias(fields, ['Ngày kết thúc']));
     const totalAmount = readLarkNumber(
       readLarkAlias(fields, ['Số tiền', 'Tổng tiền', 'Thành tiền']),
     );
@@ -958,6 +997,7 @@ export class InternalFinanceLarkImportService {
       tableId: input.table.tableId,
       tableName: input.table.name,
       recordId: input.record.recordId,
+      createdAt: input.record.createdAt ?? null,
       branchId: input.branchId,
       kind: input.kind,
       week: Math.trunc(week),
@@ -979,10 +1019,7 @@ export class InternalFinanceLarkImportService {
     if (!row) return;
     const creatorId = await this.findUserId(row.creatorRef);
     const createdById = creatorId || importUserId;
-    const branchCode = INTERNAL_FINANCE_BRANCH_CODES[row.branchId] || `B${row.branchId}`;
-    const year = row.year;
-    const week = String(row.week).padStart(2, '0');
-    const batchCode = `TCNB-TUAN-${branchCode}-${year}-W${week}`;
+    const batchCode = this.importedBatchCode(row);
     const clientUuid = `INTERNAL_FINANCE_WEEK:${row.branchId}:${this.dateKey(row.weekStart)}`;
     const approvalCode = APPROVAL_DEFINITIONS[row.kind].approvalCode;
     const terminal =
@@ -1010,12 +1047,20 @@ export class InternalFinanceLarkImportService {
     ) as Prisma.InputJsonValue;
 
     await this.prisma.$transaction(async (tx) => {
+      // Khoảng ngày của tuần trên nguồn thay đổi khi có thêm phiếu, nên nhận
+      // diện tuần theo mã (chi nhánh + năm + số tuần) thay vì theo ngày.
+      const known = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: { code: batchCode },
+        select: { weekStart: true, weekEnd: true },
+      });
+      const weekStart = known?.weekStart ?? row.weekStart;
+      const weekEnd = known?.weekEnd ?? row.weekEnd;
       const batch = await tx.internalFinanceWeeklyBatch.upsert({
         where: {
           branchId_weekStart_weekEnd: {
             branchId: row.branchId,
-            weekStart: row.weekStart,
-            weekEnd: row.weekEnd,
+            weekStart,
+            weekEnd,
           },
         },
         create: {
@@ -1027,6 +1072,7 @@ export class InternalFinanceLarkImportService {
           status: row.status,
           preparedAt: row.weekStart,
           createdBy: createdById,
+          ...(row.createdAt ? { createdAt: row.createdAt } : {}),
         },
         update: {
           totalAmount: row.totalAmount,
@@ -1034,8 +1080,21 @@ export class InternalFinanceLarkImportService {
           preparedAt: row.weekStart,
         },
       });
+      if (batch.code !== batchCode) {
+        throw new Error(
+          `Tuần ${batchCode} trùng khoảng ngày với ${batch.code}; bỏ qua`,
+        );
+      }
+      const linkedUuid = batch.approvalRequestId
+        ? (
+            await tx.approvalRequest.findUnique({
+              where: { id: batch.approvalRequestId },
+              select: { clientUuid: true },
+            })
+          )?.clientUuid
+        : null;
       const request = await tx.approvalRequest.upsert({
-        where: { clientUuid },
+        where: { clientUuid: linkedUuid || clientUuid },
         create: {
           kind: row.kind,
           approvalCode,
@@ -1066,30 +1125,49 @@ export class InternalFinanceLarkImportService {
         where: { id: batch.id },
         data: { approvalRequestId: request.id },
       });
-      const entries = await tx.internalFinanceEntry.findMany({
-        where: {
-          branchId: row.branchId,
-          direction: 'EXPENSE',
-          occurredAt: { gte: row.weekStart, lte: row.weekEnd },
-          sourceType: { not: 'LARK_IMPORT' },
-          OR: [{ weeklyBatchId: null }, { weeklyBatchId: batch.id }],
-          cashFlowId: null,
-        },
-        select: { id: true },
-      });
+      // Gắn phiếu chi trong khoảng ngày của tuần, kể cả dòng nhập về. Dòng đã
+      // xử lý tiếp trên POS thì không giành lại; tuần bị từ chối không giữ phiếu.
+      const entries =
+        row.status === INTERNAL_FINANCE_WEEKLY_STATUS.REJECTED
+          ? []
+          : await tx.internalFinanceEntry.findMany({
+              where: {
+                branchId: row.branchId,
+                direction: 'EXPENSE',
+                occurredAt: { gte: row.weekStart, lte: row.weekEnd },
+                status: {
+                  notIn: [
+                    INTERNAL_FINANCE_STATUS.CANCELLED,
+                    INTERNAL_FINANCE_STATUS.REJECTED,
+                  ],
+                },
+                OR: [
+                  { weeklyBatchId: null, posManagedAt: null },
+                  { weeklyBatchId: batch.id },
+                ],
+                cashFlowId: null,
+              },
+              select: { id: true },
+            });
+      // Cập nhật bằng SQL để việc gắn tuần không làm đổi ngày cập nhật của phiếu.
+      if (row.status === INTERNAL_FINANCE_WEEKLY_STATUS.REJECTED) {
+        await tx.$executeRaw`
+          UPDATE internal_finance_entries
+          SET "weeklyBatchId" = NULL,
+              status = ${INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT}
+          WHERE "weeklyBatchId" = ${batch.id} AND "cashIssued" = false
+        `;
+      }
       if (entries.length) {
-        await tx.internalFinanceEntry.updateMany({
-          where: { id: { in: entries.map((entry) => entry.id) } },
-          data: {
-            weeklyBatchId: batch.id,
-            status:
-              row.status === INTERNAL_FINANCE_WEEKLY_STATUS.APPROVED
-                ? INTERNAL_FINANCE_STATUS.APPROVED
-                : row.status === INTERNAL_FINANCE_WEEKLY_STATUS.REJECTED
-                  ? INTERNAL_FINANCE_STATUS.REJECTED
-                  : INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
-          },
-        });
+        const entryStatus =
+          row.status === INTERNAL_FINANCE_WEEKLY_STATUS.APPROVED
+            ? INTERNAL_FINANCE_STATUS.APPROVED
+            : INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL;
+        await tx.$executeRaw`
+          UPDATE internal_finance_entries
+          SET "weeklyBatchId" = ${batch.id}, status = ${entryStatus}
+          WHERE id = ANY(${entries.map((entry) => entry.id)}::int[])
+        `;
       }
       if (row.instanceCode) {
         const eventKey = `LARK_IMPORT:${row.baseToken}:${row.tableId}:${row.recordId}`;
@@ -1115,6 +1193,27 @@ export class InternalFinanceLarkImportService {
         });
       }
     });
+  }
+
+  private sourceTimestamps(entry: {
+    sourceCreatedAt: Date | null;
+    sourceModifiedAt: Date | null;
+  }) {
+    const updatedAt = entry.sourceModifiedAt || entry.sourceCreatedAt;
+    return {
+      ...(entry.sourceCreatedAt ? { createdAt: entry.sourceCreatedAt } : {}),
+      ...(updatedAt ? { updatedAt } : {}),
+    };
+  }
+
+  private importedBatchCode(row: {
+    branchId: number;
+    year: number;
+    week: number;
+  }) {
+    const branchCode =
+      INTERNAL_FINANCE_BRANCH_CODES[row.branchId] || `B${row.branchId}`;
+    return `TCNB-TUAN-${branchCode}-${row.year}-W${String(row.week).padStart(2, '0')}`;
   }
 
   private async findUserId(ref: LarkPersonRef | null) {
@@ -1160,6 +1259,8 @@ export class InternalFinanceLarkImportService {
         defaultBranchId: input.branchId,
         recordId: record.recordId,
         fields: record.fields,
+        createdAt: record.createdAt,
+        modifiedAt: record.modifiedAt,
       });
       if (!outcome.entry) {
         input.result.skipped += 1;
@@ -1179,6 +1280,9 @@ export class InternalFinanceLarkImportService {
         cashIssued: true,
         code: true,
         sourceSnapshot: true,
+        posManagedAt: true,
+        weeklyBatchId: true,
+        updatedAt: true,
       },
     });
     const existingByKey = new Map(
@@ -1252,9 +1356,14 @@ export class InternalFinanceLarkImportService {
         input.result.skipped += 1;
         continue;
       }
-      const matchedInvoices = entry.invoiceCodes
-        .map((code) => invoiceIds.get(code))
-        .filter((id): id is number => Boolean(id));
+      // Một dòng có thể nhắc cùng một hóa đơn nhiều lần; chỉ liên kết một lần.
+      const matchedInvoices = [
+        ...new Set(
+          entry.invoiceCodes
+            .map((code) => invoiceIds.get(code))
+            .filter((id): id is number => Boolean(id)),
+        ),
+      ];
       const category =
         input.source === 'RECEIPT' &&
         (matchedInvoices.length || customerIds.get(entry.customerName || ''))
@@ -1284,11 +1393,14 @@ export class InternalFinanceLarkImportService {
         continue;
       }
 
-      // Dòng đã vào batch hoặc đã chi thì giữ nguyên, chỉ bổ sung giao dịch quỹ
-      // nếu lần nhập trước đã đánh dấu Đã chi nhưng chưa ghi sổ.
+      // Dòng đã vào batch, đã chi hoặc đã được xử lý tiếp trên POS thì giữ
+      // nguyên, chỉ bổ sung giao dịch quỹ nếu lần nhập trước đã đánh dấu Đã chi
+      // nhưng chưa ghi sổ.
       if (
         current &&
-        (current.cashIssued || PROTECTED_IMPORT_STATUSES.has(current.status))
+        (current.cashIssued ||
+          current.posManagedAt ||
+          PROTECTED_IMPORT_STATUSES.has(current.status))
       ) {
         if (
           current.cashIssued &&
@@ -1310,7 +1422,15 @@ export class InternalFinanceLarkImportService {
         if (Object.keys(descriptive).length) {
           await this.prisma.internalFinanceEntry.update({
             where: { id: current.id },
-            data: descriptive,
+            data: {
+              ...descriptive,
+              // Dòng đã làm tiếp trên POS giữ ngày cập nhật của POS.
+              updatedAt: current.posManagedAt
+                ? current.updatedAt
+                : entry.sourceModifiedAt ||
+                  entry.sourceCreatedAt ||
+                  current.updatedAt,
+            },
           });
         }
         if (isVehicleSource && vehicleIndexKey) {
@@ -1349,6 +1469,8 @@ export class InternalFinanceLarkImportService {
           attachments: [],
           vehicleId: vehicleRef?.id || null,
         });
+        // Phiếu đã thuộc một tuần thì trạng thái do tuần quyết định.
+        if (current?.weeklyBatchId) data.status = current.status;
         let savedId: number;
         if (current) {
           await this.prisma.internalFinanceEntry.update({
@@ -1480,9 +1602,7 @@ export class InternalFinanceLarkImportService {
     ]);
     const larkUserIds = Array.from(
       new Set(
-        refs
-          .map((ref) => ref?.id)
-          .filter((id): id is string => Boolean(id)),
+        refs.map((ref) => ref?.id).filter((id): id is string => Boolean(id)),
       ),
     );
     const users = larkUserIds.length
@@ -1503,10 +1623,7 @@ export class InternalFinanceLarkImportService {
     }
 
     const byEntry = new Map<string, ResolvedLarkUsers>();
-    const unmatchedByEntry = new Map<
-      string,
-      Array<Record<string, string>>
-    >();
+    const unmatchedByEntry = new Map<string, Array<Record<string, string>>>();
 
     for (const entry of entries) {
       const unmatched: Array<Record<string, string>> = [];
@@ -1534,10 +1651,15 @@ export class InternalFinanceLarkImportService {
       const accountant = resolve('accountant', entry.larkAccountant);
       const manager = resolve('manager', entry.larkManager);
       byEntry.set(entry.sourceKey, {
-        ...(creator ? { creatorId: creator.id, creatorName: creator.name || undefined } : {}),
+        ...(creator
+          ? { creatorId: creator.id, creatorName: creator.name || undefined }
+          : {}),
         ...(payer ? { payerId: payer.id } : {}),
         ...(accountant
-          ? { accountantId: accountant.id, accountantName: accountant.name || undefined }
+          ? {
+              accountantId: accountant.id,
+              accountantName: accountant.name || undefined,
+            }
           : {}),
         ...(manager
           ? { managerId: manager.id, managerName: manager.name || undefined }
@@ -1564,30 +1686,123 @@ export class InternalFinanceLarkImportService {
     if (!input.pendingEntryIds.size) {
       return { failures };
     }
-    const token = await this.lark.getToken();
-    const entries = await this.prisma.internalFinanceEntry.findMany({
-      where: { id: { in: [...input.pendingEntryIds] } },
-      select: { id: true, sourceSnapshot: true },
+    let token = await this.lark.getToken();
+    const cutoff = attachmentCutoff();
+    const ids = [...input.pendingEntryIds];
+    // Tải song song vài phiếu một lúc; token được lấy lại theo từng lô.
+    const BATCH = 200;
+    const PARALLEL = 4;
+    for (let start = 0; start < ids.length; start += BATCH) {
+      if (start > 0) token = await this.lark.getToken();
+      // Chỉ tải chứng từ của phiếu trong 1 tháng gần nhất.
+      const entries = await this.prisma.internalFinanceEntry.findMany({
+        where: {
+          id: { in: ids.slice(start, start + BATCH) },
+          occurredAt: { gte: cutoff },
+        },
+        select: { id: true, sourceSnapshot: true },
+      });
+      for (let index = 0; index < entries.length; index += PARALLEL) {
+        await Promise.all(
+          entries
+            .slice(index, index + PARALLEL)
+            .map((entry) =>
+              this.downloadEntryAttachments(entry, token, input, failures),
+            ),
+        );
+      }
+    }
+    return { failures };
+  }
+
+  /** Tải mọi chứng từ còn chờ của các phiếu đã đồng bộ (chạy lại được). */
+  async downloadPendingAttachments(
+    userId: number,
+    onProgress?: (progress: {
+      total: number;
+      downloaded: number;
+      failed: number;
+    }) => void,
+  ) {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ id: number; files: number }>
+    >`
+      SELECT id, jsonb_array_length("sourceSnapshot"->'pendingAttachments')::int AS files
+      FROM internal_finance_entries
+      WHERE jsonb_typeof("sourceSnapshot"->'pendingAttachments') = 'array'
+        AND jsonb_array_length("sourceSnapshot"->'pendingAttachments') > 0
+        AND "occurredAt" >= ${attachmentCutoff()}
+      ORDER BY id DESC
+    `;
+    const total = rows.reduce((sum, row) => sum + Number(row.files), 0);
+    const runState: LarkImportRunState = {
+      pendingEntryIds: new Set(rows.map((row) => Number(row.id))),
+      cashIssuedEntryIds: new Set<number>(),
+      attachmentTotal: total,
+      attachmentDownloaded: 0,
+      attachmentFailures: [],
+      vehicleIndex: new Map(),
+      vehicles: new Map(),
+    };
+    onProgress?.({ total, downloaded: 0, failed: 0 });
+    await this.importPendingAttachments({
+      userId,
+      pendingEntryIds: runState.pendingEntryIds,
+      runState,
+      onProgress: (patch) =>
+        onProgress?.({
+          total,
+          downloaded: patch.attachmentsDownloaded || 0,
+          failed: patch.attachmentsFailed || 0,
+        }),
     });
-    for (const entry of entries) {
-      const snapshot = asSnapshotRecord(entry.sourceSnapshot);
-      const pending = readPendingAttachments(snapshot);
-      if (!pending.length) continue;
-      const remaining: typeof pending = [];
-      for (const file of pending) {
-        const url =
-          file.url ||
-          file.tmpUrl ||
-          `https://open.larksuite.com/open-apis/drive/v1/medias/${file.token}/download`;
-        try {
-          const buffer = await this.lark.download(url, token);
-          const stored = await this.uploadService.saveFile(
-            buffer,
-            file.name || `${file.token}.bin`,
-            file.type || 'application/octet-stream',
-            'internal-finance',
+    return {
+      total,
+      downloaded: runState.attachmentDownloaded,
+      failed: runState.attachmentFailures.length,
+    };
+  }
+
+  private async downloadEntryAttachments(
+    entry: { id: number; sourceSnapshot: Prisma.JsonValue },
+    token: string,
+    input: {
+      userId: number;
+      runState: LarkImportRunState;
+      onProgress?: (patch: Partial<LarkImportJobStatus>) => void;
+    },
+    failures: string[],
+  ) {
+    const pending = readPendingAttachments(
+      asSnapshotRecord(entry.sourceSnapshot),
+    );
+    for (const file of pending) {
+      const url =
+        file.url ||
+        file.tmpUrl ||
+        `https://open.larksuite.com/open-apis/drive/v1/medias/${file.token}/download`;
+      try {
+        const buffer = await this.lark.download(url, token);
+        const stored = await this.uploadService.saveFile(
+          buffer,
+          file.name || `${file.token}.bin`,
+          file.type || 'application/octet-stream',
+          'internal-finance',
+        );
+        // Lưu file và đánh dấu "đã tải" trong cùng một giao dịch, từng file
+        // một: bị ngắt giữa chừng rồi chạy lại cũng không tạo bản thứ hai.
+        await this.prisma.$transaction(async (tx) => {
+          const current = await tx.internalFinanceEntry.findUnique({
+            where: { id: entry.id },
+            select: { sourceSnapshot: true, updatedAt: true },
+          });
+          const snapshot = asSnapshotRecord(current?.sourceSnapshot ?? null);
+          const imported = new Set(
+            readImportedTokens(snapshot as Prisma.JsonValue),
           );
-          await this.prisma.internalFinanceAttachment.create({
+          if (imported.has(file.token)) return;
+          imported.add(file.token);
+          await tx.internalFinanceAttachment.create({
             data: {
               entryId: entry.id,
               kind: file.kind || 'EVIDENCE',
@@ -1598,50 +1813,41 @@ export class InternalFinanceLarkImportService {
               createdBy: input.userId,
             },
           });
-          input.runState.attachmentDownloaded += 1;
-          this.logger.log(
-            `[LARK_IMPORT] attachment downloaded entry=${entry.id} downloaded=${input.runState.attachmentDownloaded} failed=${input.runState.attachmentFailures.length}`,
-          );
-        } catch (error) {
-          remaining.push(file);
-          const message =
-            error instanceof Error ? error.message : 'Không tải được chứng từ';
-          input.runState.attachmentFailures.push(message);
-          failures.push(message);
-          this.logger.warn(
-            `[LARK_IMPORT] attachment failed entry=${entry.id} name=${file.name || file.token}`,
-          );
-        }
-        input.onProgress?.({
-          attachmentsTotal: input.runState.attachmentTotal,
-          attachmentsDownloaded: input.runState.attachmentDownloaded,
-          attachmentsFailed: input.runState.attachmentFailures.length,
+          await tx.internalFinanceEntry.update({
+            where: { id: entry.id },
+            data: {
+              evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
+              // Tải chứng từ không tính là sửa phiếu.
+              updatedAt: current?.updatedAt,
+              sourceSnapshot: {
+                ...snapshot,
+                importedFileTokens: [...imported],
+                pendingAttachments: readPendingAttachments(snapshot).filter(
+                  (item) => item.token !== file.token,
+                ),
+              } as Prisma.InputJsonValue,
+            },
+          });
         });
+        input.runState.attachmentDownloaded += 1;
+        this.logger.log(
+          `[LARK_IMPORT] attachment downloaded entry=${entry.id} downloaded=${input.runState.attachmentDownloaded} failed=${input.runState.attachmentFailures.length}`,
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Không tải được chứng từ';
+        input.runState.attachmentFailures.push(message);
+        failures.push(message);
+        this.logger.warn(
+          `[LARK_IMPORT] attachment failed entry=${entry.id} name=${file.name || file.token}`,
+        );
       }
-      const importedTokens = new Set(
-        readImportedTokens(snapshot as Prisma.JsonValue),
-      );
-      for (const file of pending) {
-        if (!remaining.some((item) => item.token === file.token)) {
-          importedTokens.add(file.token);
-        }
-      }
-      await this.prisma.internalFinanceEntry.update({
-        where: { id: entry.id },
-        data: {
-          evidenceStatus:
-            importedTokens.size > 0
-              ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
-              : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
-          sourceSnapshot: {
-            ...snapshot,
-            importedFileTokens: [...importedTokens],
-            pendingAttachments: remaining,
-          } as Prisma.InputJsonValue,
-        },
+      input.onProgress?.({
+        attachmentsTotal: input.runState.attachmentTotal,
+        attachmentsDownloaded: input.runState.attachmentDownloaded,
+        attachmentsFailed: input.runState.attachmentFailures.length,
       });
     }
-    return { failures };
   }
 
   /**
@@ -1752,7 +1958,8 @@ export class InternalFinanceLarkImportService {
               throw error;
             }
             count += 1;
-            if (!earliest || row.occurredAt < earliest) earliest = row.occurredAt;
+            if (!earliest || row.occurredAt < earliest)
+              earliest = row.occurredAt;
           }
           if (earliest && count > 0) {
             await this.fundLedger.invalidateClosings(tx, branchId, earliest);
@@ -1882,6 +2089,8 @@ export class InternalFinanceLarkImportService {
   ): Prisma.InternalFinanceEntryUncheckedUpdateInput {
     const payerId = payerIdOf(entry, resolvedUsers);
     return {
+      // Dòng được bảo vệ giữ ngày cập nhật của POS, chỉ sửa ngày tạo.
+      ...(entry.sourceCreatedAt ? { createdAt: entry.sourceCreatedAt } : {}),
       ...(payerId ? { payerId } : {}),
       ...(vehicle?.id
         ? { vehicleId: vehicle.id, vehicleName: vehicle.label }
@@ -1914,29 +2123,38 @@ export class InternalFinanceLarkImportService {
   ) {
     const target = await this.prisma.internalFinanceEntry.findUnique({
       where: { id: vehicleEntryId },
-      select: { id: true, status: true, cashIssued: true, cashFlowId: true },
+      select: {
+        id: true,
+        status: true,
+        cashIssued: true,
+        cashFlowId: true,
+        posManagedAt: true,
+      },
     });
-    if (!target || target.cashFlowId) return;
+    if (!target || target.cashFlowId || target.posManagedAt) return;
     const locked =
       target.cashIssued || PROTECTED_IMPORT_STATUSES.has(target.status);
     const reviewedAt = entry.occurredAt || new Date();
     await this.prisma.internalFinanceEntry.update({
       where: { id: target.id },
       data: {
+        ...(entry.sourceModifiedAt
+          ? { updatedAt: entry.sourceModifiedAt }
+          : {}),
         ...(resolvedUsers?.payerId ? { payerId: resolvedUsers.payerId } : {}),
         ...(locked
           ? {}
           : {
               status: entry.status,
-              ...(entry.accountantTicked && resolvedUsers?.accountantId
+              ...(entry.accountantTicked
                 ? {
-                    accountantReviewedBy: resolvedUsers.accountantId,
+                    accountantReviewedBy: resolvedUsers?.accountantId ?? null,
                     accountantReviewedAt: reviewedAt,
                   }
                 : {}),
-              ...(entry.managerTicked && resolvedUsers?.managerId
+              ...(entry.managerTicked
                 ? {
-                    managerReviewedBy: resolvedUsers.managerId,
+                    managerReviewedBy: resolvedUsers?.managerId ?? null,
                     managerReviewedAt: reviewedAt,
                   }
                 : {}),
@@ -1997,20 +2215,18 @@ export class InternalFinanceLarkImportService {
     }>;
     vehicleId?: number | null;
   }): Promise<Prisma.InternalFinanceEntryCreateInput> {
-    const reviews = this.reviewRows(
-      input.entry,
-      input.resolvedUsers,
-    );
-    const occurredAt = input.entry.occurredAt || new Date();
-    const code =
-      input.existingCode?.startsWith('TCNB-')
-        ? input.existingCode
-        : await this.codeService.nextCode(this.prisma, {
-            direction: input.entry.direction,
-            category: input.entry.category,
-            branchId: input.entry.branchId,
-            occurredAt,
-          });
+    const reviews = this.reviewRows(input.entry, input.resolvedUsers);
+    // Dòng trống ngày chi thì lấy ngày tạo trên nguồn, không lấy lúc đồng bộ.
+    const occurredAt =
+      input.entry.occurredAt || input.entry.sourceCreatedAt || new Date();
+    const code = input.existingCode?.startsWith('TCNB-')
+      ? input.existingCode
+      : await this.codeService.nextCode(this.prisma, {
+          direction: input.entry.direction,
+          category: input.entry.category,
+          branchId: input.entry.branchId,
+          occurredAt,
+        });
     const snapshot = input.entry.sourceSnapshot;
     return {
       code,
@@ -2020,6 +2236,7 @@ export class InternalFinanceLarkImportService {
       branch: { connect: { id: input.entry.branchId } },
       amount: input.entry.amount,
       occurredAt,
+      ...this.sourceTimestamps(input.entry),
       sourceType: 'LARK_IMPORT',
       sourceId: input.entry.sourceSnapshot.lark
         ? String(
@@ -2080,25 +2297,26 @@ export class InternalFinanceLarkImportService {
       ...(input.packingSlipId
         ? { packingSlip: { connect: { id: input.packingSlipId } } }
         : {}),
-      ...(input.entry.accountantTicked
-        ? input.resolvedUsers?.accountantId
-          ? {
-              accountantReviewer: {
-                connect: { id: input.resolvedUsers.accountantId },
-              },
-              accountantReviewedAt: input.entry.occurredAt || new Date(),
-            }
-          : {}
+      // Ô tick trên nguồn không kèm người; có tick là ghi nhận đã kiểm tra.
+      accountantReviewedAt: input.entry.accountantTicked
+        ? input.entry.occurredAt || new Date()
+        : null,
+      ...(input.entry.accountantTicked && input.resolvedUsers?.accountantId
+        ? {
+            accountantReviewer: {
+              connect: { id: input.resolvedUsers.accountantId },
+            },
+          }
         : {}),
-      ...(input.entry.managerTicked
-        ? input.resolvedUsers?.managerId
-          ? {
-              managerReviewer: {
-                connect: { id: input.resolvedUsers.managerId },
-              },
-              managerReviewedAt: input.entry.occurredAt || new Date(),
-            }
-          : {}
+      managerReviewedAt: input.entry.managerTicked
+        ? input.entry.occurredAt || new Date()
+        : null,
+      ...(input.entry.managerTicked && input.resolvedUsers?.managerId
+        ? {
+            managerReviewer: {
+              connect: { id: input.resolvedUsers.managerId },
+            },
+          }
         : {}),
       ...(input.invoiceIds.length
         ? {
@@ -2201,7 +2419,9 @@ export class InternalFinanceLarkImportService {
 }
 
 function normalizePersonName(value: string | null | undefined) {
-  return value?.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase() || '';
+  return (
+    value?.normalize('NFC').replace(/\s+/g, ' ').trim().toLowerCase() || ''
+  );
 }
 
 type PendingAttachment = {
@@ -2246,6 +2466,13 @@ function readPendingAttachments(
 
 function asString(value: unknown) {
   return typeof value === 'string' ? value : '';
+}
+
+/** Chứng từ chỉ được tải cho phiếu phát sinh trong 1 tháng gần nhất. */
+export function attachmentCutoff(now = new Date()): Date {
+  const cutoff = new Date(now);
+  cutoff.setMonth(cutoff.getMonth() - 1);
+  return cutoff;
 }
 
 function sourcePriority(source: LarkImportSource) {

@@ -5,6 +5,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LarkAuthService } from './lark-auth.service';
+import { FinanceAccessService } from './finance-access.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { GoogleStrategy } from './strategies/google.strategy';
 import { UsersModule } from '../users/users.module';
@@ -46,7 +47,13 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LarkAuthService, JwtStrategy, GoogleStrategy],
-  exports: [AuthService],
+  providers: [
+    AuthService,
+    LarkAuthService,
+    JwtStrategy,
+    GoogleStrategy,
+    FinanceAccessService,
+  ],
+  exports: [AuthService, FinanceAccessService],
 })
 export class AuthModule {}

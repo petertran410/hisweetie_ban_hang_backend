@@ -33,6 +33,12 @@ export class PackingSlipsController {
     return this.packingSlipsService.findAll(query);
   }
 
+  @Get(':id/cancel-check')
+  @RequirePermissions('packing_slips:view')
+  cancelCheck(@Param('id') id: string) {
+    return this.packingSlipsService.cancelCheck(+id);
+  }
+
   @Get(':id')
   @RequirePermissions('packing_slips:view')
   findOne(@Param('id') id: string) {
@@ -71,8 +77,16 @@ export class PackingSlipsController {
 
   @Delete(':id')
   @RequirePermissions('packing_slips:delete')
-  remove(@Param('id') id: string, @Req() req: any) {
+  remove(
+    @Param('id') id: string,
+    @Req() req: any,
+    @Query('cancelCashFlows') cancelCashFlows?: string,
+  ) {
     const userId = req.user?.id || 1;
-    return this.packingSlipsService.remove(+id, userId);
+    return this.packingSlipsService.remove(
+      +id,
+      userId,
+      cancelCashFlows === undefined ? undefined : cancelCashFlows === 'true',
+    );
   }
 }

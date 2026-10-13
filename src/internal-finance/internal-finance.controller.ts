@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Patch,
@@ -14,6 +15,8 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InternalFinanceService } from './internal-finance.service';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
 import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
+import { InternalFinanceSyncService } from './internal-finance-sync.service';
+import { FinanceCutoverService } from './finance-cutover.service';
 import {
   CreateApprovalForWeeklyBatchDto,
   CreateWarehouseExpenseDto,
@@ -26,6 +29,7 @@ import {
   CreateWarehouseReceiptDto,
   CancelWarehouseReceiptDto,
   InternalFinanceQueryDto,
+  CheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
   WarehouseCashImportDto,
@@ -51,33 +55,74 @@ export class InternalFinanceController {
     private readonly service: InternalFinanceService,
     private readonly larkImport: InternalFinanceLarkImportService,
     private readonly fundHistory: InternalFundHistorySyncService,
+    private readonly financeSync: InternalFinanceSyncService,
+    private readonly cutover: FinanceCutoverService,
   ) {}
 
+  // Giới hạn truy vấn về các chi nhánh user được phép; ngoài phạm vi thì từ chối.
+  private scopeBranches<T extends { branchIds?: number[] }>(
+    query: T,
+    allowed: number[],
+  ): T {
+    const requested = query.branchIds?.length
+      ? query.branchIds.map(Number).filter((id) => allowed.includes(id))
+      : allowed;
+    if (!requested.length)
+      throw new ForbiddenException('Không có quyền xem dữ liệu chi nhánh này');
+    return { ...query, branchIds: requested };
+  }
+
+  @Get('access')
+  @ApiOperation({
+    summary: 'Quyền tài chính của user tại từng chi nhánh được truy cập',
+  })
+  access(@CurrentUser() user: any) {
+    return this.service.financeAccessSummary(user);
+  }
+
   @Get()
-  @RequirePermissions('cash_flows:view')
   @ApiOperation({ summary: 'List internal finance entries' })
-  findAll(@Query() query: InternalFinanceQueryDto) {
-    return this.service.findAll(query);
+  async findAll(
+    @Query() query: InternalFinanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.findAll(
+      this.scopeBranches(query, await this.service.financeViewBranches(user)),
+    );
   }
 
   @Get('summary')
-  @RequirePermissions('cash_flows:view')
   @ApiOperation({ summary: 'Summarize internal finance entries' })
-  summary(@Query() query: InternalFinanceQueryDto) {
-    return this.service.getSummary(query);
+  async summary(
+    @Query() query: InternalFinanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.getSummary(
+      this.scopeBranches(query, await this.service.financeViewBranches(user)),
+    );
   }
 
   @Get('warehouse-receipts')
-  @RequirePermissions('warehouse_cash:view')
   @ApiOperation({ summary: 'List warehouse cash receipts' })
-  warehouseReceipts(@Query() query: InternalFinanceQueryDto) {
-    return this.service.listWarehouseReceipts(query);
+  async warehouseReceipts(
+    @Query() query: InternalFinanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listWarehouseReceipts(
+      this.scopeBranches(
+        query,
+        await this.service.warehouseCashBranches(user, 'view'),
+      ),
+    );
   }
 
   @Get('warehouse-receipts/:id')
-  @RequirePermissions('warehouse_cash:view')
   @ApiOperation({ summary: 'Get one warehouse cash receipt' })
-  warehouseReceipt(@Param('id', ParseIntPipe) id: number) {
+  async warehouseReceipt(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    await this.service.assertWarehouseCashEntry(user, 'view', id);
     return this.service.getWarehouseReceipt(id);
   }
 
@@ -161,58 +206,72 @@ export class InternalFinanceController {
     return this.service.markWarehouseExpenseIssued(id, user, dto);
   }
 
+  @Patch('warehouse-expenses/:id/check')
+  @ApiOperation({ summary: 'Tick or untick a warehouse expense check' })
+  checkWarehouseExpense(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CheckWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.checkWarehouseExpense(id, user, dto);
+  }
+
   @Post('warehouse-receipts/lark-import')
   @RequirePermissions('cash_flows:create')
   @ApiOperation({
     summary: 'Import warehouse cash history without Lark identifiers',
   })
-  importWarehouseCash(
+  async importWarehouseCash(
     @Body() dto: WarehouseCashImportDto,
     @CurrentUser() user: any,
   ) {
+    if (dto.dryRun === false) await this.cutover.assertOpen();
     return this.larkImport.importWarehouseCash(dto, user.id);
   }
 
   @Post('warehouse-receipts')
-  @RequirePermissions('warehouse_cash:create')
   @ApiOperation({ summary: 'Create a manual warehouse cash receipt' })
-  createWarehouseReceipt(
+  async createWarehouseReceipt(
     @Body() dto: CreateWarehouseReceiptDto,
     @CurrentUser() user: any,
   ) {
+    await this.service.assertWarehouseCash(user, 'create', dto.branchId);
     return this.service.createWarehouseReceipt(dto, user.id);
   }
 
   @Patch('warehouse-receipts/:id')
-  @RequirePermissions('warehouse_cash:update')
   @ApiOperation({ summary: 'Update an open warehouse cash receipt' })
-  updateWarehouseReceipt(
+  async updateWarehouseReceipt(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateWarehouseReceiptDto,
     @CurrentUser() user: any,
   ) {
+    await this.service.assertWarehouseCashEntry(user, 'update', id);
+    // Chuyển phiếu sang kho khác thì cũng phải có quyền ở kho đó.
+    if (dto.branchId)
+      await this.service.assertWarehouseCash(user, 'update', dto.branchId);
     return this.service.updateWarehouseReceipt(id, dto, user.id);
   }
 
   @Post('warehouse-receipts/:id/post')
-  @RequirePermissions('warehouse_cash:post')
   @ApiOperation({ summary: 'Allocate and create cash receipts' })
-  postWarehouseReceipt(
+  async postWarehouseReceipt(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: PostWarehouseReceiptDto,
     @CurrentUser() user: any,
   ) {
+    await this.service.assertWarehouseCashEntry(user, 'post', id);
     return this.service.postWarehouseReceipt(id, dto, user.id);
   }
 
   @Put('warehouse-receipts/:id/cancel')
-  @RequirePermissions('warehouse_cash:cancel')
   @ApiOperation({ summary: 'Cancel a warehouse cash receipt' })
-  cancelWarehouseReceipt(
+  async cancelWarehouseReceipt(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: CancelWarehouseReceiptDto,
     @CurrentUser() user: any,
   ) {
+    await this.service.assertWarehouseCashEntry(user, 'cancel', id);
     return this.service.cancelWarehouseReceipt(id, dto, user.id);
   }
 
@@ -247,16 +306,54 @@ export class InternalFinanceController {
     summary:
       'Queue a background Lark finance import and return its progress immediately',
   })
-  importFromLark(@Body() dto: LarkFinanceImportDto, @CurrentUser() user: any) {
+  async importFromLark(
+    @Body() dto: LarkFinanceImportDto,
+    @CurrentUser() user: any,
+  ) {
+    if (dto.dryRun === false) await this.cutover.assertOpen();
     return this.larkImport.startImport(dto, user.id);
+  }
+
+  @Post('sync')
+  @ApiOperation({
+    summary: 'Đồng bộ toàn bộ dữ liệu thu chi kho (chạy nền, Super Admin)',
+  })
+  async startSync(@CurrentUser() user: any) {
+    await this.service.assertSuperAdmin(user);
+    await this.cutover.assertOpen();
+    return this.financeSync.start(user.id);
+  }
+
+  @Get('cutover')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Trạng thái chốt chuyển đổi sổ tài chính' })
+  cutoverStatus() {
+    return this.cutover.status();
+  }
+
+  @Post('cutover')
+  @RequirePermissions('cash_flows:create')
+  @ApiOperation({ summary: 'Chốt / mở lại chuyển đổi (Super Admin)' })
+  setCutover(@Body() body: { locked?: boolean }, @CurrentUser() user: any) {
+    return this.cutover.set(body?.locked !== false, user);
+  }
+
+  @Get('sync/status')
+  @RequirePermissions('cash_flows:view')
+  @ApiOperation({ summary: 'Tiến độ đồng bộ dữ liệu thu chi kho' })
+  syncStatus() {
+    return this.financeSync.getStatus();
   }
 
   @Post('fund-history/sync')
   @RequirePermissions('cash_flows:create')
   @ApiOperation({
-    summary: 'Đồng bộ toàn bộ bút toán sổ quỹ lịch sử vào quỹ nội bộ (chạy nền)',
+    summary:
+      'Đồng bộ toàn bộ bút toán sổ quỹ lịch sử vào quỹ nội bộ (chạy nền)',
   })
-  syncFundHistory(@CurrentUser() user: any) {
+  async syncFundHistory(@CurrentUser() user: any) {
+    await this.service.assertSuperAdmin(user);
+    await this.cutover.assertOpen();
     return this.fundHistory.start(user.id);
   }
 

@@ -130,6 +130,9 @@ export interface MappedLarkEntry {
   branchId: number;
   amount: number;
   occurredAt: Date | null;
+  /** Ngày tạo / sửa cuối của dòng trên nguồn, dùng cho createdAt / updatedAt. */
+  sourceCreatedAt: Date | null;
+  sourceModifiedAt: Date | null;
   description: string | null;
   status: string;
   evidenceStatus: string;
@@ -626,6 +629,8 @@ export function mapLarkRecord(input: {
   defaultBranchId: number;
   recordId: string;
   fields: Record<string, unknown>;
+  createdAt?: Date | null;
+  modifiedAt?: Date | null;
 }): { entry: MappedLarkEntry | null; skipReason: string | null } {
   const amount = amountFrom(input.fields);
   if (amount === null || amount <= 0) {
@@ -649,10 +654,11 @@ export function mapLarkRecord(input: {
           : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT
       : ticks.rejected
         ? INTERNAL_FINANCE_STATUS.REJECTED
-        : ticks.approvedText || (ticks.accountantTicked && ticks.managerTicked)
+        : ticks.approvedText
           ? INTERNAL_FINANCE_STATUS.APPROVED
-          : ticks.accountantTicked
-            ? INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED
+          : // Hai tick độc lập: đủ cả hai mới sẵn sàng gom tuần.
+            ticks.accountantTicked && ticks.managerTicked
+            ? INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
             : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT;
   const category =
     input.source === 'RECEIPT'
@@ -738,6 +744,8 @@ export function mapLarkRecord(input: {
       branchId,
       amount,
       occurredAt: dateFrom(input.fields),
+      sourceCreatedAt: input.createdAt ?? null,
+      sourceModifiedAt: input.modifiedAt ?? null,
       description,
       status,
       evidenceStatus: attachments.length

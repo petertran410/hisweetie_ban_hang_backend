@@ -876,8 +876,13 @@ export class PackingSlipsService {
     return false;
   }
 
-  async remove(id: number, userId?: number) {
+  cancelCheck(id: number) {
+    return this.internalFinanceService.packingSlipCancelCheck(id);
+  }
+
+  async remove(id: number, userId?: number, cancelCashFlows?: boolean) {
     const packingSlip = await this.findOne(id);
+    const cancelledCashFlows: Array<{ cashFlow: any; updated: any }> = [];
 
     const invoiceIds: number[] = (packingSlip.invoices || [])
       .map((i: any) => i.invoiceId)
@@ -900,45 +905,14 @@ export class PackingSlipsService {
         data: { cancelledAt: new Date(), cancelledById: userId ?? null },
       });
 
-      const internalFinanceEntries = await tx.internalFinanceEntry.findMany({
-        where: { packingSlipId: id },
-        select: {
-          id: true,
-          weeklyBatchId: true,
-          cashFlowId: true,
-          cashIssued: true,
-          status: true,
-        },
-      });
-      const lockedEntry = internalFinanceEntries.find(
-        (entry) =>
-          entry.weeklyBatchId ||
-          entry.cashFlowId ||
-          entry.cashIssued ||
-          [
-            INTERNAL_FINANCE_STATUS.POSTING,
-            INTERNAL_FINANCE_STATUS.POSTED,
-          ].includes(entry.status as any),
+      cancelledCashFlows.push(
+        ...(await this.internalFinanceService.cancelPackingSlipEntriesInTransaction(
+          tx,
+          { id, branchId: packingSlip.branchId },
+          userId ?? packingSlip.createdBy,
+          cancelCashFlows,
+        )),
       );
-      if (lockedEntry) {
-        throw new BadRequestException(
-          'Không thể hủy báo đơn khi khoản tài chính đã vào batch hoặc đã ghi nhận vào sổ quỹ',
-        );
-      }
-      await tx.internalFinanceEntry.updateMany({
-        where: {
-          packingSlipId: id,
-          weeklyBatchId: null,
-          cashFlowId: null,
-          status: {
-            notIn: [
-              INTERNAL_FINANCE_STATUS.REJECTED,
-              INTERNAL_FINANCE_STATUS.CANCELLED,
-            ],
-          },
-        },
-        data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
-      });
 
       // Hoàn (lùi) trạng thái hóa đơn về bậc cao nhất còn lại
       if (invoiceIds.length > 0) {
@@ -952,6 +926,11 @@ export class PackingSlipsService {
         for (const productId of touched) touchedProductIds.add(productId);
       }
     });
+
+    await this.internalFinanceService.logCancelledCashFlows(
+      cancelledCashFlows,
+      userId ?? packingSlip.createdBy,
+    );
 
     for (const productId of touchedProductIds) {
       this.larkProductSync.enqueueSync(productId);
