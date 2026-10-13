@@ -318,6 +318,60 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  SUBCONTRACT_ORDER_CREATE: {
+    template: 'Tạo lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_UPDATE: {
+    template: 'Cập nhật lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_SEND: {
+    template: 'Gửi nguyên liệu đi gia công theo lệnh {orderCode}',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_RECEIVE: {
+    template:
+      'Nhập {goodQuantity} thành phẩm gia công {receiptCode} của lệnh {orderCode}',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_RECEIPT_CANCEL: {
+    template: 'Hủy đợt nhập {receiptCode} của lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'warning',
+  },
+  SUBCONTRACT_ORDER_COMPLETE: {
+    template: 'Hoàn thành lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_CANCEL: {
+    template: 'Hủy lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'warning',
+  },
+  SUBCONTRACT_ORDER_APPLY_COST: {
+    template:
+      'Áp giá vốn {newCostAmount} cho {productName} từ lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'warning',
+  },
+  SUBCONTRACT_ORDER_PAYMENT_CREATE: {
+    template:
+      'Thanh toán {amount} cho lệnh gia công {orderCode} ({paymentCode})',
+    category: 'subcontract',
+    severity: 'info',
+  },
+  SUBCONTRACT_ORDER_PAYMENT_DELETE: {
+    template: 'Hủy thanh toán {paymentCode} của lệnh gia công {orderCode}',
+    category: 'subcontract',
+    severity: 'warning',
+  },
+
   DESTRUCTION_CREATE: {
     template: 'Tạo phiếu xuất hủy {destructionCode}',
     category: 'destruction',

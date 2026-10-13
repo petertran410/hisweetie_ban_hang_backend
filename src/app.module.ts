@@ -45,6 +45,7 @@ import { CashFlowsModule } from './cashflows/cashflows.module';
 import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 import { NoteTemplatesModule } from './note-templates/note-templates.module';
 import { ProductionsModule } from './productions/productions.module';
+import { SubcontractOrdersModule } from './subcontract-orders/subcontract-orders.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { InternalUseModule } from './internal-use/internal-use.module';
 import { InternalUseReturnsModule } from './internal-use-returns/internal-use-returns.module';
@@ -156,6 +157,7 @@ import { ProductQualityModule } from './product-quality/product-quality.module';
     CashFlowGroupsModule,
     NoteTemplatesModule,
     ProductionsModule,
+    SubcontractOrdersModule,
     DestructionsModule,
     InternalUseModule,
     InternalUseReturnsModule,

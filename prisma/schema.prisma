@@ -335,6 +335,8 @@ model Branch {
   priceBookBranches         PriceBookBranch[]
   productionsDestination    Production[]             @relation("ProductionDestination")
   productionsSource         Production[]             @relation("ProductionSource")
+  subcontractOrdersSource   SubcontractOrder[]       @relation("SubcontractOrderSource")
+  subcontractOrdersReceive  SubcontractOrder[]       @relation("SubcontractOrderReceive")
   promotionBranches         PromotionBranch[]
   purchaseOrders            PurchaseOrder[]
   returnOrders              ReturnOrder[]
@@ -574,6 +576,7 @@ model Supplier {
   purchaseOrders             PurchaseOrder[]
   supplierGroupDetails       SupplierGroupDetail[]
   supplierReturns            SupplierReturn[]
+  subcontractOrders          SubcontractOrder[]
   branch                     Branch?               @relation(fields: [branchId], references: [id])
   creator                    User?                 @relation("SupplierCreator", fields: [createdBy], references: [id])
   staffUsers                 User[]                @relation("SupplierStaff")
@@ -793,6 +796,8 @@ model Product {
   images                         ProductImage[]
   productionComponents           ProductionComponent[]
   productions                    Production[]
+  subcontractOrders              SubcontractOrder[]
+  subcontractOrderMaterials      SubcontractOrderMaterial[]
   masterProduct                  Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
   productUnits                   Product[]                      @relation("ProductUnits")
   priceBook                      PriceBook?                     @relation(fields: [priceBookId], references: [id])
@@ -855,6 +860,7 @@ model ProductFormula {
   product     Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
   components  ProductComponent[]
   productions Production[]
+  subcontractOrders SubcontractOrder[]
 
   @@index([productId])
   @@map("product_formulas")
@@ -1417,6 +1423,7 @@ model BankAccount {
   orderPayments         OrderPayment[]
   orderSupplierPayments OrderSupplierPayment[]
   purchaseOrderPayments PurchaseOrderPayment[]
+  subcontractOrderPayments SubcontractOrderPayment[]
   userMappings          UserBankAccount[]
 
   @@map("bank_accounts")
@@ -2190,6 +2197,7 @@ model CashFlow {
   invoicePayments           InvoicePayment[]
   orderSupplierPayments     OrderSupplierPayment[]
   purchaseOrderPayments     PurchaseOrderPayment[]
+  subcontractOrderPayments  SubcontractOrderPayment[]
   returnOrders              ReturnOrder[]
   supplierReturns           SupplierReturn[]
 
@@ -2659,6 +2667,7 @@ model Factory {
   factory_products      factory_products[]
   orderSupplierItems    OrderSupplierItem[]
   productQualityTickets ProductQualityTicket[]
+  subcontractOrders     SubcontractOrder[]
 
   @@index([supplierId])
   @@index([isActive])
@@ -4732,4 +4741,174 @@ model ProductQualityDepartmentMember {
   @@unique([department, branchId, userId])
   @@index([department, branchId])
   @@map("product_quality_department_members")
+}
+
+/// Lệnh gia công ngoài: gửi nguyên liệu sang nhà máy, nhận thành phẩm về kho.
+/// status: 1 Nháp, 2 Đang gia công, 3 Nhận một phần, 4 Hoàn thành, 5 Đã hủy.
+/// Các cột tổng (goodQuantity … paidAmount) là cache, luôn được tính lại bởi
+/// recomputeSubcontractOrderTotals (src/common/subcontract-order.util.ts).
+model SubcontractOrder {
+  id                   Int                        @id @default(autoincrement())
+  code                 String                     @unique
+  supplierId           Int
+  factoryId            Int?
+  /// Kho xuất nguyên liệu (và nhận lại nguyên liệu thừa).
+  branchId             Int
+  branchName           String
+  /// Kho nhận thành phẩm.
+  receiveBranchId      Int
+  receiveBranchName    String
+  productId            Int
+  productCode          String
+  productName          String
+  formulaId            Int?
+  formulaName          String?
+  plannedQuantity      Decimal                    @default(0) @db.Decimal(18, 4)
+  /// Đơn giá gia công / 1 thành phẩm đạt, theo `currency`.
+  processingUnitPrice  Decimal                    @default(0) @db.Decimal(18, 6)
+  currency             String                     @default("VND")
+  exchangeRate         Decimal                    @default(1) @db.Decimal(18, 6)
+  lossAllowancePercent Decimal                    @default(0) @db.Decimal(9, 4)
+  status               Int                        @default(1)
+  orderDate            DateTime                   @default(now())
+  expectedDate         DateTime?
+  sentDate             DateTime?
+  completedDate        DateTime?
+  note                 String?
+  goodQuantity         Decimal                    @default(0) @db.Decimal(18, 4)
+  defectQuantity       Decimal                    @default(0) @db.Decimal(18, 4)
+  materialCost         Decimal                    @default(0) @db.Decimal(18, 2)
+  processingCost       Decimal                    @default(0) @db.Decimal(18, 2)
+  otherCost            Decimal                    @default(0) @db.Decimal(18, 2)
+  totalCost            Decimal                    @default(0) @db.Decimal(18, 2)
+  unitCost             Decimal                    @default(0) @db.Decimal(18, 6)
+  /// Phải trả nhà máy = phí gia công các đợt nhập + chi phí isFactoryPayable.
+  payableAmount        Decimal                    @default(0) @db.Decimal(18, 2)
+  paidAmount           Decimal                    @default(0) @db.Decimal(18, 2)
+  /// Giá vốn thành phẩm chỉ được ghi khi người dùng xác nhận (apply-cost).
+  costAppliedAt        DateTime?
+  costAppliedById      Int?
+  appliedUnitCost      Decimal?                   @db.Decimal(18, 6)
+  appliedCostSnapshot  Json?
+  cancelReason         String?
+  cancelledAt          DateTime?
+  createdById          Int
+  createdByName        String
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  materials            SubcontractOrderMaterial[]
+  receipts             SubcontractOrderReceipt[]
+  costs                SubcontractOrderCost[]
+  payments             SubcontractOrderPayment[]
+  supplier             Supplier                   @relation(fields: [supplierId], references: [id])
+  factory              Factory?                   @relation(fields: [factoryId], references: [id])
+  branch               Branch                     @relation("SubcontractOrderSource", fields: [branchId], references: [id])
+  receiveBranch        Branch                     @relation("SubcontractOrderReceive", fields: [receiveBranchId], references: [id])
+  product              Product                    @relation(fields: [productId], references: [id])
+  formula              ProductFormula?            @relation(fields: [formulaId], references: [id], onDelete: SetNull)
+
+  @@index([supplierId])
+  @@index([factoryId])
+  @@index([branchId])
+  @@index([receiveBranchId])
+  @@index([productId])
+  @@index([status])
+  @@index([orderDate])
+  @@map("subcontract_orders")
+}
+
+/// Nguyên liệu của lệnh gia công, tính theo đơn vị tồn kho của sản phẩm.
+model SubcontractOrderMaterial {
+  id               Int              @id @default(autoincrement())
+  orderId          Int
+  productId        Int
+  productCode      String
+  productName      String
+  unit             String?
+  plannedQuantity  Decimal          @default(0) @db.Decimal(18, 4)
+  sentQuantity     Decimal          @default(0) @db.Decimal(18, 4)
+  returnedQuantity Decimal          @default(0) @db.Decimal(18, 4)
+  /// = sentQuantity − returnedQuantity, chốt khi hoàn thành lệnh.
+  consumedQuantity Decimal          @default(0) @db.Decimal(18, 4)
+  /// Giá vốn nguyên liệu tại kho xuất, chụp lúc gửi.
+  unitCost         Decimal          @default(0) @db.Decimal(18, 6)
+  note             String?
+  order            SubcontractOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product          Product          @relation(fields: [productId], references: [id])
+
+  @@unique([orderId, productId])
+  @@index([productId])
+  @@map("subcontract_order_materials")
+}
+
+/// Một đợt nhập thành phẩm. status: 1 hiệu lực, 2 đã hủy.
+model SubcontractOrderReceipt {
+  id             Int              @id @default(autoincrement())
+  code           String           @unique
+  orderId        Int
+  receivedDate   DateTime         @default(now())
+  goodQuantity   Decimal          @default(0) @db.Decimal(18, 4)
+  defectQuantity Decimal          @default(0) @db.Decimal(18, 4)
+  /// Chụp đơn giá + tỷ giá lúc nhập; amount là phí gia công quy VND của đợt.
+  unitPrice      Decimal          @default(0) @db.Decimal(18, 6)
+  exchangeRate   Decimal          @default(1) @db.Decimal(18, 6)
+  foreignAmount  Decimal?         @db.Decimal(18, 2)
+  amount         Decimal          @default(0) @db.Decimal(18, 2)
+  status         Int              @default(1)
+  note           String?
+  createdById    Int
+  createdByName  String
+  cancelledAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  order          SubcontractOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([receivedDate])
+  @@map("subcontract_order_receipts")
+}
+
+/// Chi phí khác của lệnh (VND, có dấu — bồi thường là số âm).
+/// isFactoryPayable=true → cộng vào công nợ nhà máy; false → chỉ vào giá thành.
+model SubcontractOrderCost {
+  id               Int              @id @default(autoincrement())
+  orderId          Int
+  type             String           @default("other")
+  name             String
+  amount           Decimal          @default(0) @db.Decimal(18, 2)
+  isFactoryPayable Boolean          @default(false)
+  costDate         DateTime         @default(now())
+  note             String?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  order            SubcontractOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("subcontract_order_costs")
+}
+
+/// Thanh toán cho nhà máy theo lệnh — đối xứng PurchaseOrderPayment.
+model SubcontractOrderPayment {
+  id            Int              @id @default(autoincrement())
+  code          String
+  orderId       Int
+  amount        Decimal
+  paymentDate   DateTime         @default(now())
+  paymentMethod String           @default("cash")
+  accountId     Int?
+  description   String?
+  status        Int              @default(1)
+  statusValue   String?
+  cashFlowId    Int?
+  exchangeRate  Decimal?         @map("exchange_rate") @db.Decimal(18, 6)
+  foreignAmount Decimal?         @map("foreign_amount") @db.Decimal(18, 2)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  account       BankAccount?     @relation(fields: [accountId], references: [id])
+  cashFlow      CashFlow?        @relation(fields: [cashFlowId], references: [id])
+  order         SubcontractOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([code, orderId])
+  @@index([cashFlowId])
+  @@map("subcontract_order_payments")
 }

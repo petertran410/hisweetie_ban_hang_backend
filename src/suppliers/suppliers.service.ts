@@ -15,6 +15,7 @@ import {
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { getSubcontractDebtItems } from '../common/subcontract-order.util';
 import {
   SUPPLIER_DEBT_PO_WHERE,
   SUPPLIER_DEBT_SR_WHERE,
@@ -1012,9 +1013,36 @@ export class SuppliersService {
       });
     }
 
+    // Gia công ngoài → cộng nợ. Dùng getSubcontractDebtItems — CÙNG nguồn
+    //    với Formula B để dòng cuối timeline khớp `Supplier.debt`.
+    const subcontractItems = await getSubcontractDebtItems(
+      this.prisma,
+      supplierId,
+    );
+    for (const item of subcontractItems) {
+      timeline.push({
+        type: 'subcontract',
+        // 'receipt' | 'cost' — hai bảng khác nhau nên id có thể trùng số.
+        subcontractKind: item.kind,
+        id: item.id,
+        code: item.code,
+        date: item.date,
+        createdAt: item.createdAt,
+        amount: item.amount,
+        subcontractOrderId: item.orderId,
+        subcontractOrderCode: item.orderCode,
+        method: null,
+        description: item.description,
+        debtSnapshot: 0,
+        branch: item.branch,
+        user: null,
+      });
+    }
+
     // 3. Sort tăng dần
     const calcOrder: Record<string, number> = {
       purchase: 0,
+      subcontract: 0,
       balance_adjustment: 1,
       supplier_return: 2,
       payment: 3,
@@ -1036,7 +1064,7 @@ export class SuppliersService {
     // 4. Tính debtSnapshot
     let runningDebt = 0;
     for (const item of timeline) {
-      if (item.type === 'purchase') {
+      if (item.type === 'purchase' || item.type === 'subcontract') {
         runningDebt += item.amount;
       } else if (item.type === 'balance_adjustment') {
         runningDebt += item.amount; // ← đối xứng KH "expense": cashflow thu S tăng debt
@@ -1081,6 +1109,7 @@ export class SuppliersService {
 
     const TYPE_LABEL: Record<string, string> = {
       purchase: 'Nhập hàng',
+      subcontract: 'Gia công ngoài',
       payment: 'Thanh toán',
       balance_adjustment: 'Cân bằng nợ',
       supplier_return: 'Trả hàng nhập',
@@ -1198,7 +1227,9 @@ export class SuppliersService {
     //   cân bằng nợ (cashflow thu S). Ghi CÓ (credit) = giảm nợ: thanh toán +
     //   trả hàng nhập. Đối xứng Formula B.
     const isItemDebit = (item: any): boolean =>
-      item.type === 'purchase' || item.type === 'balance_adjustment';
+      item.type === 'purchase' ||
+      item.type === 'subcontract' ||
+      item.type === 'balance_adjustment';
 
     // ── 2. Nợ đầu kỳ / cuối kỳ — lấy từ debtSnapshot ─────────────────────
     let noDauKy = 0;
@@ -1319,6 +1350,7 @@ export class SuppliersService {
 
     const TYPE_LABEL: Record<string, string> = {
       purchase: 'Nhập hàng',
+      subcontract: 'Gia công ngoài',
       payment: 'Thanh toán',
       balance_adjustment: 'Cân bằng nợ',
       supplier_return: 'Trả hàng nhập',

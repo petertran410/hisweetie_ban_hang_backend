@@ -12,6 +12,8 @@
 // nơi reconcile onHand → đảm bảo một nguồn chân lý duy nhất.
 // ====================================================================
 
+import { SUBCONTRACT_ACTIVE_STATUSES } from './subcontract-order.util';
+
 // Mapping refType → finder trả về các id CÒN HIỆU LỰC (status != mã hủy).
 // Log trỏ tới id không thuộc tập active (bị hủy hoặc xóa cứng) → bị loại.
 const ACTIVE_FINDERS: Record<
@@ -83,6 +85,24 @@ const ACTIVE_FINDERS: Record<
   clt: (tx, ids) =>
     tx.stockConditionTransfer.findMany({
       where: { id: { in: ids }, status: 2 },
+      select: { id: true },
+    }),
+  // Lệnh gia công ngoài: log xuất NVL / nhận NVL thừa còn hiệu lực khi lệnh
+  // đã gửi và chưa hủy (status 2/3/4).
+  subcontract_order: (tx, ids) =>
+    tx.subcontractOrder.findMany({
+      where: { id: { in: ids }, status: { in: SUBCONTRACT_ACTIVE_STATUSES } },
+      select: { id: true },
+    }),
+  // Đợt nhập thành phẩm gia công: còn hiệu lực khi đợt chưa hủy VÀ lệnh cha
+  // chưa hủy — hủy lệnh là void luôn mọi đợt nhập.
+  subcontract_receipt: (tx, ids) =>
+    tx.subcontractOrderReceipt.findMany({
+      where: {
+        id: { in: ids },
+        status: 1,
+        order: { status: { in: SUBCONTRACT_ACTIVE_STATUSES } },
+      },
       select: { id: true },
     }),
 };

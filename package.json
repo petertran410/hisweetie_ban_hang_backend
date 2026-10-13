@@ -75,6 +75,7 @@
     "seed:internal-use": "ts-node prisma/seeds/add-internal-use-permissions.ts",
     "seed:internal-use-export": "ts-node prisma/seeds/add-internal-use-export-permission.ts",
     "seed:internal-use-returns": "ts-node prisma/seeds/add-internal-use-returns-permissions.ts",
+    "seed:subcontract-orders": "ts-node prisma/seeds/add-subcontract-orders-permissions.ts",
     "seed:internal-use-print": "ts-node prisma/seeds/add-internal-use-print-template.ts",
     "seed:consignments": "ts-node prisma/seeds/add-consignment-permissions.ts",
     "seed:consignment-print": "ts-node prisma/seeds/add-consignment-print-template.ts",

@@ -1,3 +1,5 @@
+import { getSubcontractDebtItems } from './subcontract-order.util';
+
 interface RecalcSupplierDebtOptions {
   /**
    * Bỏ 1 supplier-return ra khỏi offsets — dùng khi SR đang chuyển trạng thái
@@ -185,8 +187,18 @@ export async function recalcSupplierDebt(
       0,
     ) + (opts.extraSupplierReturnOffset || 0);
 
+  // 4. Gia công ngoài: phí gia công các đợt nhập + chi phí trả cho nhà máy.
+  //    Tiền trả nhà máy đi qua CashFlow S nên đã nằm ở bước 2. KHÔNG cộng vào
+  //    `totalInvoiced` (đó là giá trị MUA hàng, giữ nguyên nghĩa PN-only).
+  const subcontractDebtItems = await getSubcontractDebtItems(tx, supplierId);
+  const debtFromSubcontract = subcontractDebtItems.reduce(
+    (s, item) => s + item.amount,
+    0,
+  );
+
   const totalDebt =
     debtFromPurchases +
+    debtFromSubcontract +
     totalCashFlowReceived -
     totalCashFlowPaid -
     totalSupplierReturnOffsets;

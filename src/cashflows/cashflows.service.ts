@@ -22,6 +22,7 @@ import {
 } from '../invoices/dto/invoice-status.constants';
 import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplier-debt.util';
 import { SUPPLIER_DEBT_PO_WHERE } from 'src/common/supplier-debt.util';
+import { recomputeSubcontractOrderTotals } from 'src/common/subcontract-order.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 
@@ -978,6 +979,16 @@ export class CashFlowsService {
           select: { id: true, orderSupplierId: true },
         });
 
+      // Thanh toán lệnh gia công ngoài (PCGC*) gắn với phiếu chi này.
+      const linkedSubcontractOrderPayments =
+        await tx.subcontractOrderPayment.findMany({
+          where: {
+            OR: [{ cashFlowId: id }, { code: cashFlow.code }],
+            status: { not: 2 },
+          },
+          select: { id: true, orderId: true },
+        });
+
       // ── 2. Hủy cashflow
       const updated = await tx.cashFlow.update({
         where: { id },
@@ -1024,6 +1035,22 @@ export class CashFlowsService {
           },
           data: { status: 2, statusValue: 'Đã hủy' },
         });
+      }
+      // Hủy thanh toán lệnh gia công + tính lại paidAmount của từng lệnh.
+      // Supplier.debt được recalc chung ở cuối (partnerId = NCC của lệnh).
+      if (linkedSubcontractOrderPayments.length > 0) {
+        await tx.subcontractOrderPayment.updateMany({
+          where: {
+            id: { in: linkedSubcontractOrderPayments.map((p) => p.id) },
+          },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+        const affectedSubcontractOrderIds = new Set(
+          linkedSubcontractOrderPayments.map((p) => p.orderId),
+        );
+        for (const orderId of affectedSubcontractOrderIds) {
+          await recomputeSubcontractOrderTotals(tx, orderId);
+        }
       }
 
       // ── 6. Recalc paidAmount/debtAmount/status cho từng invoice bị ảnh hưởng
@@ -1458,6 +1485,7 @@ export class CashFlowsService {
       debtOffsets,
       purchaseOrderPayments,
       orderSupplierPayments,
+      subcontractOrderPayments,
     ] = await Promise.all([
       this.prisma.invoicePayment.findMany({
         where: {
@@ -1578,6 +1606,27 @@ export class CashFlowsService {
         },
         orderBy: { paymentDate: 'desc' },
       }),
+      // Lệnh gia công ngoài (LGC) liên kết.
+      this.prisma.subcontractOrderPayment.findMany({
+        where: {
+          OR: [{ code: cashFlow.code }, { cashFlowId: cashFlowId }],
+        },
+        include: {
+          order: {
+            select: {
+              id: true,
+              code: true,
+              payableAmount: true,
+              paidAmount: true,
+              status: true,
+              supplier: {
+                select: { id: true, code: true, name: true },
+              },
+            },
+          },
+        },
+        orderBy: { paymentDate: 'desc' },
+      }),
     ]);
 
     return {
@@ -1586,6 +1635,7 @@ export class CashFlowsService {
       debtOffsets,
       purchaseOrderPayments,
       orderSupplierPayments,
+      subcontractOrderPayments,
     };
   }
 
