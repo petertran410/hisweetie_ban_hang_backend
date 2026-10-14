@@ -3,7 +3,6 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type RangeKey = 'today' | 'yesterday' | 'week' | 'month';
-export type FinRangeKey = 'd7' | 'm30' | 'all';
 // Mốc thời gian của So sánh chi nhánh (khớp PeriodKey phía frontend).
 export type PeriodKey =
   | 'today'
@@ -33,6 +32,8 @@ const COD_DONE_OR_CANCELLED = [1, 2, 7];
 // Worklist (Tổng quan) chỉ tính 3 chi nhánh đang vận hành khi không lọc cụ thể:
 // 1 Kho Sài Gòn · 5 Văn phòng Hà Nội · 6 Kho Hà Nội.
 const TASK_BRANCH_IDS = [1, 5, 6];
+// Tab "Tồn cảnh báo" chỉ theo dõi các loại hàng này (products.parent_name).
+const STOCK_WARNING_PARENT_NAMES = ['Hàng thương hiệu', 'Hàng thương mại'];
 
 @Injectable()
 export class DashboardService {
@@ -752,36 +753,28 @@ export class DashboardService {
 
   // ──────────────────────── Finance (công nợ & COD & aging) ────────────────────────
 
-  async getFinance(finRange: FinRangeKey = 'all', branchId?: number) {
-    const now = new Date();
-    let since: Date | null = null;
-    if (finRange === 'd7') {
-      since = new Date(now);
-      since.setDate(since.getDate() - 7);
-    } else if (finRange === 'm30') {
-      since = new Date(now);
-      since.setDate(since.getDate() - 30);
-    }
+  /**
+   * Công nợ & COD. Tổng phải thu khớp trang Khách hàng (Σ Nợ hiện tại của khách
+   * đang hoạt động). Phân tuổi nợ: với mỗi khách còn nợ, tiền đã trả coi như trừ
+   * HĐ cũ nhất trước → phần nợ thực nằm ở các HĐ mới nhất (debtAmount trên HĐ
+   * không phản ánh các khoản thu nợ chung / ứng trước / cấn trừ chưa gắn HĐ).
+   * Nợ không gắn HĐ nào (vd số dư đầu kỳ) tính vào nhóm > 30 ngày.
+   */
+  async getFinance(period: PeriodKey | 'all' = 'all', branchId?: number) {
+    const w = period === 'all' ? null : this.getPeriodWindow(period);
+    const filtered = !!branchId || !!w;
 
     const branchFilter = branchId
       ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
-    const sinceFilter = since
-      ? Prisma.sql`AND i."purchaseDate" >= ${since}`
+    const windowFilter = w
+      ? Prisma.sql`AND i."purchaseDate" >= ${w.start} AND i."purchaseDate" <= ${w.end}`
       : Prisma.empty;
 
-    const [debtAgg, codResult, agingRows] = await Promise.all([
-      // Tổng phải thu theo Hóa đơn — khách còn hoạt động, HĐ chưa hủy.
-      this.prisma.invoice.aggregate({
-        where: {
-          debtAmount: { gt: 0 },
-          status: { notIn: [2] },
-          customer: { is: { isActive: true } },
-          ...(branchId ? { branchId } : {}),
-          ...(since ? { purchaseDate: { gte: since } } : {}),
-        },
-        _sum: { debtAmount: true },
-        _count: true,
+    const [customerDebt, codResult, agingRows] = await Promise.all([
+      this.prisma.customer.aggregate({
+        where: { isActive: true },
+        _sum: { totalDebt: true },
       }),
       // COD đang luân chuyển theo Hóa đơn — loại HĐ Hoàn thành/Hủy/Giao thành công.
       this.prisma.$queryRaw<[{ amount: number | null; cnt: bigint }]>`
@@ -791,39 +784,81 @@ export class DashboardService {
         WHERE i."usingCod" = true
           AND i.status NOT IN (1, 2, 7)
           ${branchFilter}
-          ${sinceFilter}
+          ${windowFilter}
       `,
-      // Aging buckets theo tuổi nợ tính từ purchaseDate (không có dueDate).
-      this.prisma.$queryRaw<[{ in_term: number; d30: number; over30: number }]>`
+      this.prisma.$queryRaw<
+        [
+          {
+            in_term: number;
+            d30: number;
+            over30: number;
+            allocated: number;
+            cnt: number;
+            leftover: number;
+          },
+        ]
+      >`
+        WITH cust AS (
+          SELECT id, "totalDebt" AS td
+          FROM customers
+          WHERE "isActive" = true AND "totalDebt" > 0
+        ),
+        inv AS (
+          SELECT i.id, i."customerId" AS cid, i."branchId", i."purchaseDate",
+                 i."debtAmount" AS d,
+                 SUM(i."debtAmount") OVER (
+                   PARTITION BY i."customerId"
+                   ORDER BY i."purchaseDate" DESC, i.id DESC
+                 ) AS cum
+          FROM invoices i
+          INNER JOIN cust c ON c.id = i."customerId"
+          WHERE i."debtAmount" > 0 AND i.status NOT IN (2)
+        ),
+        alloc AS (
+          SELECT inv.*, GREATEST(0, LEAST(inv.d, c.td - (inv.cum - inv.d))) AS a
+          FROM inv
+          INNER JOIN cust c ON c.id = inv.cid
+        ),
+        leftover AS (
+          SELECT COALESCE(SUM(GREATEST(0, c.td - COALESCE(s.total, 0))), 0) AS amt
+          FROM cust c
+          LEFT JOIN (SELECT cid, SUM(d) AS total FROM inv GROUP BY cid) s
+            ON s.cid = c.id
+        )
         SELECT
-          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) <= 0), 0)::float8 AS in_term,
-          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) BETWEEN 1 AND 30), 0)::float8 AS d30,
-          COALESCE(SUM(i."debtAmount") FILTER (WHERE (now()::date - i."purchaseDate"::date) > 30), 0)::float8 AS over30
-        FROM invoices i
-        INNER JOIN customers c ON c.id = i."customerId" AND c."isActive" = true
-        WHERE i."debtAmount" > 0
-          AND i.status NOT IN (2)
+          COALESCE(SUM(i.a) FILTER (WHERE (now()::date - i."purchaseDate"::date) <= 0), 0)::float8 AS in_term,
+          COALESCE(SUM(i.a) FILTER (WHERE (now()::date - i."purchaseDate"::date) BETWEEN 1 AND 30), 0)::float8 AS d30,
+          COALESCE(SUM(i.a) FILTER (WHERE (now()::date - i."purchaseDate"::date) > 30), 0)::float8 AS over30,
+          COALESCE(SUM(i.a), 0)::float8 AS allocated,
+          COUNT(*)::int AS cnt,
+          (SELECT amt FROM leftover)::float8 AS leftover
+        FROM alloc i
+        WHERE i.a > 0
           ${branchFilter}
-          ${sinceFilter}
+          ${windowFilter}
       `,
     ]);
 
-    const debt = Number(debtAgg._sum.debtAmount || 0);
-    const aging = agingRows[0] || { in_term: 0, d30: 0, over30: 0 };
-    const overdue = Number(aging.d30 || 0) + Number(aging.over30 || 0);
+    const row = agingRows[0];
+    // Nợ không gắn HĐ chỉ có ý nghĩa khi xem toàn bộ (không lọc CN/thời gian).
+    const leftover = filtered ? 0 : Number(row?.leftover || 0);
+    const aging = {
+      inTerm: Number(row?.in_term || 0),
+      d1to30: Number(row?.d30 || 0),
+      over30: Number(row?.over30 || 0) + leftover,
+    };
+    const debt = filtered
+      ? Number(row?.allocated || 0)
+      : Number(customerDebt._sum.totalDebt || 0);
 
     return {
-      finRange,
+      finRange: period,
       debt,
-      overdue,
-      unpaidCount: debtAgg._count || 0,
+      overdue: aging.d1to30 + aging.over30,
+      unpaidCount: Number(row?.cnt || 0),
       codAmount: Number(codResult[0]?.amount || 0),
       codCount: Number(codResult[0]?.cnt || 0),
-      aging: {
-        inTerm: Number(aging.in_term || 0),
-        d1to30: Number(aging.d30 || 0),
-        over30: Number(aging.over30 || 0),
-      },
+      aging,
     };
   }
 
@@ -976,6 +1011,7 @@ export class DashboardService {
       INNER JOIN products p ON p.id = i."productId"
       INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
       WHERE p."isActive" = true
+        AND p."parent_name" IN (${Prisma.join(STOCK_WARNING_PARENT_NAMES)})
         ${stockFilter}
         ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.sql`AND i."branchId" IN (${Prisma.join(TASK_BRANCH_IDS)})`}
       ORDER BY i."onHand" ASC
@@ -1034,6 +1070,7 @@ export class DashboardService {
         INNER JOIN products p ON p.id = i."productId"
         INNER JOIN branches b ON b.id = i."branchId" AND b."isActive" = true
         WHERE p."isActive" = true
+          AND p."parent_name" IN (${Prisma.join(STOCK_WARNING_PARENT_NAMES)})
           AND i."onHand" <= i."minQuality"
           ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.sql`AND i."branchId" IN (${Prisma.join(TASK_BRANCH_IDS)})`}
       `,
