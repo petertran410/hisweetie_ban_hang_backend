@@ -362,9 +362,10 @@ export class InternalFinanceController {
   @ApiOperation({ summary: 'Cancel an open fuel or vehicle care entry' })
   cancelVehicleEntry(
     @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelWarehouseExpenseDto,
     @CurrentUser() user: any,
   ) {
-    return this.service.cancelVehicleEntry(id, user);
+    return this.service.cancelVehicleEntry(id, user, dto.reason);
   }
 
   @Post(':id/review/:role')

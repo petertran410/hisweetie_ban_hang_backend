@@ -78,6 +78,7 @@
     "seed:vehicles": "ts-node prisma/seeds/add-vehicle-permissions.ts",
     "seed:warehouse-finance": "ts-node prisma/seeds/add-warehouse-finance-permissions.ts",
     "reconcile:warehouse-funds": "ts-node prisma/scripts/reconcile-warehouse-funds.ts",
+    "dedupe:lark-twins": "ts-node prisma/scripts/dedupe-lark-twins.ts",
     "seed:internal-use-print": "ts-node prisma/seeds/add-internal-use-print-template.ts",
     "seed:consignments": "ts-node prisma/seeds/add-consignment-permissions.ts",
     "seed:consignment-print": "ts-node prisma/seeds/add-consignment-print-template.ts",

@@ -1498,9 +1498,13 @@ export class InternalFinanceService {
               }),
           note: dto.note !== undefined ? dto.note.trim() || null : undefined,
           payerId: dto.payerId,
-          description: isFuel
-            ? `Xăng dầu - ${vehicleLabel}`
-            : `${serviceLabel} - ${vehicleLabel}`,
+          // Phiếu chuyển từ Lark giữ nguyên nội dung gốc.
+          description:
+            entry.sourceType === 'LARK_IMPORT'
+              ? undefined
+              : isFuel
+                ? `Xăng dầu - ${vehicleLabel}`
+                : `${serviceLabel} - ${vehicleLabel}`,
           sourceSnapshot: this.toJson({
             ...snapshot,
             vehicle: vehicleLabel,
@@ -1543,7 +1547,8 @@ export class InternalFinanceService {
     });
   }
 
-  async cancelVehicleEntry(id: number, user: any) {
+  async cancelVehicleEntry(id: number, user: any, reason: string) {
+    const trimmed = this.requireCancelReason(reason);
     const branchHint = await this.prisma.internalFinanceEntry.findUnique({
       where: { id },
       select: { branchId: true },
@@ -1552,21 +1557,18 @@ export class InternalFinanceService {
     await this.vehicles.assertPermission(user, branchHint.branchId, 'update');
     return this.prisma.$transaction(async (tx) => {
       await this.internalFund.lockBranch(tx, [branchHint.branchId]);
-      const entry = await tx.internalFinanceEntry.findUnique({ where: { id } });
-      this.assertVehicleEntry(entry);
-      this.assertExpenseOpenForEdit(entry);
-      return tx.internalFinanceEntry.update({
+      const entry = await tx.internalFinanceEntry.findUnique({
         where: { id },
-        data: {
-          status: INTERNAL_FINANCE_STATUS.CANCELLED,
-          sourceSnapshot: this.toJson({
-            ...this.snapshotOf(entry),
-            cancelledBy: user.id,
-            cancelledAt: new Date().toISOString(),
-          }),
-        },
-        include: this.vehicleEntryInclude(),
+        include: { weeklyBatch: { select: { status: true } } },
       });
+      this.assertVehicleEntry(entry);
+      return this.cancelExpenseInTx(
+        tx,
+        entry,
+        user,
+        trimmed,
+        this.vehicleEntryInclude(),
+      );
     });
   }
 
@@ -2393,8 +2395,7 @@ export class InternalFinanceService {
   // Hủy phiếu chi kho bị từ chối hẳn: chỉ khi chưa Đã chi và chưa vào Approval
   // tuần đang duyệt/đã duyệt. Phiếu trong batch chưa gửi Lark được gỡ ra trước.
   async cancelWarehouseExpense(entryId: number, user: any, reason: string) {
-    const trimmed = reason?.trim();
-    if (!trimmed) throw new BadRequestException('Cần nhập lý do hủy phiếu');
+    const trimmed = this.requireCancelReason(reason);
     const hint = await this.prisma.internalFinanceEntry.findUnique({
       where: { id: entryId },
       select: { branchId: true },
@@ -2411,43 +2412,73 @@ export class InternalFinanceService {
       if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
         throw new NotFoundException('Không tìm thấy khoản chi');
       }
-      if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED) {
-        throw new BadRequestException('Phiếu chi đã được hủy');
-      }
-      if (entry.cashIssued || entry.cashFlowId) {
-        throw new BadRequestException(
-          'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
-        );
-      }
-      if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY') {
-        throw new BadRequestException(
-          'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không thể hủy',
-        );
-      }
-      if (entry.weeklyBatchId) {
-        await this.fundLedger.detachFromBatch(tx, entry);
-      }
-      const now = new Date();
-      await tx.internalFinanceReview.create({
-        data: {
-          entryId,
-          role: INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
-          decision: 'CANCEL',
-          reason: trimmed,
-          reviewerId: user.id,
-        },
-      });
-      return tx.internalFinanceEntry.update({
-        where: { id: entryId },
-        data: {
-          status: INTERNAL_FINANCE_STATUS.CANCELLED,
-          cancelReason: trimmed,
-          cancelledAt: now,
-          cancelledBy: user.id,
-          posManagedAt: now,
-        },
-        include: this.warehouseExpenseInclude(),
-      });
+      return this.cancelExpenseInTx(
+        tx,
+        entry,
+        user,
+        trimmed,
+        this.warehouseExpenseInclude(),
+      );
+    });
+  }
+
+  private requireCancelReason(reason: string) {
+    const trimmed = reason?.trim();
+    if (!trimmed) throw new BadRequestException('Cần nhập lý do hủy phiếu');
+    return trimmed;
+  }
+
+  /** Lõi hủy phiếu chi dùng chung cho Phiếu chi kho và Xe cộ (đã khóa quỹ). */
+  private async cancelExpenseInTx(
+    tx: Prisma.TransactionClient,
+    entry: {
+      id: number;
+      status: string;
+      cashIssued: boolean;
+      cashFlowId: number | null;
+      weeklyBatchId: number | null;
+      weeklyBatch?: { status: string } | null;
+    },
+    user: any,
+    reason: string,
+    include: any,
+  ) {
+    if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED) {
+      throw new BadRequestException('Phiếu chi đã được hủy');
+    }
+    if (entry.cashIssued || entry.cashFlowId) {
+      throw new BadRequestException(
+        'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
+      );
+    }
+    if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY') {
+      throw new BadRequestException(
+        'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không thể hủy',
+      );
+    }
+    if (entry.weeklyBatchId) {
+      await this.fundLedger.detachFromBatch(tx, entry);
+    }
+    const now = new Date();
+    await tx.internalFinanceReview.create({
+      data: {
+        entryId: entry.id,
+        role: INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+        decision: 'CANCEL',
+        reason,
+        reviewerId: user.id,
+      },
+    });
+    return tx.internalFinanceEntry.update({
+      where: { id: entry.id },
+      data: {
+        status: INTERNAL_FINANCE_STATUS.CANCELLED,
+        cancelReason: reason,
+        cancelledAt: now,
+        cancelledBy: user.id,
+        posManagedAt: now,
+      },
+      include,
     });
   }
 
@@ -2773,9 +2804,10 @@ export class InternalFinanceService {
     if (
       !entry ||
       entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE ||
-      !['FUEL', 'VEHICLE_CARE'].includes(entry.sourceType)
+      !['FUEL', 'VEHICLE_CARE'].includes(entry.category) ||
+      !['FUEL', 'VEHICLE_CARE', 'LARK_IMPORT'].includes(entry.sourceType)
     ) {
-      // Dòng nhập từ Lark (LARK_IMPORT) chỉ để đối chiếu, không sửa tại đây.
+      // Phiếu chuyển từ Lark còn mở cũng sửa/hủy như phiếu tạo trên POS.
       throw new NotFoundException('Không tìm thấy phiếu xe có thể chỉnh sửa');
     }
   }
@@ -2794,6 +2826,7 @@ export class InternalFinanceService {
         },
       },
       weeklyBatch: { select: { id: true, code: true, status: true } },
+      canceller: { select: { id: true, name: true } },
       attachments: true,
     };
   }

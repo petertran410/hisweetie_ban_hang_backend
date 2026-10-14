@@ -65,10 +65,15 @@ export class LarkExpenseReviewNotificationService {
         url: `${this.base()}/don-hang/bao-don?Code=${encodeURIComponent(entry.packingSlipCode)}`,
       };
     }
-    if (['FUEL', 'VEHICLE_CARE'].includes(entry.sourceType)) {
+    // Phiếu xe tạo trên POS hoặc chuyển từ Lark đều sửa ở trang Xe cộ.
+    if (
+      ['FUEL', 'VEHICLE_CARE'].includes(entry.sourceType) ||
+      (entry.sourceType === 'LARK_IMPORT' &&
+        ['FUEL', 'VEHICLE_CARE'].includes(entry.category))
+    ) {
       return {
         label: 'Sửa ở Xe cộ',
-        url: `${this.base()}/tai-chinh/xe-co?Code=${encodeURIComponent(entry.code)}&kind=${entry.sourceType}`,
+        url: `${this.base()}/tai-chinh/xe-co?Code=${encodeURIComponent(entry.code)}&kind=${entry.category}`,
       };
     }
     return null;

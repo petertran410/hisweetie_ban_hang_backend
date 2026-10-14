@@ -77,8 +77,19 @@ describe('LarkExpenseReviewNotificationService', () => {
     expect(
       service.sourceLink({ ...entry, sourceType: 'MANUAL_EXPENSE' }),
     ).toBeNull();
+    // Phiếu xe chuyển từ Lark cũng sửa ở Xe cộ.
+    expect(service.sourceLink({ ...entry, sourceType: 'LARK_IMPORT' })).toEqual(
+      {
+        label: 'Sửa ở Xe cộ',
+        url: 'https://pos.example.com/tai-chinh/xe-co?Code=TCNB-CHI-HN-1&kind=FUEL',
+      },
+    );
     expect(
-      service.sourceLink({ ...entry, sourceType: 'LARK_IMPORT' }),
+      service.sourceLink({
+        ...entry,
+        sourceType: 'LARK_IMPORT',
+        category: 'OTHER_EXPENSE',
+      }),
     ).toBeNull();
   });
 

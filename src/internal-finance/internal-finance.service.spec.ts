@@ -1138,7 +1138,8 @@ describe('InternalFinanceService', () => {
       cashFlowId: null,
       cashIssued: false,
       weeklyBatchId: 12,
-      status: 'READY_FOR_WEEKLY_APPROVAL',
+      weeklyBatch: { status: 'IN_APPROVAL' },
+      status: 'IN_WEEKLY_APPROVAL',
     };
     const { service } = makeService({
       internalFinanceEntry: {
@@ -1151,13 +1152,14 @@ describe('InternalFinanceService', () => {
     await expect(
       service.updateVehicleEntry(93, { amount: 500000 }, user),
     ).rejects.toThrow('đã được tổng hợp');
-    await expect(service.cancelVehicleEntry(93, user)).rejects.toThrow(
-      'đã được tổng hợp',
-    );
+    await expect(
+      service.cancelVehicleEntry(93, user, 'Sai ngày'),
+    ).rejects.toThrow('Approval tuần đã gửi duyệt');
     expect(update).not.toHaveBeenCalled();
   });
 
-  it('does not treat a Lark-imported row as an editable vehicle entry', async () => {
+  it('edits an open Lark-imported vehicle entry but keeps its original content', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 94 });
     const { service } = makeService({
       internalFinanceEntry: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1166,19 +1168,68 @@ describe('InternalFinanceService', () => {
           category: 'FUEL',
           sourceType: 'LARK_IMPORT',
           branchId: 6,
+          amount: 500000,
+          description: 'Đổ xăng xe 29D (Lark)',
+          cashFlowId: null,
+          cashIssued: false,
+          weeklyBatchId: null,
           status: 'PENDING_ACCOUNTANT',
+          sourceSnapshot: {},
         }),
-        update: jest.fn(),
+        update,
       },
     });
 
-    await expect(
-      service.updateVehicleEntry(
-        94,
-        { amount: 1 },
-        { id: 7, roles: [], permissions: [] },
-      ),
-    ).rejects.toThrow('Không tìm thấy phiếu xe');
+    await service.updateVehicleEntry(
+      94,
+      {
+        occurredAt: '2026-10-13T08:00:00+07:00',
+        attachments: [{ fileUrl: 'https://cdn/hoa-don.jpg' }],
+      } as any,
+      { id: 7, roles: [], permissions: [] },
+    );
+    const data = update.mock.calls[0][0].data;
+    expect(data.description).toBeUndefined();
+    expect(data.occurredAt).toEqual(new Date('2026-10-13T01:00:00.000Z'));
+    expect(data.attachments.create[0].fileUrl).toBe('https://cdn/hoa-don.jpg');
+  });
+
+  it('cancels a vehicle entry only with a reason and records who cancelled', async () => {
+    const update = jest.fn().mockResolvedValue({ id: 95 });
+    const reviewCreate = jest.fn();
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 95,
+          direction: 'EXPENSE',
+          category: 'FUEL',
+          sourceType: 'LARK_IMPORT',
+          branchId: 6,
+          cashFlowId: null,
+          cashIssued: false,
+          weeklyBatchId: null,
+          weeklyBatch: null,
+          status: 'PENDING_ACCOUNTANT',
+        }),
+        update,
+      },
+      internalFinanceReview: { create: reviewCreate },
+    });
+    const user = { id: 7, roles: [], permissions: [] };
+
+    await expect(service.cancelVehicleEntry(95, user, '  ')).rejects.toThrow(
+      'lý do',
+    );
+    await service.cancelVehicleEntry(95, user, 'Nhập trùng');
+    expect(update.mock.calls[0][0].data).toMatchObject({
+      status: 'CANCELLED',
+      cancelReason: 'Nhập trùng',
+      cancelledBy: 7,
+    });
+    expect(reviewCreate.mock.calls[0][0].data).toMatchObject({
+      decision: 'CANCEL',
+      reason: 'Nhập trùng',
+    });
   });
 
   it('does not create a warehouse receipt for transfer, zero cash, or a non-warehouse branch', async () => {
