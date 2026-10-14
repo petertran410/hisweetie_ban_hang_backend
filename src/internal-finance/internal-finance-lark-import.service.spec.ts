@@ -535,6 +535,7 @@ describe('InternalFinanceLarkImportService', () => {
         },
         approvalRequest: {
           findUnique: jest.fn(),
+          findFirst: jest.fn().mockResolvedValue(null),
           upsert: jest.fn().mockResolvedValue({ id: 70 }),
         },
         approvalRequestEvent: { upsert: jest.fn() },
@@ -596,6 +597,39 @@ describe('InternalFinanceLarkImportService', () => {
     const [sql, ...values] = prisma.$executeRaw.mock.calls.at(-1);
     expect(sql.join('?')).toContain('"weeklyBatchId" = ?, status = ?');
     expect(values).toEqual([3, 'APPROVED', [11, 12]]);
+  });
+
+  it('leaves a week alone once POS received its approval result from Lark', async () => {
+    const { service, prisma } = makeService({
+      prisma: {
+        approvalRequest: {
+          findFirst: jest.fn().mockResolvedValue({ id: 70 }),
+        },
+      },
+    });
+    await (service as any).persistApprovalRow(
+      {
+        source: 'APPROVAL_HN',
+        branchId: 6,
+        kind: 'EXPENSE_HN',
+        week: 39,
+        year: 2026,
+        weekStart: new Date('2026-09-21T00:00:00Z'),
+        weekEnd: new Date('2026-09-26T00:00:00Z'),
+        totalAmount: 500000,
+        status: 'APPROVED',
+        instanceCode: 'E607605F',
+        creatorRef: null,
+        fields: {},
+      },
+      7,
+    );
+    expect(prisma.approvalRequest.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ instanceCode: 'E607605F' }),
+      }),
+    );
+    expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('downloads documents only for the last month and never twice after an interrupted run', async () => {

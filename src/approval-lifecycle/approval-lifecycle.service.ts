@@ -41,6 +41,9 @@ type ApprovalEvent = {
   uuid?: string;
 };
 
+// Đơn duyệt tuần: tạo từ POS hoặc đồng bộ từ Lark khi còn đang chờ duyệt.
+const WEEKLY_SOURCE_TYPES = ['INTERNAL_FINANCE_WEEKLY', 'LARK_IMPORT_WEEKLY'];
+
 @Injectable()
 export class ApprovalLifecycleService {
   private readonly logger = new Logger(ApprovalLifecycleService.name);
@@ -726,6 +729,57 @@ export class ApprovalLifecycleService {
         );
       }
     }
+    try {
+      await this.repairImportedWeeks();
+    } catch (error: any) {
+      this.logger.warn(`Không vá được tuần đồng bộ: ${error?.message}`);
+    }
+  }
+
+  /**
+   * Tuần đồng bộ từ Lark lúc còn chờ duyệt, POS đã nhận kết quả duyệt (có
+   * detailSnapshot) nhưng batch chưa được xử lý — vá lại một lần. Tuần lịch sử
+   * đồng bộ thẳng thành Đã duyệt không có detailSnapshot nên không bị đụng.
+   */
+  private async repairImportedWeeks() {
+    const requests = await this.prisma.approvalRequest.findMany({
+      where: {
+        sourceType: 'LARK_IMPORT_WEEKLY',
+        status: { in: ['APPROVED', 'REJECTED', 'CANCELED', 'DELETED'] },
+        detailSnapshot: { not: Prisma.DbNull },
+        sourceId: { not: null },
+      },
+      select: { id: true, status: true, sourceId: true },
+      take: 100,
+    });
+    if (!requests.length) return;
+    const stuck = await this.prisma.internalFinanceWeeklyBatch.findMany({
+      where: {
+        id: { in: requests.map((request) => request.sourceId!) },
+        status: 'IN_APPROVAL',
+      },
+      select: { id: true },
+    });
+    for (const batch of stuck) {
+      const request = requests.find((item) => item.sourceId === batch.id)!;
+      try {
+        await this.prisma.$transaction((tx) =>
+          this.applyWeeklyBatchStatus(
+            tx,
+            { id: request.id, sourceId: batch.id },
+            request.status as ApprovalInstanceStatus,
+            false,
+          ),
+        );
+        this.logger.log(
+          `Đã xử lý tuần đồng bộ #${batch.id} theo Approval ${request.status}`,
+        );
+      } catch (error: any) {
+        this.logger.warn(
+          `Không xử lý được tuần đồng bộ #${batch.id}: ${error?.message}`,
+        );
+      }
+    }
   }
 
   private async refreshFromLark(
@@ -840,7 +894,7 @@ export class ApprovalLifecycleService {
       }
 
       if (
-        current.sourceType !== 'INTERNAL_FINANCE_WEEKLY' ||
+        !WEEKLY_SOURCE_TYPES.includes(current.sourceType || '') ||
         !current.sourceId
       ) {
         await tx.approvalRequest.update({
@@ -850,66 +904,84 @@ export class ApprovalLifecycleService {
         return;
       }
 
-      const batch = await tx.internalFinanceWeeklyBatch.findUnique({
-        where: { id: current.sourceId },
-        select: { branchId: true, createdBy: true },
-      });
-      if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
       const wasApproved = current.status === 'APPROVED';
-      await tx.approvalRequest.update({
-        where: { id: requestId },
-        data,
-      });
+      await this.applyWeeklyBatchStatus(
+        tx,
+        { id: requestId, sourceId: current.sourceId },
+        status,
+        wasApproved,
+        () => tx.approvalRequest.update({ where: { id: requestId }, data }),
+      );
+    });
+  }
 
-      if (batch) {
-        const batchStatus =
-          status === 'APPROVED'
-            ? 'APPROVED'
-            : status === 'PENDING'
-              ? 'IN_APPROVAL'
-              : 'REJECTED';
-        const entryStatus =
-          status === 'APPROVED'
-            ? 'APPROVED'
-            : status === 'PENDING'
-              ? 'IN_WEEKLY_APPROVAL'
-              : 'REJECTED';
-        await tx.internalFinanceWeeklyBatch.update({
-          where: { id: current.sourceId },
-          data: { status: batchStatus },
-        });
-        await tx.internalFinanceEntry.updateMany({
-          where: {
-            weeklyBatchId: current.sourceId,
-            cashFlowId: null,
-            cashIssued: false,
-          },
-          data: { status: entryStatus },
-        });
-        // Kho: Approval duyệt thì tự ghi quỹ + tick Đã chi; bị thu hồi thì rút lại.
-        if ([1, 6].includes(batch.branchId)) {
-          if (status === 'APPROVED') {
-            await this.fundLedger.issueApprovedBatch(
-              tx,
-              current.sourceId,
-              requestId,
-              batch.createdBy,
-            );
-          } else if (wasApproved) {
-            await this.fundLedger.revertApprovedBatch(
-              tx,
-              current.sourceId,
-              requestId,
-              batch.createdBy,
-            );
-            await tx.internalFinanceEntry.updateMany({
-              where: { weeklyBatchId: current.sourceId, cashIssued: false },
-              data: { status: entryStatus },
-            });
-          }
+  /**
+   * Đơn duyệt tuần đổi trạng thái: cập nhật batch và phiếu chi; kho thì duyệt
+   * xong tự ghi quỹ + tick Đã chi, bị thu hồi thì rút lại. Dùng cho cả tuần tạo
+   * trên POS lẫn tuần đồng bộ từ Lark khi còn đang chờ duyệt.
+   */
+  private async applyWeeklyBatchStatus(
+    tx: Prisma.TransactionClient,
+    request: { id: number; sourceId: number },
+    status: ApprovalInstanceStatus,
+    wasApproved: boolean,
+    updateRequest?: () => Promise<unknown>,
+  ) {
+    const batch = await tx.internalFinanceWeeklyBatch.findUnique({
+      where: { id: request.sourceId },
+      select: { branchId: true, createdBy: true },
+    });
+    if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
+    if (updateRequest) await updateRequest();
+
+    if (batch) {
+      const batchStatus =
+        status === 'APPROVED'
+          ? 'APPROVED'
+          : status === 'PENDING'
+            ? 'IN_APPROVAL'
+            : 'REJECTED';
+      const entryStatus =
+        status === 'APPROVED'
+          ? 'APPROVED'
+          : status === 'PENDING'
+            ? 'IN_WEEKLY_APPROVAL'
+            : 'REJECTED';
+      await tx.internalFinanceWeeklyBatch.update({
+        where: { id: request.sourceId },
+        data: { status: batchStatus },
+      });
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          weeklyBatchId: request.sourceId,
+          cashFlowId: null,
+          cashIssued: false,
+        },
+        data: { status: entryStatus },
+      });
+      // Kho: Approval duyệt thì tự ghi quỹ + tick Đã chi; bị thu hồi thì rút lại.
+      if ([1, 6].includes(batch.branchId)) {
+        if (status === 'APPROVED') {
+          await this.fundLedger.issueApprovedBatch(
+            tx,
+            request.sourceId,
+            request.id,
+            batch.createdBy,
+          );
+        } else if (wasApproved) {
+          await this.fundLedger.revertApprovedBatch(
+            tx,
+            request.sourceId,
+            request.id,
+            batch.createdBy,
+          );
+          await tx.internalFinanceEntry.updateMany({
+            where: { weeklyBatchId: request.sourceId, cashIssued: false },
+            data: { status: entryStatus },
+          });
         }
       }
-    });
+    }
   }
 
   private async getInstance(instanceCode: string) {

@@ -1046,6 +1046,19 @@ export class InternalFinanceLarkImportService {
       }),
     ) as Prisma.InputJsonValue;
 
+    // Tuần POS đã nhận kết quả duyệt trực tiếp từ Lark (có detailSnapshot) thì
+    // không ghi đè: Approval duyệt đã tự xử lý batch, tick Đã chi và ghi quỹ.
+    const tracked = row.instanceCode
+      ? await this.prisma.approvalRequest.findFirst({
+          where: {
+            instanceCode: row.instanceCode,
+            detailSnapshot: { not: Prisma.DbNull },
+          },
+          select: { id: true },
+        })
+      : null;
+    if (tracked) return;
+
     await this.prisma.$transaction(async (tx) => {
       // Khoảng ngày của tuần trên nguồn thay đổi khi có thêm phiếu, nên nhận
       // diện tuần theo mã (chi nhánh + năm + số tuần) thay vì theo ngày.

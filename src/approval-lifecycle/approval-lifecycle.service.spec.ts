@@ -677,6 +677,87 @@ describe('ApprovalLifecycleService', () => {
     );
   });
 
+  it('handles an approval for a week synced from Lark while it was still pending', async () => {
+    const request: any = {
+      id: 11,
+      instanceCode: 'instance-11',
+      status: 'PENDING',
+      lastEventAt: null,
+      sourceType: 'LARK_IMPORT_WEEKLY',
+      sourceId: 5,
+    };
+    const { service, prisma, fundLedger } = createService({
+      approvalRequest: {
+        findUnique: jest.fn(async () => request),
+        update: jest.fn(async ({ data }: any) => Object.assign(request, data)),
+      },
+    });
+    const batchUpdate = jest.fn();
+    (prisma as any).internalFinanceWeeklyBatch = {
+      findUnique: jest.fn().mockResolvedValue({ branchId: 6, createdBy: 9 }),
+      update: batchUpdate,
+    };
+    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (fundLedger as any).issueApprovedBatch = jest.fn();
+
+    await service.handleInstanceEvent({
+      approval_code: 'E759B9DB-B8EA-4DC6-B309-2E162D94EEF3',
+      instance_code: 'instance-11',
+      status: 'APPROVED',
+      instance_operate_time: '1790440000000',
+      uuid: 'approved-11',
+    });
+
+    expect(batchUpdate).toHaveBeenCalledWith({
+      where: { id: 5 },
+      data: { status: 'APPROVED' },
+    });
+    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
+      prisma,
+      5,
+      11,
+      9,
+    );
+  });
+
+  it('repairs synced weeks whose approval result arrived before the fix', async () => {
+    const findMany = jest
+      .fn()
+      // reconcilePending: không còn đơn chờ duyệt.
+      .mockResolvedValueOnce([])
+      // Đơn tuần đồng bộ đã duyệt và POS đã nhận kết quả trực tiếp.
+      .mockResolvedValueOnce([{ id: 12, status: 'APPROVED', sourceId: 6 }]);
+    const { service, prisma, fundLedger } = createService({
+      approvalRequest: { findMany },
+    });
+    const batchFindMany = jest.fn().mockResolvedValue([{ id: 6 }]);
+    (prisma as any).internalFinanceWeeklyBatch = {
+      findMany: batchFindMany,
+      findUnique: jest.fn().mockResolvedValue({ branchId: 1, createdBy: 3 }),
+      update: jest.fn(),
+    };
+    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (fundLedger as any).issueApprovedBatch = jest.fn();
+
+    await service.reconcilePending();
+
+    expect(findMany.mock.calls[1][0].where).toMatchObject({
+      sourceType: 'LARK_IMPORT_WEEKLY',
+      detailSnapshot: { not: expect.anything() },
+    });
+    expect(batchFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: { in: [6] }, status: 'IN_APPROVAL' },
+      }),
+    );
+    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
+      prisma,
+      6,
+      12,
+      3,
+    );
+  });
+
   it('reconciles a pending request when the webhook was missed', async () => {
     const { service, prisma, larkClient } = createService({
       approvalRequest: {
@@ -688,9 +769,10 @@ describe('ApprovalLifecycleService', () => {
         }),
         findMany: jest
           .fn()
-          .mockResolvedValue([
+          .mockResolvedValueOnce([
             { id: 8, instanceCode: 'instance-8', status: 'PENDING' },
-          ]),
+          ])
+          .mockResolvedValue([]),
       },
     });
     larkClient.approval.v4.instance.get.mockResolvedValue({
