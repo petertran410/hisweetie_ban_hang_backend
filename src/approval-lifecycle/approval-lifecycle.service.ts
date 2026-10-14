@@ -798,7 +798,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         await this.prisma.$transaction((tx) =>
           this.applyWeeklyBatchStatus(
             tx,
-            { id: request.id, sourceId: batch.id },
+            {
+              id: request.id,
+              sourceId: batch.id,
+              sourceType: 'LARK_IMPORT_WEEKLY',
+            },
             request.status as ApprovalInstanceStatus,
             false,
           ),
@@ -939,7 +943,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       const wasApproved = current.status === 'APPROVED';
       await this.applyWeeklyBatchStatus(
         tx,
-        { id: requestId, sourceId: current.sourceId },
+        {
+          id: requestId,
+          sourceId: current.sourceId,
+          sourceType: current.sourceType,
+        },
         status,
         wasApproved,
         () => tx.approvalRequest.update({ where: { id: requestId }, data }),
@@ -954,7 +962,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    */
   private async applyWeeklyBatchStatus(
     tx: Prisma.TransactionClient,
-    request: { id: number; sourceId: number },
+    request: { id: number; sourceId: number; sourceType?: string | null },
     status: ApprovalInstanceStatus,
     wasApproved: boolean,
     updateRequest?: () => Promise<unknown>,
@@ -965,6 +973,26 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     });
     if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
     if (updateRequest) await updateRequest();
+
+    // Tuần Kho HN đồng bộ từ Lark được gắn phiếu theo khoảng ngày: chỉ phiếu đã
+    // được Quản lý kho và Kế toán kho đồng kiểm mới thuộc approval, phiếu còn lại
+    // trả về chờ kiểm tra. Kho SG trên Lark không dùng hai tick nên approval
+    // gồm mọi phiếu của tuần.
+    if (
+      batch?.branchId === 6 &&
+      status === 'APPROVED' &&
+      request.sourceType === 'LARK_IMPORT_WEEKLY'
+    ) {
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          weeklyBatchId: request.sourceId,
+          cashIssued: false,
+          cashFlowId: null,
+          OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+        },
+        data: { weeklyBatchId: null, status: 'PENDING_ACCOUNTANT' },
+      });
+    }
 
     if (batch) {
       const batchStatus =

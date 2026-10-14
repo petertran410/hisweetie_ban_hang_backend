@@ -174,6 +174,10 @@ describe('Internal fund ledger', () => {
         transactionType: 'EXPENSE',
         branchId: 6,
       });
+      // Ghi quỹ vào ngày tick Đã chi, không phải ngày của phiếu (05/10).
+      expect(f.transactions[0].occurredAt.getTime()).toBeGreaterThan(
+        fundDayStart('2026-10-06').getTime(),
+      );
       expect(f.entry.cashIssued).toBe(true);
       expect(f.prisma.cashFlow.create).not.toHaveBeenCalled();
       expect(f.prisma.$executeRaw).toHaveBeenCalled();
@@ -191,6 +195,17 @@ describe('Internal fund ledger', () => {
       expect(f.transactions).toHaveLength(0);
     },
   );
+
+  it('ticks Đã chi without a second fund posting when Lark already deducted it', async () => {
+    const f = fixture();
+    f.entry.sourceSnapshot = { larkLedgerRecorded: true };
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.prisma.internalFundTransaction.create).not.toHaveBeenCalled();
+    expect(f.entry).toMatchObject({
+      cashIssued: true,
+      cashIssuedReason: 'Đã trừ quỹ trên Lark',
+    });
+  });
 
   it('issues an expense outside weekly approval only with a reason', async () => {
     const f = fixture();

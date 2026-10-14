@@ -16,6 +16,19 @@ export function fundDayStart(value: string | Date): Date {
   return new Date(`${fundDateKey(value)}T00:00:00+07:00`);
 }
 
+/** Lý do Đã chi của phiếu mà tiền đã trừ trong sổ quỹ Lark trước khi lên POS. */
+export const LARK_LEDGER_RECORDED_REASON = 'Đã trừ quỹ trên Lark';
+
+/** Phiếu nhập từ Lark có dòng trừ quỹ tương ứng trong sổ quỹ Lark. */
+export function isLarkLedgerRecorded(entry: { sourceSnapshot?: unknown }) {
+  const snapshot = entry.sourceSnapshot;
+  return Boolean(
+    snapshot &&
+      typeof snapshot === 'object' &&
+      (snapshot as { larkLedgerRecorded?: unknown }).larkLedgerRecorded === true,
+  );
+}
+
 export function fundClosingDate(value: string | Date): Date {
   return new Date(`${fundDateKey(value)}T00:00:00Z`);
 }
@@ -129,10 +142,13 @@ export class InternalFundLedgerService {
       current.weeklyBatch?.status === 'APPROVED' &&
       Boolean(current.weeklyBatch.approvalRequestId) &&
       current.weeklyBatch.approvalRequest?.status === 'APPROVED';
+    // Tiền ra khỏi quỹ vào lúc tick Đã chi, không phải ngày của phiếu chi.
+    const issuedAt = new Date();
     if (approved) {
-      await this.assertOpen(tx, current.branchId, current.occurredAt, adjust);
+      await this.assertOpen(tx, current.branchId, issuedAt, adjust);
       return this.postExpenseRow(tx, current, userId, {
         approvalRequestId: current.weeklyBatch!.approvalRequestId!,
+        issuedAt,
         invalidate: adjust,
       });
     }
@@ -153,9 +169,10 @@ export class InternalFundLedgerService {
         );
       await this.detachFromBatch(tx, current);
     }
-    await this.assertOpen(tx, current.branchId, current.occurredAt, adjust);
+    await this.assertOpen(tx, current.branchId, issuedAt, adjust);
     return this.postExpenseRow(tx, current, userId, {
       reason,
+      issuedAt,
       invalidate: adjust,
     });
   }
@@ -195,14 +212,32 @@ export class InternalFundLedgerService {
       amount: Prisma.Decimal;
       occurredAt: Date;
       description: string | null;
+      sourceSnapshot?: Prisma.JsonValue;
     },
     userId: number,
     options: {
       approvalRequestId?: number;
       reason?: string;
+      /** Ngày tiền ra khỏi quỹ: ngày duyệt Approval hoặc ngày tick Đã chi. */
+      issuedAt: Date;
       invalidate?: boolean;
     },
   ) {
+    // Phiếu đồng bộ từ Lark đã có dòng trừ quỹ trong sổ quỹ Lark: chỉ tick Đã
+    // chi theo luật POS, không trừ quỹ lần nữa.
+    if (isLarkLedgerRecorded(current)) {
+      await tx.internalFinanceEntry.update({
+        where: { id: current.id },
+        data: {
+          cashIssued: true,
+          cashIssuedAt: options.issuedAt,
+          cashIssuedBy: userId,
+          cashIssuedReason: options.reason ?? LARK_LEDGER_RECORDED_REASON,
+          posManagedAt: new Date(),
+        },
+      });
+      return null;
+    }
     const description = current.description || current.code;
     const row = await tx.internalFundTransaction.create({
       data: {
@@ -212,7 +247,7 @@ export class InternalFundLedgerService {
         entryId: current.id,
         transactionType: 'EXPENSE',
         amount: current.amount,
-        occurredAt: current.occurredAt,
+        occurredAt: options.issuedAt,
         description: options.reason
           ? `${description} (Lý do: ${options.reason})`
           : description,
@@ -234,7 +269,7 @@ export class InternalFundLedgerService {
       },
     });
     if (options.invalidate)
-      await this.invalidateClosings(tx, current.branchId, current.occurredAt);
+      await this.invalidateClosings(tx, current.branchId, options.issuedAt);
     return row;
   }
 
@@ -255,9 +290,16 @@ export class InternalFundLedgerService {
       },
       orderBy: { id: 'asc' },
     });
+    // Ghi quỹ vào ngày Approval duyệt — ngày tiền thật sự chi ra.
+    const request = await tx.approvalRequest.findUnique({
+      where: { id: approvalRequestId },
+      select: { completedAt: true },
+    });
+    const issuedAt = request?.completedAt ?? new Date();
     for (const entry of entries)
       await this.postExpenseRow(tx, entry, userId, {
         approvalRequestId,
+        issuedAt,
         invalidate: true,
       });
     return entries.length;

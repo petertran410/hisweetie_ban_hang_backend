@@ -662,6 +662,12 @@ describe('ApprovalLifecycleService', () => {
       9,
     );
     expect((fundLedger as any).revertApprovedBatch).not.toHaveBeenCalled();
+    // Tuần tạo trên POS vốn chỉ gồm phiếu đủ hai tick: không gỡ phiếu nào.
+    expect(
+      (prisma as any).internalFinanceEntry.updateMany.mock.calls.some(
+        ([args]: any[]) => args.data?.weeklyBatchId === null,
+      ),
+    ).toBe(false);
 
     await service.handleInstanceEvent({
       ...event,
@@ -712,12 +718,59 @@ describe('ApprovalLifecycleService', () => {
       where: { id: 5 },
       data: { status: 'APPROVED' },
     });
+    // Phiếu chưa đủ hai tick bị gỡ khỏi tuần đồng bộ trước khi ghi quỹ.
+    expect((prisma as any).internalFinanceEntry.updateMany).toHaveBeenCalledWith({
+      where: {
+        weeklyBatchId: 5,
+        cashIssued: false,
+        cashFlowId: null,
+        OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+      },
+      data: { weeklyBatchId: null, status: 'PENDING_ACCOUNTANT' },
+    });
     expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
       prisma,
       5,
       11,
       9,
     );
+  });
+
+  it('keeps every Kho SG entry in a synced week on approval (SG never used the two ticks)', async () => {
+    const request: any = {
+      id: 14,
+      instanceCode: 'instance-14',
+      status: 'PENDING',
+      lastEventAt: null,
+      sourceType: 'LARK_IMPORT_WEEKLY',
+      sourceId: 8,
+    };
+    const { service, prisma, fundLedger } = createService({
+      approvalRequest: {
+        findUnique: jest.fn(async () => request),
+        update: jest.fn(async ({ data }: any) => Object.assign(request, data)),
+      },
+    });
+    (prisma as any).internalFinanceWeeklyBatch = {
+      findUnique: jest.fn().mockResolvedValue({ branchId: 1, createdBy: 9 }),
+      update: jest.fn(),
+    };
+    const updateMany = jest.fn();
+    (prisma as any).internalFinanceEntry = { updateMany };
+    (fundLedger as any).issueApprovedBatch = jest.fn();
+
+    await service.handleInstanceEvent({
+      approval_code: 'AE8660B8-0E5F-4F2B-A8B1-8E9C0A5A6C3D',
+      instance_code: 'instance-14',
+      status: 'APPROVED',
+      instance_operate_time: '1790440000000',
+      uuid: 'approved-14',
+    });
+
+    expect(
+      updateMany.mock.calls.some(([args]: any[]) => args.data?.weeklyBatchId === null),
+    ).toBe(false);
+    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(prisma, 8, 14, 9);
   });
 
   it('repairs synced weeks whose approval result arrived before the fix, once at startup', async () => {
