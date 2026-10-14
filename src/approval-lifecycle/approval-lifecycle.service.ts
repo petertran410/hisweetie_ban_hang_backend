@@ -740,26 +740,55 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   }
 
   /**
-   * Tuần đồng bộ từ Lark lúc còn chờ duyệt, POS đã nhận kết quả duyệt (có
-   * detailSnapshot) nhưng batch chưa được xử lý — vá lại một lần. Tuần lịch sử
-   * đồng bộ thẳng thành Đã duyệt không có detailSnapshot nên không bị đụng.
+   * Tuần đồng bộ từ Lark lúc còn chờ duyệt, POS đã tự nhận kết quả duyệt (có
+   * detailSnapshot) nhưng batch chưa được xử lý — vá lại một lần. Gồm cả tuần
+   * kho đã bị bước đồng bộ cũ đặt thẳng "Đã duyệt" mà chưa phiếu nào Đã chi.
+   * Tuần lịch sử duyệt trước khi lên POS không có detailSnapshot nên không bị đụng.
    */
   private async repairImportedWeeks() {
-    const requests = await this.prisma.approvalRequest.findMany({
+    const tracked = await this.prisma.approvalRequest.findMany({
       where: {
         sourceType: 'LARK_IMPORT_WEEKLY',
         status: { in: ['APPROVED', 'REJECTED', 'CANCELED', 'DELETED'] },
         detailSnapshot: { not: Prisma.DbNull },
         sourceId: { not: null },
       },
-      select: { id: true, status: true, sourceId: true },
-      take: 100,
+      select: {
+        id: true,
+        status: true,
+        sourceId: true,
+        createdAt: true,
+        detailSnapshot: true,
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 500,
+    });
+    // Chỉ tuần Lark duyệt xong sau khi đã nhập vào POS; tuần lịch sử được lịch
+    // dò hỏi lại vẫn có detailSnapshot nhưng thời điểm duyệt nằm trước đó.
+    const requests = tracked.filter((request) => {
+      const end = Number(
+        (request.detailSnapshot as { end_time?: unknown } | null)?.end_time,
+      );
+      return end > request.createdAt.getTime();
     });
     if (!requests.length) return;
+    const approvedIds = requests
+      .filter((request) => request.status === 'APPROVED')
+      .map((request) => request.sourceId!);
     const stuck = await this.prisma.internalFinanceWeeklyBatch.findMany({
       where: {
-        id: { in: requests.map((request) => request.sourceId!) },
-        status: 'IN_APPROVAL',
+        OR: [
+          {
+            id: { in: requests.map((request) => request.sourceId!) },
+            status: 'IN_APPROVAL',
+          },
+          {
+            id: { in: approvedIds },
+            status: 'APPROVED',
+            branchId: { in: [1, 6] },
+            entries: { none: { cashIssued: true } },
+          },
+        ],
       },
       select: { id: true },
     });

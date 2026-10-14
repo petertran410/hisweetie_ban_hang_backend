@@ -724,7 +724,23 @@ describe('ApprovalLifecycleService', () => {
     // Đơn tuần đồng bộ đã duyệt và POS đã nhận kết quả trực tiếp.
     const findMany = jest
       .fn()
-      .mockResolvedValue([{ id: 12, status: 'APPROVED', sourceId: 6 }]);
+      .mockResolvedValue([
+        {
+          id: 12,
+          status: 'APPROVED',
+          sourceId: 6,
+          createdAt: new Date('2026-10-13T15:41:00Z'),
+          detailSnapshot: { end_time: String(Date.parse('2026-10-14T00:55:00Z')) },
+        },
+        // Tuần lịch sử: Lark duyệt từ 2025, chỉ được hỏi lại sau khi nhập.
+        {
+          id: 13,
+          status: 'APPROVED',
+          sourceId: 7,
+          createdAt: new Date('2026-10-13T15:41:00Z'),
+          detailSnapshot: { end_time: String(Date.parse('2025-03-20T08:56:00Z')) },
+        },
+      ]);
     const { service, prisma, fundLedger } = createService({
       approvalRequest: { findMany },
     });
@@ -744,17 +760,37 @@ describe('ApprovalLifecycleService', () => {
       sourceType: 'LARK_IMPORT_WEEKLY',
       detailSnapshot: { not: expect.anything() },
     });
-    expect(batchFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: { in: [6] }, status: 'IN_APPROVAL' },
-      }),
-    );
+    const where = batchFindMany.mock.calls[0][0].where;
+    expect(where.OR[0]).toEqual({ id: { in: [6] }, status: 'IN_APPROVAL' });
+    // Tuần đã bị đặt thẳng "Đã duyệt": chỉ kho, chỉ khi chưa phiếu nào Đã chi.
+    expect(where.OR[1]).toEqual({
+      id: { in: [6] },
+      status: 'APPROVED',
+      branchId: { in: [1, 6] },
+      entries: { none: { cashIssued: true } },
+    });
     expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
       prisma,
       6,
       12,
       3,
     );
+  });
+
+  it('only looks at weeks whose approval result POS received itself', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service, prisma } = createService({
+      approvalRequest: { findMany },
+    });
+    const batchFindMany = jest.fn();
+    (prisma as any).internalFinanceWeeklyBatch = { findMany: batchFindMany };
+
+    service.onApplicationBootstrap();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Tuần lịch sử không có detailSnapshot nên không nằm trong danh sách.
+    expect(findMany.mock.calls[0][0].where.detailSnapshot).toBeDefined();
+    expect(batchFindMany).not.toHaveBeenCalled();
   });
 
   it('does not throw at startup when the repair fails', async () => {
