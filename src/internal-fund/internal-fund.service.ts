@@ -790,6 +790,10 @@ export class InternalFundService {
     });
   }
 
+  /**
+   * Mỗi dòng là một chốt sổ do người dùng tạo (hoặc đồng bộ sang). Số hệ
+   * thống đặt cạnh để đối soát, tính trực tiếp từ sổ quỹ nên luôn mới nhất.
+   */
   async listDailyClosings(
     query: InternalFundQueryDto,
     user: InternalFundActor,
@@ -797,46 +801,88 @@ export class InternalFundService {
     const branches = await this.branches(query, user);
     const page = query.page || 1;
     const limit = Math.min(query.limit || 30, 100);
-    const where: Prisma.InternalFundDailyClosingWhereInput = {
-      branchId: { in: branches },
-      ...(query.fromDate || query.toDate
-        ? {
-            closingDate: {
-              ...(query.fromDate
-                ? { gte: fundClosingDate(query.fromDate) }
-                : {}),
-              ...(query.toDate ? { lte: fundClosingDate(query.toDate) } : {}),
-            },
-          }
-        : {}),
-    };
-    const [data, total] = await Promise.all([
+    if (!branches.length) return { data: [], total: 0, page, limit };
+    const [sums, closings] = await Promise.all([
+      this.prisma.$queryRaw<
+        Array<{
+          branchId: number;
+          day: string;
+          receipt: Prisma.Decimal;
+          expense: Prisma.Decimal;
+        }>
+      >`
+        SELECT "branchId",
+          to_char("occurredAt" + interval '7 hours', 'YYYY-MM-DD') AS day,
+          COALESCE(SUM(CASE WHEN "transactionType" IN ('RECEIPT', 'TRANSFER_IN') THEN amount ELSE 0 END), 0) AS receipt,
+          COALESCE(SUM(CASE WHEN "transactionType" IN ('RECEIPT', 'TRANSFER_IN') THEN 0 ELSE amount END), 0) AS expense
+        FROM internal_fund_transactions
+        WHERE "branchId" IN (${Prisma.join(branches)}) AND status = 'POSTED'
+        GROUP BY 1, 2`,
       this.prisma.internalFundDailyClosing.findMany({
-        where,
-        skip: (page - 1) * limit,
-        take: limit,
-        orderBy: [{ closingDate: 'desc' }, { id: 'desc' }],
-        select: {
-          id: true,
-          branchId: true,
-          closingDate: true,
-          systemOpeningBalance: true,
-          systemReceipt: true,
-          systemExpense: true,
-          systemClosingBalance: true,
-          actualOpeningBalance: true,
-          actualReceipt: true,
-          actualExpense: true,
-          actualClosingBalance: true,
-          reconciliationStatus: true,
-          notes: true,
-          closedBy: true,
-          closedAt: true,
-        },
+        where: { branchId: { in: branches } },
       }),
-      this.prisma.internalFundDailyClosing.count({ where }),
     ]);
-    return { data, total, page, limit };
+    const zero = new Prisma.Decimal(0);
+    const from = query.fromDate ? fundDateKey(query.fromDate) : null;
+    const to = query.toDate ? fundDateKey(query.toDate) : null;
+    const rows: Array<Record<string, unknown> & { closingDate: string }> = [];
+    for (const branchId of branches) {
+      const moves = new Map(
+        sums
+          .filter((row) => Number(row.branchId) === branchId)
+          .map((row) => [row.day, row]),
+      );
+      const saved = new Map(
+        closings
+          .filter((row) => row.branchId === branchId)
+          .map((row) => [row.closingDate.toISOString().slice(0, 10), row]),
+      );
+      const days = [...new Set([...moves.keys(), ...saved.keys()])].sort();
+      let balance = zero;
+      for (const day of days) {
+        const opening = balance;
+        const receipt = new Prisma.Decimal(moves.get(day)?.receipt ?? 0);
+        const expense = new Prisma.Decimal(moves.get(day)?.expense ?? 0);
+        balance = opening.plus(receipt).minus(expense);
+        const closing = saved.get(day);
+        // Ngày chỉ có giao dịch mà chưa ai tạo chốt sổ thì không hiện.
+        if (!closing || (from && day < from) || (to && day > to)) continue;
+        const actualClosing = closing.actualClosingBalance;
+        rows.push({
+          id: closing.id,
+          branchId,
+          closingDate: day,
+          systemOpeningBalance: opening,
+          systemReceipt: receipt,
+          systemExpense: expense,
+          systemClosingBalance: balance,
+          actualOpeningBalance: closing.actualOpeningBalance,
+          actualReceipt: closing.actualReceipt,
+          actualExpense: closing.actualExpense,
+          actualClosingBalance: actualClosing,
+          // Giống bảng chốt sổ cũ: chỉ so số cuối kỳ.
+          reconciliationStatus: !actualClosing
+            ? 'PENDING'
+            : actualClosing.equals(balance)
+              ? 'MATCHED'
+              : 'MISMATCHED',
+          notes: closing.notes,
+          closedBy: closing.closedBy,
+          closedAt: closing.closedAt,
+        });
+      }
+    }
+    rows.sort(
+      (a, b) =>
+        b.closingDate.localeCompare(a.closingDate) ||
+        Number(a.branchId) - Number(b.branchId),
+    );
+    return {
+      data: rows.slice((page - 1) * limit, page * limit),
+      total: rows.length,
+      page,
+      limit,
+    };
   }
 
   async getDailyClosing(id: number, user: InternalFundActor) {
@@ -866,24 +912,30 @@ export class InternalFundService {
         dto.branchId,
         dto.closingDate,
       );
-      const actuals = [
+      const entered = [
         dto.actualOpeningBalance,
         dto.actualReceipt,
         dto.actualExpense,
-        dto.actualClosingBalance,
       ];
+      const complete = entered.every((v) => v !== undefined);
+      // Cuối kỳ của kế toán tự tính từ đầu kỳ + thu − chi, không gõ tay.
+      const actualClosing = complete
+        ? new Prisma.Decimal(dto.actualOpeningBalance!)
+            .plus(dto.actualReceipt!)
+            .minus(dto.actualExpense!)
+        : dto.actualClosingBalance !== undefined
+          ? new Prisma.Decimal(dto.actualClosingBalance)
+          : null;
+      const actuals = [...entered, actualClosing?.toNumber()];
       const systems = [
         summary.opening,
         summary.receipt,
         summary.expense,
         summary.closing,
       ];
-      const complete = actuals.every((v) => v !== undefined);
+      // Chỉ so số cuối kỳ với sổ quỹ.
       const matched =
-        complete &&
-        actuals.every(
-          (v, i) => v !== undefined && systems[i].equals(new Prisma.Decimal(v)),
-        );
+        actualClosing !== null && summary.closing.equals(actualClosing);
       const snapshot = {
         capturedAt: new Date().toISOString(),
         actorId: userId,
@@ -907,8 +959,8 @@ export class InternalFundService {
         actualOpeningBalance: dto.actualOpeningBalance ?? null,
         actualReceipt: dto.actualReceipt ?? null,
         actualExpense: dto.actualExpense ?? null,
-        actualClosingBalance: dto.actualClosingBalance ?? null,
-        reconciliationStatus: complete
+        actualClosingBalance: actualClosing,
+        reconciliationStatus: actualClosing
           ? matched
             ? 'MATCHED'
             : 'MISMATCHED'
@@ -918,6 +970,7 @@ export class InternalFundService {
         log: [...history, snapshot] as Prisma.InputJsonValue,
         closedAt: new Date(),
         closedBy: userId,
+        posManagedAt: new Date(),
       };
       return tx.internalFundDailyClosing.upsert({
         where: {

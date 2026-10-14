@@ -2563,6 +2563,8 @@ model InternalFundDailyClosing {
   createdBy             Int
   closedBy              Int?
   closedAt              DateTime?
+  sourceKey             String?   @db.VarChar(255)
+  posManagedAt          DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 

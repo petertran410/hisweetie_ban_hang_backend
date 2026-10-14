@@ -501,11 +501,11 @@ describe('Internal fund ledger', () => {
   });
 
   it.each([
-    ['MATCHED', 1120],
-    ['MISMATCHED', 999],
+    ['MATCHED', 30],
+    ['MISMATCHED', 151],
   ])(
     'closing computes %s with prior transactions and no prior closing',
-    async (status, actualClosing) => {
+    async (status, actualExpense) => {
       const f = fixture();
       f.prisma.internalFundTransaction.groupBy.mockResolvedValue([
         {
@@ -533,14 +533,17 @@ describe('Internal fund ledger', () => {
           closingDate: '2026-10-05',
           actualOpeningBalance: 1000,
           actualReceipt: 150,
-          actualExpense: 30,
-          actualClosingBalance: actualClosing,
+          actualExpense,
         },
         7,
       );
       expect(String(closing.systemClosingBalance)).toBe('1120');
       expect(String(closing.systemOpeningBalance)).toBe('1000');
       expect(closing.reconciliationStatus).toBe(status);
+      // Cuối kỳ kế toán tự tính: đầu kỳ + thu − chi.
+      expect(String(closing.actualClosingBalance)).toBe(
+        String(1000 + 150 - actualExpense),
+      );
       expect(f.prisma.internalFundTransaction.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({ status: 'POSTED', branchId: 6 }),
@@ -549,6 +552,42 @@ describe('Internal fund ledger', () => {
       expect(closing.log).toHaveLength(1);
     },
   );
+
+  it('lists only closings users created, with live system numbers beside them', async () => {
+    const f = fixture();
+    (f.prisma as any).$queryRaw = jest.fn().mockResolvedValue([
+      { branchId: 6, day: '2026-10-04', receipt: 1000, expense: 0 },
+      { branchId: 6, day: '2026-10-05', receipt: 150, expense: 30 },
+      { branchId: 6, day: '2026-10-06', receipt: 5, expense: 0 },
+    ]);
+    f.prisma.internalFundDailyClosing.findMany.mockResolvedValue([
+      {
+        id: 3,
+        branchId: 6,
+        closingDate: new Date('2026-10-05T00:00:00Z'),
+        actualOpeningBalance: new Prisma.Decimal(1000),
+        actualReceipt: new Prisma.Decimal(150),
+        actualExpense: new Prisma.Decimal(50),
+        actualClosingBalance: new Prisma.Decimal(1100),
+        notes: 'Lệch 20',
+        closedBy: 7,
+        closedAt: new Date(),
+      },
+    ]);
+    const result = await f.service.listDailyClosings(
+      { branchId: 6, page: 1, limit: 30 },
+      { id: 7 },
+    );
+    // Ngày 04 và 06 có giao dịch nhưng chưa ai tạo chốt sổ nên không hiện.
+    expect(result.total).toBe(1);
+    expect(result.data[0]).toMatchObject({
+      id: 3,
+      closingDate: '2026-10-05',
+      reconciliationStatus: 'MISMATCHED',
+    });
+    expect(String(result.data[0].systemOpeningBalance)).toBe('1000');
+    expect(String(result.data[0].systemClosingBalance)).toBe('1120');
+  });
 
   it('rejects cross-branch viewing and cancellation', async () => {
     const f = fixture();

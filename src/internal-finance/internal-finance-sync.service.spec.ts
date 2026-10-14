@@ -17,13 +17,16 @@ describe('InternalFinanceSyncService', () => {
       getStatus: jest.fn().mockReturnValue({ running: false }),
       runAndWait: jest.fn().mockResolvedValue({ ...counts, error: null }),
     };
+    const fundClosing = { run: jest.fn().mockResolvedValue(counts) };
     return {
       service: new InternalFinanceSyncService(
         larkImport as any,
         fundHistory as any,
+        fundClosing as any,
       ),
       larkImport,
       fundHistory,
+      fundClosing,
     };
   };
   const settle = async (service: InternalFinanceSyncService) => {
@@ -33,7 +36,7 @@ describe('InternalFinanceSyncService', () => {
   };
 
   it('runs expenses, weekly approvals, warehouse cash then the fund ledger', async () => {
-    const { service, larkImport, fundHistory } = make();
+    const { service, larkImport, fundHistory, fundClosing } = make();
     service.start(7);
     expect(() => service.start(7)).toThrow('Đang đồng bộ');
     const status = await settle(service);
@@ -61,9 +64,11 @@ describe('InternalFinanceSyncService', () => {
       'DONE',
       'DONE',
       'DONE',
+      'DONE',
     ]);
     expect(status.steps[0]).toMatchObject(counts);
-    expect(status.steps[4]).toMatchObject({
+    expect(fundClosing.run).toHaveBeenCalledWith(7);
+    expect(status.steps[5]).toMatchObject({
       key: 'DOCUMENTS',
       fetched: 9,
       created: 8,
@@ -84,6 +89,7 @@ describe('InternalFinanceSyncService', () => {
       error: 'Không đọc được bảng',
     });
     expect(status.steps.slice(1).map((step) => step.state)).toEqual([
+      'DONE',
       'DONE',
       'DONE',
       'DONE',

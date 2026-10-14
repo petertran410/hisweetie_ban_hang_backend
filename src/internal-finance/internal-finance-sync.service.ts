@@ -1,12 +1,14 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
 import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
+import { InternalFundClosingSyncService } from './internal-fund-closing-sync.service';
 
 export const FINANCE_SYNC_STEPS = [
   'EXPENSES',
   'WEEKLY_APPROVALS',
   'WAREHOUSE_CASH',
   'FUND_LEDGER',
+  'DAILY_CLOSINGS',
   'DOCUMENTS',
 ] as const;
 export type FinanceSyncStepKey = (typeof FINANCE_SYNC_STEPS)[number];
@@ -36,7 +38,7 @@ type StepCounts = Pick<
 
 /**
  * Một lần bấm đồng bộ toàn bộ dữ liệu thu chi kho: xe cộ + phiếu chi kho,
- * approval tuần, tiền mặt kho, sổ quỹ, cuối cùng là chứng từ đính kèm. Bước nào lỗi thì ghi lại và chạy
+ * approval tuần, tiền mặt kho, sổ quỹ, chốt sổ quỹ hàng ngày, cuối cùng là chứng từ đính kèm. Bước nào lỗi thì ghi lại và chạy
  * tiếp bước sau; chạy lại nhiều lần không tạo trùng.
  */
 @Injectable()
@@ -47,6 +49,7 @@ export class InternalFinanceSyncService {
   constructor(
     private readonly larkImport: InternalFinanceLarkImportService,
     private readonly fundHistory: InternalFundHistorySyncService,
+    private readonly fundClosing: InternalFundClosingSyncService,
   ) {}
 
   getStatus(): FinanceSyncStatus {
@@ -112,6 +115,7 @@ export class InternalFinanceSyncService {
         skipped: result.skipped,
       };
     });
+    await this.step('DAILY_CLOSINGS', () => this.fundClosing.run(userId));
     // Chứng từ tải sau cùng: lâu nhất và không ảnh hưởng số liệu.
     await this.step('DOCUMENTS', async (report) => {
       const toCounts = (progress: {

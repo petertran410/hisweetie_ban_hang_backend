@@ -47,7 +47,7 @@ const PERMISSIONS: PermissionSeed[] = [
     ['submit_approval', 'Gửi duyệt phiếu thu / chuyển tiền trên Lark'],
     ['mark_issued', 'Xác nhận đã chi'],
     ['mark_received', 'Xác nhận đã thu'],
-    ['close', 'Chốt sổ quỹ hàng ngày'],
+    ['close', 'Nhập số đối soát chốt sổ quỹ hàng ngày'],
     ['cancel', 'Hủy giao dịch quỹ'],
     ['adjust', 'Điều chỉnh sau khi đã chốt sổ'],
   ]),
@@ -68,7 +68,12 @@ async function main() {
       'internal_fund',
     ])) +
     // Quyền của nút "Kho nộp tiền" đã bỏ ở trang Biến động số dư.
-    (await removePermissions(prisma, ['internal_fund:create_expense']));
+    // và hai quyền tick duyệt chốt sổ đã bỏ.
+    (await removePermissions(prisma, [
+      'internal_fund:create_expense',
+      'internal_fund:closing_accountant',
+      'internal_fund:closing_chief',
+    ]));
   const { created, updated } = await upsertFinancePermissions(
     prisma,
     PERMISSIONS,

@@ -8,6 +8,7 @@ import { InternalFinanceService } from './internal-finance.service';
 import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
 import { LarkFinanceImportClient } from './lark-finance-import.client';
 import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
+import { InternalFundClosingSyncService } from './internal-fund-closing-sync.service';
 import { InternalFinanceSyncService } from './internal-finance-sync.service';
 import { FinanceCutoverService } from './finance-cutover.service';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
@@ -33,6 +34,7 @@ import { VehiclesModule } from '../vehicles/vehicles.module';
     InternalFinanceLarkImportService,
     LarkFinanceImportClient,
     InternalFundHistorySyncService,
+    InternalFundClosingSyncService,
     InternalFinanceSyncService,
     FinanceCutoverService,
     InternalFinanceCodeService,
