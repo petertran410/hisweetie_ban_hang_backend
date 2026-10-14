@@ -106,6 +106,7 @@ export class ConsignmentsService {
       const consignAddrSnapshot = await resolveDeliveryAddress(
         tx,
         dto.customerId,
+        dto.delivery,
       );
 
       const consignment = await tx.consignment.create({
@@ -319,7 +320,11 @@ export class ConsignmentsService {
         // Snapshot địa chỉ cũ+mới theo customerId (ưu tiên dto, fallback existing).
         const updCustomerId =
           dto.customerId !== undefined ? dto.customerId : existing.customerId;
-        const updAddrSnapshot = await resolveDeliveryAddress(tx, updCustomerId);
+        const updAddrSnapshot = await resolveDeliveryAddress(
+          tx,
+          updCustomerId,
+          dto.delivery,
+        );
         const deliveryData = {
           receiver: dto.delivery.receiver || '',
           contactNumber: dto.delivery.contactNumber || '',

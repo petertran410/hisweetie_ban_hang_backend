@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { createDocumentQrPayload } from '../common/document-qr.util';
+import { pickCustomerAddress } from '../common/address-resolver.util';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
 
@@ -328,9 +329,9 @@ export class PrintTemplatesService {
       include: {
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -364,9 +365,9 @@ export class PrintTemplatesService {
       include: {
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -401,9 +402,9 @@ export class PrintTemplatesService {
       include: {
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -435,9 +436,9 @@ export class PrintTemplatesService {
       include: {
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -465,9 +466,9 @@ export class PrintTemplatesService {
         branch: true,
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -517,9 +518,9 @@ export class PrintTemplatesService {
       include: {
         customer: {
           include: {
+            // Toàn bộ địa chỉ: dò đúng địa chỉ giao hàng (địa chỉ cũ) — default vẫn đứng đầu.
             addresses: {
-              where: { isDefault: true },
-              take: 1,
+              orderBy: [{ isDefault: 'desc' }, { createdAt: 'asc' }],
             },
           },
         },
@@ -610,7 +611,7 @@ export class PrintTemplatesService {
   private customerVars(customer: any, delivery?: any) {
     // Ưu tiên lấy địa chỉ từ delivery (snapshot tại thời điểm tạo)
     // Fallback lấy từ default address của customer
-    const defaultAddr = customer?.addresses?.[0];
+    const defaultAddr = customer?.addresses?.find((a: any) => a.isDefault);
 
     return {
       Ma_Khach_Hang: customer?.code || '',
@@ -639,6 +640,29 @@ export class PrintTemplatesService {
     };
   }
 
+  /**
+   * Địa chỉ cũ (trước sáp nhập): "Phường/Xã, Quận/Huyện, Tỉnh/TP". Chỉ coi là
+   * có khi đủ cả 3 cấp — giống màn Khách hàng (chọn đủ Tỉnh / Quận / Phường).
+   * Ưu tiên địa chỉ hiện tại của khách khớp với địa chỉ giao hàng (sửa địa chỉ
+   * khách → bản in cập nhật theo); không đủ 3 cấp mới dùng snapshot old* lưu
+   * trên phiếu lúc tạo đơn.
+   */
+  private oldDeliveryAddress(delivery: any, addresses: any[]): string {
+    const full = (parts: (string | null | undefined)[]) => {
+      const t = parts.map((v) => (v || '').trim());
+      return t.every(Boolean) ? t.join(', ') : '';
+    };
+    const addr = pickCustomerAddress(addresses, delivery);
+    return (
+      full([addr?.wardName, addr?.districtName, addr?.cityName]) ||
+      full([
+        delivery?.oldWardName,
+        delivery?.oldDistrictName,
+        delivery?.oldCityName,
+      ])
+    );
+  }
+
   private deliveryVars(delivery: any, customer?: any) {
     const weight = delivery?.weight ? Number(delivery.weight) : 0;
     const unit = delivery?.weightUnit || 'g';
@@ -647,7 +671,11 @@ export class PrintTemplatesService {
       : '';
 
     // Fallback lấy từ default address của customer khi delivery snapshot trống
-    const defaultAddr = customer?.addresses?.[0];
+    const defaultAddr = customer?.addresses?.find((a: any) => a.isDefault);
+    const oldAddress = this.oldDeliveryAddress(
+      delivery,
+      customer?.addresses ?? [],
+    );
 
     return {
       Nguoi_Nhan: delivery?.receiver || customer?.name || '',
@@ -670,6 +698,11 @@ export class PrintTemplatesService {
         delivery?.oldDistrictName || defaultAddr?.districtName || '',
       Tinh_Thanh_Cu_Giao_Hang:
         delivery?.oldCityName || defaultAddr?.cityName || '',
+      // Địa chỉ hành chính cũ (trước sáp nhập) — rỗng khi không có / trùng mới.
+      Dia_Chi_Cu_Giao_Hang: oldAddress,
+      Dong_Dia_Chi_Cu_Giao_Hang: oldAddress
+        ? `<br>(Địa chỉ cũ: ${this.escapeHtml(oldAddress)})`
+        : '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
       Khoi_Luong: formatted,

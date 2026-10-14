@@ -1959,6 +1959,7 @@ export class InvoicesService {
         const invoiceAddrSnapshot = await resolveDeliveryAddress(
           tx,
           dto.customerId,
+          dto.delivery,
         );
 
         const invoice = await tx.invoice.create({
@@ -3159,7 +3160,7 @@ export class InvoicesService {
         // Snapshot địa chỉ cũ+mới: resolve lại theo customerId mới (nếu đổi khách) hoặc giữ snapshot cũ.
         const updateCustomerId = dto.customerId ?? currentInvoice.customerId;
         const updateAddrSnapshot = dto.delivery
-          ? await resolveDeliveryAddress(tx, updateCustomerId)
+          ? await resolveDeliveryAddress(tx, updateCustomerId, dto.delivery)
           : null;
 
         const newInvoice = await tx.invoice.create({
@@ -3862,6 +3863,7 @@ export class InvoicesService {
         const inPlaceAddrSnapshot = await resolveDeliveryAddress(
           tx,
           inPlaceCustomerId,
+          dto.delivery,
         );
         await tx.invoiceDelivery.deleteMany({
           where: { invoiceId: id },

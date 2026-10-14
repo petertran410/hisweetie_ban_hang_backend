@@ -36,6 +36,7 @@
     "seed:print-promotion-vars": "ts-node prisma/seeds/add-print-promotion-vars.ts",
     "seed:warehouse-export-template": "ts-node prisma/seeds/add-warehouse-export-print-template.ts",
     "seed:print-shipping-fee-vars": "ts-node prisma/seeds/add-shipping-fee-print-variables.ts",
+    "seed:print-old-address-vars": "ts-node prisma/seeds/add-old-delivery-address-print-vars.ts",
     "patch:print-shipping-fee": "ts-node prisma/seeds/patch-shipping-fee-print-templates.ts",
     "seed:permissions": "ts-node prisma/seeds/seed-permissions.ts",
     "seed:upsert-permissions": "ts-node prisma/seeds/upsert-permissions.ts",
