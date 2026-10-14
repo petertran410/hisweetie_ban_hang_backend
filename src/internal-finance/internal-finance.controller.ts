@@ -13,14 +13,9 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InternalFinanceService } from './internal-finance.service';
-import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
-import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
-import { InternalFinanceSyncService } from './internal-finance-sync.service';
-import { FinanceCutoverService } from './finance-cutover.service';
 import {
   CreateApprovalForWeeklyBatchDto,
   CreateWarehouseExpenseDto,
-  LarkFinanceImportDto,
   AddInternalFinanceAttachmentsDto,
   CreateFuelEntryDto,
   CreateManualExpenseDto,
@@ -32,7 +27,6 @@ import {
   CheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
-  WarehouseCashImportDto,
   WarehouseExpenseQueryDto,
   PrepareWeeklyBatchDto,
   ReviewInternalFinanceDto,
@@ -53,10 +47,6 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 export class InternalFinanceController {
   constructor(
     private readonly service: InternalFinanceService,
-    private readonly larkImport: InternalFinanceLarkImportService,
-    private readonly fundHistory: InternalFundHistorySyncService,
-    private readonly financeSync: InternalFinanceSyncService,
-    private readonly cutover: FinanceCutoverService,
   ) {}
 
   // Giới hạn truy vấn về các chi nhánh user được phép; ngoài phạm vi thì từ chối.
@@ -216,19 +206,6 @@ export class InternalFinanceController {
     return this.service.checkWarehouseExpense(id, user, dto);
   }
 
-  @Post('warehouse-receipts/lark-import')
-  @RequirePermissions('cash_flows:create')
-  @ApiOperation({
-    summary: 'Import warehouse cash history without Lark identifiers',
-  })
-  async importWarehouseCash(
-    @Body() dto: WarehouseCashImportDto,
-    @CurrentUser() user: any,
-  ) {
-    if (dto.dryRun === false) await this.cutover.assertOpen();
-    return this.larkImport.importWarehouseCash(dto, user.id);
-  }
-
   @Post('warehouse-receipts')
   @ApiOperation({ summary: 'Create a manual warehouse cash receipt' })
   async createWarehouseReceipt(
@@ -298,77 +275,6 @@ export class InternalFinanceController {
   @ApiOperation({ summary: 'Create a fuel entry' })
   createFuel(@Body() dto: CreateFuelEntryDto, @CurrentUser() user: any) {
     return this.service.createFuel(dto, user);
-  }
-
-  @Post('lark-import')
-  @RequirePermissions('cash_flows:create')
-  @ApiOperation({
-    summary:
-      'Queue a background Lark finance import and return its progress immediately',
-  })
-  async importFromLark(
-    @Body() dto: LarkFinanceImportDto,
-    @CurrentUser() user: any,
-  ) {
-    if (dto.dryRun === false) await this.cutover.assertOpen();
-    return this.larkImport.startImport(dto, user.id);
-  }
-
-  @Post('sync')
-  @ApiOperation({
-    summary: 'Đồng bộ toàn bộ dữ liệu thu chi kho (chạy nền, Super Admin)',
-  })
-  async startSync(@CurrentUser() user: any) {
-    await this.service.assertSuperAdmin(user);
-    await this.cutover.assertOpen();
-    return this.financeSync.start(user.id);
-  }
-
-  @Get('cutover')
-  @RequirePermissions('cash_flows:view')
-  @ApiOperation({ summary: 'Trạng thái chốt chuyển đổi sổ tài chính' })
-  cutoverStatus() {
-    return this.cutover.status();
-  }
-
-  @Post('cutover')
-  @RequirePermissions('cash_flows:create')
-  @ApiOperation({ summary: 'Chốt / mở lại chuyển đổi (Super Admin)' })
-  setCutover(@Body() body: { locked?: boolean }, @CurrentUser() user: any) {
-    return this.cutover.set(body?.locked !== false, user);
-  }
-
-  @Get('sync/status')
-  @RequirePermissions('cash_flows:view')
-  @ApiOperation({ summary: 'Tiến độ đồng bộ dữ liệu thu chi kho' })
-  syncStatus() {
-    return this.financeSync.getStatus();
-  }
-
-  @Post('fund-history/sync')
-  @RequirePermissions('cash_flows:create')
-  @ApiOperation({
-    summary:
-      'Đồng bộ toàn bộ bút toán sổ quỹ lịch sử vào quỹ nội bộ (chạy nền)',
-  })
-  async syncFundHistory(@CurrentUser() user: any) {
-    await this.service.assertSuperAdmin(user);
-    await this.cutover.assertOpen();
-    return this.fundHistory.start(user.id);
-  }
-
-  @Get('fund-history/sync/status')
-  @RequirePermissions('cash_flows:view')
-  @ApiOperation({ summary: 'Tiến độ đồng bộ sổ quỹ lịch sử' })
-  fundHistoryStatus() {
-    return this.fundHistory.getStatus();
-  }
-
-  @Get('lark-import/status')
-  @RequirePermissions('cash_flows:view')
-  @ApiOperation({ summary: 'Get the current Lark finance import progress' })
-  larkImportStatus() {
-    return this.larkImport.getImportStatus();
   }
 
   @Post('vehicle-care')
@@ -468,16 +374,6 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.updateCashIssued(id, dto.cashIssued, user.id);
-  }
-
-  @Post('maintenance/backfill-expense-metadata')
-  @RequirePermissions('cash_flows:update')
-  @ApiOperation({
-    summary:
-      'Fill payer, expense item and vehicle links on existing expenses (dry-run by default)',
-  })
-  backfillExpenseMetadata(@Body() dto: WarehouseCashImportDto) {
-    return this.service.backfillExpenseMetadata(dto.dryRun !== false);
   }
 
   @Post('maintenance/normalize-codes')

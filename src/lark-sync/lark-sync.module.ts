@@ -6,9 +6,7 @@ import { LarkBaseService } from './services/lark-base.service';
 import { LarkOrderSyncService } from './services/lark-order-sync.service';
 import { LarkOrderNotificationService } from './services/lark-order-notification.service';
 import { LarkLoadingNotificationService } from './services/lark-loading-notification.service';
-import { LarkExpenseBaseService } from './services/lark-expense-base.service';
 import { LarkUserDirectoryService } from './services/lark-user-directory.service';
-import { LarkExpenseSyncService } from './services/lark-expense-sync.service';
 import { LarkCustomerBaseService } from './services/lark-customer-base.service';
 import { LarkCustomerSyncService } from './services/lark-customer-sync.service';
 import { LarkProductBaseService } from './services/lark-product-base.service';
@@ -26,9 +24,7 @@ import { LarkDebtNotificationService } from './services/lark-debt-notification.s
     LarkOrderSyncService,
     LarkOrderNotificationService,
     LarkLoadingNotificationService,
-    LarkExpenseBaseService,
     LarkUserDirectoryService,
-    LarkExpenseSyncService,
     LarkCustomerBaseService,
     LarkCustomerSyncService,
     LarkProductBaseService,
@@ -41,7 +37,6 @@ import { LarkDebtNotificationService } from './services/lark-debt-notification.s
     LarkOrderSyncService,
     LarkOrderNotificationService,
     LarkLoadingNotificationService,
-    LarkExpenseSyncService,
     LarkCustomerSyncService,
     LarkProductSyncService,
     LarkDebtNotificationService,

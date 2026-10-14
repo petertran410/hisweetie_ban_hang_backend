@@ -20,7 +20,6 @@ import {
   WAREHOUSE_EXPENSE_ITEMS,
 } from '../internal-finance.constants';
 import { VEHICLE_SERVICE_TYPES } from '../../vehicles/vehicles.constants';
-import { LARK_IMPORT_SOURCES } from '../internal-finance-lark-import.mapper';
 
 export class InternalFinanceAttachmentDto {
   @IsString()
@@ -502,17 +501,6 @@ export const INTERNAL_FINANCE_DIRECTIONS = Object.values(
   INTERNAL_FINANCE_DIRECTION,
 );
 
-export class LarkFinanceImportDto {
-  @IsOptional()
-  @IsBoolean()
-  dryRun?: boolean;
-
-  @IsOptional()
-  @IsArray()
-  @IsIn(LARK_IMPORT_SOURCES, { each: true })
-  sources?: string[];
-}
-
 export class WarehouseReceiptCustomerInputDto {
   @IsInt()
   @Type(() => Number)
@@ -630,12 +618,6 @@ export class WarehouseReceiptCustomerAllocationDto {
   @ValidateNested({ each: true })
   @Type(() => WarehouseReceiptInvoiceAllocationDto)
   invoices?: WarehouseReceiptInvoiceAllocationDto[];
-}
-
-export class WarehouseCashImportDto {
-  @IsOptional()
-  @IsBoolean()
-  dryRun?: boolean;
 }
 
 export class PostWarehouseReceiptDto {

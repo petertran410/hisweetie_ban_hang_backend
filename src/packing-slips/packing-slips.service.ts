@@ -20,7 +20,6 @@ import {
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { N8nNotifyService } from '../n8n-notify/n8n-notify.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
-import { LarkExpenseSyncService } from '../lark-sync/services/lark-expense-sync.service';
 import {
   applyPackingToConsignments,
   recalcConsignmentStatusAfterPackingCancel,
@@ -47,7 +46,6 @@ export class PackingSlipsService {
     private n8nNotifyService: N8nNotifyService,
     private larkProductSync: LarkProductSyncService,
     private internalFinanceService: InternalFinanceService,
-    private larkExpenseSync: LarkExpenseSyncService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -420,21 +418,8 @@ export class PackingSlipsService {
     // Zalo/Lark chỉ cần bản đầy đủ sau khi phiếu đã ghi xong. Không chờ
     // findOne này trong response, để màn hình lưu không bị đứng.
     void this.dispatchDeliveryNotifications(packingSlip.id);
-    this.pushLarkExpenses(packingSlip.id);
 
     return packingSlip;
-  }
-
-  // Chạy song song với Lark: đẩy phí báo đơn lên Base, không chặn nghiệp vụ.
-  private pushLarkExpenses(id: number) {
-    if (!this.larkExpenseSync.isEnabled()) return;
-    void this.findOne(id)
-      .then((slip) =>
-        this.larkExpenseSync.syncPackingSlipExpenses(slip as any),
-      )
-      .catch((err) => {
-        console.error('larkExpenseSync unexpected error:', err);
-      });
   }
 
   private async dispatchDeliveryNotifications(id: number) {
@@ -625,7 +610,6 @@ export class PackingSlipsService {
       return updatedSlip;
     });
 
-    this.pushLarkExpenses(id);
 
     // Audit log ngoài transaction
     if (userId) {
@@ -743,21 +727,6 @@ export class PackingSlipsService {
           ? 'Đã gửi lại thông báo giao hàng (Bibi)'
           : 'Đã gửi lại thông báo giao hàng vào Zalo',
     };
-  }
-
-  /**
-   * Endpoint legacy được giữ để trả thông báo rõ ràng sau khi chuyển sang
-   * Internal Finance và Approval tuần trực tiếp trên POS.
-   */
-  async resendLarkExpense(id: number) {
-    const fullPackingSlip = await this.findOne(id);
-    if (!this.larkExpenseSync.isEnabled()) {
-      throw new ServiceUnavailableException(
-        'Đồng bộ Lark chưa được cấu hình (LARK_EXPENSE_BASE_TOKEN)',
-      );
-    }
-    await this.larkExpenseSync.syncPackingSlipExpenses(fullPackingSlip as any);
-    return { message: 'Đã đồng bộ phiếu chi lên Lark' };
   }
 
   /**

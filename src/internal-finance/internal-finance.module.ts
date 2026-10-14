@@ -5,12 +5,6 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
 import { UploadModule } from '../upload/upload.module';
 import { InternalFinanceController } from './internal-finance.controller';
 import { InternalFinanceService } from './internal-finance.service';
-import { InternalFinanceLarkImportService } from './internal-finance-lark-import.service';
-import { LarkFinanceImportClient } from './lark-finance-import.client';
-import { InternalFundHistorySyncService } from './internal-fund-history-sync.service';
-import { InternalFundClosingSyncService } from './internal-fund-closing-sync.service';
-import { InternalFinanceSyncService } from './internal-finance-sync.service';
-import { FinanceCutoverService } from './finance-cutover.service';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
 import { AuthModule } from '../auth/auth.module';
 import { InternalFundModule } from '../internal-fund/internal-fund.module';
@@ -31,12 +25,6 @@ import { VehiclesModule } from '../vehicles/vehicles.module';
   controllers: [InternalFinanceController],
   providers: [
     InternalFinanceService,
-    InternalFinanceLarkImportService,
-    LarkFinanceImportClient,
-    InternalFundHistorySyncService,
-    InternalFundClosingSyncService,
-    InternalFinanceSyncService,
-    FinanceCutoverService,
     InternalFinanceCodeService,
   ],
   exports: [InternalFinanceService],
