@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { ConfigService } from '@nestjs/config';
@@ -45,7 +46,7 @@ type ApprovalEvent = {
 const WEEKLY_SOURCE_TYPES = ['INTERNAL_FINANCE_WEEKLY', 'LARK_IMPORT_WEEKLY'];
 
 @Injectable()
-export class ApprovalLifecycleService {
+export class ApprovalLifecycleService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ApprovalLifecycleService.name);
 
   constructor(
@@ -729,11 +730,13 @@ export class ApprovalLifecycleService {
         );
       }
     }
-    try {
-      await this.repairImportedWeeks();
-    } catch (error: any) {
-      this.logger.warn(`Không vá được tuần đồng bộ: ${error?.message}`);
-    }
+  }
+
+  /** Vá một lần khi khởi động; chạy nền để không làm chậm việc khởi động. */
+  onApplicationBootstrap() {
+    void this.repairImportedWeeks().catch((error: any) =>
+      this.logger.warn(`Không vá được tuần đồng bộ: ${error?.message}`),
+    );
   }
 
   /**

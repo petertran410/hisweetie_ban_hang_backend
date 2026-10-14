@@ -720,13 +720,11 @@ describe('ApprovalLifecycleService', () => {
     );
   });
 
-  it('repairs synced weeks whose approval result arrived before the fix', async () => {
+  it('repairs synced weeks whose approval result arrived before the fix, once at startup', async () => {
+    // Đơn tuần đồng bộ đã duyệt và POS đã nhận kết quả trực tiếp.
     const findMany = jest
       .fn()
-      // reconcilePending: không còn đơn chờ duyệt.
-      .mockResolvedValueOnce([])
-      // Đơn tuần đồng bộ đã duyệt và POS đã nhận kết quả trực tiếp.
-      .mockResolvedValueOnce([{ id: 12, status: 'APPROVED', sourceId: 6 }]);
+      .mockResolvedValue([{ id: 12, status: 'APPROVED', sourceId: 6 }]);
     const { service, prisma, fundLedger } = createService({
       approvalRequest: { findMany },
     });
@@ -739,9 +737,10 @@ describe('ApprovalLifecycleService', () => {
     (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
     (fundLedger as any).issueApprovedBatch = jest.fn();
 
-    await service.reconcilePending();
+    service.onApplicationBootstrap();
+    await new Promise((resolve) => setImmediate(resolve));
 
-    expect(findMany.mock.calls[1][0].where).toMatchObject({
+    expect(findMany.mock.calls[0][0].where).toMatchObject({
       sourceType: 'LARK_IMPORT_WEEKLY',
       detailSnapshot: { not: expect.anything() },
     });
@@ -758,6 +757,16 @@ describe('ApprovalLifecycleService', () => {
     );
   });
 
+  it('does not throw at startup when the repair fails', async () => {
+    const { service } = createService({
+      approvalRequest: {
+        findMany: jest.fn().mockRejectedValue(new Error('DB chưa sẵn sàng')),
+      },
+    });
+    expect(() => service.onApplicationBootstrap()).not.toThrow();
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
   it('reconciles a pending request when the webhook was missed', async () => {
     const { service, prisma, larkClient } = createService({
       approvalRequest: {
@@ -769,10 +778,9 @@ describe('ApprovalLifecycleService', () => {
         }),
         findMany: jest
           .fn()
-          .mockResolvedValueOnce([
+          .mockResolvedValue([
             { id: 8, instanceCode: 'instance-8', status: 'PENDING' },
-          ])
-          .mockResolvedValue([]),
+          ]),
       },
     });
     larkClient.approval.v4.instance.get.mockResolvedValue({
