@@ -130,6 +130,9 @@ model User {
   managedInternalFinanceEntries                             InternalFinanceEntry[]             @relation("InternalFinanceEntryManager")
   issuedInternalFinanceEntries                              InternalFinanceEntry[]             @relation("InternalFinanceEntryCashIssuer")
   paidInternalFinanceEntries                                InternalFinanceEntry[]             @relation("InternalFinanceEntryPayer")
+  cancelledInternalFinanceEntries                           InternalFinanceEntry[]             @relation("InternalFinanceEntryCanceller")
+  internalFinanceEntryNotes                                 InternalFinanceEntryNote[]         @relation("InternalFinanceEntryNoteCreator")
+  internalFinanceEntryNoteMentions                          InternalFinanceEntryNoteMention[]  @relation("InternalFinanceEntryNoteMentionUser")
   drivenVehicles                                            Vehicle[]                          @relation("VehicleDriver")
   createdVehicles                                           Vehicle[]                          @relation("VehicleCreator")
   internalFinanceReviews                                    InternalFinanceReview[]             @relation("InternalFinanceReviewUser")
@@ -2321,6 +2324,9 @@ model InternalFinanceEntry {
   cashIssuedAt          DateTime?
   cashIssuedBy          Int?
   cashIssuedReason      String?
+  cancelReason          String?
+  cancelledAt           DateTime?
+  cancelledBy           Int?
   posManagedAt          DateTime?
   vehicleName           String?
   vehicleServiceType    String?
@@ -2356,9 +2362,11 @@ model InternalFinanceEntry {
   accountantReviewer  User?                      @relation("InternalFinanceEntryAccountant", fields: [accountantReviewedBy], references: [id])
   managerReviewer     User?                      @relation("InternalFinanceEntryManager", fields: [managerReviewedBy], references: [id])
   cashIssuer           User?                      @relation("InternalFinanceEntryCashIssuer", fields: [cashIssuedBy], references: [id])
+  canceller           User?                      @relation("InternalFinanceEntryCanceller", fields: [cancelledBy], references: [id])
   attachments         InternalFinanceAttachment[]
   invoiceLinks        InternalFinanceInvoiceLink[]
   reviews             InternalFinanceReview[]
+  reviewNotes         InternalFinanceEntryNote[]
   fundTransaction     InternalFundTransaction?
 
   @@index([branchId, occurredAt])
@@ -2450,6 +2458,38 @@ model InternalFinanceReview {
 
   @@index([entryId, role, createdAt])
   @@map("internal_finance_reviews")
+}
+
+// Ghi chú yêu cầu xem lại phiếu chi, kèm người được tag (nhận tin Lark).
+model InternalFinanceEntryNote {
+  id        Int      @id @default(autoincrement())
+  entryId   Int
+  content   String
+  createdBy Int
+  createdAt DateTime @default(now())
+
+  entry    InternalFinanceEntry             @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  creator  User                             @relation("InternalFinanceEntryNoteCreator", fields: [createdBy], references: [id])
+  mentions InternalFinanceEntryNoteMention[]
+
+  @@index([entryId, createdAt])
+  @@map("internal_finance_entry_notes")
+}
+
+model InternalFinanceEntryNoteMention {
+  id         Int       @id @default(autoincrement())
+  noteId     Int
+  userId     Int
+  larkStatus String    @default("PENDING") @db.VarChar(16)
+  larkError  String?
+  sentAt     DateTime?
+
+  note InternalFinanceEntryNote @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  user User                     @relation("InternalFinanceEntryNoteMentionUser", fields: [userId], references: [id])
+
+  @@unique([noteId, userId])
+  @@index([userId])
+  @@map("internal_finance_entry_note_mentions")
 }
 
 model InternalFinanceWeeklyBatch {

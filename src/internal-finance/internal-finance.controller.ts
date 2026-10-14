@@ -13,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InternalFinanceService } from './internal-finance.service';
+import { WarehouseExpenseNotesService } from './warehouse-expense-notes.service';
 import {
   CreateApprovalForWeeklyBatchDto,
   CreateWarehouseExpenseDto,
@@ -23,6 +24,8 @@ import {
   CreateVehicleCareEntryDto,
   CreateWarehouseReceiptDto,
   CancelWarehouseReceiptDto,
+  CancelWarehouseExpenseDto,
+  CreateWarehouseExpenseNoteDto,
   InternalFinanceQueryDto,
   CheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
@@ -47,6 +50,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 export class InternalFinanceController {
   constructor(
     private readonly service: InternalFinanceService,
+    private readonly notes: WarehouseExpenseNotesService,
   ) {}
 
   // Giới hạn truy vấn về các chi nhánh user được phép; ngoài phạm vi thì từ chối.
@@ -184,6 +188,55 @@ export class InternalFinanceController {
       dto.detailUrl,
       dto.viewUrl,
     );
+  }
+
+  @Post('warehouse-expenses/weekly-batches/:id/cancel')
+  @ApiOperation({ summary: 'Cancel a warehouse expense weekly batch' })
+  cancelWarehouseExpenseBatch(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cancelWarehouseExpenseBatch(id, user);
+  }
+
+  @Put('warehouse-expenses/:id/cancel')
+  @ApiOperation({ summary: 'Cancel a warehouse expense with a reason' })
+  cancelWarehouseExpense(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cancelWarehouseExpense(id, user, dto.reason);
+  }
+
+  @Get('warehouse-expenses/:id/notes')
+  @ApiOperation({ summary: 'List review notes of a warehouse expense' })
+  warehouseExpenseNotes(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.notes.list(id, user);
+  }
+
+  @Get('warehouse-expenses/:id/mention-candidates')
+  @ApiOperation({ summary: 'Users that can be tagged to review an expense' })
+  warehouseExpenseMentionCandidates(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.notes.mentionCandidates(id, user);
+  }
+
+  @Post('warehouse-expenses/:id/notes')
+  @ApiOperation({
+    summary: 'Add a review note and notify tagged users on Lark',
+  })
+  createWarehouseExpenseNote(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CreateWarehouseExpenseNoteDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.notes.create(id, dto, user);
   }
 
   @Patch('warehouse-expenses/:id/mark-issued')

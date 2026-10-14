@@ -66,9 +66,7 @@ import {
   InternalFundLedgerService,
 } from '../internal-fund/internal-fund-ledger.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
-import {
-  VEHICLE_CHECK,
-} from '../vehicles/vehicles.constants';
+import { VEHICLE_CHECK } from '../vehicles/vehicles.constants';
 
 type DbClient = PrismaService | any;
 
@@ -85,6 +83,15 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
+// Approval Lark đã kết thúc mà không duyệt: batch tuần được phép hủy.
+const CANCELLABLE_WEEKLY_APPROVAL_STATUSES = [
+  'CANCELED',
+  'REJECTED',
+  'DELETED',
+  'REVERTED',
+  'CREATE_FAILED',
+];
+
 type WarehouseExpenseAction =
   | 'view'
   | 'create'
@@ -93,7 +100,12 @@ type WarehouseExpenseAction =
   | 'submit'
   | 'mark_issued'
   | 'check_manager'
-  | 'check_accountant';
+  | 'check_accountant'
+  | 'cancel'
+  | 'request_review';
+
+/** Phiếu chi từ báo đơn không cập nhật theo báo đơn vì đang khóa. */
+export type PackingFinanceLock = { code: string; reason: string };
 
 type WarehouseCashAction = 'view' | 'create' | 'update' | 'post' | 'cancel';
 
@@ -458,6 +470,13 @@ export class InternalFinanceService {
     ];
     if (query.category) conditions.push({ category: query.category });
     if (query.status) conditions.push({ status: query.status });
+    // Phiếu đã hủy chỉ hiện khi lọc đúng trạng thái đó hoặc tìm theo mã
+    // (link "Mở phiếu chi" trong tin Lark).
+    else if (!query.search?.trim()) {
+      conditions.push({
+        status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
+      });
+    }
     if (query.cashIssued === 'ISSUED') {
       conditions.push({ cashIssued: true });
     } else if (query.cashIssued === 'NOT_ISSUED') {
@@ -1323,10 +1342,13 @@ export class InternalFinanceService {
       { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE },
       { category: query.category },
       { branchId: { in: branchIds } },
-      // Phiếu đã hủy chỉ hiện khi lọc đúng trạng thái đó.
+      // Phiếu đã hủy chỉ hiện khi lọc đúng trạng thái đó hoặc tìm theo mã
+      // (link "Sửa ở Xe cộ" trong tin Lark).
       query.status
         ? { status: query.status }
-        : { status: { not: INTERNAL_FINANCE_STATUS.CANCELLED } },
+        : query.search?.trim()
+          ? {}
+          : { status: { not: INTERNAL_FINANCE_STATUS.CANCELLED } },
     ];
     if (query.vehicleId) conditions.push({ vehicleId: query.vehicleId });
     if (query.serviceType) {
@@ -1953,8 +1975,17 @@ export class InternalFinanceService {
             where: { id: existing.id },
           });
         }
+        const reason = options.requireBothChecks
+          ? await this.explainNoEligibleEntries(tx, {
+              branchId: dto.branchId,
+              weekStart,
+              weekEnd,
+              categories: options.allowedCategories,
+              excludeBatchId: existing?.id,
+            })
+          : '';
         throw new BadRequestException(
-          'Không có khoản chi đủ điều kiện để tổng hợp tuần',
+          `Không có khoản chi đủ điều kiện để tổng hợp tuần${reason}`,
         );
       }
 
@@ -2011,6 +2042,81 @@ export class InternalFinanceService {
 
       return batch;
     });
+  }
+
+  // Kho: nói rõ vì sao khoảng ngày không gom được phiếu nào.
+  private async explainNoEligibleEntries(
+    tx: Prisma.TransactionClient,
+    scope: {
+      branchId: number;
+      weekStart: Date;
+      weekEnd: Date;
+      categories?: string[];
+      excludeBatchId?: number;
+    },
+  ) {
+    const base: Prisma.InternalFinanceEntryWhereInput = {
+      branchId: scope.branchId,
+      direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+      occurredAt: { gte: scope.weekStart, lte: scope.weekEnd },
+      status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
+      ...(scope.categories?.length
+        ? { category: { in: scope.categories } }
+        : {}),
+    };
+    const free: Prisma.InternalFinanceEntryWhereInput = scope.excludeBatchId
+      ? {
+          OR: [
+            { weeklyBatchId: null },
+            { weeklyBatchId: scope.excludeBatchId },
+          ],
+        }
+      : { weeklyBatchId: null };
+    const [inOtherBatch, issued, unchecked] = await Promise.all([
+      tx.internalFinanceEntry.count({
+        where: {
+          ...base,
+          weeklyBatchId: { not: null },
+          ...(scope.excludeBatchId
+            ? { NOT: { weeklyBatchId: scope.excludeBatchId } }
+            : {}),
+        },
+      }),
+      tx.internalFinanceEntry.count({
+        where: {
+          AND: [
+            base,
+            free,
+            { OR: [{ cashIssued: true }, { cashFlowId: { not: null } }] },
+          ],
+        },
+      }),
+      tx.internalFinanceEntry.count({
+        where: {
+          AND: [
+            base,
+            free,
+            { cashIssued: false, cashFlowId: null },
+            {
+              OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+            },
+          ],
+        },
+      }),
+    ]);
+    const range = [scope.weekStart, scope.weekEnd]
+      .map((date) => fundDateKey(date).split('-').reverse().join('/'))
+      .join('–');
+    const parts = [
+      unchecked && `${unchecked} phiếu chưa đủ tick Quản lý kho/Kế toán kho`,
+      issued && `${issued} phiếu đã chi`,
+      inOtherBatch && `${inOtherBatch} phiếu đã thuộc batch tuần khác`,
+    ].filter(Boolean);
+    return ` ${range}: ${
+      parts.length
+        ? parts.join(', ')
+        : 'không có phiếu chi nào trong khoảng này'
+    }`;
   }
 
   async createWeeklyApproval(
@@ -2108,7 +2214,9 @@ export class InternalFinanceService {
         {
           kind,
           branchId: batch.branchId,
-          clientUuid: `INTERNAL_FINANCE_WEEK:${batch.branchId}:${from}:${to}`,
+          // Có id batch: batch bị hủy rồi tổng hợp lại cùng khoảng ngày phải ra
+          // Approval mới, không dính Approval cũ (POS và Lark chống trùng theo mã).
+          clientUuid: `INTERNAL_FINANCE_WEEK:${batch.id}:${batch.branchId}:${from}:${to}`,
           sourceType: 'INTERNAL_FINANCE_WEEKLY',
           sourceId: batch.id,
           form,
@@ -2158,6 +2266,73 @@ export class InternalFinanceService {
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
     await this.assertWarehouseExpensePermission(user, batch.branchId, 'submit');
     return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
+  }
+
+  // Hủy batch chưa gửi Lark, hoặc có Approval Lark đã kết thúc mà không duyệt:
+  // trả phiếu về Phiếu chi kho (giữ tick, Đã chi, quỹ) rồi xóa batch để tổng
+  // hợp lại. Approval đang duyệt hoặc đã duyệt thì không hủy được.
+  async cancelWarehouseExpenseBatch(batchId: number, user: any) {
+    const found = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id: batchId },
+      select: { branchId: true },
+    });
+    if (!found) throw new NotFoundException('Không tìm thấy batch tuần');
+    await this.assertWarehouseExpensePermission(
+      user,
+      found.branchId,
+      'prepare',
+    );
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [found.branchId]);
+      const batch = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: { id: batchId },
+        select: {
+          id: true,
+          code: true,
+          status: true,
+          approvalRequest: { select: { status: true } },
+        },
+      });
+      if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
+      const approvalStatus = batch.approvalRequest?.status;
+      if (
+        ['IN_APPROVAL', 'APPROVED'].includes(batch.status) ||
+        (approvalStatus &&
+          !CANCELLABLE_WEEKLY_APPROVAL_STATUSES.includes(approvalStatus))
+      ) {
+        throw new BadRequestException(
+          'Approval tuần đang duyệt hoặc đã duyệt, không thể hủy batch',
+        );
+      }
+
+      const released = await tx.internalFinanceEntry.count({
+        where: { weeklyBatchId: batch.id },
+      });
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          weeklyBatchId: batch.id,
+          cashIssued: false,
+          managerReviewedAt: { not: null },
+          accountantReviewedAt: { not: null },
+        },
+        data: { status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED },
+      });
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          weeklyBatchId: batch.id,
+          cashIssued: false,
+          OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+        },
+        data: { status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT },
+      });
+      await tx.internalFinanceEntry.updateMany({
+        where: { weeklyBatchId: batch.id },
+        data: { weeklyBatchId: null },
+      });
+      await tx.internalFinanceWeeklyBatch.delete({ where: { id: batch.id } });
+      return { id: batch.id, code: batch.code, released };
+    });
   }
 
   async listWarehouseExpenseBatches(query: InternalFinanceQueryDto, user: any) {
@@ -2213,6 +2388,67 @@ export class InternalFinanceService {
       dto.cashIssued,
       dto.reason,
     );
+  }
+
+  // Hủy phiếu chi kho bị từ chối hẳn: chỉ khi chưa Đã chi và chưa vào Approval
+  // tuần đang duyệt/đã duyệt. Phiếu trong batch chưa gửi Lark được gỡ ra trước.
+  async cancelWarehouseExpense(entryId: number, user: any, reason: string) {
+    const trimmed = reason?.trim();
+    if (!trimmed) throw new BadRequestException('Cần nhập lý do hủy phiếu');
+    const hint = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id: entryId },
+      select: { branchId: true },
+    });
+    if (!hint) throw new NotFoundException('Không tìm thấy khoản chi');
+    await this.assertWarehouseExpensePermission(user, hint.branchId, 'cancel');
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [hint.branchId]);
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id: entryId },
+        include: { weeklyBatch: { select: { status: true } } },
+      });
+      if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
+        throw new NotFoundException('Không tìm thấy khoản chi');
+      }
+      if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED) {
+        throw new BadRequestException('Phiếu chi đã được hủy');
+      }
+      if (entry.cashIssued || entry.cashFlowId) {
+        throw new BadRequestException(
+          'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
+        );
+      }
+      if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY') {
+        throw new BadRequestException(
+          'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không thể hủy',
+        );
+      }
+      if (entry.weeklyBatchId) {
+        await this.fundLedger.detachFromBatch(tx, entry);
+      }
+      const now = new Date();
+      await tx.internalFinanceReview.create({
+        data: {
+          entryId,
+          role: INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+          decision: 'CANCEL',
+          reason: trimmed,
+          reviewerId: user.id,
+        },
+      });
+      return tx.internalFinanceEntry.update({
+        where: { id: entryId },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.CANCELLED,
+          cancelReason: trimmed,
+          cancelledAt: now,
+          cancelledBy: user.id,
+          posManagedAt: now,
+        },
+        include: this.warehouseExpenseInclude(),
+      });
+    });
   }
 
   async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
@@ -2741,13 +2977,14 @@ export class InternalFinanceService {
     db: DbClient,
     packingSlip: any,
     userId: number,
-  ) {
+  ): Promise<{ locked: PackingFinanceLock[] }> {
+    const locked: PackingFinanceLock[] = [];
     if (
       !(INTERNAL_FINANCE_BRANCH_IDS as readonly number[]).includes(
         Number(packingSlip.branchId),
       )
     ) {
-      return;
+      return { locked };
     }
     await this.internalFund.lockBranch(db, [Number(packingSlip.branchId)]);
     const files = packingSlip.expenseFiles || [];
@@ -2816,6 +3053,7 @@ export class InternalFinanceService {
         invoiceIds,
         attachments: attachmentData,
         userId,
+        locked,
       });
     }
 
@@ -2882,6 +3120,37 @@ export class InternalFinanceService {
       },
       data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
     });
+    return { locked };
+  }
+
+  // Vì sao phiếu từ báo đơn không được cập nhật theo báo đơn (null: sửa được).
+  private packingLockReason(
+    existing: {
+      cashFlowId: number | null;
+      cashIssued: boolean;
+      weeklyBatchId: number | null;
+      status: string;
+      weeklyBatch?: { code: string; status: string } | null;
+    },
+    direction: string,
+    editableStatuses: string[],
+  ): string | null {
+    if (existing.cashIssued || existing.cashFlowId) return 'đã chi';
+    if (
+      direction === INTERNAL_FINANCE_DIRECTION.EXPENSE &&
+      existing.weeklyBatchId
+    ) {
+      const batch = existing.weeklyBatch;
+      return batch?.status === 'READY'
+        ? `đang trong Approval tuần ${batch.code} (chưa gửi Lark): bỏ tick Quản lý kho/Kế toán kho hoặc hủy batch rồi lưu lại báo đơn`
+        : `đang trong Approval tuần ${batch?.code || ''} đã gửi duyệt`;
+    }
+    if (!editableStatuses.includes(existing.status)) {
+      return existing.status === INTERNAL_FINANCE_STATUS.CANCELLED
+        ? 'phiếu chi đã hủy'
+        : 'phiếu chi đã kết thúc';
+    }
+    return null;
   }
 
   async syncPackingSlipEntriesInTransaction(
@@ -2914,10 +3183,16 @@ export class InternalFinanceService {
       expenseItem?: string;
       preserveUserText?: boolean;
       reopenIfCancelled?: boolean;
+      /** Gom phiếu chi đang khóa mà báo đơn đổi số tiền/chứng từ để báo lại. */
+      locked?: PackingFinanceLock[];
     },
   ) {
     const existing = await db.internalFinanceEntry.findUnique({
       where: { sourceKey: data.sourceKey },
+      include: {
+        attachments: { select: { fileUrl: true } },
+        weeklyBatch: { select: { code: true, status: true } },
+      },
     });
     const evidenceStatus = data.attachments.length
       ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
@@ -2925,21 +3200,39 @@ export class InternalFinanceService {
     const direction = data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
     const requiresEvidence = direction === INTERNAL_FINANCE_DIRECTION.EXPENSE;
     if (existing) {
-      if (
-        existing.cashFlowId ||
-        existing.cashIssued ||
-        (direction === INTERNAL_FINANCE_DIRECTION.EXPENSE &&
-          existing.weeklyBatchId)
-      )
-        return existing;
-      const editableStatuses = [
+      const editableStatuses: string[] = [
         INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
         INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
         INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
         INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
         ...(data.reopenIfCancelled ? [INTERNAL_FINANCE_STATUS.CANCELLED] : []),
       ];
-      if (!editableStatuses.includes(existing.status)) return existing;
+      const lockReason = this.packingLockReason(
+        existing,
+        direction,
+        editableStatuses,
+      );
+      if (lockReason) {
+        // Phiếu chi khóa thì giữ nguyên; chỉ báo khi báo đơn thực sự đổi
+        // số tiền hoặc chứng từ để người sửa biết phiếu chi chưa cập nhật.
+        if (data.locked) {
+          const fileKey = (files: Array<{ fileUrl?: unknown }>) =>
+            files
+              .map((file) => String(file.fileUrl || ''))
+              .sort()
+              .join('|');
+          const oldFiles = Array.isArray(existing.attachments)
+            ? existing.attachments
+            : [];
+          if (
+            Number(existing.amount) !== Number(data.amount) ||
+            fileKey(oldFiles) !== fileKey(data.attachments)
+          ) {
+            data.locked.push({ code: existing.code, reason: lockReason });
+          }
+        }
+        return existing;
+      }
       // Đổi số tiền sau khi đã tick kiểm tra thì phải kiểm tra lại.
       const recheck =
         existing.status === INTERNAL_FINANCE_STATUS.MANAGER_APPROVED &&
@@ -3456,6 +3749,8 @@ export class InternalFinanceService {
       managerReviewer: { select: { id: true, name: true } },
       accountantReviewer: { select: { id: true, name: true } },
       fundTransaction: { select: { id: true, code: true, status: true } },
+      canceller: { select: { id: true, name: true } },
+      _count: { select: { reviewNotes: true } },
       branch: { select: { id: true, name: true } },
       packingSlip: { select: { id: true, code: true } },
       weeklyBatch: {
@@ -3627,4 +3922,3 @@ function fuelLiters(
   if (!unitPrice || unitPrice <= 0) return null;
   return Math.round((amount / unitPrice) * 10000) / 10000;
 }
-

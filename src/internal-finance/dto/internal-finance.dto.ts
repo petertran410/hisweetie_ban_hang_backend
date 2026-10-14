@@ -1,4 +1,5 @@
 import {
+  ArrayMaxSize,
   ArrayNotEmpty,
   IsArray,
   IsBoolean,
@@ -9,7 +10,9 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
@@ -797,6 +800,27 @@ export class MarkWarehouseExpenseIssuedDto {
   @IsOptional()
   @IsString()
   reason?: string;
+}
+
+export class CancelWarehouseExpenseDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(500)
+  reason: string;
+}
+
+export class CreateWarehouseExpenseNoteDto {
+  @IsString()
+  @MinLength(1)
+  @MaxLength(2000)
+  content: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  mentionUserIds?: number[];
 }
 
 export class CheckWarehouseExpenseDto {

@@ -601,13 +601,16 @@ export class PackingSlipsService {
         },
       });
 
-      await this.internalFinanceService.syncPackingSlipEntriesInTransaction(
-        tx,
-        updatedSlip,
-        userId || 1,
-      );
+      const finance =
+        await this.internalFinanceService.syncPackingSlipEntriesInTransaction(
+          tx,
+          updatedSlip,
+          userId || 1,
+        );
 
-      return updatedSlip;
+      // Phiếu chi đang khóa (vào Approval tuần / đã chi) không theo báo đơn:
+      // trả về để giao diện báo cho người sửa.
+      return { ...updatedSlip, financeLocked: finance?.locked || [] };
     });
 
 

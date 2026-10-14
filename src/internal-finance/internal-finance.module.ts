@@ -10,6 +10,8 @@ import { AuthModule } from '../auth/auth.module';
 import { InternalFundModule } from '../internal-fund/internal-fund.module';
 import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.module';
 import { VehiclesModule } from '../vehicles/vehicles.module';
+import { LarkSyncModule } from '../lark-sync/lark-sync.module';
+import { WarehouseExpenseNotesService } from './warehouse-expense-notes.service';
 
 @Module({
   imports: [
@@ -21,11 +23,13 @@ import { VehiclesModule } from '../vehicles/vehicles.module';
     InternalFundModule,
     InternalFundLedgerModule,
     VehiclesModule,
+    LarkSyncModule,
   ],
   controllers: [InternalFinanceController],
   providers: [
     InternalFinanceService,
     InternalFinanceCodeService,
+    WarehouseExpenseNotesService,
   ],
   exports: [InternalFinanceService],
 })

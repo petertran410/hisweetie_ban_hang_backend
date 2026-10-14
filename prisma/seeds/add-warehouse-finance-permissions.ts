@@ -39,6 +39,8 @@ const PERMISSIONS: PermissionSeed[] = [
     ['mark_issued', 'Tick Đã chi và ghi quỹ'],
     ['check_manager', 'Tick kiểm tra cột Quản lý kho'],
     ['check_accountant', 'Tick kiểm tra cột Kế toán kho'],
+    ['cancel', 'Hủy phiếu chi kho (kèm lý do)'],
+    ['request_review', 'Ghi chú và tag người xem lại phiếu chi (gửi tin Lark)'],
   ]),
   ...group('internal_fund', [
     ['view', 'Xem quỹ nội bộ'],

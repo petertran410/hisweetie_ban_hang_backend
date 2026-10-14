@@ -110,7 +110,7 @@ describe('InternalFinanceService', () => {
     expect(approvalLifecycle.create).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'EXPENSE_HN',
-        clientUuid: 'INTERNAL_FINANCE_WEEK:6:2026-10-05:2026-10-11',
+        clientUuid: 'INTERNAL_FINANCE_WEEK:4:6:2026-10-05:2026-10-11',
       }),
       7,
     );
@@ -373,6 +373,12 @@ describe('InternalFinanceService', () => {
 
   it('prepares a warehouse batch only from entries ticked by both roles', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
+    // Thứ tự đếm: thuộc batch khác, đã chi, chưa đủ tick.
+    const count = jest
+      .fn()
+      .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(5);
     const { service, authService } = makeService({
       branch: {
         findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
@@ -380,7 +386,7 @@ describe('InternalFinanceService', () => {
       internalFinanceWeeklyBatch: {
         findUnique: jest.fn().mockResolvedValue(null),
       },
-      internalFinanceEntry: { findMany },
+      internalFinanceEntry: { findMany, count },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
       'warehouse_expense:prepare',
@@ -390,7 +396,9 @@ describe('InternalFinanceService', () => {
         { branchId: 6, weekStart: '2026-10-05', weekEnd: '2026-10-11' },
         { id: 7, roles: [] },
       ),
-    ).rejects.toThrow('Không có khoản chi đủ điều kiện');
+    ).rejects.toThrow(
+      'Không có khoản chi đủ điều kiện để tổng hợp tuần 05/10/2026–11/10/2026: 5 phiếu chưa đủ tick Quản lý kho/Kế toán kho, 3 phiếu đã chi',
+    );
     expect(findMany.mock.calls[0][0].where).toMatchObject({
       status: { in: ['MANAGER_APPROVED', 'READY_FOR_WEEKLY_APPROVAL'] },
       managerReviewedAt: { not: null },
@@ -398,6 +406,226 @@ describe('InternalFinanceService', () => {
     });
     // Dòng đồng bộ về cũng được gom khi đã đủ hai tick.
     expect(findMany.mock.calls[0][0].where.sourceType).toBeUndefined();
+  });
+
+  describe('cancelWarehouseExpense', () => {
+    const open = {
+      id: 9,
+      branchId: 6,
+      direction: 'EXPENSE',
+      status: 'MANAGER_APPROVED',
+      cashIssued: false,
+      cashFlowId: null,
+      weeklyBatchId: null,
+      weeklyBatch: null,
+    };
+    const setup = (entry: any, permissions = ['warehouse_expense:cancel']) => {
+      const update = jest.fn().mockResolvedValue({ id: entry.id });
+      const reviewCreate = jest.fn();
+      const ctx = makeService({
+        internalFinanceEntry: {
+          findUnique: jest.fn().mockResolvedValue(entry),
+          update,
+        },
+        internalFinanceReview: { create: reviewCreate },
+      });
+      ctx.authService.getPermissionsForBranch.mockResolvedValue(permissions);
+      return { ...ctx, update, reviewCreate };
+    };
+    const user = { id: 7, roles: [] };
+
+    it('cancels an open entry with reason, canceller and history', async () => {
+      const { service, update, reviewCreate, internalFund } = setup(open);
+      await service.cancelWarehouseExpense(9, user, '  Sai số tiền ');
+      expect(internalFund.lockBranch).toHaveBeenCalled();
+      expect(update.mock.calls[0][0].data).toMatchObject({
+        status: 'CANCELLED',
+        cancelReason: 'Sai số tiền',
+        cancelledBy: 7,
+        cancelledAt: expect.any(Date),
+      });
+      expect(reviewCreate.mock.calls[0][0].data).toMatchObject({
+        entryId: 9,
+        decision: 'CANCEL',
+        reason: 'Sai số tiền',
+        reviewerId: 7,
+      });
+    });
+
+    it('detaches an entry from a batch not yet sent to Lark', async () => {
+      const entry = {
+        ...open,
+        weeklyBatchId: 3,
+        weeklyBatch: { status: 'READY' },
+      };
+      const { service, fundLedger } = setup(entry);
+      await service.cancelWarehouseExpense(9, user, 'Trùng phiếu');
+      expect(fundLedger.detachFromBatch).toHaveBeenCalledWith(
+        expect.anything(),
+        entry,
+      );
+    });
+
+    it.each([
+      ['an issued entry', { cashIssued: true }, 'hủy giao dịch ở Quỹ nội bộ'],
+      [
+        'an entry in a submitted weekly approval',
+        { weeklyBatchId: 3, weeklyBatch: { status: 'IN_APPROVAL' } },
+        'Approval tuần',
+      ],
+      ['a cancelled entry', { status: 'CANCELLED' }, 'đã được hủy'],
+    ])('refuses %s', async (_label, patch, message) => {
+      const { service, update } = setup({ ...open, ...patch });
+      await expect(
+        service.cancelWarehouseExpense(9, user, 'Lý do'),
+      ).rejects.toThrow(message);
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('requires a reason and the cancel permission', async () => {
+      const { service } = setup(open);
+      await expect(
+        service.cancelWarehouseExpense(9, user, '   '),
+      ).rejects.toThrow('lý do');
+      const denied = setup(open, ['warehouse_expense:view']);
+      await expect(
+        denied.service.cancelWarehouseExpense(9, user, 'Lý do'),
+      ).rejects.toThrow('Không có quyền');
+    });
+  });
+
+  it('hides cancelled expenses unless filtered or searched', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service, authService } = makeService({
+      internalFinanceEntry: {
+        findMany,
+        count: jest.fn().mockResolvedValue(0),
+      },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:view',
+    ]);
+    const user = { id: 7, roles: [] };
+    const hidden = { status: { not: 'CANCELLED' } };
+    await service.listWarehouseExpenses({} as any, user);
+    expect(findMany.mock.calls[0][0].where.AND).toContainEqual(hidden);
+    await service.listWarehouseExpenses({ status: 'CANCELLED' } as any, user);
+    expect(findMany.mock.calls[1][0].where.AND).not.toContainEqual(hidden);
+    await service.listWarehouseExpenses(
+      { search: 'TCNB-CHI-HN-1' } as any,
+      user,
+    );
+    expect(findMany.mock.calls[2][0].where.AND).not.toContainEqual(hidden);
+  });
+
+  describe('cancelWarehouseExpenseBatch', () => {
+    const setup = (batch: any, permissions = ['warehouse_expense:prepare']) => {
+      const updateMany = jest.fn();
+      const remove = jest.fn();
+      const ctx = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(batch),
+          delete: remove,
+        },
+        internalFinanceEntry: {
+          count: jest.fn().mockResolvedValue(3),
+          updateMany,
+        },
+      });
+      ctx.authService.getPermissionsForBranch.mockResolvedValue(permissions);
+      return { ...ctx, updateMany, remove };
+    };
+    const user = { id: 7, roles: [] };
+
+    it('releases entries of a batch not yet sent to Lark and deletes it', async () => {
+      const { service, updateMany, remove, internalFund } = setup({
+        id: 4,
+        code: 'TUAN-4',
+        branchId: 6,
+        status: 'READY',
+        approvalRequest: null,
+      });
+      expect(await service.cancelWarehouseExpenseBatch(4, user)).toEqual({
+        id: 4,
+        code: 'TUAN-4',
+        released: 3,
+      });
+      expect(internalFund.lockBranch).toHaveBeenCalled();
+      expect(updateMany).toHaveBeenCalledWith({
+        where: {
+          weeklyBatchId: 4,
+          cashIssued: false,
+          managerReviewedAt: { not: null },
+          accountantReviewedAt: { not: null },
+        },
+        data: { status: 'MANAGER_APPROVED' },
+      });
+      expect(updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { status: 'PENDING_ACCOUNTANT' },
+        }),
+      );
+      expect(updateMany).toHaveBeenLastCalledWith({
+        where: { weeklyBatchId: 4 },
+        data: { weeklyBatchId: null },
+      });
+      expect(remove).toHaveBeenCalledWith({ where: { id: 4 } });
+    });
+
+    it.each(['CANCELED', 'REJECTED', 'DELETED', 'REVERTED'])(
+      'allows cancelling when the Lark Approval is %s',
+      async (approvalStatus) => {
+        const { service, remove } = setup({
+          id: 4,
+          code: 'TUAN-4',
+          branchId: 1,
+          status: 'REJECTED',
+          approvalRequest: { status: approvalStatus },
+        });
+        await service.cancelWarehouseExpenseBatch(4, user);
+        expect(remove).toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['IN_APPROVAL', { status: 'PENDING' }],
+      ['APPROVED', { status: 'APPROVED' }],
+      ['IN_APPROVAL', null],
+      ['REJECTED', { status: 'PENDING' }],
+    ])(
+      'refuses a batch %s with Approval %j',
+      async (status, approvalRequest) => {
+        const { service, updateMany, remove } = setup({
+          id: 4,
+          code: 'TUAN-4',
+          branchId: 6,
+          status,
+          approvalRequest,
+        });
+        await expect(
+          service.cancelWarehouseExpenseBatch(4, user),
+        ).rejects.toThrow('không thể hủy batch');
+        expect(updateMany).not.toHaveBeenCalled();
+        expect(remove).not.toHaveBeenCalled();
+      },
+    );
+
+    it('requires the prepare permission', async () => {
+      const { service, remove } = setup(
+        {
+          id: 4,
+          code: 'TUAN-4',
+          branchId: 6,
+          status: 'READY',
+          approvalRequest: null,
+        },
+        ['warehouse_expense:view'],
+      );
+      await expect(
+        service.cancelWarehouseExpenseBatch(4, user),
+      ).rejects.toThrow();
+      expect(remove).not.toHaveBeenCalled();
+    });
   });
 
   it('cancels packing-slip entries, asking about cashflows only when a receipt exists', async () => {
@@ -1011,6 +1239,59 @@ describe('InternalFinanceService', () => {
         (entry) => entry.category === 'CUSTOMER_RECEIPT',
       ),
     ).toBe(false);
+  });
+
+  it('reports fee entries locked in a weekly batch when the packing slip changes', async () => {
+    const db = memoryFinanceDb();
+    const { service } = makeService();
+    const slip = {
+      id: 30,
+      code: 'BD-30',
+      branchId: 6,
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+      paymentMethod: 'transfer',
+      cashAmount: 0,
+      hasFeeGuiBen: true,
+      feeGuiBen: 20000,
+      hasFeeGrab: false,
+      feeGrab: 0,
+      hasCuocGuiHang: false,
+      cuocGuiHang: 0,
+      hasCuocNhanHang: false,
+      cuocNhanHang: 0,
+      invoices: [],
+      expenseFiles: [],
+      images: [],
+    };
+    await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7);
+    const fee = [...db.entries.values()][0];
+    Object.assign(fee, {
+      weeklyBatchId: 3,
+      weeklyBatch: { code: 'TCNB-TUAN-HN-W41', status: 'READY' },
+      attachments: [],
+    });
+
+    // Không đổi gì: không báo.
+    expect(
+      await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7),
+    ).toEqual({ locked: [] });
+
+    const result = await service.syncPackingSlipEntriesInTransaction(
+      db as any,
+      {
+        ...slip,
+        expenseFiles: [{ fileUrl: 'https://cdn/hoa-don.jpg' }],
+      },
+      7,
+    );
+    expect(result.locked).toEqual([
+      {
+        code: fee.code,
+        reason: expect.stringContaining('TCNB-TUAN-HN-W41'),
+      },
+    ]);
+    // Phiếu chi giữ nguyên khi đang khóa.
+    expect(fee.attachments).toEqual([]);
   });
 
   it('updates an open cash receipt, keeps a posted one, and cancels when cash is removed', async () => {
