@@ -8,7 +8,6 @@ import {
 import {
   DashboardService,
   RangeKey,
-  FinRangeKey,
   PeriodKey,
   TopMetric,
   CategoryDimension,
@@ -105,13 +104,13 @@ export class DashboardController {
 
   @Get('finance')
   @ApiOperation({ summary: 'Debt, COD and aging buckets' })
-  @ApiQuery({ name: 'finRange', required: false })
+  @ApiQuery({ name: 'period', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
   getFinance(
-    @Query('finRange') finRange?: FinRangeKey,
+    @Query('period') period?: PeriodKey | 'all',
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
   ) {
-    return this.dashboardService.getFinance(finRange || 'all', branchId);
+    return this.dashboardService.getFinance(period || 'all', branchId);
   }
 
   @Get('tasks')

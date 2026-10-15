@@ -643,7 +643,11 @@ export class OrdersService {
           : dto.discountAmount || 0;
 
       // Snapshot địa chỉ cũ (3 cấp) + mới (2 cấp) từ customer_addresses để shipper xem cả hai.
-      const addrSnapshot = await resolveDeliveryAddress(tx, dto.customerId);
+      const addrSnapshot = await resolveDeliveryAddress(
+        tx,
+        dto.customerId,
+        dto.delivery,
+      );
 
       const order = await tx.order.create({
         data: {

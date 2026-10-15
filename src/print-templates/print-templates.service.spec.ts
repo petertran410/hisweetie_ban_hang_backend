@@ -212,6 +212,119 @@ describe('PrintTemplatesService', () => {
     });
   });
 
+  describe('địa chỉ cũ giao hàng', () => {
+    const vars = (delivery: any, customer?: any) =>
+      (createService() as any).deliveryVars(delivery, customer);
+
+    it('đủ 3 cấp phường / quận / tỉnh cũ → hiện dòng địa chỉ cũ', () => {
+      const v = vars({
+        address: 'Ngõ 169 Kim Mã',
+        wardName: 'Phường Giảng Võ',
+        locationName: 'Thành phố Hà Nội',
+        oldWardName: 'Phường Kim Mã',
+        oldDistrictName: 'Quận Ba Đình',
+        oldCityName: 'Thành phố Hà Nội',
+      });
+      expect(v.Dia_Chi_Cu_Giao_Hang).toBe(
+        'Phường Kim Mã, Quận Ba Đình, Thành phố Hà Nội',
+      );
+      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toBe(
+        '<br>(Địa chỉ cũ: Phường Kim Mã, Quận Ba Đình, Thành phố Hà Nội)',
+      );
+    });
+
+    it('thiếu cấp nào (vd chỉ còn tên phường) → coi như không có địa chỉ cũ', () => {
+      const v = vars({
+        address: 'Ngõ 169 Kim Mã',
+        wardName: 'Phường Giảng Võ',
+        locationName: 'Thành phố Hà Nội',
+        oldWardName: 'Phường Kim Mã',
+      });
+      expect(v.Dia_Chi_Cu_Giao_Hang).toBe('');
+      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toBe('');
+    });
+
+    it('thiếu delivery → lấy địa chỉ cũ từ địa chỉ mặc định của khách', () => {
+      const v = vars(null, {
+        addresses: [
+          {
+            address: '230/5 Võ Thành Trang',
+            wardName: 'Phường 11',
+            districtName: 'Quận Tân Bình',
+            cityName: 'Thành phố Hồ Chí Minh',
+            newWardName: 'Phường Tân Hòa',
+            newCityName: 'Thành phố Hồ Chí Minh',
+          },
+        ],
+      });
+      expect(v.Dia_Chi_Cu_Giao_Hang).toBe(
+        'Phường 11, Quận Tân Bình, Thành phố Hồ Chí Minh',
+      );
+    });
+
+    it('ưu tiên địa chỉ hiện tại của khách khớp với địa chỉ giao hàng', () => {
+      // HD131758: snapshot trên HĐ thiếu phường cũ; địa chỉ khách đã sửa đủ 3 cấp.
+      const v = vars(
+        {
+          address: 'Số 252 Đại Từ',
+          wardName: 'Phường Đại Kim',
+          locationName: 'Thành phố Hà Nội',
+          oldDistrictName: 'Huyện Thanh Trì',
+          oldCityName: 'Thành phố Hà Nội',
+        },
+        {
+          addresses: [
+            {
+              address: '225 Phố Đại Từ',
+              isDefault: true,
+              wardName: 'Phường Đại Kim',
+              districtName: 'Quận Hoàng Mai',
+              cityName: 'Thành phố Hà Nội',
+              newWardName: 'Phường Định Công',
+              newCityName: 'Thành phố Hà Nội',
+            },
+          ],
+        },
+      );
+      expect(v.Dia_Chi_Cu_Giao_Hang).toBe(
+        'Phường Đại Kim, Quận Hoàng Mai, Thành phố Hà Nội',
+      );
+    });
+
+    it('khách chỉ còn sót tên phường cũ → không hiện', () => {
+      const v = vars(
+        {
+          address: 'Ngõ 169 Kim Mã',
+          wardName: 'Phường Giảng Võ',
+          oldWardName: 'Phường Kim Mã',
+        },
+        {
+          addresses: [
+            {
+              address: 'Ngõ 169 Kim Mã',
+              isDefault: true,
+              wardName: 'Phường Kim Mã',
+              newWardName: 'Phường Giảng Võ',
+            },
+          ],
+        },
+      );
+      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toBe('');
+    });
+
+    it('escape HTML trong dòng địa chỉ cũ', () => {
+      const v = vars({
+        address: 'A',
+        wardName: 'Mới',
+        locationName: 'T',
+        oldWardName: '<b>Cũ</b>',
+        oldDistrictName: 'Q',
+        oldCityName: 'T',
+      });
+      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toContain('&lt;b&gt;Cũ&lt;/b&gt;');
+    });
+  });
+
   describe('shipping fee print variables', () => {
     const baseEntity = {
       code: '',
