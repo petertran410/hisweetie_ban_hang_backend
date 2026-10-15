@@ -265,9 +265,10 @@ export class InternalFinanceController {
   @ApiOperation({ summary: 'Cancel a warehouse expense weekly batch' })
   cancelWarehouseExpenseBatch(
     @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelWarehouseExpenseDto,
     @CurrentUser() user: any,
   ) {
-    return this.service.cancelWarehouseExpenseBatch(id, user);
+    return this.service.cancelWarehouseExpenseBatch(id, user, dto.reason);
   }
 
   @Put('warehouse-expenses/:id/cancel')

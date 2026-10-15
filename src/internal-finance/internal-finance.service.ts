@@ -74,6 +74,12 @@ import {
 } from '../internal-fund/internal-fund-ledger.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { VEHICLE_CHECK } from '../vehicles/vehicles.constants';
+import { cancelWeeklyBatchInTx } from './weekly-batch-cancel';
+import {
+  approvalHistory,
+  endingStep,
+  type ApprovalHistoryItem,
+} from './approval-history';
 
 type DbClient = PrismaService | any;
 
@@ -95,6 +101,23 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
  * ngày bắt đầu dùng POS, để không kéo dữ liệu lịch sử từ Lark vào batch mới.
  */
 const CARRY_OVER_FROM = new Date('2026-10-13T00:00:00+07:00');
+
+// Batch đã hủy không còn phiếu: số phiếu hiển thị là số phiếu lúc hủy.
+const withCancelledCount = <
+  T extends {
+    status: string;
+    cancelledEntryIds: number[];
+    _count: { entries: number };
+  },
+>(
+  batch: T,
+): T =>
+  batch.status === INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED
+    ? { ...batch, _count: { entries: batch.cancelledEntryIds.length } }
+    : batch;
+
+// Đơn Lark kết thúc không duyệt: hiện lý do (bước từ chối / thu hồi cuối).
+const ENDED_APPROVAL_STATUSES = ['REJECTED', 'CANCELED', 'DELETED', 'REVERTED'];
 
 // Approval Lark đã kết thúc mà không duyệt: batch tuần được phép hủy.
 const CANCELLABLE_WEEKLY_APPROVAL_STATUSES = [
@@ -146,11 +169,17 @@ export class InternalFinanceService {
     const limit = Math.min(query.limit || 50, 100);
     const page = query.page || 1;
     const where = this.buildEntryWhere(query);
+    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
+    // Sắp xếp theo cột (Thời gian / Số tiền); cùng giá trị thì phiếu mới trước.
+    const orderBy: Prisma.InternalFinanceEntryOrderByWithRelationInput[] =
+      query.orderBy === 'amount'
+        ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
+        : [{ occurredAt: direction }, { id: direction }];
 
     const [data, total] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where,
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        orderBy,
         skip: (page - 1) * limit,
         take: limit,
         include: {
@@ -2000,18 +2029,32 @@ export class InternalFinanceService {
     const where = this.weeklyBatchWhere(query);
     const page = Math.max(1, query.page || 1);
     const limit = Math.min(query.limit || 20, 100);
-    const [data, summary] = await Promise.all([
+    const [data, summary, active] = await Promise.all([
       this.loadWeeklyBatches(where, (page - 1) * limit, limit),
       this.prisma.internalFinanceWeeklyBatch.aggregate({
         where,
         _count: { _all: true },
         _sum: { totalAmount: true },
       }),
+      // Số batch / tổng chi đầu trang không tính batch đã hủy (trừ khi đang lọc
+      // đúng "Đã hủy"); danh sách vẫn hiện batch đã hủy.
+      query.status
+        ? null
+        : this.prisma.internalFinanceWeeklyBatch.aggregate({
+            where: {
+              ...where,
+              status: { not: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED },
+            },
+            _count: { _all: true },
+            _sum: { totalAmount: true },
+          }),
     ]);
+    const counted = active || summary;
     return {
       data,
       total: summary._count._all,
-      totalAmount: Number(summary._sum.totalAmount || 0),
+      batchCount: counted._count._all,
+      totalAmount: Number(counted._sum.totalAmount || 0),
       page,
       limit,
     };
@@ -2042,6 +2085,7 @@ export class InternalFinanceService {
       take,
       include: {
         branch: { select: { id: true, name: true } },
+        canceller: { select: { id: true, name: true } },
         approvalRequest: {
           select: {
             id: true,
@@ -2054,6 +2098,15 @@ export class InternalFinanceService {
       },
     });
     const ids = batches.map((batch) => batch.id);
+    const notes = await this.approvalNotes(
+      batches
+        .map((batch) => batch.approvalRequest)
+        .filter(
+          (request): request is NonNullable<typeof request> =>
+            !!request && ENDED_APPROVAL_STATUSES.includes(request.status),
+        )
+        .map((request) => request.id),
+    );
     if (!ids.length) return [];
     const cashIssuedRows = await this.prisma.internalFinanceEntry.groupBy({
       by: ['weeklyBatchId'],
@@ -2067,43 +2120,119 @@ export class InternalFinanceService {
       cashIssuedRows.map((row) => [row.weeklyBatchId, row._count._all]),
     );
     return batches.map((batch) => ({
-      ...batch,
+      ...withCancelledCount(batch),
       cashIssuedCount: cashIssuedByBatch.get(batch.id) || 0,
+      approvalNote: batch.approvalRequest
+        ? notes.get(batch.approvalRequest.id) || null
+        : null,
     }));
   }
 
+  /** Bước từ chối / thu hồi cuối cùng của các đơn Lark kết thúc không duyệt. */
+  private async approvalNotes(requestIds: number[]) {
+    const notes = new Map<
+      number,
+      Omit<ApprovalHistoryItem, 'openId'> & {
+        userName: string | null;
+      }
+    >();
+    if (!requestIds.length) return notes;
+    const requests = await this.prisma.approvalRequest.findMany({
+      where: { id: { in: requestIds } },
+      select: { id: true, detailSnapshot: true },
+    });
+    const steps = requests
+      .map((request) => ({
+        id: request.id,
+        step: endingStep(approvalHistory(request.detailSnapshot)),
+      }))
+      .filter((row) => row.step);
+    const names = await this.larkUserNames(
+      steps.map((row) => row.step!.openId),
+    );
+    for (const { id, step } of steps) {
+      const { openId, ...rest } = step!;
+      notes.set(id, { ...rest, userName: names.get(openId || '') || null });
+    }
+    return notes;
+  }
+
+  /** Lịch sử duyệt đầy đủ của một đơn, tên người lấy theo tài khoản POS. */
+  private async approvalTimeline(detailSnapshot: unknown) {
+    const history = approvalHistory(detailSnapshot);
+    const names = await this.larkUserNames(history.map((item) => item.openId));
+    return history.map(({ openId, ...rest }) => ({
+      ...rest,
+      userName: names.get(openId || '') || null,
+    }));
+  }
+
+  private async larkUserNames(openIds: Array<string | null>) {
+    const ids = [...new Set(openIds.filter((id): id is string => !!id))];
+    if (!ids.length) return new Map<string, string>();
+    const users = await this.prisma.user.findMany({
+      where: { larkUserId: { in: ids } },
+      select: { larkUserId: true, name: true },
+    });
+    return new Map(
+      users
+        .filter((user) => user.larkUserId)
+        .map((user) => [user.larkUserId!, user.name]),
+    );
+  }
+
   async findWeeklyBatch(id: number) {
+    const entryQuery = {
+      orderBy: [{ occurredAt: 'asc' as const }, { id: 'asc' as const }],
+      include: {
+        branch: { select: { id: true, name: true } },
+        packingSlip: { select: { id: true, code: true } },
+        cashIssuer: { select: { id: true, name: true } },
+        payer: { select: { id: true, name: true } },
+        vehicle: { select: { id: true, label: true, plate: true } },
+        attachments: true,
+        invoiceLinks: {
+          include: { invoice: { select: { id: true, code: true } } },
+        },
+      },
+    };
     const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
       where: { id },
       include: {
         branch: { select: { id: true, name: true } },
+        canceller: { select: { id: true, name: true } },
         approvalRequest: {
           select: {
             id: true,
             status: true,
             instanceCode: true,
             currentNode: true,
+            detailSnapshot: true,
           },
         },
-        entries: {
-          orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
-          include: {
-            branch: { select: { id: true, name: true } },
-            packingSlip: { select: { id: true, code: true } },
-            cashIssuer: { select: { id: true, name: true } },
-            payer: { select: { id: true, name: true } },
-            vehicle: { select: { id: true, label: true, plate: true } },
-            attachments: true,
-            invoiceLinks: {
-              include: { invoice: { select: { id: true, code: true } } },
-            },
-          },
-        },
+        entries: entryQuery,
         _count: { select: { entries: true } },
       },
     });
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
-    return batch;
+    const { approvalRequest, ...rest } = batch;
+    const { detailSnapshot, ...request } = approvalRequest || {};
+    // Batch đã hủy: phiếu đã được trả về, hiện lại các phiếu lúc hủy.
+    const entries =
+      batch.status === INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED
+        ? await this.prisma.internalFinanceEntry.findMany({
+            where: { id: { in: batch.cancelledEntryIds } },
+            ...entryQuery,
+          })
+        : batch.entries;
+    return {
+      ...withCancelledCount(rest),
+      entries,
+      approvalRequest: approvalRequest ? request : null,
+      approvalHistory: approvalRequest
+        ? await this.approvalTimeline(detailSnapshot)
+        : [],
+    };
   }
 
   async prepareWeeklyBatch(dto: PrepareWeeklyBatchDto, userId: number) {
@@ -2163,13 +2292,13 @@ export class InternalFinanceService {
 
     return this.prisma.$transaction(async (tx) => {
       await this.internalFund.lockBranch(tx, [dto.branchId]);
-      const existing = await tx.internalFinanceWeeklyBatch.findUnique({
+      // Batch đã hủy được giữ lại; tuần đó gom lại thì tạo batch mới.
+      const existing = await tx.internalFinanceWeeklyBatch.findFirst({
         where: {
-          branchId_weekStart_weekEnd: {
-            branchId: dto.branchId,
-            weekStart,
-            weekEnd,
-          },
+          branchId: dto.branchId,
+          weekStart,
+          weekEnd,
+          status: { not: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED },
         },
         include: {
           entries: true,
@@ -2285,37 +2414,35 @@ export class InternalFinanceService {
           });
       }
 
-      const batch = await tx.internalFinanceWeeklyBatch.upsert({
-        where: {
-          branchId_weekStart_weekEnd: {
-            branchId: dto.branchId,
-            weekStart,
-            weekEnd,
-          },
-        },
-        create: {
-          code,
-          branchId: dto.branchId,
-          weekStart,
-          weekEnd,
-          totalAmount,
-          status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
-          preparedAt: new Date(),
-          createdBy: userId,
-          entries: {
-            connect: entries.map((entry) => ({ id: entry.id })),
-          },
-        },
-        update: {
-          totalAmount,
-          preparedAt: new Date(),
-          status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
-          entries: {
-            set: entries.map((entry) => ({ id: entry.id })),
-          },
-        },
-        include: { entries: true, branch: true },
-      });
+      const batch = existing
+        ? await tx.internalFinanceWeeklyBatch.update({
+            where: { id: existing.id },
+            data: {
+              totalAmount,
+              preparedAt: new Date(),
+              status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
+              entries: {
+                set: entries.map((entry) => ({ id: entry.id })),
+              },
+            },
+            include: { entries: true, branch: true },
+          })
+        : await tx.internalFinanceWeeklyBatch.create({
+            data: {
+              code: await this.uniqueBatchCode(tx, code),
+              branchId: dto.branchId,
+              weekStart,
+              weekEnd,
+              totalAmount,
+              status: INTERNAL_FINANCE_WEEKLY_STATUS.READY,
+              preparedAt: new Date(),
+              createdBy: userId,
+              entries: {
+                connect: entries.map((entry) => ({ id: entry.id })),
+              },
+            },
+            include: { entries: true, branch: true },
+          });
 
       await tx.internalFinanceEntry.updateMany({
         where: { id: { in: entries.map((entry) => entry.id) } },
@@ -2327,6 +2454,22 @@ export class InternalFinanceService {
 
       return batch;
     });
+  }
+
+  /** Mã batch đã có (batch cũ đã hủy của cùng tuần) thì thêm đuôi -L2, -L3… */
+  private async uniqueBatchCode(tx: Prisma.TransactionClient, base: string) {
+    const taken = new Set(
+      (
+        await tx.internalFinanceWeeklyBatch.findMany({
+          where: { code: { startsWith: base } },
+          select: { code: true },
+        })
+      ).map((row) => row.code),
+    );
+    if (!taken.has(base)) return base;
+    let round = 2;
+    while (taken.has(`${base}-L${round}`)) round++;
+    return `${base}-L${round}`;
   }
 
   // Kho: nói rõ vì sao khoảng ngày không gom được phiếu nào.
@@ -2769,9 +2912,14 @@ export class InternalFinanceService {
   }
 
   // Hủy batch chưa gửi Lark, hoặc có Approval Lark đã kết thúc mà không duyệt:
-  // trả phiếu về Phiếu chi kho (giữ tick, Đã chi, quỹ) rồi xóa batch để tổng
-  // hợp lại. Approval đang duyệt hoặc đã duyệt thì không hủy được.
-  async cancelWarehouseExpenseBatch(batchId: number, user: any) {
+  // trả phiếu về Phiếu chi kho (giữ tick, Đã chi, quỹ) để tổng hợp lại; batch
+  // giữ lại với trạng thái "Đã hủy". Approval đang duyệt / đã duyệt thì không hủy.
+  async cancelWarehouseExpenseBatch(
+    batchId: number,
+    user: any,
+    reason: string,
+  ) {
+    const trimmed = this.requireCancelReason(reason);
     const found = await this.prisma.internalFinanceWeeklyBatch.findUnique({
       where: { id: batchId },
       select: { branchId: true },
@@ -2791,6 +2939,8 @@ export class InternalFinanceService {
         },
       });
       if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
+      if (batch.status === INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED)
+        throw new BadRequestException('Batch tuần đã hủy');
       const approvalStatus = batch.approvalRequest?.status;
       if (
         ['IN_APPROVAL', 'APPROVED'].includes(batch.status) ||
@@ -2802,31 +2952,10 @@ export class InternalFinanceService {
         );
       }
 
-      const released = await tx.internalFinanceEntry.count({
-        where: { weeklyBatchId: batch.id },
+      const released = await cancelWeeklyBatchInTx(tx, batch.id, {
+        cancelledBy: user.id,
+        reason: trimmed,
       });
-      await tx.internalFinanceEntry.updateMany({
-        where: {
-          weeklyBatchId: batch.id,
-          cashIssued: false,
-          managerReviewedAt: { not: null },
-          accountantReviewedAt: { not: null },
-        },
-        data: { status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED },
-      });
-      await tx.internalFinanceEntry.updateMany({
-        where: {
-          weeklyBatchId: batch.id,
-          cashIssued: false,
-          OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
-        },
-        data: { status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT },
-      });
-      await tx.internalFinanceEntry.updateMany({
-        where: { weeklyBatchId: batch.id },
-        data: { weeklyBatchId: null },
-      });
-      await tx.internalFinanceWeeklyBatch.delete({ where: { id: batch.id } });
       return { id: batch.id, code: batch.code, released };
     });
   }

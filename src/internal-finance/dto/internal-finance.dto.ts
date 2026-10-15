@@ -145,6 +145,14 @@ export class InternalFinanceQueryDto {
   @Min(1)
   @Type(() => Number)
   limit = 50;
+
+  @IsOptional()
+  @IsIn(['occurredAt', 'amount'])
+  orderBy?: 'occurredAt' | 'amount';
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  orderDirection?: 'asc' | 'desc';
 }
 
 export class CreateManualReceiptDto {

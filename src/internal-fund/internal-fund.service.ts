@@ -220,12 +220,18 @@ export class InternalFundService {
     };
     const page = query.page || 1,
       limit = Math.min(query.limit || 50, 100);
-    const [data, total] = await Promise.all([
+    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
+    // Sắp xếp theo cột (Ngày ghi quỹ / Số tiền); cùng giá trị thì dòng mới trước.
+    const orderBy: Prisma.InternalFundTransactionOrderByWithRelationInput[] =
+      query.orderBy === 'amount'
+        ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
+        : [{ occurredAt: direction }, { id: direction }];
+    const [data, total, sums] = await Promise.all([
       this.prisma.internalFundTransaction.findMany({
         where,
         skip: (page - 1) * limit,
         take: limit,
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        orderBy,
         include: {
           branch: { select: { id: true, name: true } },
           transfer: true,
@@ -248,8 +254,22 @@ export class InternalFundService {
         },
       }),
       this.prisma.internalFundTransaction.count({ where }),
+      this.prisma.internalFundTransaction.groupBy({
+        by: ['transactionType'],
+        where,
+        _sum: { amount: true },
+      }),
     ]);
-    return { data, total, page, limit };
+    // Tổng của toàn bộ dòng khớp bộ lọc: tiền vào (thu, chuyển đến) và tiền ra.
+    const sumOf = (types: string[]) =>
+      sums
+        .filter((row) => types.includes(row.transactionType))
+        .reduce((sum, row) => sum + Number(row._sum.amount || 0), 0);
+    const totals = {
+      receipt: sumOf(['RECEIPT', 'TRANSFER_IN']),
+      expense: sumOf(['EXPENSE', 'TRANSFER_OUT']),
+    };
+    return { data, total, page, limit, totals };
   }
 
   async summary(query: InternalFundQueryDto, user: InternalFundActor) {

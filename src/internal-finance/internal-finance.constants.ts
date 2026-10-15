@@ -99,6 +99,7 @@ export const INTERNAL_FINANCE_WEEKLY_STATUS = {
   APPROVED: 'APPROVED',
   REJECTED: 'REJECTED',
   POSTED: 'POSTED',
+  CANCELLED: 'CANCELLED',
 } as const;
 
 export const INTERNAL_FINANCE_BRANCH_IDS = [1, 4, 6, 7] as const;

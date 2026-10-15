@@ -35,6 +35,11 @@ import {
 import type { CreateApprovalRequestDto } from './dto/create-approval-request.dto';
 import type { ApprovalRequestQueryDto } from './dto/approval-request-query.dto';
 import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
+import { cancelWeeklyBatchInTx } from '../internal-finance/weekly-batch-cancel';
+import {
+  approvalHistory,
+  endingStep,
+} from '../internal-finance/approval-history';
 import {
   LarkApprovalMirrorService,
   larkTime,
@@ -1347,10 +1352,39 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   ) {
     const batch = await tx.internalFinanceWeeklyBatch.findUnique({
       where: { id: request.sourceId },
-      select: { branchId: true, createdBy: true },
+      select: { branchId: true, createdBy: true, status: true },
     });
     if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
     if (updateRequest) await updateRequest();
+    // Batch đã hủy: chỉ ghi nhận trạng thái đơn, không đụng phiếu.
+    if (batch?.status === 'CANCELLED') return;
+
+    // Lark từ chối / thu hồi / xóa đơn chưa duyệt: tự hủy batch như nút Hủy
+    // (giữ batch "Đã hủy" kèm lý do, phiếu trả về Phiếu chi kho để gom lại).
+    if (
+      batch &&
+      !wasApproved &&
+      ['REJECTED', 'CANCELED', 'DELETED'].includes(status)
+    ) {
+      const snapshot = await tx.approvalRequest.findUnique({
+        where: { id: request.id },
+        select: { detailSnapshot: true },
+      });
+      const comment = endingStep(
+        approvalHistory(snapshot?.detailSnapshot),
+      )?.comment;
+      const label =
+        status === 'REJECTED'
+          ? 'Lark Approval từ chối'
+          : status === 'CANCELED'
+            ? 'Người gửi thu hồi Approval Lark'
+            : 'Approval Lark đã bị xóa';
+      await cancelWeeklyBatchInTx(tx, request.sourceId, {
+        cancelledBy: null,
+        reason: comment ? `${label}: ${comment}` : label,
+      });
+      return;
+    }
 
     // Tuần Kho HN đồng bộ từ Lark được gắn phiếu theo khoảng ngày: chỉ phiếu đã
     // được Quản lý kho và Kế toán kho đồng kiểm mới thuộc approval, phiếu còn lại

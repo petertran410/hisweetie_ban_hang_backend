@@ -58,6 +58,14 @@ export class InternalFundQueryDto {
   @Max(100)
   @Type(() => Number)
   limit = 30;
+
+  @IsOptional()
+  @IsIn(['occurredAt', 'amount'])
+  orderBy?: 'occurredAt' | 'amount';
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  orderDirection?: 'asc' | 'desc';
 }
 
 export class CreateInternalFundReceiptApprovalDto {

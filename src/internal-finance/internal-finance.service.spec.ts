@@ -408,21 +408,26 @@ describe('InternalFinanceService', () => {
     const setup = (existing: any = null) => {
       const findMany = jest.fn().mockResolvedValue([{ id: 5, amount: 100 }]);
       const updateMany = jest.fn();
-      const upsert = jest.fn().mockResolvedValue({ id: 9 });
+      const update = jest.fn().mockResolvedValue({ id: 9 });
+      const create = jest.fn().mockResolvedValue({ id: 10 });
+      const findFirst = jest.fn().mockResolvedValue(existing);
+      const codes = jest.fn().mockResolvedValue([]);
       const ctx = makeService({
         branch: {
           findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
         },
         internalFinanceWeeklyBatch: {
-          findUnique: jest.fn().mockResolvedValue(existing),
-          upsert,
+          findFirst,
+          findMany: codes,
+          update,
+          create,
         },
         internalFinanceEntry: { findMany, updateMany },
       });
       ctx.authService.getPermissionsForBranch.mockResolvedValue([
         'weekly_approval:prepare',
       ]);
-      return { ...ctx, findMany, updateMany, upsert };
+      return { ...ctx, findMany, updateMany, update, create, findFirst, codes };
     };
     const user = { id: 7, roles: [] };
     const week = {
@@ -550,6 +555,20 @@ describe('InternalFinanceService', () => {
       });
     });
 
+    it('creates a new batch beside a cancelled one, suffixing a taken code', async () => {
+      const { service, findFirst, create, codes } = setup();
+      codes.mockResolvedValue([
+        { code: 'TCNB-TUAN-HN-2026-W43-2026-10-20-2026-10-26' },
+      ]);
+      await service.prepareWarehouseExpenseBatch(week, user);
+      expect(findFirst.mock.calls[0][0].where.status).toEqual({
+        not: 'CANCELLED',
+      });
+      expect(create.mock.calls[0][0].data.code).toBe(
+        'TCNB-TUAN-HN-2026-W43-2026-10-20-2026-10-26-L2',
+      );
+    });
+
     it('lists carry-over candidates for the preview', async () => {
       const { service, findMany } = setup();
       findMany.mockResolvedValueOnce([
@@ -601,7 +620,7 @@ describe('InternalFinanceService', () => {
         findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
       },
       internalFinanceWeeklyBatch: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
       },
       internalFinanceEntry: { findMany, count },
     });
@@ -857,30 +876,36 @@ describe('InternalFinanceService', () => {
     const setup = (batch: any, permissions = ['weekly_approval:prepare']) => {
       const updateMany = jest.fn();
       const remove = jest.fn();
+      const update = jest.fn();
       const ctx = makeService({
         internalFinanceWeeklyBatch: {
           findUnique: jest.fn().mockResolvedValue(batch),
           delete: remove,
+          update,
         },
         internalFinanceEntry: {
-          count: jest.fn().mockResolvedValue(3),
+          findMany: jest
+            .fn()
+            .mockResolvedValue([{ id: 11 }, { id: 12 }, { id: 13 }]),
           updateMany,
         },
       });
       ctx.authService.getPermissionsForBranch.mockResolvedValue(permissions);
-      return { ...ctx, updateMany, remove };
+      return { ...ctx, updateMany, remove, update };
     };
     const user = { id: 7, roles: [] };
 
-    it('releases entries of a batch not yet sent to Lark and deletes it', async () => {
-      const { service, updateMany, remove, internalFund } = setup({
+    it('releases entries and keeps the batch as CANCELLED with the reason', async () => {
+      const { service, updateMany, remove, update, internalFund } = setup({
         id: 4,
         code: 'TUAN-4',
         branchId: 6,
         status: 'READY',
         approvalRequest: null,
       });
-      expect(await service.cancelWarehouseExpenseBatch(4, user)).toEqual({
+      expect(
+        await service.cancelWarehouseExpenseBatch(4, user, ' Trùng tuần 37 '),
+      ).toEqual({
         id: 4,
         code: 'TUAN-4',
         released: 3,
@@ -904,21 +929,47 @@ describe('InternalFinanceService', () => {
         where: { weeklyBatchId: 4 },
         data: { weeklyBatchId: null },
       });
-      expect(remove).toHaveBeenCalledWith({ where: { id: 4 } });
+      expect(remove).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 4 },
+        data: expect.objectContaining({
+          status: 'CANCELLED',
+          cancelledBy: 7,
+          cancelReason: 'Trùng tuần 37',
+          cancelledEntryIds: [11, 12, 13],
+        }),
+      });
+    });
+
+    it('requires a reason and refuses a batch already cancelled', async () => {
+      const { service, update } = setup({
+        id: 4,
+        code: 'TUAN-4',
+        branchId: 6,
+        status: 'CANCELLED',
+        approvalRequest: null,
+      });
+      await expect(
+        service.cancelWarehouseExpenseBatch(4, user, '  '),
+      ).rejects.toThrow('lý do');
+      await expect(
+        service.cancelWarehouseExpenseBatch(4, user, 'x'),
+      ).rejects.toThrow('đã hủy');
+      expect(update).not.toHaveBeenCalled();
     });
 
     it.each(['CANCELED', 'REJECTED', 'DELETED', 'REVERTED'])(
       'allows cancelling when the Lark Approval is %s',
       async (approvalStatus) => {
-        const { service, remove } = setup({
+        const { service, update } = setup({
           id: 4,
           code: 'TUAN-4',
           branchId: 1,
           status: 'REJECTED',
           approvalRequest: { status: approvalStatus },
         });
-        await service.cancelWarehouseExpenseBatch(4, user);
-        expect(remove).toHaveBeenCalled();
+        await service.cancelWarehouseExpenseBatch(4, user, 'Lark từ chối');
+        expect(update).toHaveBeenCalled();
       },
     );
 
@@ -938,7 +989,7 @@ describe('InternalFinanceService', () => {
           approvalRequest,
         });
         await expect(
-          service.cancelWarehouseExpenseBatch(4, user),
+          service.cancelWarehouseExpenseBatch(4, user, 'x'),
         ).rejects.toThrow('không thể hủy batch');
         expect(updateMany).not.toHaveBeenCalled();
         expect(remove).not.toHaveBeenCalled();
@@ -957,7 +1008,7 @@ describe('InternalFinanceService', () => {
         ['warehouse_expense:view'],
       );
       await expect(
-        service.cancelWarehouseExpenseBatch(4, user),
+        service.cancelWarehouseExpenseBatch(4, user, 'x'),
       ).rejects.toThrow();
       expect(remove).not.toHaveBeenCalled();
     });

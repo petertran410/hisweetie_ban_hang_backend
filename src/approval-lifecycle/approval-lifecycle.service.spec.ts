@@ -707,6 +707,82 @@ describe('ApprovalLifecycleService', () => {
     );
   });
 
+  it('cancels the weekly batch (keeping it) when Lark rejects the approval', async () => {
+    const request: any = {
+      id: 15,
+      instanceCode: 'instance-15',
+      status: 'PENDING',
+      lastEventAt: null,
+      sourceType: 'INTERNAL_FINANCE_WEEKLY',
+      sourceId: 9,
+    };
+    const detail = {
+      status: 'REJECTED',
+      timeline: [
+        { type: 'START', create_time: '1790440000000' },
+        {
+          type: 'REJECT',
+          create_time: '1790440001000',
+          open_id: 'ou_1',
+          comment: 'bị trùng với phiếu tuần 37 đã tính CP',
+        },
+      ],
+    };
+    const { service, prisma, larkClient } = createService({
+      approvalRequest: {
+        findUnique: jest.fn(async () => request),
+        update: jest.fn(async ({ data }: any) => Object.assign(request, data)),
+      },
+    });
+    larkClient.approval.v4.instance.get.mockResolvedValue({
+      code: 0,
+      data: detail,
+    });
+    const batchUpdate = jest.fn();
+    (prisma as any).internalFinanceWeeklyBatch = {
+      findUnique: jest
+        .fn()
+        .mockResolvedValue({
+          branchId: 6,
+          createdBy: 9,
+          status: 'IN_APPROVAL',
+        }),
+      update: batchUpdate,
+      delete: jest.fn(),
+    };
+    const updateMany = jest.fn();
+    (prisma as any).internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+      updateMany,
+    };
+
+    await service.handleInstanceEvent({
+      approval_code: 'E759B9DB-B8EA-4DC6-B309-2E162D94EEF3',
+      instance_code: 'instance-15',
+      status: 'REJECTED',
+      instance_operate_time: '1790440001000',
+      uuid: 'rejected-15',
+    });
+
+    expect(batchUpdate).toHaveBeenCalledWith({
+      where: { id: 9 },
+      data: expect.objectContaining({
+        status: 'CANCELLED',
+        cancelledBy: null,
+        cancelReason:
+          'Lark Approval từ chối: bị trùng với phiếu tuần 37 đã tính CP',
+        cancelledEntryIds: [1, 2],
+      }),
+    });
+    expect(
+      (prisma as any).internalFinanceWeeklyBatch.delete,
+    ).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { weeklyBatchId: 9 },
+      data: { weeklyBatchId: null },
+    });
+  });
+
   it('handles an approval for a week synced from Lark while it was still pending', async () => {
     const request: any = {
       id: 11,

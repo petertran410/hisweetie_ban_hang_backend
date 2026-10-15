@@ -138,6 +138,7 @@ model User {
   createdVehicles                                           Vehicle[]                          @relation("VehicleCreator")
   internalFinanceReviews                                    InternalFinanceReview[]             @relation("InternalFinanceReviewUser")
   createdInternalFinanceBatches                             InternalFinanceWeeklyBatch[]        @relation("InternalFinanceBatchCreator")
+  cancelledInternalFinanceBatches                           InternalFinanceWeeklyBatch[]        @relation("InternalFinanceBatchCanceller")
   createdInternalFinanceAttachments                         InternalFinanceAttachment[]
   createdInternalFundTransactions                           InternalFundTransaction[]           @relation("InternalFundTransactionCreator")
   cancelledInternalFundTransactions                         InternalFundTransaction[]           @relation("InternalFundTransactionCanceller")
@@ -2550,13 +2551,22 @@ model InternalFinanceWeeklyBatch {
   approvalRequestId Int?      @unique
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  // Hủy batch giữ lại dữ liệu: ai hủy (null = tự hủy khi Lark từ chối), lý do
+  // và các phiếu có trong batch lúc hủy (phiếu đã được trả về để gom lại).
+  cancelledAt       DateTime?
+  cancelledBy       Int?
+  cancelReason      String?
+  cancelledEntryIds Int[]     @default([])
 
   branch         Branch           @relation(fields: [branchId], references: [id])
   creator        User             @relation("InternalFinanceBatchCreator", fields: [createdBy], references: [id])
+  canceller      User?            @relation("InternalFinanceBatchCanceller", fields: [cancelledBy], references: [id])
   approvalRequest ApprovalRequest? @relation(fields: [approvalRequestId], references: [id])
   entries        InternalFinanceEntry[]
 
-  @@unique([branchId, weekStart, weekEnd])
+  // Một tuần có thể có nhiều batch (batch đã hủy + batch gom lại), nhưng chỉ
+  // một batch chưa hủy: giữ bằng khóa chi nhánh khi gom tuần.
+  @@index([branchId, weekStart, weekEnd])
   @@index([status, weekStart])
   @@map("internal_finance_weekly_batches")
 }
