@@ -667,6 +667,24 @@ describe('Internal fund ledger', () => {
     expect(String(result.data[0].systemClosingBalance)).toBe('1120');
   });
 
+  it('lists fund rows with their source voucher and finds them by voucher code', async () => {
+    const f = fixture();
+    f.auth.getPermissionsForBranch.mockResolvedValue(['internal_fund:view']);
+    await f.service.listTransactions(
+      { branchId: 6, page: 1, limit: 10, search: 'TCNB-CHI-HN' },
+      { id: 7 },
+    );
+    const args = f.prisma.internalFundTransaction.findMany.mock.calls[0][0];
+    expect(args.include.entry.select).toMatchObject({
+      code: true,
+      occurredAt: true,
+      weeklyBatch: { select: { code: true } },
+    });
+    expect(args.where.OR).toContainEqual({
+      entry: { code: { contains: 'TCNB-CHI-HN', mode: 'insensitive' } },
+    });
+  });
+
   it('rejects cross-branch viewing and cancellation', async () => {
     const f = fixture();
     f.auth.getPermissionsForBranch.mockImplementation(

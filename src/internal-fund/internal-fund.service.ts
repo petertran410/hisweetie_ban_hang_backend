@@ -204,9 +204,17 @@ export class InternalFundService {
         : {}),
       ...(query.search
         ? {
-            OR: ['code', 'description'].map((key) => ({
-              [key]: { contains: query.search, mode: 'insensitive' },
-            })),
+            OR: [
+              ...['code', 'description'].map((key) => ({
+                [key]: { contains: query.search, mode: 'insensitive' },
+              })),
+              // Tìm theo mã phiếu gốc (TCNB-…) của dòng quỹ.
+              {
+                entry: {
+                  code: { contains: query.search, mode: 'insensitive' },
+                },
+              },
+            ] as Prisma.InternalFundTransactionWhereInput[],
           }
         : {}),
     };
@@ -223,6 +231,19 @@ export class InternalFundService {
           transfer: true,
           approvalRequest: {
             select: { id: true, status: true, instanceCode: true },
+          },
+          // Phiếu gốc: quỹ ghi theo ngày tiền ra (vd. ngày duyệt Approval
+          // tuần), phiếu giữ ngày chi thật để đối chiếu.
+          entry: {
+            select: {
+              id: true,
+              code: true,
+              occurredAt: true,
+              direction: true,
+              category: true,
+              sourceType: true,
+              weeklyBatch: { select: { code: true } },
+            },
           },
         },
       }),
