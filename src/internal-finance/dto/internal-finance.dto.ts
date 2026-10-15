@@ -487,6 +487,15 @@ export class PrepareWeeklyBatchDto {
   weekEnd: string;
 }
 
+export class AddWeeklyBatchEntriesDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(200)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  entryIds: number[];
+}
+
 export class CreateApprovalForWeeklyBatchDto {
   @IsOptional()
   @IsString()
@@ -682,6 +691,14 @@ export class WarehouseExpenseQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsIn(['occurredAt', 'amount'])
+  orderBy?: 'occurredAt' | 'amount';
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  orderDirection?: 'asc' | 'desc';
 
   @IsOptional()
   @IsInt()

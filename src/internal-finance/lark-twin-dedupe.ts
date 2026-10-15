@@ -91,12 +91,18 @@ export interface TwinEntry {
   category?: string | null;
   subCategory?: string | null;
   sourceKey?: string | null;
+  expenseItem?: string | null;
+  payerId?: number | null;
 }
+
+/** Căn cứ ghép cặp phiếu xe, để báo cáo cho người dùng kiểm. */
+export type TwinBasis = 'label' | 'item' | 'note';
 
 export interface TwinPair<T> {
   kind: 'vehicle' | 'packing';
   dup: T;
   keep: T;
+  basis?: TwinBasis;
 }
 
 const vehicleLabel = (entry: TwinEntry) =>
@@ -134,28 +140,75 @@ function narrowByService<T extends TwinEntry>(text: string, found: T[]) {
   return fuel.length ? fuel : found;
 }
 
+/** Khoản mục xe trên bảng phiếu chi Lark ứng với loại phiếu xe. */
+function itemCategory(item?: string | null) {
+  const text = normalizeText(item || '');
+  if (text.includes('xang xe')) return 'FUEL';
+  if (text.includes('sua chua') && text.includes('bao duong'))
+    return 'VEHICLE_CARE';
+  return null;
+}
+
+/** Ghi chú của bản sao (cột ghi chú hoặc GHI CHÚ trên Lark), đã chuẩn hóa. */
+const dupNote = (dup: TwinEntry) =>
+  normalizeText(
+    dup.note ||
+      fieldText(snapshotOf(snapshotOf(dup.sourceSnapshot).fields), NOTE_FIELDS),
+  );
+
+/** Lọc lần lượt, dừng ngay khi còn đúng một ứng viên. */
+function narrowCandidates<T extends TwinEntry>(
+  dup: T,
+  text: string,
+  found: T[],
+): T[] {
+  const filters: Array<(keep: T) => boolean> = [
+    (keep) => text.includes(normalizeText(vehicleLabel(keep))),
+    (keep) =>
+      Boolean(dupNote(dup)) && normalizeText(keep.note || '') === dupNote(dup),
+  ];
+  let list = found;
+  for (const filter of filters) {
+    if (list.length < 2) return list;
+    const next = list.filter(filter);
+    if (next.length) list = next;
+  }
+  list = narrowByService(text, list);
+  if (list.length < 2 || !dup.payerId) return list;
+  const samePayer = list.filter((keep) => keep.payerId === dup.payerId);
+  return samePayer.length ? samePayer : list;
+}
+
 /**
  * Ghép bản sao ở bảng phiếu chi với phiếu xe: cùng kho, cùng ngày (giờ VN),
- * cùng số tiền và tên xe nằm trong chữ của bản sao. Chỉ nhận cặp 1–1.
+ * cùng số tiền và có một căn cứ: tên xe nằm trong chữ của bản sao (HN có cột
+ * liên kết), khoản mục xe cùng loại (SG không chép tên xe), hoặc cùng ghi chú.
+ * Chỉ nhận cặp 1–1.
  */
 export function matchVehicleTwins<T extends TwinEntry>(dups: T[], keeps: T[]) {
   const byKey = new Map<string, T[]>();
   for (const keep of keeps) {
-    const label = normalizeText(vehicleLabel(keep));
-    if (!label) continue;
     const key = `${keep.branchId}|${vnDay(keep.occurredAt)}|${Number(keep.amount)}`;
     byKey.set(key, [...(byKey.get(key) || []), keep]);
   }
+  const basisOf = (dup: T, text: string, keep: T): TwinBasis | null => {
+    const label = normalizeText(vehicleLabel(keep));
+    if (label && text.includes(label)) return 'label';
+    const item = itemCategory(dup.expenseItem);
+    if (item && item === keep.category) return 'item';
+    const note = dupNote(dup);
+    if (note && normalizeText(keep.note || '') === note) return 'note';
+    return null;
+  };
   const candidates = new Map<number, T[]>();
   const claimedBy = new Map<number, number>();
   for (const dup of dups) {
     const key = `${dup.branchId}|${vnDay(dup.occurredAt)}|${Number(dup.amount)}`;
     const text = twinText(dup);
-    const found = narrowByService(
+    const found = narrowCandidates(
+      dup,
       text,
-      (byKey.get(key) || []).filter((keep) =>
-        text.includes(normalizeText(vehicleLabel(keep))),
-      ),
+      (byKey.get(key) || []).filter((keep) => basisOf(dup, text, keep)),
     );
     if (!found.length) continue;
     candidates.set(dup.id, found);
@@ -168,7 +221,12 @@ export function matchVehicleTwins<T extends TwinEntry>(dups: T[], keeps: T[]) {
     const found = candidates.get(dup.id);
     if (!found) continue;
     if (found.length === 1 && claimedBy.get(found[0].id) === 1)
-      pairs.push({ kind: 'vehicle', dup, keep: found[0] });
+      pairs.push({
+        kind: 'vehicle',
+        dup,
+        keep: found[0],
+        basis: basisOf(dup, twinText(dup), found[0])!,
+      });
     else ambiguous.push({ dup, keeps: found });
   }
   return { pairs, ambiguous };
@@ -215,6 +273,7 @@ const entrySelect = {
   category: true,
   subCategory: true,
   vehicleName: true,
+  expenseItem: true,
   vehicle: { select: { label: true } },
   packingSlipId: true,
   payerId: true,
@@ -265,7 +324,39 @@ export interface PlannedMerge {
   kind: 'vehicle' | 'packing';
   dup: TwinRow;
   keep: TwinRow;
+  basis?: TwinBasis;
   actions: MergeAction[];
+}
+
+export interface SuspectRow {
+  id: number;
+  code: string;
+  branchId: number;
+  amount: Prisma.Decimal;
+  occurredAt: Date;
+  sourceType: string;
+  category: string;
+  description: string | null;
+  note: string | null;
+  payer: { name: string } | null;
+}
+
+/**
+ * Nhóm phiếu chi cùng kho, cùng ngày, cùng số tiền có ít nhất một dòng chuyển
+ * từ Lark — chỉ để người dùng xem, không tự hủy (chi hai lần cùng ngày cùng
+ * tiền vẫn có thể là thật).
+ */
+export function suspectGroups(rows: SuspectRow[], excludeIds: Set<number>) {
+  const groups = new Map<string, SuspectRow[]>();
+  for (const row of rows) {
+    if (excludeIds.has(row.id)) continue;
+    const key = `${row.branchId}|${vnDay(row.occurredAt)}|${Number(row.amount)}`;
+    groups.set(key, [...(groups.get(key) || []), row]);
+  }
+  return [...groups.values()].filter(
+    (group) =>
+      group.length > 1 && group.some((row) => row.sourceType === 'LARK_IMPORT'),
+  );
 }
 
 const postedTx = (row: TwinRow) =>
@@ -387,11 +478,42 @@ export async function planTwinDedupe(db: Db) {
       skipped.push({ dup: pair.dup, keep: pair.keep, reason: result.skip });
     else merges.push({ ...pair, actions: result.actions });
   }
+  // Bản sao sẽ hủy và bản sao đã đưa vào mục kiểm tay không xét nghi trùng nữa.
+  const excludeIds = new Set<number>([
+    ...merges.map((merge) => merge.dup.id),
+    ...vehicle.ambiguous.map((item) => item.dup.id),
+    ...skipped.map((item) => item.dup.id),
+    ...packing.mismatched.map((item) => item.dup.id),
+  ]);
+  const suspects = suspectGroups(
+    await db.internalFinanceEntry.findMany({
+      where: {
+        branchId: { in: BRANCHES },
+        direction: 'EXPENSE',
+        status: { not: 'CANCELLED' },
+      },
+      select: {
+        id: true,
+        code: true,
+        branchId: true,
+        amount: true,
+        occurredAt: true,
+        sourceType: true,
+        category: true,
+        description: true,
+        note: true,
+        payer: { select: { name: true } },
+      },
+      orderBy: [{ occurredAt: 'desc' }, { id: 'asc' }],
+    }),
+    excludeIds,
+  );
   return {
     merges,
     skipped,
     ambiguous: vehicle.ambiguous,
     packingMismatched: packing.mismatched,
+    suspects,
   };
 }
 

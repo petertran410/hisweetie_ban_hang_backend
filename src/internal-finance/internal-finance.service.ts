@@ -85,6 +85,12 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
+/**
+ * Phiếu sót tuần trước (đủ hai tick nhưng chưa vào tuần nào) chỉ được gộp từ
+ * ngày bắt đầu dùng POS, để không kéo dữ liệu lịch sử từ Lark vào batch mới.
+ */
+const CARRY_OVER_FROM = new Date('2026-10-13T00:00:00+07:00');
+
 // Approval Lark đã kết thúc mà không duyệt: batch tuần được phép hủy.
 const CANCELLABLE_WEEKLY_APPROVAL_STATUSES = [
   'CANCELED',
@@ -438,7 +444,11 @@ export class InternalFinanceService {
     return { ...decorated, allocatableInvoices };
   }
 
-  async listWarehouseExpenses(query: WarehouseExpenseQueryDto, user: any) {
+  /** Điều kiện lọc phiếu chi kho theo quyền + bộ lọc (danh sách và báo cáo). */
+  private async warehouseExpenseConditions(
+    query: WarehouseExpenseQueryDto,
+    user: any,
+  ): Promise<any[]> {
     const allowedBranches = await this.allowedWarehouseExpenseBranches(
       user,
       'view',
@@ -454,8 +464,6 @@ export class InternalFinanceService {
         'Không có quyền xem phiếu chi của chi nhánh này',
       );
     }
-    const page = query.page || 1;
-    const limit = Math.min(query.limit || 50, 100);
     const branchIds = query.branchId
       ? [Number(query.branchId)]
       : allowedBranches;
@@ -532,18 +540,93 @@ export class InternalFinanceService {
       });
     }
 
+    return conditions;
+  }
+
+  /**
+   * Báo cáo nhanh "ai đã chi bao nhiêu": cộng tiền theo người chi trên toàn bộ
+   * phiếu khớp bộ lọc của trang Phiếu chi kho.
+   */
+  async warehouseExpensePayerSummary(
+    query: WarehouseExpenseQueryDto,
+    user: any,
+  ) {
+    const conditions = await this.warehouseExpenseConditions(query, user);
+    const groups = await this.prisma.internalFinanceEntry.groupBy({
+      by: ['payerId'],
+      where: { AND: conditions },
+      _sum: { amount: true },
+      _count: { _all: true },
+    });
+    const ids = groups
+      .map((group) => group.payerId)
+      .filter((id): id is number => id !== null);
+    const users = ids.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const names = new Map(users.map((item) => [item.id, item.name]));
+    const rows = groups
+      .map((group) => ({
+        payerId: group.payerId,
+        name:
+          group.payerId === null
+            ? 'Chưa có người chi'
+            : names.get(group.payerId) || `#${group.payerId}`,
+        count: group._count._all,
+        amount: Number(group._sum.amount || 0),
+      }))
+      .sort((a, b) =>
+        a.payerId === null
+          ? 1
+          : b.payerId === null
+            ? -1
+            : a.name.localeCompare(b.name, 'vi'),
+      );
+    return {
+      rows,
+      total: rows.reduce((sum, row) => sum + row.amount, 0),
+      count: rows.reduce((sum, row) => sum + row.count, 0),
+    };
+  }
+
+  async listWarehouseExpenses(query: WarehouseExpenseQueryDto, user: any) {
+    const page = query.page || 1;
+    const limit = Math.min(query.limit || 50, 100);
+    const conditions = await this.warehouseExpenseConditions(query, user);
     const where = { AND: conditions };
-    const [data, total] = await Promise.all([
+    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
+    // Sắp xếp theo cột (Ngày chi / Số tiền); cùng giá trị thì phiếu mới trước.
+    const orderBy: Prisma.InternalFinanceEntryOrderByWithRelationInput[] =
+      query.orderBy === 'amount'
+        ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
+        : [{ occurredAt: direction }, { id: direction }];
+    const [data, total, sums, issued] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where,
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        orderBy,
         skip: (page - 1) * limit,
         take: limit,
         include: this.warehouseExpenseInclude(),
       }),
       this.prisma.internalFinanceEntry.count({ where }),
+      this.prisma.internalFinanceEntry.aggregate({
+        where,
+        _sum: { amount: true },
+      }),
+      this.prisma.internalFinanceEntry.aggregate({
+        where: { AND: [...conditions, { cashIssued: true }] },
+        _sum: { amount: true },
+      }),
     ]);
-    return { data, total, page, limit };
+    // Tổng của toàn bộ phiếu khớp bộ lọc (dòng tổng dưới tên cột).
+    const totals = {
+      amount: Number(sums._sum.amount || 0),
+      issuedAmount: Number(issued._sum.amount || 0),
+    };
+    return { data, total, page, limit, totals };
   }
 
   async createWarehouseExpense(dto: CreateWarehouseExpenseDto, user: any) {
@@ -1818,10 +1901,11 @@ export class InternalFinanceService {
     if (query.fromDate || query.toDate) {
       where.weekStart = {};
       if (query.fromDate) {
-        where.weekStart.gte = this.startOfDateString(query.fromDate);
+        // Mốc tuần lưu theo đầu ngày giờ VN (12/10 0h VN = 11/10 17h UTC).
+        where.weekStart.gte = fundDayStart(query.fromDate);
       }
       if (query.toDate) {
-        where.weekStart.lte = this.startOfDateString(query.toDate);
+        where.weekStart.lte = fundDayStart(query.toDate);
       }
     }
     return where;
@@ -1986,7 +2070,6 @@ export class InternalFinanceService {
         where: {
           branchId: dto.branchId,
           direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
-          occurredAt: { gte: weekStart, lte: weekEnd },
           status: { in: options.eligibleStatuses },
           ...(options.allowedCategories?.length
             ? { category: { in: options.allowedCategories } }
@@ -2001,9 +2084,23 @@ export class InternalFinanceService {
                 accountantReviewedAt: { not: null },
               }
             : { sourceType: { not: 'LARK_IMPORT' } }),
-          OR: existing
-            ? [{ weeklyBatchId: null }, { weeklyBatchId: existing.id }]
-            : [{ weeklyBatchId: null }],
+          OR: [
+            // Phiếu trong tuần (chưa vào tuần nào, hoặc đang ở batch này).
+            {
+              occurredAt: { gte: weekStart, lte: weekEnd },
+              weeklyBatchId: existing ? { in: [existing.id] } : null,
+            },
+            ...(existing
+              ? [
+                  {
+                    occurredAt: { gte: weekStart, lte: weekEnd },
+                    weeklyBatchId: null,
+                  },
+                  // Phiếu sót tuần trước đã được thêm tay vào batch: giữ lại.
+                  { occurredAt: { lt: weekStart }, weeklyBatchId: existing.id },
+                ]
+              : []),
+          ],
         },
         select: { id: true, amount: true },
       });
@@ -2029,6 +2126,7 @@ export class InternalFinanceService {
               weekEnd,
               categories: options.allowedCategories,
               excludeBatchId: existing?.id,
+              carryOverIgnored: true,
             })
           : '';
         throw new BadRequestException(
@@ -2046,6 +2144,23 @@ export class InternalFinanceService {
       }-${calendarStart.getUTCFullYear()}-W${String(
         this.isoWeek(calendarStart),
       ).padStart(2, '0')}-${fundDateKey(weekStart)}-${fundDateKey(weekEnd)}`;
+
+      if (existing) {
+        // Gom lại batch chưa gửi: phiếu bị bỏ ra (vd bỏ tích gộp phiếu sót)
+        // trả về trạng thái chờ gom, không kẹt ở "đã gom tuần".
+        const keep = new Set(entries.map((entry) => entry.id));
+        const dropped = existing.entries
+          .filter((entry) => !keep.has(entry.id))
+          .map((entry) => entry.id);
+        if (dropped.length)
+          await tx.internalFinanceEntry.updateMany({
+            where: {
+              id: { in: dropped },
+              status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+            },
+            data: { status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED },
+          });
+      }
 
       const batch = await tx.internalFinanceWeeklyBatch.upsert({
         where: {
@@ -2100,6 +2215,8 @@ export class InternalFinanceService {
       weekEnd: Date;
       categories?: string[];
       excludeBatchId?: number;
+      /** Đang bỏ tích "Gộp phiếu sót": báo số phiếu sót bị bỏ qua. */
+      carryOverIgnored?: boolean;
     },
   ) {
     const base: Prisma.InternalFinanceEntryWhereInput = {
@@ -2154,10 +2271,38 @@ export class InternalFinanceService {
     const range = [scope.weekStart, scope.weekEnd]
       .map((date) => fundDateKey(date).split('-').reverse().join('/'))
       .join('–');
+    const leftover = scope.carryOverIgnored
+      ? await tx.internalFinanceEntry.count({
+          where: {
+            branchId: scope.branchId,
+            direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+            occurredAt: {
+              gte: CARRY_OVER_FROM,
+              lt: scope.weekStart,
+            },
+            weeklyBatchId: null,
+            cashIssued: false,
+            cashFlowId: null,
+            managerReviewedAt: { not: null },
+            accountantReviewedAt: { not: null },
+            status: {
+              in: [
+                INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+                INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+              ],
+            },
+            ...(scope.categories?.length
+              ? { category: { in: scope.categories } }
+              : {}),
+          },
+        })
+      : 0;
     const parts = [
       unchecked && `${unchecked} phiếu chưa đủ tick Quản lý kho/Kế toán kho`,
       issued && `${issued} phiếu đã chi`,
       inOtherBatch && `${inOtherBatch} phiếu đã thuộc batch tuần khác`,
+      leftover &&
+        `${leftover} phiếu sót tuần trước (thêm vào approval sau khi đã có batch tuần này)`,
     ].filter(Boolean);
     return ` ${range}: ${
       parts.length
@@ -2313,6 +2458,191 @@ export class InternalFinanceService {
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
     await this.assertWeeklyApprovalPermission(user, batch.branchId, 'submit');
     return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
+  }
+
+  /** Phiếu sót tuần trước có thể gộp vào tuần bắt đầu từ `weekStart`. */
+  async warehouseCarryOver(user: any, branchId: number, weekStart: string) {
+    await this.assertWeeklyApprovalPermission(user, branchId, 'prepare');
+    if (!this.isWarehouseBranch(branchId)) return { data: [], total: 0 };
+    const start = fundDayStart(weekStart);
+    const data = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        branchId,
+        direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+        category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] },
+        occurredAt: { gte: CARRY_OVER_FROM, lt: start },
+        weeklyBatchId: null,
+        cashIssued: false,
+        cashFlowId: null,
+        managerReviewedAt: { not: null },
+        accountantReviewedAt: { not: null },
+        status: {
+          in: [
+            INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+            INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          ],
+        },
+      },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        code: true,
+        occurredAt: true,
+        description: true,
+        amount: true,
+      },
+    });
+    return {
+      data,
+      total: data.reduce((sum, row) => sum + Number(row.amount), 0),
+    };
+  }
+
+  /**
+   * Thêm phiếu sót tuần trước vào batch chưa gửi Lark: từng phiếu hoặc tất cả.
+   * Chỉ nhận phiếu đủ điều kiện phiếu sót; phiếu khác bị bỏ qua.
+   */
+  async addCarryOverEntries(batchId: number, entryIds: number[], user: any) {
+    const found = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id: batchId },
+      select: { branchId: true },
+    });
+    if (!found) throw new NotFoundException('Không tìm thấy batch tuần');
+    await this.assertWeeklyApprovalPermission(user, found.branchId, 'prepare');
+    const ids = [...new Set(entryIds)];
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [found.branchId]);
+      const batch = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: { id: batchId },
+      });
+      if (
+        !batch ||
+        batch.approvalRequestId ||
+        batch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.READY
+      ) {
+        throw new BadRequestException(
+          'Chỉ thêm được vào batch chưa gửi Approval Lark',
+        );
+      }
+      const eligible = await tx.internalFinanceEntry.findMany({
+        where: {
+          id: { in: ids },
+          branchId: batch.branchId,
+          direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+          category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] },
+          occurredAt: { gte: CARRY_OVER_FROM, lt: batch.weekStart },
+          weeklyBatchId: null,
+          cashIssued: false,
+          cashFlowId: null,
+          managerReviewedAt: { not: null },
+          accountantReviewedAt: { not: null },
+          status: {
+            in: [
+              INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+              INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+            ],
+          },
+        },
+        select: { id: true },
+      });
+      if (!eligible.length) {
+        throw new BadRequestException(
+          'Không có phiếu sót đủ điều kiện để thêm vào approval',
+        );
+      }
+      const added = eligible.map((row) => row.id);
+      await tx.internalFinanceEntry.updateMany({
+        where: { id: { in: added } },
+        data: {
+          weeklyBatchId: batch.id,
+          status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          posManagedAt: new Date(),
+        },
+      });
+      const sum = await tx.internalFinanceEntry.aggregate({
+        where: { weeklyBatchId: batch.id },
+        _sum: { amount: true },
+      });
+      await tx.internalFinanceWeeklyBatch.update({
+        where: { id: batch.id },
+        data: { totalAmount: sum._sum.amount || 0 },
+      });
+      return {
+        added: added.length,
+        skipped: ids.filter((id) => !added.includes(id)).length,
+      };
+    });
+  }
+
+  /**
+   * Bỏ phiếu khỏi batch chưa gửi Lark (thêm nhầm): phiếu giữ nguyên hai tick,
+   * trở về chờ gom; batch tính lại tổng tiền, hết phiếu thì xóa batch.
+   */
+  async removeWeeklyBatchEntries(
+    batchId: number,
+    entryIds: number[],
+    user: any,
+  ) {
+    const found = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id: batchId },
+      select: { branchId: true },
+    });
+    if (!found) throw new NotFoundException('Không tìm thấy batch tuần');
+    await this.assertWeeklyApprovalPermission(user, found.branchId, 'prepare');
+
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [found.branchId]);
+      const batch = await tx.internalFinanceWeeklyBatch.findUnique({
+        where: { id: batchId },
+      });
+      if (
+        !batch ||
+        batch.approvalRequestId ||
+        batch.status !== INTERNAL_FINANCE_WEEKLY_STATUS.READY
+      ) {
+        throw new BadRequestException(
+          'Chỉ bỏ được phiếu khỏi batch chưa gửi Approval Lark',
+        );
+      }
+      const where = { id: { in: entryIds }, weeklyBatchId: batch.id };
+      const removed = await tx.internalFinanceEntry.count({ where });
+      if (!removed) {
+        throw new BadRequestException('Phiếu không nằm trong batch này');
+      }
+      await tx.internalFinanceEntry.updateMany({
+        where: {
+          ...where,
+          managerReviewedAt: { not: null },
+          accountantReviewedAt: { not: null },
+        },
+        data: {
+          weeklyBatchId: null,
+          status: INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+        },
+      });
+      await tx.internalFinanceEntry.updateMany({
+        where,
+        data: {
+          weeklyBatchId: null,
+          status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        },
+      });
+      const rest = await tx.internalFinanceEntry.aggregate({
+        where: { weeklyBatchId: batch.id },
+        _sum: { amount: true },
+        _count: { _all: true },
+      });
+      if (!rest._count._all) {
+        await tx.internalFinanceWeeklyBatch.delete({ where: { id: batch.id } });
+        return { removed, batchDeleted: true };
+      }
+      await tx.internalFinanceWeeklyBatch.update({
+        where: { id: batch.id },
+        data: { totalAmount: rest._sum.amount || 0 },
+      });
+      return { removed, batchDeleted: false };
+    });
   }
 
   // Hủy batch chưa gửi Lark, hoặc có Approval Lark đã kết thúc mà không duyệt:

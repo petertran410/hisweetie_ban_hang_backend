@@ -2,6 +2,7 @@ import {
   matchPackingTwins,
   matchVehicleTwins,
   planMerge,
+  suspectGroups,
   twinText,
   type TwinEntry,
   type TwinRow,
@@ -37,7 +38,9 @@ const careHn: TwinEntry = {
 describe('matchVehicleTwins', () => {
   it('pairs the HN expense copy with the vehicle entry via the link text', () => {
     const { pairs, ambiguous } = matchVehicleTwins([dupHn], [careHn]);
-    expect(pairs).toEqual([{ kind: 'vehicle', dup: dupHn, keep: careHn }]);
+    expect(pairs).toEqual([
+      { kind: 'vehicle', dup: dupHn, keep: careHn, basis: 'label' },
+    ]);
     expect(ambiguous).toEqual([]);
   });
 
@@ -106,7 +109,7 @@ describe('matchVehicleTwins', () => {
       description: 'Phạt nóng - 29E - 623.55 - Dầu',
     };
     expect(matchVehicleTwins([dup], [fuel, care]).pairs).toEqual([
-      { kind: 'vehicle', dup, keep: care },
+      { kind: 'vehicle', dup, keep: care, basis: 'label' },
     ]);
 
     // Bản sao không ghi dịch vụ nào là phiếu xăng.
@@ -117,8 +120,56 @@ describe('matchVehicleTwins', () => {
       note: 'Xăng - 29E - 623.55 - Dầu - 2026/03/27',
     };
     expect(matchVehicleTwins([fuelDup], [fuel, care]).pairs).toEqual([
-      { kind: 'vehicle', dup: fuelDup, keep: fuel },
+      { kind: 'vehicle', dup: fuelDup, keep: fuel, basis: 'label' },
     ]);
+  });
+
+  it('pairs SG care copies without a vehicle name by item and note', () => {
+    const dup: TwinEntry = {
+      ...dupHn,
+      id: 30,
+      branchId: 1,
+      amount: 180000,
+      occurredAt: at('2026-10-11T17:00:00Z'), // 12/10 giờ VN
+      description: '12.10.26 - 180,000 - Sửa chữa xe',
+      note: 've snnh thắng xe',
+      expenseItem: 'Sửa chữa, bảo dưỡng; oto xe máy',
+      sourceSnapshot: { lark: { source: 'EXPENSE_SG' } },
+    };
+    const care: TwinEntry = {
+      ...careHn,
+      id: 31,
+      branchId: 1,
+      amount: 180000,
+      occurredAt: at('2026-10-12T02:00:00Z'),
+      category: 'VEHICLE_CARE',
+      description: 'Sửa chữa - 29D - 233.19',
+      note: 've snnh thắng xe',
+      vehicle: { label: '29D - 233.19' },
+    };
+    const fuel: TwinEntry = {
+      ...care,
+      id: 32,
+      category: 'FUEL',
+      description: 'Xăng dầu - 29D - 233.19',
+      note: null,
+    };
+    expect(matchVehicleTwins([dup], [care, fuel]).pairs).toEqual([
+      { kind: 'vehicle', dup, keep: care, basis: 'item' },
+    ]);
+
+    // Hai phiếu chăm sóc xe cùng ngày, cùng tiền: ghi chú quyết định.
+    const other: TwinEntry = { ...care, id: 33, note: 'thay lốp' };
+    expect(matchVehicleTwins([dup], [other, care]).pairs[0].keep).toBe(care);
+
+    // Khoản mục xăng không ghép với phiếu chăm sóc xe.
+    const fuelItem: TwinEntry = {
+      ...dup,
+      id: 34,
+      note: null,
+      expenseItem: 'Xăng xe: oto, xe tại kho',
+    };
+    expect(matchVehicleTwins([fuelItem], [care]).pairs).toEqual([]);
   });
 
   it('reads link and note text without accents', () => {
@@ -217,5 +268,31 @@ describe('planMerge', () => {
         }),
       ),
     ).toHaveProperty('skip');
+  });
+});
+
+describe('suspectGroups', () => {
+  const base = {
+    branchId: 6,
+    amount: 50000 as any,
+    occurredAt: at('2026-10-01T03:00:00Z'),
+    category: 'OTHER_EXPENSE',
+    description: null,
+    note: null,
+    payer: null,
+  };
+  it('lists same-day same-amount groups that include a Lark row', () => {
+    const rows = [
+      { ...base, id: 1, code: 'A', sourceType: 'LARK_IMPORT' },
+      { ...base, id: 2, code: 'B', sourceType: 'PACKING_SLIP' },
+      { ...base, id: 3, code: 'C', sourceType: 'FUEL', amount: 60000 as any },
+      { ...base, id: 4, code: 'D', sourceType: 'MANUAL_EXPENSE', branchId: 1 },
+      { ...base, id: 5, code: 'E', sourceType: 'MANUAL_EXPENSE', branchId: 1 },
+    ];
+    const groups = suspectGroups(rows, new Set());
+    expect(groups.map((group) => group.map((row) => row.code))).toEqual([
+      ['A', 'B'],
+    ]);
+    expect(suspectGroups(rows, new Set([1]))).toEqual([]);
   });
 });

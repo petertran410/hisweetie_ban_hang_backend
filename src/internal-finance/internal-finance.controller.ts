@@ -28,6 +28,7 @@ import {
   CreateWarehouseExpenseNoteDto,
   InternalFinanceQueryDto,
   CheckWarehouseExpenseDto,
+  AddWeeklyBatchEntriesDto,
   BulkCheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
@@ -139,6 +140,15 @@ export class InternalFinanceController {
     return this.service.createWarehouseExpense(dto, user);
   }
 
+  @Get('warehouse-expenses/payer-summary')
+  @ApiOperation({ summary: 'Warehouse expense totals by payer' })
+  warehouseExpensePayerSummary(
+    @Query() query: WarehouseExpenseQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.warehouseExpensePayerSummary(query, user);
+  }
+
   // Khai báo trước `warehouse-expenses/:id` để không bị khớp nhầm thành id.
   @Patch('warehouse-expenses/check-bulk')
   @ApiOperation({ summary: 'Tick a check on many warehouse expenses' })
@@ -177,6 +187,16 @@ export class InternalFinanceController {
     return this.service.pageWarehouseExpenseBatches(query, user);
   }
 
+  @Get('warehouse-expenses/weekly-carry-over')
+  @ApiOperation({ summary: 'Expenses left out of earlier weekly batches' })
+  warehouseCarryOver(
+    @Query('branchId', ParseIntPipe) branchId: number,
+    @Query('weekStart') weekStart: string,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.warehouseCarryOver(user, branchId, weekStart);
+  }
+
   @Get('warehouse-expenses/weekly-batches/:id')
   @ApiOperation({ summary: 'Get a warehouse expense weekly batch' })
   warehouseExpenseBatch(
@@ -208,6 +228,26 @@ export class InternalFinanceController {
       dto.detailUrl,
       dto.viewUrl,
     );
+  }
+
+  @Post('warehouse-expenses/weekly-batches/:id/add-entries')
+  @ApiOperation({ summary: 'Add carried-over expenses to a weekly batch' })
+  addCarryOverEntries(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddWeeklyBatchEntriesDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.addCarryOverEntries(id, dto.entryIds, user);
+  }
+
+  @Post('warehouse-expenses/weekly-batches/:id/remove-entries')
+  @ApiOperation({ summary: 'Remove expenses from a weekly batch not yet sent' })
+  removeWeeklyBatchEntries(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddWeeklyBatchEntriesDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.removeWeeklyBatchEntries(id, dto.entryIds, user);
   }
 
   @Post('warehouse-expenses/weekly-batches/:id/cancel')

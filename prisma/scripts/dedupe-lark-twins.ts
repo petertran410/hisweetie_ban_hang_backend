@@ -29,6 +29,12 @@ const ACTION_LABEL: Record<string, string> = {
   cancelDoubleFund: 'TRỪ QUỸ HAI LẦN: hủy giao dịch quỹ của bản sao',
 };
 
+const BASIS_LABEL = {
+  label: 'tên xe',
+  item: 'khoản mục xe',
+  note: 'ghi chú',
+} as const;
+
 const money = (value: unknown) =>
   Number(value).toLocaleString('vi-VN', { maximumFractionDigits: 0 });
 const line = (row: TwinRow) =>
@@ -45,8 +51,21 @@ function report(plan: TwinPlan, before: Map<number, unknown>) {
       console.log(
         `${kind === 'vehicle' ? 'Cặp phiếu xe' : 'Cặp cước báo đơn'} sẽ gộp: ${list.length} cặp, ${money(total)}đ`,
       );
-      for (const m of list.slice(0, 20))
-        console.log(`  hủy  ${line(m.dup)}\n  giữ  ${line(m.keep)}\n`);
+      if (kind === 'vehicle' && list.length)
+        console.log(
+          `  ghép theo: ${(['label', 'item', 'note'] as const)
+            .map(
+              (basis) =>
+                `${BASIS_LABEL[basis]} ${list.filter((m) => m.basis === basis).length}`,
+            )
+            .join(', ')}`,
+        );
+      for (const m of list.slice(0, 30))
+        console.log(
+          `  hủy  ${line(m.dup)}\n  giữ  ${line(m.keep)}${
+            m.basis ? `  [${BASIS_LABEL[m.basis]}]` : ''
+          }\n`,
+        );
     }
     for (const action of Object.keys(ACTION_LABEL)) {
       const list = merges.filter((m) => m.actions.includes(action as any));
@@ -94,6 +113,25 @@ function report(plan: TwinPlan, before: Map<number, unknown>) {
       extra: `${m.keep.code} ${money(m.keep.amount)}đ`,
     })),
   );
+
+  if (plan.suspects.length) {
+    console.log(
+      `\nNghi trùng khác (chỉ xem, KHÔNG tự gộp): ${plan.suspects.length} nhóm cùng kho, cùng ngày, cùng số tiền`,
+    );
+    for (const group of plan.suspects.slice(0, 100)) {
+      console.log(
+        `  ${NAME[group[0].branchId]}  ${vnDay(group[0].occurredAt)}  ${money(group[0].amount)}đ`,
+      );
+      for (const row of group)
+        console.log(
+          `    ${row.code}  [${row.sourceType}/${row.category}]  ${row.description || ''}${
+            row.note ? `  | ghi chú: ${row.note}` : ''
+          }${row.payer?.name ? `  | người chi: ${row.payer.name}` : ''}`,
+        );
+    }
+    if (plan.suspects.length > 100)
+      console.log(`  … còn ${plan.suspects.length - 100} nhóm`);
+  }
 }
 
 async function main() {

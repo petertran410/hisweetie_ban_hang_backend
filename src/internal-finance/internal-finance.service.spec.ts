@@ -223,6 +223,7 @@ describe('InternalFinanceService', () => {
         findUnique: jest.fn(),
         findMany,
         count,
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }),
         update: jest.fn(),
         updateMany: jest.fn(),
       },
@@ -369,6 +370,170 @@ describe('InternalFinanceService', () => {
         },
       ),
     ).rejects.toThrow('đã gửi Approval tuần');
+  });
+
+  describe('carry-over of expenses missed by earlier weeks', () => {
+    const setup = (existing: any = null) => {
+      const findMany = jest.fn().mockResolvedValue([{ id: 5, amount: 100 }]);
+      const updateMany = jest.fn();
+      const upsert = jest.fn().mockResolvedValue({ id: 9 });
+      const ctx = makeService({
+        branch: {
+          findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+        },
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(existing),
+          upsert,
+        },
+        internalFinanceEntry: { findMany, updateMany },
+      });
+      ctx.authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      return { ...ctx, findMany, updateMany, upsert };
+    };
+    const user = { id: 7, roles: [] };
+    const week = {
+      branchId: 6,
+      weekStart: '2026-10-20',
+      weekEnd: '2026-10-26',
+    };
+
+    it('prepares only the week, keeping carry-over entries already added', async () => {
+      const { service, findMany } = setup({
+        id: 9,
+        status: 'READY',
+        entries: [{ id: 5 }],
+      });
+      await service.prepareWarehouseExpenseBatch(week, user);
+      const or = findMany.mock.calls[0][0].where.OR;
+      // Không tự gộp phiếu sót mới; chỉ giữ phiếu sót đã thêm vào batch này.
+      expect(or).toContainEqual({
+        occurredAt: { lt: new Date('2026-10-20T00:00:00+07:00') },
+        weeklyBatchId: 9,
+      });
+      expect(JSON.stringify(or)).not.toContain('2026-10-12T17:00:00');
+    });
+
+    it('adds chosen carry-over entries to a batch not yet sent to Lark', async () => {
+      const updateMany = jest.fn();
+      const update = jest.fn();
+      const { service, authService } = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 9,
+            branchId: 6,
+            status: 'READY',
+            approvalRequestId: null,
+            weekStart: new Date('2026-10-20T00:00:00+07:00'),
+          }),
+          update,
+        },
+        internalFinanceEntry: {
+          findMany: jest.fn().mockResolvedValue([{ id: 5 }]),
+          updateMany,
+          aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 150 } }),
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      expect(await service.addCarryOverEntries(9, [5, 6], user)).toEqual({
+        added: 1,
+        skipped: 1,
+      });
+      expect(updateMany.mock.calls[0][0]).toMatchObject({
+        where: { id: { in: [5] } },
+        data: { weeklyBatchId: 9, status: 'READY_FOR_WEEKLY_APPROVAL' },
+      });
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 9 },
+        data: { totalAmount: 150 },
+      });
+    });
+
+    it('removes a wrongly added entry, keeping its ticks, and deletes an empty batch', async () => {
+      const updateMany = jest.fn();
+      const remove = jest.fn();
+      const { service, authService } = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 9,
+            branchId: 6,
+            status: 'READY',
+            approvalRequestId: null,
+          }),
+          delete: remove,
+        },
+        internalFinanceEntry: {
+          count: jest.fn().mockResolvedValue(1),
+          updateMany,
+          aggregate: jest
+            .fn()
+            .mockResolvedValue({ _sum: { amount: null }, _count: { _all: 0 } }),
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      expect(await service.removeWeeklyBatchEntries(9, [5], user)).toEqual({
+        removed: 1,
+        batchDeleted: true,
+      });
+      expect(updateMany.mock.calls[0][0]).toMatchObject({
+        data: { weeklyBatchId: null, status: 'MANAGER_APPROVED' },
+      });
+      expect(remove).toHaveBeenCalledWith({ where: { id: 9 } });
+    });
+
+    it('refuses to add entries to a batch already sent to Lark', async () => {
+      const { service, authService } = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 9,
+            branchId: 6,
+            status: 'IN_APPROVAL',
+            approvalRequestId: 3,
+          }),
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      await expect(service.addCarryOverEntries(9, [5], user)).rejects.toThrow(
+        'chưa gửi Approval Lark',
+      );
+    });
+
+    it('returns entries dropped from a re-prepared batch to waiting state', async () => {
+      const { service, updateMany } = setup({
+        id: 9,
+        status: 'READY',
+        entries: [{ id: 5 }, { id: 4 }],
+      });
+      await service.prepareWarehouseExpenseBatch(week, user);
+      expect(updateMany).toHaveBeenCalledWith({
+        where: { id: { in: [4] }, status: 'READY_FOR_WEEKLY_APPROVAL' },
+        data: { status: 'MANAGER_APPROVED' },
+      });
+    });
+
+    it('lists carry-over candidates for the preview', async () => {
+      const { service, findMany } = setup();
+      findMany.mockResolvedValueOnce([
+        { id: 5, code: 'A', amount: 100 },
+        { id: 6, code: 'B', amount: 50 },
+      ]);
+      expect(
+        await service.warehouseCarryOver(user, 6, '2026-10-20'),
+      ).toMatchObject({ total: 150 });
+      expect(findMany.mock.calls[0][0].where).toMatchObject({
+        weeklyBatchId: null,
+        cashIssued: false,
+        managerReviewedAt: { not: null },
+        accountantReviewedAt: { not: null },
+      });
+    });
   });
 
   it('needs the Approval tuần permission, not Phiếu chi kho, to prepare a week', async () => {
@@ -560,12 +725,79 @@ describe('InternalFinanceService', () => {
     });
   });
 
+  it('sorts warehouse expenses by amount and returns totals for the whole filter', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const aggregate = jest
+      .fn()
+      .mockResolvedValueOnce({ _sum: { amount: 1500000 } })
+      .mockResolvedValueOnce({ _sum: { amount: 400000 } });
+    const { service, authService } = makeService({
+      internalFinanceEntry: {
+        findMany,
+        count: jest.fn().mockResolvedValue(3),
+        aggregate,
+      },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:view',
+    ]);
+    const result = await service.listWarehouseExpenses(
+      { orderBy: 'amount', orderDirection: 'asc' } as any,
+      { id: 7, roles: [] },
+    );
+    expect(findMany.mock.calls[0][0].orderBy[0]).toEqual({ amount: 'asc' });
+    expect(aggregate.mock.calls[1][0].where.AND).toContainEqual({
+      cashIssued: true,
+    });
+    expect(result.totals).toEqual({ amount: 1500000, issuedAmount: 400000 });
+  });
+
+  it('sums warehouse expenses by payer with the same filters as the list', async () => {
+    const groupBy = jest.fn().mockResolvedValue([
+      { payerId: 2, _sum: { amount: 850000 }, _count: { _all: 3 } },
+      { payerId: null, _sum: { amount: 100000 }, _count: { _all: 1 } },
+      { payerId: 1, _sum: { amount: 1100000 }, _count: { _all: 2 } },
+    ]);
+    const { service, authService } = makeService({
+      internalFinanceEntry: { groupBy },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({
+          branchId: null,
+          userBranches: [{ branchId: 6 }, { branchId: 1 }],
+          userRoles: [],
+        }),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 1, name: 'Bùi Tấn Thuận' },
+          { id: 2, name: 'Bùi Vũ Thành' },
+        ]),
+      },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:view',
+    ]);
+    const result = await service.warehouseExpensePayerSummary(
+      { status: 'APPROVED' } as any,
+      { id: 7, roles: [] },
+    );
+    expect(groupBy.mock.calls[0][0].where.AND).toContainEqual({
+      status: 'APPROVED',
+    });
+    expect(result.rows.map((row) => row.name)).toEqual([
+      'Bùi Tấn Thuận',
+      'Bùi Vũ Thành',
+      'Chưa có người chi',
+    ]);
+    expect(result.total).toBe(2050000);
+    expect(result.count).toBe(6);
+  });
+
   it('hides cancelled expenses unless filtered or searched', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const { service, authService } = makeService({
       internalFinanceEntry: {
         findMany,
         count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }),
       },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
@@ -755,6 +987,7 @@ describe('InternalFinanceService', () => {
         findUnique: jest.fn().mockResolvedValue({ id: 77, branchId: 1 }),
         findMany: jest.fn().mockResolvedValue([]),
         count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }),
       },
     });
     // Vai trò có đủ quyền, nhưng user chỉ được truy cập Kho Hà Nội (6).
