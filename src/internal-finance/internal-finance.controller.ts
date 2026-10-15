@@ -157,6 +157,15 @@ export class InternalFinanceController {
     return this.service.listWarehouseExpenseBatches(query, user);
   }
 
+  @Get('warehouse-expenses/weekly-batch-pages')
+  @ApiOperation({ summary: 'Paged warehouse expense weekly batches' })
+  warehouseExpenseBatchPage(
+    @Query() query: InternalFinanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.pageWarehouseExpenseBatches(query, user);
+  }
+
   @Get('warehouse-expenses/weekly-batches/:id')
   @ApiOperation({ summary: 'Get a warehouse expense weekly batch' })
   warehouseExpenseBatch(

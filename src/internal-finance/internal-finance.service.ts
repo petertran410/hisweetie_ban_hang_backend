@@ -1772,6 +1772,36 @@ export class InternalFinanceService {
   }
 
   async findWeeklyBatches(query: InternalFinanceQueryDto) {
+    return this.loadWeeklyBatches(
+      this.weeklyBatchWhere(query),
+      0,
+      Math.min(query.limit || 50, 100),
+    );
+  }
+
+  /** Approval tuần có phân trang, kèm tổng số batch và tổng tiền mọi trang. */
+  async findWeeklyBatchPage(query: InternalFinanceQueryDto) {
+    const where = this.weeklyBatchWhere(query);
+    const page = Math.max(1, query.page || 1);
+    const limit = Math.min(query.limit || 20, 100);
+    const [data, summary] = await Promise.all([
+      this.loadWeeklyBatches(where, (page - 1) * limit, limit),
+      this.prisma.internalFinanceWeeklyBatch.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { totalAmount: true },
+      }),
+    ]);
+    return {
+      data,
+      total: summary._count._all,
+      totalAmount: Number(summary._sum.totalAmount || 0),
+      page,
+      limit,
+    };
+  }
+
+  private weeklyBatchWhere(query: InternalFinanceQueryDto) {
     const where: any = {};
     if (query.branchIds?.length) where.branchId = { in: query.branchIds };
     if (query.status) where.status = query.status;
@@ -1784,10 +1814,15 @@ export class InternalFinanceService {
         where.weekStart.lte = this.startOfDateString(query.toDate);
       }
     }
+    return where;
+  }
+
+  private async loadWeeklyBatches(where: any, skip: number, take: number) {
     const batches = await this.prisma.internalFinanceWeeklyBatch.findMany({
       where,
       orderBy: [{ weekStart: 'desc' }, { id: 'desc' }],
-      take: Math.min(query.limit || 50, 100),
+      skip,
+      take,
       include: {
         branch: { select: { id: true, name: true } },
         approvalRequest: {
@@ -2357,6 +2392,25 @@ export class InternalFinanceService {
       ...query,
       branchIds: requested,
     });
+  }
+
+  async pageWarehouseExpenseBatches(query: InternalFinanceQueryDto, user: any) {
+    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+      user,
+      'view',
+    );
+    if (!allowedBranches.length) {
+      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
+    }
+    const requested = query.branchIds?.length
+      ? query.branchIds.map(Number)
+      : allowedBranches;
+    if (requested.some((branchId) => !allowedBranches.includes(branchId))) {
+      throw new ForbiddenException(
+        'Không có quyền xem phiếu chi của chi nhánh này',
+      );
+    }
+    return this.findWeeklyBatchPage({ ...query, branchIds: requested });
   }
 
   async getWarehouseExpenseBatch(id: number, user: any) {
