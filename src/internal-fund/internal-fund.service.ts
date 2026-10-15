@@ -9,6 +9,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { FinanceAccessService } from '../auth/finance-access.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
 import {
+  INTERNAL_FINANCE_STATUS,
+  LARK_APPROVAL_SOURCE_TYPE,
+} from '../internal-finance/internal-finance.constants';
+import {
   INTERNAL_FUND_SCOPE_BRANCHES,
   type InternalFundActor,
   type InternalFundPermissionAction,
@@ -717,14 +721,32 @@ export class InternalFundService {
       await this.ledger.assertOpen(tx, row.branchId, row.occurredAt, adjust);
       // Khoản chi POS: trả về "chưa chi" và nhả khóa để bấm Đã chi lại được.
       // Khoản nhập từ Lark giữ nguyên khóa để lần nhập sau không tự ghi lại.
-      const entry =
-        current.transactionType === 'EXPENSE' && current.entryId
-          ? await tx.internalFinanceEntry.findUnique({
-              where: { id: current.entryId },
-              select: { id: true, sourceType: true, posManagedAt: true },
-            })
-          : null;
-      if (entry && (entry.sourceType !== 'LARK_IMPORT' || entry.posManagedAt)) {
+      const entry = current.entryId
+        ? await tx.internalFinanceEntry.findUnique({
+            where: { id: current.entryId },
+            select: { id: true, sourceType: true, posManagedAt: true },
+          })
+        : null;
+      // Dòng Tài chính nội bộ của đơn Lark Approval chỉ phản ánh giao dịch quỹ:
+      // hủy giao dịch thì hủy luôn dòng đó.
+      if (entry?.sourceType === LARK_APPROVAL_SOURCE_TYPE) {
+        await tx.internalFinanceEntry.update({
+          where: { id: entry.id },
+          data: {
+            status: INTERNAL_FINANCE_STATUS.CANCELLED,
+            cancelReason: `Hủy giao dịch quỹ: ${dto.reason.trim()}`,
+            cancelledAt: new Date(),
+            cancelledBy: userId,
+            cashIssued: false,
+          },
+        });
+        return this.ledger.releaseCancelled(tx, current, userId, dto.reason);
+      }
+      if (
+        current.transactionType === 'EXPENSE' &&
+        entry &&
+        (entry.sourceType !== 'LARK_IMPORT' || entry.posManagedAt)
+      ) {
         await tx.internalFinanceEntry.update({
           where: { id: entry.id },
           data: {

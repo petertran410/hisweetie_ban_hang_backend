@@ -20,6 +20,7 @@ import {
   APPROVAL_STATUS_ORDER,
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
+  LARK_LEDGER_CUTOFF,
   PAYMENT_VOUCHER,
   readFundReceipt,
   readPaymentVoucherCash,
@@ -29,10 +30,16 @@ import {
   type ApprovalFormItem,
   type ApprovalInstanceStatus,
   type ApprovalRequestKind,
+  type LarkFormKind,
 } from './approval-lifecycle.constants';
 import type { CreateApprovalRequestDto } from './dto/create-approval-request.dto';
 import type { ApprovalRequestQueryDto } from './dto/approval-request-query.dto';
 import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
+import {
+  LarkApprovalMirrorService,
+  larkTime,
+  type LarkMirrorResult,
+} from './lark-approval-mirror.service';
 
 type ApprovalEvent = {
   approval_code?: string;
@@ -41,6 +48,11 @@ type ApprovalEvent = {
   instance_operate_time?: string;
   uuid?: string;
 };
+
+/** Đơn nhân viên tạo trực tiếp trên Lark (POS nhận về với clientUuid LARK:...). */
+function isLarkCreated(clientUuid: string | null | undefined) {
+  return String(clientUuid || '').startsWith('LARK:');
+}
 
 // Đơn duyệt tuần: tạo từ POS hoặc đồng bộ từ Lark khi còn đang chờ duyệt.
 const WEEKLY_SOURCE_TYPES = ['INTERNAL_FINANCE_WEEKLY', 'LARK_IMPORT_WEEKLY'];
@@ -54,6 +66,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     private readonly config: ConfigService,
     @Inject(LARK_CLIENT) private readonly larkClient: lark.Client,
     private readonly fundLedger: InternalFundLedgerService,
+    private readonly larkMirror: LarkApprovalMirrorService,
   ) {}
 
   async create(dto: CreateApprovalRequestDto, userId: number) {
@@ -457,29 +470,32 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       }
     }
 
-    if (!matchedRequest && approvalCode === this.paymentVoucherCode()) {
-      const ingestedId = await this.ingestPaymentVoucher(instanceCode);
-      if (ingestedId) {
-        await this.replayOrphanEvents(ingestedId, instanceCode);
+    // Đơn nhân viên tạo trực tiếp trên Lark của 4 form: lưu bản sao; PHIẾU CHI
+    // / PHIẾU THU tiền mặt thì nhận vào quỹ (và Tài chính nội bộ nếu là quỹ kho).
+    const larkKind = matchedRequest ? null : this.larkFormKind(approvalCode);
+    let skipReason: string | null = null;
+    if (larkKind) {
+      const ingested = await this.ingestLarkInstance(
+        instanceCode,
+        approvalCode,
+        larkKind,
+      );
+      if (ingested.requestId) {
+        await this.replayOrphanEvents(ingested.requestId, instanceCode);
         return;
       }
-    }
-
-    if (
-      !matchedRequest &&
-      approvalCode === APPROVAL_DEFINITIONS.RECEIPT.approvalCode
-    ) {
-      const ingestedId = await this.ingestFundReceipt(instanceCode);
-      if (ingestedId) {
-        await this.replayOrphanEvents(ingestedId, instanceCode);
-        return;
-      }
+      skipReason = ingested.skipReason;
     }
 
     if (!matchedRequest) {
       await this.prisma.approvalRequestEvent.update({
         where: { id: storedEvent.id },
-        data: { error: 'Không tìm thấy approval request tương ứng' },
+        data: skipReason
+          ? {
+              processedAt: new Date(),
+              error: `Đơn Lark không ghi quỹ: ${skipReason}`,
+            }
+          : { error: 'Không tìm thấy approval request tương ứng' },
       });
       this.logger.warn(`Approval event không có request POS: ${instanceCode}`);
       return;
@@ -520,8 +536,8 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    * Nhận đơn PHIẾU CHI tạo trực tiếp trên Lark. Chỉ lưu đơn chi tiền mặt từ
    * một trong các quỹ nội bộ; đơn khác trả null để sự kiện bị bỏ qua như cũ.
    */
-  private async ingestPaymentVoucher(instanceCode: string) {
-    const detail: any = await this.getInstance(instanceCode);
+  private async ingestPaymentVoucher(instanceCode: string, knownDetail?: any) {
+    const detail: any = knownDetail || (await this.getInstance(instanceCode));
     let form: ApprovalFormItem[] = [];
     try {
       form = JSON.parse(detail?.form || '[]');
@@ -575,8 +591,8 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    * "chuyển đến" ở quỹ đích); đơn thu tiền mặt vào một quỹ thành phiếu thu quỹ.
    * Đơn không liên quan quỹ tiền mặt trả null để sự kiện bị bỏ qua như cũ.
    */
-  private async ingestFundReceipt(instanceCode: string) {
-    const detail: any = await this.getInstance(instanceCode);
+  private async ingestFundReceipt(instanceCode: string, knownDetail?: any) {
+    const detail: any = knownDetail || (await this.getInstance(instanceCode));
     let form: ApprovalFormItem[] = [];
     try {
       form = JSON.parse(detail?.form || '[]');
@@ -658,6 +674,335 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         select: { id: true },
       });
       return existing?.id || null;
+    }
+  }
+
+  /** Form Lark do nhân viên tạo trực tiếp mà POS nhận về; null nếu không thuộc 4 form. */
+  larkFormKind(approvalCode: string): LarkFormKind | null {
+    if (approvalCode === this.paymentVoucherCode()) return 'PHIEU_CHI';
+    if (approvalCode === APPROVAL_DEFINITIONS.RECEIPT.approvalCode)
+      return 'PHIEU_THU';
+    if (approvalCode === APPROVAL_DEFINITIONS.EXPENSE_HN.approvalCode)
+      return 'PHIEU_CHI_KHO_HN';
+    if (approvalCode === APPROVAL_DEFINITIONS.EXPENSE_SG.approvalCode)
+      return 'PHIEU_CHI_KHO_SG';
+    return null;
+  }
+
+  /** Mã approval của 4 form Lark POS nhận về. */
+  larkApprovalCodes() {
+    return [
+      this.paymentVoucherCode(),
+      APPROVAL_DEFINITIONS.RECEIPT.approvalCode,
+      APPROVAL_DEFINITIONS.EXPENSE_HN.approvalCode,
+      APPROVAL_DEFINITIONS.EXPENSE_SG.approvalCode,
+    ];
+  }
+
+  /**
+   * Lưu bản sao đơn Lark rồi tạo ApprovalRequest nếu đơn ghi quỹ (PHIẾU CHI /
+   * PHIẾU THU tiền mặt, theo luật quỹ cũ). PHIẾU CHI KHO tạo trên Lark chỉ lưu
+   * bản sao. `fundBranches`: chỉ nhận đơn chạm vào các quỹ này (lấy bù).
+   */
+  private async ingestLarkInstance(
+    instanceCode: string,
+    approvalCode: string,
+    kind: LarkFormKind,
+    knownDetail?: any,
+    inspected?: LarkMirrorResult,
+    fundBranches?: number[],
+  ): Promise<{ requestId: number | null; skipReason: string | null }> {
+    const detail: any = knownDetail || (await this.getInstance(instanceCode));
+    const result = inspected || (await this.larkMirror.inspect(kind, detail));
+    await this.larkMirror.save({
+      instanceCode,
+      approvalCode,
+      kind,
+      detail,
+      inspected: result,
+    });
+    const allowed =
+      !fundBranches ||
+      result.summary.fundBranchIds.every((id) => fundBranches.includes(id));
+    const requestId = !allowed
+      ? null
+      : kind === 'PHIEU_CHI'
+        ? await this.ingestPaymentVoucher(instanceCode, detail)
+        : kind === 'PHIEU_THU'
+          ? await this.ingestFundReceipt(instanceCode, detail)
+          : null;
+    if (requestId) await this.larkMirror.linkRequest(instanceCode, requestId);
+    return { requestId, skipReason: result.summary.skipReason };
+  }
+
+  /** Đơn PHIẾU CHI / PHIẾU THU (thu vào một quỹ) đã có dòng trong sổ quỹ Lark. */
+  private async ledgerHasLarkOrder(
+    tx: Prisma.TransactionClient,
+    requestId: number,
+    completedAt: Date,
+  ) {
+    const request = await tx.approvalRequest.findUnique({
+      where: { id: requestId },
+      select: { sourceType: true, branchId: true, formSnapshot: true },
+    });
+    if (!request?.branchId) return false;
+    const snapshot = request.formSnapshot as {
+      form?: ApprovalFormItem[];
+      metadata?: { amount?: number };
+    } | null;
+    if (request.sourceType === PAYMENT_VOUCHER.sourceType) {
+      const amount = Number(snapshot?.metadata?.amount || 0);
+      return (
+        amount > 0 &&
+        this.larkMirror.hasLedgerTwin(tx, {
+          branchId: request.branchId,
+          receipt: false,
+          amount,
+          at: completedAt,
+        })
+      );
+    }
+    if (request.sourceType === 'INTERNAL_FUND_RECEIPT') {
+      const receipt = readFundReceipt(snapshot?.form || []);
+      return (
+        receipt?.kind === 'RECEIPT' &&
+        this.larkMirror.hasLedgerTwin(tx, {
+          branchId: receipt.branchId,
+          receipt: true,
+          amount: receipt.amount,
+          at: receipt.occurredAt,
+        })
+      );
+    }
+    return false;
+  }
+
+  private async isPosUuid(uuid: unknown) {
+    if (!uuid) return false;
+    const request = await this.prisma.approvalRequest.findUnique({
+      where: { clientUuid: String(uuid) },
+      select: { clientUuid: true },
+    });
+    return Boolean(request && !isLarkCreated(request.clientUuid));
+  }
+
+  /** Sau khi đơn Lark đổi trạng thái: cập nhật bản sao, tạo hoặc hủy phiếu POS. */
+  private async syncLarkEntry(requestId: number) {
+    const request = await this.prisma.approvalRequest.findUnique({
+      where: { id: requestId },
+      select: {
+        id: true,
+        approvalCode: true,
+        instanceCode: true,
+        clientUuid: true,
+        detailSnapshot: true,
+      },
+    });
+    if (!request?.instanceCode || !isLarkCreated(request.clientUuid)) return;
+    const kind = this.larkFormKind(request.approvalCode);
+    if (!kind) return;
+    try {
+      if (request.detailSnapshot)
+        await this.larkMirror.save({
+          instanceCode: request.instanceCode,
+          approvalCode: request.approvalCode,
+          kind,
+          detail: request.detailSnapshot,
+          approvalRequestId: request.id,
+        });
+      await this.larkMirror.ensureEntry(request.id);
+    } catch (error: any) {
+      this.logger.warn(
+        `Không tạo được phiếu POS cho đơn Lark #${request.id}: ${error?.message}`,
+      );
+    }
+  }
+
+  /**
+   * Xem trước một đơn Lark mà không ghi gì: dùng cho script lấy bù chạy thử.
+   */
+  async previewLarkInstance(
+    instanceCode: string,
+    approvalCode: string,
+    fundBranches?: number[],
+  ) {
+    const kind = this.larkFormKind(approvalCode);
+    if (!kind) return null;
+    const existing = await this.prisma.approvalRequest.findUnique({
+      where: { instanceCode },
+      select: { id: true, clientUuid: true, sourceType: true, status: true },
+    });
+    if (existing && !isLarkCreated(existing.clientUuid))
+      return { kind, outcome: 'POS' as const };
+    const detail: any = await this.getInstance(instanceCode);
+    if (!existing && (await this.isPosUuid(detail?.uuid)))
+      return { kind, outcome: 'POS' as const };
+    const status = this.parseStatus(detail?.status);
+    const inspected = await this.larkMirror.inspect(kind, detail);
+    const entry = await this.prisma.internalFinanceEntry.findUnique({
+      where: { sourceKey: `LARK_APPROVAL:${instanceCode}` },
+      select: { id: true },
+    });
+    const form = (() => {
+      try {
+        return JSON.parse(detail?.form || '[]');
+      } catch {
+        return [];
+      }
+    })();
+    const fundEligible =
+      (kind === 'PHIEU_CHI'
+        ? Boolean(readPaymentVoucherCash(form))
+        : kind === 'PHIEU_THU'
+          ? Boolean(readFundReceipt(form))
+          : false) &&
+      (!fundBranches ||
+        inspected.summary.fundBranchIds.every((id) =>
+          fundBranches.includes(id),
+        ));
+    const completedAt = larkTime(detail?.end_time);
+    const { summary } = inspected;
+    const amount = summary.cashAmount ?? summary.amount ?? 0;
+    const ledgerTwin =
+      fundEligible &&
+      status === 'APPROVED' &&
+      Boolean(summary.branchId) &&
+      amount > 0 &&
+      (await this.larkMirror.hasLedgerTwin(this.prisma, {
+        branchId: summary.branchId!,
+        receipt: summary.direction === 'RECEIPT',
+        amount,
+        at:
+          summary.direction === 'RECEIPT'
+            ? summary.occurredAt || completedAt || new Date()
+            : completedAt || new Date(),
+      }));
+    const fund =
+      status !== 'APPROVED' || !fundEligible
+        ? 'none'
+        : (completedAt && completedAt < LARK_LEDGER_CUTOFF) || ledgerTwin
+          ? 'ledger'
+          : existing?.status === status
+            ? 'existing'
+            : 'post';
+    return {
+      kind,
+      outcome: 'LARK' as const,
+      status,
+      existingRequest: Boolean(existing),
+      existingEntry: Boolean(entry),
+      fund,
+      completedAt,
+      requesterOpenId: detail?.open_id ? String(detail.open_id) : null,
+      /** Chi tiết đơn đã tải, để ghi thật không phải gọi Lark lần nữa. */
+      detail,
+      ...inspected,
+    };
+  }
+
+  /**
+   * Lấy một đơn Lark về POS như webhook: bản sao, quỹ, phiếu. `skipSuspect`
+   * bỏ qua đơn có thể trùng với phiếu POS (chỉ lưu bản sao).
+   */
+  async syncLarkInstance(
+    instanceCode: string,
+    approvalCode: string,
+    options: {
+      skipSuspect?: boolean;
+      knownDetail?: any;
+      /** Lấy bù: chỉ ghi quỹ của các chi nhánh này (đơn khác chỉ lưu bản sao). */
+      fundBranches?: number[];
+    } = {},
+  ) {
+    const kind = this.larkFormKind(approvalCode);
+    if (!kind) return 'UNKNOWN_FORM';
+    const existing = await this.prisma.approvalRequest.findUnique({
+      where: { instanceCode },
+      select: { id: true, clientUuid: true, status: true },
+    });
+    if (existing && !isLarkCreated(existing.clientUuid)) return 'POS';
+    const detail: any =
+      options.knownDetail || (await this.getInstance(instanceCode));
+    // Đơn POS vừa gửi nhưng chưa kịp lưu mã đơn: nhận ra qua uuid.
+    if (!existing && (await this.isPosUuid(detail?.uuid))) return 'POS';
+    const status = this.parseStatus(detail?.status);
+    const inspected = await this.larkMirror.inspect(kind, detail);
+    if (!existing && options.skipSuspect && inspected.suspectDuplicateOfId) {
+      await this.larkMirror.save({
+        instanceCode,
+        approvalCode,
+        kind,
+        detail,
+        inspected,
+      });
+      return 'SUSPECT';
+    }
+    const requestId = existing
+      ? existing.id
+      : (
+          await this.ingestLarkInstance(
+            instanceCode,
+            approvalCode,
+            kind,
+            detail,
+            inspected,
+            options.fundBranches,
+          )
+        ).requestId;
+    if (!requestId) return 'MIRRORED';
+    // Đơn POS đã xử lý và Lark không đổi trạng thái: không chạy lại bước quỹ
+    // (dòng quỹ có thể đã bị hủy tay, chạy lại sẽ ghi quỹ lần nữa).
+    if (existing && existing.status === status) {
+      await this.larkMirror.save({
+        instanceCode,
+        approvalCode,
+        kind,
+        detail,
+        inspected,
+        approvalRequestId: existing.id,
+      });
+      await this.larkMirror.ensureEntry(existing.id);
+      return 'UNCHANGED';
+    }
+    if (status)
+      await this.refreshFromLark(
+        requestId,
+        instanceCode,
+        status,
+        status === 'PENDING' ? undefined : larkTime(detail?.end_time),
+        detail,
+      );
+    else await this.syncLarkEntry(requestId);
+    return 'SYNCED';
+  }
+
+  /** Chốt chặn đơn lỡ webhook: mỗi giờ quét đơn 4 form tạo trong 3 ngày gần nhất. */
+  @Cron('17 * * * *')
+  async syncRecentLarkInstances() {
+    const to = new Date();
+    const from = new Date(to.getTime() - 3 * 86400000);
+    for (const approvalCode of this.larkApprovalCodes()) {
+      try {
+        const codes = await this.larkMirror.listInstanceCodes(
+          approvalCode,
+          from,
+          to,
+        );
+        const done = await this.larkMirror.settledCodes(codes);
+        for (const instanceCode of codes) {
+          if (done.has(instanceCode)) continue;
+          await this.syncLarkInstance(instanceCode, approvalCode).catch(
+            (error: any) =>
+              this.logger.warn(
+                `Không đồng bộ được đơn Lark ${instanceCode}: ${error?.message}`,
+              ),
+          );
+        }
+      } catch (error: any) {
+        this.logger.warn(
+          `Không quét được đơn Lark ${approvalCode}: ${error?.message}`,
+        );
+      }
     }
   }
 
@@ -826,6 +1171,25 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     knownDetail?: any,
     eventUuid?: string,
   ) {
+    await this.applyLarkStatus(
+      requestId,
+      instanceCode,
+      status,
+      eventTime,
+      knownDetail,
+      eventUuid,
+    );
+    await this.syncLarkEntry(requestId);
+  }
+
+  private async applyLarkStatus(
+    requestId: number,
+    instanceCode: string,
+    status: ApprovalInstanceStatus,
+    eventTime?: Date | null,
+    knownDetail?: any,
+    eventUuid?: string,
+  ) {
     const hint = await this.prisma.approvalRequest.findUnique({
       where: { id: requestId },
       select: { status: true, lastEventAt: true },
@@ -872,6 +1236,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           lastEventAt: true,
           sourceType: true,
           sourceId: true,
+          clientUuid: true,
         },
       });
       if (!current) return;
@@ -906,6 +1271,19 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         completedAt: status === 'PENDING' ? undefined : eventTime || new Date(),
         ...(detail ? { detailSnapshot: detail } : {}),
       };
+
+      // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS,
+      // hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái, không ghi quỹ lần 2.
+      if (
+        isLarkCreated(current.clientUuid) &&
+        status === 'APPROVED' &&
+        data.completedAt &&
+        (data.completedAt.getTime() < LARK_LEDGER_CUTOFF.getTime() ||
+          (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
+      ) {
+        await tx.approvalRequest.update({ where: { id: requestId }, data });
+        return;
+      }
 
       if (
         ['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'].includes(

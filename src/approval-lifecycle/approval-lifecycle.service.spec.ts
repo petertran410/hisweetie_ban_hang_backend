@@ -1,6 +1,20 @@
 import { BadRequestException } from '@nestjs/common';
 import { ApprovalLifecycleService } from './approval-lifecycle.service';
 
+function larkMirrorStub() {
+  return {
+    inspect: jest.fn().mockResolvedValue({
+      summary: { inScope: false, skipReason: 'Ngoài phạm vi' },
+      suspectDuplicateOfId: null,
+    }),
+    save: jest.fn(),
+    ensureEntry: jest.fn(),
+    linkRequest: jest.fn(),
+    hasLedgerTwin: jest.fn().mockResolvedValue(false),
+    settledCodes: jest.fn().mockResolvedValue(new Set()),
+  };
+}
+
 describe('ApprovalLifecycleService', () => {
   const user = { id: 7, larkUserId: 'ou_requester' };
 
@@ -74,19 +88,29 @@ describe('ApprovalLifecycleService', () => {
     const fundLedger = {
       applyApproval: jest.fn(),
       applyPaymentVoucher: jest.fn(),
+      applyWarehouseExpense: jest.fn(),
       lockApproval: jest.fn(),
       lock: jest.fn(),
     };
     (prisma as any).$transaction = jest.fn(async (callback: any) =>
       callback(prisma),
     );
+    const larkMirror = overrides.larkMirror || larkMirrorStub();
     const service = new ApprovalLifecycleService(
       prisma as any,
       { get: jest.fn() } as any,
       larkClient as any,
       fundLedger as any,
+      larkMirror as any,
     );
-    return { service, prisma, larkClient, cashFlowsService, fundLedger };
+    return {
+      service,
+      prisma,
+      larkClient,
+      cashFlowsService,
+      fundLedger,
+      larkMirror,
+    };
   }
 
   const hnForm = [
@@ -719,7 +743,9 @@ describe('ApprovalLifecycleService', () => {
       data: { status: 'APPROVED' },
     });
     // Phiếu chưa đủ hai tick bị gỡ khỏi tuần đồng bộ trước khi ghi quỹ.
-    expect((prisma as any).internalFinanceEntry.updateMany).toHaveBeenCalledWith({
+    expect(
+      (prisma as any).internalFinanceEntry.updateMany,
+    ).toHaveBeenCalledWith({
       where: {
         weeklyBatchId: 5,
         cashIssued: false,
@@ -768,32 +794,41 @@ describe('ApprovalLifecycleService', () => {
     });
 
     expect(
-      updateMany.mock.calls.some(([args]: any[]) => args.data?.weeklyBatchId === null),
+      updateMany.mock.calls.some(
+        ([args]: any[]) => args.data?.weeklyBatchId === null,
+      ),
     ).toBe(false);
-    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(prisma, 8, 14, 9);
+    expect((fundLedger as any).issueApprovedBatch).toHaveBeenCalledWith(
+      prisma,
+      8,
+      14,
+      9,
+    );
   });
 
   it('repairs synced weeks whose approval result arrived before the fix, once at startup', async () => {
     // Đơn tuần đồng bộ đã duyệt và POS đã nhận kết quả trực tiếp.
-    const findMany = jest
-      .fn()
-      .mockResolvedValue([
-        {
-          id: 12,
-          status: 'APPROVED',
-          sourceId: 6,
-          createdAt: new Date('2026-10-13T15:41:00Z'),
-          detailSnapshot: { end_time: String(Date.parse('2026-10-14T00:55:00Z')) },
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 12,
+        status: 'APPROVED',
+        sourceId: 6,
+        createdAt: new Date('2026-10-13T15:41:00Z'),
+        detailSnapshot: {
+          end_time: String(Date.parse('2026-10-14T00:55:00Z')),
         },
-        // Tuần lịch sử: Lark duyệt từ 2025, chỉ được hỏi lại sau khi nhập.
-        {
-          id: 13,
-          status: 'APPROVED',
-          sourceId: 7,
-          createdAt: new Date('2026-10-13T15:41:00Z'),
-          detailSnapshot: { end_time: String(Date.parse('2025-03-20T08:56:00Z')) },
+      },
+      // Tuần lịch sử: Lark duyệt từ 2025, chỉ được hỏi lại sau khi nhập.
+      {
+        id: 13,
+        status: 'APPROVED',
+        sourceId: 7,
+        createdAt: new Date('2026-10-13T15:41:00Z'),
+        detailSnapshot: {
+          end_time: String(Date.parse('2025-03-20T08:56:00Z')),
         },
-      ]);
+      },
+    ]);
     const { service, prisma, fundLedger } = createService({
       approvalRequest: { findMany },
     });
@@ -1035,6 +1070,7 @@ describe('ApprovalLifecycleService', () => {
         { get: jest.fn() } as any,
         {} as any,
         { applyApproval: jest.fn() } as any,
+        larkMirrorStub() as any,
       );
 
       await expect(guardedService.postCashFlow(22, 7)).rejects.toBeInstanceOf(
@@ -1133,6 +1169,7 @@ describe('ApprovalLifecycleService', () => {
         approval: { v4: { instance: {} } },
       } as any,
       { applyApproval: jest.fn() } as any,
+      larkMirrorStub() as any,
     );
 
     await expect(serviceWithCashFlow.postCashFlow(12, 7)).rejects.toThrow(
@@ -1198,6 +1235,7 @@ describe('ApprovalLifecycleService', () => {
       { get: jest.fn() } as any,
       {} as any,
       { applyApproval: jest.fn() } as any,
+      larkMirrorStub() as any,
     );
 
     await expect(service.postCashFlow(15, 7)).rejects.toThrow(
@@ -1255,6 +1293,7 @@ describe('ApprovalLifecycleService', () => {
       { get: jest.fn().mockReturnValue('base-token') } as any,
       larkClient as any,
       { applyApproval: jest.fn() } as any,
+      larkMirrorStub() as any,
     );
 
     const result = await service.findTempAdvanceOptions();
@@ -1380,7 +1419,7 @@ describe('ApprovalLifecycleService', () => {
       approval_code: voucherCode,
       instance_code: 'D2688DAB',
       status: 'APPROVED',
-      instance_operate_time: '1791183142626',
+      instance_operate_time: '1792000000000',
     };
 
     it('ingests an approved cash voucher and posts it to the warehouse fund', async () => {
@@ -1420,7 +1459,7 @@ describe('ApprovalLifecycleService', () => {
       await f.service.handleInstanceEvent(approvedEvent);
       expect(f.requests).toHaveLength(0);
       expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
-      expect(f.events[0].error).toContain('Không tìm thấy approval request');
+      expect(f.events[0].error).toContain('Đơn Lark không ghi quỹ');
     });
   });
   describe('Lark-created PHIẾU THU', () => {
@@ -1540,7 +1579,7 @@ describe('ApprovalLifecycleService', () => {
       approval_code: receiptCode,
       instance_code: 'PT-0001',
       status: 'APPROVED',
-      instance_operate_time: '1791183142626',
+      instance_operate_time: '1792000000000',
     };
 
     it('turns a warehouse-to-office cash receipt into one fund transfer posted on approval', async () => {
@@ -1617,8 +1656,213 @@ describe('ApprovalLifecycleService', () => {
         expect(f.requests).toHaveLength(0);
         expect(f.transfers).toHaveLength(0);
         expect(f.fundLedger.applyApproval).not.toHaveBeenCalled();
-        expect(f.events[0].error).toContain('Không tìm thấy approval request');
+        expect(f.events[0].error).toContain('Đơn Lark không ghi quỹ');
       }
+    });
+  });
+  describe('Lark-created PHIẾU CHI KHO', () => {
+    const sgCode = 'AE8660B8-4467-45FE-9878-F3B649372E8C';
+    const sgForm = [
+      { id: 'widget17399388386300001', type: 'input', value: '42' },
+      { id: 'widget17399508904720001', type: 'input', value: '2026-10-13' },
+      { id: 'widget17399508961760001', type: 'input', value: '2026-10-13' },
+      { id: 'widget17368415755750001', type: 'amount', value: 150000 },
+      { id: 'widget17368416610880001', type: 'input', value: 'Tiền ship' },
+    ];
+    function khoService(operateTime: string) {
+      const requests: any[] = [];
+      const events: any[] = [];
+      const larkMirror = {
+        ...larkMirrorStub(),
+        inspect: jest.fn().mockResolvedValue({
+          summary: {
+            inScope: true,
+            branchId: 1,
+            amount: 150000,
+            description: 'Tiền ship',
+            skipReason: null,
+          },
+          suspectDuplicateOfId: null,
+        }),
+      };
+      const f = createService({
+        larkMirror,
+        approvalRequest: {
+          findUnique: jest.fn(
+            async ({ where }: any) =>
+              requests.find(
+                (row) =>
+                  row.id === where.id ||
+                  (where.instanceCode &&
+                    row.instanceCode === where.instanceCode),
+              ) || null,
+          ),
+          create: jest.fn(async ({ data }: any) => {
+            const row = { id: 60, lastEventAt: null, ...data };
+            requests.push(row);
+            return row;
+          }),
+          update: jest.fn(async ({ where, data }: any) =>
+            Object.assign(
+              requests.find((row) => row.id === where.id),
+              data,
+            ),
+          ),
+        },
+      });
+      (f.prisma.user as any).findFirst = jest.fn().mockResolvedValue({ id: 9 });
+      f.prisma.approvalRequestEvent = {
+        create: jest.fn(async ({ data }: any) => {
+          const row = { id: events.length + 1, ...data };
+          events.push(row);
+          return row;
+        }),
+        findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn(async () =>
+          events.filter((row) => !row.approvalRequestId),
+        ),
+        update: jest.fn(async ({ where, data }: any) =>
+          Object.assign(
+            events.find((row) => row.id === where.id),
+            data,
+          ),
+        ),
+        updateMany: jest.fn(),
+      } as any;
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: {
+          status: 'APPROVED',
+          open_id: 'ou_requester',
+          form: JSON.stringify(sgForm),
+        },
+      });
+      const event = {
+        approval_code: sgCode,
+        instance_code: 'KHO-SG-1',
+        status: 'APPROVED',
+        instance_operate_time: operateTime,
+      };
+      return { ...f, requests, events, event };
+    }
+
+    it('keeps a PHIẾU CHI KHO made on Lark for viewing only', async () => {
+      const f = khoService('1792000000000');
+      f.larkMirror.inspect.mockResolvedValue({
+        summary: {
+          inScope: false,
+          fundBranchIds: [],
+          skipReason: 'PHIẾU CHI KHO tạo trên Lark: chỉ xem, không ghi quỹ',
+        },
+        suspectDuplicateOfId: null,
+      });
+      await f.service.handleInstanceEvent(f.event);
+      expect(f.larkMirror.save).toHaveBeenCalled();
+      expect(f.requests).toHaveLength(0);
+      expect(f.events[0].error).toContain('chỉ xem');
+      expect(f.events[0].processedAt).toBeInstanceOf(Date);
+    });
+
+    it('does not re-run the fund step for an order POS already handled', async () => {
+      const f = khoService('1792000000000');
+      const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
+      f.requests.push({
+        id: 70,
+        instanceCode: 'PC-1',
+        clientUuid: 'LARK:PC-1',
+        sourceType: 'LARK_PAYMENT_VOUCHER',
+        status: 'APPROVED',
+        lastEventAt: null,
+      });
+      expect(await f.service.syncLarkInstance('PC-1', voucherCode)).toBe(
+        'UNCHANGED',
+      );
+      expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
+      expect(f.larkMirror.save).toHaveBeenCalledWith(
+        expect.objectContaining({ approvalRequestId: 70 }),
+      );
+      expect(f.larkMirror.ensureEntry).toHaveBeenCalledWith(70);
+    });
+
+    it('books the fund once when an order POS saw pending is now approved', async () => {
+      const f = khoService('1792000000000');
+      const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: { status: 'APPROVED', end_time: '1792000000000', form: '[]' },
+      });
+      f.requests.push({
+        id: 71,
+        instanceCode: 'PC-2',
+        clientUuid: 'LARK:PC-2',
+        sourceType: 'LARK_PAYMENT_VOUCHER',
+        status: 'PENDING',
+        lastEventAt: null,
+      });
+      expect(await f.service.syncLarkInstance('PC-2', voucherCode)).toBe(
+        'SYNCED',
+      );
+      expect(f.fundLedger.applyPaymentVoucher).toHaveBeenCalledTimes(1);
+      expect(f.requests[0].status).toBe('APPROVED');
+    });
+
+    it('does not book the fund again for an order already on the Lark Base ledger', async () => {
+      const f = khoService('1792000000000');
+      f.larkMirror.hasLedgerTwin.mockResolvedValue(true);
+      const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: { status: 'APPROVED', end_time: '1792000000000', form: '[]' },
+      });
+      f.requests.push({
+        id: 72,
+        instanceCode: 'PC-3',
+        clientUuid: 'LARK:PC-3',
+        sourceType: 'LARK_PAYMENT_VOUCHER',
+        branchId: 1,
+        formSnapshot: { metadata: { amount: 33088000 } },
+        status: 'PENDING',
+        lastEventAt: null,
+      });
+      await f.service.syncLarkInstance('PC-3', voucherCode);
+      expect(f.requests[0].status).toBe('APPROVED');
+      expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
+      expect(f.larkMirror.hasLedgerTwin).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ branchId: 1, amount: 33088000 }),
+      );
+    });
+
+    it('leaves office-fund vouchers to the user when backfilling', async () => {
+      const f = khoService('1792000000000');
+      f.larkMirror.inspect.mockResolvedValue({
+        summary: { inScope: false, fundBranchIds: [4], skipReason: 'VP' },
+        suspectDuplicateOfId: null,
+      });
+      const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
+      expect(
+        await f.service.syncLarkInstance('VP-1', voucherCode, {
+          fundBranches: [6, 1],
+        }),
+      ).toBe('MIRRORED');
+      expect(f.requests).toHaveLength(0);
+      expect(f.fundLedger.applyPaymentVoucher).not.toHaveBeenCalled();
+    });
+
+    it('does not take in a weekly approval the POS sent before its code was saved', async () => {
+      const f = khoService('1792000000000');
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: { status: 'PENDING', uuid: 'INTERNAL_FINANCE_WEEK:1:1:a:b' },
+      });
+      f.prisma.approvalRequest.findUnique = jest.fn(async ({ where }: any) =>
+        where.clientUuid === 'INTERNAL_FINANCE_WEEK:1:1:a:b'
+          ? { clientUuid: where.clientUuid }
+          : null,
+      );
+      expect(await f.service.syncLarkInstance('KHO-SG-1', sgCode)).toBe('POS');
+      expect(f.requests).toHaveLength(0);
+      expect(f.larkMirror.save).not.toHaveBeenCalled();
     });
   });
 });

@@ -9,7 +9,8 @@
 // thuộc danh sách chi nhánh của user và vai trò của user tại B có quyền X.
 //
 // File không tự gán quyền mới cho role/user, trừ một lần khi tách quyền
-// Tài chính nội bộ / Approval tuần (chép từ quyền cũ tương ứng). Chạy lại
+// Tài chính nội bộ / Approval tuần (chép từ quyền cũ tương ứng) và khi thêm
+// quyền xem Đơn Lark Approval (chép từ quyền xem Tài chính nội bộ). Chạy lại
 // nhiều lần vẫn an toàn.
 //
 // Cách chạy:
@@ -34,6 +35,9 @@ const group = (
 
 const PERMISSIONS: PermissionSeed[] = [
   ...group('internal_finance', [['view', 'Xem trang Tài chính nội bộ']]),
+  ...group('lark_approval', [
+    ['view', 'Xem đơn PHIẾU THU / PHIẾU CHI / PHIẾU CHI KHO tạo trên Lark'],
+  ]),
   ...group('weekly_approval', [
     ['view', 'Xem Approval tuần'],
     ['prepare', 'Tổng hợp tuần và hủy batch tuần'],
@@ -88,6 +92,7 @@ async function main() {
     ['warehouse_expense:view', 'weekly_approval:view'],
     ['warehouse_expense:prepare', 'weekly_approval:prepare'],
     ['warehouse_expense:submit', 'weekly_approval:submit'],
+    ['internal_finance:view', 'lark_approval:view'],
   ];
   // Chỉ chép quyền ở lần quyền mới vừa được tạo; lần chạy sau không gán lại
   // những quyền admin đã chủ động gỡ.

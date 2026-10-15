@@ -27,6 +27,7 @@ import {
   CancelWarehouseExpenseDto,
   CreateWarehouseExpenseNoteDto,
   InternalFinanceQueryDto,
+  LarkApprovalQueryDto,
   CheckWarehouseExpenseDto,
   AddWeeklyBatchEntriesDto,
   BulkCheckWarehouseExpenseDto,
@@ -176,6 +177,15 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.listWarehouseExpenseBatches(query, user);
+  }
+
+  @Get('lark-approvals')
+  @ApiOperation({ summary: 'Lark Approval forms created directly on Lark' })
+  larkApprovals(
+    @Query() query: LarkApprovalQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listLarkApprovals(query, user);
   }
 
   @Get('warehouse-expenses/weekly-batch-pages')

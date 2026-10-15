@@ -352,3 +352,183 @@ export function readFundReceipt(
     description: description || 'Thu quỹ nội bộ',
   };
 }
+
+/** Bốn form Lark Approval nhân viên tạo trực tiếp mà POS nhận về để đối chiếu. */
+export type LarkFormKind =
+  | 'PHIEU_THU'
+  | 'PHIEU_CHI'
+  | 'PHIEU_CHI_KHO_HN'
+  | 'PHIEU_CHI_KHO_SG';
+
+export const LARK_FORM_KINDS: LarkFormKind[] = [
+  'PHIEU_THU',
+  'PHIEU_CHI',
+  'PHIEU_CHI_KHO_HN',
+  'PHIEU_CHI_KHO_SG',
+];
+
+/** Kho HN (6) và Kho SG (1): đơn tiền mặt của hai quỹ này thành phiếu POS. */
+export const LARK_ENTRY_BRANCHES = [6, 1];
+
+/**
+ * Ngày dùng hệ thống tài chính nội bộ (14/10/2026): tới hết 13/10 kho ghi tiền
+ * ngay vào sổ quỹ Lark Base nên đơn duyệt trước mốc chỉ tạo phiếu, không ghi
+ * quỹ lần nữa (trùng DEPLOY_CUTOFF của ledger-deploy-cutoff).
+ */
+export const LARK_LEDGER_CUTOFF = new Date('2026-10-14T00:00:00+07:00');
+
+export interface LarkInstanceSummary {
+  amount: number | null;
+  cashAmount: number | null;
+  method: string | null;
+  cashSource: string | null;
+  description: string | null;
+  occurredAt: Date | null;
+  branchId: number | null;
+  direction: 'EXPENSE' | 'RECEIPT' | null;
+  inScope: boolean;
+  skipReason: string | null;
+  /** Quỹ tiền mặt đơn làm thay đổi (chuyển quỹ có hai quỹ). */
+  fundBranchIds: number[];
+}
+
+const BRANCH_FUND_LABELS: Record<number, string> = {
+  6: 'Tiền mặt Kho HN',
+  1: 'Tiền mặt Kho SG',
+  4: 'Tiền mặt Văn phòng HN',
+  7: 'Tiền mặt Văn phòng HCM',
+};
+
+function formValue(form: ApprovalFormItem[], id: string) {
+  return form.find((item) => item.id === id)?.value;
+}
+
+function formText(form: ApprovalFormItem[], id: string) {
+  const value = formValue(form, id);
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function formNumber(form: ApprovalFormItem[], id: string) {
+  const value = Number(formValue(form, id));
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function dateKeyOf(value: string | null) {
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getTime() + 7 * 3600000).toISOString().slice(0, 10);
+}
+
+/**
+ * Đọc một đơn Lark của 4 form: số tiền, nguồn tiền, ngày và có thành phiếu
+ * Phiếu chi kho / Tài chính nội bộ hay không (chỉ tiền mặt Kho HN / Kho SG).
+ * `fallbackDate` là ngày duyệt (hoặc ngày tạo) của đơn.
+ */
+export function summarizeLarkInstance(
+  kind: LarkFormKind,
+  form: ApprovalFormItem[],
+  fallbackDate: Date | null,
+): LarkInstanceSummary {
+  if (kind === 'PHIEU_CHI') {
+    const ids = PAYMENT_VOUCHER.fieldIds;
+    const cash = readPaymentVoucherCash(form);
+    const base = {
+      amount: formNumber(form, ids.amount),
+      cashAmount: cash?.amount ?? formNumber(form, ids.cashAmount),
+      method: formText(form, ids.method),
+      cashSource: formText(form, ids.cashSource),
+      description: formText(form, ids.description),
+      occurredAt: fallbackDate,
+      direction: 'EXPENSE' as const,
+    };
+    if (!cash)
+      return {
+        ...base,
+        branchId: null,
+        inScope: false,
+        skipReason: 'Không chi bằng tiền mặt quỹ nội bộ',
+        fundBranchIds: [],
+      };
+    const inScope = LARK_ENTRY_BRANCHES.includes(cash.branchId);
+    return {
+      ...base,
+      branchId: cash.branchId,
+      inScope,
+      skipReason: inScope ? null : 'Chi từ quỹ văn phòng',
+      fundBranchIds: [cash.branchId],
+    };
+  }
+
+  if (kind === 'PHIEU_THU') {
+    const ids = RECEIPT_FIELD_IDS;
+    const receipt = readFundReceipt(form);
+    const rawDate = formText(form, ids.date);
+    const base = {
+      amount: formNumber(form, ids.amount),
+      cashAmount: null,
+      method: formText(form, ids.method),
+      cashSource: formText(form, ids.cashSource),
+      description: formText(form, ids.description),
+      occurredAt: rawDate ? new Date(rawDate) : fallbackDate,
+      direction: 'RECEIPT' as const,
+    };
+    if (!receipt)
+      return {
+        ...base,
+        branchId: null,
+        inScope: false,
+        skipReason: 'Không thu tiền mặt vào quỹ nội bộ',
+        fundBranchIds: [],
+      };
+    if (receipt.kind === 'TRANSFER')
+      return {
+        ...base,
+        cashSource: `${BRANCH_FUND_LABELS[receipt.sourceBranchId] || receipt.sourceBranchId} → ${BRANCH_FUND_LABELS[receipt.destinationBranchId] || receipt.destinationBranchId}`,
+        branchId: receipt.sourceBranchId,
+        inScope: false,
+        skipReason: 'Chuyển tiền giữa các quỹ (xem ở Quỹ nội bộ)',
+        fundBranchIds: [receipt.sourceBranchId, receipt.destinationBranchId],
+      };
+    const inScope = LARK_ENTRY_BRANCHES.includes(receipt.branchId);
+    return {
+      ...base,
+      cashSource: base.cashSource || BRANCH_FUND_LABELS[receipt.branchId],
+      occurredAt: receipt.occurredAt,
+      branchId: receipt.branchId,
+      inScope,
+      skipReason: inScope ? null : 'Thu vào quỹ văn phòng',
+      fundBranchIds: [receipt.branchId],
+    };
+  }
+
+  // PHIẾU CHI KHO HN / SG là form Approval tuần của POS; đơn nhân viên tự tạo
+  // trên Lark (đơn tổng tuần kiểu cũ, đơn gửi lại) chỉ để xem, không ghi quỹ.
+  const ids =
+    kind === 'PHIEU_CHI_KHO_HN' ? EXPENSE_FIELD_IDS.HN : EXPENSE_FIELD_IDS.SG;
+  const branchId = kind === 'PHIEU_CHI_KHO_HN' ? 6 : 1;
+  const from = dateKeyOf(formText(form, ids.from));
+  const to = dateKeyOf(formText(form, ids.to)) || from;
+  const amount = formNumber(form, EXPENSE_FIELD_IDS.common.amount);
+  const week = formText(form, ids.week);
+  // Ô "Chi tiết" của đơn POS là đường link; đơn nhân viên tạo có thể ghi chữ.
+  const detail = formText(form, EXPENSE_FIELD_IDS.common.detail);
+  const detailText = detail && !/^https?:\/\//i.test(detail) ? detail : null;
+  const range = from && to && from !== to ? ` (${from} → ${to})` : '';
+  return {
+    amount,
+    cashAmount: amount,
+    method: null,
+    cashSource: BRANCH_FUND_LABELS[branchId],
+    description: `${detailText || `Phiếu chi kho${week ? ` tuần ${week}` : ''}`}${range}`,
+    occurredAt: from ? new Date(`${from}T00:00:00+07:00`) : fallbackDate,
+    branchId,
+    direction: 'EXPENSE',
+    inScope: false,
+    skipReason: 'PHIẾU CHI KHO tạo trên Lark: chỉ xem, không ghi quỹ',
+    fundBranchIds: [],
+  };
+}

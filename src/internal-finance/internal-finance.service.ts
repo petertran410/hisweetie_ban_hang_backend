@@ -32,6 +32,8 @@ import {
   INTERNAL_FINANCE_STATUS,
   INTERNAL_FINANCE_WEEKLY_STATUS,
   INTERNAL_FINANCE_BRANCH_IDS,
+  LARK_APPROVAL_LOCK_REASON,
+  LARK_APPROVAL_SOURCE_TYPE,
   WAREHOUSE_CASH_BRANCH_IDS,
   WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
@@ -47,6 +49,7 @@ import {
   AddInternalFinanceAttachmentsDto,
   CreateWarehouseExpenseDto,
   InternalFinanceQueryDto,
+  LarkApprovalQueryDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
   PrepareWeeklyBatchDto,
@@ -66,6 +69,7 @@ import {
   fundDayStart,
   FUND_SOURCE_TYPE,
   InternalFundLedgerService,
+  isLarkLedgerRecorded,
 } from '../internal-fund/internal-fund-ledger.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { VEHICLE_CHECK } from '../vehicles/vehicles.constants';
@@ -681,6 +685,8 @@ export class InternalFinanceService {
       if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
         throw new NotFoundException('Không tìm thấy khoản chi');
       }
+      if (entry.sourceType === LARK_APPROVAL_SOURCE_TYPE)
+        throw new BadRequestException(LARK_APPROVAL_LOCK_REASON);
       if (entry.sourceType !== 'MANUAL_EXPENSE') {
         throw new BadRequestException(
           'Khoản chi từ báo đơn, xăng dầu hoặc chăm sóc xe phải sửa tại nguồn phát sinh',
@@ -1086,8 +1092,12 @@ export class InternalFinanceService {
 
     // Tiền thu tại kho vào quỹ nội bộ cùng lúc phiếu chuyển sang "Đã lập".
     return this.prisma.$transaction(async (tx) => {
-      // Dòng đồng bộ về đã có bút toán trong sổ quỹ lịch sử, không cộng lần hai.
-      if (!String(entry.sourceKey || '').startsWith('LARK_CASH:'))
+      // Dòng đồng bộ về, hoặc phiếu đã có dòng trên sổ quỹ Lark (trước ngày
+      // dùng POS), đã có bút toán trong sổ quỹ lịch sử: không cộng lần hai.
+      if (
+        !String(entry.sourceKey || '').startsWith('LARK_CASH:') &&
+        !isLarkLedgerRecorded(entry)
+      )
         await this.fundLedger.postSystemTransaction(tx, {
           branchId: entry.branchId,
           transactionType: 'RECEIPT',
@@ -2802,6 +2812,8 @@ export class InternalFinanceService {
       if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
         throw new NotFoundException('Không tìm thấy khoản chi');
       }
+      if (entry.sourceType === LARK_APPROVAL_SOURCE_TYPE)
+        throw new BadRequestException(LARK_APPROVAL_LOCK_REASON);
       return this.cancelExpenseInTx(
         tx,
         entry,
@@ -2962,6 +2974,8 @@ export class InternalFinanceService {
       if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE) {
         throw new NotFoundException('Không tìm thấy khoản chi');
       }
+      if (entry.sourceType === LARK_APPROVAL_SOURCE_TYPE)
+        throw new BadRequestException(LARK_APPROVAL_LOCK_REASON);
       if (
         entry.cashIssued ||
         entry.cashFlowId ||
@@ -4234,6 +4248,133 @@ export class InternalFinanceService {
     });
     if (!entry) throw new NotFoundException('Không tìm thấy phiếu tiền mặt');
     await this.assertWarehouseCash(user, action, entry.branchId);
+  }
+
+  /**
+   * Trang "Đơn Lark Approval": mọi đơn PHIẾU THU / PHIẾU CHI / PHIẾU CHI KHO
+   * nhân viên tạo trên Lark, kèm phiếu POS đã tạo hoặc lý do không tạo. Không
+   * trả mã đơn Lark cho giao diện.
+   */
+  async listLarkApprovals(query: LarkApprovalQueryDto, user: FinanceActor) {
+    const allowed = await this.access.branchesFor(
+      user,
+      'lark_approval:view',
+      INTERNAL_FINANCE_BRANCH_IDS,
+    );
+    if (!allowed.length)
+      throw new ForbiddenException('Không có quyền xem đơn Lark Approval');
+    const requested = query.branchIds?.length
+      ? query.branchIds.map(Number)
+      : null;
+    if (requested?.some((branchId) => !allowed.includes(branchId)))
+      throw new ForbiddenException('Không có quyền xem đơn của chi nhánh này');
+    const and: Prisma.LarkApprovalInstanceWhereInput[] = [
+      // Đơn không gắn quỹ (chuyển khoản) không thuộc chi nhánh nào.
+      requested
+        ? { branchId: { in: requested } }
+        : { OR: [{ branchId: { in: allowed } }, { branchId: null }] },
+    ];
+    if (query.formKind) and.push({ formKind: query.formKind });
+    if (query.status) and.push({ status: query.status });
+    if (query.scope) and.push({ inScope: query.scope === 'IN' });
+    if (query.suspect === 'true')
+      and.push({ suspectDuplicateOfId: { not: null } });
+    if (query.fromDate || query.toDate)
+      and.push({
+        occurredAt: {
+          ...(query.fromDate ? { gte: fundDayStart(query.fromDate) } : {}),
+          ...(query.toDate
+            ? { lt: new Date(fundDayStart(query.toDate).getTime() + 86400000) }
+            : {}),
+        },
+      });
+    const search = query.search?.trim();
+    if (search) {
+      const entryIds = (
+        await this.prisma.internalFinanceEntry.findMany({
+          where: {
+            sourceType: LARK_APPROVAL_SOURCE_TYPE,
+            code: { contains: search, mode: 'insensitive' },
+          },
+          select: { id: true },
+          take: 50,
+        })
+      ).map((row) => row.id);
+      and.push({
+        OR: [
+          { description: { contains: search, mode: 'insensitive' } },
+          { requesterName: { contains: search, mode: 'insensitive' } },
+          ...(entryIds.length ? [{ entryId: { in: entryIds } }] : []),
+        ],
+      });
+    }
+    const where: Prisma.LarkApprovalInstanceWhereInput = { AND: and };
+    const page = Math.max(1, query.page || 1);
+    const limit = Math.min(query.limit || 50, 200);
+    const [rows, summary] = await Promise.all([
+      this.prisma.larkApprovalInstance.findMany({
+        where,
+        orderBy: [{ submittedAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.larkApprovalInstance.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: { amount: true },
+      }),
+    ]);
+    const linkedIds = [
+      ...new Set(
+        rows.flatMap((row) =>
+          [row.entryId, row.suspectDuplicateOfId].filter(
+            (id): id is number => typeof id === 'number',
+          ),
+        ),
+      ),
+    ];
+    const entries = linkedIds.length
+      ? await this.prisma.internalFinanceEntry.findMany({
+          where: { id: { in: linkedIds } },
+          select: { id: true, code: true, status: true },
+        })
+      : [];
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const branches = await this.prisma.branch.findMany({
+      where: { id: { in: [...INTERNAL_FINANCE_BRANCH_IDS] } },
+      select: { id: true, name: true },
+    });
+    const branchName = new Map(branches.map((row) => [row.id, row.name]));
+    return {
+      data: rows.map((row) => ({
+        id: row.id,
+        formKind: row.formKind,
+        status: row.status,
+        requesterName: row.requesterName,
+        submittedAt: row.submittedAt,
+        completedAt: row.completedAt,
+        occurredAt: row.occurredAt,
+        amount: row.amount === null ? null : Number(row.amount),
+        cashAmount: row.cashAmount === null ? null : Number(row.cashAmount),
+        method: row.method,
+        cashSource: row.cashSource,
+        description: row.description,
+        branchId: row.branchId,
+        branchName: row.branchId ? branchName.get(row.branchId) || null : null,
+        direction: row.direction,
+        inScope: row.inScope,
+        skipReason: row.skipReason,
+        entry: row.entryId ? byId.get(row.entryId) || null : null,
+        suspectDuplicate: row.suspectDuplicateOfId
+          ? byId.get(row.suspectDuplicateOfId) || null
+          : null,
+        syncedAt: row.syncedAt,
+      })),
+      total: summary._count._all,
+      totalAmount: Number(summary._sum.amount || 0),
+      page,
+      limit,
+    };
   }
 
   /** Chi nhánh user được xem ở trang Tài chính nội bộ. */

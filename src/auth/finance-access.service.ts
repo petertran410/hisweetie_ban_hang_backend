@@ -13,6 +13,7 @@ const FINANCE_RESOURCES = [
   'warehouse_cash',
   'vehicles',
   'cash_flows',
+  'lark_approval',
 ];
 
 /** Người thao tác: id, hoặc user của request (đã có vai trò và chi nhánh). */

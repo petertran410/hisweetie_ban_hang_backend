@@ -859,3 +859,19 @@ export class BulkCheckWarehouseExpenseDto {
   @IsIn(['manager', 'accountant'])
   role: 'manager' | 'accountant';
 }
+
+/** Lọc trang "Đơn Lark Approval". */
+export class LarkApprovalQueryDto extends InternalFinanceQueryDto {
+  @IsOptional()
+  @IsIn(['PHIEU_THU', 'PHIEU_CHI', 'PHIEU_CHI_KHO_HN', 'PHIEU_CHI_KHO_SG'])
+  formKind?: string;
+
+  /** IN: đã / sẽ thành phiếu POS; OUT: chỉ xem (ngoài phạm vi). */
+  @IsOptional()
+  @IsIn(['IN', 'OUT'])
+  scope?: string;
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  suspect?: string;
+}

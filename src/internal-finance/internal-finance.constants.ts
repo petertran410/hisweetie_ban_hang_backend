@@ -11,6 +11,10 @@ export const INTERNAL_FINANCE_CATEGORY = {
   CUSTOMER_RECEIPT: 'CUSTOMER_RECEIPT',
   MANUAL_RECEIPT: 'MANUAL_RECEIPT',
   OTHER_EXPENSE: 'OTHER_EXPENSE',
+  // Giao dịch quỹ tiền mặt duyệt trên Lark (PHIẾU CHI / PHIẾU THU): hiện ở
+  // Tài chính nội bộ, không phải chi phí vận hành của Phiếu chi kho.
+  CASH_FUND_EXPENSE: 'CASH_FUND_EXPENSE',
+  CASH_FUND_RECEIPT: 'CASH_FUND_RECEIPT',
 } as const;
 
 export const INTERNAL_FINANCE_SUBCATEGORY = {
@@ -41,6 +45,13 @@ export function localizeFeeCodes(text: string | null | undefined) {
     (code) => PACKING_FEE_LABELS[code] || code,
   );
 }
+
+/** Phiếu sinh từ đơn Lark Approval đã duyệt (tiền mặt Kho HN / Kho SG). */
+export const LARK_APPROVAL_SOURCE_TYPE = 'LARK_APPROVAL';
+
+/** Lý do khóa thao tác trên phiếu sinh từ đơn Lark Approval. */
+export const LARK_APPROVAL_LOCK_REASON =
+  'Phiếu từ Lark Approval đã duyệt, sửa hoặc thu hồi trên Lark';
 
 export const INTERNAL_FINANCE_BRANCH_CODES: Record<number, string> = {
   6: 'HN',

@@ -285,6 +285,38 @@ describe('InternalFinanceService', () => {
     });
   });
 
+  it('does not tick entries from a Lark Approval order', async () => {
+    const entry: any = {
+      id: 78,
+      branchId: 6,
+      direction: 'EXPENSE',
+      sourceType: 'LARK_APPROVAL',
+      status: 'POSTED',
+      cashIssued: true,
+      cashFlowId: null,
+      weeklyBatch: null,
+    };
+    const update = jest.fn();
+    const { service, authService } = makeService({
+      internalFinanceEntry: { findUnique: jest.fn(async () => entry), update },
+      internalFinanceReview: { create: jest.fn() },
+    });
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:check_manager',
+    ]);
+    await expect(
+      service.checkWarehouseExpense(
+        78,
+        { id: 7, roles: [] },
+        {
+          role: 'manager',
+          checked: true,
+        },
+      ),
+    ).rejects.toThrow('Lark Approval');
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it('ticks manager and accountant checks independently and derives the status', async () => {
     const entry: any = {
       id: 77,
@@ -705,6 +737,11 @@ describe('InternalFinanceService', () => {
         'Approval tuần',
       ],
       ['a cancelled entry', { status: 'CANCELLED' }, 'đã được hủy'],
+      [
+        'an entry from a Lark Approval order',
+        { sourceType: 'LARK_APPROVAL', cashIssued: true },
+        'Lark Approval',
+      ],
     ])('refuses %s', async (_label, patch, message) => {
       const { service, update } = setup({ ...open, ...patch });
       await expect(
@@ -1987,6 +2024,45 @@ describe('InternalFinanceService', () => {
     expect(state.status).toBe('POSTED');
     expect((state as any).posManagedAt).toBeInstanceOf(Date);
     expect(fundLedger.postSystemTransaction).not.toHaveBeenCalled();
+  });
+
+  it('does not credit the fund again for a receipt already on the Lark Base ledger', async () => {
+    const state = {
+      ...warehouseEntry(),
+      subCategory: 'WAREHOUSE_ITEM_SALE',
+      customerId: null,
+      sourceSnapshot: {
+        receiptKind: 'WAREHOUSE_SALE',
+        larkLedgerRecorded: true,
+        larkLedgerCode: 'SQ-18088',
+      },
+      invoiceLinks: [],
+    };
+    const { service, prisma, cashFlowsService, fundLedger } = makeService({
+      customer: { findMany: jest.fn().mockResolvedValue([]) },
+      invoice: { findMany: jest.fn() },
+    });
+    prisma.internalFinanceEntry.findUnique.mockImplementation(async () => ({
+      ...state,
+    }));
+    prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+    prisma.internalFinanceEntry.update.mockImplementation(
+      async ({ data }: any) => {
+        Object.assign(state, data);
+        return { ...state };
+      },
+    );
+    cashFlowsService.createStandaloneCashReceipt.mockResolvedValue({
+      cashFlow: { id: 13, code: 'TT000013' },
+    });
+
+    await service.postWarehouseReceipt(4, { allocations: [] }, 7);
+
+    expect(state.status).toBe('POSTED');
+    expect(fundLedger.postSystemTransaction).not.toHaveBeenCalled();
+    expect((state as any).sourceSnapshot).toMatchObject({
+      larkLedgerRecorded: true,
+    });
   });
 
   it('cancels a warehouse receipt without cashflows', async () => {

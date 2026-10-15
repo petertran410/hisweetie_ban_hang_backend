@@ -2287,6 +2287,43 @@ model ApprovalRequestEvent {
   @@map("approval_request_events")
 }
 
+// Bản sao đơn PHIẾU THU / PHIẾU CHI / PHIẾU CHI KHO HN, SG do nhân viên tạo
+// trực tiếp trên Lark Approval (không gồm đơn POS tự gửi), để đối chiếu trên POS.
+model LarkApprovalInstance {
+  id                   Int       @id @default(autoincrement())
+  instanceCode         String    @unique @map("instance_code") @db.VarChar(64)
+  approvalCode         String    @map("approval_code") @db.VarChar(64)
+  formKind             String    @map("form_kind") @db.VarChar(32)
+  status               String    @db.VarChar(20)
+  serialNumber         String?   @map("serial_number") @db.VarChar(64)
+  requesterId          Int?      @map("requester_id")
+  requesterName        String?   @map("requester_name") @db.VarChar(255)
+  submittedAt          DateTime? @map("submitted_at")
+  completedAt          DateTime? @map("completed_at")
+  amount               Decimal?  @db.Decimal(18, 2)
+  cashAmount           Decimal?  @map("cash_amount") @db.Decimal(18, 2)
+  method               String?   @db.VarChar(255)
+  cashSource           String?   @map("cash_source") @db.VarChar(255)
+  description          String?
+  occurredAt           DateTime? @map("occurred_at")
+  branchId             Int?      @map("branch_id")
+  direction            String?   @db.VarChar(16)
+  inScope              Boolean   @default(false) @map("in_scope")
+  skipReason           String?   @map("skip_reason")
+  suspectDuplicateOfId Int?      @map("suspect_duplicate_of_id")
+  approvalRequestId    Int?      @unique @map("approval_request_id")
+  entryId              Int?      @unique @map("entry_id")
+  detailSnapshot       Json?     @map("detail_snapshot")
+  syncedAt             DateTime  @default(now()) @map("synced_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
+
+  @@index([formKind, status])
+  @@index([branchId, occurredAt])
+  @@index([submittedAt])
+  @@map("lark_approval_instances")
+}
+
 model InternalFinanceCodeCounter {
   id           Int      @id @default(autoincrement())
   dateKey      String   @unique @db.VarChar(8)

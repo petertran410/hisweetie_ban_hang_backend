@@ -2,7 +2,9 @@ import {
   matchPackingTwins,
   matchVehicleTwins,
   planMerge,
+  plateHints,
   suspectGroups,
+  vehiclePlate,
   twinText,
   type TwinEntry,
   type TwinRow,
@@ -39,7 +41,7 @@ describe('matchVehicleTwins', () => {
   it('pairs the HN expense copy with the vehicle entry via the link text', () => {
     const { pairs, ambiguous } = matchVehicleTwins([dupHn], [careHn]);
     expect(pairs).toEqual([
-      { kind: 'vehicle', dup: dupHn, keep: careHn, basis: 'label' },
+      { kind: 'vehicle', dup: dupHn, keep: careHn, basis: 'plate' },
     ]);
     expect(ambiguous).toEqual([]);
   });
@@ -109,7 +111,7 @@ describe('matchVehicleTwins', () => {
       description: 'Phạt nóng - 29E - 623.55 - Dầu',
     };
     expect(matchVehicleTwins([dup], [fuel, care]).pairs).toEqual([
-      { kind: 'vehicle', dup, keep: care, basis: 'label' },
+      { kind: 'vehicle', dup, keep: care, basis: 'plate' },
     ]);
 
     // Bản sao không ghi dịch vụ nào là phiếu xăng.
@@ -120,7 +122,7 @@ describe('matchVehicleTwins', () => {
       note: 'Xăng - 29E - 623.55 - Dầu - 2026/03/27',
     };
     expect(matchVehicleTwins([fuelDup], [fuel, care]).pairs).toEqual([
-      { kind: 'vehicle', dup: fuelDup, keep: fuel, basis: 'label' },
+      { kind: 'vehicle', dup: fuelDup, keep: fuel, basis: 'plate' },
     ]);
   });
 
@@ -271,28 +273,158 @@ describe('planMerge', () => {
   });
 });
 
+describe('plate matching', () => {
+  it('reads plate hints and ignores dates and amounts', () => {
+    expect(plateHints('Xăng - 29D - 220.60 - 2026/03/09')).toEqual(
+      expect.arrayContaining(['29d22060', '22060']),
+    );
+    expect(plateHints('Dầu xe 053.80')).toEqual(['05380']);
+    expect(plateHints('Sửa xe 2309')).toEqual(['2309']);
+    expect(plateHints('XE TIỀN 52218')).toEqual(['52218']);
+    expect(plateHints('12.10.26 - 180,000 - Sửa chữa xe')).toEqual([]);
+    expect(plateHints('Xăng - 71H4 - 8700 (xe máy) - 2026/10/14')).toEqual(
+      expect.arrayContaining(['71h48700']),
+    );
+    expect(
+      vehiclePlate({ ...careHn, vehicle: { label: '71H4 - 8700 (xe máy)' } }),
+    ).toBe('71h48700');
+    expect(
+      vehiclePlate({ ...careHn, vehicle: { label: '29D - 220.60 - Xăng' } }),
+    ).toBe('29d22060');
+  });
+
+  const day = at('2026-03-09T03:00:00Z');
+  const fuel = (id: number, label: string): TwinEntry => ({
+    ...careHn,
+    id,
+    code: `XD-${id}`,
+    category: 'FUEL',
+    amount: 650000,
+    occurredAt: day,
+    description: `Xăng dầu - ${label}`,
+    note: null,
+    vehicle: { label },
+  });
+  const copy = (id: number, note: string, item?: string): TwinEntry => ({
+    ...dupHn,
+    id,
+    amount: 650000,
+    occurredAt: day,
+    description: 'Dầu xe',
+    note,
+    expenseItem: item ?? 'Xăng xe: oto, xe tại kho',
+    sourceSnapshot: {},
+  });
+
+  it('pairs only with the vehicle whose plate the copy names', () => {
+    const right = fuel(41, '29D - 220.60 - Xăng');
+    const wrong = fuel(42, '30B - 460.35 - Xăng');
+    const dup = copy(40, 'Xăng - 29D - 220.60 - 2026/03/09');
+    expect(matchVehicleTwins([dup], [wrong, right]).pairs).toEqual([
+      { kind: 'vehicle', dup, keep: right, basis: 'plate' },
+    ]);
+  });
+
+  it('pairs by identical timestamp even when the vehicle was renamed later', () => {
+    const at09 = at('2026-03-09T10:26:52Z');
+    const renamed = { ...fuel(51, '30B - 460.35 - Xăng'), occurredAt: at09 };
+    const other = fuel(52, '29D - 223.09 - Xăng');
+    const dup = {
+      ...copy(53, 'Xăng - 29D - 220.60 - 2026/03/09'),
+      occurredAt: at09,
+    };
+    expect(matchVehicleTwins([dup], [other, renamed]).pairs).toEqual([
+      { kind: 'vehicle', dup, keep: renamed, basis: 'time' },
+    ]);
+  });
+
+  it('reports a copy naming a plate that has no matching entry that day', () => {
+    const dup = copy(43, 'Xăng - 29D - 220.60 - 2026/03/09');
+    // Phiếu xe khác giờ: không phải bản gốc của bản sao này.
+    const result = matchVehicleTwins(
+      [dup],
+      [
+        {
+          ...fuel(44, '30B - 460.35 - Xăng'),
+          occurredAt: at('2026-03-09T05:00:00Z'),
+        },
+      ],
+    );
+    expect(result.pairs).toEqual([]);
+    expect(result.plateMissing[0].hints).toContain('29d22060');
+  });
+
+  it('matches short plate hints like "053.80" and "2309"', () => {
+    const dup = copy(45, 'Dầu xe 053.80');
+    const keep = fuel(46, '29K - 053.80 - Dầu');
+    expect(
+      matchVehicleTwins([dup], [fuel(47, '29E - 623.55 - Dầu'), keep]).pairs[0]
+        .keep,
+    ).toBe(keep);
+  });
+
+  it('sends a copy without plate to manual review when two vehicles match', () => {
+    const dup = copy(48, '');
+    const result = matchVehicleTwins(
+      [dup],
+      [fuel(49, '29D - 220.60 - Xăng'), fuel(50, '30B - 460.35 - Xăng')],
+    );
+    expect(result.pairs).toEqual([]);
+    expect(result.ambiguous[0].keeps).toHaveLength(2);
+  });
+});
+
 describe('suspectGroups', () => {
   const base = {
     branchId: 6,
     amount: 50000 as any,
     occurredAt: at('2026-10-01T03:00:00Z'),
-    category: 'OTHER_EXPENSE',
     description: null,
     note: null,
     payer: null,
+    sourceSnapshot: {},
   };
-  it('lists same-day same-amount groups that include a Lark row', () => {
-    const rows = [
-      { ...base, id: 1, code: 'A', sourceType: 'LARK_IMPORT' },
-      { ...base, id: 2, code: 'B', sourceType: 'PACKING_SLIP' },
-      { ...base, id: 3, code: 'C', sourceType: 'FUEL', amount: 60000 as any },
-      { ...base, id: 4, code: 'D', sourceType: 'MANUAL_EXPENSE', branchId: 1 },
-      { ...base, id: 5, code: 'E', sourceType: 'MANUAL_EXPENSE', branchId: 1 },
-    ];
-    const groups = suspectGroups(rows, new Set());
-    expect(groups.map((group) => group.map((row) => row.code))).toEqual([
-      ['A', 'B'],
+  const gửiBến = {
+    ...base,
+    id: 1,
+    code: 'CHI-1',
+    sourceType: 'LARK_IMPORT',
+    category: 'DELIVERY_FEE',
+    description: 'Phí gửi bến - HD1',
+    expenseItem: 'Cước gửi hàng cho khách',
+  };
+  const xăngCopy = {
+    ...base,
+    id: 2,
+    code: 'CHI-2',
+    sourceType: 'LARK_IMPORT',
+    category: 'OTHER_EXPENSE',
+    expenseItem: 'Xăng xe: oto, xe tại kho',
+  };
+  const xăng = {
+    ...base,
+    id: 3,
+    code: 'XD-3',
+    sourceType: 'LARK_IMPORT',
+    category: 'FUEL',
+    vehicle: { label: '29D - 220.60 - Xăng' },
+  };
+
+  it('groups a vehicle-like copy only with vehicle entries', () => {
+    const groups = suspectGroups(
+      [gửiBến, xăngCopy] as any,
+      [xăng] as any,
+      [],
+      new Set(),
+    );
+    expect(groups.map((g: any[]) => g.map((row) => row.code))).toEqual([
+      ['CHI-2', 'XD-3'],
     ]);
-    expect(suspectGroups(rows, new Set([1]))).toEqual([]);
+  });
+
+  it('skips copies already merged or under manual review', () => {
+    expect(
+      suspectGroups([xăngCopy] as any, [xăng] as any, [], new Set([2])),
+    ).toEqual([]);
   });
 });

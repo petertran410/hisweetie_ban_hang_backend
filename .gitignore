@@ -92,3 +92,6 @@ prisma/seeds/data/product-image-map.json
 # Database dumps (tránh commit file dump lớn vào repo)
 *.dump
 *.sql.gz
+
+# Báo cáo script một lần (dedupe-lark-twins…)
+/reports

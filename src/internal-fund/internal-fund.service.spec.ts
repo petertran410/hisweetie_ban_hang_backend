@@ -329,6 +329,24 @@ describe('Internal fund ledger', () => {
     expect(f.entry.cashIssued).toBe(true);
   });
 
+  it('cancels the Tài chính nội bộ row of a Lark Approval order with its fund row', async () => {
+    const f = fixture();
+    await f.service.postExpenseEntry(12, 7, true);
+    f.entry.sourceType = 'LARK_APPROVAL';
+    f.entry.status = 'POSTED';
+    await f.service.cancelTransaction(1, { reason: ' Ghi nhầm quỹ ' }, 7);
+    expect(f.entry).toMatchObject({
+      status: 'CANCELLED',
+      cashIssued: false,
+      cancelReason: 'Hủy giao dịch quỹ: Ghi nhầm quỹ',
+      cancelledBy: 7,
+    });
+    expect(f.transactions[0]).toMatchObject({
+      status: 'CANCELLED',
+      entryId: null,
+    });
+  });
+
   it('refuses to cancel warehouse-cash rows from the fund screen', async () => {
     const f = fixture();
     f.transactions.push({
