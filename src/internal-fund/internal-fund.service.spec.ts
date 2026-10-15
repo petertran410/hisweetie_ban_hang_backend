@@ -90,6 +90,7 @@ function fixture() {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
       updateMany: jest.fn(),
+      update: jest.fn(async ({ data }: any) => data),
       upsert: jest.fn(async ({ create }: any) => create),
     },
     approvalRequest: {
@@ -567,6 +568,50 @@ describe('Internal fund ledger', () => {
       expect(closing.log).toHaveLength(1);
     },
   );
+
+  it('moves an existing closing to an empty day, keeping its history', async () => {
+    const f = fixture();
+    const saved = {
+      id: 3,
+      branchId: 6,
+      closingDate: new Date('2026-10-04T00:00:00Z'),
+      closedAt: new Date(),
+      log: [{ capturedAt: '2026-10-04T10:00:00Z' }],
+    };
+    f.prisma.internalFundDailyClosing.findUnique.mockImplementation(
+      async ({ where }: any) => (where.id === 3 ? saved : null),
+    );
+    const closing: any = await f.service.closeDay(
+      { id: 3, branchId: 6, closingDate: '2026-10-05', notes: 'Nhầm ngày' },
+      7,
+    );
+    expect(f.prisma.internalFundDailyClosing.upsert).not.toHaveBeenCalled();
+    expect(f.prisma.internalFundDailyClosing.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 3 } }),
+    );
+    expect(closing.closingDate).toEqual(new Date('2026-10-05T00:00:00Z'));
+    expect(closing.snapshot.movedFrom).toBe('2026-10-04');
+    expect(closing.log).toHaveLength(2);
+  });
+
+  it('refuses to move a closing onto a day that already has one', async () => {
+    const f = fixture();
+    f.prisma.internalFundDailyClosing.findUnique.mockImplementation(
+      async ({ where }: any) =>
+        where.id === 3
+          ? {
+              id: 3,
+              branchId: 6,
+              closingDate: new Date('2026-10-04T00:00:00Z'),
+              closedAt: new Date(),
+            }
+          : { id: 4, branchId: 6, closedAt: new Date() },
+    );
+    await expect(
+      f.service.closeDay({ id: 3, branchId: 6, closingDate: '2026-10-05' }, 7),
+    ).rejects.toThrow('05/10/2026 đã có chốt sổ');
+    expect(f.prisma.internalFundDailyClosing.update).not.toHaveBeenCalled();
+  });
 
   it('lists only closings users created, with live system numbers beside them', async () => {
     const f = fixture();

@@ -900,11 +900,28 @@ export class InternalFundService {
     return this.prisma.$transaction(async (tx) => {
       await this.ledger.lock(tx, [dto.branchId]);
       const date = fundClosingDate(dto.closingDate);
-      const existing = await tx.internalFundDailyClosing.findUnique({
+      // Sửa theo id thì được dời dòng sang ngày khác, miễn ngày đó còn trống.
+      const current = dto.id
+        ? await tx.internalFundDailyClosing.findUnique({
+            where: { id: dto.id },
+          })
+        : null;
+      if (dto.id && current?.branchId !== dto.branchId)
+        throw new NotFoundException('Không tìm thấy chốt sổ');
+      const sameDay = await tx.internalFundDailyClosing.findUnique({
         where: {
           branchId_closingDate: { branchId: dto.branchId, closingDate: date },
         },
       });
+      if (current && sameDay && sameDay.id !== current.id)
+        throw new BadRequestException(
+          `Ngày ${date.toISOString().slice(0, 10).split('-').reverse().join('/')} đã có chốt sổ`,
+        );
+      const existing = current ?? sameDay;
+      const movedFrom =
+        current && current.closingDate.getTime() !== date.getTime()
+          ? current.closingDate.toISOString().slice(0, 10)
+          : undefined;
       if (existing?.closedAt && !adjust)
         throw new ForbiddenException('Cần quyền điều chỉnh để chốt lại');
       const summary = await this.ledger.balance(
@@ -949,6 +966,7 @@ export class InternalFundService {
         })),
         system: systems.map(String),
         actual: actuals.map((v) => v ?? null),
+        ...(movedFrom && { movedFrom }),
       };
       const history = Array.isArray(existing?.log) ? existing.log : [];
       const data = {
@@ -972,6 +990,11 @@ export class InternalFundService {
         closedBy: userId,
         posManagedAt: new Date(),
       };
+      if (current)
+        return tx.internalFundDailyClosing.update({
+          where: { id: current.id },
+          data: { ...data, closingDate: date },
+        });
       return tx.internalFundDailyClosing.upsert({
         where: {
           branchId_closingDate: { branchId: dto.branchId, closingDate: date },

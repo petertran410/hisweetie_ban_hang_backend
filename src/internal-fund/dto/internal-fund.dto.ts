@@ -138,6 +138,12 @@ export class MarkInternalFundExpenseDto {
 }
 
 export class CloseInternalFundDayDto {
+  /** Sửa chốt sổ đã có: đổi được ngày, dòng giữ nguyên id và lịch sử. */
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  id?: number;
+
   @IsInt()
   @Type(() => Number)
   branchId: number;
