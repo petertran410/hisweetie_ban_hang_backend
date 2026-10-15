@@ -33,6 +33,7 @@ import {
   BulkCheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
+  ConfirmWarehouseReceiptAmountDto,
   WarehouseExpenseQueryDto,
   PrepareWeeklyBatchDto,
   ReviewInternalFinanceDto,
@@ -351,6 +352,17 @@ export class InternalFinanceController {
     if (dto.branchId)
       await this.service.assertWarehouseCash(user, 'update', dto.branchId);
     return this.service.updateWarehouseReceipt(id, dto, user.id);
+  }
+
+  @Patch('warehouse-receipts/:id/confirm-amount')
+  @ApiOperation({ summary: 'Warehouse accountant confirms the cash received' })
+  async confirmWarehouseReceiptAmount(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: ConfirmWarehouseReceiptAmountDto,
+    @CurrentUser() user: any,
+  ) {
+    await this.service.assertWarehouseCashEntry(user, 'confirm_amount', id);
+    return this.service.confirmWarehouseReceiptAmount(id, dto, user.id);
   }
 
   @Post('warehouse-receipts/:id/post')

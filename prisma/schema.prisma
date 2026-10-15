@@ -131,6 +131,7 @@ model User {
   issuedInternalFinanceEntries                              InternalFinanceEntry[]             @relation("InternalFinanceEntryCashIssuer")
   paidInternalFinanceEntries                                InternalFinanceEntry[]             @relation("InternalFinanceEntryPayer")
   cancelledInternalFinanceEntries                           InternalFinanceEntry[]             @relation("InternalFinanceEntryCanceller")
+  confirmedInternalFinanceEntries                           InternalFinanceEntry[]             @relation("InternalFinanceEntryConfirmer")
   internalFinanceEntryNotes                                 InternalFinanceEntryNote[]         @relation("InternalFinanceEntryNoteCreator")
   internalFinanceEntryNoteMentions                          InternalFinanceEntryNoteMention[]  @relation("InternalFinanceEntryNoteMentionUser")
   drivenVehicles                                            Vehicle[]                          @relation("VehicleDriver")
@@ -2365,6 +2366,12 @@ model InternalFinanceEntry {
   cancelledAt           DateTime?
   cancelledBy           Int?
   posManagedAt          DateTime?
+  // Tiền mặt kho: số kế toán kho xác nhận thực nhận (MATCH = đúng số báo đơn,
+  // MANUAL = tự nhập). Phiếu thu chỉ lập theo số này.
+  confirmedAmount       Decimal?  @db.Decimal(18, 2)
+  confirmedMode         String?   @db.VarChar(16)
+  confirmedBy           Int?
+  confirmedAt           DateTime?
   vehicleName           String?
   vehicleServiceType    String?
   vehicleOdo            Decimal?  @db.Decimal(18, 2)
@@ -2400,6 +2407,7 @@ model InternalFinanceEntry {
   managerReviewer     User?                      @relation("InternalFinanceEntryManager", fields: [managerReviewedBy], references: [id])
   cashIssuer           User?                      @relation("InternalFinanceEntryCashIssuer", fields: [cashIssuedBy], references: [id])
   canceller           User?                      @relation("InternalFinanceEntryCanceller", fields: [cancelledBy], references: [id])
+  confirmer           User?                      @relation("InternalFinanceEntryConfirmer", fields: [confirmedBy], references: [id])
   attachments         InternalFinanceAttachment[]
   invoiceLinks        InternalFinanceInvoiceLink[]
   reviews             InternalFinanceReview[]

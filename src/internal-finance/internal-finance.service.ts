@@ -52,6 +52,7 @@ import {
   LarkApprovalQueryDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
+  ConfirmWarehouseReceiptAmountDto,
   PrepareWeeklyBatchDto,
   ReviewInternalFinanceDto,
   UpdateWarehouseReceiptDto,
@@ -119,7 +120,13 @@ export type PackingFinanceLock = { code: string; reason: string };
 
 type WeeklyApprovalAction = 'view' | 'prepare' | 'submit';
 
-type WarehouseCashAction = 'view' | 'create' | 'update' | 'post' | 'cancel';
+type WarehouseCashAction =
+  | 'view'
+  | 'create'
+  | 'update'
+  | 'post'
+  | 'cancel'
+  | 'confirm_amount';
 
 @Injectable()
 export class InternalFinanceService {
@@ -370,6 +377,20 @@ export class InternalFinanceService {
         },
       });
     }
+    if (query.confirmStatus === 'UNCONFIRMED') {
+      conditions.push({ confirmedAmount: null });
+    } else if (query.confirmStatus === 'CONFIRMED') {
+      conditions.push({ confirmedAmount: { not: null } });
+    } else if (query.confirmStatus === 'DIFFERENT') {
+      // Prisma không so sánh hai cột: lấy id phiếu có số xác nhận khác số báo đơn.
+      const rows = await this.prisma.$queryRaw<Array<{ id: number }>>`
+        SELECT id FROM internal_finance_entries
+        WHERE "confirmedAmount" IS NOT NULL
+          AND "confirmedAmount" <> amount
+          AND direction = 'RECEIPT'
+          AND "branchId" IN (${Prisma.join(branchIds)})`;
+      conditions.push({ id: { in: rows.map((row) => Number(row.id)) } });
+    }
     if (query.fromDate || query.toDate) {
       const occurredAt: Record<string, Date> = {};
       if (query.fromDate) occurredAt.gte = fundDayStart(query.fromDate);
@@ -445,7 +466,77 @@ export class InternalFinanceService {
           orderBy: [{ purchaseDate: 'asc' }, { id: 'asc' }],
         })
       : [];
-    return { ...decorated, allocatableInvoices };
+    // Hóa đơn của phiếu giao hàng hiện mặc định; hóa đơn khác bấm mới hiện.
+    const linkedIds = new Set<number>([
+      ...(decorated.invoiceLinks || []).map((link: any) =>
+        Number(link.invoiceId ?? link.invoice?.id),
+      ),
+      ...(Array.isArray(this.snapshotOf(decorated).invoiceIds)
+        ? (this.snapshotOf(decorated).invoiceIds as unknown[]).map(Number)
+        : []),
+    ]);
+    return {
+      ...decorated,
+      allocatableInvoices: allocatableInvoices.map((invoice) => ({
+        ...invoice,
+        inPackingSlip: linkedIds.has(invoice.id),
+      })),
+    };
+  }
+
+  /**
+   * Kế toán kho xác nhận số tiền mặt thực nhận của phiếu thu: đúng số báo đơn
+   * (MATCH), tự nhập (MANUAL) hoặc bỏ xác nhận (CLEAR). Phiếu thu chỉ lập theo
+   * số này; phiếu đã lập / đã hủy thì không đổi được.
+   */
+  async confirmWarehouseReceiptAmount(
+    id: number,
+    dto: ConfirmWarehouseReceiptAmountDto,
+    userId: number,
+  ) {
+    const entry = await this.getOpenWarehouseReceipt(id);
+    let data: Prisma.InternalFinanceEntryUncheckedUpdateInput;
+    if (dto.mode === 'CLEAR') {
+      data = {
+        confirmedAmount: null,
+        confirmedMode: null,
+        confirmedBy: null,
+        confirmedAt: null,
+      };
+    } else {
+      const amount =
+        dto.mode === 'MATCH' ? Number(entry.amount) : Number(dto.amount);
+      if (!Number.isFinite(amount) || amount < 0) {
+        throw new BadRequestException('Số tiền xác nhận không hợp lệ');
+      }
+      data = {
+        confirmedAmount: amount,
+        confirmedMode: dto.mode,
+        confirmedBy: userId,
+        confirmedAt: new Date(),
+      };
+    }
+    return this.prisma.$transaction(async (tx) => {
+      await tx.internalFinanceReview.create({
+        data: {
+          entryId: id,
+          role: INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+          decision: dto.mode === 'CLEAR' ? 'CLEAR_CONFIRM' : 'CONFIRM_AMOUNT',
+          reason:
+            dto.mode === 'CLEAR'
+              ? 'Bỏ xác nhận số tiền thực nhận'
+              : `Xác nhận thực nhận ${Number(data.confirmedAmount)}`,
+          reviewerId: userId,
+        },
+      });
+      const updated = await tx.internalFinanceEntry.update({
+        where: { id },
+        data,
+        include: this.warehouseInclude(),
+      });
+      const [decorated] = await this.decorateWarehouseRows([updated]);
+      return decorated;
+    });
   }
 
   /** Điều kiện lọc phiếu chi kho theo quyền + bộ lọc (danh sách và báo cáo). */
@@ -874,6 +965,16 @@ export class InternalFinanceService {
       data: {
         branchId,
         amount: dto.amount ?? Number(entry.amount),
+        // Đổi số tiền thì kế toán kho phải xác nhận lại.
+        ...(dto.amount !== undefined &&
+        Number(dto.amount) !== Number(entry.amount)
+          ? {
+              confirmedAmount: null,
+              confirmedMode: null,
+              confirmedBy: null,
+              confirmedAt: null,
+            }
+          : {}),
         occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
         description:
           dto.description !== undefined
@@ -961,11 +1062,23 @@ export class InternalFinanceService {
     if (!sale && !customers.length) {
       throw new BadRequestException('Phiếu thu chưa có khách hàng');
     }
+    // Kế toán công nợ chỉ lập phiếu thu theo số kế toán kho xác nhận thực nhận.
+    if (entry.confirmedAmount === null || entry.confirmedAmount === undefined) {
+      throw new BadRequestException(
+        'Kế toán kho chưa xác nhận số tiền thực nhận',
+      );
+    }
+    const received = Number(entry.confirmedAmount);
+    if (!(received > 0)) {
+      throw new BadRequestException(
+        'Kế toán kho xác nhận chưa thu được tiền: không lập phiếu thu',
+      );
+    }
     const allocations = sale
-      ? [{ customerId: 0, amount: Number(entry.amount), invoices: [] }]
-      : dto.allocations || [];
+      ? [{ customerId: 0, amount: received, invoices: [] }]
+      : (dto.allocations || []).filter((item) => Number(item.amount) > 0);
     if (!sale) {
-      await this.validateWarehouseAllocations(entry, allocations, customers);
+      await this.validateWarehouseAllocations(received, allocations);
     }
     const snapshot = this.snapshotOf(entry);
     const posted = this.postedCashFlows(snapshot);
@@ -1006,7 +1119,7 @@ export class InternalFinanceService {
     if (sale && !entry.cashFlowId) {
       const created = await this.cashFlowsService.createStandaloneCashReceipt({
         branchId: entry.branchId,
-        amount: Number(entry.amount),
+        amount: received,
         transDate: new Date(entry.occurredAt).toISOString(),
         description: entry.description || `Thu bán đồ kho ${entry.code}`,
         userId,
@@ -1019,7 +1132,7 @@ export class InternalFinanceService {
         id: created.cashFlow.id,
         code: created.cashFlow.code,
         customerId: 0,
-        amount: Number(entry.amount),
+        amount: received,
       });
       await this.prisma.internalFinanceEntry.update({
         where: { id },
@@ -1102,7 +1215,7 @@ export class InternalFinanceService {
           branchId: entry.branchId,
           transactionType: 'RECEIPT',
           codeKind: 'THU',
-          amount: entry.amount,
+          amount: received,
           occurredAt: new Date(entry.occurredAt),
           description: entry.description || entry.code,
           sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
@@ -3772,6 +3885,15 @@ export class InternalFinanceService {
                 accountantReviewedAt: null,
               }
             : {}),
+          // Báo đơn đổi số tiền mặt: kế toán kho phải xác nhận lại.
+          ...(Number(existing.amount) !== Number(data.amount)
+            ? {
+                confirmedAmount: null,
+                confirmedMode: null,
+                confirmedBy: null,
+                confirmedAt: null,
+              }
+            : {}),
           sourceSnapshot: {
             ...data.sourceSnapshot,
             ...(keepContent ? { contentEdited: true } : {}),
@@ -3958,14 +4080,17 @@ export class InternalFinanceService {
     return { customerIds, invoiceIds };
   }
 
+  /**
+   * Phân bổ tiền thực nhận cho khách: tổng bằng số kế toán kho xác nhận. Khách
+   * có thể ngoài báo đơn (tài xế thu hộ nợ cũ); hóa đơn phải đúng của khách.
+   */
   private async validateWarehouseAllocations(
-    entry: any,
+    received: number,
     allocations: Array<{
       customerId: number;
       amount: number;
       invoices?: Array<{ invoiceId: number; amount: number }>;
     }>,
-    customerIds: number[],
   ) {
     if (!allocations.length) {
       throw new BadRequestException('Chưa có phân bổ khách hàng');
@@ -3974,22 +4099,21 @@ export class InternalFinanceService {
     if (new Set(allocationIds).size !== allocationIds.length) {
       throw new BadRequestException('Mỗi khách hàng chỉ được phân bổ một lần');
     }
-    if (
-      allocationIds.length !== customerIds.length ||
-      allocationIds.some((id) => !customerIds.includes(id))
-    ) {
-      throw new BadRequestException(
-        'Phân bổ phải đúng các khách hàng của phiếu thu',
-      );
+    const found = await this.prisma.customer.findMany({
+      where: { id: { in: allocationIds } },
+      select: { id: true },
+    });
+    if (found.length !== allocationIds.length) {
+      throw new BadRequestException('Có khách hàng không tồn tại');
     }
     const cents = (value: number) => Math.round(Number(value) * 100);
     const total = allocations.reduce(
       (sum, item) => sum + Number(item.amount),
       0,
     );
-    if (cents(total) !== cents(Number(entry.amount))) {
+    if (cents(total) !== cents(received)) {
       throw new BadRequestException(
-        `Tổng phân bổ (${total}) phải bằng số tiền mặt (${Number(entry.amount)})`,
+        `Tổng phân bổ (${total}) phải bằng số tiền kế toán kho xác nhận (${received})`,
       );
     }
     const requestedIds = [
@@ -4106,6 +4230,11 @@ export class InternalFinanceService {
       return {
         ...row,
         customers,
+        // Chênh lệch số báo đơn với số kế toán kho xác nhận (dương = thiếu).
+        difference:
+          row.confirmedAmount === null || row.confirmedAmount === undefined
+            ? null
+            : Number(row.amount) - Number(row.confirmedAmount),
         note: typeof snapshot.note === 'string' ? snapshot.note : '',
         postedCashFlows: posted.length
           ? posted
@@ -4432,6 +4561,7 @@ export class InternalFinanceService {
       customer: { select: { id: true, code: true, name: true } },
       packingSlip: { select: { id: true, code: true } },
       cashFlow: { select: { id: true, code: true, status: true } },
+      confirmer: { select: { id: true, name: true } },
       attachments: true,
       invoiceLinks: {
         include: {

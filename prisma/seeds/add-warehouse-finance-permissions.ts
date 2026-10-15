@@ -69,6 +69,7 @@ const PERMISSIONS: PermissionSeed[] = [
     ['create', 'Tạo phiếu tiền mặt kho'],
     ['update', 'Sửa phiếu tiền mặt kho'],
     ['post', 'Lập phiếu thu từ tiền mặt kho'],
+    ['confirm_amount', 'Kế toán kho xác nhận số tiền thực nhận'],
     ['cancel', 'Hủy phiếu tiền mặt kho'],
   ]),
 ];

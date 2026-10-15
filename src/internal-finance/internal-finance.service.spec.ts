@@ -1568,6 +1568,50 @@ describe('InternalFinanceService', () => {
     });
   });
 
+  it('asks the warehouse accountant to confirm again when the packing-slip cash changes', async () => {
+    const db = memoryFinanceDb();
+    const { service } = makeService();
+    const slip = {
+      id: 24,
+      code: 'BD-24',
+      branchId: 6,
+      createdAt: new Date('2026-10-02T00:00:00.000Z'),
+      paymentMethod: 'cash',
+      cashAmount: 100000,
+      hasFeeGuiBen: false,
+      feeGuiBen: 0,
+      hasFeeGrab: false,
+      feeGrab: 0,
+      hasCuocGuiHang: false,
+      cuocGuiHang: 0,
+      hasCuocNhanHang: false,
+      cuocNhanHang: 0,
+      invoices: [{ invoiceId: 1, invoice: { customerId: 8 } }],
+      expenseFiles: [],
+      images: [],
+    };
+    await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7);
+    const receipt = db.entries.get('PACKING_SLIP:24:CUSTOMER_RECEIPT');
+    Object.assign(receipt, {
+      confirmedAmount: 100000,
+      confirmedMode: 'MATCH',
+      confirmedBy: 9,
+    });
+    await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7);
+    expect(receipt.confirmedAmount).toBe(100000);
+    await service.syncPackingSlipEntriesInTransaction(
+      db as any,
+      { ...slip, cashAmount: 80000 },
+      7,
+    );
+    expect(receipt).toMatchObject({
+      amount: 80000,
+      confirmedAmount: null,
+      confirmedMode: null,
+      confirmedBy: null,
+    });
+  });
+
   it('does not create a warehouse receipt for transfer, zero cash, or a non-warehouse branch', async () => {
     const db = memoryFinanceDb();
     const { service } = makeService();
@@ -1947,6 +1991,154 @@ describe('InternalFinanceService', () => {
     expect(state.status).toBe('POSTED');
   });
 
+  describe('warehouse accountant confirmed amount', () => {
+    const setup = (patch: Record<string, unknown> = {}) => {
+      const state: any = { ...warehouseEntry(), ...patch };
+      const reviewCreate = jest.fn();
+      const ctx = makeService({
+        customer: {
+          findMany: jest.fn(async ({ where }: any) =>
+            (where?.id?.in || [55]).map((id: number) => ({
+              id,
+              code: `KH${id}`,
+              name: `Khách ${id}`,
+            })),
+          ),
+        },
+        invoice: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 30, code: 'HD1', customerId: 55, debtAmount: 40000 },
+            { id: 77, code: 'HD77', customerId: 66, debtAmount: 500000 },
+          ]),
+        },
+        internalFinanceReview: { create: reviewCreate },
+      });
+      ctx.prisma.internalFinanceEntry.findUnique.mockImplementation(
+        async () => ({ ...state }),
+      );
+      ctx.prisma.internalFinanceEntry.updateMany.mockResolvedValue({
+        count: 1,
+      });
+      ctx.prisma.internalFinanceEntry.update.mockImplementation(
+        async ({ data }: any) => {
+          Object.assign(state, data);
+          return { ...state };
+        },
+      );
+      ctx.cashFlowsService.createCustomerPayment.mockResolvedValue({
+        cashFlow: { id: 12, code: 'TT000012' },
+      });
+      return { ...ctx, state, reviewCreate };
+    };
+
+    it('copies the packing-slip amount, takes a typed amount, and clears it', async () => {
+      const f = setup({ confirmedAmount: null });
+      await f.service.confirmWarehouseReceiptAmount(4, { mode: 'MATCH' }, 9);
+      expect(f.state).toMatchObject({
+        confirmedAmount: 100000,
+        confirmedMode: 'MATCH',
+        confirmedBy: 9,
+      });
+      await f.service.confirmWarehouseReceiptAmount(
+        4,
+        { mode: 'MANUAL', amount: 60000 },
+        9,
+      );
+      expect(f.state).toMatchObject({
+        confirmedAmount: 60000,
+        confirmedMode: 'MANUAL',
+      });
+      await f.service.confirmWarehouseReceiptAmount(4, { mode: 'CLEAR' }, 9);
+      expect(f.state).toMatchObject({
+        confirmedAmount: null,
+        confirmedMode: null,
+        confirmedBy: null,
+      });
+      expect(f.reviewCreate).toHaveBeenCalledTimes(3);
+    });
+
+    it('does not change the confirmation of a posted receipt', async () => {
+      const f = setup({ status: 'POSTED', cashFlowId: 3 });
+      await expect(
+        f.service.confirmWarehouseReceiptAmount(4, { mode: 'MATCH' }, 9),
+      ).rejects.toThrow('đã lập');
+    });
+
+    it.each([
+      ['unconfirmed', null, 'chưa xác nhận'],
+      ['confirmed as nothing received', 0, 'chưa thu được tiền'],
+    ])('refuses to post an %s receipt', async (_label, amount, message) => {
+      const f = setup({ confirmedAmount: amount });
+      await expect(
+        f.service.postWarehouseReceipt(
+          4,
+          { allocations: [{ customerId: 55, amount: 100000, invoices: [] }] },
+          7,
+        ),
+      ).rejects.toThrow(message);
+      expect(f.cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+    });
+
+    it('posts only the confirmed amount, also to another customer, and books it to the fund', async () => {
+      const f = setup({ confirmedAmount: 60000 });
+      await expect(
+        f.service.postWarehouseReceipt(
+          4,
+          { allocations: [{ customerId: 55, amount: 100000, invoices: [] }] },
+          7,
+        ),
+      ).rejects.toThrow('kế toán kho xác nhận');
+
+      await f.service.postWarehouseReceipt(
+        4,
+        {
+          allocations: [
+            {
+              customerId: 55,
+              amount: 40000,
+              invoices: [{ invoiceId: 30, amount: 40000 }],
+            },
+            {
+              customerId: 66,
+              amount: 20000,
+              invoices: [{ invoiceId: 77, amount: 20000 }],
+            },
+          ],
+        },
+        7,
+      );
+      expect(f.cashFlowsService.createCustomerPayment).toHaveBeenCalledTimes(2);
+      expect(f.cashFlowsService.createCustomerPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId: 66, totalAmount: 20000 }),
+        7,
+      );
+      expect(f.fundLedger.postSystemTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ amount: 60000 }),
+      );
+      expect(f.state.status).toBe('POSTED');
+    });
+
+    it('rejects an invoice that belongs to another customer', async () => {
+      const f = setup();
+      await expect(
+        f.service.postWarehouseReceipt(
+          4,
+          {
+            allocations: [
+              {
+                customerId: 55,
+                amount: 100000,
+                invoices: [{ invoiceId: 77, amount: 10000 }],
+              },
+            ],
+          },
+          7,
+        ),
+      ).rejects.toThrow('không thuộc khách hàng');
+    });
+  });
+
   it('posts a warehouse item sale without a customer or invoice allocation', async () => {
     const state = {
       ...warehouseEntry(),
@@ -2186,6 +2378,8 @@ function warehouseEntry() {
     sourceKey: 'PACKING_SLIP:9:CUSTOMER_RECEIPT',
     branchId: 6,
     amount: 100000,
+    // Kế toán kho đã xác nhận đúng số báo đơn.
+    confirmedAmount: 100000,
     occurredAt: new Date('2026-10-02T00:00:00.000Z'),
     status: 'PENDING_ACCOUNTANT',
     cashFlowId: null,

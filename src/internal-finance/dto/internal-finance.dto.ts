@@ -129,6 +129,11 @@ export class InternalFinanceQueryDto {
   @IsIn(['OPEN', 'POSTED', 'CANCELLED'])
   receiptStatus?: string;
 
+  /** Tiền mặt kho: lọc theo xác nhận của kế toán kho. */
+  @IsOptional()
+  @IsIn(['UNCONFIRMED', 'CONFIRMED', 'DIFFERENT'])
+  confirmStatus?: string;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -874,4 +879,16 @@ export class LarkApprovalQueryDto extends InternalFinanceQueryDto {
   @IsOptional()
   @IsIn(['true', 'false'])
   suspect?: string;
+}
+
+/** Kế toán kho xác nhận số tiền mặt thực nhận của phiếu thu tiền mặt kho. */
+export class ConfirmWarehouseReceiptAmountDto {
+  @IsIn(['MATCH', 'MANUAL', 'CLEAR'])
+  mode: 'MATCH' | 'MANUAL' | 'CLEAR';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  amount?: number;
 }
