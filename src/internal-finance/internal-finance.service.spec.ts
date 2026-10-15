@@ -371,6 +371,26 @@ describe('InternalFinanceService', () => {
     ).rejects.toThrow('đã gửi Approval tuần');
   });
 
+  it('needs the Approval tuần permission, not Phiếu chi kho, to prepare a week', async () => {
+    const { service, authService } = makeService({
+      branch: {
+        findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+      },
+    });
+    // Đủ quyền Phiếu chi kho nhưng chưa có quyền Approval tuần.
+    authService.getPermissionsForBranch.mockResolvedValue([
+      'warehouse_expense:view',
+      'warehouse_expense:check_manager',
+      'weekly_approval:view',
+    ]);
+    await expect(
+      service.prepareWarehouseExpenseBatch(
+        { branchId: 6, weekStart: '2026-10-05', weekEnd: '2026-10-11' },
+        { id: 7, roles: [] },
+      ),
+    ).rejects.toThrow('Không có quyền tổng hợp tuần');
+  });
+
   it('prepares a warehouse batch only from entries ticked by both roles', async () => {
     const findMany = jest.fn().mockResolvedValue([]);
     // Thứ tự đếm: thuộc batch khác, đã chi, chưa đủ tick.
@@ -389,7 +409,7 @@ describe('InternalFinanceService', () => {
       internalFinanceEntry: { findMany, count },
     });
     authService.getPermissionsForBranch.mockResolvedValue([
-      'warehouse_expense:prepare',
+      'weekly_approval:prepare',
     ]);
     await expect(
       service.prepareWarehouseExpenseBatch(
@@ -406,6 +426,52 @@ describe('InternalFinanceService', () => {
     });
     // Dòng đồng bộ về cũng được gom khi đã đủ hai tick.
     expect(findMany.mock.calls[0][0].where.sourceType).toBeUndefined();
+  });
+
+  it('bulk-ticks entries, keeping already-ticked ones and reporting failures', async () => {
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: 1,
+            code: 'A',
+            managerReviewedAt: null,
+            accountantReviewedAt: null,
+          },
+          {
+            id: 2,
+            code: 'B',
+            managerReviewedAt: new Date(),
+            accountantReviewedAt: null,
+          },
+          {
+            id: 3,
+            code: 'C',
+            managerReviewedAt: null,
+            accountantReviewedAt: null,
+          },
+        ]),
+      },
+    });
+    const single = jest
+      .spyOn(service, 'checkWarehouseExpense')
+      .mockResolvedValueOnce({ id: 1 } as any)
+      .mockRejectedValueOnce(new Error('Khoản chi đã chi hoặc đã hủy'));
+    const result = await service.bulkCheckWarehouseExpenses(
+      { id: 7, roles: [] },
+      { ids: [1, 2, 3, 3, 4], role: 'manager' },
+    );
+    expect(single).toHaveBeenCalledTimes(2);
+    expect(single).toHaveBeenCalledWith(1, expect.anything(), {
+      role: 'manager',
+      checked: true,
+    });
+    expect(result.updated).toEqual([{ id: 1 }]);
+    expect(result.alreadyChecked).toBe(1);
+    expect(result.skipped).toEqual([
+      { id: 3, code: 'C', reason: 'Khoản chi đã chi hoặc đã hủy' },
+      { id: 4, code: '4', reason: 'Không tìm thấy phiếu' },
+    ]);
   });
 
   describe('cancelWarehouseExpense', () => {
@@ -519,7 +585,7 @@ describe('InternalFinanceService', () => {
   });
 
   describe('cancelWarehouseExpenseBatch', () => {
-    const setup = (batch: any, permissions = ['warehouse_expense:prepare']) => {
+    const setup = (batch: any, permissions = ['weekly_approval:prepare']) => {
       const updateMany = jest.fn();
       const remove = jest.fn();
       const ctx = makeService({
@@ -703,7 +769,7 @@ describe('InternalFinanceService', () => {
       'warehouse_expense:check_manager',
       'warehouse_cash:view',
       'warehouse_cash:post',
-      'cash_flows:view',
+      'internal_finance:view',
     ]);
     const user = { id: 7 };
 

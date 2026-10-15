@@ -11,7 +11,10 @@ import {
   type FinanceActor,
 } from '../auth/finance-access.service';
 import { LarkExpenseReviewNotificationService } from '../lark-sync/services/lark-expense-review-notification.service';
-import { INTERNAL_FINANCE_DIRECTION } from './internal-finance.constants';
+import {
+  INTERNAL_FINANCE_DIRECTION,
+  localizeFeeCodes,
+} from './internal-finance.constants';
 import type { CreateWarehouseExpenseNoteDto } from './dto';
 
 /** Chi nhánh có phiếu chi kho (Kho HN, Kho SG, VP HN, VP SG). */
@@ -110,7 +113,7 @@ export class WarehouseExpenseNotesService {
               occurredAt: entry.occurredAt,
               sourceType: entry.sourceType,
               category: entry.category,
-              description: entry.description,
+              description: localizeFeeCodes(entry.description),
               expenseItem: entry.expenseItem,
               amount: Number(entry.amount),
               payerName: entry.payer?.name || null,

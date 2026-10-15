@@ -26,6 +26,7 @@ import {
   INTERNAL_FINANCE_EVIDENCE_STATUS,
   INTERNAL_FINANCE_REVIEW_DECISION,
   INTERNAL_FINANCE_REVIEW_ROLE,
+  PACKING_FEE_LABELS,
   INTERNAL_FINANCE_BRANCH_CODES,
   INTERNAL_FINANCE_SUBCATEGORY,
   INTERNAL_FINANCE_STATUS,
@@ -42,6 +43,7 @@ import {
   CreateWarehouseReceiptDto,
   CancelWarehouseReceiptDto,
   CheckWarehouseExpenseDto,
+  BulkCheckWarehouseExpenseDto,
   AddInternalFinanceAttachmentsDto,
   CreateWarehouseExpenseDto,
   InternalFinanceQueryDto,
@@ -96,8 +98,6 @@ type WarehouseExpenseAction =
   | 'view'
   | 'create'
   | 'update'
-  | 'prepare'
-  | 'submit'
   | 'mark_issued'
   | 'check_manager'
   | 'check_accountant'
@@ -106,6 +106,8 @@ type WarehouseExpenseAction =
 
 /** Phiếu chi từ báo đơn không cập nhật theo báo đơn vì đang khóa. */
 export type PackingFinanceLock = { code: string; reason: string };
+
+type WeeklyApprovalAction = 'view' | 'prepare' | 'submit';
 
 type WarehouseCashAction = 'view' | 'create' | 'update' | 'post' | 'cancel';
 
@@ -513,6 +515,14 @@ export class InternalFinanceService {
           { description: { contains: search, mode: 'insensitive' } },
           { note: { contains: search, mode: 'insensitive' } },
           { vehicleName: { contains: search, mode: 'insensitive' } },
+          // Phiếu cũ lưu mã loại phí ("FEE_GUI_BEN - …"): tìm "Phí gửi bến" vẫn ra.
+          ...Object.entries(PACKING_FEE_LABELS)
+            .filter(([, label]) =>
+              label.toLowerCase().includes(search.toLowerCase()),
+            )
+            .map(([code]) => ({
+              description: { contains: code },
+            })),
           {
             packingSlip: {
               code: { contains: search, mode: 'insensitive' },
@@ -1899,7 +1909,7 @@ export class InternalFinanceService {
   }
 
   async prepareWarehouseExpenseBatch(dto: PrepareWeeklyBatchDto, user: any) {
-    await this.assertWarehouseExpensePermission(user, dto.branchId, 'prepare');
+    await this.assertWeeklyApprovalPermission(user, dto.branchId, 'prepare');
     // Kho: chỉ gom phiếu đã được cả quản lý kho và kế toán kho tick.
     if (this.isWarehouseBranch(dto.branchId)) {
       return this.prepareWeeklyBatchInternal(dto, user.id, {
@@ -2301,7 +2311,7 @@ export class InternalFinanceService {
       select: { id: true, branchId: true },
     });
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
-    await this.assertWarehouseExpensePermission(user, batch.branchId, 'submit');
+    await this.assertWeeklyApprovalPermission(user, batch.branchId, 'submit');
     return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
   }
 
@@ -2314,11 +2324,7 @@ export class InternalFinanceService {
       select: { branchId: true },
     });
     if (!found) throw new NotFoundException('Không tìm thấy batch tuần');
-    await this.assertWarehouseExpensePermission(
-      user,
-      found.branchId,
-      'prepare',
-    );
+    await this.assertWeeklyApprovalPermission(user, found.branchId, 'prepare');
 
     return this.prisma.$transaction(async (tx) => {
       await this.internalFund.lockBranch(tx, [found.branchId]);
@@ -2373,12 +2379,12 @@ export class InternalFinanceService {
   }
 
   async listWarehouseExpenseBatches(query: InternalFinanceQueryDto, user: any) {
-    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+    const allowedBranches = await this.allowedWeeklyApprovalBranches(
       user,
       'view',
     );
     if (!allowedBranches.length) {
-      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
+      throw new ForbiddenException('Không có quyền xem Approval tuần');
     }
     const requested = query.branchIds?.length
       ? query.branchIds.map(Number)
@@ -2395,12 +2401,12 @@ export class InternalFinanceService {
   }
 
   async pageWarehouseExpenseBatches(query: InternalFinanceQueryDto, user: any) {
-    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+    const allowedBranches = await this.allowedWeeklyApprovalBranches(
       user,
       'view',
     );
     if (!allowedBranches.length) {
-      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
+      throw new ForbiddenException('Không có quyền xem Approval tuần');
     }
     const requested = query.branchIds?.length
       ? query.branchIds.map(Number)
@@ -2419,7 +2425,7 @@ export class InternalFinanceService {
       select: { id: true, branchId: true },
     });
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
-    await this.assertWarehouseExpensePermission(user, batch.branchId, 'view');
+    await this.assertWeeklyApprovalPermission(user, batch.branchId, 'view');
     return this.findWeeklyBatch(id);
   }
 
@@ -2541,6 +2547,61 @@ export class InternalFinanceService {
   }
 
   // Tick kiểm tra của quản lý kho / kế toán kho: độc lập, không cần thứ tự.
+  /**
+   * Tick hàng loạt một cột (Quản lý kho / Kế toán kho): mỗi phiếu chạy đúng
+   * luật tick từng phiếu; phiếu không tick được thì bỏ qua và báo lý do.
+   */
+  async bulkCheckWarehouseExpenses(
+    user: any,
+    dto: BulkCheckWarehouseExpenseDto,
+  ) {
+    const ids = [...new Set(dto.ids)];
+    const entries = await this.prisma.internalFinanceEntry.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        code: true,
+        managerReviewedAt: true,
+        accountantReviewedAt: true,
+      },
+    });
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const updated: any[] = [];
+    const skipped: Array<{ id: number; code: string; reason: string }> = [];
+    let alreadyChecked = 0;
+    for (const id of ids) {
+      const entry = byId.get(id);
+      if (!entry) {
+        skipped.push({ id, code: String(id), reason: 'Không tìm thấy phiếu' });
+        continue;
+      }
+      const at =
+        dto.role === 'manager'
+          ? entry.managerReviewedAt
+          : entry.accountantReviewedAt;
+      // Đã tick sẵn thì giữ nguyên người và giờ tick cũ.
+      if (at) {
+        alreadyChecked += 1;
+        continue;
+      }
+      try {
+        updated.push(
+          await this.checkWarehouseExpense(id, user, {
+            role: dto.role,
+            checked: true,
+          }),
+        );
+      } catch (error: any) {
+        skipped.push({
+          id,
+          code: entry.code,
+          reason: error?.message || 'Không tick được',
+        });
+      }
+    }
+    return { updated, skipped, alreadyChecked };
+  }
+
   async checkWarehouseExpense(
     entryId: number,
     user: any,
@@ -3124,7 +3185,7 @@ export class InternalFinanceService {
         amount,
         branchId: packingSlip.branchId,
         packingSlipId: packingSlip.id,
-        description: `${category} - ${packingSlip.code}`,
+        description: `${PACKING_FEE_LABELS[category] || category} - ${packingSlip.code}`,
         sourceSnapshot: {
           packingSlipId: packingSlip.id,
           packingSlipCode: packingSlip.code,
@@ -3724,6 +3785,40 @@ export class InternalFinanceService {
     );
   }
 
+  /** Kho (HN, SG, VP) user được thao tác Approval tuần theo quyền `weekly_approval:*`. */
+  private async allowedWeeklyApprovalBranches(
+    user: any,
+    action: WeeklyApprovalAction,
+  ): Promise<number[]> {
+    if (!user?.id) return [];
+    return this.access.branchesFor(
+      user,
+      `weekly_approval:${action}`,
+      WAREHOUSE_EXPENSE_SCOPES.flatMap((scope) => [...scope.branchIds]),
+    );
+  }
+
+  private async assertWeeklyApprovalPermission(
+    user: FinanceActor,
+    branchId: number,
+    action: WeeklyApprovalAction,
+  ) {
+    if (!this.warehouseExpenseScopeForBranch(branchId)) {
+      throw new ForbiddenException(
+        'Chi nhánh không thuộc phạm vi Approval tuần',
+      );
+    }
+    if (!(await this.access.can(user, branchId, `weekly_approval:${action}`))) {
+      throw new ForbiddenException(
+        action === 'view'
+          ? 'Không có quyền xem Approval tuần của chi nhánh này'
+          : action === 'prepare'
+            ? 'Không có quyền tổng hợp tuần ở chi nhánh này'
+            : 'Không có quyền tạo approval tuần ở chi nhánh này',
+      );
+    }
+  }
+
   // Quyền theo vai trò × chi nhánh; chi nhánh phải thuộc danh sách của user.
   private async allowedWarehouseExpenseBranches(
     user: any,
@@ -3815,7 +3910,7 @@ export class InternalFinanceService {
   async financeViewBranches(user: FinanceActor) {
     return this.access.branchesFor(
       user,
-      'cash_flows:view',
+      'internal_finance:view',
       INTERNAL_FINANCE_BRANCH_IDS,
     );
   }

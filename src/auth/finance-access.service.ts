@@ -6,6 +6,8 @@ import { AuthService } from './auth.service';
 export const FINANCE_BRANCH_IDS = [6, 1, 4, 7] as const;
 
 const FINANCE_RESOURCES = [
+  'internal_finance',
+  'weekly_approval',
   'warehouse_expense',
   'internal_fund',
   'warehouse_cash',

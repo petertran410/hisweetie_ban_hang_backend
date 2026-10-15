@@ -28,6 +28,7 @@ import {
   CreateWarehouseExpenseNoteDto,
   InternalFinanceQueryDto,
   CheckWarehouseExpenseDto,
+  BulkCheckWarehouseExpenseDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
   WarehouseExpenseQueryDto,
@@ -136,6 +137,16 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.createWarehouseExpense(dto, user);
+  }
+
+  // Khai báo trước `warehouse-expenses/:id` để không bị khớp nhầm thành id.
+  @Patch('warehouse-expenses/check-bulk')
+  @ApiOperation({ summary: 'Tick a check on many warehouse expenses' })
+  bulkCheckWarehouseExpenses(
+    @Body() dto: BulkCheckWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.bulkCheckWarehouseExpenses(user, dto);
   }
 
   @Patch('warehouse-expenses/:id')

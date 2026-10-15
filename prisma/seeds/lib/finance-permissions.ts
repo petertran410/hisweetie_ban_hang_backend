@@ -83,3 +83,76 @@ async function deletePermissions(
     console.log(`  🗑  Đã xóa quyền không còn dùng "${permission.name}".`);
   return stale.length;
 }
+
+/**
+ * Chép mọi lượt gán của quyền cũ sang quyền mới (vai trò, vai trò theo chi
+ * nhánh, user, user theo chi nhánh). Bỏ qua lượt đã có; chạy lại vẫn an toàn.
+ * Trả về số lượt gán đã thêm.
+ */
+export async function copyPermissionGrants(
+  prisma: PrismaClient,
+  pairs: Array<[from: string, to: string]>,
+) {
+  let copied = 0;
+  for (const [fromName, toName] of pairs) {
+    const [from, to] = await Promise.all([
+      prisma.permission.findUnique({ where: { name: fromName } }),
+      prisma.permission.findUnique({ where: { name: toName } }),
+    ]);
+    if (!from || !to) continue;
+    const [roles, roleBranches, users, userBranches] = await Promise.all([
+      prisma.rolePermission.findMany({ where: { permissionId: from.id } }),
+      prisma.roleBranchPermission.findMany({
+        where: { permissionId: from.id },
+      }),
+      prisma.userPermission.findMany({ where: { permissionId: from.id } }),
+      prisma.userBranchPermission.findMany({
+        where: { permissionId: from.id },
+      }),
+    ]);
+    copied += (
+      await prisma.rolePermission.createMany({
+        data: roles.map((row) => ({
+          roleId: row.roleId,
+          permissionId: to.id,
+          conditions: row.conditions ?? undefined,
+        })),
+        skipDuplicates: true,
+      })
+    ).count;
+    copied += (
+      await prisma.roleBranchPermission.createMany({
+        data: roleBranches.map((row) => ({
+          roleId: row.roleId,
+          branchId: row.branchId,
+          permissionId: to.id,
+        })),
+        skipDuplicates: true,
+      })
+    ).count;
+    copied += (
+      await prisma.userPermission.createMany({
+        data: users.map((row) => ({
+          userId: row.userId,
+          permissionId: to.id,
+          type: row.type,
+          conditions: row.conditions ?? undefined,
+        })),
+        skipDuplicates: true,
+      })
+    ).count;
+    copied += (
+      await prisma.userBranchPermission.createMany({
+        data: userBranches.map((row) => ({
+          userId: row.userId,
+          branchId: row.branchId,
+          permissionId: to.id,
+          granted: row.granted,
+        })),
+        skipDuplicates: true,
+      })
+    ).count;
+    console.log(`  ↪ ${fromName} → ${toName}`);
+  }
+  return copied;
+}

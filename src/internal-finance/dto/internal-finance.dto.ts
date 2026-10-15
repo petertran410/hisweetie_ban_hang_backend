@@ -830,3 +830,15 @@ export class CheckWarehouseExpenseDto {
   @IsBoolean()
   checked: boolean;
 }
+
+export class BulkCheckWarehouseExpenseDto {
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(200)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  ids: number[];
+
+  @IsIn(['manager', 'accountant'])
+  role: 'manager' | 'accountant';
+}

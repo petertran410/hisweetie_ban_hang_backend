@@ -25,6 +25,23 @@ export const INTERNAL_FINANCE_SUBCATEGORY = {
   WAREHOUSE_ITEM_SALE: 'WAREHOUSE_ITEM_SALE',
 } as const;
 
+/** Tên tiếng Việt của loại phí báo đơn, dùng làm nội dung phiếu chi. */
+export const PACKING_FEE_LABELS: Record<string, string> = {
+  FEE_GUI_BEN: 'Phí gửi bến',
+  FEE_GRAB: 'Phí Grab',
+  SHIPPING_OUT: 'Cước gửi hàng',
+  SHIPPING_IN: 'Cước nhận hàng',
+};
+
+/** Đổi mã loại phí cũ còn nằm trong nội dung phiếu (vd "FEE_GUI_BEN - BD-1"). */
+export function localizeFeeCodes(text: string | null | undefined) {
+  if (!text) return text ?? null;
+  return text.replace(
+    /\b(FEE_GUI_BEN|FEE_GRAB|SHIPPING_OUT|SHIPPING_IN)\b/g,
+    (code) => PACKING_FEE_LABELS[code] || code,
+  );
+}
+
 export const INTERNAL_FINANCE_BRANCH_CODES: Record<number, string> = {
   6: 'HN',
   1: 'SG',

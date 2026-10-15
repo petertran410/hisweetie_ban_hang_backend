@@ -8,13 +8,16 @@
 // Quyền KHÔNG gắn chi nhánh trong tên. User làm được việc X ở chi nhánh B khi B
 // thuộc danh sách chi nhánh của user và vai trò của user tại B có quyền X.
 //
-// File không tự gán quyền cho role/user. Chạy lại nhiều lần vẫn an toàn.
+// File không tự gán quyền mới cho role/user, trừ một lần khi tách quyền
+// Tài chính nội bộ / Approval tuần (chép từ quyền cũ tương ứng). Chạy lại
+// nhiều lần vẫn an toàn.
 //
 // Cách chạy:
 //   yarn seed:warehouse-finance
 
 import { PrismaClient } from '@prisma/client';
 import {
+  copyPermissionGrants,
   removeBranchSuffixedPermissions,
   removePermissions,
   upsertFinancePermissions,
@@ -30,12 +33,16 @@ const group = (
   actions.map(([action, description]) => ({ resource, action, description }));
 
 const PERMISSIONS: PermissionSeed[] = [
+  ...group('internal_finance', [['view', 'Xem trang Tài chính nội bộ']]),
+  ...group('weekly_approval', [
+    ['view', 'Xem Approval tuần'],
+    ['prepare', 'Tổng hợp tuần và hủy batch tuần'],
+    ['submit', 'Tạo approval tuần trên Lark'],
+  ]),
   ...group('warehouse_expense', [
-    ['view', 'Xem phiếu chi kho và approval tuần'],
+    ['view', 'Xem phiếu chi kho'],
     ['create', 'Tạo khoản chi khác'],
     ['update', 'Sửa khoản chi khác'],
-    ['prepare', 'Tổng hợp phiếu chi theo tuần'],
-    ['submit', 'Tạo approval tuần trên Lark'],
     ['mark_issued', 'Tick Đã chi và ghi quỹ'],
     ['check_manager', 'Tick kiểm tra cột Quản lý kho'],
     ['check_accountant', 'Tick kiểm tra cột Kế toán kho'],
@@ -76,12 +83,38 @@ async function main() {
       'internal_fund:closing_accountant',
       'internal_fund:closing_chief',
     ]));
+  const SPLIT: Array<[from: string, to: string]> = [
+    ['cash_flows:view', 'internal_finance:view'],
+    ['warehouse_expense:view', 'weekly_approval:view'],
+    ['warehouse_expense:prepare', 'weekly_approval:prepare'],
+    ['warehouse_expense:submit', 'weekly_approval:submit'],
+  ];
+  // Chỉ chép quyền ở lần quyền mới vừa được tạo; lần chạy sau không gán lại
+  // những quyền admin đã chủ động gỡ.
+  const existingNew = new Set(
+    (
+      await prisma.permission.findMany({
+        where: { name: { in: SPLIT.map(([, to]) => to) } },
+        select: { name: true },
+      })
+    ).map((row) => row.name),
+  );
   const { created, updated } = await upsertFinancePermissions(
     prisma,
     PERMISSIONS,
   );
+  // Tách quyền riêng cho Tài chính nội bộ và Approval tuần: ai đang có quyền
+  // cũ tương ứng được thêm quyền mới, không ai mất quyền sau khi cập nhật.
+  const copied = await copyPermissionGrants(
+    prisma,
+    SPLIT.filter(([, to]) => !existingNew.has(to)),
+  );
+  const movedOut = await removePermissions(prisma, [
+    'warehouse_expense:prepare',
+    'warehouse_expense:submit',
+  ]);
   console.log(
-    `📊 Tổng kết: tạo mới ${created}, cập nhật ${updated}, xóa quyền kiểu cũ ${removed}.`,
+    `📊 Tổng kết: tạo mới ${created}, cập nhật ${updated}, xóa quyền kiểu cũ ${removed + movedOut}, chép ${copied} lượt gán sang quyền mới.`,
   );
   console.log(
     '👉 Seed này không tự gán quyền. Hãy gán quyền cho vai trò theo từng chi nhánh qua giao diện phân quyền.',
