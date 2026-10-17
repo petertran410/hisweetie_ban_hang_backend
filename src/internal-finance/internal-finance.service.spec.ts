@@ -25,6 +25,15 @@ describe('InternalFinanceService', () => {
       $transaction: jest.fn(async (callback: any) => callback(prisma)),
       ...overrides,
     };
+    // Mặc định cho bước đồng bộ dòng quỹ của phiếu Tiền mặt kho.
+    prisma.internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([]),
+      ...prisma.internalFinanceEntry,
+    };
+    prisma.internalFundTransaction = {
+      findUnique: jest.fn().mockResolvedValue(null),
+      ...prisma.internalFundTransaction,
+    };
     const cashFlowsService = {
       createInternalFinanceCashFlow: jest.fn(),
       createInternalFinanceCashFlowInTransaction: jest.fn(),
@@ -1372,6 +1381,7 @@ describe('InternalFinanceService', () => {
           return Promise.resolve({ ...entry, ...data });
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn().mockResolvedValue([]),
       },
     };
     const { service } = makeService();
@@ -2090,6 +2100,15 @@ describe('InternalFinanceService', () => {
         confirmedMode: 'MATCH',
         confirmedBy: 9,
       });
+      // Xác nhận xong là tiền vào quỹ kho, theo ngày báo đơn.
+      expect(f.fundLedger.postSystemTransaction).toHaveBeenLastCalledWith(
+        f.prisma,
+        expect.objectContaining({
+          sourceKey: 'WAREHOUSE_RECEIPT:4',
+          transactionType: 'RECEIPT',
+          amount: 100000,
+        }),
+      );
       await f.service.confirmWarehouseReceiptAmount(
         4,
         { mode: 'MANUAL', amount: 60000 },
@@ -2099,12 +2118,24 @@ describe('InternalFinanceService', () => {
         confirmedAmount: 60000,
         confirmedMode: 'MANUAL',
       });
+      f.prisma.internalFundTransaction.findUnique.mockResolvedValue({
+        amount: 60000,
+        branchId: f.state.branchId,
+        occurredAt: f.state.occurredAt,
+      });
       await f.service.confirmWarehouseReceiptAmount(4, { mode: 'CLEAR' }, 9);
       expect(f.state).toMatchObject({
         confirmedAmount: null,
         confirmedMode: null,
         confirmedBy: null,
       });
+      // Bỏ xác nhận: rút tiền khỏi quỹ.
+      expect(f.fundLedger.cancelBySource).toHaveBeenLastCalledWith(
+        f.prisma,
+        'WAREHOUSE_RECEIPT:4',
+        9,
+        'Bỏ xác nhận số tiền thực nhận',
+      );
       expect(f.reviewCreate).toHaveBeenCalledTimes(3);
     });
 
@@ -2450,9 +2481,28 @@ function memoryFinanceDb() {
   const entries = new Map<string, any>();
   return {
     entries,
+    // Dòng quỹ đang có của phiếu Tiền mặt kho (theo sourceKey).
+    internalFundTransaction: {
+      findUnique: jest.fn().mockResolvedValue(null),
+    },
     internalFinanceEntry: {
       findUnique: jest.fn(({ where }: any) =>
-        Promise.resolve(entries.get(where.sourceKey) || null),
+        Promise.resolve(
+          (where.id
+            ? [...entries.values()].find((item) => item.id === where.id)
+            : entries.get(where.sourceKey)) || null,
+        ),
+      ),
+      findMany: jest.fn(({ where }: any) =>
+        Promise.resolve(
+          [...entries.values()].filter(
+            (entry) =>
+              entry.packingSlipId === where.packingSlipId &&
+              entry.direction === where.direction &&
+              !where.sourceKey?.notIn?.includes(entry.sourceKey) &&
+              (!where.status?.in || where.status.in.includes(entry.status)),
+          ),
+        ),
       ),
       create: jest.fn(({ data }: any) => {
         const entry = { id: entries.size + 1, ...data };

@@ -558,14 +558,82 @@ export class InternalFinanceService {
           reviewerId: userId,
         },
       });
-      const updated = await tx.internalFinanceEntry.update({
+      await tx.internalFinanceEntry.update({ where: { id }, data });
+      // Tiền mặt vào quỹ kho ngay khi kế toán kho xác nhận số thực nhận.
+      await this.syncWarehouseReceiptFund(tx, id, userId);
+      const updated = await tx.internalFinanceEntry.findUnique({
         where: { id },
-        data,
         include: this.warehouseInclude(),
       });
       const [decorated] = await this.decorateWarehouseRows([updated]);
       return decorated;
     });
+  }
+
+  /**
+   * Dòng quỹ "Thu tiền khách" của phiếu Tiền mặt kho theo số kế toán kho xác
+   * nhận: có xác nhận (> 0) thì ghi quỹ ngày báo đơn; đổi số / ngày / kho thì
+   * hủy dòng cũ ghi lại; bỏ xác nhận hoặc hủy phiếu thì rút khỏi quỹ. Phiếu đã
+   * lập giữ nguyên. Dòng đồng bộ từ Lark hoặc đã ghi trên sổ quỹ Lark thì không
+   * ghi quỹ lần hai.
+   */
+  private async syncWarehouseReceiptFund(
+    tx: Prisma.TransactionClient,
+    entryId: number,
+    userId: number,
+  ) {
+    const entry = await tx.internalFinanceEntry.findUnique({
+      where: { id: entryId },
+    });
+    if (
+      !entry ||
+      entry.direction !== INTERNAL_FINANCE_DIRECTION.RECEIPT ||
+      entry.status === INTERNAL_FINANCE_STATUS.POSTED
+    )
+      return;
+    const key = this.warehouseReceiptFundKey(entryId);
+    const current = await tx.internalFundTransaction.findUnique({
+      where: { sourceKey: key },
+    });
+    const skip =
+      entry.status === INTERNAL_FINANCE_STATUS.CANCELLED ||
+      String(entry.sourceKey || '').startsWith('LARK_CASH:') ||
+      isLarkLedgerRecorded(entry);
+    const amount =
+      skip || entry.confirmedAmount === null
+        ? 0
+        : Number(entry.confirmedAmount);
+    if (
+      current &&
+      Number(current.amount) === amount &&
+      current.branchId === entry.branchId &&
+      new Date(current.occurredAt).getTime() ===
+        new Date(entry.occurredAt).getTime()
+    )
+      return;
+    if (current)
+      await this.fundLedger.cancelBySource(
+        tx,
+        key,
+        userId,
+        amount > 0
+          ? 'Kế toán kho đổi số tiền thực nhận'
+          : 'Bỏ xác nhận số tiền thực nhận',
+      );
+    if (amount > 0)
+      await this.fundLedger.postSystemTransaction(tx, {
+        branchId: entry.branchId,
+        transactionType: 'RECEIPT',
+        codeKind: 'THU',
+        amount,
+        occurredAt: new Date(entry.occurredAt),
+        description: entry.description || entry.code,
+        sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
+        sourceKey: key,
+        sourceId: String(entryId),
+        entryId,
+        userId,
+      });
   }
 
   /** Điều kiện lọc phiếu chi kho theo quyền + bộ lọc (danh sách và báo cáo). */
@@ -989,88 +1057,93 @@ export class InternalFinanceService {
         ? await this.resolveWarehouseCustomers(dto.customers)
         : null;
     const linkedInvoiceIds = customers?.invoiceIds ?? [];
-    return this.prisma.internalFinanceEntry.update({
-      where: { id },
-      data: {
-        branchId,
-        amount: dto.amount ?? Number(entry.amount),
-        // Đổi số tiền thì kế toán kho phải xác nhận lại.
-        ...(dto.amount !== undefined &&
-        Number(dto.amount) !== Number(entry.amount)
-          ? {
-              confirmedAmount: null,
-              confirmedMode: null,
-              confirmedBy: null,
-              confirmedAt: null,
-            }
-          : {}),
-        occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
-        description:
-          dto.description !== undefined
-            ? dto.description.trim()
-            : entry.description,
-        subCategory: sale
-          ? INTERNAL_FINANCE_SUBCATEGORY.WAREHOUSE_ITEM_SALE
-          : dto.receiptKind === 'CUSTOMER'
-            ? INTERNAL_FINANCE_SUBCATEGORY.OTHER
-            : undefined,
-        customerId: sale
-          ? null
-          : customers
-            ? customers.customerIds[0] || null
-            : entry.customerId,
-        evidenceStatus: dto.attachments
-          ? dto.attachments.length
-            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
-            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
-          : undefined,
-        sourceSnapshot: this.toJson({
-          ...snapshot,
-          method: 'cash',
-          note: dto.note !== undefined ? dto.note : snapshot.note || '',
-          customerIds: sale
-            ? []
+    // Đổi số tiền / ngày / kho: dòng quỹ theo số xác nhận được cập nhật cùng lúc.
+    return this.prisma.$transaction(async (tx) => {
+      const updated = await tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          branchId,
+          amount: dto.amount ?? Number(entry.amount),
+          // Đổi số tiền thì kế toán kho phải xác nhận lại.
+          ...(dto.amount !== undefined &&
+          Number(dto.amount) !== Number(entry.amount)
+            ? {
+                confirmedAmount: null,
+                confirmedMode: null,
+                confirmedBy: null,
+                confirmedAt: null,
+              }
+            : {}),
+          occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : undefined,
+          description:
+            dto.description !== undefined
+              ? dto.description.trim()
+              : entry.description,
+          subCategory: sale
+            ? INTERNAL_FINANCE_SUBCATEGORY.WAREHOUSE_ITEM_SALE
+            : dto.receiptKind === 'CUSTOMER'
+              ? INTERNAL_FINANCE_SUBCATEGORY.OTHER
+              : undefined,
+          customerId: sale
+            ? null
             : customers
-              ? customers.customerIds
-              : this.customerIdsFromEntry(entry),
-          receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
-          manual: true,
-        }),
-        ...(sale || customers
-          ? {
-              invoiceLinks: {
-                deleteMany: {},
-                ...(linkedInvoiceIds.length
-                  ? {
-                      create: linkedInvoiceIds.map((invoiceId) => ({
-                        invoiceId,
-                      })),
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(dto.attachments
-          ? {
-              attachments: {
-                deleteMany: {},
-                ...(dto.attachments.length
-                  ? {
-                      create: dto.attachments.map((file) => ({
-                        kind: file.kind || 'EVIDENCE',
-                        fileUrl: file.fileUrl,
-                        fileName: file.fileName,
-                        fileType: file.fileType,
-                        fileSize: file.fileSize,
-                        createdBy: userId,
-                      })),
-                    }
-                  : {}),
-              },
-            }
-          : {}),
-      },
-      include: this.warehouseInclude(),
+              ? customers.customerIds[0] || null
+              : entry.customerId,
+          evidenceStatus: dto.attachments
+            ? dto.attachments.length
+              ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+              : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
+            : undefined,
+          sourceSnapshot: this.toJson({
+            ...snapshot,
+            method: 'cash',
+            note: dto.note !== undefined ? dto.note : snapshot.note || '',
+            customerIds: sale
+              ? []
+              : customers
+                ? customers.customerIds
+                : this.customerIdsFromEntry(entry),
+            receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
+            manual: true,
+          }),
+          ...(sale || customers
+            ? {
+                invoiceLinks: {
+                  deleteMany: {},
+                  ...(linkedInvoiceIds.length
+                    ? {
+                        create: linkedInvoiceIds.map((invoiceId) => ({
+                          invoiceId,
+                        })),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(dto.attachments
+            ? {
+                attachments: {
+                  deleteMany: {},
+                  ...(dto.attachments.length
+                    ? {
+                        create: dto.attachments.map((file) => ({
+                          kind: file.kind || 'EVIDENCE',
+                          fileUrl: file.fileUrl,
+                          fileName: file.fileName,
+                          fileType: file.fileType,
+                          fileSize: file.fileSize,
+                          createdBy: userId,
+                        })),
+                      }
+                    : {}),
+                },
+              }
+            : {}),
+        },
+        include: this.warehouseInclude(),
+      });
+      await this.syncWarehouseReceiptFund(tx, id, userId);
+      return updated;
     });
   }
 
@@ -1232,27 +1305,10 @@ export class InternalFinanceService {
       });
     }
 
-    // Tiền thu tại kho vào quỹ nội bộ cùng lúc phiếu chuyển sang "Đã lập".
+    // Tiền đã vào quỹ từ lúc kế toán kho xác nhận; phiếu xác nhận trước khi
+    // đổi cách ghi quỹ thì ghi bù tại đây (không ghi lần hai).
     return this.prisma.$transaction(async (tx) => {
-      // Dòng đồng bộ về, hoặc phiếu đã có dòng trên sổ quỹ Lark (trước ngày
-      // dùng POS), đã có bút toán trong sổ quỹ lịch sử: không cộng lần hai.
-      if (
-        !String(entry.sourceKey || '').startsWith('LARK_CASH:') &&
-        !isLarkLedgerRecorded(entry)
-      )
-        await this.fundLedger.postSystemTransaction(tx, {
-          branchId: entry.branchId,
-          transactionType: 'RECEIPT',
-          codeKind: 'THU',
-          amount: received,
-          occurredAt: new Date(entry.occurredAt),
-          description: entry.description || entry.code,
-          sourceType: FUND_SOURCE_TYPE.WAREHOUSE_CASH_RECEIPT,
-          sourceKey: this.warehouseReceiptFundKey(id),
-          sourceId: String(id),
-          entryId: id,
-          userId,
-        });
+      await this.syncWarehouseReceiptFund(tx, id, userId);
       return tx.internalFinanceEntry.update({
         where: { id },
         data: {
@@ -3804,7 +3860,7 @@ export class InternalFinanceService {
     ) {
       const sourceKey = `PACKING_SLIP:${packingSlip.id}:CUSTOMER_RECEIPT`;
       activeKeys.push(sourceKey);
-      await this.upsertPackingEntry(db, {
+      const receipt = await this.upsertPackingEntry(db, {
         sourceKey,
         sourceId: String(packingSlip.id),
         category: INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT,
@@ -3832,28 +3888,38 @@ export class InternalFinanceService {
         preserveUserText: true,
         reopenIfCancelled: true,
       });
+      // Báo đơn đổi số tiền / kho: số xác nhận bị bỏ thì dòng quỹ cũng rút ra.
+      await this.syncWarehouseReceiptFund(db, receipt.id, userId);
     }
 
-    await db.internalFinanceEntry.updateMany({
-      where: {
-        packingSlipId: packingSlip.id,
-        cashIssued: false,
-        OR: [
-          { direction: 'RECEIPT' },
-          { direction: 'EXPENSE', weeklyBatchId: null },
+    const dropWhere = {
+      packingSlipId: packingSlip.id,
+      cashIssued: false,
+      OR: [
+        { direction: 'RECEIPT' },
+        { direction: 'EXPENSE', weeklyBatchId: null },
+      ],
+      sourceKey: { notIn: activeKeys.length ? activeKeys : ['__none__'] },
+      status: {
+        in: [
+          INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+          INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
+          INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
+          INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
         ],
-        sourceKey: { notIn: activeKeys.length ? activeKeys : ['__none__'] },
-        status: {
-          in: [
-            INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
-            INTERNAL_FINANCE_STATUS.ACCOUNTANT_APPROVED,
-            INTERNAL_FINANCE_STATUS.PENDING_MANAGER,
-            INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
-          ],
-        },
       },
+    };
+    const droppedReceipts = await db.internalFinanceEntry.findMany({
+      where: { ...dropWhere, direction: INTERNAL_FINANCE_DIRECTION.RECEIPT },
+      select: { id: true },
+    });
+    await db.internalFinanceEntry.updateMany({
+      where: dropWhere,
       data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
     });
+    // Báo đơn bỏ thu tiền mặt: phiếu đã xác nhận phải rút tiền khỏi quỹ.
+    for (const receipt of droppedReceipts)
+      await this.syncWarehouseReceiptFund(db, receipt.id, userId);
     return { locked };
   }
 
