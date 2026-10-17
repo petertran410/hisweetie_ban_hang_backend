@@ -441,8 +441,8 @@ describe('InternalFinanceService', () => {
     const user = { id: 7, roles: [] };
     const week = {
       branchId: 6,
-      weekStart: '2026-10-20',
-      weekEnd: '2026-10-26',
+      weekStart: '2026-10-19',
+      weekEnd: '2026-10-25',
     };
 
     it('prepares only the week, keeping carry-over entries already added', async () => {
@@ -455,7 +455,7 @@ describe('InternalFinanceService', () => {
       const or = findMany.mock.calls[0][0].where.OR;
       // Không tự gộp phiếu sót mới; chỉ giữ phiếu sót đã thêm vào batch này.
       expect(or).toContainEqual({
-        occurredAt: { lt: new Date('2026-10-20T00:00:00+07:00') },
+        occurredAt: { lt: new Date('2026-10-19T00:00:00+07:00') },
         weeklyBatchId: 9,
       });
       expect(JSON.stringify(or)).not.toContain('2026-10-12T17:00:00');
@@ -471,7 +471,7 @@ describe('InternalFinanceService', () => {
             branchId: 6,
             status: 'READY',
             approvalRequestId: null,
-            weekStart: new Date('2026-10-20T00:00:00+07:00'),
+            weekStart: new Date('2026-10-19T00:00:00+07:00'),
           }),
           update,
         },
@@ -567,15 +567,49 @@ describe('InternalFinanceService', () => {
     it('creates a new batch beside a cancelled one, suffixing a taken code', async () => {
       const { service, findFirst, create, codes } = setup();
       codes.mockResolvedValue([
-        { code: 'TCNB-TUAN-HN-2026-W43-2026-10-20-2026-10-26' },
+        { code: 'TCNB-TUAN-HN-2026-W43-2026-10-19-2026-10-25' },
       ]);
       await service.prepareWarehouseExpenseBatch(week, user);
       expect(findFirst.mock.calls[0][0].where.status).toEqual({
         not: 'CANCELLED',
       });
       expect(create.mock.calls[0][0].data.code).toBe(
-        'TCNB-TUAN-HN-2026-W43-2026-10-20-2026-10-26-L2',
+        'TCNB-TUAN-HN-2026-W43-2026-10-19-2026-10-25-L2',
       );
+    });
+
+    it.each([
+      ['starts on a Tuesday', '2026-09-29', '2026-10-04'],
+      ['is not 7 days', '2026-09-28', '2026-10-05'],
+    ])('refuses a week that %s', async (_label, weekStart, weekEnd) => {
+      const { service, create, update } = setup();
+      await expect(
+        service.prepareWarehouseExpenseBatch(
+          { branchId: 6, weekStart, weekEnd },
+          user,
+        ),
+      ).rejects.toThrow('đủ 7 ngày, từ Thứ hai đến Chủ nhật');
+      expect(create).not.toHaveBeenCalled();
+      expect(update).not.toHaveBeenCalled();
+    });
+
+    it('names the batch by the ISO week of its Monday', async () => {
+      const { service, create } = setup();
+      await service.prepareWarehouseExpenseBatch(
+        { branchId: 6, weekStart: '2026-09-28', weekEnd: '2026-10-04' },
+        user,
+      );
+      expect(create.mock.calls[0][0].data.code).toBe(
+        'TCNB-TUAN-HN-2026-W40-2026-09-28-2026-10-04',
+      );
+    });
+
+    it('offers carry-over entries from any earlier date', async () => {
+      const { service, findMany } = setup();
+      await service.warehouseCarryOver(user, 6, '2026-10-19');
+      expect(findMany.mock.calls[0][0].where.occurredAt).toEqual({
+        lt: new Date('2026-10-19T00:00:00+07:00'),
+      });
     });
 
     it('lists carry-over candidates for the preview', async () => {
@@ -585,7 +619,7 @@ describe('InternalFinanceService', () => {
         { id: 6, code: 'B', amount: 50 },
       ]);
       expect(
-        await service.warehouseCarryOver(user, 6, '2026-10-20'),
+        await service.warehouseCarryOver(user, 6, '2026-10-19'),
       ).toMatchObject({ total: 150 });
       expect(findMany.mock.calls[0][0].where).toMatchObject({
         weeklyBatchId: null,

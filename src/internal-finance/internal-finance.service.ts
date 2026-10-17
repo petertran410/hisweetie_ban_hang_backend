@@ -96,11 +96,22 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
-/**
- * Phiếu sót tuần trước (đủ hai tick nhưng chưa vào tuần nào) chỉ được gộp từ
- * ngày bắt đầu dùng POS, để không kéo dữ liệu lịch sử từ Lark vào batch mới.
- */
-const CARRY_OVER_FROM = new Date('2026-10-13T00:00:00+07:00');
+/** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
+export const isoWeekOf = (dateKey: string) => {
+  const date = new Date(`${dateKey}T00:00:00Z`);
+  // Thứ năm cùng tuần quyết định tuần thuộc năm nào.
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const year = date.getUTCFullYear();
+  const week = Math.ceil(
+    ((date.getTime() - Date.UTC(year, 0, 1)) / 86400000 + 1) / 7,
+  );
+  return { year, week };
+};
+
+const addDaysKey = (dateKey: string, days: number) =>
+  new Date(Date.parse(`${dateKey}T00:00:00Z`) + days * 86400000)
+    .toISOString()
+    .slice(0, 10);
 
 // Batch đã hủy không còn phiếu: số phiếu hiển thị là số phiếu lúc hủy.
 const withCancelledCount = <
@@ -2342,8 +2353,16 @@ export class InternalFinanceService {
     const weekEnd = new Date(
       fundDayStart(dto.weekEnd).getTime() + 86400000 - 1,
     );
-    if (weekStart > weekEnd) {
-      throw new BadRequestException('Tuần có ngày bắt đầu sau ngày kết thúc');
+    // Tuần tổng hợp luôn đủ 7 ngày Thứ hai–Chủ nhật; phiếu tuần trước gộp qua
+    // "Phiếu sót tuần trước", không kéo dài khoảng ngày.
+    const startKey = fundDateKey(weekStart);
+    if (
+      new Date(`${startKey}T00:00:00Z`).getUTCDay() !== 1 ||
+      fundDateKey(weekEnd) !== addDaysKey(startKey, 6)
+    ) {
+      throw new BadRequestException(
+        'Tuần tổng hợp phải đủ 7 ngày, từ Thứ hai đến Chủ nhật',
+      );
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -2446,12 +2465,10 @@ export class InternalFinanceService {
         (sum, entry) => sum + Number(entry.amount),
         0,
       );
-      const calendarStart = new Date(`${fundDateKey(weekStart)}T00:00:00Z`);
+      const isoWeek = isoWeekOf(startKey);
       const code = `TCNB-TUAN-${
         INTERNAL_FINANCE_BRANCH_CODES[dto.branchId] || `B${dto.branchId}`
-      }-${calendarStart.getUTCFullYear()}-W${String(
-        this.isoWeek(calendarStart),
-      ).padStart(2, '0')}-${fundDateKey(weekStart)}-${fundDateKey(weekEnd)}`;
+      }-${isoWeek.year}-W${String(isoWeek.week).padStart(2, '0')}-${startKey}-${fundDateKey(weekEnd)}`;
 
       if (existing) {
         // Gom lại batch chưa gửi: phiếu bị bỏ ra (vd bỏ tích gộp phiếu sót)
@@ -2599,7 +2616,6 @@ export class InternalFinanceService {
             branchId: scope.branchId,
             direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
             occurredAt: {
-              gte: CARRY_OVER_FROM,
               lt: scope.weekStart,
             },
             weeklyBatchId: null,
@@ -2659,7 +2675,7 @@ export class InternalFinanceService {
           : 'EXPENSE_VP';
     const from = fundDateKey(batch.weekStart);
     const to = fundDateKey(batch.weekEnd);
-    const week = String(this.isoWeek(new Date(`${from}T00:00:00Z`)));
+    const week = String(isoWeekOf(from).week);
     const ids =
       kind === 'EXPENSE_HN'
         ? EXPENSE_FIELD_IDS.HN
@@ -2792,7 +2808,7 @@ export class InternalFinanceService {
         branchId,
         direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
         category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] },
-        occurredAt: { gte: CARRY_OVER_FROM, lt: start },
+        occurredAt: { lt: start },
         weeklyBatchId: null,
         cashIssued: false,
         cashFlowId: null,
@@ -2853,7 +2869,7 @@ export class InternalFinanceService {
           branchId: batch.branchId,
           direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
           category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] },
-          occurredAt: { gte: CARRY_OVER_FROM, lt: batch.weekStart },
+          occurredAt: { lt: batch.weekStart },
           weeklyBatchId: null,
           cashIssued: false,
           cashFlowId: null,
@@ -4862,18 +4878,6 @@ export class InternalFinanceService {
 
   private dateKey(value: Date) {
     return this.dateOnly(value).replace(/-/g, '');
-  }
-
-  private isoWeek(value: Date) {
-    const date = new Date(
-      Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()),
-    );
-    const day = date.getUTCDay() || 7;
-    date.setUTCDate(date.getUTCDate() + 4 - day);
-    const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
-    return Math.ceil(
-      ((date.getTime() - yearStart.getTime()) / 86400000 + 1) / 7,
-    );
   }
 
   private batchLink(batchId: number) {

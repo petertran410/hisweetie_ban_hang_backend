@@ -36,6 +36,9 @@ type LarkShellUser = {
   larkUserId: string | null;
 };
 
+/** Handler event Lark trả giá trị này để phân biệt với xác thực thất bại. */
+const HANDLED = 'handled';
+
 @Injectable()
 export class LarkAuthService {
   private readonly logger = new Logger(LarkAuthService.name);
@@ -168,9 +171,10 @@ export class LarkAuthService {
     }
 
     const dispatcher = this.getEventDispatcher(encryptKey, verificationToken);
+    // SDK trả undefined khi xác thực thất bại; các handler luôn trả HANDLED.
     const result = await dispatcher.invoke(payload);
     if (result === undefined) {
-      this.logger.warn('Lark event verification failed or handler returned empty');
+      this.logger.warn('Lark event verification failed');
     }
     return { ok: true };
   }
@@ -414,11 +418,16 @@ export class LarkAuthService {
     }).register({
       'contact.user.created_v3': async (data) => {
         await this.provisionFromContactCreated(data?.object);
+        return HANDLED;
       },
       approval_instance: async (data) => {
         const event = (data as any)?.event || data;
         await this.approvalLifecycle.handleInstanceEvent(event as any);
+        return HANDLED;
       },
+      // Lark gửi kèm các event này; POS không dùng, nhận để khỏi báo "no handle".
+      approval: async () => HANDLED,
+      'im.chat.access_event.bot_p2p_chat_entered_v1': async () => HANDLED,
     });
     return this.eventDispatcher;
   }
