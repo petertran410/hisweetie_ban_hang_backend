@@ -11,6 +11,10 @@ export class PermissionCacheService {
   // Cache danh sách permission theo cặp user + chi nhánh (dùng cho PermissionsGuard).
   // Key: `${userId}:${branchId}`. Branch nằm trong key nên không lẫn quyền giữa các chi nhánh.
   private readonly branchCache = new Map<string, CachedEntry>();
+  // Cache response GET /auth/profile. Key: `${userId}:${branchId ?? ''}`.
+  // Chỉ đọc sau JwtAuthGuard (đã kiểm isActive/permissionVersion) nên user bị
+  // khóa không bao giờ chạm tới cache này.
+  private readonly profileCache = new Map<string, CachedEntry>();
   private readonly TTL_MS = 60_000;
 
   get(userId: number): any | null {
@@ -48,13 +52,33 @@ export class PermissionCacheService {
     });
   }
 
+  getProfile(userId: number, branchId?: number): any | null {
+    const key = `${userId}:${branchId ?? ''}`;
+    const entry = this.profileCache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expiresAt) {
+      this.profileCache.delete(key);
+      return null;
+    }
+    return entry.data;
+  }
+
+  setProfile(userId: number, branchId: number | undefined, data: any): void {
+    this.profileCache.set(`${userId}:${branchId ?? ''}`, {
+      data,
+      expiresAt: Date.now() + this.TTL_MS,
+    });
+  }
+
   invalidateUser(userId: number): void {
     this.cache.delete(userId);
     // Xóa mọi entry branch-specific của user này (mọi chi nhánh).
     const prefix = `${userId}:`;
-    for (const key of this.branchCache.keys()) {
-      if (key.startsWith(prefix)) {
-        this.branchCache.delete(key);
+    for (const map of [this.branchCache, this.profileCache]) {
+      for (const key of map.keys()) {
+        if (key.startsWith(prefix)) {
+          map.delete(key);
+        }
       }
     }
   }
@@ -62,5 +86,6 @@ export class PermissionCacheService {
   invalidateAll(): void {
     this.cache.clear();
     this.branchCache.clear();
+    this.profileCache.clear();
   }
 }

@@ -73,6 +73,8 @@ import { PermissionCacheModule } from './permission-cache/permission-cache.modul
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
+import { FixedWindowThrottlerStorage } from './common/guards/fixed-window-throttler.storage';
+import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 // import { SyncKiotModule } from './sync-kiot/sync-kiot.module'; // disabled: bỏ hoàn toàn sync-kiot
 import { LarkSyncModule } from './lark-sync/lark-sync.module';
 import { MisaSyncModule } from './misa-sync/misa-sync.module';
@@ -103,19 +105,23 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
       envFilePath: '.env',
     }),
     ScheduleModule.forRoot(),
-    ThrottlerModule.forRoot([
-      {
-        // Giới hạn mặc định toàn cục: 300 request / 60 giây / user.
-        // Đếm theo user-id (UserThrottlerGuard) nên mỗi nhân viên có bucket
-        // riêng, không cạnh tranh nhau khi NAT chung IP. Con số 300 chừa đủ
-        // headroom cho FE bắn nhiều query song song (list + count + filter
-        // + react-query prefetch + đổi branch), vẫn chặn được bot quét.
-        // Auth endpoints override riêng xuống 5/60s (xem auth.controller.ts).
-        name: 'default',
-        ttl: 60000,
-        limit: 300,
-      },
-    ]),
+    ThrottlerModule.forRoot({
+      throttlers: [
+        {
+          // Giới hạn mặc định toàn cục: 300 request / 60 giây / user.
+          // Đếm theo user-id (UserThrottlerGuard) nên mỗi nhân viên có bucket
+          // riêng, không cạnh tranh nhau khi NAT chung IP. Con số 300 chừa đủ
+          // headroom cho FE bắn nhiều query song song (list + count + filter
+          // + react-query prefetch + đổi branch), vẫn chặn được bot quét.
+          // Auth endpoints override riêng xuống 5/60s (xem auth.controller.ts).
+          name: 'default',
+          ttl: 60000,
+          limit: 300,
+        },
+      ],
+      // Thay storage in-memory mặc định (lỗi timer, xem file storage).
+      storage: new FixedWindowThrottlerStorage(),
+    }),
     PrismaModule,
     PermissionCacheModule,
     AuthModule,
@@ -222,6 +228,11 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
     {
       provide: APP_FILTER,
       useClass: HttpExceptionFilter,
+    },
+    {
+      // Log request chậm (>= 2s) và route xuất/nhập/upload file.
+      provide: APP_INTERCEPTOR,
+      useClass: LoggingInterceptor,
     },
   ],
 })

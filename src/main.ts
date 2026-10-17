@@ -9,6 +9,7 @@ import * as compression from 'compression';
 import { PrismaService } from './prisma/prisma.service';
 import { createPublicationPdfMiddleware } from './upload/publication-pdf.middleware';
 import { selectPublicationDisplayName } from './upload/publication-pdf-title';
+import { startEventLoopMonitor } from './common/monitoring/event-loop-monitor';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -166,6 +167,7 @@ async function bootstrap() {
   // headersTimeout phải > keepAliveTimeout để tránh race đóng khi đang đọc header.
   server.keepAliveTimeout = 65000;
   server.headersTimeout = 66000;
+  startEventLoopMonitor();
   console.log(
     `CORS allowed origins: ${process.env.CORS_ORIGIN || 'None set - requests may be blocked'}`,
   );

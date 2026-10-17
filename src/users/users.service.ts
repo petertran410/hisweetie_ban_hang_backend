@@ -485,6 +485,10 @@ export class UsersService {
       data.canViewOnlyOwnLoadingInvoices !== undefined
     ) {
       await this.bumpPermissionVersion(id);
+    } else {
+      // Đổi thông tin/chi nhánh không cần buộc đăng nhập lại, nhưng phải xóa
+      // cache (vd profile) để lần gọi sau thấy dữ liệu mới.
+      this.permissionCache.invalidateUser(id);
     }
 
     return updatedUser;

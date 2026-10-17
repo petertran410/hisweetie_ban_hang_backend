@@ -108,7 +108,6 @@ export class AuthController {
   }
 
   @Get('profile')
-  @UseGuards(JwtAuthGuard)
   async getProfile(@Req() req, @Query('branchId') branchId?: string) {
     const parsedBranchId = branchId ? parseInt(branchId) : undefined;
     return this.authService.getProfile(req.user.id, parsedBranchId);

@@ -76,6 +76,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // Lỗi client 4xx là hành vi mong đợi (validation, không tìm thấy, ...) → log gọn 1 dòng.
     // Riêng 401/403 (chưa đăng nhập / không có quyền) và 404 (path không tồn tại,
     // chủ yếu do bot/scanner dò đường) bỏ qua hẳn để tránh lụt log.
+    // 429 do UserThrottlerGuard tự log gộp (1 dòng/phút/user).
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
         `${request.method} ${request.url} - IP ${clientIp} - UA "${userAgent}"`,
@@ -84,7 +85,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
     } else if (
       status !== HttpStatus.UNAUTHORIZED &&
       status !== HttpStatus.FORBIDDEN &&
-      status !== HttpStatus.NOT_FOUND
+      status !== HttpStatus.NOT_FOUND &&
+      status !== HttpStatus.TOO_MANY_REQUESTS
     ) {
       // Trích message gọn để log dễ debug (vd lý do bị chặn khi hủy phiếu)
       const reason =

@@ -2,6 +2,7 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
+import { PermissionCacheService } from '../permission-cache/permission-cache.service';
 import { isRetiredPermissionName } from '../permissions/permission-policy';
 import * as bcrypt from 'bcrypt';
 
@@ -10,6 +11,7 @@ export class AuthService {
   constructor(
     private prisma: PrismaService,
     private jwtService: JwtService,
+    private permissionCache: PermissionCacheService,
   ) {}
 
   async login(email: string, password: string, branchId?: number) {
@@ -74,9 +76,7 @@ export class AuthService {
       );
       permissions = [
         ...new Set([...rolePermissions, ...grantPermissions]),
-      ].filter(
-        (p) => !denyPermissions.has(p) && !isRetiredPermissionName(p),
-      );
+      ].filter((p) => !denyPermissions.has(p) && !isRetiredPermissionName(p));
     }
 
     const userBranches = await this.prisma.userBranch.findMany({
@@ -331,6 +331,18 @@ export class AuthService {
   }
 
   async getProfile(userId: number, branchId?: number) {
+    // FE gọi profile mỗi lần load trang/đổi chi nhánh (RouteGuard) — mỗi lần
+    // ~25 câu SQL. Cache 60s, xóa qua invalidateUser/invalidateAll khi quyền,
+    // trạng thái hoặc thông tin user thay đổi.
+    const cached = this.permissionCache.getProfile(userId, branchId);
+    if (cached) return cached;
+
+    const profile = await this.loadProfile(userId, branchId);
+    this.permissionCache.setProfile(userId, branchId, profile);
+    return profile;
+  }
+
+  private async loadProfile(userId: number, branchId?: number) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -375,9 +387,7 @@ export class AuthService {
       );
       permissions = [
         ...new Set([...rolePermissions, ...grantPermissions]),
-      ].filter(
-        (p) => !denyPermissions.has(p) && !isRetiredPermissionName(p),
-      );
+      ].filter((p) => !denyPermissions.has(p) && !isRetiredPermissionName(p));
     }
 
     const branchIds = user.userBranches.map((ub) => ub.branchId);
@@ -407,7 +417,7 @@ export class AuthService {
     userId: number,
     data: { name?: string; phone?: string; avatar?: string },
   ) {
-    return this.prisma.user.update({
+    const updated = await this.prisma.user.update({
       where: { id: userId },
       data,
       select: {
@@ -418,6 +428,8 @@ export class AuthService {
         avatar: true,
       },
     });
+    this.permissionCache.invalidateUser(userId);
+    return updated;
   }
 
   async changePassword(
