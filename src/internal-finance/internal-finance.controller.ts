@@ -281,6 +281,18 @@ export class InternalFinanceController {
     return this.service.cancelWarehouseExpense(id, user, dto.reason);
   }
 
+  @Put('warehouse-expenses/:id/attachments')
+  @ApiOperation({
+    summary: 'Replace evidence of a warehouse expense synced from Lark',
+  })
+  replaceWarehouseExpenseAttachments(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddInternalFinanceAttachmentsDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.replaceWarehouseExpenseAttachments(id, dto, user);
+  }
+
   @Get('warehouse-expenses/:id/notes')
   @ApiOperation({ summary: 'List review notes of a warehouse expense' })
   warehouseExpenseNotes(

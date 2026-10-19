@@ -3138,6 +3138,79 @@ export class InternalFinanceService {
     });
   }
 
+  /**
+   * Sửa chứng từ của phiếu chi đồng bộ từ LarkBase (không có báo đơn / phiếu xe
+   * để sửa ở nguồn): thay cả danh sách để vừa thêm vừa bỏ file sai. Phiếu đã
+   * chi, đã hủy hoặc đang trong Approval tuần đã gửi thì khóa.
+   */
+  async replaceWarehouseExpenseAttachments(
+    id: number,
+    dto: AddInternalFinanceAttachmentsDto,
+    user: any,
+  ) {
+    const hint = await this.prisma.internalFinanceEntry.findUnique({
+      where: { id },
+      select: { branchId: true },
+    });
+    if (!hint) throw new NotFoundException('Không tìm thấy khoản chi');
+    await this.assertWarehouseExpensePermission(user, hint.branchId, 'update');
+    return this.prisma.$transaction(async (tx) => {
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id },
+        include: { weeklyBatch: { select: { status: true } } },
+      });
+      if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE)
+        throw new NotFoundException('Không tìm thấy khoản chi');
+      if (
+        entry.sourceType !== 'LARK_IMPORT' ||
+        ['FUEL', 'VEHICLE_CARE'].includes(entry.category)
+      )
+        throw new BadRequestException(
+          'Chỉ sửa chứng từ trực tiếp cho phiếu đồng bộ từ Lark; phiếu khác sửa ở báo đơn / Xe cộ / form phiếu',
+        );
+      if (entry.status === INTERNAL_FINANCE_STATUS.CANCELLED)
+        throw new BadRequestException('Phiếu chi đã hủy');
+      if (entry.cashIssued || entry.cashFlowId)
+        throw new BadRequestException('Phiếu đã chi: không sửa được chứng từ');
+      if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY')
+        throw new BadRequestException(
+          'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không sửa được',
+        );
+      const files = dto.attachments || [];
+      await tx.internalFinanceAttachment.deleteMany({ where: { entryId: id } });
+      if (files.length)
+        await tx.internalFinanceAttachment.createMany({
+          data: files.map((file) => ({
+            entryId: id,
+            kind: file.kind || 'EVIDENCE',
+            fileUrl: file.fileUrl,
+            fileName: file.fileName,
+            fileType: file.fileType,
+            fileSize: file.fileSize,
+            createdBy: user.id,
+          })),
+        });
+      await tx.internalFinanceReview.create({
+        data: {
+          entryId: id,
+          role: INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
+          decision: 'UPDATE_EVIDENCE',
+          reason: `Sửa chứng từ: còn ${files.length} file`,
+          reviewerId: user.id,
+        },
+      });
+      return tx.internalFinanceEntry.update({
+        where: { id },
+        data: {
+          evidenceStatus: files.length
+            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
+        },
+        include: this.warehouseExpenseInclude(),
+      });
+    });
+  }
+
   private requireCancelReason(reason: string) {
     const trimmed = reason?.trim();
     if (!trimmed) throw new BadRequestException('Cần nhập lý do hủy phiếu');

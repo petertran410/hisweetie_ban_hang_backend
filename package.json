@@ -86,6 +86,7 @@
     "sync:lark-approvals": "ts-node prisma/scripts/sync-lark-approvals.ts",
     "check:lark-fund": "ts-node prisma/scripts/check-lark-fund.ts",
     "fix:ledger-deploy": "ts-node prisma/scripts/fix-ledger-deploy.ts",
+    "reopen:sg-expenses": "ts-node prisma/scripts/reopen-sg-expenses.ts",
     "seed:internal-use-print": "ts-node prisma/seeds/add-internal-use-print-template.ts",
     "seed:consignments": "ts-node prisma/seeds/add-consignment-permissions.ts",
     "seed:consignment-print": "ts-node prisma/seeds/add-consignment-print-template.ts",

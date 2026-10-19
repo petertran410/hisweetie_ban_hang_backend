@@ -915,6 +915,74 @@ describe('InternalFinanceService', () => {
     expect(findMany.mock.calls[2][0].where.AND).not.toContainEqual(hidden);
   });
 
+  describe('replaceWarehouseExpenseAttachments', () => {
+    const user = { id: 7, roles: [] };
+    const setup = (entry: any) => {
+      const ctx = makeService({
+        internalFinanceAttachment: {
+          deleteMany: jest.fn(),
+          createMany: jest.fn(),
+        },
+        internalFinanceReview: { create: jest.fn() },
+      });
+      ctx.prisma.internalFinanceEntry.findUnique.mockResolvedValue({
+        id: 4,
+        branchId: 1,
+        direction: 'EXPENSE',
+        sourceType: 'LARK_IMPORT',
+        category: 'DELIVERY_FEE',
+        status: 'PENDING_ACCOUNTANT',
+        cashIssued: false,
+        cashFlowId: null,
+        weeklyBatch: null,
+        ...entry,
+      });
+      ctx.authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:update',
+      ]);
+      return ctx;
+    };
+    const files = {
+      attachments: [{ fileUrl: 'https://files.example/a.jpg', kind: 'IMAGE' }],
+    };
+
+    it('replaces the evidence of a Lark-synced expense', async () => {
+      const { service, prisma } = setup({});
+      await service.replaceWarehouseExpenseAttachments(4, files as any, user);
+      expect(prisma.internalFinanceAttachment.deleteMany).toHaveBeenCalledWith({
+        where: { entryId: 4 },
+      });
+      expect(prisma.internalFinanceAttachment.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            entryId: 4,
+            fileUrl: 'https://files.example/a.jpg',
+            createdBy: 7,
+          }),
+        ],
+      });
+      expect(prisma.internalFinanceEntry.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: { evidenceStatus: 'COMPLETE' },
+        }),
+      );
+    });
+
+    it.each([
+      [{ cashIssued: true }, 'đã chi'],
+      [{ weeklyBatch: { status: 'IN_APPROVAL' } }, 'đã gửi duyệt'],
+      [{ sourceType: 'PACKING_SLIP' }, 'đồng bộ từ Lark'],
+    ])('refuses %j', async (patch, message) => {
+      const { service, prisma } = setup(patch);
+      await expect(
+        service.replaceWarehouseExpenseAttachments(4, files as any, user),
+      ).rejects.toThrow(message);
+      expect(
+        prisma.internalFinanceAttachment.deleteMany,
+      ).not.toHaveBeenCalled();
+    });
+  });
+
   describe('cancelWarehouseExpenseBatch', () => {
     const setup = (batch: any, permissions = ['weekly_approval:prepare']) => {
       const updateMany = jest.fn();
