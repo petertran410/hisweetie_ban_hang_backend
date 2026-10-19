@@ -248,10 +248,13 @@ export class PublicApiWriteService {
   }
 
   async updateInvoice(id: number, dto: UpdateInvoiceDto) {
+    // Client public API không có quyền theo user → giữ hành vi cũ, cho sửa
+    // cả hóa đơn đã Giao thành công / Hoàn thành.
     const invoice = await this.invoicesService.update(
       id,
       dto,
       this.actingUserId,
+      { finalizedEditAuthorized: true },
     );
     const presented = this.present('invoices', invoice);
     void this.outboxService?.enqueue(

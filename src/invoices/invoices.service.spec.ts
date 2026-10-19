@@ -311,6 +311,68 @@ describe('InvoicesService delivery reporting', () => {
     expect(updateInput.data.grandTotal).toBeUndefined();
   });
 
+  describe('sửa hóa đơn đã Giao thành công / Hoàn thành', () => {
+    const FINALIZED_ERROR =
+      'Bạn không có quyền sửa hóa đơn đã giao thành công / hoàn thành';
+
+    it.each([INVOICE_STATUS.DELIVERED, INVOICE_STATUS.COMPLETED])(
+      'chặn sửa nội dung khi thiếu quyền update_finalized (trạng thái %s)',
+      async (status) => {
+        const { service, tx } = createService(createInvoice(null, status));
+
+        await expect(
+          service.update(1, { shippingFee: 15_000 } as any, 9),
+        ).rejects.toThrow(FINALIZED_ERROR);
+        await expect(
+          service.update(1, { items: [] } as any, 9),
+        ).rejects.toThrow(FINALIZED_ERROR);
+        expect(tx.invoice.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      [INVOICE_STATUS.DELIVERED, { status: INVOICE_STATUS.COMPLETED }],
+      [INVOICE_STATUS.DELIVERED, { description: 'Ghi chú mới' }],
+      [INVOICE_STATUS.COMPLETED, { status: INVOICE_STATUS.DELIVERED }],
+      [INVOICE_STATUS.COMPLETED, { description: 'Ghi chú mới' }],
+    ])(
+      'vẫn cho đổi trạng thái / ghi chú khi thiếu quyền (trạng thái %s)',
+      async (status, dto) => {
+        const { service, tx } = createService(createInvoice(null, status));
+
+        await service.update(1, dto as any, 9);
+
+        expect(tx.invoice.update).toHaveBeenCalled();
+      },
+    );
+
+    it('cho sửa nội dung khi có quyền update_finalized', async () => {
+      const { service, tx } = createService(
+        createInvoice(null, INVOICE_STATUS.DELIVERED),
+      );
+
+      await service.update(1, { shippingFee: 15_000 } as any, 9, {
+        finalizedEditAuthorized: true,
+      });
+
+      expect(tx.invoice.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ shippingFee: 15_000 }),
+        }),
+      );
+    });
+
+    it('không áp dụng cho hóa đơn chưa giao', async () => {
+      const { service, tx } = createService(
+        createInvoice(null, INVOICE_STATUS.PROCESSING),
+      );
+
+      await service.update(1, { shippingFee: 15_000 } as any, 9);
+
+      expect(tx.invoice.update).toHaveBeenCalled();
+    });
+  });
+
   it('khóa invoice trước khi đọc trong update transaction', async () => {
     const { service, tx } = createService(createInvoice(null));
     const calls: string[] = [];

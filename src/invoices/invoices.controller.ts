@@ -9,6 +9,7 @@ import {
   UseGuards,
   ParseIntPipe,
   Res,
+  Req,
 } from '@nestjs/common';
 import { InvoicesService } from './invoices.service';
 import {
@@ -24,6 +25,7 @@ import { ResolveScanDto } from './dto/resolve-scan.dto';
 import { CreateInvoiceFromConsignmentDto } from '../consignments/dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { requestHasPermission } from '../auth/request-permissions';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   RequirePermissions,
@@ -310,7 +312,9 @@ export class InvoicesController {
 
   @Post('merge/validate')
   @RequirePermissions('invoices:merge')
-  @ApiOperation({ summary: 'Kiểm tra điều kiện gộp hóa đơn trước khi mở modal' })
+  @ApiOperation({
+    summary: 'Kiểm tra điều kiện gộp hóa đơn trước khi mở modal',
+  })
   validateMerge(@Body() body: { sourceInvoiceIds: number[] }) {
     return this.invoicesService.validateMerge(body.sourceInvoiceIds);
   }
@@ -321,8 +325,14 @@ export class InvoicesController {
     @Param('id') id: string,
     @Body() dto: UpdateInvoiceDto,
     @CurrentUser() user: any,
+    @Req() req: any,
   ) {
-    return this.invoicesService.update(+id, dto, user.id);
+    return this.invoicesService.update(+id, dto, user.id, {
+      finalizedEditAuthorized: requestHasPermission(
+        req,
+        'invoices:update_finalized',
+      ),
+    });
   }
 
   @Put(':id/cancel')

@@ -72,6 +72,13 @@ const POS_PAYMENT_EPSILON = 1;
 // Transaction hóa đơn làm nhiều việc (trừ/hoàn kho, recalc thẻ kho, công nợ)
 // → mặc định 5s của Prisma không đủ khi phải chờ khóa dòng tồn kho.
 const INVOICE_TX_OPTIONS = { timeout: 30000, maxWait: 10000 };
+// Field được phép gửi khi hóa đơn đã Giao thành công / Hoàn thành mà không
+// cần quyền invoices:update_finalized.
+const FINALIZED_FREE_UPDATE_KEYS = new Set([
+  'status',
+  'description',
+  'cancelPayments',
+]);
 const POS_PREPAID_ORDER_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
@@ -2924,7 +2931,10 @@ export class InvoicesService {
     id: number,
     dto: UpdateInvoiceDto,
     userId?: number,
-    options: { cancellationAuthorized?: boolean } = {},
+    options: {
+      cancellationAuthorized?: boolean;
+      finalizedEditAuthorized?: boolean;
+    } = {},
   ) {
     await this.findOne(id);
     this.assertCancellationAuthorized(dto, options);
@@ -2963,6 +2973,8 @@ export class InvoicesService {
       if (!currentInvoice) {
         throw new NotFoundException(`Invoice with ID ${id} not found`);
       }
+
+      this.assertFinalizedEditAuthorized(currentInvoice.status, dto, options);
 
       if (dto.items && this.hasVersionableChanges(currentInvoice, dto)) {
         const newCode = await this.generateInvoiceCodeWithSuffix(
@@ -4045,6 +4057,32 @@ export class InvoicesService {
     ) {
       throw new ForbiddenException(
         'Vui lòng sử dụng chức năng Hủy hóa đơn để thực hiện thao tác này',
+      );
+    }
+  }
+
+  // Hóa đơn đã Giao thành công / Hoàn thành: chỉ đổi trạng thái (Kết thúc,
+  // Báo đơn), ghi chú và hủy là tự do; sửa nội dung cần invoices:update_finalized.
+  private assertFinalizedEditAuthorized(
+    currentStatus: number,
+    dto: UpdateInvoiceDto,
+    options: { finalizedEditAuthorized?: boolean },
+  ) {
+    if (options.finalizedEditAuthorized) return;
+    if (
+      currentStatus !== INVOICE_STATUS.DELIVERED &&
+      currentStatus !== INVOICE_STATUS.COMPLETED
+    ) {
+      return;
+    }
+    const contentKeys = Object.keys(dto).filter(
+      (key) =>
+        !FINALIZED_FREE_UPDATE_KEYS.has(key) &&
+        dto[key as keyof UpdateInvoiceDto] !== undefined,
+    );
+    if (contentKeys.length > 0) {
+      throw new ForbiddenException(
+        'Bạn không có quyền sửa hóa đơn đã giao thành công / hoàn thành',
       );
     }
   }
