@@ -1484,6 +1484,7 @@ describe('InternalFinanceService', () => {
         }),
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
       },
       customer: {
         findUnique: jest.fn().mockResolvedValue({
@@ -1851,6 +1852,78 @@ describe('InternalFinanceService', () => {
         (entry) => entry.category === 'CUSTOMER_RECEIPT',
       ),
     ).toBe(false);
+  });
+
+  it('updates the Lark-synced fee entry of the same packing slip instead of creating a twin', async () => {
+    const db = memoryFinanceDb();
+    db.entries.set('LARK:base:tbl:rec1', {
+      id: 99,
+      code: 'TCNB-CHI-SG-20261013-000034',
+      sourceKey: 'LARK:base:tbl:rec1',
+      sourceType: 'LARK_IMPORT',
+      direction: 'EXPENSE',
+      category: 'DELIVERY_FEE',
+      subCategory: 'FEE_GUI_BEN',
+      packingSlipId: 31,
+      amount: 20000,
+      status: 'PENDING_ACCOUNTANT',
+      cashIssued: false,
+      cashFlowId: null,
+      weeklyBatchId: null,
+      attachments: [],
+      sourceSnapshot: { larkRecordId: 'rec1', larkLedgerRecorded: true },
+    });
+    const { service } = makeService();
+    const slip = {
+      id: 31,
+      code: 'BD016053',
+      branchId: 1,
+      createdAt: new Date('2026-10-13T03:00:00.000Z'),
+      paymentMethod: 'transfer',
+      cashAmount: 0,
+      hasFeeGuiBen: true,
+      feeGuiBen: 25000,
+      hasFeeGrab: false,
+      feeGrab: 0,
+      hasCuocGuiHang: false,
+      cuocGuiHang: 0,
+      hasCuocNhanHang: false,
+      cuocNhanHang: 0,
+      invoices: [],
+      expenseFiles: [{ fileUrl: 'https://cdn/chung-tu-moi.jpg' }],
+      images: [],
+    };
+
+    const result = await service.syncPackingSlipEntriesInTransaction(
+      db as any,
+      slip,
+      7,
+    );
+
+    expect(db.internalFinanceEntry.create).not.toHaveBeenCalled();
+    const twin = db.entries.get('LARK:base:tbl:rec1');
+    expect(twin).toMatchObject({
+      amount: 25000,
+      status: 'PENDING_ACCOUNTANT',
+      evidenceStatus: 'COMPLETE',
+      sourceSnapshot: expect.objectContaining({
+        larkRecordId: 'rec1',
+        larkLedgerRecorded: true,
+        packingSlipCode: 'BD016053',
+      }),
+    });
+    expect(
+      db.internalFinanceEntry.update.mock.calls[0][0].data.attachments.create,
+    ).toEqual([
+      expect.objectContaining({ fileUrl: 'https://cdn/chung-tu-moi.jpg' }),
+    ]);
+    // Đã trừ trên sổ quỹ Lark theo số cũ: báo để điều chỉnh tay.
+    expect(result.locked).toEqual([
+      { code: 'TCNB-CHI-SG-20261013-000034', reason: expect.any(String) },
+    ]);
+    // Không bị hủy ở bước dọn phiếu không còn dùng.
+    const dropped = db.internalFinanceEntry.updateMany.mock.calls.at(-1)![0];
+    expect(dropped.where.sourceKey.notIn).toContain('LARK:base:tbl:rec1');
   });
 
   it('reports fee entries locked in a weekly batch when the packing slip changes', async () => {
@@ -2614,6 +2687,18 @@ function memoryFinanceDb() {
           (where.id
             ? [...entries.values()].find((item) => item.id === where.id)
             : entries.get(where.sourceKey)) || null,
+        ),
+      ),
+      // Phiếu đồng bộ từ Lark cùng báo đơn, cùng loại phí.
+      findFirst: jest.fn(({ where }: any) =>
+        Promise.resolve(
+          [...entries.values()].find(
+            (entry) =>
+              entry.packingSlipId === where.packingSlipId &&
+              entry.sourceType === where.sourceType &&
+              entry.subCategory === where.subCategory &&
+              entry.status !== 'CANCELLED',
+          ) || null,
         ),
       ),
       findMany: jest.fn(({ where }: any) =>

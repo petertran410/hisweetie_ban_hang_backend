@@ -3943,7 +3943,7 @@ export class InternalFinanceService {
       if (!enabled || amount <= 0) continue;
       const sourceKey = `PACKING_SLIP:${packingSlip.id}:${category}`;
       activeKeys.push(sourceKey);
-      await this.upsertPackingEntry(db, {
+      const fee = await this.upsertPackingEntry(db, {
         sourceKey,
         sourceId: String(packingSlip.id),
         category: DELIVERY_EXPENSE_CATEGORIES[0],
@@ -3969,6 +3969,8 @@ export class InternalFinanceService {
         userId,
         locked,
       });
+      // Phiếu đồng bộ từ Lark đứng thay phiếu phí này: giữ, không hủy.
+      if (fee?.sourceKey) activeKeys.push(fee.sourceKey);
     }
 
     const cashAmount = Number(packingSlip.cashAmount || 0);
@@ -4016,9 +4018,23 @@ export class InternalFinanceService {
       await this.syncWarehouseReceiptFund(db, receipt.id, userId);
     }
 
+    const feeCodes = Object.keys(PACKING_FEE_LABELS);
     const dropWhere = {
       packingSlipId: packingSlip.id,
       cashIssued: false,
+      // Chỉ phiếu sinh từ báo đơn, hoặc phiếu phí đồng bộ từ Lark khi báo đơn
+      // bỏ loại phí đó; phiếu Lark khác gắn báo đơn giữ nguyên.
+      AND: [
+        {
+          OR: [
+            { sourceType: 'PACKING_SLIP' },
+            {
+              sourceType: 'LARK_IMPORT',
+              subCategory: { in: feeCodes },
+            },
+          ],
+        },
+      ],
       OR: [
         { direction: 'RECEIPT' },
         { direction: 'EXPENSE', weeklyBatchId: null },
@@ -4111,17 +4127,34 @@ export class InternalFinanceService {
       locked?: PackingFinanceLock[];
     },
   ) {
-    const existing = await db.internalFinanceEntry.findUnique({
-      where: { sourceKey: data.sourceKey },
-      include: {
-        attachments: { select: { fileUrl: true } },
-        weeklyBatch: { select: { code: true, status: true } },
-      },
-    });
+    const include = {
+      attachments: { select: { fileUrl: true } },
+      weeklyBatch: { select: { code: true, status: true } },
+    };
+    const direction = data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
+    // Báo đơn chưa có phiếu phí POS nhưng đã có phiếu đồng bộ từ Lark cùng
+    // loại phí: cập nhật phiếu Lark đó, không tạo phiếu thứ hai.
+    const existing =
+      (await db.internalFinanceEntry.findUnique({
+        where: { sourceKey: data.sourceKey },
+        include,
+      })) ||
+      (direction === INTERNAL_FINANCE_DIRECTION.EXPENSE && data.subCategory
+        ? await db.internalFinanceEntry.findFirst({
+            where: {
+              packingSlipId: data.packingSlipId,
+              sourceType: 'LARK_IMPORT',
+              direction,
+              subCategory: data.subCategory,
+              status: { not: INTERNAL_FINANCE_STATUS.CANCELLED },
+            },
+            orderBy: { id: 'asc' },
+            include,
+          })
+        : null);
     const evidenceStatus = data.attachments.length
       ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
       : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING;
-    const direction = data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
     const requiresEvidence = direction === INTERNAL_FINANCE_DIRECTION.EXPENSE;
     if (existing) {
       const editableStatuses: string[] = [
@@ -4168,6 +4201,18 @@ export class InternalFinanceService {
       const keepNote = Boolean(
         data.preserveUserText && previousSnapshot.noteEdited,
       );
+      // Phiếu đã trừ trên sổ quỹ Lark (theo số cũ) mà báo đơn đổi số tiền:
+      // báo để người dùng điều chỉnh quỹ tay; dấu vẫn giữ để không trừ lần hai.
+      const ledgerRecorded = isLarkLedgerRecorded(existing);
+      if (
+        ledgerRecorded &&
+        data.locked &&
+        Number(existing.amount) !== Number(data.amount)
+      )
+        data.locked.push({
+          code: existing.code,
+          reason: `đã trừ trên sổ quỹ Lark theo số cũ ${Number(existing.amount)}`,
+        });
       const nextCode = !String(existing.code || '').startsWith('TCNB-')
         ? await this.codeService.nextCode(db, {
             direction,
@@ -4214,7 +4259,18 @@ export class InternalFinanceService {
               }
             : {}),
           sourceSnapshot: {
+            // Phiếu đồng bộ từ Lark giữ thông tin gốc của Lark.
+            ...(existing.sourceType === 'LARK_IMPORT' ? previousSnapshot : {}),
             ...data.sourceSnapshot,
+            // Không làm mất dấu "đã trừ trên sổ quỹ Lark".
+            ...(ledgerRecorded
+              ? {
+                  larkLedgerRecorded: true,
+                  ...(previousSnapshot.larkLedgerCode
+                    ? { larkLedgerCode: previousSnapshot.larkLedgerCode }
+                    : {}),
+                }
+              : {}),
             ...(keepContent ? { contentEdited: true } : {}),
             ...(keepNote
               ? { note: previousSnapshot.note, noteEdited: true }
