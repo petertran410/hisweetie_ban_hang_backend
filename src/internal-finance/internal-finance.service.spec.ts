@@ -1417,6 +1417,11 @@ describe('InternalFinanceService', () => {
         updateMany: jest.fn().mockResolvedValue({ count: 0 }),
         findMany: jest.fn().mockResolvedValue([]),
       },
+      customer: {
+        findUnique: jest.fn().mockResolvedValue({
+          name: '  Khách buôn Mr Dũng  - Kim Mã, HN (Sale 1 - A1)  ',
+        }),
+      },
     };
     const { service } = makeService();
     const packingSlip = {
@@ -1435,7 +1440,10 @@ describe('InternalFinanceService', () => {
       hasCuocNhanHang: false,
       cuocNhanHang: 0,
       expensePayerId: 9,
-      invoices: [{ invoiceId: 30, invoice: { customerId: 55 } }],
+      invoices: [
+        { invoiceId: 30, invoice: { code: 'HD131049', customerId: 55 } },
+        { invoiceId: 31, invoice: { code: 'HD131050', customerId: 55 } },
+      ],
       expenseFiles: [{ fileUrl: 'https://files.example/receipt.jpg' }],
       images: [],
     };
@@ -1445,6 +1453,16 @@ describe('InternalFinanceService', () => {
       packingSlip,
       7,
     );
+    // Nội dung phí giống phiếu đồng bộ từ LarkBase: loại phí - khách - hóa đơn.
+    expect(
+      [...entries.values()]
+        .filter((entry) => entry.category === 'DELIVERY_FEE')
+        .map((entry) => entry.description)
+        .sort(),
+    ).toEqual([
+      'Phí Grab - Khách buôn Mr Dũng - Kim Mã, HN (Sale 1 - A1) - HD131049, HD131050',
+      'Phí gửi bến - Khách buôn Mr Dũng - Kim Mã, HN (Sale 1 - A1) - HD131049, HD131050',
+    ]);
     await service.syncPackingSlipEntriesInTransaction(
       db as any,
       packingSlip,
@@ -2515,6 +2533,9 @@ function memoryFinanceDb() {
   const entries = new Map<string, any>();
   return {
     entries,
+    customer: {
+      findUnique: jest.fn().mockResolvedValue({ name: 'Khách 55' }),
+    },
     // Dòng quỹ đang có của phiếu Tiền mặt kho (theo sourceKey).
     internalFundTransaction: {
       findUnique: jest.fn().mockResolvedValue(null),

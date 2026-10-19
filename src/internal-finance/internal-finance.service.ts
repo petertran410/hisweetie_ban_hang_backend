@@ -3821,6 +3821,41 @@ export class InternalFinanceService {
         (row: any) => row.consignment?.customerId,
       )?.consignment?.customerId ??
       null;
+    // Nội dung phí giống phiếu đồng bộ từ LarkBase:
+    // "[Loại phí] - [Tên khách] - [Mã hóa đơn]".
+    const invoiceCodes = [
+      ...new Set(
+        (packingSlip.invoices || [])
+          .map((row: any) => row.invoice?.code)
+          .filter(Boolean),
+      ),
+    ].join(', ');
+    const customerName =
+      (customerId
+        ? (
+            await db.customer.findUnique({
+              where: { id: customerId },
+              select: { name: true },
+            })
+          )?.name
+        : null) ||
+      (packingSlip.invoices || []).find((row: any) => row.invoice?.customerName)
+        ?.invoice?.customerName ||
+      '';
+    const feeDescription = (category: string) =>
+      [
+        PACKING_FEE_LABELS[category] || category,
+        customerName,
+        invoiceCodes || packingSlip.code,
+      ]
+        // Tên khách trong DB hay dư khoảng trắng: gộp lại cho gọn.
+        .map((part) =>
+          String(part || '')
+            .replace(/\s+/g, ' ')
+            .trim(),
+        )
+        .filter(Boolean)
+        .join(' - ');
     const activeKeys: string[] = [];
     const expenseItems = [
       ['FEE_GUI_BEN', packingSlip.hasFeeGuiBen, packingSlip.feeGuiBen],
@@ -3843,7 +3878,7 @@ export class InternalFinanceService {
         amount,
         branchId: packingSlip.branchId,
         packingSlipId: packingSlip.id,
-        description: `${PACKING_FEE_LABELS[category] || category} - ${packingSlip.code}`,
+        description: feeDescription(category),
         sourceSnapshot: {
           packingSlipId: packingSlip.id,
           packingSlipCode: packingSlip.code,
