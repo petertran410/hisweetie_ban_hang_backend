@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsDateString,
   IsIn,
+  IsArray,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -70,6 +71,22 @@ export class CustomerQueryDto {
   @IsInt()
   @Type(() => Number)
   groupId?: number;
+
+  // Lọc nhiều nhóm KH: nhận `groupIds=1&groupIds=2` hoặc `groupIds=1,2`.
+  // Dùng chung với `groupId` (giữ tương thích ngược) — gộp lại khi build where.
+  @IsOptional()
+  @Transform(({ value }) =>
+    Array.isArray(value)
+      ? value.map(Number)
+      : typeof value === 'string'
+        ? value.split(',').map(Number).filter(Boolean)
+        : value !== undefined
+          ? [Number(value)]
+          : undefined,
+  )
+  @IsArray()
+  @IsInt({ each: true })
+  groupIds?: number[];
 
   @IsOptional()
   @Type(() => String)

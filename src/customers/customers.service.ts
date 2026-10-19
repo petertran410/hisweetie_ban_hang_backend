@@ -28,6 +28,12 @@ import * as ExcelJS from 'exceljs';
 import { LarkCustomerSyncService } from '../lark-sync/services/lark-customer-sync.service';
 import { INVOICE_STATUS } from '../invoices/dto';
 
+/** Gộp `groupId` (cũ, 1 nhóm) và `groupIds` (nhiều nhóm) thành danh sách id duy nhất. */
+function resolveGroupIds(groupId?: number, groupIds?: number[]): number[] {
+  const ids = [...(groupIds ?? []), ...(groupId ? [groupId] : [])];
+  return [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+}
+
 @Injectable()
 export class CustomersService {
   constructor(
@@ -51,6 +57,7 @@ export class CustomersService {
       orderDirection = 'desc',
       birthDate,
       groupId,
+      groupIds,
       customerType,
       gender,
       branchId,
@@ -105,8 +112,11 @@ export class CustomersService {
       };
     }
 
-    if (groupId) {
-      where.customerGroupDetails = { some: { customerGroupId: groupId } };
+    const groupIdList = resolveGroupIds(groupId, groupIds);
+    if (groupIdList.length > 0) {
+      where.customerGroupDetails = {
+        some: { customerGroupId: { in: groupIdList } },
+      };
     }
 
     if (customerType && customerType !== 'all') {
@@ -354,6 +364,7 @@ export class CustomersService {
       lastModifiedFrom,
       birthDate,
       groupId,
+      groupIds,
       customerType,
       gender,
       branchId,
@@ -419,9 +430,10 @@ export class CustomersService {
       };
     }
 
-    if (groupId) {
+    const groupIdList = resolveGroupIds(groupId, groupIds);
+    if (groupIdList.length > 0) {
       where.customerGroupDetails = {
-        some: { customerGroupId: groupId },
+        some: { customerGroupId: { in: groupIdList } },
       };
     }
 
