@@ -2642,6 +2642,60 @@ describe('InternalFinanceService', () => {
     ).rejects.toThrow('đã hủy');
     expect(cashFlowsService.cancelInTransaction).not.toHaveBeenCalled();
   });
+
+  describe('export warehouse expenses permission', () => {
+    const setup = (byBranch: Record<number, string[]>) => {
+      const findMany = jest.fn().mockResolvedValue([]);
+      const ctx = makeService({
+        internalFinanceEntry: { findMany, groupBy: jest.fn() },
+        internalFinanceAttachment: {
+          groupBy: jest.fn().mockResolvedValue([]),
+        },
+      });
+      ctx.prisma.internalFinanceEntry.groupBy = jest.fn().mockResolvedValue([]);
+      ctx.prisma.user.findMany = jest.fn().mockResolvedValue([]);
+      ctx.authService.getPermissionsForBranch.mockImplementation(
+        (_userId: number, branchId: number) =>
+          Promise.resolve(byBranch[branchId] || []),
+      );
+      const res: any = { setHeader: jest.fn() };
+      return { ...ctx, findMany, res };
+    };
+    const user = { id: 7, roles: [] };
+    const VIEW = 'warehouse_expense:view';
+    const EXPORT = 'warehouse_expense:export';
+
+    it('refuses users who can view but not export', async () => {
+      const { service, res } = setup({ 1: [VIEW], 6: [VIEW] });
+      await expect(
+        service.exportWarehouseExpenses({} as any, user, res),
+      ).rejects.toThrow('Không có quyền xuất file phiếu chi kho');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('refuses a branch filter without export permission there', async () => {
+      const { service, res } = setup({ 1: [VIEW, EXPORT], 6: [VIEW] });
+      await expect(
+        service.exportWarehouseExpenses({ branchId: 6 } as any, user, res),
+      ).rejects.toThrow('Không có quyền xuất file phiếu chi của chi nhánh này');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('limits "all branches" to branches with both view and export', async () => {
+      // Kho SG xuất được; Kho HN chỉ xem; chi nhánh 4 có quyền xuất mà không xem.
+      const { service } = setup({
+        1: [VIEW, EXPORT],
+        6: [VIEW],
+        4: [EXPORT],
+      });
+      const conditions = await (service as any).warehouseExpenseConditions(
+        {},
+        user,
+        'export',
+      );
+      expect(conditions).toContainEqual({ branchId: { in: [1] } });
+    });
+  });
 });
 
 function warehouseEntry() {

@@ -148,7 +148,8 @@ type WarehouseExpenseAction =
   | 'check_manager'
   | 'check_accountant'
   | 'cancel'
-  | 'request_review';
+  | 'request_review'
+  | 'export';
 
 /** Phiếu chi từ báo đơn không cập nhật theo báo đơn vì đang khóa. */
 export type PackingFinanceLock = { code: string; reason: string };
@@ -648,24 +649,35 @@ export class InternalFinanceService {
       });
   }
 
-  /** Điều kiện lọc phiếu chi kho theo quyền + bộ lọc (danh sách và báo cáo). */
+  /**
+   * Điều kiện lọc phiếu chi kho theo quyền + bộ lọc (danh sách và báo cáo).
+   * Xuất file: chỉ các kho vừa xem được vừa có quyền xuất.
+   */
   private async warehouseExpenseConditions(
     query: WarehouseExpenseQueryDto,
     user: any,
+    action: 'view' | 'export' = 'view',
   ): Promise<any[]> {
-    const allowedBranches = await this.allowedWarehouseExpenseBranches(
+    const viewBranches = await this.allowedWarehouseExpenseBranches(
       user,
       'view',
     );
+    const allowedBranches =
+      action === 'view'
+        ? viewBranches
+        : (await this.allowedWarehouseExpenseBranches(user, action)).filter(
+            (id) => viewBranches.includes(id),
+          );
+    const verb = action === 'export' ? 'xuất file' : 'xem';
     if (!allowedBranches.length) {
-      throw new ForbiddenException('Không có quyền xem phiếu chi kho');
+      throw new ForbiddenException(`Không có quyền ${verb} phiếu chi kho`);
     }
     if (
       query.branchId !== undefined &&
       !allowedBranches.includes(Number(query.branchId))
     ) {
       throw new ForbiddenException(
-        'Không có quyền xem phiếu chi của chi nhánh này',
+        `Không có quyền ${verb} phiếu chi của chi nhánh này`,
       );
     }
     const branchIds = query.branchId
@@ -755,7 +767,12 @@ export class InternalFinanceService {
     query: WarehouseExpenseQueryDto,
     user: any,
   ) {
-    const conditions = await this.warehouseExpenseConditions(query, user);
+    return this.payerSummaryFor(
+      await this.warehouseExpenseConditions(query, user),
+    );
+  }
+
+  private async payerSummaryFor(conditions: any[]) {
     const groups = await this.prisma.internalFinanceEntry.groupBy({
       by: ['payerId'],
       where: { AND: conditions },
@@ -848,7 +865,11 @@ export class InternalFinanceService {
     res: Response,
   ): Promise<void> {
     // Kiểm quyền trước khi đặt header để lỗi vẫn trả JSON như thường.
-    const conditions = await this.warehouseExpenseConditions(query, user);
+    const conditions = await this.warehouseExpenseConditions(
+      query,
+      user,
+      'export',
+    );
     const where = { AND: conditions };
     const orderBy = this.warehouseExpenseOrderBy(query);
     // Số cột "Chứng từ n" = số chứng từ nhiều nhất của một phiếu.
@@ -862,7 +883,7 @@ export class InternalFinanceService {
       (max, group) => Math.max(max, group._count._all),
       0,
     );
-    const payerSummary = await this.warehouseExpensePayerSummary(query, user);
+    const payerSummary = await this.payerSummaryFor(conditions);
 
     const stamp = new Date(Date.now() + 7 * 3600 * 1000)
       .toISOString()
