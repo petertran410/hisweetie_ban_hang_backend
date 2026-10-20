@@ -9,6 +9,7 @@
 // Cách chạy:
 //   yarn reopen:sg-expenses                          # chạy thử, không ghi
 //   yarn reopen:sg-expenses --from=2026-10-12        # đổi ngày bắt đầu
+//   yarn reopen:sg-expenses --from=2026-09-28 --to=2026-10-11  # một khoảng ngày
 //   yarn reopen:sg-expenses --apply --user=<id>      # ghi thật
 
 import 'dotenv/config';
@@ -45,8 +46,10 @@ async function main() {
     process.argv.find((item) => item.startsWith(`--${name}=`))?.split('=')[1];
   const userId = Number(arg('user'));
   const from = arg('from') || REOPEN_FROM;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(from))
-    throw new Error('--from phải có dạng YYYY-MM-DD');
+  const to = arg('to');
+  for (const value of [from, to].filter(Boolean) as string[])
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
+      throw new Error('--from / --to phải có dạng YYYY-MM-DD');
   if (apply && !Number.isInteger(userId))
     throw new Error('Cần --user=<id> khi chạy --apply');
 
@@ -54,8 +57,8 @@ async function main() {
   try {
     const before = await sgFundBalance(prisma);
     const plan = apply
-      ? await applySgReopen(prisma, userId, from)
-      : await loadSgReopen(prisma, from);
+      ? await applySgReopen(prisma, userId, from, to)
+      : await loadSgReopen(prisma, from, to);
     const after = apply ? await sgFundBalance(prisma) : null;
 
     const items = plan.items;
@@ -66,7 +69,7 @@ async function main() {
     );
     console.log(apply ? '✅ ĐÃ GHI THẬT' : '🔎 CHẠY THỬ (không ghi DB)');
     console.log(
-      `Phiếu SG đồng bộ từ Lark từ ${from.split('-').reverse().join('/')}: ${items.length} phiếu (${money(
+      `Phiếu SG đồng bộ từ Lark từ ${from.split('-').reverse().join('/')}${to ? ` đến ${to.split('-').reverse().join('/')}` : ''}: ${items.length} phiếu (${money(
         items.reduce((sum, item) => sum + Number(item.entry.amount), 0),
       )})`,
     );

@@ -72,14 +72,24 @@ export function shouldMarkLedger(entry: {
   );
 }
 
-export async function loadSgReopen(db: Db, from = REOPEN_FROM) {
+export async function loadSgReopen(db: Db, from = REOPEN_FROM, to?: string) {
   const entries = await db.internalFinanceEntry.findMany({
     where: {
       branchId: SG_BRANCH_ID,
       direction: 'EXPENSE',
       sourceType: 'LARK_IMPORT',
       status: { not: 'CANCELLED' },
-      occurredAt: { gte: new Date(`${from}T00:00:00+07:00`) },
+      occurredAt: {
+        gte: new Date(`${from}T00:00:00+07:00`),
+        // Đến hết ngày `to` (giờ VN), nếu có.
+        ...(to
+          ? {
+              lt: new Date(
+                new Date(`${to}T00:00:00+07:00`).getTime() + 86400000,
+              ),
+            }
+          : {}),
+      },
       // Tuần đã gửi / đã duyệt Approval thì giữ nguyên.
       AND: [
         {
@@ -122,19 +132,20 @@ export async function loadSgReopen(db: Db, from = REOPEN_FROM) {
     fundRows: fundRows.filter((row) => row.entryId === entry.id),
     markLedger: shouldMarkLedger(entry),
   }));
-  return { items, from };
+  return { items, from, to };
 }
 
 export async function applySgReopen(
   prisma: PrismaClient,
   userId: number,
   from = REOPEN_FROM,
+  to?: string,
 ) {
   const ledger = new InternalFundLedgerService();
   return prisma.$transaction(
     async (tx) => {
       await ledger.lock(tx, [SG_BRANCH_ID]);
-      const plan = await loadSgReopen(tx, from);
+      const plan = await loadSgReopen(tx, from, to);
       for (const { entry, fundRows, markLedger } of plan.items) {
         for (const row of fundRows)
           await ledger.releaseCancelled(tx, row, userId, REOPEN_NOTE);
