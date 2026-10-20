@@ -11,6 +11,13 @@ import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.cons
 
 function fixture() {
   const transactions: any[] = [];
+  // Tạm ứng đã giao tiền và phần phiếu chi đã chốt vào tạm ứng.
+  const advances: any[] = [];
+  const allocations: any[] = [];
+  const matchesEntry = (where: any, row: any) =>
+    where.entryId?.in
+      ? where.entryId.in.includes(row.entryId)
+      : row.entryId === where.entryId;
   const transfer: any = {
     id: 4,
     sourceBranchId: 6,
@@ -76,6 +83,60 @@ function fixture() {
     internalFinanceEntry: {
       findUnique: jest.fn(async () => entry),
       update: jest.fn(async ({ data }: any) => Object.assign(entry, data)),
+      updateMany: jest.fn(async ({ data }: any) => {
+        Object.assign(entry, data);
+        return { count: 1 };
+      }),
+      // Phiếu chưa Đã chi (đối chiếu tạm ứng) / phiếu đã chi từ tạm ứng.
+      findMany: jest.fn(async ({ where }: any) =>
+        Boolean(where?.cashIssued) === Boolean(entry.cashIssued) ? [entry] : [],
+      ),
+    },
+    cashAdvance: {
+      findMany: jest.fn(async ({ where }: any) =>
+        advances.filter((row) =>
+          where?.id?.in ? where.id.in.includes(row.id) : true,
+        ),
+      ),
+    },
+    cashAdvanceRefund: {
+      findMany: jest.fn().mockResolvedValue([]),
+      groupBy: jest.fn().mockResolvedValue([]),
+    },
+    cashAdvanceAllocation: {
+      findMany: jest.fn(async ({ where }: any) =>
+        allocations
+          .filter((row) => row.status === 'ACTIVE' && matchesEntry(where, row))
+          .map((row) => ({
+            ...row,
+            advance: {
+              code: advances.find((item) => item.id === row.advanceId)?.code,
+            },
+          })),
+      ),
+      groupBy: jest.fn(async () => {
+        const sums = new Map<number, number>();
+        for (const row of allocations.filter(
+          (item) => item.status === 'ACTIVE',
+        ))
+          sums.set(row.advanceId, (sums.get(row.advanceId) || 0) + row.amount);
+        return [...sums].map(([advanceId, amount]) => ({
+          advanceId,
+          _sum: { amount: new Prisma.Decimal(amount) },
+        }));
+      }),
+      createMany: jest.fn(async ({ data }: any) => {
+        for (const row of data)
+          allocations.push({ id: allocations.length + 1, ...row });
+        return { count: data.length };
+      }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const rows = allocations.filter(
+          (row) => row.status === 'ACTIVE' && matchesEntry(where, row),
+        );
+        rows.forEach((row) => Object.assign(row, data));
+        return { count: rows.length };
+      }),
     },
     internalFundTransfer: {
       findUnique: jest.fn(async () => transfer),
@@ -138,7 +199,26 @@ function fixture() {
     transactions,
     entry,
     transfer,
+    advances,
+    allocations,
   };
+}
+
+/** Tạm ứng TU-1 của Kho HN đã giao tiền, kỳ 01–10/10/2026. */
+function withAdvance(f: ReturnType<typeof fixture>, amount: number) {
+  f.entry.category = 'DELIVERY_FEE';
+  f.entry.code = 'TCNB-CHI-1';
+  f.advances.push({
+    id: 1,
+    code: 'TU-1',
+    branchId: 6,
+    status: 'CONFIRMING',
+    amount: new Prisma.Decimal(amount),
+    periodFrom: new Date('2026-10-01T00:00:00Z'),
+    periodTo: new Date('2026-10-10T00:00:00Z'),
+    confirmedAt: new Date('2026-10-01T03:00:00Z'),
+    createdAt: new Date('2026-10-01T02:00:00Z'),
+  });
 }
 
 describe('Internal fund ledger', () => {
@@ -279,6 +359,89 @@ describe('Internal fund ledger', () => {
       entryId: null,
     });
     expect(f.entry.cashIssued).toBe(false);
+  });
+
+  it('does not deduct the fund again for an expense fully covered by an advance', async () => {
+    const f = fixture();
+    withAdvance(f, 200000);
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.prisma.internalFundTransaction.create).not.toHaveBeenCalled();
+    expect(f.entry.cashIssued).toBe(true);
+    expect(f.allocations).toEqual([
+      expect.objectContaining({
+        advanceId: 1,
+        entryId: 12,
+        amount: 125000,
+        status: 'ACTIVE',
+      }),
+    ]);
+    // Bấm Đã chi lần nữa: không lỗi, không ghi thêm.
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.prisma.internalFundTransaction.create).not.toHaveBeenCalled();
+    expect(f.allocations).toHaveLength(1);
+  });
+
+  it('deducts only the part above the advance from the fund', async () => {
+    const f = fixture();
+    withAdvance(f, 100000);
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      amount: 25000,
+    });
+    expect(f.transactions[0].description).toContain('chi từ TU-1');
+    expect(f.allocations[0]).toMatchObject({ amount: 100000 });
+  });
+
+  it('ignores advances whose period does not contain the expense day', async () => {
+    const f = fixture();
+    withAdvance(f, 200000);
+    f.entry.occurredAt = fundDayStart('2026-10-11');
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.transactions[0]).toMatchObject({
+      amount: new Prisma.Decimal(125000),
+    });
+    expect(f.allocations).toHaveLength(0);
+  });
+
+  it('reverting an approved batch un-issues fully covered expenses', async () => {
+    const f = fixture();
+    withAdvance(f, 200000);
+    expect(await f.ledger.issueApprovedBatch(f.prisma, 3, 55, 9)).toBe(1);
+    expect(f.transactions).toHaveLength(0);
+    expect(f.entry.cashIssued).toBe(true);
+    await f.ledger.revertApprovedBatch(f.prisma, 3, 55, 9);
+    expect(f.entry.cashIssued).toBe(false);
+    expect(f.allocations[0].status).toBe('RELEASED');
+  });
+
+  it('releases the advance part when the expense fund row is cancelled', async () => {
+    const f = fixture();
+    withAdvance(f, 100000);
+    await f.service.postExpenseEntry(12, 7, true);
+    await f.service.cancelTransaction(
+      f.transactions[0].id,
+      { reason: 'Sai' },
+      7,
+    );
+    expect(f.entry.cashIssued).toBe(false);
+    expect(f.allocations[0].status).toBe('RELEASED');
+  });
+
+  it('refuses to cancel advance fund rows from the fund page', async () => {
+    const f = fixture();
+    f.transactions.push({
+      id: 3,
+      branchId: 6,
+      status: 'POSTED',
+      transactionType: 'EXPENSE',
+      sourceType: 'CASH_ADVANCE',
+      sourceKey: 'CASH_ADVANCE:1',
+    });
+    await expect(
+      f.service.cancelTransaction(3, { reason: 'x' }, 7),
+    ).rejects.toThrow('trang Tạm ứng');
   });
 
   it('does not re-post legacy cash issued or CashFlow-linked expenses', async () => {

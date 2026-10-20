@@ -9,8 +9,10 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { InternalFinanceService } from './internal-finance.service';
 import { WarehouseExpenseNotesService } from './warehouse-expense-notes.service';
@@ -149,6 +151,16 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.warehouseExpensePayerSummary(query, user);
+  }
+
+  @Get('warehouse-expenses/export')
+  @ApiOperation({ summary: 'Xuất Excel phiếu chi kho theo bộ lọc' })
+  async exportWarehouseExpenses(
+    @Query() query: WarehouseExpenseQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    await this.service.exportWarehouseExpenses(query, user, res);
   }
 
   // Khai báo trước `warehouse-expenses/:id` để không bị khớp nhầm thành id.

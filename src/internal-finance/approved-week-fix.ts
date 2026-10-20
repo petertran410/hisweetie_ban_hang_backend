@@ -1,6 +1,11 @@
 import { randomUUID } from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { fundClosingDate } from '../internal-fund/internal-fund-ledger.service';
+import {
+  allocateEntryCoverage,
+  fromCents,
+  toCents,
+} from '../cash-advances/cash-advance-coverage';
 import { readNumber, readText } from './legacy-fund-reconcile';
 import { plateHints, vnDay } from './lark-twin-dedupe';
 
@@ -331,6 +336,14 @@ export async function applyApprovedWeeks(
         for (const line of plan.lines) {
           if (line.status !== 'toFix' || !line.entry) continue;
           const entry = line.entry;
+          // Phần đã chi từ tạm ứng không trừ quỹ lần hai (tính trước khi Đã chi).
+          const coverage = line.ledgerRecorded
+            ? null
+            : await allocateEntryCoverage(
+                tx,
+                { ...entry, direction: 'EXPENSE' },
+                userId,
+              );
           await tx.internalFinanceEntry.update({
             where: { id: entry.id },
             data: {
@@ -348,6 +361,12 @@ export async function applyApprovedWeeks(
             },
           });
           if (line.ledgerRecorded) continue;
+          const uncoveredCents =
+            toCents(entry.amount) - (coverage?.coveredCents || 0);
+          if (uncoveredCents <= 0) {
+            touched = true;
+            continue;
+          }
           const sourceKey = `EXPENSE:${entry.id}`;
           const taken = await tx.internalFundTransaction.findUnique({
             where: { sourceKey },
@@ -360,7 +379,7 @@ export async function applyApprovedWeeks(
               branchId: entry.branchId,
               entryId: entry.id,
               transactionType: 'EXPENSE',
-              amount: entry.amount,
+              amount: fromCents(uncoveredCents),
               occurredAt: issuedAt,
               description: entry.description || entry.code,
               sourceType: 'INTERNAL_FINANCE_ENTRY',

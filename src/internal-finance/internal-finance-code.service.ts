@@ -36,6 +36,9 @@ export class InternalFinanceCodeService {
   }
 
   private kind(direction: string, category: string) {
+    // Phiếu tạm ứng / hoàn ứng dùng chung bộ đếm mã theo ngày.
+    if (category === 'CASH_ADVANCE') return 'TU';
+    if (category === 'CASH_ADVANCE_REFUND') return 'HU';
     if (direction === INTERNAL_FINANCE_DIRECTION.RECEIPT) return 'THU';
     if (category === INTERNAL_FINANCE_CATEGORY.FUEL) return 'XD';
     if (category === INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE) return 'CSX';

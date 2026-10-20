@@ -5,6 +5,7 @@ import {
   isLarkLedgerRecorded,
 } from '../internal-fund/internal-fund-ledger.service';
 import { REASON } from './legacy-fund-reconcile';
+import { releaseEntryAllocations } from '../cash-advances/cash-advance-coverage';
 
 /**
  * Kho SG: phiếu chi đồng bộ từ LarkBase mang sẵn "Đã chi" (Lark SG ghi chi
@@ -150,6 +151,7 @@ export async function applySgReopen(
         for (const row of fundRows)
           await ledger.releaseCancelled(tx, row, userId, REOPEN_NOTE);
         if (entry.weeklyBatchId) await ledger.detachFromBatch(tx, entry);
+        await releaseEntryAllocations(tx, [entry.id], userId, REOPEN_NOTE);
         const snapshot =
           entry.sourceSnapshot && typeof entry.sourceSnapshot === 'object'
             ? (entry.sourceSnapshot as Record<string, unknown>)

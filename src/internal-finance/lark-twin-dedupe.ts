@@ -1,6 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { fundClosingDate } from '../internal-fund/internal-fund-ledger.service';
 import { BRANCHES, fundBalance, readText } from './legacy-fund-reconcile';
+import { releaseEntryAllocations } from '../cash-advances/cash-advance-coverage';
 
 /**
  * Gộp một lần các phiếu chi bị nhập đôi từ LarkBase.
@@ -732,6 +733,7 @@ export async function applyTwinDedupe(prisma: PrismaClient, userId: number) {
             reviewerId: userId,
           },
         });
+        await releaseEntryAllocations(tx, [dup.id], userId, reason);
         await tx.internalFinanceEntry.update({
           where: { id: dup.id },
           data: {

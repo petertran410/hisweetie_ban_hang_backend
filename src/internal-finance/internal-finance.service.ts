@@ -8,6 +8,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
+import * as ExcelJS from 'exceljs';
+import { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { CashFlowsService } from '../cashflows/cashflows.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
@@ -35,6 +37,7 @@ import {
   LARK_APPROVAL_LOCK_REASON,
   LARK_APPROVAL_SOURCE_TYPE,
   WAREHOUSE_CASH_BRANCH_IDS,
+  WAREHOUSE_EXPENSE_CATEGORIES,
   WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
 import {
@@ -76,6 +79,11 @@ import { VehiclesService } from '../vehicles/vehicles.service';
 import { VEHICLE_CHECK } from '../vehicles/vehicles.constants';
 import { cancelWeeklyBatchInTx } from './weekly-batch-cancel';
 import {
+  WAREHOUSE_EXPENSE_EXPORT_SELECT,
+  warehouseExpenseExportColumns,
+  warehouseExpenseExportRow,
+} from './warehouse-expense-export';
+import {
   approvalHistory,
   endingStep,
   type ApprovalHistoryItem,
@@ -87,13 +95,6 @@ const WAREHOUSE_EXPENSE_SCOPES = [
   { key: 'hn', branchIds: [6] },
   { key: 'sg', branchIds: [1] },
   { key: 'vp', branchIds: [4, 7] },
-] as const;
-
-const WAREHOUSE_EXPENSE_CATEGORIES = [
-  INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE,
-  INTERNAL_FINANCE_CATEGORY.FUEL,
-  INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
-  INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
 /** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
@@ -800,12 +801,7 @@ export class InternalFinanceService {
     const limit = Math.min(query.limit || 50, 100);
     const conditions = await this.warehouseExpenseConditions(query, user);
     const where = { AND: conditions };
-    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
-    // Sắp xếp theo cột (Ngày chi / Số tiền); cùng giá trị thì phiếu mới trước.
-    const orderBy: Prisma.InternalFinanceEntryOrderByWithRelationInput[] =
-      query.orderBy === 'amount'
-        ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
-        : [{ occurredAt: direction }, { id: direction }];
+    const orderBy = this.warehouseExpenseOrderBy(query);
     const [data, total, sums, issued] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where,
@@ -830,6 +826,147 @@ export class InternalFinanceService {
       issuedAmount: Number(issued._sum.amount || 0),
     };
     return { data, total, page, limit, totals };
+  }
+
+  /** Sắp xếp theo cột (Ngày chi / Số tiền); cùng giá trị thì phiếu mới trước. */
+  private warehouseExpenseOrderBy(
+    query: WarehouseExpenseQueryDto,
+  ): Prisma.InternalFinanceEntryOrderByWithRelationInput[] {
+    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
+    return query.orderBy === 'amount'
+      ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
+      : [{ occurredAt: direction }, { id: direction }];
+  }
+
+  /**
+   * Xuất Excel toàn bộ phiếu chi kho khớp bộ lọc (mọi trang, cùng thứ tự với
+   * bảng). Sheet 2: tổng theo người chi.
+   */
+  async exportWarehouseExpenses(
+    query: WarehouseExpenseQueryDto,
+    user: any,
+    res: Response,
+  ): Promise<void> {
+    // Kiểm quyền trước khi đặt header để lỗi vẫn trả JSON như thường.
+    const conditions = await this.warehouseExpenseConditions(query, user);
+    const where = { AND: conditions };
+    const orderBy = this.warehouseExpenseOrderBy(query);
+    // Số cột "Chứng từ n" = số chứng từ nhiều nhất của một phiếu.
+    const attachmentGroups =
+      await this.prisma.internalFinanceAttachment.groupBy({
+        by: ['entryId'],
+        where: { entry: where },
+        _count: { _all: true },
+      });
+    const attachmentColumns = attachmentGroups.reduce(
+      (max, group) => Math.max(max, group._count._all),
+      0,
+    );
+    const payerSummary = await this.warehouseExpensePayerSummary(query, user);
+
+    const stamp = new Date(Date.now() + 7 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 16)
+      .replace(/[-:]/g, '')
+      .replace('T', '-');
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=PhieuChiKho_${stamp}.xlsx`,
+    );
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const headerStyle = (row: ExcelJS.Row) => {
+      row.font = { bold: true };
+      row.alignment = { vertical: 'middle', wrapText: true };
+      row.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFD9E1F2' },
+      };
+    };
+
+    const columns = warehouseExpenseExportColumns(attachmentColumns);
+    const sheet = workbook.addWorksheet('Phiếu chi kho', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    sheet.columns = columns;
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: columns.length },
+    };
+    headerStyle(sheet.getRow(1));
+    sheet.getRow(1).commit();
+    for (const key of ['quantity', 'unitPrice', 'amount'])
+      sheet.getColumn(key).numFmt = '#,##0';
+
+    const BATCH_SIZE = 500;
+    let stt = 0;
+    let totalAmount = 0;
+    for (let skip = 0; ; skip += BATCH_SIZE) {
+      const batch = await this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy,
+        skip,
+        take: BATCH_SIZE,
+        select: WAREHOUSE_EXPENSE_EXPORT_SELECT,
+      });
+      for (const entry of batch) {
+        stt += 1;
+        totalAmount += Number(entry.amount);
+        const { row, dateHasTime } = warehouseExpenseExportRow(entry, stt);
+        const excelRow = sheet.addRow(row);
+        excelRow.getCell('date').numFmt = dateHasTime
+          ? 'dd/mm/yyyy hh:mm'
+          : 'dd/mm/yyyy';
+        for (let index = 1; index <= entry.attachments.length; index++)
+          excelRow.getCell(`file${index}`).font = {
+            color: { argb: 'FF0563C1' },
+            underline: true,
+          };
+        excelRow.commit();
+      }
+      if (batch.length < BATCH_SIZE) break;
+    }
+    const totalRow = sheet.addRow({
+      code: `Tổng cộng (${stt} phiếu)`,
+      amount: totalAmount,
+    });
+    totalRow.font = { bold: true };
+    totalRow.commit();
+    sheet.commit();
+
+    const payerSheet = workbook.addWorksheet('Theo người chi', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    payerSheet.columns = [
+      { header: 'Người chi', key: 'name', width: 28 },
+      { header: 'Số phiếu', key: 'count', width: 10 },
+      { header: 'Số tiền', key: 'amount', width: 16 },
+    ];
+    headerStyle(payerSheet.getRow(1));
+    payerSheet.getRow(1).commit();
+    payerSheet.getColumn('amount').numFmt = '#,##0';
+    for (const item of payerSummary.rows)
+      payerSheet
+        .addRow({ name: item.name, count: item.count, amount: item.amount })
+        .commit();
+    const payerTotal = payerSheet.addRow({
+      name: 'Tổng cộng',
+      count: payerSummary.count,
+      amount: payerSummary.total,
+    });
+    payerTotal.font = { bold: true };
+    payerTotal.commit();
+    payerSheet.commit();
+
+    await workbook.commit();
   }
 
   async createWarehouseExpense(dto: CreateWarehouseExpenseDto, user: any) {
@@ -3236,8 +3373,14 @@ export class InternalFinanceService {
       throw new BadRequestException('Phiếu chi đã được hủy');
     }
     if (entry.cashIssued || entry.cashFlowId) {
+      const advance = await tx.cashAdvanceAllocation.findFirst({
+        where: { entryId: entry.id, status: 'ACTIVE' },
+        select: { advance: { select: { code: true } } },
+      });
       throw new BadRequestException(
-        'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
+        advance
+          ? `Phiếu đã chi từ tạm ứng ${advance.advance.code}: bỏ Đã chi tại trang Tạm ứng rồi mới hủy phiếu`
+          : 'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
       );
     }
     if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY') {
@@ -4927,6 +5070,15 @@ export class InternalFinanceService {
         },
       },
       cashFlow: { select: { id: true, code: true, status: true } },
+      // Phần phiếu chi đã chi từ tạm ứng (không trừ quỹ lần hai).
+      advanceAllocations: {
+        where: { status: 'ACTIVE' },
+        select: {
+          id: true,
+          amount: true,
+          advance: { select: { id: true, code: true } },
+        },
+      },
     };
   }
 

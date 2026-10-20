@@ -253,6 +253,9 @@ describe('cancelVehicleNoCopy', () => {
       internalFinanceEntry: { findMany, update: entryUpdate },
       internalFinanceWeeklyBatch: { update: batchUpdate },
       internalFinanceReview: { create: reviewCreate },
+      cashAdvanceAllocation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
       $executeRaw: jest.fn(),
     };
     const prisma = { $transaction: (fn: any) => fn(tx) } as any;

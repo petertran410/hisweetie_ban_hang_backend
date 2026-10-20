@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { releaseEntryAllocations } from '../cash-advances/cash-advance-coverage';
 
 /**
  * Đối soát một lần quỹ Kho HN / Kho SG với sổ quỹ LarkBase ("Giao Dịch Tiền
@@ -631,6 +632,13 @@ export async function applyReconcile(
       // 5. HN chưa đồng kiểm.
       for (const row of plan.unchecked) {
         await cancelRow(tx, row, userId, REASON.unchecked);
+        if (row.entryId)
+          await releaseEntryAllocations(
+            tx,
+            [row.entryId],
+            userId,
+            REASON.unchecked,
+          );
         if (row.entryId)
           await tx.internalFinanceEntry.update({
             where: { id: row.entryId },

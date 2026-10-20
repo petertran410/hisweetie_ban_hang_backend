@@ -2,6 +2,13 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.constants';
+import {
+  activeAllocationEntryIds,
+  allocateEntryCoverage,
+  fromCents,
+  releaseEntryAllocations,
+  toCents,
+} from '../cash-advances/cash-advance-coverage';
 
 export function fundDateKey(value: Date | string): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -48,6 +55,9 @@ export const FUND_SOURCE_TYPE = {
   LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
   // Bút toán lịch sử đồng bộ từ sổ quỹ cũ: chỉ đọc trên POS.
   LEDGER_HISTORY: 'LEDGER_HISTORY',
+  // Phiếu tạm ứng / hoàn ứng: hủy tại trang Tạm ứng / Hoàn ứng.
+  CASH_ADVANCE: 'CASH_ADVANCE',
+  CASH_ADVANCE_REFUND: 'CASH_ADVANCE_REFUND',
 } as const;
 
 export interface SystemFundTransactionInput {
@@ -132,6 +142,12 @@ export class InternalFundLedgerService {
       where: { sourceKey: `EXPENSE:${current.id}` },
     });
     if (existing) return existing;
+    // Phiếu chi từ tạm ứng toàn phần không có dòng quỹ: đã Đã chi rồi.
+    if (
+      current.cashIssued &&
+      (await activeAllocationEntryIds(tx, [current.id])).size
+    )
+      return null;
     if (current.cashFlowId || current.cashIssued) {
       throw new BadRequestException(
         'Khoản chi lịch sử đã ghi nhận; không tự động ghi lại vào quỹ mới',
@@ -208,10 +224,14 @@ export class InternalFundLedgerService {
     current: {
       id: number;
       code: string;
+      direction: string;
+      category: string;
+      status: string;
       branchId: number;
       amount: Prisma.Decimal;
       occurredAt: Date;
       description: string | null;
+      cashFlowId: number | null;
       sourceSnapshot?: Prisma.JsonValue;
     },
     userId: number,
@@ -238,26 +258,38 @@ export class InternalFundLedgerService {
       });
       return null;
     }
-    const description = current.description || current.code;
-    const row = await tx.internalFundTransaction.create({
-      data: {
-        code: this.code('CHI'),
-        sourceKey: `EXPENSE:${current.id}`,
-        branchId: current.branchId,
-        entryId: current.id,
-        transactionType: 'EXPENSE',
-        amount: current.amount,
-        occurredAt: options.issuedAt,
-        description: options.reason
-          ? `${description} (Lý do: ${options.reason})`
-          : description,
-        sourceType: 'INTERNAL_FINANCE_ENTRY',
-        sourceId: String(current.id),
-        approvalRequestId: options.approvalRequestId,
-        status: 'POSTED',
-        createdBy: userId,
-      },
-    });
+    // Phần phiếu chi đã chi từ tạm ứng (tiền ra khỏi quỹ lúc giao tạm ứng):
+    // chỉ trừ quỹ phần còn lại.
+    const coverage = await allocateEntryCoverage(tx, current, userId);
+    const uncoveredCents = toCents(current.amount) - coverage.coveredCents;
+    let description = current.description || current.code;
+    if (options.reason) description += ` (Lý do: ${options.reason})`;
+    if (coverage.coveredCents > 0)
+      description += ` (ngoài tạm ứng; ${new Intl.NumberFormat('vi-VN').format(
+        fromCents(coverage.coveredCents),
+      )} chi từ ${coverage.parts.map((part) => part.code).join(', ')})`;
+    const row =
+      uncoveredCents > 0
+        ? await tx.internalFundTransaction.create({
+            data: {
+              code: this.code('CHI'),
+              sourceKey: `EXPENSE:${current.id}`,
+              branchId: current.branchId,
+              entryId: current.id,
+              transactionType: 'EXPENSE',
+              amount: coverage.coveredCents
+                ? fromCents(uncoveredCents)
+                : current.amount,
+              occurredAt: options.issuedAt,
+              description,
+              sourceType: 'INTERNAL_FINANCE_ENTRY',
+              sourceId: String(current.id),
+              approvalRequestId: options.approvalRequestId,
+              status: 'POSTED',
+              createdBy: userId,
+            },
+          })
+        : null;
     await tx.internalFinanceEntry.update({
       where: { id: current.id },
       data: {
@@ -268,7 +300,7 @@ export class InternalFundLedgerService {
         posManagedAt: new Date(),
       },
     });
-    if (options.invalidate)
+    if (options.invalidate && row)
       await this.invalidateClosings(tx, current.branchId, options.issuedAt);
     return row;
   }
@@ -320,26 +352,43 @@ export class InternalFundLedgerService {
         entry: { weeklyBatchId: batchId },
       },
     });
+    const reason = 'Approval tuần bị thu hồi trên Lark';
+    const resetIssued = {
+      cashIssued: false,
+      cashIssuedAt: null,
+      cashIssuedBy: null,
+      cashIssuedReason: null,
+    };
     for (const row of rows) {
       const entryId = row.entryId;
-      await this.releaseCancelled(
-        tx,
-        row,
-        userId,
-        'Approval tuần bị thu hồi trên Lark',
-      );
-      if (entryId)
+      await this.releaseCancelled(tx, row, userId, reason);
+      if (entryId) {
+        await releaseEntryAllocations(tx, [entryId], userId, reason);
         await tx.internalFinanceEntry.update({
           where: { id: entryId },
-          data: {
-            cashIssued: false,
-            cashIssuedAt: null,
-            cashIssuedBy: null,
-            cashIssuedReason: null,
-          },
+          data: resetIssued,
         });
+      }
     }
-    return rows.length;
+    // Phiếu chi từ tạm ứng toàn phần không có dòng quỹ để rút: bỏ Đã chi.
+    const covered = await tx.internalFinanceEntry.findMany({
+      where: {
+        weeklyBatchId: batchId,
+        cashIssued: true,
+        fundTransaction: null,
+        advanceAllocations: { some: { status: 'ACTIVE' } },
+      },
+      select: { id: true },
+    });
+    const coveredIds = covered.map((entry) => entry.id);
+    if (coveredIds.length) {
+      await releaseEntryAllocations(tx, coveredIds, userId, reason);
+      await tx.internalFinanceEntry.updateMany({
+        where: { id: { in: coveredIds } },
+        data: resetIssued,
+      });
+    }
+    return rows.length + coveredIds.length;
   }
 
   async applyApproval(tx: Prisma.TransactionClient, request: FundApprovalData) {
