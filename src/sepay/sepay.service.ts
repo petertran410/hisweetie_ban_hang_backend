@@ -339,10 +339,11 @@ export class SepayService {
   }
 
   /**
-   * Resolve accountId cho phiếu thu QR.
-   * Ưu tiên tài khoản ngân hàng đã gán cho sale (soldById) — đây là tài khoản
-   * dùng để sinh QR in trên phiếu, nên phiếu thu sẽ luôn khớp với QR.
-   * Fallback: match theo số tài khoản thực nhận (payload.accountNumber).
+   * Resolve accountId cho phiếu thu tự động từ webhook Sepay.
+   * Ưu tiên tài khoản THỰC NHẬN tiền của giao dịch (subAccount/accountNumber),
+   * vì khách có thể chuyển vào TK khác với TK in trên QR của sale.
+   * Fallback: TK ngân hàng gán cho sale (soldById) khi TK thực nhận không có
+   * trong bank_accounts.
    */
   private async resolveAccountId(
     soldById: number | null | undefined,
@@ -350,36 +351,35 @@ export class SepayService {
     subAccount: string | null,
     sepayTxId: string,
   ): Promise<number | undefined> {
-    if (soldById) {
-      const mapping = await this.prisma.userBankAccount.findUnique({
-        where: { userId: soldById },
-      });
-      if (mapping?.bankAccountId) {
-        return mapping.bankAccountId;
-      }
-    }
-
-    // Fallback: match theo số tài khoản thực nhận.
     // Ưu tiên subAccount (VA — VD BIDV 96460248888) trước, fallback accountNumber (TK chính).
     // Vì DB bank_accounts có thể lưu VA thay vì TK chính.
     const candidates = [subAccount, accountNumber].filter(
       (v): v is string => !!v,
     );
-    let bankAccount: { id: number } | null = null;
     for (const acc of candidates) {
-      bankAccount = await this.prisma.bankAccount.findFirst({
+      const bankAccount = await this.prisma.bankAccount.findFirst({
         where: { accountNumber: acc },
+        select: { id: true },
       });
-      if (bankAccount) break;
+      if (bankAccount) return bankAccount.id;
     }
 
-    if (!bankAccount) {
-      this.logger.warn(
-        `Sepay webhook: no account resolved (sale ${soldById ?? 'none'}, accountNumber "${accountNumber}", subAccount "${subAccount ?? ''}") (tx ${sepayTxId})`,
-      );
+    if (soldById) {
+      const mapping = await this.prisma.userBankAccount.findUnique({
+        where: { userId: soldById },
+      });
+      if (mapping?.bankAccountId) {
+        this.logger.warn(
+          `Sepay webhook: receiving account not in bank_accounts (accountNumber "${accountNumber}", subAccount "${subAccount ?? ''}"), using sale ${soldById} account ${mapping.bankAccountId} (tx ${sepayTxId})`,
+        );
+        return mapping.bankAccountId;
+      }
     }
 
-    return bankAccount?.id;
+    this.logger.warn(
+      `Sepay webhook: no account resolved (sale ${soldById ?? 'none'}, accountNumber "${accountNumber}", subAccount "${subAccount ?? ''}") (tx ${sepayTxId})`,
+    );
+    return undefined;
   }
 
   /**
