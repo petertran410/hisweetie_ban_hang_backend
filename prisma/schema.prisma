@@ -146,19 +146,6 @@ model User {
   cancelledInternalFundTransfers                            InternalFundTransfer[]              @relation("InternalFundTransferCanceller")
   createdInternalFundClosings                               InternalFundDailyClosing[]          @relation("InternalFundClosingCreator")
   closedInternalFundClosings                                InternalFundDailyClosing[]          @relation("InternalFundClosingCloser")
-  receivedCashAdvances                                      CashAdvance[]                       @relation("CashAdvanceRecipient")
-  createdCashAdvances                                       CashAdvance[]                       @relation("CashAdvanceCreator")
-  confirmedCashAdvances                                     CashAdvance[]                       @relation("CashAdvanceConfirmer")
-  completedCashAdvances                                     CashAdvance[]                       @relation("CashAdvanceCompleter")
-  cancelledCashAdvances                                     CashAdvance[]                       @relation("CashAdvanceCanceller")
-  refundedCashAdvanceRefunds                                CashAdvanceRefund[]                 @relation("CashAdvanceRefundRefunder")
-  createdCashAdvanceRefunds                                 CashAdvanceRefund[]                 @relation("CashAdvanceRefundCreator")
-  confirmedCashAdvanceRefunds                               CashAdvanceRefund[]                 @relation("CashAdvanceRefundConfirmer")
-  completedCashAdvanceRefunds                               CashAdvanceRefund[]                 @relation("CashAdvanceRefundCompleter")
-  cancelledCashAdvanceRefunds                               CashAdvanceRefund[]                 @relation("CashAdvanceRefundCanceller")
-  createdCashAdvanceAttachments                             CashAdvanceAttachment[]             @relation("CashAdvanceAttachmentCreator")
-  createdCashAdvanceAllocations                             CashAdvanceAllocation[]             @relation("CashAdvanceAllocationCreator")
-  releasedCashAdvanceAllocations                            CashAdvanceAllocation[]             @relation("CashAdvanceAllocationReleaser")
 
   @@map("users")
 }
@@ -395,8 +382,6 @@ model Branch {
   internalFundSourceTransfers InternalFundTransfer[]       @relation("InternalFundTransferSourceBranch")
   internalFundDestinationTransfers InternalFundTransfer[]  @relation("InternalFundTransferDestinationBranch")
   internalFundDailyClosings  InternalFundDailyClosing[]
-  cashAdvances               CashAdvance[]
-  cashAdvanceRefunds         CashAdvanceRefund[]
 
   @@index([updatedAt, id])
   @@map("branches")
@@ -2429,7 +2414,6 @@ model InternalFinanceEntry {
   reviews             InternalFinanceReview[]
   reviewNotes         InternalFinanceEntryNote[]
   fundTransaction     InternalFundTransaction?
-  advanceAllocations  CashAdvanceAllocation[]
 
   @@index([branchId, occurredAt])
   @@index([direction, category, status])
@@ -2687,137 +2671,6 @@ model InternalFundDailyClosing {
   @@index([branchId, closingDate])
   @@index([reconciliationStatus, closingDate])
   @@map("internal_fund_daily_closings")
-}
-
-// Phiếu tạm ứng: ứng tiền mặt từ quỹ nội bộ kho cho nhân viên. Tiền ra khỏi
-// quỹ khi "Xác nhận giao tiền"; phiếu chi kho trong kỳ trừ dần vào số ứng.
-model CashAdvance {
-  id            Int       @id @default(autoincrement())
-  code          String    @unique
-  clientUuid    String?   @unique @db.VarChar(64)
-  branchId      Int
-  recipientId   Int
-  amount        Decimal   @db.Decimal(18, 2)
-  advanceDate   DateTime  @db.Date
-  // WEEK: kỳ theo tuần ISO (periodYear/periodWeek); RANGE: tự chọn từ ngày–đến ngày.
-  periodMode    String    @db.VarChar(8)
-  periodYear    Int?
-  periodWeek    Int?
-  periodFrom    DateTime  @db.Date
-  periodTo      DateTime  @db.Date
-  // Hạn làm hoàn ứng: hết kỳ + 5 ngày ân hạn.
-  refundDueDate DateTime  @db.Date
-  description   String
-  status        String    @default("DRAFT") @db.VarChar(16)
-  confirmedAt   DateTime?
-  confirmedBy   Int?
-  completedAt   DateTime?
-  completedBy   Int?
-  cancelledAt   DateTime?
-  cancelledBy   Int?
-  cancelReason  String?
-  createdBy     Int
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  branch      Branch                  @relation(fields: [branchId], references: [id])
-  recipient   User                    @relation("CashAdvanceRecipient", fields: [recipientId], references: [id])
-  creator     User                    @relation("CashAdvanceCreator", fields: [createdBy], references: [id])
-  confirmer   User?                   @relation("CashAdvanceConfirmer", fields: [confirmedBy], references: [id])
-  completer   User?                   @relation("CashAdvanceCompleter", fields: [completedBy], references: [id])
-  canceller   User?                   @relation("CashAdvanceCanceller", fields: [cancelledBy], references: [id])
-  attachments CashAdvanceAttachment[]
-  refunds     CashAdvanceRefund[]
-  allocations CashAdvanceAllocation[]
-
-  @@index([branchId, status, periodFrom, periodTo])
-  @@index([recipientId, status, refundDueDate])
-  @@index([createdAt])
-  @@map("cash_advances")
-}
-
-// Phiếu hoàn ứng: trả lại quỹ phần tạm ứng dùng không hết.
-model CashAdvanceRefund {
-  id           Int       @id @default(autoincrement())
-  code         String    @unique
-  clientUuid   String?   @unique @db.VarChar(64)
-  advanceId    Int
-  branchId     Int
-  refunderId   Int
-  amount       Decimal   @db.Decimal(18, 2)
-  refundDate   DateTime  @db.Date
-  description  String?
-  status       String    @default("DRAFT") @db.VarChar(16)
-  confirmedAt  DateTime?
-  confirmedBy  Int?
-  completedAt  DateTime?
-  completedBy  Int?
-  cancelledAt  DateTime?
-  cancelledBy  Int?
-  cancelReason String?
-  createdBy    Int
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-
-  advance     CashAdvance             @relation(fields: [advanceId], references: [id])
-  branch      Branch                  @relation(fields: [branchId], references: [id])
-  refunder    User                    @relation("CashAdvanceRefundRefunder", fields: [refunderId], references: [id])
-  creator     User                    @relation("CashAdvanceRefundCreator", fields: [createdBy], references: [id])
-  confirmer   User?                   @relation("CashAdvanceRefundConfirmer", fields: [confirmedBy], references: [id])
-  completer   User?                   @relation("CashAdvanceRefundCompleter", fields: [completedBy], references: [id])
-  canceller   User?                   @relation("CashAdvanceRefundCanceller", fields: [cancelledBy], references: [id])
-  attachments CashAdvanceAttachment[]
-
-  @@index([advanceId, status])
-  @@index([branchId, status, refundDate])
-  @@map("cash_advance_refunds")
-}
-
-// Chứng từ của phiếu tạm ứng / hoàn ứng: INITIAL lúc tạo, SIGNED là phiếu in
-// đã ký upload ngược lại để hoàn thành.
-model CashAdvanceAttachment {
-  id        Int      @id @default(autoincrement())
-  advanceId Int?
-  refundId  Int?
-  kind      String   @db.VarChar(16)
-  fileUrl   String
-  fileName  String?
-  fileType  String?
-  fileSize  Int?
-  createdBy Int
-  createdAt DateTime @default(now())
-
-  advance CashAdvance?       @relation(fields: [advanceId], references: [id], onDelete: Cascade)
-  refund  CashAdvanceRefund? @relation(fields: [refundId], references: [id], onDelete: Cascade)
-  creator User               @relation("CashAdvanceAttachmentCreator", fields: [createdBy], references: [id])
-
-  @@index([advanceId, kind])
-  @@index([refundId, kind])
-  @@map("cash_advance_attachments")
-}
-
-// Phần phiếu chi kho đã chi từ tạm ứng (chốt lúc tick Đã chi): phần này không
-// trừ quỹ lần hai.
-model CashAdvanceAllocation {
-  id            Int       @id @default(autoincrement())
-  advanceId     Int
-  entryId       Int
-  amount        Decimal   @db.Decimal(18, 2)
-  status        String    @default("ACTIVE") @db.VarChar(16)
-  createdBy     Int
-  createdAt     DateTime  @default(now())
-  releasedAt    DateTime?
-  releasedBy    Int?
-  releaseReason String?
-
-  advance  CashAdvance          @relation(fields: [advanceId], references: [id])
-  entry    InternalFinanceEntry @relation(fields: [entryId], references: [id])
-  creator  User                 @relation("CashAdvanceAllocationCreator", fields: [createdBy], references: [id])
-  releaser User?                @relation("CashAdvanceAllocationReleaser", fields: [releasedBy], references: [id])
-
-  @@index([advanceId, status])
-  @@index([entryId, status])
-  @@map("cash_advance_allocations")
 }
 
 model Destruction {

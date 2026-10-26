@@ -36,7 +36,6 @@ import {
   buildFundReceiptForm,
   fundCashSourceLabel,
 } from './internal-fund-template.registry';
-import { releaseEntryAllocations } from '../cash-advances/cash-advance-coverage';
 
 @Injectable()
 export class InternalFundService {
@@ -261,43 +260,6 @@ export class InternalFundService {
         _sum: { amount: true },
       }),
     ]);
-    // Dòng quỹ của phiếu tạm ứng / hoàn ứng: gắn mã phiếu để mở trang gốc.
-    const idsOf = (sourceType: string) =>
-      data
-        .filter((row) => row.sourceType === sourceType && row.sourceId)
-        .map((row) => Number(row.sourceId));
-    const [advances, refunds] = await Promise.all([
-      this.prisma.cashAdvance.findMany({
-        where: { id: { in: idsOf(FUND_SOURCE_TYPE.CASH_ADVANCE) } },
-        select: { id: true, code: true },
-      }),
-      this.prisma.cashAdvanceRefund.findMany({
-        where: { id: { in: idsOf(FUND_SOURCE_TYPE.CASH_ADVANCE_REFUND) } },
-        select: { id: true, code: true, advance: { select: { code: true } } },
-      }),
-    ]);
-    const rows = data.map((row) => {
-      const id = Number(row.sourceId);
-      if (row.sourceType === FUND_SOURCE_TYPE.CASH_ADVANCE)
-        return {
-          ...row,
-          cashAdvance: advances.find((item) => item.id === id) || null,
-        };
-      if (row.sourceType === FUND_SOURCE_TYPE.CASH_ADVANCE_REFUND) {
-        const refund = refunds.find((item) => item.id === id);
-        return {
-          ...row,
-          cashAdvanceRefund: refund
-            ? {
-                id: refund.id,
-                code: refund.code,
-                advanceCode: refund.advance.code,
-              }
-            : null,
-        };
-      }
-      return row;
-    });
     // Tổng của toàn bộ dòng khớp bộ lọc: tiền vào (thu, chuyển đến) và tiền ra.
     const sumOf = (types: string[]) =>
       sums
@@ -307,7 +269,7 @@ export class InternalFundService {
       receipt: sumOf(['RECEIPT', 'TRANSFER_IN']),
       expense: sumOf(['EXPENSE', 'TRANSFER_OUT']),
     };
-    return { data: rows, total, page, limit, totals };
+    return { data, total, page, limit, totals };
   }
 
   async summary(query: InternalFundQueryDto, user: InternalFundActor) {
@@ -787,14 +749,6 @@ export class InternalFundService {
       );
     if (row.sourceType === FUND_SOURCE_TYPE.LEDGER_HISTORY)
       throw new BadRequestException('Bút toán lịch sử chỉ đọc, không hủy được');
-    if (row.sourceType === FUND_SOURCE_TYPE.CASH_ADVANCE)
-      throw new BadRequestException(
-        'Giao dịch tạm ứng: hãy hủy phiếu tại trang Tạm ứng',
-      );
-    if (row.sourceType === FUND_SOURCE_TYPE.CASH_ADVANCE_REFUND)
-      throw new BadRequestException(
-        'Giao dịch hoàn ứng: hãy hủy phiếu tại trang Hoàn ứng',
-      );
     await this.assertPermission(userId, row.branchId, 'cancel');
     const adjust = await this.has(userId, row.branchId, 'adjust');
     if (!dto.reason.trim()) throw new BadRequestException('Cần lý do hủy');
@@ -834,13 +788,6 @@ export class InternalFundService {
         entry &&
         (entry.sourceType !== 'LARK_IMPORT' || entry.posManagedAt)
       ) {
-        // Phần đã chi từ tạm ứng cũng được nhả, bấm Đã chi lại sẽ tính lại.
-        await releaseEntryAllocations(
-          tx,
-          [entry.id],
-          userId,
-          `Hủy giao dịch quỹ: ${dto.reason.trim()}`,
-        );
         await tx.internalFinanceEntry.update({
           where: { id: entry.id },
           data: {

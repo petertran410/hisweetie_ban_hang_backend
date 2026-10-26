@@ -37,7 +37,6 @@ import {
   LARK_APPROVAL_LOCK_REASON,
   LARK_APPROVAL_SOURCE_TYPE,
   WAREHOUSE_CASH_BRANCH_IDS,
-  WAREHOUSE_EXPENSE_CATEGORIES,
   WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
 import {
@@ -95,6 +94,13 @@ const WAREHOUSE_EXPENSE_SCOPES = [
   { key: 'hn', branchIds: [6] },
   { key: 'sg', branchIds: [1] },
   { key: 'vp', branchIds: [4, 7] },
+] as const;
+
+const WAREHOUSE_EXPENSE_CATEGORIES = [
+  INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE,
+  INTERNAL_FINANCE_CATEGORY.FUEL,
+  INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
+  INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
 /** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
@@ -3394,14 +3400,8 @@ export class InternalFinanceService {
       throw new BadRequestException('Phiếu chi đã được hủy');
     }
     if (entry.cashIssued || entry.cashFlowId) {
-      const advance = await tx.cashAdvanceAllocation.findFirst({
-        where: { entryId: entry.id, status: 'ACTIVE' },
-        select: { advance: { select: { code: true } } },
-      });
       throw new BadRequestException(
-        advance
-          ? `Phiếu đã chi từ tạm ứng ${advance.advance.code}: bỏ Đã chi tại trang Tạm ứng rồi mới hủy phiếu`
-          : 'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
+        'Phiếu đã chi: hủy giao dịch ở Quỹ nội bộ trước rồi mới hủy phiếu',
       );
     }
     if (entry.weeklyBatch && entry.weeklyBatch.status !== 'READY') {
@@ -5091,15 +5091,6 @@ export class InternalFinanceService {
         },
       },
       cashFlow: { select: { id: true, code: true, status: true } },
-      // Phần phiếu chi đã chi từ tạm ứng (không trừ quỹ lần hai).
-      advanceAllocations: {
-        where: { status: 'ACTIVE' },
-        select: {
-          id: true,
-          amount: true,
-          advance: { select: { id: true, code: true } },
-        },
-      },
     };
   }
 

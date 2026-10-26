@@ -73,9 +73,6 @@ describe('sg-expense-reopen', () => {
       },
       internalFundDailyClosing: { updateMany: jest.fn() },
       internalFinanceReview: { create: jest.fn() },
-      cashAdvanceAllocation: {
-        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
-      },
     };
     const prisma: any = { $transaction: jest.fn((fn: any) => fn(tx)) };
 

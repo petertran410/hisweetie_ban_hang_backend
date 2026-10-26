@@ -753,7 +753,6 @@ describe('InternalFinanceService', () => {
           update,
         },
         internalFinanceReview: { create: reviewCreate },
-        cashAdvanceAllocation: { findFirst: jest.fn().mockResolvedValue(null) },
       });
       ctx.authService.getPermissionsForBranch.mockResolvedValue(permissions);
       return { ...ctx, update, reviewCreate };

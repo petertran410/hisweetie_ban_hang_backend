@@ -96,7 +96,6 @@ import { CustomerDemandModule } from './customer-demand/customer-demand.module';
 import { ProductQualityModule } from './product-quality/product-quality.module';
 import { InternalFinanceModule } from './internal-finance/internal-finance.module';
 import { InternalFundModule } from './internal-fund/internal-fund.module';
-import { CashAdvancesModule } from './cash-advances/cash-advances.module';
 
 @Module({
   controllers: [HealthController],
@@ -207,7 +206,6 @@ import { CashAdvancesModule } from './cash-advances/cash-advances.module';
     ProductQualityModule,
     InternalFinanceModule,
     InternalFundModule,
-    CashAdvancesModule,
   ],
   providers: [
     {

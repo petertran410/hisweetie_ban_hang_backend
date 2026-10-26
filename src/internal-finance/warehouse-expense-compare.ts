@@ -1,6 +1,5 @@
 import { readNumber, readText } from './legacy-fund-reconcile';
 import { PrismaClient } from '@prisma/client';
-import { releaseEntryAllocations } from '../cash-advances/cash-advance-coverage';
 import { plateHints, vnDay } from './lark-twin-dedupe';
 
 /**
@@ -344,7 +343,6 @@ export async function cancelVehicleNoCopy(
             reviewerId: userId,
           },
         });
-        await releaseEntryAllocations(tx, [entry.id], userId, NO_COPY_REASON);
         await tx.internalFinanceEntry.update({
           where: { id: entry.id },
           data: {

@@ -7,8 +7,6 @@ export const ALLOWED_SUBFOLDERS = [
   'loading',
   'bao-don/chi-phi',
   'ky-gui',
-  // Chứng từ / phiếu đã ký của Tạm ứng, Hoàn ứng.
-  'tai-chinh/tam-ung',
 ] as const;
 export type AllowedSubfolder = (typeof ALLOWED_SUBFOLDERS)[number];
 

@@ -8,18 +8,6 @@ import { createDocumentQrPayload } from '../common/document-qr.util';
 import { pickCustomerAddress } from '../common/address-resolver.util';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
-import { vnNumberToWords } from '../common/vn-number-words';
-import {
-  advanceUsage,
-  loadBranchCoverage,
-  toCents,
-} from '../cash-advances/cash-advance-coverage';
-import {
-  dbDateKey,
-  formatDateKey,
-  periodLabel,
-} from '../cash-advances/cash-advance-period';
-import { CASH_ADVANCE_STATUS_LABELS } from '../cash-advances/cash-advance.constants';
 
 @Injectable()
 export class PrintTemplatesService {
@@ -326,12 +314,6 @@ export class PrintTemplatesService {
         return await this.mapWarehouseExport(
           await this.loadInvoiceForWarehouseExport(entityId),
         );
-      case 'cash_advance':
-        return this.mapCashAdvance(await this.loadCashAdvance(entityId));
-      case 'cash_advance_refund':
-        return await this.mapCashAdvanceRefund(
-          await this.loadCashAdvanceRefund(entityId),
-        );
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
@@ -602,35 +584,6 @@ export class PrintTemplatesService {
       include: { branch: true },
     });
     if (!entity) throw new NotFoundException('CashFlow not found');
-    return entity;
-  }
-
-  private async loadCashAdvance(id: number) {
-    const entity = await this.prisma.cashAdvance.findUnique({
-      where: { id },
-      include: {
-        branch: true,
-        recipient: { select: { name: true } },
-        creator: { select: { name: true } },
-        confirmer: { select: { name: true } },
-      },
-    });
-    if (!entity) throw new NotFoundException('Cash advance not found');
-    return entity;
-  }
-
-  private async loadCashAdvanceRefund(id: number) {
-    const entity = await this.prisma.cashAdvanceRefund.findUnique({
-      where: { id },
-      include: {
-        branch: true,
-        refunder: { select: { name: true } },
-        creator: { select: { name: true } },
-        confirmer: { select: { name: true } },
-        advance: true,
-      },
-    });
-    if (!entity) throw new NotFoundException('Cash advance refund not found');
     return entity;
   }
 
@@ -1212,76 +1165,6 @@ export class PrintTemplatesService {
     };
   }
 
-  /** Chữ người dùng nhập: escape HTML, giữ xuống dòng. */
-  private userText(value: string | null | undefined) {
-    return this.escapeHtml(value || '').replace(/\r\n|\r|\n/g, '<br />');
-  }
-
-  // Ngày của cột @db.Date (ngày Việt Nam, không lệch múi giờ).
-  private dateKeyVars(value: Date) {
-    const key = dbDateKey(value);
-    const [year, month] = key.split('-');
-    return {
-      Ngay: formatDateKey(key),
-      Thang: String(Number(month)),
-      Nam: year,
-    };
-  }
-
-  private mapCashAdvance(advance: any) {
-    const amount = Number(advance.amount || 0);
-    return {
-      ...this.storeVars(advance.branch),
-      ...this.dateKeyVars(advance.advanceDate),
-      Kho: this.userText(advance.branch?.name),
-      Ma_Phieu_Tam_Ung: advance.code || '',
-      Ngay_Tam_Ung: formatDateKey(dbDateKey(advance.advanceDate)),
-      Nguoi_Tam_Ung: this.userText(advance.recipient?.name),
-      Nguoi_Lap: this.userText(advance.creator?.name),
-      Nguoi_Xac_Nhan: this.userText(advance.confirmer?.name),
-      So_Tien: this.money(amount),
-      So_Tien_Bang_Chu: this.numberToWords(amount),
-      Ky_Tam_Ung: periodLabel(advance),
-      Tu_Ngay: formatDateKey(dbDateKey(advance.periodFrom)),
-      Den_Ngay: formatDateKey(dbDateKey(advance.periodTo)),
-      Han_Hoan_Ung: formatDateKey(dbDateKey(advance.refundDueDate)),
-      Noi_Dung: this.userText(advance.description),
-      Trang_Thai: CASH_ADVANCE_STATUS_LABELS[advance.status] || advance.status,
-    };
-  }
-
-  private async mapCashAdvanceRefund(refund: any) {
-    const amount = Number(refund.amount || 0);
-    const advance = refund.advance;
-    const refunded = await this.prisma.cashAdvanceRefund.findMany({
-      where: { advanceId: advance.id, status: { not: 'CANCELLED' } },
-      select: { amount: true },
-    });
-    const usage = advanceUsage(
-      advance,
-      await loadBranchCoverage(this.prisma, advance.branchId),
-      refunded.reduce((sum, row) => sum + toCents(row.amount), 0),
-    );
-    return {
-      ...this.storeVars(refund.branch),
-      ...this.dateKeyVars(refund.refundDate),
-      Kho: this.userText(refund.branch?.name),
-      Ma_Phieu_Hoan_Ung: refund.code || '',
-      Ma_Phieu_Tam_Ung: advance.code || '',
-      Ngay_Hoan_Ung: formatDateKey(dbDateKey(refund.refundDate)),
-      Nguoi_Hoan_Ung: this.userText(refund.refunder?.name),
-      Nguoi_Lap: this.userText(refund.creator?.name),
-      Nguoi_Xac_Nhan: this.userText(refund.confirmer?.name),
-      So_Tien: this.money(amount),
-      So_Tien_Bang_Chu: this.numberToWords(amount),
-      So_Tien_Tam_Ung: this.money(advance.amount),
-      Da_Su_Dung: this.money(usage.used),
-      Ky_Tam_Ung: periodLabel(advance),
-      Noi_Dung: this.userText(refund.description),
-      Trang_Thai: CASH_ADVANCE_STATUS_LABELS[refund.status] || refund.status,
-    };
-  }
-
   private mapItem(item: any, includeManufactureDate = true) {
     const price = Number(item.price || 0);
     const discount = Number(item.discount || 0);
@@ -1408,6 +1291,60 @@ export class PrintTemplatesService {
   // ==================== NUMBER TO WORDS ====================
 
   private numberToWords(num: number): string {
-    return vnNumberToWords(num);
+    if (num === 0) return 'Không đồng';
+    const ones = [
+      '',
+      'một',
+      'hai',
+      'ba',
+      'bốn',
+      'năm',
+      'sáu',
+      'bảy',
+      'tám',
+      'chín',
+    ];
+    const tens = [
+      '',
+      'mười',
+      'hai mươi',
+      'ba mươi',
+      'bốn mươi',
+      'năm mươi',
+      'sáu mươi',
+      'bảy mươi',
+      'tám mươi',
+      'chín mươi',
+    ];
+
+    const convert = (n: number): string => {
+      if (n < 10) return ones[n];
+      if (n < 100) {
+        const ten = Math.floor(n / 10);
+        const one = n % 10;
+        return tens[ten] + (one ? ' ' + ones[one] : '');
+      }
+      if (n < 1000) {
+        const hundred = Math.floor(n / 100);
+        const rest = n % 100;
+        return ones[hundred] + ' trăm' + (rest ? ' ' + convert(rest) : '');
+      }
+      if (n < 1000000) {
+        const thousand = Math.floor(n / 1000);
+        const rest = n % 1000;
+        return convert(thousand) + ' nghìn' + (rest ? ' ' + convert(rest) : '');
+      }
+      if (n < 1000000000) {
+        const million = Math.floor(n / 1000000);
+        const rest = n % 1000000;
+        return convert(million) + ' triệu' + (rest ? ' ' + convert(rest) : '');
+      }
+      const billion = Math.floor(num / 1000000000);
+      const rest = num % 1000000000;
+      return convert(billion) + ' tỷ' + (rest ? ' ' + convert(rest) : '');
+    };
+
+    const words = convert(Math.floor(num)) + ' đồng';
+    return words.charAt(0).toUpperCase() + words.slice(1);
   }
 }
