@@ -109,6 +109,7 @@ model User {
   createdTransfers                                          Transfer[]                        @relation("TransferCreator")
   transferTempQuantities                                    TransferTempQuantity[]
   bankAccountMapping                                        UserBankAccount?
+  smaxChannels                                              SmaxChannelUser[]
   branchPermissions                                         UserBranchPermission[]
   userBranchRoles                                           UserBranchRole[]
   userBranches                                              UserBranch[]
@@ -507,6 +508,7 @@ model Customer {
   debtCollectionAttempts CustomerDebtCollectionAttempt[]
   debtNote               CustomerDebtNote?
   debtPolicy             CustomerDebtPolicy?
+  zaloContacts           CustomerZaloContact[]
   debtTrackingCycles     CustomerDebtTrackingCycle[]
   customerGroupDetails   CustomerGroupDetail[]
   branch                 Branch?                         @relation(fields: [branchId], references: [id])
@@ -1465,6 +1467,42 @@ model UserBankAccount {
 
   @@index([bankAccountId])
   @@map("user_bank_accounts")
+}
+
+/// Liên kết kênh Zalo (page) trên Smax.AI với người dùng POS (sale).
+/// 1 kênh → tối đa 1 người dùng; 1 người dùng có thể có nhiều kênh.
+model SmaxChannelUser {
+  id        Int      @id @default(autoincrement())
+  pagePid   String // page_pid kênh Smax — 1 kênh gắn được nhiều người dùng POS
+  pageName  String // snapshot tên kênh lúc liên kết
+  platform  String // zalo | zaloweb
+  userId    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([pagePid, userId])
+  @@index([userId])
+  @@index([pagePid])
+  @@map("smax_channel_users")
+}
+
+/// ID Zalo (cá nhân / nhóm) của khách để chat qua Smax từ POS.
+model CustomerZaloContact {
+  id          Int      @id @default(autoincrement())
+  customerId  Int
+  kind        String // user | group
+  zaloId      String // uid khách hoặc grid nhóm
+  name        String? // tên gợi nhớ (nhóm)
+  pagePid     String? // null = dùng cho mọi kênh; set nếu ID cá nhân khác theo kênh
+  createdById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  customer    Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, kind, zaloId])
+  @@index([customerId])
+  @@map("customer_zalo_contacts")
 }
 
 model PartnerDelivery {
