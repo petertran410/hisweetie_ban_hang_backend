@@ -48,7 +48,10 @@ export function pickPreferredEmail(
 }
 
 export function pickLarkDisplayName(
-  profile: Pick<LarkUserProfile, 'name' | 'en_name' | 'email' | 'enterprise_email'>,
+  profile: Pick<
+    LarkUserProfile,
+    'name' | 'en_name' | 'email' | 'enterprise_email'
+  >,
 ): string {
   const name = (profile.name || profile.en_name || '').trim();
   if (name) return name;
@@ -57,13 +60,19 @@ export function pickLarkDisplayName(
   return 'Lark User';
 }
 
-export function safeReturnTo(value: string | undefined, fallback = '/'): string {
+export function safeReturnTo(
+  value: string | undefined,
+  fallback = '/',
+): string {
   if (!value) return fallback;
   if (value.startsWith('/') && !value.startsWith('//')) return value;
   return fallback;
 }
 
-export function buildAuthorizationUrl(config: LarkOAuthConfig, state: string): string {
+export function buildAuthorizationUrl(
+  config: LarkOAuthConfig,
+  state: string,
+): string {
   const params = new URLSearchParams({
     app_id: config.appId,
     redirect_uri: config.redirectUri,

@@ -11,7 +11,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from '../auth/auth.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
 import { PermissionCacheModule } from '../permission-cache/permission-cache.module';
-import { GoogleStrategy } from '../auth/strategies/google.strategy';
 import { ScheduleModule } from '@nestjs/schedule';
 
 describe('Internal fund module wiring (no DB or network)', () => {
@@ -29,8 +28,6 @@ describe('Internal fund module wiring (no DB or network)', () => {
       .overrideProvider(AuthService)
       .useValue({ getPermissionsForBranch: jest.fn() })
       .overrideProvider(LARK_CLIENT)
-      .useValue({})
-      .overrideProvider(GoogleStrategy)
       .useValue({})
       .compile();
     expect(module.get(InternalFundService)).toBeDefined();

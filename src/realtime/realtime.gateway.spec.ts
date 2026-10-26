@@ -114,6 +114,30 @@ describe('RealtimeGateway auth', () => {
     expect(err?.message).toBe('unauthorized');
   });
 
+  it('accepts the legacy token format without typ (sub/email/name/pv)', async () => {
+    const { runMiddleware, jwtService, gateway } = build({
+      user: { id: 7, roles: ['Sale'], branchIds: [1] },
+      branchPerms: { 1: ['orders:view'] },
+    });
+    const legacy = jwtService.sign(
+      { sub: 7, email: 'a@b.c', name: 'A', pv: 1 },
+      { expiresIn: '7d' },
+    );
+    const socket = makeSocket(legacy);
+    expect(await runMiddleware(socket)).toBeUndefined();
+    await gateway.handleConnection(socket as any);
+    expect(socket.rooms.has(ordersBranchRoom(1))).toBe(true);
+    gateway.handleDisconnect(socket as any);
+  });
+
+  it('rejects a token without sub', async () => {
+    const { runMiddleware, jwtService } = build({ user: { id: 7 } });
+    const token = jwtService.sign({ typ: 'access' });
+    expect((await runMiddleware(makeSocket(token)))?.message).toBe(
+      'unauthorized',
+    );
+  });
+
   it('joins only branches where the user can view orders', async () => {
     const { runMiddleware, jwtService, gateway } = build({
       user: { id: 7, roles: ['Sale'], branchIds: [1, 2] },

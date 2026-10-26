@@ -34,9 +34,7 @@ describe('FinanceAccessService', () => {
     ).rejects.toThrow('Thiếu quyền');
     // Không hỏi quyền của chi nhánh user không được truy cập.
     expect(auth.getPermissionsForBranch).not.toHaveBeenCalledWith(7, 1);
-    expect(await service.branchesFor(7, 'warehouse_expense:view')).toEqual([
-      6,
-    ]);
+    expect(await service.branchesFor(7, 'warehouse_expense:view')).toEqual([6]);
     expect(await service.can(7, 6, 'warehouse_expense:mark_issued')).toBe(
       false,
     );

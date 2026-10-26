@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionCacheService } from '../../permission-cache/permission-cache.service';
+import { getJwtSecret, JWT_ALGORITHM } from '../jwt-secret.util';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 
@@ -17,8 +18,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey:
-        configService.get<string>('JWT_SECRET') || 'default-secret-key',
+      secretOrKey: getJwtSecret(configService),
+      algorithms: [JWT_ALGORITHM],
     });
   }
 

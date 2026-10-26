@@ -7,7 +7,7 @@ import { AuthService } from './auth.service';
 import { LarkAuthService } from './lark-auth.service';
 import { FinanceAccessService } from './finance-access.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
-import { GoogleStrategy } from './strategies/google.strategy';
+import { getJwtSecret, JWT_ALGORITHM } from './jwt-secret.util';
 import { UsersModule } from '../users/users.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycle.module';
@@ -22,8 +22,7 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
-        const jwtSecret =
-          configService.get<string>('JWT_SECRET') || 'default-secret-key';
+        const jwtSecret = getJwtSecret(configService);
         let jwtExpiration = configService.get<string>('JWT_EXPIRATION') || '7d';
 
         jwtExpiration = jwtExpiration.trim();
@@ -40,20 +39,16 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
           secret: jwtSecret,
           signOptions: {
             expiresIn: jwtExpiration,
+            algorithm: JWT_ALGORITHM,
           },
+          verifyOptions: { algorithms: [JWT_ALGORITHM] },
         };
       },
       inject: [ConfigService],
     }),
   ],
   controllers: [AuthController],
-  providers: [
-    AuthService,
-    LarkAuthService,
-    JwtStrategy,
-    GoogleStrategy,
-    FinanceAccessService,
-  ],
+  providers: [AuthService, LarkAuthService, JwtStrategy, FinanceAccessService],
   exports: [AuthService, FinanceAccessService, JwtStrategy],
 })
 export class AuthModule {}

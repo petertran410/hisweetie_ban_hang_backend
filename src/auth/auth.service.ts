@@ -1,4 +1,3 @@
-// src/auth/auth.service.ts - Replace toàn bộ file
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { PrismaService } from '../prisma/prisma.service';
@@ -88,11 +87,12 @@ export class AuthService {
       branchIds.push(user.branchId);
     }
 
+    // JWT chỉ được KÝ, không mã hóa — ai cầm token cũng đọc được payload.
+    // Chỉ để id + permissionVersion; thông tin hiển thị trả trong `user`.
     const payload = {
       sub: user.id,
-      email: user.email,
-      name: user.name,
       pv: user.permissionVersion,
+      typ: 'access',
     };
     const accessToken = this.jwtService.sign(payload);
 
@@ -112,200 +112,6 @@ export class AuthService {
         canViewOtherStaffData: user.canViewOtherStaffData,
         canViewOnlyOwnPackings: user.canViewOnlyOwnPackings,
         canViewOnlyOwnLoadingInvoices: user.canViewOnlyOwnLoadingInvoices,
-      },
-    };
-  }
-
-  async googleLogin(googleUser: {
-    googleId: string;
-    email: string;
-    name: string;
-    avatar: string;
-  }) {
-    let user = await this.prisma.user.findUnique({
-      where: { email: googleUser.email },
-      include: {
-        userRoles: {
-          include: {
-            role: {
-              include: {
-                rolePermissions: {
-                  include: { permission: true },
-                },
-              },
-            },
-          },
-        },
-        userPermissions: {
-          include: { permission: true },
-        },
-      },
-    });
-
-    if (!user) {
-      user = await this.prisma.user.create({
-        data: {
-          googleId: googleUser.googleId,
-          email: googleUser.email,
-          name: googleUser.name,
-          avatar: googleUser.avatar,
-          isActive: true,
-        },
-        include: {
-          userRoles: {
-            include: {
-              role: {
-                include: {
-                  rolePermissions: {
-                    include: { permission: true },
-                  },
-                },
-              },
-            },
-          },
-          userPermissions: {
-            include: { permission: true },
-          },
-        },
-      });
-
-      const defaultRole = await this.prisma.role.findUnique({
-        where: { name: 'User' },
-      });
-      if (defaultRole) {
-        await this.prisma.userRole.create({
-          data: { userId: user.id, roleId: defaultRole.id },
-        });
-      }
-    } else if (!user.googleId) {
-      user = await this.prisma.user.update({
-        where: { id: user.id },
-        data: { googleId: googleUser.googleId, avatar: googleUser.avatar },
-        include: {
-          userRoles: {
-            include: {
-              role: {
-                include: {
-                  rolePermissions: {
-                    include: { permission: true },
-                  },
-                },
-              },
-            },
-          },
-          userPermissions: {
-            include: { permission: true },
-          },
-        },
-      });
-    }
-
-    const roles = user.userRoles.map((ur) => ur.role.name);
-    const rolePermissions = user.userRoles.flatMap((ur) =>
-      ur.role.rolePermissions.map((rp) => rp.permission.name),
-    );
-    const grantPermissions = user.userPermissions
-      .filter((up) => up.type === 'grant')
-      .map((up) => up.permission.name);
-    const denyPermissions = new Set(
-      user.userPermissions
-        .filter((up) => up.type === 'deny')
-        .map((up) => up.permission.name),
-    );
-    const permissions = [
-      ...new Set([...rolePermissions, ...grantPermissions]),
-    ].filter((p) => !denyPermissions.has(p) && !isRetiredPermissionName(p));
-
-    const userBranches = await this.prisma.userBranch.findMany({
-      where: { userId: user.id },
-      select: { branchId: true },
-    });
-    const branchIds = userBranches.map((ub) => ub.branchId);
-    if (user.branchId && !branchIds.includes(user.branchId)) {
-      branchIds.push(user.branchId);
-    }
-
-    const payload = {
-      sub: user.id,
-      email: user.email,
-      name: user.name,
-      pv: user.permissionVersion,
-    };
-    const accessToken = this.jwtService.sign(payload);
-
-    return {
-      accessToken,
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        avatar: user.avatar,
-        roles,
-        permissions,
-        branchId: user.branchId,
-        branchIds,
-        supplierId: user.supplierId ?? null,
-        canViewOtherStaffData: user.canViewOtherStaffData,
-        canViewOnlyOwnPackings: user.canViewOnlyOwnPackings,
-        canViewOnlyOwnLoadingInvoices: user.canViewOnlyOwnLoadingInvoices,
-      },
-    };
-  }
-
-  async register(data: {
-    name: string;
-    email: string;
-    password: string;
-    phone?: string;
-  }) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: data.email },
-    });
-
-    if (existingUser) {
-      throw new UnauthorizedException('Email already exists');
-    }
-
-    const hashedPassword = await bcrypt.hash(data.password, 10);
-
-    const user = await this.prisma.user.create({
-      data: {
-        ...data,
-        password: hashedPassword,
-      },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        createdAt: true,
-      },
-    });
-
-    const defaultRole = await this.prisma.role.findUnique({
-      where: { name: 'User' },
-    });
-    if (defaultRole) {
-      await this.prisma.userRole.create({
-        data: { userId: user.id, roleId: defaultRole.id },
-      });
-    }
-
-    const payload = {
-      sub: user.id,
-      email: user.email,
-      name: user.name,
-      pv: 1,
-    };
-    const accessToken = this.jwtService.sign(payload);
-
-    return {
-      accessToken,
-      user: {
-        ...user,
-        roles: ['User'],
-        permissions: [],
       },
     };
   }

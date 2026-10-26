@@ -67,16 +67,21 @@ export class LarkAuthService {
   async handleCallback(code?: string, state?: string): Promise<string> {
     const frontend = this.frontendLoginUrl();
     if (!code || !state) {
-      return this.hashRedirect(frontend, { lark_error: 'Thiếu mã xác thực Lark' });
+      return this.hashRedirect(frontend, {
+        lark_error: 'Thiếu mã xác thực Lark',
+      });
     }
 
     let returnTo = '/';
     try {
-      const payload = this.jwtService.verify<{ typ?: string; returnTo?: string }>(
-        state,
-      );
+      const payload = this.jwtService.verify<{
+        typ?: string;
+        returnTo?: string;
+      }>(state);
       if (payload.typ !== STATE_TYP) {
-        return this.hashRedirect(frontend, { lark_error: 'Phiên đăng nhập Lark không hợp lệ' });
+        return this.hashRedirect(frontend, {
+          lark_error: 'Phiên đăng nhập Lark không hợp lệ',
+        });
       }
       returnTo = safeReturnTo(payload.returnTo);
     } catch {
@@ -100,11 +105,15 @@ export class LarkAuthService {
       });
     } catch (err) {
       const message =
-        err instanceof UnauthorizedException || err instanceof BadRequestException
+        err instanceof UnauthorizedException ||
+        err instanceof BadRequestException
           ? err.message
           : 'Đăng nhập Lark thất bại';
       this.logger.warn(`Lark callback failed: ${message}`);
-      return this.hashRedirect(frontend, { lark_error: message, return_to: returnTo });
+      return this.hashRedirect(frontend, {
+        lark_error: message,
+        return_to: returnTo,
+      });
     }
   }
 
@@ -370,9 +379,7 @@ export class LarkAuthService {
       this.config.get<string>('LARK_OAUTH_REDIRECT_URI') ||
       'http://localhost:3060/api/auth/lark/callback'
     ).trim();
-    const domain = (
-      this.config.get<string>('LARK_DOMAIN') || 'larksuite.com'
-    )
+    const domain = (this.config.get<string>('LARK_DOMAIN') || 'larksuite.com')
       .replace(/^https?:\/\//, '')
       .replace(/\/$/, '');
 
@@ -382,7 +389,9 @@ export class LarkAuthService {
       );
     }
     if (!redirectUri) {
-      throw new BadRequestException('LARK_OAUTH_REDIRECT_URI chưa được cấu hình');
+      throw new BadRequestException(
+        'LARK_OAUTH_REDIRECT_URI chưa được cấu hình',
+      );
     }
 
     return { appId, appSecret, domain, redirectUri };

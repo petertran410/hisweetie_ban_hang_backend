@@ -1,6 +1,8 @@
 import { ExecutionContext, Injectable, Logger } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerLimitDetail } from '@nestjs/throttler';
 import { Request } from 'express';
+import { JwtService } from '@nestjs/jwt';
+import { getJwtSecret, JWT_ALGORITHM } from '../../auth/jwt-secret.util';
 
 const THROTTLE_LOG_WINDOW_MS = 60_000;
 const THROTTLE_LOG_MAX_TRACKERS = 1000;
@@ -14,10 +16,10 @@ const THROTTLE_LOG_MAX_TRACKERS = 1000;
  * hạn mức riêng.
  *
  * Lưu ý thứ tự guard: ThrottlerGuard chạy TRƯỚC JwtAuthGuard nên tại đây
- * `req.user` chưa tồn tại. Vì vậy ta tự DECODE (không verify) phần payload
- * của JWT để lấy `sub` làm khóa đếm. Việc verify chữ ký vẫn do JwtAuthGuard
- * đảm nhiệm ngay sau đó — token giả sẽ bị chặn ở bước auth, nên decode ở
- * đây chỉ phục vụ mục đích gom đếm, không tạo lỗ hổng bảo mật.
+ * `req.user` chưa tồn tại. Ta tự VERIFY chữ ký token (HMAC, rẻ) để lấy `sub`.
+ * KHÔNG được chỉ decode: kẻ tấn công có thể gửi token giả với `sub` ngẫu
+ * nhiên mỗi request → mỗi lần một bucket mới → vượt rate-limit (kể cả
+ * POST /auth/login để dò mật khẩu).
  *
  * Fallback về IP khi: không có Bearer token / token sai định dạng / decode
  * lỗi / thiếu `sub` (vd request public, màn hình login).
@@ -32,22 +34,28 @@ export class UserThrottlerGuard extends ThrottlerGuard {
     { windowStart: number; suppressed: number }
   >();
 
+  private verifier?: JwtService;
+
+  private getVerifier(): JwtService {
+    this.verifier ??= new JwtService({
+      secret: getJwtSecret(),
+      verifyOptions: { algorithms: [JWT_ALGORITHM] },
+    });
+    return this.verifier;
+  }
+
   protected async getTracker(req: Record<string, any>): Promise<string> {
     const auth: string | undefined = req.headers?.authorization;
     if (auth?.startsWith('Bearer ')) {
-      const token = auth.slice(7);
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        try {
-          const payload = JSON.parse(
-            Buffer.from(parts[1], 'base64url').toString('utf8'),
-          );
-          if (payload?.sub) {
-            return `user:${payload.sub}`;
-          }
-        } catch {
-          // Token hỏng → rơi xuống fallback IP bên dưới.
+      try {
+        const payload = this.getVerifier().verify<{ sub?: number }>(
+          auth.slice(7),
+        );
+        if (payload?.sub) {
+          return `user:${payload.sub}`;
         }
+      } catch {
+        // Token giả/hết hạn/hỏng → đếm theo IP.
       }
     }
     return `ip:${req.ip}`;

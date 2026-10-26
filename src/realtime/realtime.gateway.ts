@@ -154,7 +154,12 @@ export class RealtimeGateway
     } catch {
       throw new SocketAuthError('invalid token');
     }
-    if (payload?.typ !== 'access' || !payload?.sub) {
+    // Giống JwtStrategy: token định dạng cũ (không có `typ`) vẫn hợp lệ;
+    // token khác ký cùng secret (Lark state/setup...) luôn có `typ` riêng.
+    if (
+      !payload?.sub ||
+      (payload.typ !== undefined && payload.typ !== 'access')
+    ) {
       throw new SocketAuthError('not an access token');
     }
     try {
