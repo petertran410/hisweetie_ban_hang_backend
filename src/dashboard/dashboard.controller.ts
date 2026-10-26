@@ -4,6 +4,7 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   DashboardService,
@@ -11,6 +12,7 @@ import {
   PeriodKey,
   TopMetric,
   CategoryDimension,
+  CustomRange,
 } from './dashboard.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -33,15 +35,54 @@ import {
 export class DashboardController {
   constructor(private dashboardService: DashboardService) {}
 
+  /**
+   * Khoảng ngày tùy chọn (from/to dạng ISO) — chỉ dùng khi range/period = 'custom'.
+   * Thiếu from/to thì trả undefined (service tự rơi về mốc mặc định).
+   */
+  private parseCustom(
+    key: string | undefined,
+    from?: string,
+    to?: string,
+  ): CustomRange | undefined {
+    if (key !== 'custom') return undefined;
+    if (!from || !to) {
+      throw new BadRequestException(
+        'Thiếu from/to cho khoảng thời gian tùy chọn',
+      );
+    }
+    const f = new Date(from);
+    const t = new Date(to);
+    if (isNaN(f.getTime()) || isNaN(t.getTime()) || f > t) {
+      throw new BadRequestException('Khoảng thời gian tùy chọn không hợp lệ');
+    }
+    return { from: f, to: t };
+  }
+
   @Get('stats')
   @ApiOperation({ summary: 'Get dashboard statistics overview' })
   @ApiQuery({ name: 'range', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getStats(
     @Query('range') range?: RangeKey,
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.dashboardService.getStatsOverview(range || 'month', branchId);
+    return this.dashboardService.getStatsOverview(
+      range || 'month',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
   }
 
   @Get('revenue-chart')
@@ -57,11 +98,27 @@ export class DashboardController {
   @ApiOperation({ summary: 'Revenue + profit trend by hour/day/week' })
   @ApiQuery({ name: 'range', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getRevenueTrend(
     @Query('range') range?: RangeKey,
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.dashboardService.getRevenueTrend(range || 'today', branchId);
+    return this.dashboardService.getRevenueTrend(
+      range || 'today',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
   }
 
   @Get('category-breakdown')
@@ -69,15 +126,28 @@ export class DashboardController {
   @ApiQuery({ name: 'range', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
   @ApiQuery({ name: 'dimension', required: false })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getCategoryBreakdown(
     @Query('range') range?: RangeKey,
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
     @Query('dimension') dimension?: CategoryDimension,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.dashboardService.getCategoryBreakdown(
       range || 'month',
       branchId,
       dimension || 'parent',
+      this.parseCustom(range, from, to),
     );
   }
 
@@ -92,13 +162,26 @@ export class DashboardController {
   @ApiOperation({ summary: 'Compare active branches over time' })
   @ApiQuery({ name: 'period', required: false })
   @ApiQuery({ name: 'metric', required: false })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getBranchComparison(
     @Query('period') period?: PeriodKey,
     @Query('metric') metric?: 'rev' | 'profit',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.dashboardService.getBranchComparison(
       period || 'd7',
       metric || 'rev',
+      this.parseCustom(period, from, to),
     );
   }
 
@@ -106,11 +189,27 @@ export class DashboardController {
   @ApiOperation({ summary: 'Debt, COD and aging buckets' })
   @ApiQuery({ name: 'period', required: false })
   @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getFinance(
     @Query('period') period?: PeriodKey | 'all',
     @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
-    return this.dashboardService.getFinance(period || 'all', branchId);
+    return this.dashboardService.getFinance(
+      period || 'all',
+      branchId,
+      this.parseCustom(period, from, to),
+    );
   }
 
   @Get('tasks')
@@ -151,6 +250,36 @@ export class DashboardController {
     return this.dashboardService.getTopCustomers(limit || 10);
   }
 
+  @Get('top-buyers')
+  @ApiOperation({ summary: 'Top customers by invoice revenue in a time range' })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  getTopBuyers(
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getTopBuyers(
+      Math.min(limit || 10, 50),
+      range || 'month',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
+  }
+
   @Get('low-stock')
   @ApiOperation({ summary: 'Get low stock products' })
   @ApiQuery({ name: 'limit', required: false, type: Number })
@@ -183,6 +312,16 @@ export class DashboardController {
   @ApiQuery({ name: 'metric', required: false })
   @ApiQuery({ name: 'dimension', required: false })
   @ApiQuery({ name: 'categoryValue', required: false })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range/period = custom',
+  })
   getTopProducts(
     @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
     @Query('range') range?: RangeKey,
@@ -190,6 +329,8 @@ export class DashboardController {
     @Query('metric') metric?: TopMetric,
     @Query('dimension') dimension?: CategoryDimension,
     @Query('categoryValue') categoryValue?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.dashboardService.getTopProducts(
       limit || 10,
@@ -198,6 +339,7 @@ export class DashboardController {
       metric || 'rev',
       dimension,
       categoryValue,
+      this.parseCustom(range, from, to),
     );
   }
 

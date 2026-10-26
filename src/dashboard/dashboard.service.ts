@@ -2,7 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
-export type RangeKey = 'today' | 'yesterday' | 'week' | 'month';
+export type RangeKey =
+  | 'today'
+  | 'yesterday'
+  | 'week'
+  | 'month'
+  | 'lastMonth'
+  | 'custom';
 // Mốc thời gian của So sánh chi nhánh (khớp PeriodKey phía frontend).
 export type PeriodKey =
   | 'today'
@@ -11,7 +17,13 @@ export type PeriodKey =
   | 'd30'
   | 'thisWeek'
   | 'thisMonth'
-  | 'lastMonth';
+  | 'lastMonth'
+  | 'custom';
+/** Khoảng ngày người dùng tự chọn (range/period = 'custom'). */
+export interface CustomRange {
+  from: Date;
+  to: Date;
+}
 export type TopMetric = 'rev' | 'qty' | 'profit';
 export type CategoryDimension = 'parent' | 'middle' | 'child';
 
@@ -47,8 +59,24 @@ export class DashboardService {
    * week   → 7 ngày gần nhất; kỳ trước = 7 ngày liền trước.
    * month  → từ đầu tháng; kỳ trước = tháng trước (cùng số ngày trôi qua).
    */
-  private getRangeWindow(range: RangeKey): RangeWindow {
+  private getRangeWindow(range: RangeKey, custom?: CustomRange): RangeWindow {
     const now = new Date();
+    if (range === 'custom' && custom) {
+      // Kỳ trước = khoảng liền trước có cùng độ dài.
+      const span = custom.to.getTime() - custom.from.getTime();
+      const prevEnd = new Date(custom.from.getTime() - 1);
+      const prevStart = new Date(prevEnd.getTime() - span);
+      return { start: custom.from, end: custom.to, prevStart, prevEnd };
+    }
+    if (range === 'lastMonth') {
+      // Trọn tháng trước; kỳ trước = trọn tháng liền trước nữa.
+      const start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const end = new Date(now.getFullYear(), now.getMonth(), 1);
+      end.setMilliseconds(-1);
+      const prevStart = new Date(now.getFullYear(), now.getMonth() - 2, 1);
+      const prevEnd = new Date(start.getTime() - 1);
+      return { start, end, prevStart, prevEnd };
+    }
     if (range === 'today') {
       const start = new Date(now);
       start.setHours(0, 0, 0, 0);
@@ -83,8 +111,14 @@ export class DashboardService {
   }
 
   /** Khoảng thời gian [start, end] cho các mốc PeriodKey. */
-  private getPeriodWindow(period: PeriodKey): { start: Date; end: Date } {
+  private getPeriodWindow(
+    period: PeriodKey,
+    custom?: CustomRange,
+  ): { start: Date; end: Date } {
     const now = new Date();
+    if (period === 'custom' && custom) {
+      return { start: custom.from, end: custom.to };
+    }
     switch (period) {
       case 'today':
       case 'yesterday':
@@ -115,6 +149,11 @@ export class DashboardService {
       default:
         return this.getRangeWindow('week');
     }
+  }
+
+  /** Độ dài khoảng (ngày) — dùng chọn mức gom nhóm cho khoảng tùy chọn. */
+  private spanDays(start: Date, end: Date): number {
+    return (end.getTime() - start.getTime()) / 86400000;
   }
 
   /** where clause chung cho Order, có lọc branch nếu truyền. */
@@ -182,9 +221,13 @@ export class DashboardService {
 
   // ──────────────────────────── KPI Overview ────────────────────────────
 
-  async getStatsOverview(range: RangeKey = 'month', branchId?: number) {
+  async getStatsOverview(
+    range: RangeKey = 'month',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
     try {
-      const w = this.getRangeWindow(range);
+      const w = this.getRangeWindow(range, custom);
       const branchFilter = branchId
         ? Prisma.sql`AND i."branchId" = ${branchId}`
         : Prisma.empty;
@@ -362,6 +405,43 @@ export class DashboardService {
     return chartData;
   }
 
+  /**
+   * Top khách mua nhiều nhất trong khoảng thời gian — theo tổng tiền hóa đơn
+   * (loại Đã hủy + Trả hàng, cùng chuẩn doanh thu dashboard). Bỏ khách vãng lai.
+   */
+  async getTopBuyers(
+    limit: number = 10,
+    range: RangeKey = 'month',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
+    const rows = await this.prisma.$queryRaw<any[]>`
+      SELECT
+        c.id,
+        c.code,
+        c.name,
+        SUM(i."grandTotal")::float8 AS "totalRevenue",
+        COUNT(*)::int AS "invoiceCount"
+      FROM invoices i
+      INNER JOIN customers c ON c.id = i."customerId"
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+      GROUP BY c.id, c.code, c.name
+      ORDER BY "totalRevenue" DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: Number(r.id),
+      code: r.code,
+      name: r.name,
+      totalRevenue: Number(r.totalRevenue || 0),
+      invoiceCount: Number(r.invoiceCount || 0),
+    }));
+  }
+
   async getTopCustomers(limit: number = 10) {
     const customers = await this.prisma.customer
       .findMany({
@@ -513,8 +593,9 @@ export class DashboardService {
     metric: TopMetric = 'rev',
     dimension?: CategoryDimension,
     categoryValue?: string,
+    custom?: CustomRange,
   ) {
-    const w = this.getRangeWindow(range);
+    const w = this.getRangeWindow(range, custom);
     const branchFilter = branchId
       ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
@@ -578,13 +659,24 @@ export class DashboardService {
    * Series doanh thu + lợi nhuận (tạm tính) theo trục thời gian.
    * today → theo giờ; week → theo ngày; month → theo tuần ISO.
    */
-  async getRevenueTrend(range: RangeKey = 'today', branchId?: number) {
-    const w = this.getRangeWindow(range);
+  async getRevenueTrend(
+    range: RangeKey = 'today',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
     const branchFilter = branchId
       ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
 
-    const trunc = range === 'today' || range === 'yesterday' ? 'hour' : 'day'; // week & month đều gom theo ngày
+    // today/yesterday → theo giờ; week/month/lastMonth → theo ngày.
+    // custom: ≤ 1 ngày → giờ, ≤ 92 ngày → ngày, dài hơn → tháng.
+    let trunc: 'hour' | 'day' | 'month' =
+      range === 'today' || range === 'yesterday' ? 'hour' : 'day';
+    if (range === 'custom') {
+      const days = this.spanDays(w.start, w.end);
+      trunc = days <= 1 ? 'hour' : days <= 92 ? 'day' : 'month';
+    }
 
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -609,8 +701,10 @@ export class DashboardService {
 
     const fmt = (d: Date): string => {
       const dt = new Date(d);
-      if (range === 'today' || range === 'yesterday')
-        return String(dt.getHours()).padStart(2, '0');
+      if (trunc === 'hour') return String(dt.getHours()).padStart(2, '0');
+      if (trunc === 'month') {
+        return `${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+      }
       if (range === 'week') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
@@ -633,8 +727,9 @@ export class DashboardService {
     range: RangeKey = 'month',
     branchId?: number,
     dimension: CategoryDimension = 'parent',
+    custom?: CustomRange,
   ) {
-    const w = this.getRangeWindow(range);
+    const w = this.getRangeWindow(range, custom);
     const branchFilter = branchId
       ? Prisma.sql`AND i."branchId" = ${branchId}`
       : Prisma.empty;
@@ -677,14 +772,21 @@ export class DashboardService {
   async getBranchComparison(
     period: PeriodKey = 'd7',
     metric: 'rev' | 'profit' = 'rev',
+    custom?: CustomRange,
   ) {
-    const w = this.getPeriodWindow(period);
-    const trunc =
+    const w = this.getPeriodWindow(period, custom);
+    let trunc: 'hour' | 'day' | 'week' | 'month' =
       period === 'today' || period === 'yesterday'
         ? 'hour'
         : period === 'd7' || period === 'thisWeek'
           ? 'day'
           : 'week';
+    if (period === 'custom') {
+      // custom: ≤ 1 ngày → giờ, ≤ 14 ngày → ngày, ≤ 92 ngày → tuần, dài hơn → tháng.
+      const days = this.spanDays(w.start, w.end);
+      trunc =
+        days <= 1 ? 'hour' : days <= 14 ? 'day' : days <= 92 ? 'week' : 'month';
+    }
 
     const valueCol =
       metric === 'profit'
@@ -716,7 +818,11 @@ export class DashboardService {
     const fmt = (d: Date): string => {
       const dt = new Date(d);
       if (trunc === 'hour') return String(dt.getHours()).padStart(2, '0');
-      if (trunc === 'day') {
+      if (trunc === 'month') {
+        return `${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+      }
+      // Khoảng tùy chọn có thể dài hơn 1 tuần → nhãn ngày dd/MM để không trùng thứ.
+      if (trunc === 'day' && period !== 'custom') {
         return ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][dt.getDay()];
       }
       // Bucket tuần: nhãn = ngày thứ Hai đầu tuần (dd/MM) — tránh trùng nhãn
@@ -760,8 +866,12 @@ export class DashboardService {
    * không phản ánh các khoản thu nợ chung / ứng trước / cấn trừ chưa gắn HĐ).
    * Nợ không gắn HĐ nào (vd số dư đầu kỳ) tính vào nhóm > 30 ngày.
    */
-  async getFinance(period: PeriodKey | 'all' = 'all', branchId?: number) {
-    const w = period === 'all' ? null : this.getPeriodWindow(period);
+  async getFinance(
+    period: PeriodKey | 'all' = 'all',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = period === 'all' ? null : this.getPeriodWindow(period, custom);
     const filtered = !!branchId || !!w;
 
     const branchFilter = branchId
