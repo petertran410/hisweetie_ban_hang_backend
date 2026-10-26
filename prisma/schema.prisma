@@ -146,6 +146,8 @@ model User {
   cancelledInternalFundTransfers                            InternalFundTransfer[]              @relation("InternalFundTransferCanceller")
   createdInternalFundClosings                               InternalFundDailyClosing[]          @relation("InternalFundClosingCreator")
   closedInternalFundClosings                                InternalFundDailyClosing[]          @relation("InternalFundClosingCloser")
+  authSessions                                              AuthSession[]
+  smaxChannelUsers                                          smax_channel_users[]
 
   @@map("users")
 }
@@ -5204,4 +5206,49 @@ model ProductQualityDepartmentMember {
   @@unique([department, branchId, userId])
   @@index([department, branchId])
   @@map("product_quality_department_members")
+}
+
+/// Phiên đăng nhập = 1 refresh token (chỉ lưu băm SHA-256, không lưu token gốc).
+/// Mỗi lần làm mới tạo 1 dòng mới cùng `familyId`, dòng cũ bị đánh dấu
+/// revoked (lý do "rotated") + `replacedById`. Dùng lại token đã bị thay
+/// (ngoài ân hạn) → thu hồi cả family (nghi bị đánh cắp).
+model AuthSession {
+  id                Int       @id @default(autoincrement())
+  userId            Int       @map("user_id")
+  familyId          String    @map("family_id")
+  tokenHash         String    @unique @map("token_hash")
+  /// permissionVersion lúc đăng nhập — lệch với user hiện tại → bắt đăng nhập lại.
+  permissionVersion Int       @map("permission_version")
+  expiresAt         DateTime  @map("expires_at")
+  absoluteExpiresAt DateTime  @map("absolute_expires_at")
+  revokedAt         DateTime? @map("revoked_at")
+  /// rotated | logout | reuse | permission | password | disabled | expired
+  revokeReason      String?   @map("revoke_reason")
+  replacedById      Int?      @map("replaced_by_id")
+  lastUsedAt        DateTime  @default(now()) @map("last_used_at")
+  userAgent         String?   @map("user_agent")
+  ip                String?
+  createdAt         DateTime  @default(now()) @map("created_at")
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([absoluteExpiresAt])
+  @@map("auth_sessions")
+}
+
+/// Bảng do hệ thống tích hợp Smax tạo trực tiếp trong DB (backend này không
+/// dùng). Khai báo ở đây để `prisma db push` không xóa bảng/dữ liệu của nó.
+/// Giữ đúng cấu trúc thực tế trong DB (lấy bằng `prisma db pull --print`).
+model smax_channel_users {
+  id        Int      @id @default(autoincrement())
+  pagePid   String   @unique
+  pageName  String
+  platform  String
+  userId    Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime
+  users     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }

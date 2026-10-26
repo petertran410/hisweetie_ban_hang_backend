@@ -2,7 +2,9 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
+import { SessionService } from '../auth/session/session.service';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
@@ -19,6 +21,7 @@ export class UsersService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private permissionCache: PermissionCacheService,
+    @Optional() private sessionService?: SessionService,
   ) {}
 
   async findAll(filters?: {
@@ -324,6 +327,7 @@ export class UsersService {
       }
     }
 
+    let supplierScopeChanged = false;
     await this.prisma.$transaction(async (tx) => {
       const updateData: any = {
         name: data.name,
@@ -358,6 +362,7 @@ export class UsersService {
         updateData.supplierId = newSupplierId;
         if (newSupplierId !== user.supplierId) {
           updateData.permissionVersion = { increment: 1 };
+          supplierScopeChanged = true;
         }
       }
 
@@ -479,6 +484,7 @@ export class UsersService {
       data.roleIds ||
       data.permissionIds ||
       data.denyPermissionIds ||
+      data.password ||
       data.isActive !== undefined ||
       data.canViewOtherStaffData !== undefined ||
       data.canViewOnlyOwnPackings !== undefined ||
@@ -489,6 +495,10 @@ export class UsersService {
       // Đổi thông tin/chi nhánh không cần buộc đăng nhập lại, nhưng phải xóa
       // cache (vd profile) để lần gọi sau thấy dữ liệu mới.
       this.permissionCache.invalidateUser(id);
+      // Đổi NCC đã tăng permissionVersion ở trên → cũng phải đăng nhập lại.
+      if (supplierScopeChanged) {
+        await this.sessionService?.forceReLogin([id], 'permission');
+      }
     }
 
     return updatedUser;
@@ -577,12 +587,18 @@ export class UsersService {
     return { success: true };
   }
 
+  /**
+   * Đổi quyền/vai trò/mật khẩu/khóa → tăng permissionVersion (access token cũ
+   * hết hiệu lực) + thu hồi mọi phiên refresh + báo realtime để trình duyệt
+   * đang mở của user đó về trang đăng nhập ngay.
+   */
   private async bumpPermissionVersion(userId: number): Promise<void> {
     await this.prisma.user.update({
       where: { id: userId },
       data: { permissionVersion: { increment: 1 } },
     });
     this.permissionCache.invalidateUser(userId);
+    await this.sessionService?.forceReLogin([userId], 'permission');
   }
 
   async findAllForFilter() {

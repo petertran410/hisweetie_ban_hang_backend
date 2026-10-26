@@ -147,7 +147,9 @@ describe('RealtimeGateway auth', () => {
     expect(await runMiddleware(socket)).toBeUndefined();
     await gateway.handleConnection(socket as any);
 
-    expect([...socket.rooms]).toEqual(['sid', ordersBranchRoom(1)]);
+    expect([...socket.rooms].sort()).toEqual(
+      ['sid', 'user:7', ordersBranchRoom(1)].sort(),
+    );
     gateway.handleDisconnect(socket as any);
   });
 

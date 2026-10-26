@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionCacheService } from '../../permission-cache/permission-cache.service';
 import { getJwtSecret, JWT_ALGORITHM } from '../jwt-secret.util';
+import { SessionService } from '../session/session.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 
@@ -14,6 +15,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private configService: ConfigService,
     private prisma: PrismaService,
     private permissionCache: PermissionCacheService,
+    private sessionService: SessionService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -30,6 +32,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     const userId: number = payload.sub;
     const tokenPv: number = payload.pv;
+
+    // Token mới gắn với 1 phiên refresh: đăng xuất / đổi quyền / đổi mật khẩu
+    // thu hồi phiên → access token còn hạn cũng bị chặn ngay.
+    if (payload.sid !== undefined) {
+      const usable = await this.sessionService.isSessionUsable(
+        Number(payload.sid),
+      );
+      if (!usable) {
+        throw new UnauthorizedException(
+          'Phiên đăng nhập không còn hiệu lực. Vui lòng đăng nhập lại.',
+        );
+      }
+    }
 
     // 1. Cache hit → zero query
     const cached = this.permissionCache.get(userId);

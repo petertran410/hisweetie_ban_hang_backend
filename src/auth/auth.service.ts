@@ -4,6 +4,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { PermissionCacheService } from '../permission-cache/permission-cache.service';
 import { isRetiredPermissionName } from '../permissions/permission-policy';
 import * as bcrypt from 'bcrypt';
+import {
+  IssuedRefresh,
+  SessionContext,
+  SessionService,
+} from './session/session.service';
+import { sessionConfig, ttlToSeconds } from './session/session.config';
 
 @Injectable()
 export class AuthService {
@@ -11,9 +17,15 @@ export class AuthService {
     private prisma: PrismaService,
     private jwtService: JwtService,
     private permissionCache: PermissionCacheService,
+    private sessionService: SessionService,
   ) {}
 
-  async login(email: string, password: string, branchId?: number) {
+  async login(
+    email: string,
+    password: string,
+    branchId?: number,
+    ctx?: SessionContext,
+  ) {
     const user = await this.prisma.user.findUnique({
       where: { email },
       select: { id: true, password: true, isActive: true },
@@ -28,10 +40,79 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     if (!user.isActive) throw new UnauthorizedException('Account is inactive');
 
-    return this.issueAuthResponse(user.id, branchId);
+    return this.issueAuthResponse(user.id, branchId, ctx);
   }
 
-  async issueAuthResponse(userId: number, branchId?: number) {
+  /**
+   * Access token JWT ngắn hạn. JWT chỉ được KÝ, không mã hóa — ai cầm token
+   * cũng đọc được payload, nên chỉ chứa id, permissionVersion, id phiên.
+   */
+  signAccessToken(userId: number, permissionVersion: number, sid: number) {
+    const ttl = sessionConfig.accessTokenTtl;
+    return {
+      accessToken: this.jwtService.sign(
+        { sub: userId, pv: permissionVersion, typ: 'access', sid },
+        { expiresIn: ttl },
+      ),
+      expiresIn: ttlToSeconds(ttl),
+    };
+  }
+
+  /** Đọc payload (đã được JwtAuthGuard verify trước đó). */
+  decodeToken(token: string): { sid?: number } | null {
+    return this.jwtService.decode<{ sid?: number } | null>(token);
+  }
+
+  /** Đổi refresh token (cookie) lấy access token mới + refresh token mới. */
+  async refresh(raw: string, ctx: SessionContext) {
+    const rotated = await this.sessionService.rotate(raw, ctx);
+    return {
+      ...this.signAccessToken(
+        rotated.userId,
+        rotated.permissionVersion,
+        rotated.sessionId,
+      ),
+      refresh: rotated.refresh,
+    };
+  }
+
+  /**
+   * Phiên cũ (Bearer 7 ngày, không có `sid`) → tạo phiên refresh token mới,
+   * để người đang đăng nhập không phải đăng nhập lại khi chuyển cơ chế.
+   */
+  async migrateLegacySession(userId: number, ctx: SessionContext) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, isActive: true, permissionVersion: true },
+    });
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('Tài khoản không hợp lệ');
+    }
+    const refresh = await this.sessionService.createSession(
+      user.id,
+      user.permissionVersion,
+      ctx,
+    );
+    return {
+      ...this.signAccessToken(
+        user.id,
+        user.permissionVersion,
+        refresh.sessionId,
+      ),
+      refresh,
+    };
+  }
+
+  async issueAuthResponse(
+    userId: number,
+    branchId?: number,
+    ctx?: SessionContext,
+  ): Promise<{
+    accessToken: string;
+    expiresIn: number;
+    refresh: IssuedRefresh;
+    user: Record<string, unknown>;
+  }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       include: {
@@ -87,17 +168,21 @@ export class AuthService {
       branchIds.push(user.branchId);
     }
 
-    // JWT chỉ được KÝ, không mã hóa — ai cầm token cũng đọc được payload.
-    // Chỉ để id + permissionVersion; thông tin hiển thị trả trong `user`.
-    const payload = {
-      sub: user.id,
-      pv: user.permissionVersion,
-      typ: 'access',
-    };
-    const accessToken = this.jwtService.sign(payload);
+    const refresh = await this.sessionService.createSession(
+      user.id,
+      user.permissionVersion,
+      ctx,
+    );
+    const { accessToken, expiresIn } = this.signAccessToken(
+      user.id,
+      user.permissionVersion,
+      refresh.sessionId,
+    );
 
     return {
       accessToken,
+      expiresIn,
+      refresh,
       user: {
         id: user.id,
         name: user.name,
@@ -264,10 +349,16 @@ export class AuthService {
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
+    // Đổi mật khẩu → mọi thiết bị (kể cả thiết bị hiện tại) đăng nhập lại.
     await this.prisma.user.update({
       where: { id: userId },
-      data: { password: hashedPassword },
+      data: {
+        password: hashedPassword,
+        permissionVersion: { increment: 1 },
+      },
     });
+    this.permissionCache.invalidateUser(userId);
+    await this.sessionService.forceReLogin([userId], 'password');
 
     return { message: 'Password changed successfully' };
   }

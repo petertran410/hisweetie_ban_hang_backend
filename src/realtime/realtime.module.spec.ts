@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { ConfigModule } from '@nestjs/config';
 import { RealtimeModule } from './realtime.module';
+import { SessionModule } from '../auth/session/session.module';
 import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeService } from './realtime.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -19,6 +20,7 @@ describe('Realtime module wiring (no DB or network)', () => {
         ConfigModule.forRoot({ isGlobal: true, ignoreEnvFile: true }),
         PermissionCacheModule,
         ScheduleModule.forRoot(),
+        SessionModule,
         RealtimeModule,
       ],
     })

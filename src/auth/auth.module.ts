@@ -8,6 +8,8 @@ import { LarkAuthService } from './lark-auth.service';
 import { FinanceAccessService } from './finance-access.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { getJwtSecret, JWT_ALGORITHM } from './jwt-secret.util';
+import { sessionConfig } from './session/session.config';
+import { SessionModule } from './session/session.module';
 import { UsersModule } from '../users/users.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycle.module';
@@ -16,6 +18,7 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
   imports: [
     UsersModule,
     PrismaModule,
+    SessionModule,
     ApprovalLifecycleModule,
     PassportModule,
     ConfigModule,
@@ -23,17 +26,8 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
         const jwtSecret = getJwtSecret(configService);
-        let jwtExpiration = configService.get<string>('JWT_EXPIRATION') || '7d';
-
-        jwtExpiration = jwtExpiration.trim();
-
-        const validFormats = /^(\d+[smhd]|\d+)$/;
-        if (!validFormats.test(jwtExpiration)) {
-          console.warn(
-            `Invalid JWT_EXPIRATION format: "${jwtExpiration}". Using default: 7d`,
-          );
-          jwtExpiration = '7d';
-        }
+        // Access token ngắn hạn (mặc định 15 phút) — xem session.config.ts.
+        const jwtExpiration = sessionConfig.accessTokenTtl;
 
         return {
           secret: jwtSecret,

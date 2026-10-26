@@ -1,4 +1,5 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { SessionService } from '../auth/session/session.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRoleDto, UpdateRoleDto } from './dto';
 import { PermissionCacheService } from 'src/permission-cache/permission-cache.service';
@@ -15,6 +16,7 @@ export class RolesService {
     private prisma: PrismaService,
     private permissionCache: PermissionCacheService,
     private auditLogsService: AuditLogsService,
+    @Optional() private sessionService?: SessionService,
   ) {}
 
   private async resolveUser(userId?: number) {
@@ -245,16 +247,26 @@ export class RolesService {
   private async bumpUsersOfRole(roleId: number): Promise<void> {
     // Bump cả user có role qua UserRole (global) lẫn UserBranchRole (per-branch),
     // vì cả 2 đều có thể nhận permission từ role này.
+    const where = {
+      OR: [
+        { userRoles: { some: { roleId } } },
+        { userBranchRoles: { some: { roleId } } },
+      ],
+    };
+    const affected = await this.prisma.user.findMany({
+      where,
+      select: { id: true },
+    });
     await this.prisma.user.updateMany({
-      where: {
-        OR: [
-          { userRoles: { some: { roleId } } },
-          { userBranchRoles: { some: { roleId } } },
-        ],
-      },
+      where,
       data: { permissionVersion: { increment: 1 } },
     });
     this.permissionCache.invalidateAll();
+    // Mọi user thuộc vai trò này phải đăng nhập lại ngay.
+    await this.sessionService?.forceReLogin(
+      affected.map((u) => u.id),
+      'permission',
+    );
   }
 
   async getRoleBranchPermissions(

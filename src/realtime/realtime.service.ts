@@ -1,9 +1,20 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
+import {
+  SESSION_REVOKED,
+  SessionRevokedEvent,
+  sessionEvents,
+} from '../auth/session/session-events';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   ORDERS_ALL_ROOM,
   ordersBranchRoom,
   RealtimeGateway,
+  userRoom,
 } from './realtime.gateway';
 
 export interface OrderChangedPayload {
@@ -13,7 +24,7 @@ export interface OrderChangedPayload {
 }
 
 @Injectable()
-export class RealtimeService {
+export class RealtimeService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RealtimeService.name);
 
   constructor(
@@ -28,6 +39,35 @@ export class RealtimeService {
    */
   emitOrderChanged(payload: OrderChangedPayload) {
     void this.emitOrderChangedAsync(payload);
+  }
+
+  private readonly onSessionRevoked = (event: SessionRevokedEvent) =>
+    this.emitSessionRevoked(event.userIds, event.reason);
+
+  onModuleInit() {
+    sessionEvents.on(SESSION_REVOKED, this.onSessionRevoked);
+  }
+
+  onModuleDestroy() {
+    sessionEvents.off(SESSION_REVOKED, this.onSessionRevoked);
+  }
+
+  /**
+   * Báo các trình duyệt đang mở của user phải đăng xuất ngay (đổi quyền,
+   * đổi mật khẩu, khóa tài khoản). Phiên đã bị thu hồi phía server trước đó.
+   */
+  emitSessionRevoked(userIds: number[], reason: string) {
+    try {
+      const server = this.gateway.server;
+      if (!server || userIds.length === 0) return;
+      server
+        .to(userIds.map((id) => userRoom(id)))
+        .emit('auth.revoked', { reason, at: Date.now() });
+    } catch (error) {
+      this.logger.warn(
+        `emitSessionRevoked failed: ${(error as Error)?.message}`,
+      );
+    }
   }
 
   private async emitOrderChangedAsync(payload: OrderChangedPayload) {

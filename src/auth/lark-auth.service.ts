@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from './auth.service';
+import type { IssuedRefresh, SessionContext } from './session/session.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
 import {
   buildAuthorizationUrl,
@@ -64,10 +65,14 @@ export class LarkAuthService {
     return buildAuthorizationUrl(oauth, state);
   }
 
-  async handleCallback(code?: string, state?: string): Promise<string> {
+  async handleCallback(
+    code?: string,
+    state?: string,
+    ctx?: SessionContext,
+  ): Promise<{ url: string; refresh?: IssuedRefresh }> {
     const frontend = this.frontendLoginUrl();
     if (!code || !state) {
-      return this.hashRedirect(frontend, {
+      return this.redirectOnly(frontend, {
         lark_error: 'Thiếu mã xác thực Lark',
       });
     }
@@ -79,30 +84,35 @@ export class LarkAuthService {
         returnTo?: string;
       }>(state);
       if (payload.typ !== STATE_TYP) {
-        return this.hashRedirect(frontend, {
+        return this.redirectOnly(frontend, {
           lark_error: 'Phiên đăng nhập Lark không hợp lệ',
         });
       }
       returnTo = safeReturnTo(payload.returnTo);
     } catch {
-      return this.hashRedirect(frontend, {
+      return this.redirectOnly(frontend, {
         lark_error: 'Phiên đăng nhập Lark đã hết hạn',
       });
     }
 
     try {
       const { user } = await exchangeCode(this.getOAuthConfig(), code);
-      const result = await this.completeLarkLogin(user);
+      const result = await this.completeLarkLogin(user, ctx);
       if (result.mode === 'setup') {
-        return this.hashRedirect(frontend, {
+        return this.redirectOnly(frontend, {
           lark_setup: result.token,
           return_to: returnTo,
         });
       }
-      return this.hashRedirect(frontend, {
-        lark_token: result.token,
-        return_to: returnTo,
-      });
+      // Không đưa token lên URL: refresh token được controller set vào cookie
+      // HttpOnly, FE gọi /auth/refresh để lấy access token.
+      return {
+        url: this.hashRedirect(frontend, {
+          lark_ok: '1',
+          return_to: returnTo,
+        }),
+        refresh: result.refresh,
+      };
     } catch (err) {
       const message =
         err instanceof UnauthorizedException ||
@@ -110,18 +120,21 @@ export class LarkAuthService {
           ? err.message
           : 'Đăng nhập Lark thất bại';
       this.logger.warn(`Lark callback failed: ${message}`);
-      return this.hashRedirect(frontend, {
+      return this.redirectOnly(frontend, {
         lark_error: message,
         return_to: returnTo,
       });
     }
   }
 
-  async setupPassword(input: {
-    setupToken: string;
-    password: string;
-    confirmPassword: string;
-  }) {
+  async setupPassword(
+    input: {
+      setupToken: string;
+      password: string;
+      confirmPassword: string;
+    },
+    ctx?: SessionContext,
+  ) {
     const password = (input.password || '').trim();
     const confirmPassword = (input.confirmPassword || '').trim();
     if (password.length < MIN_PASSWORD_LENGTH) {
@@ -159,7 +172,7 @@ export class LarkAuthService {
       data: { password: hashedPassword },
     });
 
-    return this.authService.issueAuthResponse(user.id);
+    return this.authService.issueAuthResponse(user.id, undefined, ctx);
   }
 
   async handleEvent(
@@ -257,7 +270,11 @@ export class LarkAuthService {
 
   async completeLarkLogin(
     profile: LarkUserProfile,
-  ): Promise<{ mode: 'setup' | 'session'; token: string }> {
+    ctx?: SessionContext,
+  ): Promise<
+    | { mode: 'setup'; token: string }
+    | { mode: 'session'; refresh: IssuedRefresh }
+  > {
     const openId = (profile.open_id || '').trim();
     if (!openId) {
       throw new UnauthorizedException('Lark không trả về mã người dùng');
@@ -306,8 +323,12 @@ export class LarkAuthService {
       return { mode: 'setup', token: this.signSetupToken(user.id) };
     }
 
-    const session = await this.authService.issueAuthResponse(user.id);
-    return { mode: 'session', token: session.accessToken };
+    const session = await this.authService.issueAuthResponse(
+      user.id,
+      undefined,
+      ctx,
+    );
+    return { mode: 'session', refresh: session.refresh };
   }
 
   private async createUserFromQr(
@@ -402,6 +423,13 @@ export class LarkAuthService {
       this.config.get<string>('FRONTEND_URL') || 'http://localhost:3050'
     ).replace(/\/$/, '');
     return `${frontend}/login`;
+  }
+
+  private redirectOnly(
+    loginUrl: string,
+    params: Record<string, string | undefined>,
+  ): { url: string } {
+    return { url: this.hashRedirect(loginUrl, params) };
   }
 
   private hashRedirect(

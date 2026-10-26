@@ -24,6 +24,8 @@ const MAX_SOCKETS_PER_USER = 20;
 export const ORDERS_ALL_ROOM = 'orders:all';
 export const ordersBranchRoom = (branchId: number) =>
   `orders:branch:${branchId}`;
+/** Phòng riêng của từng user — dùng để buộc đăng xuất ngay. */
+export const userRoom = (userId: number) => `user:${userId}`;
 
 interface AccessTokenPayload {
   sub?: number;
@@ -182,7 +184,7 @@ export class RealtimeGateway
 
   /** Phòng = các chi nhánh user có quyền xem đơn (Super Admin: tất cả). */
   private async syncRooms(socket: Socket, user: ValidatedUser) {
-    const rooms = new Set<string>();
+    const rooms = new Set<string>([userRoom(user.id)]);
 
     if (user.roles?.includes(SUPER_ADMIN_ROLE)) {
       rooms.add(ORDERS_ALL_ROOM);

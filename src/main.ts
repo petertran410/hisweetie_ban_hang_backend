@@ -6,6 +6,7 @@ import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import helmet from 'helmet';
 import * as compression from 'compression';
+import * as cookieParser from 'cookie-parser';
 import { PrismaService } from './prisma/prisma.service';
 import { createPublicationPdfMiddleware } from './upload/publication-pdf.middleware';
 import { selectPublicationDisplayName } from './upload/publication-pdf-title';
@@ -43,6 +44,8 @@ async function bootstrap() {
   // nén giúp client mạng yếu / latency cao nhận đủ body nhanh hơn, giảm rủi ro
   // đứt giữa chừng trên chuỗi proxy nhiều hop.
   app.use(compression());
+  // Đọc cookie refresh token (hs_rt) cho /api/auth/refresh, /logout.
+  app.use(cookieParser());
 
   app.useBodyParser('json', { limit: '20mb' });
   // OAuth 2.0 client-credentials libraries commonly submit form-urlencoded bodies.
