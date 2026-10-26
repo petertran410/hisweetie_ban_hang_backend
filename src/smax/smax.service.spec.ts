@@ -225,6 +225,7 @@ describe('SmaxApiService', () => {
       {
         pid: 'zl1',
         name: 'OA',
+        picture: null,
         platform: 'zalo',
         active: true,
         connectionError: null,
@@ -232,6 +233,7 @@ describe('SmaxApiService', () => {
       {
         pid: 'zl9',
         name: 'Lermao OA',
+        picture: null,
         platform: 'zalo',
         active: true,
         connectionError: null,
@@ -239,6 +241,7 @@ describe('SmaxApiService', () => {
       {
         pid: 'zlw2',
         name: 'Diệp Trà Ms Vân Anh',
+        picture: null,
         platform: 'zaloweb',
         active: true,
         connectionError: {

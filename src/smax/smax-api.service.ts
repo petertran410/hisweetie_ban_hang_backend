@@ -13,6 +13,8 @@ import { firstValueFrom } from 'rxjs';
 export interface SmaxPage {
   pid: string;
   name: string;
+  // Ảnh đại diện tài khoản Zalo / OA của kênh
+  picture: string | null;
   platform: string;
   active: boolean;
   /**
@@ -67,6 +69,10 @@ export interface SmaxRecentThread {
   lastMessage: string;
   lastMessageAt: string | null;
   unread: boolean;
+  // Tổng số tin của thread (Smax reply_count) — client tính "tin mới" theo chênh lệch
+  messageCount: number;
+  avatar: string | null;
+  memberPreview: { name: string | null; avatar: string | null }[];
 }
 
 export interface SmaxFriendStatus {
@@ -124,6 +130,7 @@ export class SmaxApiService {
     return rows.map((p) => ({
       pid: String(p.pid ?? p.page_pid ?? ''),
       name: p.name ?? '',
+      picture: p.picture ?? p.zaloweb?.picture ?? null,
       platform: p.platform ?? '',
       active: p.active !== false,
       connectionError: this.connectionError(p),
@@ -220,6 +227,9 @@ export class SmaxApiService {
         lastMessage: typeof t.message === 'string' ? t.message : '',
         lastMessageAt: t.last_message_at ?? null,
         unread: t.read === false,
+        messageCount: Number(t.reply_count ?? 0),
+        avatar: t.customer?.picture ?? t.customer?.zaloweb?.picture ?? null,
+        memberPreview: memberPreview(t),
       }));
   }
 

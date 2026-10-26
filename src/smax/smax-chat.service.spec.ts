@@ -74,6 +74,7 @@ const makeService = (env: Record<string, string> = {}) => {
     getFriendStatus: jest.fn().mockResolvedValue({ isFriend: true, isRequested: false, isRequesting: false }),
     requestFriend: jest.fn().mockResolvedValue({}),
     undoRequestFriend: jest.fn().mockResolvedValue({}),
+    bizAlias: 'dieptra',
     listGroupThreads: jest.fn().mockResolvedValue([
       { zaloId: '2395241168877084467', name: 'test group', memberPids: ['zlw1239621715347596858', 'zlwX'], lastMessageAt: null, avatar: null, memberPreview: [] },
       { zaloId: '777', name: 'Cộng đồng', memberPids: ['zlw1239621715347596858', 'zlwY', 'zlwZ'], lastMessageAt: null, avatar: null, memberPreview: [] },
@@ -326,7 +327,7 @@ describe('SmaxChatService', () => {
       { id: 77, code: 'KH005844', name: 'Mr Vũ' },
     ]);
     (api as any).listRecentThreads = jest.fn().mockResolvedValue([
-      { tid: 'zlw2395241168877084467', pagePid: PAGE, name: 'test group', isGroup: true, lastMessage: 'attach', lastMessageAt: null, unread: true },
+      { tid: 'zlw2395241168877084467', pagePid: PAGE, name: 'test group', isGroup: true, lastMessage: 'attach', lastMessageAt: null, unread: true, messageCount: 5, avatar: null, memberPreview: [] },
       { tid: 'zlw3102735962735863553', pagePid: PAGE, name: 'TGNL VŨNG TÀU MR VŨ - DIỆP TRÀ kh005844', isGroup: true, lastMessage: 'hi', lastMessageAt: null, unread: false },
       { tid: 'zlw999', pagePid: PAGE, name: 'Nhóm lạ', isGroup: true, lastMessage: 'x', lastMessageAt: null, unread: false },
     ]);
@@ -339,7 +340,13 @@ describe('SmaxChatService', () => {
       ['byCode', 77],
       [null, null],
     ]);
-    expect(items[0]).toMatchObject({ lastMessage: '[Tệp/ảnh]', channelName: 'Diệp Trà Cs', zaloId: '2395241168877084467' });
+    expect(items[0]).toMatchObject({
+      lastMessage: '[Tệp/ảnh]',
+      channelName: 'Diệp Trà Cs',
+      zaloId: '2395241168877084467',
+      messageCount: 5,
+      smaxUrl: `https://smax.ai/bizs/dieptra/chats/${PAGE}?tid=zlw2395241168877084467`,
+    });
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
   });
 

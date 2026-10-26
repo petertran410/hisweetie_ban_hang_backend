@@ -136,6 +136,7 @@ export class SmaxChatService {
       return {
         pagePid: l.pagePid,
         name: page?.name ?? l.pageName,
+        avatar: page?.picture ?? null,
         platform: page?.platform ?? l.platform,
         connectionError: page?.connectionError ?? null,
         missing: !page,
@@ -675,9 +676,9 @@ export class SmaxChatService {
    * Hội thoại mới nhất trên các kênh Zalo cá nhân của người gọi, khớp khách POS:
    * theo ID Zalo đã lưu (mở được ngay), hoặc theo mã khách trong tên nhóm (gợi ý).
    */
-  async recentChats(actorId: number) {
+  async recentChats(actorId: number, pagePid?: string) {
     const channels = (await this.myChannels(actorId)).filter(
-      (c) => !c.missing && c.platform === 'zaloweb',
+      (c) => !c.missing && c.platform === 'zaloweb' && (!pagePid || c.pagePid === pagePid),
     );
     if (!channels.length) return { items: [] };
     const pagePids = channels.map((c) => c.pagePid).sort();
@@ -734,6 +735,10 @@ export class SmaxChatService {
           lastMessage: t.lastMessage === 'attach' ? '[Tệp/ảnh]' : t.lastMessage,
           lastMessageAt: t.lastMessageAt,
           unread: t.unread,
+          messageCount: t.messageCount,
+          avatar: t.avatar,
+          memberPreview: t.memberPreview,
+          smaxUrl: `https://smax.ai/bizs/${this.smaxApi.bizAlias}/chats/${t.pagePid}?tid=${t.tid}`,
           // linked: đã lưu ID Zalo → mở ngay; byCode: đoán theo mã khách trong tên nhóm
           match: contact
             ? { type: 'linked' as const, customer: contact.customer, contactId: contact.id, kind: contact.kind }
