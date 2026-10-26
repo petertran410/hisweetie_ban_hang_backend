@@ -52,10 +52,16 @@ export class SmaxChatController {
     };
   }
 
+  @Get('channels')
+  @RequirePermissions('smax_chat:view')
+  channels(@Req() req: any) {
+    return this.service.myChannels(req.user.id);
+  }
+
   @Get('recent')
   @RequirePermissions('smax_chat:view')
-  recent(@Req() req: any) {
-    return this.service.recentChats(req.user.id);
+  recent(@Req() req: any, @Query('pagePid') pagePid?: string) {
+    return this.service.recentChats(req.user.id, pagePid || undefined);
   }
 
   @Get('customers/:id/context')
