@@ -5,6 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { SessionService } from '../auth/session/session.service';
+import { describeUserAgent } from '../auth/session/user-agent.util';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
@@ -585,6 +586,93 @@ export class UsersService {
     }
     await this.bumpPermissionVersion(userId);
     return { success: true };
+  }
+
+  // ── Thiết bị đăng nhập của nhân viên (admin) ──────────────────────────
+
+  async listUserSessions(userId: number) {
+    await this.assertUserExists(userId);
+    const sessions =
+      (await this.sessionService?.listActiveSessions(userId)) ?? [];
+    return sessions.map((session) => ({
+      id: session.id,
+      ...describeUserAgent(session.userAgent),
+      ip: session.ip,
+      createdAt: session.createdAt,
+      lastUsedAt: session.lastUsedAt,
+      current: false,
+    }));
+  }
+
+  async revokeUserSession(
+    userId: number,
+    sessionId: number,
+    performedByUserId?: number,
+  ) {
+    const user = await this.assertUserExists(userId);
+    const target = (
+      (await this.sessionService?.listActiveSessions(userId)) ?? []
+    ).find((s) => s.id === sessionId);
+    const ok =
+      !!target &&
+      ((await this.sessionService?.revokeSession(userId, sessionId)) ?? false);
+    if (!ok) throw new NotFoundException('Không tìm thấy thiết bị');
+
+    const info = describeUserAgent(target.userAgent);
+    await this.logSessionAudit('USER_SESSION_REVOKE', user, performedByUserId, {
+      device: `${info.browser} trên ${info.os}`,
+    });
+    return { ok: true };
+  }
+
+  async revokeAllUserSessions(userId: number, performedByUserId?: number) {
+    const user = await this.assertUserExists(userId);
+    const count = (await this.sessionService?.revokeOtherSessions(userId)) ?? 0;
+    await this.logSessionAudit(
+      'USER_SESSION_REVOKE_ALL',
+      user,
+      performedByUserId,
+      { count },
+    );
+    return { ok: true, count };
+  }
+
+  private async assertUserExists(userId: number) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, name: true, email: true },
+    });
+    if (!user) throw new NotFoundException('User not found');
+    return user;
+  }
+
+  private async logSessionAudit(
+    actionCode: 'USER_SESSION_REVOKE' | 'USER_SESSION_REVOKE_ALL',
+    user: { id: number; name: string | null; email: string },
+    performedByUserId: number | undefined,
+    params: Record<string, unknown>,
+  ) {
+    if (!performedByUserId) return;
+    const actor = await this.prisma.user.findUnique({
+      where: { id: performedByUserId },
+      select: { name: true, email: true },
+    });
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode,
+      entityType: 'users',
+      entityId: user.id.toString(),
+      category: getCategoryFromActionCode(actionCode),
+      severity: getSeverityFromActionCode(actionCode),
+      snapshot: { name: user.name, email: user.email, ...params },
+      message: renderAuditMessage(actionCode, {
+        userName: user.name || user.email,
+        ...params,
+      }),
+      messageTemplate: actionCode,
+      userId: performedByUserId,
+      userName: actor?.name || actor?.email || 'System',
+    });
   }
 
   /**

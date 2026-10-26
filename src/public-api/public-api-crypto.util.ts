@@ -8,11 +8,19 @@ import {
 import * as dns from 'dns';
 import * as net from 'net';
 
+/**
+ * Khoá mã hoá bí mật webhook. KHÔNG có giá trị mặc định viết cứng (ai đọc mã
+ * nguồn cũng giải mã được). Nên đặt `PUBLIC_API_ENCRYPTION_KEY` riêng; thiếu thì
+ * dùng `PUBLIC_API_JWT_SECRET` như trước để vẫn đọc được dữ liệu đã mã hoá.
+ */
 function getEncryptionKey(): Buffer {
   const secret =
-    process.env.PUBLIC_API_ENCRYPTION_KEY ||
-    process.env.PUBLIC_API_JWT_SECRET ||
-    'default-encryption-key-for-public-api-32';
+    process.env.PUBLIC_API_ENCRYPTION_KEY || process.env.PUBLIC_API_JWT_SECRET;
+  if (!secret) {
+    throw new Error(
+      'PUBLIC_API_ENCRYPTION_KEY (hoặc PUBLIC_API_JWT_SECRET) must be configured',
+    );
+  }
   return createHash('sha256').update(secret).digest();
 }
 

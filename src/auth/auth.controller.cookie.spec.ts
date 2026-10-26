@@ -1,6 +1,6 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { AuthController } from './auth.controller';
-import { REFRESH_COOKIE } from './auth-cookie.util';
+import { DEVICE_COOKIE, REFRESH_COOKIE } from './auth-cookie.util';
 
 const refresh = {
   sessionId: 1,
@@ -35,13 +35,12 @@ describe('AuthController cookies', () => {
       refresh,
     }),
     decodeToken: jest.fn(),
-    migrateLegacySession: jest.fn().mockResolvedValue({
-      accessToken: 'at3',
-      expiresIn: 900,
-      refresh,
-    }),
   };
-  const sessionService = { revokeByToken: jest.fn() };
+  const sessionService = {
+    revokeByToken: jest.fn(),
+    revokeSession: jest.fn(),
+    revokeOtherSessions: jest.fn().mockResolvedValue(2),
+  };
   const controller = new AuthController(
     authService as any,
     {} as any,
@@ -61,8 +60,9 @@ describe('AuthController cookies', () => {
       user: { id: 1 },
     });
     expect(JSON.stringify(body)).not.toContain('raw-refresh-token');
-    const [name, value, opts] = res.cookie.mock.calls[0];
-    expect(name).toBe(REFRESH_COOKIE);
+    const [, value, opts] = res.cookie.mock.calls.find(
+      ([name]) => name === REFRESH_COOKIE,
+    )!;
     expect(value).toBe('raw-refresh-token');
     expect(opts).toMatchObject({
       httpOnly: true,
@@ -71,6 +71,18 @@ describe('AuthController cookies', () => {
       path: '/api/auth',
     });
     expect(opts.domain).toBeUndefined();
+  });
+
+  it('login rejects a foreign or missing Origin (login CSRF)', async () => {
+    for (const headers of [{ origin: 'https://evil.example' }, {}]) {
+      await expect(
+        controller.login(
+          { email: 'a', password: 'b' },
+          makeReq({ headers }),
+          makeRes() as any,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    }
   });
 
   it('refresh rejects a foreign Origin', async () => {
@@ -124,34 +136,110 @@ describe('AuthController cookies', () => {
     expect(res.clearCookie).toHaveBeenCalled();
   });
 
-  it('migrate only accepts legacy tokens (without sid)', async () => {
-    authService.decodeToken.mockReturnValueOnce({ sub: 1, sid: 5 });
-    await expect(
-      controller.migrateSession(
-        makeReq({
-          headers: {
-            origin: 'http://localhost:3050',
-            authorization: 'Bearer new',
-          },
-          user: { id: 1 },
-        }),
-        makeRes() as any,
-      ),
-    ).rejects.toBeInstanceOf(BadRequestException);
+  it('login on a browser that already has a session replaces it (1 browser = 1 session)', async () => {
+    authService.login.mockClear();
+    await controller.login(
+      { email: 'a', password: 'b' },
+      makeReq({ cookies: { [REFRESH_COOKIE]: 'old-cookie' } }),
+      makeRes() as any,
+    );
+    expect(authService.login).toHaveBeenCalledWith(
+      'a',
+      'b',
+      undefined,
+      expect.objectContaining({ replaceToken: 'old-cookie' }),
+    );
+  });
 
-    authService.decodeToken.mockReturnValueOnce({ sub: 1, pv: 1 });
+  it('login gives a browser without one a device id cookie (Lax, survives logout)', async () => {
+    authService.login.mockClear();
     const res = makeRes();
-    const body = await controller.migrateSession(
+    await controller.login(
+      { email: 'a', password: 'b' },
+      makeReq(),
+      res as any,
+    );
+    const call = res.cookie.mock.calls.find(([name]) => name === DEVICE_COOKIE);
+    expect(call).toBeDefined();
+    const [, deviceId, opts] = call!;
+    expect(deviceId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(opts).toMatchObject({
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/api/auth',
+    });
+    expect(authService.login.mock.calls[0][3].deviceId).toBe(deviceId);
+  });
+
+  it('keeps an existing device id and does not set it again', async () => {
+    authService.login.mockClear();
+    const res = makeRes();
+    const deviceId = 'AbCdEfGhIjKlMnOpQrStUv';
+    await controller.login(
+      { email: 'a', password: 'b' },
+      makeReq({ cookies: { [DEVICE_COOKIE]: deviceId } }),
+      res as any,
+    );
+    expect(authService.login.mock.calls[0][3].deviceId).toBe(deviceId);
+    expect(res.cookie.mock.calls.some(([name]) => name === DEVICE_COOKIE)).toBe(
+      false,
+    );
+  });
+
+  it('logout never clears the device id cookie', async () => {
+    const res = makeRes();
+    await controller.logout(
+      makeReq({ cookies: { [REFRESH_COOKIE]: 'tok' } }),
+      res as any,
+    );
+    expect(
+      res.clearCookie.mock.calls.some(([name]) => name === DEVICE_COOKIE),
+    ).toBe(false);
+  });
+
+  it('uses Cloudflare client IP for display', async () => {
+    authService.login.mockClear();
+    await controller.login(
+      { email: 'a', password: 'b' },
       makeReq({
         headers: {
           origin: 'http://localhost:3050',
-          authorization: 'Bearer legacy',
+          'cf-connecting-ip': '113.1.2.3',
         },
+      }),
+      makeRes() as any,
+    );
+    expect(authService.login.mock.calls[0][3].ip).toBe('113.1.2.3');
+  });
+
+  it('device list marks the current device using the sid of the access token', async () => {
+    const listDevices = jest.fn().mockResolvedValue([]);
+    (authService as any).listDevices = listDevices;
+    authService.decodeToken.mockReturnValueOnce({ sub: 1, sid: 42 });
+    await controller.listMySessions(
+      makeReq({
+        headers: { authorization: 'Bearer t' },
         user: { id: 1 },
       }),
-      res as any,
     );
-    expect(body).toEqual({ accessToken: 'at3', expiresIn: 900 });
-    expect(res.cookie).toHaveBeenCalled();
+    expect(listDevices).toHaveBeenCalledWith(1, 42);
+  });
+
+  it('cannot revoke a device that is not mine', async () => {
+    sessionService.revokeSession.mockResolvedValueOnce(false);
+    await expect(
+      controller.revokeMySession(5, makeReq({ user: { id: 1 } })),
+    ).rejects.toThrow('Không tìm thấy thiết bị');
+    expect(sessionService.revokeSession).toHaveBeenCalledWith(1, 5);
+  });
+
+  it('revoke-others keeps the current device', async () => {
+    authService.decodeToken.mockReturnValueOnce({ sub: 1, sid: 42 });
+    const body = await controller.revokeOtherSessions(
+      makeReq({ headers: { authorization: 'Bearer t' }, user: { id: 1 } }),
+    );
+    expect(sessionService.revokeOtherSessions).toHaveBeenCalledWith(1, 42);
+    expect(body).toEqual({ ok: true, count: 2 });
   });
 });

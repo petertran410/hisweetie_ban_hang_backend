@@ -6,13 +6,19 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { LarkAuthService } from './lark-auth.service';
 import { FinanceAccessService } from './finance-access.service';
+import { LoginAttemptsService } from './login-attempts.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
-import { getJwtSecret, JWT_ALGORITHM } from './jwt-secret.util';
+import {
+  ACCESS_TOKEN_VERIFY_OPTIONS,
+  getJwtSecret,
+  JWT_ALGORITHM,
+} from './jwt-secret.util';
 import { sessionConfig } from './session/session.config';
 import { SessionModule } from './session/session.module';
 import { UsersModule } from '../users/users.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycle.module';
+import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 
 @Module({
   imports: [
@@ -20,6 +26,7 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
     PrismaModule,
     SessionModule,
     ApprovalLifecycleModule,
+    AuditLogsModule,
     PassportModule,
     ConfigModule,
     JwtModule.registerAsync({
@@ -35,14 +42,21 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
             expiresIn: jwtExpiration,
             algorithm: JWT_ALGORITHM,
           },
-          verifyOptions: { algorithms: [JWT_ALGORITHM] },
+          // Mặc định = luật access token. Token Lark tự truyền `audience` riêng.
+          verifyOptions: ACCESS_TOKEN_VERIFY_OPTIONS,
         };
       },
       inject: [ConfigService],
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, LarkAuthService, JwtStrategy, FinanceAccessService],
+  providers: [
+    AuthService,
+    LarkAuthService,
+    JwtStrategy,
+    FinanceAccessService,
+    LoginAttemptsService,
+  ],
   exports: [AuthService, FinanceAccessService, JwtStrategy],
 })
 export class AuthModule {}

@@ -2,7 +2,10 @@ import { ExecutionContext, Injectable, Logger } from '@nestjs/common';
 import { ThrottlerGuard, ThrottlerLimitDetail } from '@nestjs/throttler';
 import { Request } from 'express';
 import { JwtService } from '@nestjs/jwt';
-import { getJwtSecret, JWT_ALGORITHM } from '../../auth/jwt-secret.util';
+import {
+  ACCESS_TOKEN_VERIFY_OPTIONS,
+  getJwtSecret,
+} from '../../auth/jwt-secret.util';
 
 const THROTTLE_LOG_WINDOW_MS = 60_000;
 const THROTTLE_LOG_MAX_TRACKERS = 1000;
@@ -39,7 +42,7 @@ export class UserThrottlerGuard extends ThrottlerGuard {
   private getVerifier(): JwtService {
     this.verifier ??= new JwtService({
       secret: getJwtSecret(),
-      verifyOptions: { algorithms: [JWT_ALGORITHM] },
+      verifyOptions: ACCESS_TOKEN_VERIFY_OPTIONS,
     });
     return this.verifier;
   }

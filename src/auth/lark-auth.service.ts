@@ -2,12 +2,21 @@ import {
   BadRequestException,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
+import { SecurityAuditService } from '../audit-logs/security-audit.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { IncomingHttpHeaders } from 'http';
+import { createHash, timingSafeEqual } from 'crypto';
 import * as bcrypt from 'bcrypt';
+import {
+  deriveJwtSecret,
+  JWT_ALGORITHM,
+  JWT_ISSUER,
+  LARK_TOKEN_AUDIENCE,
+} from './jwt-secret.util';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuthService } from './auth.service';
@@ -26,6 +35,17 @@ import {
 const SETUP_TYP = 'lark_setup';
 const STATE_TYP = 'lark_oauth_state';
 const MIN_PASSWORD_LENGTH = 8;
+
+const sha256 = (value: string) =>
+  createHash('sha256').update(value).digest('base64url');
+
+/** Băm nonce trong state phải khớp cookie của trình duyệt (so sánh hằng thời gian). */
+function sameNonce(expectedHash?: string, nonce?: string): boolean {
+  if (!expectedHash || !nonce) return false;
+  const a = Buffer.from(expectedHash);
+  const b = Buffer.from(sha256(nonce));
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 type LarkShellUser = {
   id: number;
@@ -51,16 +71,47 @@ export class LarkAuthService {
     private readonly config: ConfigService,
     private readonly authService: AuthService,
     private readonly approvalLifecycle: ApprovalLifecycleService,
+    @Optional() private readonly securityAudit?: SecurityAuditService,
   ) {}
 
-  buildAuthorizeUrl(returnTo?: string): string {
+  /** Khoá riêng cho state/setup token (không dùng chung khoá access token). */
+  private larkSecret(): string {
+    this.larkTokenSecret ??= deriveJwtSecret('lark-oauth', this.config);
+    return this.larkTokenSecret;
+  }
+  private larkTokenSecret?: string;
+
+  private larkSignOptions() {
+    return {
+      secret: this.larkSecret(),
+      issuer: JWT_ISSUER,
+      audience: LARK_TOKEN_AUDIENCE,
+    };
+  }
+
+  /** Ghi đè luật access token mặc định của JwtModule: khoá + `aud` riêng. */
+  private larkVerifyOptions() {
+    return {
+      secret: this.larkSecret(),
+      algorithms: [JWT_ALGORITHM],
+      issuer: JWT_ISSUER,
+      audience: LARK_TOKEN_AUDIENCE,
+    };
+  }
+
+  /**
+   * `nonce` = giá trị cookie HttpOnly vừa đặt cho trình duyệt này; state chỉ
+   * mang băm của nó. Callback phải nhận lại đúng cookie đó mới đăng nhập.
+   */
+  buildAuthorizeUrl(returnTo: string | undefined, nonce: string): string {
     const oauth = this.getOAuthConfig();
     const state = this.jwtService.sign(
       {
         typ: STATE_TYP,
         returnTo: safeReturnTo(returnTo),
+        nh: sha256(nonce),
       },
-      { expiresIn: '10m' },
+      { expiresIn: '10m', ...this.larkSignOptions() },
     );
     return buildAuthorizationUrl(oauth, state);
   }
@@ -69,6 +120,7 @@ export class LarkAuthService {
     code?: string,
     state?: string,
     ctx?: SessionContext,
+    nonce?: string,
   ): Promise<{ url: string; refresh?: IssuedRefresh }> {
     const frontend = this.frontendLoginUrl();
     if (!code || !state) {
@@ -82,10 +134,11 @@ export class LarkAuthService {
       const payload = this.jwtService.verify<{
         typ?: string;
         returnTo?: string;
-      }>(state);
-      if (payload.typ !== STATE_TYP) {
+        nh?: string;
+      }>(state, this.larkVerifyOptions());
+      if (payload.typ !== STATE_TYP || !sameNonce(payload.nh, nonce)) {
         return this.redirectOnly(frontend, {
-          lark_error: 'Phiên đăng nhập Lark không hợp lệ',
+          lark_error: 'Phiên đăng nhập Lark không hợp lệ. Vui lòng thử lại',
         });
       }
       returnTo = safeReturnTo(payload.returnTo);
@@ -148,6 +201,7 @@ export class LarkAuthService {
     try {
       const payload = this.jwtService.verify<{ typ?: string; uid?: number }>(
         input.setupToken,
+        this.larkVerifyOptions(),
       );
       if (payload.typ !== SETUP_TYP || !payload.uid) {
         throw new UnauthorizedException('Phiên đặt mật khẩu không hợp lệ');
@@ -167,12 +221,35 @@ export class LarkAuthService {
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    await this.prisma.user.update({
-      where: { id: user.id },
-      data: { password: hashedPassword },
+    // Token đặt mật khẩu chỉ dùng được 1 lần: chỉ ghi khi user CHƯA có mật khẩu
+    // (điều kiện nằm trong câu UPDATE → 2 request cùng lúc cũng chỉ 1 cái qua).
+    // Tăng permissionVersion → phiên cũ (nếu có) phải đăng nhập lại.
+    const { count } = await this.prisma.user.updateMany({
+      where: { id: user.id, password: null },
+      data: {
+        password: hashedPassword,
+        permissionVersion: { increment: 1 },
+      },
     });
+    if (count === 0) {
+      throw new UnauthorizedException(
+        'Tài khoản đã có mật khẩu. Vui lòng đăng nhập lại.',
+      );
+    }
 
-    return this.authService.issueAuthResponse(user.id, undefined, ctx);
+    const response = await this.authService.issueAuthResponse(
+      user.id,
+      undefined,
+      ctx,
+    );
+    this.securityAudit?.record('AUTH_PASSWORD_CHANGE', {
+      userId: user.id,
+      ip: ctx?.ip,
+      userAgent: ctx?.userAgent,
+      params: { method: 'đặt lần đầu qua Lark' },
+    });
+    this.authService.recordLogin?.(user.id, 'Lark', ctx);
+    return response;
   }
 
   async handleEvent(
@@ -328,6 +405,7 @@ export class LarkAuthService {
       undefined,
       ctx,
     );
+    this.authService.recordLogin?.(user.id, 'Lark', ctx);
     return { mode: 'session', refresh: session.refresh };
   }
 
@@ -389,7 +467,7 @@ export class LarkAuthService {
   private signSetupToken(userId: number): string {
     return this.jwtService.sign(
       { typ: SETUP_TYP, uid: userId },
-      { expiresIn: '15m' },
+      { expiresIn: '15m', ...this.larkSignOptions() },
     );
   }
 

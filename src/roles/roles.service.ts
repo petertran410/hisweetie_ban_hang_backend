@@ -9,6 +9,10 @@ import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
+import {
+  assertCanEditRole,
+  assertRoleNameAllowed,
+} from '../auth/owner-protection';
 
 @Injectable()
 export class RolesService {
@@ -67,6 +71,7 @@ export class RolesService {
   }
 
   async create(dto: CreateRoleDto, userId?: number) {
+    assertRoleNameAllowed(null, dto.name);
     const lastRole = await this.prisma.role.findFirst({
       orderBy: { id: 'desc' },
       select: { id: true },
@@ -113,8 +118,17 @@ export class RolesService {
     return this.findOne(role.id);
   }
 
-  async update(id: number, dto: UpdateRoleDto, userId?: number) {
-    await this.findOne(id);
+  async update(
+    id: number,
+    dto: UpdateRoleDto,
+    userId?: number,
+    actorRoles?: string[],
+  ) {
+    const current = await this.findOne(id);
+    assertRoleNameAllowed(current.name, dto.name);
+    if (dto.permissionIds !== undefined) {
+      assertCanEditRole(current.name, { roles: actorRoles }, 'permissions');
+    }
 
     const role = await this.prisma.role.update({
       where: { id },
@@ -171,6 +185,7 @@ export class RolesService {
 
   async remove(id: number, userId?: number) {
     const existing = await this.findOne(id);
+    assertCanEditRole(existing.name, null, 'delete');
     await this.bumpUsersOfRole(id);
     const deleted = await this.prisma.role.delete({ where: { id } });
 
@@ -201,8 +216,10 @@ export class RolesService {
     id: number,
     permissionIds: number[],
     userId?: number,
+    actorRoles?: string[],
   ) {
     const existing = await this.findOne(id);
+    assertCanEditRole(existing.name, { roles: actorRoles }, 'permissions');
 
     await this.prisma.rolePermission.deleteMany({
       where: { roleId: id },
@@ -285,7 +302,16 @@ export class RolesService {
     branchId: number,
     permissionIds: number[],
     userId?: number,
+    actorRoles?: string[],
   ): Promise<void> {
+    const target = await this.prisma.role.findUnique({
+      where: { id: roleId },
+      select: { name: true },
+    });
+    if (!target) {
+      throw new NotFoundException(`Role with ID ${roleId} not found`);
+    }
+    assertCanEditRole(target.name, { roles: actorRoles }, 'permissions');
     await this.prisma.$transaction([
       this.prisma.roleBranchPermission.deleteMany({
         where: { roleId, branchId },

@@ -14,6 +14,7 @@ import {
   ORDERS_ALL_ROOM,
   ordersBranchRoom,
   RealtimeGateway,
+  sessionRoom,
   userRoom,
 } from './realtime.gateway';
 
@@ -42,7 +43,7 @@ export class RealtimeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private readonly onSessionRevoked = (event: SessionRevokedEvent) =>
-    this.emitSessionRevoked(event.userIds, event.reason);
+    this.emitSessionRevoked(event);
 
   onModuleInit() {
     sessionEvents.on(SESSION_REVOKED, this.onSessionRevoked);
@@ -56,13 +57,18 @@ export class RealtimeService implements OnModuleInit, OnModuleDestroy {
    * Báo các trình duyệt đang mở của user phải đăng xuất ngay (đổi quyền,
    * đổi mật khẩu, khóa tài khoản). Phiên đã bị thu hồi phía server trước đó.
    */
-  emitSessionRevoked(userIds: number[], reason: string) {
+  emitSessionRevoked(event: SessionRevokedEvent) {
     try {
       const server = this.gateway.server;
-      if (!server || userIds.length === 0) return;
+      if (!server) return;
+      const rooms = [
+        ...(event.userIds ?? []).map((id) => userRoom(id)),
+        ...(event.sessionIds ?? []).map((id) => sessionRoom(id)),
+      ];
+      if (rooms.length === 0) return;
       server
-        .to(userIds.map((id) => userRoom(id)))
-        .emit('auth.revoked', { reason, at: Date.now() });
+        .to(rooms)
+        .emit('auth.revoked', { reason: event.reason, at: Date.now() });
     } catch (error) {
       this.logger.warn(
         `emitSessionRevoked failed: ${(error as Error)?.message}`,

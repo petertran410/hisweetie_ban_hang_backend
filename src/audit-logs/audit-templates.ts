@@ -406,6 +406,56 @@ export const AUDIT_TEMPLATES: Record<
     category: 'user',
     severity: 'critical',
   },
+  USER_SESSION_REVOKE: {
+    template: 'Đăng xuất thiết bị {device} của người dùng {userName}',
+    category: 'user',
+    severity: 'warning',
+  },
+  USER_SESSION_REVOKE_ALL: {
+    template: 'Đăng xuất tất cả thiết bị ({count}) của người dùng {userName}',
+    category: 'user',
+    severity: 'warning',
+  },
+
+  // Sự kiện bảo mật (SecurityAuditService).
+  AUTH_LOGIN_SUCCESS: {
+    template: '{targetName} đăng nhập ({method}) trên {device}, IP {ip}',
+    category: 'security',
+    severity: 'info',
+  },
+  AUTH_LOGIN_FAILED: {
+    template:
+      'Đăng nhập sai mật khẩu vào tài khoản {targetName} từ {device}, IP {ip}',
+    category: 'security',
+    severity: 'warning',
+  },
+  AUTH_LOGIN_LOCKED: {
+    template:
+      'Tạm khoá đăng nhập tài khoản {targetName} 15 phút do nhập sai nhiều lần (IP {ip})',
+    category: 'security',
+    severity: 'critical',
+  },
+  AUTH_TOKEN_REUSE: {
+    template:
+      'Phát hiện phiên đăng nhập của {targetName} bị dùng lại (nghi bị đánh cắp) trên {device}, IP {ip} — đã thu hồi phiên',
+    category: 'security',
+    severity: 'critical',
+  },
+  AUTH_PASSWORD_CHANGE: {
+    template: '{targetName} đổi mật khẩu ({method}) — đăng xuất mọi thiết bị',
+    category: 'security',
+    severity: 'warning',
+  },
+  AUTH_SUPER_ADMIN_GRANT: {
+    template: 'Cấp vai trò Super Admin cho {targetName}',
+    category: 'security',
+    severity: 'critical',
+  },
+  AUTH_SUPER_ADMIN_REVOKE: {
+    template: 'Gỡ vai trò Super Admin của {targetName}',
+    category: 'security',
+    severity: 'critical',
+  },
 
   BRANCH_CREATE: {
     template: 'Thêm chi nhánh {branchName} ({branchCode})',

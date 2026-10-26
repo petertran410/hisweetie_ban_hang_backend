@@ -530,6 +530,7 @@ model Customer {
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
+  zaloContacts                customer_zalo_contacts[]
   @@map("customers")
 }
 
@@ -5208,29 +5209,37 @@ model ProductQualityDepartmentMember {
   @@map("product_quality_department_members")
 }
 
-/// Phiên đăng nhập = 1 refresh token (chỉ lưu băm SHA-256, không lưu token gốc).
-/// Mỗi lần làm mới tạo 1 dòng mới cùng `familyId`, dòng cũ bị đánh dấu
-/// revoked (lý do "rotated") + `replacedById`. Dùng lại token đã bị thay
-/// (ngoài ân hạn) → thu hồi cả family (nghi bị đánh cắp).
+/// Phiên đăng nhập = 1 trình duyệt/thiết bị = 1 dòng. Chỉ lưu băm SHA-256 của
+/// refresh token. Mỗi lần làm mới, token được thay NGAY TRÊN DÒNG NÀY:
+/// `previousTokenHash` giữ token liền trước để (1) cho nhiều tab gọi cùng lúc
+/// trong 30s ân hạn, (2) phát hiện token cũ bị dùng lại (nghi đánh cắp).
 model AuthSession {
   id                Int       @id @default(autoincrement())
   userId            Int       @map("user_id")
+  /// Không còn dùng (thiết kế cũ: mỗi lần xoay 1 dòng). Xóa sau.
   familyId          String    @map("family_id")
   tokenHash         String    @unique @map("token_hash")
+  previousTokenHash String?   @unique @map("previous_token_hash")
+  rotatedAt         DateTime? @map("rotated_at")
   /// permissionVersion lúc đăng nhập — lệch với user hiện tại → bắt đăng nhập lại.
   permissionVersion Int       @map("permission_version")
   expiresAt         DateTime  @map("expires_at")
   absoluteExpiresAt DateTime  @map("absolute_expires_at")
   revokedAt         DateTime? @map("revoked_at")
-  /// rotated | logout | reuse | permission | password | disabled | expired
+  /// logout | replaced | remote_logout | reuse | permission | password | disabled | expired
   revokeReason      String?   @map("revoke_reason")
+  /// Không còn dùng (thiết kế cũ). Xóa sau.
   replacedById      Int?      @map("replaced_by_id")
   lastUsedAt        DateTime  @default(now()) @map("last_used_at")
   userAgent         String?   @map("user_agent")
   ip                String?
+  /// Mã trình duyệt (cookie `hs_did`, không mất khi đăng xuất). 1 user + 1 trình
+  /// duyệt = tối đa 1 dòng. NULL = dòng tạo trước khi có cookie này.
+  deviceId          String?   @map("device_id")
   createdAt         DateTime  @default(now()) @map("created_at")
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, deviceId])
   @@index([userId])
   @@index([familyId])
   @@index([absoluteExpiresAt])
@@ -5251,4 +5260,23 @@ model smax_channel_users {
   users     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// Bảng do hệ thống tích hợp Smax/Zalo tạo trực tiếp trong DB (backend này
+/// không dùng). Khai báo để `prisma db push` không xóa bảng/dữ liệu của nó.
+/// Giữ đúng cấu trúc thực tế trong DB (lấy bằng `prisma db pull --print`).
+model customer_zalo_contacts {
+  id          Int      @id @default(autoincrement())
+  customerId  Int
+  kind        String
+  zaloId      String
+  name        String?
+  pagePid     String?
+  createdById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime
+  customers   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, kind, zaloId])
+  @@index([customerId])
 }

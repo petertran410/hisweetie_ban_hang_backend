@@ -51,7 +51,7 @@ export class RolesController {
     @Body() dto: UpdateRoleDto,
     @CurrentUser() user: any,
   ) {
-    return this.rolesService.update(+id, dto, user?.id);
+    return this.rolesService.update(+id, dto, user?.id, user?.roles);
   }
 
   @Delete(':id')
@@ -73,6 +73,7 @@ export class RolesController {
       +id,
       body.permissionIds,
       user?.id,
+      user?.roles,
     );
   }
 
@@ -98,6 +99,7 @@ export class RolesController {
       +branchId,
       data.permissionIds,
       user?.id,
+      user?.roles,
     );
   }
 }

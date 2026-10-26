@@ -2,7 +2,10 @@ import { Global, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthModule } from '../auth/auth.module';
-import { getJwtSecret, JWT_ALGORITHM } from '../auth/jwt-secret.util';
+import {
+  ACCESS_TOKEN_VERIFY_OPTIONS,
+  getJwtSecret,
+} from '../auth/jwt-secret.util';
 import { RealtimeGateway } from './realtime.gateway';
 import { RealtimeService } from './realtime.service';
 
@@ -14,7 +17,7 @@ import { RealtimeService } from './realtime.service';
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
         secret: getJwtSecret(configService),
-        verifyOptions: { algorithms: [JWT_ALGORITHM] },
+        verifyOptions: ACCESS_TOKEN_VERIFY_OPTIONS,
       }),
       inject: [ConfigService],
     }),

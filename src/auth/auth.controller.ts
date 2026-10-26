@@ -11,21 +11,29 @@ import {
   Query,
   ForbiddenException,
   HttpCode,
-  BadRequestException,
+  Delete,
+  Param,
+  ParseIntPipe,
+  NotFoundException,
 } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import type { Request as ExpressRequest, Response } from 'express';
 import {
   clearRefreshCookie,
+  issueLarkNonce,
   readRefreshCookie,
   sessionContext,
   setRefreshCookie,
+  takeLarkNonce,
 } from './auth-cookie.util';
 import { isCorsOriginAllowed } from '../common/cors-origin.util';
 import { SessionService } from './session/session.service';
 import { AuthService } from './auth.service';
 import { LarkAuthService } from './lark-auth.service';
 import { LarkSetupPasswordDto } from './dto/lark-setup-password.dto';
+import { LoginDto } from './dto/login.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -56,15 +64,17 @@ export class AuthController {
   @HttpCode(200)
   @ApiOperation({ summary: 'Login' })
   async login(
-    @Body() data: { email: string; password: string },
+    @Body() data: LoginDto,
     @Req() req: ExpressRequest,
     @Res({ passthrough: true }) res: Response,
   ) {
+    // Chặn trang khác gửi form đăng nhập hộ (login CSRF).
+    this.assertTrustedOrigin(req);
     const { refresh, ...body } = await this.authService.login(
       data.email,
       data.password,
       undefined,
-      sessionContext(req),
+      sessionContext(req, res),
     );
     setRefreshCookie(res, refresh);
     return body;
@@ -84,7 +94,7 @@ export class AuthController {
     try {
       const { refresh, ...body } = await this.authService.refresh(
         readRefreshCookie(req) ?? '',
-        sessionContext(req),
+        sessionContext(req, res),
       );
       if (refresh) setRefreshCookie(res, refresh);
       return body;
@@ -108,29 +118,45 @@ export class AuthController {
     return { ok: true };
   }
 
-  /**
-   * Chuyển phiên Bearer 7 ngày cũ (lưu ở localStorage) sang refresh token
-   * cookie — người đang đăng nhập không phải đăng nhập lại. Chỉ nhận token cũ.
-   */
-  @Post('session/migrate')
-  @HttpCode(200)
-  @ApiOperation({ summary: 'Migrate legacy bearer session to refresh cookie' })
-  async migrateSession(
-    @Req() req: ExpressRequest & { user: { id: number } },
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    this.assertTrustedOrigin(req);
+  /** `sid` (phiên/thiết bị) trong access token của request hiện tại. */
+  private currentSessionId(req: ExpressRequest): number | undefined {
     const token = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-    const payload = token ? this.authService.decodeToken(token) : null;
-    if (!payload || payload.sid !== undefined) {
-      throw new BadRequestException('Phiên đã ở định dạng mới');
-    }
-    const { refresh, ...body } = await this.authService.migrateLegacySession(
+    const sid = token ? this.authService.decodeToken(token)?.sid : undefined;
+    return typeof sid === 'number' ? sid : undefined;
+  }
+
+  @Get('sessions')
+  @ApiOperation({ summary: 'Thiết bị đang đăng nhập của tôi' })
+  listMySessions(@Req() req: ExpressRequest & { user: { id: number } }) {
+    return this.authService.listDevices(
       req.user.id,
-      sessionContext(req),
+      this.currentSessionId(req),
     );
-    setRefreshCookie(res, refresh);
-    return body;
+  }
+
+  @Delete('sessions/:id')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Đăng xuất 1 thiết bị của tôi' })
+  async revokeMySession(
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req: ExpressRequest & { user: { id: number } },
+  ) {
+    const ok = await this.sessionService.revokeSession(req.user.id, id);
+    if (!ok) throw new NotFoundException('Không tìm thấy thiết bị');
+    return { ok: true };
+  }
+
+  @Post('sessions/revoke-others')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Đăng xuất mọi thiết bị khác' })
+  async revokeOtherSessions(
+    @Req() req: ExpressRequest & { user: { id: number } },
+  ) {
+    const count = await this.sessionService.revokeOtherSessions(
+      req.user.id,
+      this.currentSessionId(req),
+    );
+    return { ok: true, count };
   }
 
   @Public()
@@ -138,7 +164,8 @@ export class AuthController {
   @Get('lark')
   @ApiOperation({ summary: 'Lark OAuth QR login' })
   startLarkLogin(@Query('return_to') returnTo: string, @Res() res: Response) {
-    const url = this.larkAuthService.buildAuthorizeUrl(returnTo);
+    const nonce = issueLarkNonce(res);
+    const url = this.larkAuthService.buildAuthorizeUrl(returnTo, nonce);
     return res.redirect(url);
   }
 
@@ -154,7 +181,8 @@ export class AuthController {
     const { url, refresh } = await this.larkAuthService.handleCallback(
       code,
       state,
-      sessionContext(req),
+      sessionContext(req, res),
+      takeLarkNonce(req, res),
     );
     // Token KHÔNG đi trên URL: refresh token nằm trong cookie HttpOnly, FE gọi
     // /auth/refresh để lấy access token.
@@ -171,9 +199,10 @@ export class AuthController {
     @Req() req: ExpressRequest,
     @Res({ passthrough: true }) res: Response,
   ) {
+    this.assertTrustedOrigin(req);
     const { refresh, ...body } = await this.larkAuthService.setupPassword(
       data,
-      sessionContext(req),
+      sessionContext(req, res),
     );
     setRefreshCookie(res, refresh);
     return body;
@@ -197,10 +226,7 @@ export class AuthController {
   @ApiBearerAuth()
   @Put('profile')
   @ApiOperation({ summary: 'Update profile' })
-  updateProfile(
-    @Request() req,
-    @Body() data: { name?: string; phone?: string; avatar?: string },
-  ) {
+  updateProfile(@Request() req, @Body() data: UpdateProfileDto) {
     return this.authService.updateProfile(req.user.id, data);
   }
 
@@ -208,10 +234,7 @@ export class AuthController {
   @ApiBearerAuth()
   @Put('change-password')
   @ApiOperation({ summary: 'Change password' })
-  changePassword(
-    @Request() req,
-    @Body() data: { oldPassword: string; newPassword: string },
-  ) {
+  changePassword(@Request() req, @Body() data: ChangePasswordDto) {
     return this.authService.changePassword(
       req.user.id,
       data.oldPassword,

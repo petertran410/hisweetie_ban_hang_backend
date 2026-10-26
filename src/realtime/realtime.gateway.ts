@@ -11,6 +11,7 @@ import type { Server, Socket } from 'socket.io';
 import { isCorsOriginAllowed } from '../common/cors-origin.util';
 import { AuthService } from '../auth/auth.service';
 import { JwtStrategy } from '../auth/strategies/jwt.strategy';
+import { isAccessTokenClaims } from '../auth/jwt-secret.util';
 import { PermissionCacheService } from '../permission-cache/permission-cache.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
@@ -26,11 +27,14 @@ export const ordersBranchRoom = (branchId: number) =>
   `orders:branch:${branchId}`;
 /** Phòng riêng của từng user — dùng để buộc đăng xuất ngay. */
 export const userRoom = (userId: number) => `user:${userId}`;
+/** Phòng của 1 phiên (thiết bị) — dùng để đăng xuất từ xa đúng thiết bị đó. */
+export const sessionRoom = (sessionId: number) => `session:${sessionId}`;
 
 interface AccessTokenPayload {
   sub?: number;
   typ?: string;
   exp?: number;
+  sid?: number;
 }
 
 interface ValidatedUser {
@@ -41,6 +45,7 @@ interface ValidatedUser {
 }
 
 interface SocketData {
+  sessionId?: number;
   userId?: number;
   token?: string;
   user?: ValidatedUser;
@@ -144,24 +149,23 @@ export class RealtimeGateway
     data.userId = user.id;
     data.token = token;
     data.user = user;
+    const sid = this.jwtService.decode<AccessTokenPayload | null>(token)?.sid;
+    data.sessionId = typeof sid === 'number' ? sid : undefined;
 
     await this.enforceSocketLimit(user.id);
   }
 
   /** Verify chữ ký + hạn token, rồi kiểm tra tài khoản như HTTP. */
   private async validateToken(token: string): Promise<ValidatedUser> {
-    let payload: AccessTokenPayload;
+    let payload: unknown;
     try {
-      payload = await this.jwtService.verifyAsync<AccessTokenPayload>(token);
+      // verifyOptions của module = luật access token (thuật toán, iss, aud).
+      payload = await this.jwtService.verifyAsync<object>(token);
     } catch {
       throw new SocketAuthError('invalid token');
     }
-    // Giống JwtStrategy: token định dạng cũ (không có `typ`) vẫn hợp lệ;
-    // token khác ký cùng secret (Lark state/setup...) luôn có `typ` riêng.
-    if (
-      !payload?.sub ||
-      (payload.typ !== undefined && payload.typ !== 'access')
-    ) {
+    // Giống JwtStrategy: phải đủ typ='access' + sid + pv (không nhận token cũ).
+    if (!isAccessTokenClaims(payload)) {
       throw new SocketAuthError('not an access token');
     }
     try {
@@ -185,6 +189,8 @@ export class RealtimeGateway
   /** Phòng = các chi nhánh user có quyền xem đơn (Super Admin: tất cả). */
   private async syncRooms(socket: Socket, user: ValidatedUser) {
     const rooms = new Set<string>([userRoom(user.id)]);
+    const sessionId = (socket.data as SocketData).sessionId;
+    if (sessionId) rooms.add(sessionRoom(sessionId));
 
     if (user.roles?.includes(SUPER_ADMIN_ROLE)) {
       rooms.add(ORDERS_ALL_ROOM);
@@ -219,7 +225,7 @@ export class RealtimeGateway
   private scheduleExpiry(socket: Socket, token: string) {
     const decoded: AccessTokenPayload | null = this.jwtService.decode(token);
     if (!decoded?.exp) return;
-    // setTimeout tối đa ~24.8 ngày; token 7 ngày nằm trong giới hạn.
+    // setTimeout tối đa ~24.8 ngày; access token chỉ sống vài phút.
     const ms = Math.min(decoded.exp * 1000 - Date.now(), 2 ** 31 - 1);
     (socket.data as SocketData).expiryTimer = setTimeout(
       () => socket.disconnect(true),

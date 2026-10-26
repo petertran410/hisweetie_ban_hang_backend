@@ -15,6 +15,7 @@ import { LarkSyncController } from './lark-sync.controller';
 import { LarkSyncCron } from './lark-sync.cron';
 import { LarkDebtNotificationService } from './services/lark-debt-notification.service';
 import { LarkExpenseReviewNotificationService } from './services/lark-expense-review-notification.service';
+import { LarkSecurityNotificationService } from './services/lark-security-notification.service';
 
 @Module({
   imports: [ConfigModule, PrismaModule],
@@ -33,6 +34,7 @@ import { LarkExpenseReviewNotificationService } from './services/lark-expense-re
     LarkSyncCron,
     LarkDebtNotificationService,
     LarkExpenseReviewNotificationService,
+    LarkSecurityNotificationService,
   ],
   exports: [
     LARK_CLIENT,

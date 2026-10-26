@@ -4,7 +4,11 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { PermissionCacheService } from '../../permission-cache/permission-cache.service';
-import { getJwtSecret, JWT_ALGORITHM } from '../jwt-secret.util';
+import {
+  ACCESS_TOKEN_VERIFY_OPTIONS,
+  getJwtSecret,
+  isAccessTokenClaims,
+} from '../jwt-secret.util';
 import { SessionService } from '../session/session.service';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
@@ -21,29 +25,29 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
       secretOrKey: getJwtSecret(configService),
-      algorithms: [JWT_ALGORITHM],
+      algorithms: ACCESS_TOKEN_VERIFY_OPTIONS.algorithms,
+      issuer: ACCESS_TOKEN_VERIFY_OPTIONS.issuer,
+      audience: ACCESS_TOKEN_VERIFY_OPTIONS.audience,
     });
   }
 
-  async validate(payload: any) {
-    if (payload?.typ && payload.typ !== 'access') {
-      throw new UnauthorizedException('Tài khoản không hợp lệ');
+  async validate(payload: unknown) {
+    if (!isAccessTokenClaims(payload)) {
+      throw new UnauthorizedException(
+        'Phiên đăng nhập không hợp lệ. Vui lòng đăng nhập lại.',
+      );
     }
 
-    const userId: number = payload.sub;
-    const tokenPv: number = payload.pv;
+    const userId = payload.sub;
+    const tokenPv = payload.pv;
 
-    // Token mới gắn với 1 phiên refresh: đăng xuất / đổi quyền / đổi mật khẩu
-    // thu hồi phiên → access token còn hạn cũng bị chặn ngay.
-    if (payload.sid !== undefined) {
-      const usable = await this.sessionService.isSessionUsable(
-        Number(payload.sid),
+    // Access token gắn với 1 phiên refresh: đăng xuất / đổi quyền / đổi mật
+    // khẩu thu hồi phiên → access token còn hạn cũng bị chặn ngay.
+    const usable = await this.sessionService.isSessionUsable(payload.sid);
+    if (!usable) {
+      throw new UnauthorizedException(
+        'Phiên đăng nhập không còn hiệu lực. Vui lòng đăng nhập lại.',
       );
-      if (!usable) {
-        throw new UnauthorizedException(
-          'Phiên đăng nhập không còn hiệu lực. Vui lòng đăng nhập lại.',
-        );
-      }
     }
 
     // 1. Cache hit → zero query
@@ -65,7 +69,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     }
 
     // 3. pv mismatch → quyền đã thay đổi → buộc đăng nhập lại
-    if (tokenPv !== undefined && user.permissionVersion !== tokenPv) {
+    if (user.permissionVersion !== tokenPv) {
       throw new UnauthorizedException(
         'Quyền của bạn đã được thay đổi. Vui lòng đăng nhập lại.',
       );

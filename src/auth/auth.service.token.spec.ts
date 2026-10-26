@@ -2,7 +2,7 @@ import { JwtService } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 
 describe('AuthService access token payload', () => {
-  it('contains only sub, pv, typ, sid (+ iat/exp) — no personal data', async () => {
+  it('contains only sub, pv, typ, sid (+ iss/aud/iat/exp) — no personal data', async () => {
     const jwt = new JwtService({
       secret: 'test',
       signOptions: { expiresIn: '7d' },
@@ -41,9 +41,16 @@ describe('AuthService access token payload', () => {
     const payload = jwt.decode<Record<string, unknown>>(res.accessToken);
 
     expect(Object.keys(payload).sort()).toEqual(
-      ['exp', 'iat', 'pv', 'sid', 'sub', 'typ'].sort(),
+      ['aud', 'exp', 'iat', 'iss', 'pv', 'sid', 'sub', 'typ'].sort(),
     );
-    expect(payload).toMatchObject({ sub: 5, pv: 3, typ: 'access', sid: 11 });
+    expect(payload).toMatchObject({
+      sub: 5,
+      pv: 3,
+      typ: 'access',
+      sid: 11,
+      iss: 'hisweetie-pos',
+      aud: 'hisweetie-pos-api',
+    });
     // Access token ngắn hạn (15 phút mặc định).
     expect((payload.exp as number) - (payload.iat as number)).toBe(15 * 60);
     expect(res.expiresIn).toBe(15 * 60);

@@ -8,6 +8,26 @@ import {
 
 describe('public-api-crypto.util', () => {
   describe('encryptSecret & decryptSecret', () => {
+    const saved = {
+      enc: process.env.PUBLIC_API_ENCRYPTION_KEY,
+      jwt: process.env.PUBLIC_API_JWT_SECRET,
+    };
+    beforeEach(() => {
+      process.env.PUBLIC_API_ENCRYPTION_KEY = 'test-encryption-key';
+    });
+    afterAll(() => {
+      if (saved.enc === undefined) delete process.env.PUBLIC_API_ENCRYPTION_KEY;
+      else process.env.PUBLIC_API_ENCRYPTION_KEY = saved.enc;
+      if (saved.jwt === undefined) delete process.env.PUBLIC_API_JWT_SECRET;
+      else process.env.PUBLIC_API_JWT_SECRET = saved.jwt;
+    });
+
+    it('không có khoá cấu hình → báo lỗi, không dùng khoá mặc định viết cứng', () => {
+      delete process.env.PUBLIC_API_ENCRYPTION_KEY;
+      delete process.env.PUBLIC_API_JWT_SECRET;
+      expect(() => encryptSecret('secret')).toThrow(/must be configured/);
+    });
+
     it('mã hóa và giải mã chính xác chuỗi bí mật', () => {
       const raw = 'partner-webhook-secret-123456';
       const encrypted = encryptSecret(raw);

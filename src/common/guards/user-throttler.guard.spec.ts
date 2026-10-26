@@ -1,6 +1,7 @@
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { UserThrottlerGuard } from './user-throttler.guard';
+import { ACCESS_TOKEN_AUDIENCE, JWT_ISSUER } from '../../auth/jwt-secret.util';
 
 const SECRET = 'throttler-test-secret';
 
@@ -21,8 +22,19 @@ describe('UserThrottlerGuard tracker', () => {
     }) as Promise<string>;
 
   it('counts by user for a validly signed token', async () => {
-    const token = new JwtService({ secret: SECRET }).sign({ sub: 42 });
+    const token = new JwtService({ secret: SECRET }).sign(
+      { sub: 42 },
+      { issuer: JWT_ISSUER, audience: ACCESS_TOKEN_AUDIENCE },
+    );
     expect(await tracker(`Bearer ${token}`)).toBe('user:42');
+  });
+
+  it('falls back to IP for a token of another audience (vd token Lark)', async () => {
+    const token = new JwtService({ secret: SECRET }).sign(
+      { sub: 42 },
+      { issuer: JWT_ISSUER, audience: 'hisweetie-lark-oauth' },
+    );
+    expect(await tracker(`Bearer ${token}`)).toBe('ip:1.2.3.4');
   });
 
   it('falls back to IP for a forged token (cannot mint fresh buckets)', async () => {
