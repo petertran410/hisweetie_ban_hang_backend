@@ -148,7 +148,6 @@ model User {
   createdInternalFundClosings                               InternalFundDailyClosing[]          @relation("InternalFundClosingCreator")
   closedInternalFundClosings                                InternalFundDailyClosing[]          @relation("InternalFundClosingCloser")
   authSessions                                              AuthSession[]
-  smaxChannelUsers                                          smax_channel_users[]
 
   @@map("users")
 }
@@ -532,7 +531,6 @@ model Customer {
 
   @@index([larkSyncStatus])
   @@index([updatedAt, id])
-  zaloContacts                customer_zalo_contacts[]
   @@map("customers")
 }
 
@@ -5284,37 +5282,3 @@ model AuthSession {
   @@map("auth_sessions")
 }
 
-/// Bảng do hệ thống tích hợp Smax tạo trực tiếp trong DB (backend này không
-/// dùng). Khai báo ở đây để `prisma db push` không xóa bảng/dữ liệu của nó.
-/// Giữ đúng cấu trúc thực tế trong DB (lấy bằng `prisma db pull --print`).
-model smax_channel_users {
-  id        Int      @id @default(autoincrement())
-  pagePid   String   @unique
-  pageName  String
-  platform  String
-  userId    Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime
-  users     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-}
-
-/// Bảng do hệ thống tích hợp Smax/Zalo tạo trực tiếp trong DB (backend này
-/// không dùng). Khai báo để `prisma db push` không xóa bảng/dữ liệu của nó.
-/// Giữ đúng cấu trúc thực tế trong DB (lấy bằng `prisma db pull --print`).
-model customer_zalo_contacts {
-  id          Int      @id @default(autoincrement())
-  customerId  Int
-  kind        String
-  zaloId      String
-  name        String?
-  pagePid     String?
-  createdById Int?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime
-  customers   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
-
-  @@unique([customerId, kind, zaloId])
-  @@index([customerId])
-}
