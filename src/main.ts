@@ -10,6 +10,7 @@ import { PrismaService } from './prisma/prisma.service';
 import { createPublicationPdfMiddleware } from './upload/publication-pdf.middleware';
 import { selectPublicationDisplayName } from './upload/publication-pdf-title';
 import { startEventLoopMonitor } from './common/monitoring/event-loop-monitor';
+import { isCorsOriginAllowed } from './common/cors-origin.util';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -51,45 +52,7 @@ async function bootstrap() {
 
   app.enableCors({
     origin: (origin, callback) => {
-      const allowedOrigins =
-        process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()) || [];
-
-      if (!origin) {
-        return callback(null, true);
-      }
-
-      try {
-        const url = new URL(origin);
-        const isAllowed = allowedOrigins.some((allowedOrigin) => {
-          if (allowedOrigin === origin) return true;
-
-          try {
-            const allowedUrl = new URL(allowedOrigin);
-            if (
-              allowedUrl.hostname === 'localhost' &&
-              url.hostname === 'localhost'
-            ) {
-              return true;
-            }
-          } catch {
-            if (allowedOrigin === '*') return true;
-          }
-
-          return false;
-        });
-
-        if (isAllowed) {
-          callback(null, true);
-        } else {
-          console.warn(
-            `CORS: Rejected origin ${origin}. Allowed: ${allowedOrigins.join(', ')}`,
-          );
-          callback(null, false);
-        }
-      } catch (error) {
-        console.warn(`CORS: Invalid origin format ${origin}`);
-        callback(null, false);
-      }
+      callback(null, isCorsOriginAllowed(origin));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],

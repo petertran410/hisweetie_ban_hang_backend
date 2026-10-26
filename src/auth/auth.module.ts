@@ -54,6 +54,6 @@ import { ApprovalLifecycleModule } from '../approval-lifecycle/approval-lifecycl
     GoogleStrategy,
     FinanceAccessService,
   ],
-  exports: [AuthService, FinanceAccessService],
+  exports: [AuthService, FinanceAccessService, JwtStrategy],
 })
 export class AuthModule {}

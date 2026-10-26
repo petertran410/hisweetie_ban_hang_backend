@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -28,6 +29,7 @@ import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
 
@@ -114,6 +116,7 @@ export class OrdersService {
     private larkOrderSync: LarkOrderSyncService,
     private larkOrderNotification: LarkOrderNotificationService,
     private promotionsService: PromotionsService,
+    @Optional() private realtime?: RealtimeService,
   ) {}
 
   /**
@@ -760,6 +763,13 @@ export class OrdersService {
     }, ORDER_TX_OPTIONS);
 
     this.flushAuditLogs(pendingAuditLogs);
+    if (result?.order) {
+      this.realtime?.emitOrderChanged({
+        orderId: result.order.id,
+        branchId: result.order.branchId,
+        status: result.order.status,
+      });
+    }
     return result;
   }
 
@@ -1171,6 +1181,12 @@ export class OrdersService {
     if (result?.status === ORDER_STATUS.CONFIRMED) {
       this.larkOrderNotification.notifyOrderConfirmedAsync(id);
     }
+
+    this.realtime?.emitOrderChanged({
+      orderId: id,
+      branchId: result?.branchId,
+      status: result?.status,
+    });
 
     return result;
   }
@@ -2022,6 +2038,10 @@ export class OrdersService {
     }, ORDER_TX_OPTIONS);
 
     this.flushAuditLogs(pendingAuditLogs);
+    this.realtime?.emitOrderChanged({
+      orderId: id,
+      status: ORDER_STATUS.CANCELLED,
+    });
     return result;
   }
 

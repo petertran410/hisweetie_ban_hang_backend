@@ -3,7 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Optional,
 } from '@nestjs/common';
+import { RealtimeService } from '../realtime/realtime.service';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { Prisma } from '@prisma/client';
@@ -198,6 +200,7 @@ export class InvoicesService {
     private larkProductSync: LarkProductSyncService,
     private metaPurchaseOutbox: MetaPurchaseOutboxService,
     private tiktokOutbox: TiktokEventsOutboxService,
+    @Optional() private realtime?: RealtimeService,
   ) {}
 
   async resolveScan(
@@ -4044,6 +4047,14 @@ export class InvoicesService {
       this.larkProductSync.enqueueSync(productId);
     }
 
+    // Sửa/hủy hóa đơn có thể làm đổi trạng thái đơn hàng gốc.
+    if (result?.orderId) {
+      this.realtime?.emitOrderChanged({
+        orderId: result.orderId,
+        branchId: result.branchId,
+      });
+    }
+
     return result;
   }
 
@@ -4184,7 +4195,7 @@ export class InvoicesService {
     userId: number,
     fromPos = false,
   ) {
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${orderId} FOR UPDATE`;
       const order = await tx.order.findUnique({
         where: { id: orderId },
@@ -4233,6 +4244,15 @@ export class InvoicesService {
       }
       if (order.status === ORDER_STATUS.COMPLETED) {
         throw new BadRequestException('Đơn hàng đã hoàn thành');
+      }
+      // Chỉ tạo hóa đơn khi đơn "Đã xác nhận" hoặc "Đã ra 1 phần hóa đơn".
+      if (
+        order.status !== ORDER_STATUS.CONFIRMED &&
+        order.status !== ORDER_STATUS.PARTIALLY_INVOICED
+      ) {
+        throw new BadRequestException(
+          'Đơn hàng chưa được xác nhận, không thể tạo hóa đơn',
+        );
       }
       if (!order.branchId) {
         throw new BadRequestException('Đơn hàng không có thông tin chi nhánh');
@@ -4972,6 +4992,13 @@ export class InvoicesService {
         },
       });
     }, INVOICE_TX_OPTIONS);
+
+    // Sau commit: báo client đơn hàng đã đổi trạng thái (ra 1 phần / hoàn thành).
+    this.realtime?.emitOrderChanged({
+      orderId,
+      branchId: created?.branchId,
+    });
+    return created;
   }
 
   /**

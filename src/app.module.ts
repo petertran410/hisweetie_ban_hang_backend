@@ -84,6 +84,7 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { RealtimeModule } from './realtime/realtime.module';
 import { DebtTrackingModule } from './debt-tracking/debt-tracking.module';
 import { DebtTicketsModule } from './debt-tickets/debt-tickets.module';
 import { ExchangeRatesModule } from './exchange-rates/exchange-rates.module';
@@ -194,6 +195,7 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
     SepayModule,
     PromotionsModule,
     NotificationsModule,
+    RealtimeModule,
     DebtTrackingModule,
     DebtTicketsModule,
     ExchangeRatesModule,
