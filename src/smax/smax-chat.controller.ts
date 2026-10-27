@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
@@ -27,9 +28,13 @@ import {
 } from './smax-chat.service';
 import {
   ChatMessagesQueryDto,
+  MediaQueryDto,
   CreateZaloContactDto,
+  ReactMessageDto,
   FriendActionDto,
   SendChatMessageDto,
+  SendThreadMessageDto,
+  ThreadQueryDto,
   SharedGroupsQueryDto,
   UpdateZaloContactDto,
   ZaloProfileQueryDto,
@@ -49,13 +54,50 @@ export class SmaxChatController {
       name: req.user.name,
       canViewOtherStaffData: req.user.canViewOtherStaffData,
       canViewDebt: requestHasPermission(req, 'customers:view_debt'),
+      canViewPackingSlips: requestHasPermission(req, 'packing_slips:view'),
     };
+  }
+
+  // Tải ảnh/tệp Zalo (chỉ host Zalo) — dùng cho "Tải xuống" / chọn nhiều
+  @Get('media')
+  @RequirePermissions('smax_chat:view')
+  async media(@Query() q: MediaQueryDto, @Res() res: any) {
+    const { body, contentType } = await this.service.fetchZaloMedia(q.url);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(body);
   }
 
   @Get('channels')
   @RequirePermissions('smax_chat:view')
   channels(@Req() req: any) {
     return this.service.myChannels(req.user.id);
+  }
+
+  // Hội thoại chưa gắn khách POS (mở từ "Đang chat gần đây")
+  @Get('threads/messages')
+  @RequirePermissions('smax_chat:view')
+  threadMessages(@Query() q: ThreadQueryDto, @Req() req: any) {
+    return this.service.getThreadMessages(req.user.id, q.pagePid, q.tid, q.before);
+  }
+
+  @Get('threads/profile')
+  @RequirePermissions('smax_chat:view')
+  threadProfile(@Query() q: ThreadQueryDto, @Req() req: any) {
+    return this.service.getThreadProfile(req.user.id, q.pagePid, q.tid, q.isGroup === 'true');
+  }
+
+  @Post('threads/messages')
+  @RequirePermissions('smax_chat:send')
+  sendToThread(@Body() dto: SendThreadMessageDto, @Req() req: any) {
+    return this.service.sendToThread(this.actor(req), dto);
+  }
+
+  // Thả / thu hồi cảm xúc (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Post('threads/reaction')
+  @RequirePermissions('smax_chat:send')
+  react(@Body() dto: ReactMessageDto, @Req() req: any) {
+    return this.service.reactMessage(this.actor(req), dto);
   }
 
   @Get('recent')
