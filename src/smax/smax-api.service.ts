@@ -93,6 +93,15 @@ export interface SmaxRawMessage {
     group_layout_id?: string;
     // Tin sticker: chỉ có mã, ảnh lấy từ máy chủ sticker công khai của Zalo
     sticker_id?: string;
+    // Tin trả lời: trích tin gốc
+    quote?: { global_msg_id?: string; msg?: string; reply_to_name?: string };
+    // Cảm xúc theo từng người thả (icons: HEART, LIKE, HAHA, CRY…; number = số lần bấm)
+    customer_reactions?: {
+      customer_pid?: string;
+      customer_name?: string;
+      customer_picture?: string;
+      icons?: { name?: string; number?: number }[];
+    }[];
     attachments?: {
       url?: string;
       thumbnail?: string;
@@ -112,6 +121,8 @@ export class SmaxApiService {
   private readonly baseUrl: string;
   readonly bizAlias: string;
   private readonly token?: string;
+  // Token đăng nhập 1 tài khoản Smax (JWT) — chỉ dùng cho API nội bộ Partner API chưa có (thả cảm xúc)
+  private readonly userToken?: string;
 
   constructor(
     private readonly http: HttpService,
@@ -122,6 +133,28 @@ export class SmaxApiService {
       .replace(/\/+$/, '');
     this.bizAlias = config.get<string>('SMAX_BIZ_ALIAS', 'dieptra');
     this.token = config.get<string>('SMAX_API_TOKEN');
+    this.userToken = config.get<string>('SMAX_USER_TOKEN')?.trim() || undefined;
+  }
+
+  /** Thả cảm xúc được không (đã cấu hình SMAX_USER_TOKEN). */
+  get canReact(): boolean {
+    return !!this.userToken;
+  }
+
+  /**
+   * Thả / thu hồi cảm xúc tin Zalo (reaction NONE = thu hồi) qua API nội bộ của app Smax
+   * (Partner API không có). Thả với tư cách tài khoản Zalo của kênh.
+   */
+  async reactMessage(pagePid: string, tid: string, pid: string, reaction: string): Promise<void> {
+    if (!this.userToken) {
+      throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa thả cảm xúc được');
+    }
+    await this.request(
+      'POST',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages/${pid}/reaction`,
+      { reaction },
+      { token: this.userToken },
+    );
   }
 
   async listPages(): Promise<SmaxPage[]> {
@@ -265,6 +298,21 @@ export class SmaxApiService {
     );
   }
 
+  /**
+   * Gửi vào thread theo tid — dùng cho TRẢ LỜI (reply_to_pid = pid tin được trả lời);
+   * zaloweb-messages không có trường trích dẫn.
+   */
+  async sendThreadMessage(
+    pagePid: string,
+    tid: string,
+    body: { replyToPid?: string; message: string },
+  ): Promise<any> {
+    return this.request('POST', `/partner/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages`, {
+      ...(body.replyToPid ? { reply_to_pid: body.replyToPid } : {}),
+      messages: [{ message: body.message }],
+    });
+  }
+
   /** Trạng thái kết bạn giữa kênh và người dùng Zalo (uid). */
   async getFriendStatus(pagePid: string, uid: string): Promise<SmaxFriendStatus | null> {
     const body = await this.request(
@@ -333,9 +381,9 @@ export class SmaxApiService {
     method: 'GET' | 'POST',
     path: string,
     data?: any,
-    opts: { allow404?: boolean; timeout?: number } = {},
+    opts: { allow404?: boolean; timeout?: number; token?: string } = {},
   ): Promise<any> {
-    if (!this.token) {
+    if (!opts.token && !this.token) {
       throw new ServiceUnavailableException(
         'Chưa cấu hình SMAX_API_TOKEN trong .env của backend',
       );
@@ -346,7 +394,7 @@ export class SmaxApiService {
           method,
           url: `${this.baseUrl}${path}`,
           data,
-          headers: { Authorization: `Bearer ${this.token}` },
+          headers: { Authorization: `Bearer ${opts.token ?? this.token}` },
           timeout: opts.timeout ?? 15000,
         }),
       );
@@ -366,7 +414,9 @@ export class SmaxApiService {
       }
       const reason =
         status === 401
-          ? 'token không hợp lệ hoặc đã hết hạn'
+          ? opts.token
+            ? 'SMAX_USER_TOKEN hết hạn hoặc không hợp lệ — lấy token đăng nhập Smax mới'
+            : 'token không hợp lệ hoặc đã hết hạn'
           : status === 403
             ? 'token không có quyền'
             : status === 429

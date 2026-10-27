@@ -39,6 +39,16 @@ export class ChatAttachmentDto {
   name: string;
 }
 
+export class ForwardMediaDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  url: string;
+
+  @IsIn(['image', 'file'])
+  kind: 'image' | 'file';
+}
+
 export class SendChatMessageDto {
   @IsString()
   @IsNotEmpty()
@@ -71,9 +81,31 @@ export class SendChatMessageDto {
   productImageIds?: number[];
 
   @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsInt({ each: true })
+  packingSlipImageIds?: number[];
+
+  @IsOptional()
+  @IsBoolean()
+  imagesFirst?: boolean;
+
+  @IsOptional()
   @IsString()
   @MaxLength(10)
   stickerId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  replyToPid?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ForwardMediaDto)
+  forwardMedia?: ForwardMediaDto[];
 
   @IsOptional()
   @IsBoolean()
@@ -146,4 +178,119 @@ export class FriendActionDto {
   @IsString()
   @MaxLength(150)
   message?: string;
+}
+
+export class SendThreadMessageDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isGroup?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  text?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ChatAttachmentDto)
+  attachments?: ChatAttachmentDto[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  qrImageUrl?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsInt({ each: true })
+  productImageIds?: number[];
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @IsInt({ each: true })
+  packingSlipImageIds?: number[];
+
+  @IsOptional()
+  @IsBoolean()
+  imagesFirst?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(10)
+  stickerId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  replyToPid?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => ForwardMediaDto)
+  forwardMedia?: ForwardMediaDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
+export class ReactMessageDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  // pid tin nhắn ("zlw" + id Zalo)
+  @IsString()
+  @IsNotEmpty()
+  pid: string;
+
+  @IsIn(['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'])
+  reaction: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
+export class ThreadQueryDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsOptional()
+  @IsString()
+  before?: string;
+
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  isGroup?: string;
+}
+
+export class MediaQueryDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  url: string;
 }

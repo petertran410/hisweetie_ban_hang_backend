@@ -1,11 +1,12 @@
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
 import * as fs from 'fs';
-import { safeFileName, SmaxChatService, vietQrUrl } from './smax-chat.service';
+import { isZaloMediaUrl, safeFileName, SmaxChatService, vietQrUrl } from './smax-chat.service';
 
 const PAGE = 'zlw693698651694262958';
 const pages = [
@@ -43,6 +44,16 @@ const makeService = (env: Record<string, string> = {}) => {
       ),
     },
     customer: { findUnique: jest.fn().mockResolvedValue({ code: 'TOANTEST', totalDebt: 1250000 }) },
+    packingSlipImage: {
+      findMany: jest.fn(({ where }) =>
+        Promise.resolve(
+          [
+            { id: 31, imageUrl: 'https://backendpos.hisweetievietnam.com/uploads/bao-don/a.jpg' },
+            { id: 32, imageUrl: 'https://backendpos.hisweetievietnam.com/uploads/bao-don/b.jpg' },
+          ].filter((r) => where.id.in.includes(r.id)),
+        ),
+      ),
+    },
     productImage: {
       findMany: jest.fn(({ where }) =>
         Promise.resolve(
@@ -69,7 +80,10 @@ const makeService = (env: Record<string, string> = {}) => {
       memberAvatars: { zlw1239621715347596858: 'https://ava/1.jpg' },
     }),
     getMessages: jest.fn().mockResolvedValue([]),
+    reactMessage: jest.fn().mockResolvedValue(undefined),
+    canReact: true,
     sendZaloweb: jest.fn().mockResolvedValue({ ok: true }),
+    sendThreadMessage: jest.fn().mockResolvedValue({ ok: true }),
     findFriendByPhone: jest.fn().mockResolvedValue(null),
     getFriendStatus: jest.fn().mockResolvedValue({ isFriend: true, isRequested: false, isRequesting: false }),
     requestFriend: jest.fn().mockResolvedValue({}),
@@ -361,5 +375,126 @@ describe('SmaxChatService', () => {
     await expect(
       service.friendAction(5, actor, { pagePid: PAGE, contactId: 11, action: 'request' }),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('hội thoại chưa gắn khách: đọc / gửi theo tid (uid hoặc grid), chặn tid lạ và kênh của người khác', async () => {
+    const { service, api, audit } = makeService();
+    await service.getThreadMessages(1, PAGE, 'zlw45460453502640815');
+    expect(api.getMessages).toHaveBeenCalledWith(PAGE, 'zlw45460453502640815', undefined);
+
+    await service.sendToThread(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', text: 'hi', confirmed: true });
+    await service.sendToThread(actor, { pagePid: PAGE, tid: 'zlw777', isGroup: true, text: 'nhóm', confirmed: true });
+    expect(api.sendZaloweb.mock.calls.map((c) => c[1])).toEqual([{ uid: '45460453502640815' }, { grid: '777' }]);
+    expect(audit.create.mock.calls[0][0]).toMatchObject({ entityType: 'smax_threads', entityId: 'zlw45460453502640815' });
+
+    await expect(service.getThreadMessages(1, PAGE, '../x')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.getThreadMessages(1, 'zlwOTHER', 'zlw777')).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('trả lời: phần chữ qua thread kèm reply_to_pid; chuyển tiếp ảnh/tệp Zalo', async () => {
+    const { service, api } = makeService();
+    await service.sendMessage(5, actor, {
+      pagePid: PAGE,
+      contactId: 10,
+      text: 'ok ạ',
+      replyToPid: 'zlw8420175530134',
+      forwardMedia: [
+        { url: 'https://photo-stal-35.zdn.vn/no/jpg/a/b.jpg', kind: 'image' },
+        { url: 'https://do36.dlfl.vn/9b60/4779', kind: 'file' },
+      ],
+      confirmed: true,
+    });
+    expect(api.sendThreadMessage).toHaveBeenCalledWith(PAGE, 'zlw1239621715347596858', {
+      replyToPid: 'zlw8420175530134',
+      message: 'ok ạ',
+    });
+    expect(api.sendZaloweb.mock.calls.map((c) => c[2])).toEqual([
+      { images: ['https://photo-stal-35.zdn.vn/no/jpg/a/b.jpg'] },
+      { file: 'https://do36.dlfl.vn/9b60/4779' },
+    ]);
+  });
+
+  it('trả lời: Smax báo 5xx nhưng tin đã tới → coi là đã gửi (tránh gửi trùng khi thử lại)', async () => {
+    const { service, api, audit } = makeService();
+    api.sendThreadMessage.mockRejectedValueOnce(new BadGatewayException('Smax: không kết nối được'));
+    api.getMessages.mockResolvedValueOnce([
+      { pid: 'zlw1', sender_pid: PAGE, message: 'ok ạ', created_at: new Date().toISOString() },
+    ]);
+    await service.sendMessage(5, actor, { pagePid: PAGE, contactId: 10, text: 'ok ạ', replyToPid: 'zlw8420215128116', confirmed: true });
+    expect(audit.create).toHaveBeenCalled();
+
+    // Không thấy tin trên Smax → vẫn báo lỗi
+    api.sendThreadMessage.mockRejectedValueOnce(new BadGatewayException('Smax: không kết nối được'));
+    api.getMessages.mockResolvedValueOnce([]);
+    await expect(
+      service.sendMessage(5, actor, { pagePid: PAGE, contactId: 10, text: 'lần 2', replyToPid: 'zlw8420215128116', confirmed: true }),
+    ).rejects.toBeInstanceOf(BadGatewayException);
+  });
+
+  it('báo đơn: 1 ảnh gửi trước chữ, nhiều ảnh gửi chữ trước; cần quyền xem Báo đơn', async () => {
+    const { service, api } = makeService();
+    const slipActor = { ...actor, canViewPackingSlips: true };
+    await service.sendMessage(5, slipActor, {
+      pagePid: PAGE, contactId: 10, text: '🎉 Báo đơn BD1', packingSlipImageIds: [31], imagesFirst: true, confirmed: true,
+    });
+    expect(api.sendZaloweb.mock.calls.map((c) => c[2])).toEqual([
+      { images: ['https://backendpos.hisweetievietnam.com/uploads/bao-don/a.jpg'] },
+      { message: '🎉 Báo đơn BD1' },
+    ]);
+    api.sendZaloweb.mockClear();
+    await service.sendMessage(5, slipActor, {
+      pagePid: PAGE, contactId: 10, text: '🎉 Báo đơn BD2', packingSlipImageIds: [31, 32], confirmed: true,
+    });
+    expect(api.sendZaloweb.mock.calls.map((c) => Object.keys(c[2]))).toEqual([['message'], ['images']]);
+    await expect(
+      service.sendMessage(5, actor, { pagePid: PAGE, contactId: 10, text: 'x', packingSlipImageIds: [31], confirmed: true }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('cảm xúc: gộp theo icon, đánh dấu của kênh; thả/thu hồi qua API nội bộ + audit', async () => {
+    const { service, api, audit } = makeService();
+    api.getMessages.mockResolvedValueOnce([
+      {
+        pid: 'zlw1', sender_pid: 'zlwX', message: 'ok', created_at: new Date().toISOString(),
+        zaloweb: {
+          customer_reactions: [
+            { customer_pid: 'zlwX', customer_name: 'Khách', icons: [{ name: 'HEART', number: 2 }] },
+            { customer_pid: PAGE, customer_name: 'Kênh', icons: [{ name: 'HEART', number: 1 }, { name: 'LIKE', number: 1 }] },
+          ],
+        },
+      },
+    ]);
+    const page = await service.getThreadMessages(1, PAGE, 'zlw45460453502640815');
+    expect(page.canReact).toBe(true);
+    expect(page.messages[0].reactions).toEqual([
+      { icon: 'HEART', count: 3, mine: true, users: [{ name: 'Khách', avatar: null }, { name: 'Kênh', avatar: null }] },
+      { icon: 'LIKE', count: 1, mine: true, users: [{ name: 'Kênh', avatar: null }] },
+    ]);
+
+    await service.reactMessage(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'zlw8420215128116', reaction: 'NONE', confirmed: true });
+    expect(api.reactMessage).toHaveBeenCalledWith(PAGE, 'zlw45460453502640815', 'zlw8420215128116', 'NONE');
+    expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_CHAT_REACT' });
+    await expect(
+      service.reactMessage(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'zlw8420215128116', reaction: 'KISS', confirmed: true }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.reactMessage(actor, { pagePid: 'zlwOTHER', tid: 'zlw45460453502640815', pid: 'zlw8420215128116', reaction: 'LIKE', confirmed: true }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('chặn chuyển tiếp/tải link ngoài Zalo và trả lời không có chữ', async () => {
+    const { service } = makeService();
+    expect(isZaloMediaUrl('https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=1')).toBe(true);
+    expect(isZaloMediaUrl('https://evil.com/zdn.vn/x.jpg')).toBe(false);
+    expect(isZaloMediaUrl('http://photo.zdn.vn/x.jpg')).toBe(false);
+    await expect(
+      service.sendMessage(5, actor, {
+        pagePid: PAGE, contactId: 10, forwardMedia: [{ url: 'https://evil.com/a.jpg', kind: 'image' }], confirmed: true,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.sendMessage(5, actor, { pagePid: PAGE, contactId: 10, stickerId: '1', replyToPid: 'zlw1', confirmed: true }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.fetchZaloMedia('https://evil.com/a.jpg')).rejects.toBeInstanceOf(BadRequestException);
   });
 });
