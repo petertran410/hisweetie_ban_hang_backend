@@ -314,6 +314,25 @@ export class SmaxApiService {
   }
 
   /** Trạng thái kết bạn giữa kênh và người dùng Zalo (uid). */
+  /**
+   * Avatar bạn bè của kênh theo pid ("zlw" + uid). Link ảnh Zalo có hạn: ảnh trong
+   * tin / thread của Smax hay đã hết hạn, danh sách bạn bè thì mới. Danh sách lớn (~4MB).
+   */
+  async listFriendAvatars(pagePid: string): Promise<Record<string, string>> {
+    const body = await this.request(
+      'GET',
+      `/partner/bizs/${this.bizAlias}/pages/${pagePid}/friends`,
+      undefined,
+      { timeout: 30_000 },
+    );
+    // Smax bọc danh sách trong data.data
+    let rows: any = body;
+    while (rows && !Array.isArray(rows)) rows = rows.data;
+    const out: Record<string, string> = {};
+    for (const r of rows ?? []) if (r?.userId && r?.avatar) out[`zlw${r.userId}`] = r.avatar;
+    return out;
+  }
+
   async getFriendStatus(pagePid: string, uid: string): Promise<SmaxFriendStatus | null> {
     const body = await this.request(
       'GET',

@@ -60,6 +60,7 @@ export interface ChatMessage {
 function groupReactions(
   raw: NonNullable<SmaxRawMessage['zaloweb']>['customer_reactions'],
   pagePid: string,
+  avatars: Record<string, string> = {},
 ): ChatMessage['reactions'] {
   const byIcon = new Map<string, ChatMessage['reactions'][number]>();
   for (const r of raw ?? []) {
@@ -68,7 +69,8 @@ function groupReactions(
       const g = byIcon.get(i.name) ?? { icon: i.name, count: 0, mine: false, users: [] };
       g.count += Math.max(1, Number(i.number) || 1);
       if (r.customer_pid === pagePid) g.mine = true;
-      g.users.push({ name: r.customer_name ?? null, avatar: r.customer_picture ?? null });
+      const avatar = (r.customer_pid && avatars[r.customer_pid]) || r.customer_picture || null;
+      g.users.push({ name: r.customer_name ?? null, avatar });
       byIcon.set(i.name, g);
     }
   }
@@ -154,6 +156,11 @@ export class SmaxChatService {
   private readonly groupIndex = new Map<
     string,
     { at: number; groups: Promise<SmaxGroupThread[]> }
+  >();
+  // Avatar bạn bè theo kênh (tải ngầm, dùng cho người thả cảm xúc)
+  private readonly friendAvatars = new Map<
+    string,
+    { at: number; map: Record<string, string>; loading: boolean }
   >();
   private readonly confirmBeforeSend: boolean;
   // Domain công khai Smax tải được file đính kèm (localhost thì Smax không tới được)
@@ -400,11 +407,37 @@ export class SmaxChatService {
     return {
       thread: thread ? { name: thread.name, chatType: thread.chatType } : null,
       senders,
-      messages: this.normalize(raw, channel.pid, members),
+      messages: this.normalize(raw, channel.pid, members, {
+        // Ảnh trong customer_reactions hay hết hạn → ưu tiên ảnh bạn bè (mới), ảnh kênh
+        ...(thread?.memberAvatars ?? {}),
+        ...(raw.some((m) => m.zaloweb?.customer_reactions?.length) ? this.peekFriendAvatars(channel.pid) : {}),
+        ...(channel.picture ? { [channel.pid]: channel.picture } : {}),
+      }),
       hasMore: raw.length >= 20,
       // Thả cảm xúc cần SMAX_USER_TOKEN (API nội bộ Smax)
       canReact: this.smaxApi.canReact,
     };
+  }
+
+  /**
+   * Avatar bạn bè đã có trong cache; hết hạn / chưa có thì tải ngầm (không chờ:
+   * danh sách lớn, lần tải tin sau sẽ có ảnh). Lỗi thì giữ ảnh cũ, thử lại sau TTL.
+   */
+  private peekFriendAvatars(pagePid: string): Record<string, string> {
+    const entry = this.friendAvatars.get(pagePid) ?? { at: 0, map: {}, loading: false };
+    this.friendAvatars.set(pagePid, entry);
+    if (!entry.loading && Date.now() - entry.at > GROUP_INDEX_TTL_MS) {
+      entry.loading = true;
+      this.smaxApi
+        .listFriendAvatars(pagePid)
+        .then((map) => (entry.map = map))
+        .catch(() => undefined)
+        .finally(() => {
+          entry.at = Date.now();
+          entry.loading = false;
+        });
+    }
+    return entry.map;
   }
 
   /** Thả / thu hồi (NONE) cảm xúc 1 tin, với tư cách tài khoản Zalo của kênh. */
@@ -1088,6 +1121,7 @@ export class SmaxChatService {
     raw: SmaxRawMessage[],
     pagePid: string,
     members: Record<string, string>,
+    avatars: Record<string, string> = {},
   ): ChatMessage[] {
     const seen = new Set<string>();
     return raw
@@ -1125,7 +1159,7 @@ export class SmaxChatService {
                 senderName: m.zaloweb.quote.reply_to_name ?? null,
               }
             : null,
-          reactions: groupReactions(m.zaloweb?.customer_reactions, pagePid),
+          reactions: groupReactions(m.zaloweb?.customer_reactions, pagePid, avatars),
           createdAt: m.created_at,
         };
       })

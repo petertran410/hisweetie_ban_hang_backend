@@ -81,6 +81,7 @@ const makeService = (env: Record<string, string> = {}) => {
     }),
     getMessages: jest.fn().mockResolvedValue([]),
     reactMessage: jest.fn().mockResolvedValue(undefined),
+    listFriendAvatars: jest.fn().mockResolvedValue({ zlwX: 'https://ava/x-moi.jpg' }),
     canReact: true,
     sendZaloweb: jest.fn().mockResolvedValue({ ok: true }),
     sendThreadMessage: jest.fn().mockResolvedValue({ ok: true }),
@@ -470,6 +471,18 @@ describe('SmaxChatService', () => {
       { icon: 'HEART', count: 3, mine: true, users: [{ name: 'Khách', avatar: null }, { name: 'Kênh', avatar: null }] },
       { icon: 'LIKE', count: 1, mine: true, users: [{ name: 'Kênh', avatar: null }] },
     ]);
+
+    // Avatar bạn bè tải ngầm → lần tải sau dùng ảnh mới
+    expect(api.listFriendAvatars).toHaveBeenCalledWith(PAGE);
+    await new Promise((r) => setImmediate(r));
+    api.getMessages.mockResolvedValueOnce([
+      {
+        pid: 'zlw2', sender_pid: 'zlwX', message: 'a', created_at: new Date().toISOString(),
+        zaloweb: { customer_reactions: [{ customer_pid: 'zlwX', customer_name: 'Khách', customer_picture: 'https://ava/cu.jpg', icons: [{ name: 'LIKE' }] }] },
+      },
+    ]);
+    const page2 = await service.getThreadMessages(1, PAGE, 'zlw45460453502640815');
+    expect(page2.messages[0].reactions[0].users[0].avatar).toBe('https://ava/x-moi.jpg');
 
     await service.reactMessage(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'zlw8420215128116', reaction: 'NONE', confirmed: true });
     expect(api.reactMessage).toHaveBeenCalledWith(PAGE, 'zlw45460453502640815', 'zlw8420215128116', 'NONE');
