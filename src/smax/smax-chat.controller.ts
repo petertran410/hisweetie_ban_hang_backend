@@ -102,8 +102,8 @@ export class SmaxChatController {
 
   @Get('recent')
   @RequirePermissions('smax_chat:view')
-  recent(@Req() req: any, @Query('pagePid') pagePid?: string) {
-    return this.service.recentChats(req.user.id, pagePid || undefined);
+  recent(@Req() req: any, @Query('pagePid') pagePid?: string, @Query('limit') limit?: string) {
+    return this.service.recentChats(req.user.id, pagePid || undefined, Number(limit) || undefined);
   }
 
   @Get('customers/:id/context')

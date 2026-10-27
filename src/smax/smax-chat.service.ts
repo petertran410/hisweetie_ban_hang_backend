@@ -979,16 +979,18 @@ export class SmaxChatService {
    * Hội thoại mới nhất trên các kênh Zalo cá nhân của người gọi, khớp khách POS:
    * theo ID Zalo đã lưu (mở được ngay), hoặc theo mã khách trong tên nhóm (gợi ý).
    */
-  async recentChats(actorId: number, pagePid?: string) {
+  async recentChats(actorId: number, pagePid?: string, limit = 30) {
+    // Thanh thu gọn xin thêm khi bấm "…" (Smax: 100 hội thoại ~2s, nên chỉ lấy khi cần)
+    const take = Math.min(200, Math.max(10, Math.round(limit)));
     const channels = (await this.myChannels(actorId)).filter(
       (c) => !c.missing && c.platform === 'zaloweb' && (!pagePid || c.pagePid === pagePid),
     );
     if (!channels.length) return { items: [] };
     const pagePids = channels.map((c) => c.pagePid).sort();
-    const key = pagePids.join(',');
+    const key = `${pagePids.join(',')}:${take}`;
     let cached = this.recentCache.get(key);
     if (!cached || Date.now() - cached.at > RECENT_TTL_MS) {
-      cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, 30) };
+      cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, take) };
       this.recentCache.set(key, cached);
       cached.threads.catch(() => this.recentCache.delete(key));
     }
