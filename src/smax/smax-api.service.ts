@@ -242,11 +242,12 @@ export class SmaxApiService {
   }
 
   /** Hội thoại mới nhất của các kênh (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
-  async listRecentThreads(pagePids: string[], limit = 30): Promise<SmaxRecentThread[]> {
+  async listRecentThreads(pagePids: string[], limit = 30, keyword?: string): Promise<SmaxRecentThread[]> {
     const body = await this.request(
       'POST',
       `/partner/bizs/${this.bizAlias}/threads/threads`,
-      { page_pids: pagePids, limit },
+      // keyword: Smax tìm trên mọi hội thoại (tên khách/nhóm, cả thành viên & nội dung) — ~2-3s
+      { page_pids: pagePids, limit, ...(keyword ? { keyword } : {}) },
       { timeout: 30000 },
     );
     return (body?.data ?? [])
