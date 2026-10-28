@@ -5307,3 +5307,18 @@ model AuthSession {
   @@map("auth_sessions")
 }
 
+/// Danh mục Đơn vị tính. Product.unit vẫn lưu TÊN (chuỗi) lấy từ bảng này,
+/// nên các nơi chỉ đọc/hiển thị đơn vị không phải đổi.
+/// `code` chỉ dùng cho đơn vị hệ thống (CARTON = Thùng): logic nhận theo code.
+model Unit {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique
+  code      String?  @unique
+  isSystem  Boolean  @default(false)
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("units")
+}

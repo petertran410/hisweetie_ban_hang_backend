@@ -81,6 +81,32 @@ export class ProductionsService {
       where.isExternal = query.isExternal;
     }
 
+    if (query.factoryIds?.length) {
+      where.factoryId = { in: query.factoryIds };
+    }
+    if (query.supplierIds?.length) {
+      where.supplierId = { in: query.supplierIds };
+    }
+    if (query.createdByIds?.length) {
+      where.createdById = { in: query.createdByIds };
+    }
+    if (query.productId) {
+      where.productId = query.productId;
+    }
+    if (query.componentProductId) {
+      where.components = {
+        some: { componentProductId: query.componentProductId },
+      };
+    }
+    if (query.fromCreatedDate || query.toCreatedDate) {
+      where.createdAt = {
+        ...(query.fromCreatedDate
+          ? { gte: new Date(query.fromCreatedDate) }
+          : {}),
+        ...(query.toCreatedDate ? { lte: new Date(query.toCreatedDate) } : {}),
+      };
+    }
+
     if (fromManufacturedDate || toManufacturedDate) {
       where.manufacturedDate = {};
       if (fromManufacturedDate) {

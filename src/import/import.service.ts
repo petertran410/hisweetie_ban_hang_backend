@@ -1,5 +1,9 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  loadUnitNameMap,
+  resolveUnitFromMap,
+} from '../common/unit.util';
 import { ProductsService } from '../products/products.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
@@ -106,7 +110,8 @@ export class ImportService {
       else if (
         headerLower === 'đơn vị tính' ||
         headerLower === 'don vi tinh' ||
-        headerLower === 'đvt'
+        headerLower === 'đvt' ||
+        headerLower === 'dvt'
       )
         columnMap['unit'] = colNumber;
       else if (
@@ -291,6 +296,27 @@ export class ImportService {
           error: `Mã hàng "${row.code}" không tồn tại trong hệ thống`,
         });
       }
+    }
+
+    // Đơn vị tính phải có trong danh mục Đơn vị tính (không tự tạo, tránh sinh
+    // biến thể gõ sai). Không phân biệt hoa/thường: "thùng" → "Thùng".
+    const unitNameMap = await loadUnitNameMap(this.prisma);
+    const unknownUnits: { row: number; unit: string }[] = [];
+    for (const row of rawRows) {
+      const resolved = resolveUnitFromMap(unitNameMap, row.unit);
+      if (resolved.unknown !== undefined) {
+        unknownUnits.push({ row: row.rowNumber, unit: resolved.unknown });
+      } else if (resolved.name) {
+        row.unit = resolved.name;
+      }
+    }
+    if (unknownUnits.length > 0) {
+      const list = unknownUnits
+        .map((u) => `dòng ${u.row} "${u.unit}"`)
+        .join(', ');
+      throw new BadRequestException(
+        `Có ${unknownUnits.length} dòng có ĐVT chưa có trong danh mục Đơn vị tính: ${list}. Thêm vào danh mục (Cài đặt → Đơn vị tính) hoặc sửa file rồi import lại.`,
+      );
     }
 
     if (validationErrors.length > 0) {

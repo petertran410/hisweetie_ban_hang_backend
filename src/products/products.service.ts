@@ -35,6 +35,7 @@ import {
   recalcStockAuditChain,
 } from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
+import { resolveUnitName } from '../common/unit.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { StockAuditsService } from '../stock-audits/stock-audits.service';
 import {
@@ -1125,6 +1126,9 @@ export class ProductsService {
       ...productData
     } = dto;
 
+    // Đơn vị tính phải có trong danh mục; ghi đúng tên chuẩn ("thùng" → "Thùng").
+    productData.unit = await resolveUnitName(this.prisma, productData.unit);
+
     // Hàng sản xuất gửi nhiều công thức → giá vốn tính theo công thức mặc định.
     const normalizedFormulas =
       dto.type === 4 && formulas ? normalizeFormulas(formulas) : undefined;
@@ -1518,6 +1522,15 @@ export class ProductsService {
       attributes,
       ...productData
     } = dto;
+
+    // Đơn vị tính phải có trong danh mục. Giữ nguyên đơn vị cũ (kể cả giá trị
+    // chưa có trong danh mục) thì cho qua, để không chặn sửa các trường khác.
+    if (
+      productData.unit !== undefined &&
+      productData.unit !== currentProduct.unit
+    ) {
+      productData.unit = await resolveUnitName(this.prisma, productData.unit);
+    }
 
     const productType = dto.type ?? currentProduct.type;
     // Hàng sản xuất gửi nhiều công thức → giá vốn tính theo công thức mặc định.

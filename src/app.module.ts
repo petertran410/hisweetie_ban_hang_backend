@@ -44,6 +44,7 @@ import { InvoicesModule } from './invoices/invoices.module';
 import { CashFlowsModule } from './cashflows/cashflows.module';
 import { CashFlowGroupsModule } from './cashflow-groups/cashflow-groups.module';
 import { NoteTemplatesModule } from './note-templates/note-templates.module';
+import { UnitsModule } from './units/units.module';
 import { ProductionsModule } from './productions/productions.module';
 import { DestructionsModule } from './destructions/destructions.module';
 import { InternalUseModule } from './internal-use/internal-use.module';
@@ -166,6 +167,7 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
     CashFlowsModule,
     CashFlowGroupsModule,
     NoteTemplatesModule,
+    UnitsModule,
     ProductionsModule,
     DestructionsModule,
     InternalUseModule,
