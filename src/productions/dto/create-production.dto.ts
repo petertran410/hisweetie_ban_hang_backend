@@ -7,6 +7,8 @@ import {
   IsBoolean,
   IsArray,
   ValidateNested,
+  IsIn,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
@@ -73,4 +75,44 @@ export class CreateProductionDto {
   @IsInt()
   @Type(() => Number)
   formulaId?: number;
+
+  // ── Gửi sản xuất ở nhà máy ngoài ────────────────────────────────────
+  @IsOptional()
+  @IsBoolean()
+  isExternal?: boolean;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  factoryId?: number | null;
+
+  // NCC ghi nhận phí sản xuất (công nợ). Bắt buộc với phiếu gửi.
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  supplierId?: number;
+
+  @IsOptional()
+  @IsIn(['VND', 'CNY'])
+  feeCurrency?: string;
+
+  // Phí sản xuất cả lô bằng VND (dùng khi feeCurrency = VND).
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  processingFee?: number;
+
+  // Phí bằng ngoại tệ + tỷ giá (dùng khi feeCurrency = CNY).
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeForeignAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeExchangeRate?: number;
 }

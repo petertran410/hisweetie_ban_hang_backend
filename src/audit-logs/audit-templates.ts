@@ -317,6 +317,26 @@ export const AUDIT_TEMPLATES: Record<
     category: 'production',
     severity: 'warning',
   },
+  PRODUCTION_FACTORY_SEND: {
+    template: 'Gửi nguyên liệu sang nhà máy theo phiếu {productionCode}',
+    category: 'production',
+    severity: 'info',
+  },
+  PRODUCTION_FACTORY_RECEIVE: {
+    template: 'Nhận {receivedQuantity} thành phẩm từ nhà máy, phiếu {productionCode}',
+    category: 'production',
+    severity: 'info',
+  },
+  PRODUCTION_FACTORY_APPLY_COST: {
+    template: 'Áp giá vốn {newCostAmount} cho thành phẩm của phiếu {productionCode}',
+    category: 'production',
+    severity: 'warning',
+  },
+  PRODUCTION_FACTORY_CANCEL: {
+    template: 'Hủy phiếu gửi sản xuất {productionCode}',
+    category: 'production',
+    severity: 'warning',
+  },
 
   DESTRUCTION_CREATE: {
     template: 'Tạo phiếu xuất hủy {destructionCode}',

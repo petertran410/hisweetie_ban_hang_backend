@@ -17,6 +17,11 @@ import {
   CreateProductionDto,
   UpdateProductionDto,
   ProductionQueryDto,
+  SendProductionDto,
+  ReceiveProductionDto,
+  ApplyProductionCostDto,
+  CostPreviewQueryDto,
+  CancelSentProductionDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
@@ -95,6 +100,70 @@ export class ProductionsController {
   ) {
     const userId = req.user?.id || 1;
     return this.productionsService.update(+id, dto, userId);
+  }
+
+  // ── Gửi sản xuất ở nhà máy ngoài ──────────────────────────────────────
+  @Post(':id/send')
+  @RequirePermissions('productions:update')
+  send(
+    @Param('id') id: string,
+    @Body() dto: SendProductionDto,
+    @Req() req: any,
+  ) {
+    return this.productionsService.sendToFactory(+id, dto, req.user?.id || 1);
+  }
+
+  @Post(':id/receive')
+  @RequirePermissions('productions:update')
+  receive(
+    @Param('id') id: string,
+    @Body() dto: ReceiveProductionDto,
+    @Req() req: any,
+  ) {
+    return this.productionsService.receiveFromFactory(
+      +id,
+      dto,
+      req.user?.id || 1,
+    );
+  }
+
+  @Get(':id/cost-preview')
+  @RequirePermissions('productions:view')
+  costPreview(@Param('id') id: string, @Query() query: CostPreviewQueryDto) {
+    return this.productionsService.getFactoryCostPreview(
+      +id,
+      query.receivedQuantity,
+    );
+  }
+
+  @Post(':id/apply-cost')
+  @RequirePermissions('productions:update')
+  applyCost(
+    @Param('id') id: string,
+    @Body() dto: ApplyProductionCostDto,
+    @Req() req: any,
+  ) {
+    return this.productionsService.applyFactoryCost(
+      +id,
+      dto,
+      req.user?.id || 1,
+    );
+  }
+
+  // Phiếu đã gửi / hoàn thành chỉ admin hủy được: dùng quyền Xóa phiếu sản
+  // xuất (vốn chỉ cấp cho admin) thay vì thêm quyền mới.
+  @Post(':id/cancel-sent')
+  @RequirePermissions('productions:delete')
+  cancelSent(
+    @Param('id') id: string,
+    @Body() dto: CancelSentProductionDto,
+    @Req() req: any,
+  ) {
+    return this.productionsService.cancelSentProduction(
+      +id,
+      dto,
+      req.user?.id || 1,
+    );
   }
 
   @Delete(':id')

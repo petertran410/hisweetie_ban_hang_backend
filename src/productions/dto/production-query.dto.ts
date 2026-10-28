@@ -39,4 +39,13 @@ export class ProductionQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  // true = chỉ phiếu Gửi sản xuất, false = chỉ sản xuất nội bộ.
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === undefined || value === ''
+      ? undefined
+      : value === true || value === 'true',
+  )
+  isExternal?: boolean;
 }
