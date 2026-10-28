@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as fs from 'fs';
-import { isZaloMediaUrl, safeFileName, SmaxChatService, vietQrUrl } from './smax-chat.service';
+import { isProxyableMediaUrl, isZaloMediaUrl, safeFileName, SmaxChatService, vietQrUrl } from './smax-chat.service';
 
 const PAGE = 'zlw693698651694262958';
 const pages = [
@@ -365,6 +365,26 @@ describe('SmaxChatService', () => {
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
   });
 
+  it('recentChats tìm kiếm: gửi keyword cho Smax, chỉ giữ hội thoại khớp tên (không dấu, không phân biệt hoa thường)', async () => {
+    const { service, api } = makeService();
+    (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+    (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+      { tid: 'zlw1', pagePid: PAGE, name: 'Diệp Trà - Ms Thúy - Tân Phú', isGroup: true, lastMessage: 'a', lastMessageAt: null, unread: false },
+      // Smax khớp do thành viên / nội dung tin → bỏ
+      { tid: 'zlw2', pagePid: PAGE, name: 'CỘNG ĐỒNG LERMAO HƯNG YÊN', isGroup: true, lastMessage: 'chị Thúy ơi', lastMessageAt: null, unread: false },
+      { tid: 'zlw3', pagePid: PAGE, name: 'THUY NGUYEN', isGroup: false, lastMessage: 'b', lastMessageAt: null, unread: false },
+    ]);
+
+    const { items } = await service.recentChats(1, undefined, 50, '  thúy ');
+
+    expect(items.map((i) => i.tid)).toEqual(['zlw1', 'zlw3']);
+    expect((api as any).listRecentThreads).toHaveBeenCalledWith([PAGE], 50, 'thúy');
+  });
+
   it('friendAction: đồng ý = gửi lời mời lại, thu hồi = undo; chỉ cho Zalo cá nhân; ghi audit', async () => {
     const { service, api, audit } = makeService();
     const res = await service.friendAction(5, actor, { pagePid: PAGE, contactId: 10, action: 'accept' });
@@ -500,6 +520,10 @@ describe('SmaxChatService', () => {
     expect(isZaloMediaUrl('https://zalo-api.zadn.vn/api/emoticon/sticker/webpc?eid=1')).toBe(true);
     expect(isZaloMediaUrl('https://evil.com/zdn.vn/x.jpg')).toBe(false);
     expect(isZaloMediaUrl('http://photo.zdn.vn/x.jpg')).toBe(false);
+    // Tải qua backend: thêm ảnh QR VietQR (mẫu in), không mở cho chuyển tiếp
+    expect(isProxyableMediaUrl('https://img.vietqr.io/image/BIDV-1-compact1.png?amount=0')).toBe(true);
+    expect(isZaloMediaUrl('https://img.vietqr.io/image/BIDV-1-compact1.png')).toBe(false);
+    expect(isProxyableMediaUrl('https://img.vietqr.io.evil.com/x.png')).toBe(false);
     await expect(
       service.sendMessage(5, actor, {
         pagePid: PAGE, contactId: 10, forwardMedia: [{ url: 'https://evil.com/a.jpg', kind: 'image' }], confirmed: true,

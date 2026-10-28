@@ -83,6 +83,9 @@ const REACTIONS = ['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'];
 const SEND_LIMIT_PER_MINUTE = 20;
 const GROUP_INDEX_TTL_MS = 10 * 60_000;
 const RECENT_TTL_MS = 30_000;
+// So khớp tên không phân biệt hoa thường / dấu tiếng Việt
+const foldVi = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
 // Mã khách POS trong tên nhóm Zalo, vd "… DIỆP TRÀ KH005844", "KH241166031.1"
 const CUSTOMER_CODE_IN_NAME = /\bKH\d{3,}(?:\.\d+)?\b/gi;
 const MEDIA_SUBFOLDER = 'smax-chat';
@@ -135,6 +138,9 @@ export interface SendContent {
 // Máy chủ ảnh/tệp/sticker của Zalo — cho phép chuyển tiếp & tải qua backend
 const ZALO_MEDIA_HOST = /^https:\/\/([\w-]+\.)*(zdn\.vn|zadn\.vn|zalo\.me|dlfl\.vn|dlmd\.me)\//;
 export const isZaloMediaUrl = (url: string) => ZALO_MEDIA_HOST.test(url || '');
+// Ảnh QR VietQR trong mẫu in (chụp bản in hoá đơn/đặt hàng gửi vào chat — host không cho CORS)
+const VIETQR_IMAGE_HOST = /^https:\/\/img\.vietqr\.io\//;
+export const isProxyableMediaUrl = (url: string) => isZaloMediaUrl(url) || VIETQR_IMAGE_HOST.test(url || '');
 export interface ChatAttachmentInput {
   // Đường dẫn trong /uploads do uploadAttachments trả về, vd "smax-chat/123-ab.jpg"
   path: string;
@@ -182,9 +188,9 @@ export class SmaxChatService {
         : config.get<string>('NODE_ENV') !== 'production';
   }
 
-  /** Tải ảnh/tệp Zalo qua backend (trình duyệt bị CORS + chặn hotlink). */
+  /** Tải ảnh/tệp Zalo (hoặc ảnh QR VietQR) qua backend (trình duyệt bị CORS + chặn hotlink). */
   async fetchZaloMedia(url: string) {
-    if (!isZaloMediaUrl(url)) throw new BadRequestException('Chỉ tải được ảnh/tệp trên máy chủ Zalo');
+    if (!isProxyableMediaUrl(url)) throw new BadRequestException('Chỉ tải được ảnh/tệp trên máy chủ Zalo');
     const res = await fetch(url, { redirect: 'follow' });
     if (!res.ok || !res.body) throw new NotFoundException('Không tải được tệp từ Zalo');
     return {
@@ -979,20 +985,27 @@ export class SmaxChatService {
    * Hội thoại mới nhất trên các kênh Zalo cá nhân của người gọi, khớp khách POS:
    * theo ID Zalo đã lưu (mở được ngay), hoặc theo mã khách trong tên nhóm (gợi ý).
    */
-  async recentChats(actorId: number, pagePid?: string) {
+  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string) {
+    // Thanh thu gọn xin thêm khi bấm "…" (Smax: 100 hội thoại ~2s, nên chỉ lấy khi cần)
+    const take = Math.min(200, Math.max(10, Math.round(limit)));
+    const keyword = q?.trim().slice(0, 100) || undefined;
     const channels = (await this.myChannels(actorId)).filter(
       (c) => !c.missing && c.platform === 'zaloweb' && (!pagePid || c.pagePid === pagePid),
     );
     if (!channels.length) return { items: [] };
     const pagePids = channels.map((c) => c.pagePid).sort();
-    const key = pagePids.join(',');
+    const key = `${pagePids.join(',')}:${take}:${keyword ?? ''}`;
     let cached = this.recentCache.get(key);
     if (!cached || Date.now() - cached.at > RECENT_TTL_MS) {
-      cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, 30) };
+      // Mỗi từ khoá tìm là 1 mục cache → dọn mục hết hạn để map không phình
+      for (const [k, v] of this.recentCache) if (Date.now() - v.at > RECENT_TTL_MS) this.recentCache.delete(k);
+      cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, take, keyword) };
       this.recentCache.set(key, cached);
       cached.threads.catch(() => this.recentCache.delete(key));
     }
-    const threads = await cached.threads;
+    let threads = await cached.threads;
+    // Smax khớp cả thành viên nhóm & nội dung tin → chỉ giữ hội thoại khớp tên Zalo / tên nhóm
+    if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 
     const zaloIds = threads.map((t) => t.tid.slice(ZALOWEB_PREFIX.length));
     const codes = [
