@@ -48,6 +48,26 @@ export class ReceiveProductionDto {
   @IsOptional()
   @IsIn(['receiveBranch', 'allBranches'])
   costScope?: 'receiveBranch' | 'allBranches';
+
+  // Phí chốt lúc nhận (= giá trị phiếu nhập). Bỏ trống → phí ước tính trên
+  // phiếu. Phí VND dùng `processingFee`; phí CNY dùng số CNY + tỷ giá.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  processingFee?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeForeignAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeExchangeRate?: number;
 }
 
 export class ApplyProductionCostDto {
@@ -73,6 +93,13 @@ export class CostPreviewQueryDto {
   @Min(0)
   @Type(() => Number)
   receivedQuantity?: number;
+
+  // Phí (VND) người dùng đang nhập ở modal Nhận hàng — để xem trước đúng.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  processingFee?: number;
 }
 
 export class CancelSentProductionDto {

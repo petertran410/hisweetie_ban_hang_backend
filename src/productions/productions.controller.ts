@@ -133,6 +133,7 @@ export class ProductionsController {
     return this.productionsService.getFactoryCostPreview(
       +id,
       query.receivedQuantity,
+      query.processingFee,
     );
   }
 

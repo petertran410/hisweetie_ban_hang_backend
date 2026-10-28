@@ -1028,7 +1028,7 @@ model Production {
   isExternal            Boolean               @default(false)
   factoryId             Int?
   supplierId            Int?
-  /// Phí sản xuất cả lô quy VND — cộng vào nợ NCC khi Hoàn thành.
+  /// Phí sản xuất cả lô quy VND. Vào nợ NCC qua phiếu nhập (PN) nhận hàng.
   processingFee         Decimal               @default(0) @db.Decimal(18, 2)
   feeCurrency           String                @default("VND")
   feeForeignAmount      Decimal?              @db.Decimal(18, 2)
@@ -1045,6 +1045,7 @@ model Production {
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   components            ProductionComponent[]
+  purchaseOrders        PurchaseOrder[]
   formula               ProductFormula?       @relation(fields: [formulaId], references: [id], onDelete: SetNull)
   factory               Factory?              @relation(fields: [factoryId], references: [id])
   supplier              Supplier?             @relation(fields: [supplierId], references: [id])
@@ -1994,6 +1995,8 @@ model PurchaseOrder {
   vehicleShipmentId     Int?
   currency              String?                  @default("VND") @map("currency")
   exchangeRate          Decimal?                 @default(1) @map("exchange_rate")
+  /// PN nhận thành phẩm từ phiếu Gửi sản xuất (giá trị PN = phí sản xuất).
+  productionId          Int?
   items                 PurchaseOrderItem[]
   payments              PurchaseOrderPayment[]
   surcharges            PurchaseOrderSurcharge[]
@@ -2003,9 +2006,11 @@ model PurchaseOrder {
   purchaseBy            User?                    @relation("PurchaseOrderBuyer", fields: [purchaseById], references: [id])
   supplier              Supplier                 @relation(fields: [supplierId], references: [id])
   vehicleShipment       VehicleShipment?         @relation(fields: [vehicleShipmentId], references: [id])
+  production            Production?              @relation(fields: [productionId], references: [id])
   supplierReturnDetails SupplierReturnDetail[]
   supplierReturns       SupplierReturn[]
 
+  @@index([productionId])
   @@map("purchase_orders")
 }
 

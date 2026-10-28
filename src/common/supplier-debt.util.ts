@@ -1,5 +1,3 @@
-import { getProductionFeeDebtItems } from './production-factory.util';
-
 interface RecalcSupplierDebtOptions {
   /**
    * Bỏ 1 supplier-return ra khỏi offsets — dùng khi SR đang chuyển trạng thái
@@ -187,18 +185,8 @@ export async function recalcSupplierDebt(
       0,
     ) + (opts.extraSupplierReturnOffset || 0);
 
-  // 4. Phí sản xuất của phiếu Gửi sản xuất đã hoàn thành. Giá vốn nguyên
-  //    liệu đang ở nhà máy KHÔNG tính vào nợ (theo dõi riêng). Không cộng vào
-  //    `totalInvoiced` (đó là giá trị MUA hàng).
-  const productionFeeItems = await getProductionFeeDebtItems(tx, supplierId);
-  const debtFromProductionFees = productionFeeItems.reduce(
-    (s, item) => s + item.amount,
-    0,
-  );
-
   const totalDebt =
     debtFromPurchases +
-    debtFromProductionFees +
     totalCashFlowReceived -
     totalCashFlowPaid -
     totalSupplierReturnOffsets;

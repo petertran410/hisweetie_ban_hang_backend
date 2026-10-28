@@ -23,6 +23,11 @@ import {
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 import {
+  assertProductionPurchaseOrder,
+  ensureInventoryRow,
+  syncProductionFromPurchaseOrders,
+} from '../common/production-factory.util';
+import {
   writeConditionLogs,
   recalcConditionBucketsForPairs,
   computeBucketTotalsBatch,
@@ -44,357 +49,396 @@ export class PurchaseOrdersService {
 
   async create(dto: CreatePurchaseOrderDto, userId: number) {
     const touchedProductIds = new Set<number>();
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Cho phép user tự điền mã PN. Trim + check duplicate; nếu trống fallback
-      // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
-      const code = await this.resolvePurchaseOrderCode(tx, dto.code);
+    const result = await this.prisma.$transaction((tx) =>
+      this.createTx(tx, dto, userId, touchedProductIds),
+    );
+    this.enqueueLarkSync(touchedProductIds);
+    return result;
+  }
 
-      const itemsData = await Promise.all(
-        dto.items.map(async (item, index) => {
-          const product = await tx.product.findUnique({
-            where: { id: item.productId },
-          });
-          if (!product)
-            throw new NotFoundException(`Product ${item.productId} not found`);
-
-          // FE có thể gửi sẵn `totalPrice` (số nguyên đã chốt) khi user nhập
-          // trực tiếp ô Thành tiền. Khi đó lưu thẳng để tránh sai lệch do đơn
-          // giá có 3 số thập phân (vd 333.333 * 3 = 999.999). Nếu không gửi,
-          // fallback công thức (price - discount) * quantity.
-          const totalPrice =
-            item.totalPrice !== undefined && item.totalPrice !== null
-              ? Number(item.totalPrice)
-              : (Number(item.price) - (Number(item.discount) || 0)) *
-                Number(item.quantity);
-
-          return {
-            productId: item.productId,
-            productCode: product.code,
-            productName: product.name,
-            quantity: item.quantity,
-            price: item.price,
-            discount: item.discount || 0,
-            discountRatio: item.discountRatio || 0,
-            totalPrice,
-            description: item.description,
-            // Số thứ tự dòng (1, 2, 3...). Ưu tiên FE gửi sẵn (vd khi sửa
-            // PN đã có), fallback generate theo index — đảm bảo unique key
-            // (purchaseOrderId, lineNumber) luôn khác nhau trong cùng phiếu.
-            lineNumber: item.lineNumber ?? index + 1,
-            // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
-            conditionType: item.conditionType || 'normal',
-            factoryPrice:
-              item.factoryPrice != null ? Number(item.factoryPrice) : null,
-            factorySubTotal:
-              item.factorySubTotal != null
-                ? Number(item.factorySubTotal)
-                : null,
-          };
-        }),
-      );
-
-      const total = itemsData.reduce(
-        (sum, item) => sum + Number(item.totalPrice),
-        0,
-      );
-
-      const currency = (dto.currency || 'VND').toUpperCase();
-      if (!['VND', 'CNY'].includes(currency)) {
-        throw new BadRequestException(
-          `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
-        );
-      }
-      const exchangeRate =
-        currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
-      if (currency === 'CNY' && exchangeRate <= 0) {
-        throw new BadRequestException(
-          'Khi currency = CNY thì exchangeRate phải > 0',
-        );
-      }
-
-      const paidAmount = Number(dto.paidAmount || 0);
-      if (paidAmount > 0 && currency === 'CNY') {
-        if (
-          dto.paymentExchangeRate == null ||
-          Number(dto.paymentExchangeRate) <= 0 ||
-          dto.paymentForeignAmount == null ||
-          Number(dto.paymentForeignAmount) <= 0
-        ) {
-          throw new BadRequestException(
-            'Thanh toán phiếu CNY phải có tỉ giá và số tiền CNY',
-          );
-        }
-        if (
-          Math.round(
-            Number(dto.paymentForeignAmount) * Number(dto.paymentExchangeRate),
-          ) !== paidAmount
-        ) {
-          throw new BadRequestException(
-            'Số tiền thanh toán CNY quy đổi không khớp số tiền VND',
-          );
-        }
-      }
-      if (
-        paidAmount > 0 &&
-        currency === 'VND' &&
-        (dto.paymentExchangeRate != null || dto.paymentForeignAmount != null)
-      ) {
-        throw new BadRequestException(
-          'Thanh toán phiếu VND không được gửi số tiền CNY',
-        );
-      }
-
-      const discountAmount = dto.discountRatio
-        ? (total * dto.discountRatio) / 100
-        : Number(dto.discount || 0);
-
-      if (dto.orderSupplierId) {
-        const linkedOrderSupplier = await tx.orderSupplier.findUnique({
-          where: { id: dto.orderSupplierId },
-          select: { discount: true },
-        });
-        if (linkedOrderSupplier) {
-          const existingPOs = await tx.purchaseOrder.findMany({
-            where: { orderSupplierId: dto.orderSupplierId },
-            select: { discount: true },
-          });
-          const usedDiscount = existingPOs.reduce(
-            (sum, po) => sum + Number(po.discount),
-            0,
-          );
-          const maxDiscount = Number(linkedOrderSupplier.discount);
-          if (usedDiscount + discountAmount > maxDiscount) {
-            throw new BadRequestException(
-              `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${maxDiscount - usedDiscount}`,
-            );
-          }
-        }
-      }
-
-      const subTotal = total - discountAmount;
-      const debtAmount = subTotal - paidAmount;
-
-      // Đối xứng `invoices.service.ts:583`: nếu có thanh toán mà chưa chọn
-      // chi nhánh, throw thẳng. Tránh case PurchaseOrderPayment được tạo
-      // nhưng CashFlow bỏ qua → recalcSupplierDebt sai.
-      if (paidAmount > 0 && !dto.isDraft && !dto.branchId) {
-        throw new BadRequestException(
-          'Vui lòng chọn chi nhánh khi có thanh toán',
-        );
-      }
-
-      const supplier = await tx.supplier.findUnique({
-        where: { id: dto.supplierId },
-        select: { debt: true, name: true, code: true },
-      });
-      const supplierOldDebt = Number(supplier?.debt || 0);
-
-      const purchaseOrder = await tx.purchaseOrder.create({
-        data: {
-          code,
-          orderSupplierId: dto.orderSupplierId,
-          supplierId: dto.supplierId,
-          branchId: dto.branchId,
-          purchaseDate: dto.purchaseDate
-            ? new Date(dto.purchaseDate)
-            : new Date(),
-          total,
-          totalAmount: total,
-          discount: discountAmount,
-          discountRatio: dto.discountRatio || 0,
-          subTotal,
-          paidAmount,
-          debtAmount,
-          status: dto.isDraft ? 0 : 1,
-          statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
-          supplierOldDebt,
-          supplierDebt: debtAmount,
-          // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
-          // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
-          currency,
-          exchangeRate,
-          isDraft: dto.isDraft || false,
-          partnerType: dto.partnerType,
-          description: dto.description,
-          purchaseById: dto.purchaseById,
-          createdBy: userId,
-          items: {
-            create: itemsData,
-          },
-        },
-        include: {
-          items: true,
-        },
-      });
-
-      // Semantic mới: chỉ "Hoàn thành" mới đụng tồn kho. PN tạo dạng "Phiếu
-      // tạm" (isDraft=true) KHÔNG cộng tồn — chờ user chuyển sang Hoàn thành
-      // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
-      // sẵn check `!dto.isDraft` ở dưới.
-      if (dto.branchId && !dto.isDraft) {
-        // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
-        // (truy vết ai nhập kho).
-        const poUser = await tx.user.findUnique({
-          where: { id: userId },
-          select: { name: true, email: true },
-        });
-        const poLogActor = buildInventoryLogActor(
-          userId,
-          poUser?.name || poUser?.email,
-        );
-        const touched = await this.updateInventory(
-          purchaseOrder.id,
-          tx,
-          poLogActor,
-        );
-        for (const productId of touched) touchedProductIds.add(productId);
-      }
-
-      // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
-      // + CashFlow PCPN. Formula B đối xứng triệt để KH: cashflow là single
-      // source cho mọi tiền, KHÔNG dùng po.paidAmount trong công thức.
-      const cashFlowIdsToUpdate: number[] = [];
-      if (paidAmount > 0 && !dto.isDraft && dto.branchId) {
-        const paymentCode = await this.generatePCPNCode(tx);
-
-        // Tạo CashFlow TRƯỚC để có id gán vào PurchaseOrderPayment.cashFlowId
-        // (đối xứng pattern `invoice-payments.service.ts:78-99`).
-        const cashFlow = await tx.cashFlow.create({
-          data: {
-            code: paymentCode,
-            branchId: dto.branchId,
-            cashFlowGroupId: 9,
-            isReceipt: false,
-            amount: paidAmount,
-            currency: currency === 'CNY' ? 'CNY' : 'VND',
-            exchangeRate:
-              currency === 'CNY' && dto.paymentExchangeRate != null
-                ? Number(dto.paymentExchangeRate)
-                : 1,
-            foreignAmount:
-              currency === 'CNY' && dto.paymentForeignAmount != null
-                ? Number(dto.paymentForeignAmount)
-                : null,
-            transDate: dto.purchaseDate
-              ? new Date(dto.purchaseDate)
-              : new Date(),
-            method: dto.paymentMethod || 'cash',
-            accountId: dto.paymentAccountId ?? null,
-            partnerType: 'S',
-            partnerId: dto.supplierId,
-            partnerName: supplier?.name,
-            description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
-            status: 0,
-            statusValue: 'Đã thanh toán',
-            createdBy: userId,
-            usedForFinancialReporting: 1,
-            supplierDebtSnapshot: null,
-          },
-        });
-        cashFlowIdsToUpdate.push(cashFlow.id);
-
-        await tx.purchaseOrderPayment.create({
-          data: {
-            code: paymentCode,
-            purchaseOrderId: purchaseOrder.id,
-            paymentDate: dto.purchaseDate
-              ? new Date(dto.purchaseDate)
-              : new Date(),
-            amount: paidAmount,
-            paymentMethod: dto.paymentMethod || 'cash',
-            accountId: dto.paymentAccountId ?? null,
-            description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
-            status: 1,
-            statusValue: 'Đã thanh toán',
-            cashFlowId: cashFlow.id,
-            exchangeRate:
-              dto.paymentExchangeRate != null
-                ? Number(dto.paymentExchangeRate)
-                : null,
-            foreignAmount:
-              dto.paymentForeignAmount != null
-                ? Number(dto.paymentForeignAmount)
-                : null,
-          },
-        });
-      }
-
-      await this.updateSupplierDebt(dto.supplierId, tx);
-
-      // Update supplierDebtSnapshot trên cashflow vừa tạo, đối xứng
-      // `invoices.service.ts:1845-1854` (cashFlow.updateMany sau recalc).
-      if (cashFlowIdsToUpdate.length > 0) {
-        const updatedSupplier = await tx.supplier.findUnique({
-          where: { id: dto.supplierId },
-          select: { debt: true },
-        });
-        await tx.cashFlow.updateMany({
-          where: { id: { in: cashFlowIdsToUpdate } },
-          data: {
-            supplierDebtSnapshot: updatedSupplier
-              ? Number(updatedSupplier.debt)
-              : null,
-          },
-        });
-      }
-
-      if (dto.orderSupplierId) {
-        await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
-      }
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true, branchId: true },
-      });
-
-      const branch = await tx.branch.findUnique({
-        where: { id: dto.branchId },
-        select: { name: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'PURCHASE_ORDER_CREATE',
-        entityType: 'purchase_orders',
-        entityId: purchaseOrder.id.toString(),
-        entityCode: purchaseOrder.code,
-        category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
-        severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
-        snapshot: this.buildPurchaseOrderSnapshot(
-          purchaseOrder,
-          supplier?.name,
-          branch?.name,
-        ),
-        message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
-          purchaseOrderCode: purchaseOrder.code,
-          supplierName: supplier?.name || 'N/A',
-        }),
-        messageTemplate: 'PURCHASE_ORDER_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: purchaseOrder.branchId || user?.branchId || undefined,
-      });
-
-      return tx.purchaseOrder.findUnique({
-        where: { id: purchaseOrder.id },
-        include: {
-          orderSupplier: true,
-          supplier: true,
-          branch: true,
-          purchaseBy: { select: { id: true, name: true } },
-          creator: { select: { id: true, name: true } },
-          items: { include: { product: true } },
-          payments: true,
-          surcharges: true,
-        },
-      });
-    });
-
-    for (const productId of touchedProductIds) {
+  /** Đẩy đồng bộ Lark cho sản phẩm đã đổi tồn — gọi SAU khi commit. */
+  enqueueLarkSync(productIds: Iterable<number>) {
+    for (const productId of productIds) {
       this.larkProductSync.enqueueSync(productId);
     }
+  }
 
-    return result;
+  /**
+   * Lõi tạo PN nhận sẵn `tx` — để luồng Nhận hàng của phiếu Gửi sản xuất tạo
+   * PN trong cùng transaction với phiếu. Người gọi tự đẩy đồng bộ Lark cho
+   * `touchedProductIds` SAU khi commit.
+   */
+  async createTx(
+    tx: any,
+    dto: CreatePurchaseOrderDto,
+    userId: number,
+    touchedProductIds: Set<number> = new Set<number>(),
+  ) {
+    // PN nhận thành phẩm từ phiếu Gửi sản xuất: đúng NCC, kho, 1 dòng.
+    if (dto.productionId) {
+      if (dto.orderSupplierId) {
+        throw new BadRequestException(
+          'Phiếu nhập không thể vừa từ đặt hàng nhập vừa từ phiếu sản xuất',
+        );
+      }
+      const production = await assertProductionPurchaseOrder(tx, {
+        productionId: dto.productionId,
+        supplierId: dto.supplierId,
+        branchId: dto.branchId,
+        items: dto.items,
+      });
+      dto = { ...dto, branchId: production.destinationBranchId };
+      await ensureInventoryRow(
+        tx,
+        production.productId,
+        production.destinationBranchId,
+      );
+    }
+
+    // Cho phép user tự điền mã PN. Trim + check duplicate; nếu trống fallback
+    // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
+    const code = await this.resolvePurchaseOrderCode(tx, dto.code);
+
+    const itemsData = await Promise.all(
+      dto.items.map(async (item, index) => {
+        const product = await tx.product.findUnique({
+          where: { id: item.productId },
+        });
+        if (!product)
+          throw new NotFoundException(`Product ${item.productId} not found`);
+
+        // FE có thể gửi sẵn `totalPrice` (số nguyên đã chốt) khi user nhập
+        // trực tiếp ô Thành tiền. Khi đó lưu thẳng để tránh sai lệch do đơn
+        // giá có 3 số thập phân (vd 333.333 * 3 = 999.999). Nếu không gửi,
+        // fallback công thức (price - discount) * quantity.
+        const totalPrice =
+          item.totalPrice !== undefined && item.totalPrice !== null
+            ? Number(item.totalPrice)
+            : (Number(item.price) - (Number(item.discount) || 0)) *
+              Number(item.quantity);
+
+        return {
+          productId: item.productId,
+          productCode: product.code,
+          productName: product.name,
+          quantity: item.quantity,
+          price: item.price,
+          discount: item.discount || 0,
+          discountRatio: item.discountRatio || 0,
+          totalPrice,
+          description: item.description,
+          // Số thứ tự dòng (1, 2, 3...). Ưu tiên FE gửi sẵn (vd khi sửa
+          // PN đã có), fallback generate theo index — đảm bảo unique key
+          // (purchaseOrderId, lineNumber) luôn khác nhau trong cùng phiếu.
+          lineNumber: item.lineNumber ?? index + 1,
+          // Phân loại hàng: "normal" (mặc định) hoặc "damaged" (loại B).
+          conditionType: item.conditionType || 'normal',
+          factoryPrice:
+            item.factoryPrice != null ? Number(item.factoryPrice) : null,
+          factorySubTotal:
+            item.factorySubTotal != null ? Number(item.factorySubTotal) : null,
+        };
+      }),
+    );
+
+    const total = itemsData.reduce(
+      (sum, item) => sum + Number(item.totalPrice),
+      0,
+    );
+
+    const currency = (dto.currency || 'VND').toUpperCase();
+    if (!['VND', 'CNY'].includes(currency)) {
+      throw new BadRequestException(
+        `currency không hợp lệ: ${currency}. Chỉ chấp nhận VND hoặc CNY.`,
+      );
+    }
+    const exchangeRate =
+      currency === 'VND' ? 1 : Number(dto.exchangeRate ?? 0) || 0;
+    if (currency === 'CNY' && exchangeRate <= 0) {
+      throw new BadRequestException(
+        'Khi currency = CNY thì exchangeRate phải > 0',
+      );
+    }
+
+    const paidAmount = Number(dto.paidAmount || 0);
+    if (paidAmount > 0 && currency === 'CNY') {
+      if (
+        dto.paymentExchangeRate == null ||
+        Number(dto.paymentExchangeRate) <= 0 ||
+        dto.paymentForeignAmount == null ||
+        Number(dto.paymentForeignAmount) <= 0
+      ) {
+        throw new BadRequestException(
+          'Thanh toán phiếu CNY phải có tỉ giá và số tiền CNY',
+        );
+      }
+      if (
+        Math.round(
+          Number(dto.paymentForeignAmount) * Number(dto.paymentExchangeRate),
+        ) !== paidAmount
+      ) {
+        throw new BadRequestException(
+          'Số tiền thanh toán CNY quy đổi không khớp số tiền VND',
+        );
+      }
+    }
+    if (
+      paidAmount > 0 &&
+      currency === 'VND' &&
+      (dto.paymentExchangeRate != null || dto.paymentForeignAmount != null)
+    ) {
+      throw new BadRequestException(
+        'Thanh toán phiếu VND không được gửi số tiền CNY',
+      );
+    }
+
+    const discountAmount = dto.discountRatio
+      ? (total * dto.discountRatio) / 100
+      : Number(dto.discount || 0);
+
+    if (dto.orderSupplierId) {
+      const linkedOrderSupplier = await tx.orderSupplier.findUnique({
+        where: { id: dto.orderSupplierId },
+        select: { discount: true },
+      });
+      if (linkedOrderSupplier) {
+        const existingPOs = await tx.purchaseOrder.findMany({
+          where: { orderSupplierId: dto.orderSupplierId },
+          select: { discount: true },
+        });
+        const usedDiscount = existingPOs.reduce(
+          (sum, po) => sum + Number(po.discount),
+          0,
+        );
+        const maxDiscount = Number(linkedOrderSupplier.discount);
+        if (usedDiscount + discountAmount > maxDiscount) {
+          throw new BadRequestException(
+            `Giảm giá vượt quá giới hạn. Còn có thể dùng: ${maxDiscount - usedDiscount}`,
+          );
+        }
+      }
+    }
+
+    const subTotal = total - discountAmount;
+    const debtAmount = subTotal - paidAmount;
+
+    // Đối xứng `invoices.service.ts:583`: nếu có thanh toán mà chưa chọn
+    // chi nhánh, throw thẳng. Tránh case PurchaseOrderPayment được tạo
+    // nhưng CashFlow bỏ qua → recalcSupplierDebt sai.
+    if (paidAmount > 0 && !dto.isDraft && !dto.branchId) {
+      throw new BadRequestException(
+        'Vui lòng chọn chi nhánh khi có thanh toán',
+      );
+    }
+
+    const supplier = await tx.supplier.findUnique({
+      where: { id: dto.supplierId },
+      select: { debt: true, name: true, code: true },
+    });
+    const supplierOldDebt = Number(supplier?.debt || 0);
+
+    const purchaseOrder = await tx.purchaseOrder.create({
+      data: {
+        code,
+        orderSupplierId: dto.orderSupplierId,
+        productionId: dto.productionId,
+        supplierId: dto.supplierId,
+        branchId: dto.branchId,
+        purchaseDate: dto.purchaseDate
+          ? new Date(dto.purchaseDate)
+          : new Date(),
+        total,
+        totalAmount: total,
+        discount: discountAmount,
+        discountRatio: dto.discountRatio || 0,
+        subTotal,
+        paidAmount,
+        debtAmount,
+        status: dto.isDraft ? 0 : 1,
+        statusValue: dto.isDraft ? 'Phiếu tạm' : 'Đã nhập hàng',
+        supplierOldDebt,
+        supplierDebt: debtAmount,
+        // Mặc định VND + rate=1 khi tạo PN trực tiếp (không qua PDN).
+        // Currency/exchangeRate chỉ được kế thừa khi tạo từ PDN có set.
+        currency,
+        exchangeRate,
+        isDraft: dto.isDraft || false,
+        partnerType: dto.partnerType,
+        description: dto.description,
+        purchaseById: dto.purchaseById,
+        createdBy: userId,
+        items: {
+          create: itemsData,
+        },
+      },
+      include: {
+        items: true,
+      },
+    });
+
+    // Semantic mới: chỉ "Hoàn thành" mới đụng tồn kho. PN tạo dạng "Phiếu
+    // tạm" (isDraft=true) KHÔNG cộng tồn — chờ user chuyển sang Hoàn thành
+    // qua màn edit thì mới cộng. Đối xứng `createFromOrderSupplier` đã có
+    // sẵn check `!dto.isDraft` ở dưới.
+    if (dto.branchId && !dto.isDraft) {
+      // Fetch người thực hiện để ghi userId/createdByName vào InventoryLog
+      // (truy vết ai nhập kho).
+      const poUser = await tx.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      });
+      const poLogActor = buildInventoryLogActor(
+        userId,
+        poUser?.name || poUser?.email,
+      );
+      const touched = await this.updateInventory(
+        purchaseOrder.id,
+        tx,
+        poLogActor,
+      );
+      for (const productId of touched) touchedProductIds.add(productId);
+    }
+
+    // Đối xứng Invoice.create: paidAmount > 0 → tạo PurchaseOrderPayment
+    // + CashFlow PCPN. Formula B đối xứng triệt để KH: cashflow là single
+    // source cho mọi tiền, KHÔNG dùng po.paidAmount trong công thức.
+    const cashFlowIdsToUpdate: number[] = [];
+    if (paidAmount > 0 && !dto.isDraft && dto.branchId) {
+      const paymentCode = await this.generatePCPNCode(tx);
+
+      // Tạo CashFlow TRƯỚC để có id gán vào PurchaseOrderPayment.cashFlowId
+      // (đối xứng pattern `invoice-payments.service.ts:78-99`).
+      const cashFlow = await tx.cashFlow.create({
+        data: {
+          code: paymentCode,
+          branchId: dto.branchId,
+          cashFlowGroupId: 9,
+          isReceipt: false,
+          amount: paidAmount,
+          currency: currency === 'CNY' ? 'CNY' : 'VND',
+          exchangeRate:
+            currency === 'CNY' && dto.paymentExchangeRate != null
+              ? Number(dto.paymentExchangeRate)
+              : 1,
+          foreignAmount:
+            currency === 'CNY' && dto.paymentForeignAmount != null
+              ? Number(dto.paymentForeignAmount)
+              : null,
+          transDate: dto.purchaseDate ? new Date(dto.purchaseDate) : new Date(),
+          method: dto.paymentMethod || 'cash',
+          accountId: dto.paymentAccountId ?? null,
+          partnerType: 'S',
+          partnerId: dto.supplierId,
+          partnerName: supplier?.name,
+          description: `Chi tiền nhập hàng ${purchaseOrder.code}`,
+          status: 0,
+          statusValue: 'Đã thanh toán',
+          createdBy: userId,
+          usedForFinancialReporting: 1,
+          supplierDebtSnapshot: null,
+        },
+      });
+      cashFlowIdsToUpdate.push(cashFlow.id);
+
+      await tx.purchaseOrderPayment.create({
+        data: {
+          code: paymentCode,
+          purchaseOrderId: purchaseOrder.id,
+          paymentDate: dto.purchaseDate
+            ? new Date(dto.purchaseDate)
+            : new Date(),
+          amount: paidAmount,
+          paymentMethod: dto.paymentMethod || 'cash',
+          accountId: dto.paymentAccountId ?? null,
+          description: `Trả tiền nhập hàng ${purchaseOrder.code}`,
+          status: 1,
+          statusValue: 'Đã thanh toán',
+          cashFlowId: cashFlow.id,
+          exchangeRate:
+            dto.paymentExchangeRate != null
+              ? Number(dto.paymentExchangeRate)
+              : null,
+          foreignAmount:
+            dto.paymentForeignAmount != null
+              ? Number(dto.paymentForeignAmount)
+              : null,
+        },
+      });
+    }
+
+    await this.updateSupplierDebt(dto.supplierId, tx);
+
+    // Update supplierDebtSnapshot trên cashflow vừa tạo, đối xứng
+    // `invoices.service.ts:1845-1854` (cashFlow.updateMany sau recalc).
+    if (cashFlowIdsToUpdate.length > 0) {
+      const updatedSupplier = await tx.supplier.findUnique({
+        where: { id: dto.supplierId },
+        select: { debt: true },
+      });
+      await tx.cashFlow.updateMany({
+        where: { id: { in: cashFlowIdsToUpdate } },
+        data: {
+          supplierDebtSnapshot: updatedSupplier
+            ? Number(updatedSupplier.debt)
+            : null,
+        },
+      });
+    }
+
+    if (dto.orderSupplierId) {
+      await this.updateOrderSupplierStatus(dto.orderSupplierId, tx);
+    }
+    if (dto.productionId) {
+      await syncProductionFromPurchaseOrders(tx, dto.productionId);
+    }
+
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { name: true, email: true, branchId: true },
+    });
+
+    const branch = await tx.branch.findUnique({
+      where: { id: dto.branchId },
+      select: { name: true },
+    });
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PURCHASE_ORDER_CREATE',
+      entityType: 'purchase_orders',
+      entityId: purchaseOrder.id.toString(),
+      entityCode: purchaseOrder.code,
+      category: getCategoryFromActionCode('PURCHASE_ORDER_CREATE'),
+      severity: getSeverityFromActionCode('PURCHASE_ORDER_CREATE'),
+      snapshot: this.buildPurchaseOrderSnapshot(
+        purchaseOrder,
+        supplier?.name,
+        branch?.name,
+      ),
+      message: renderAuditMessage('PURCHASE_ORDER_CREATE', {
+        purchaseOrderCode: purchaseOrder.code,
+        supplierName: supplier?.name || 'N/A',
+      }),
+      messageTemplate: 'PURCHASE_ORDER_CREATE',
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: purchaseOrder.branchId || user?.branchId || undefined,
+    });
+
+    return tx.purchaseOrder.findUnique({
+      where: { id: purchaseOrder.id },
+      include: {
+        orderSupplier: true,
+        production: { select: { id: true, code: true } },
+        supplier: true,
+        branch: true,
+        purchaseBy: { select: { id: true, name: true } },
+        creator: { select: { id: true, name: true } },
+        items: { include: { product: true } },
+        payments: true,
+        surcharges: true,
+      },
+    });
   }
 
   /**
@@ -982,6 +1026,7 @@ export class PurchaseOrdersService {
       where.OR = [
         { code: { contains: search, mode: 'insensitive' } },
         { orderSupplier: { code: { contains: search, mode: 'insensitive' } } },
+        { production: { code: { contains: search, mode: 'insensitive' } } },
         { supplier: { name: { contains: search, mode: 'insensitive' } } },
         { supplier: { code: { contains: search, mode: 'insensitive' } } },
         {
@@ -1042,6 +1087,7 @@ export class PurchaseOrdersService {
               code: true,
             },
           },
+          production: { select: { id: true, code: true } },
           branch: { select: { id: true, name: true } },
           purchaseBy: { select: { id: true, name: true } },
           creator: { select: { id: true, name: true } },
@@ -1322,6 +1368,7 @@ export class PurchaseOrdersService {
             code: true,
           },
         },
+        production: { select: { id: true, code: true } },
         supplier: true,
         branch: true,
         purchaseBy: { select: { id: true, name: true } },
@@ -1356,6 +1403,23 @@ export class PurchaseOrdersService {
 
       if (!existing) {
         throw new NotFoundException('Purchase order not found');
+      }
+
+      // PN nhận hàng từ phiếu Gửi sản xuất: giữ đúng NCC, kho, 1 dòng
+      // thành phẩm khi sửa.
+      if (existing.productionId) {
+        if (existing.status === 2) {
+          throw new BadRequestException(
+            'Phiếu nhập đã hủy, không thể chỉnh sửa',
+          );
+        }
+        await assertProductionPurchaseOrder(tx, {
+          productionId: existing.productionId,
+          supplierId: dto.supplierId ?? existing.supplierId,
+          branchId: dto.branchId ?? existing.branchId,
+          items: dto.items ?? existing.items,
+          excludePurchaseOrderId: id,
+        });
       }
 
       // ─── Đổi nhà cung cấp ───────────────────────────────────────────────
@@ -1936,6 +2000,9 @@ export class PurchaseOrdersService {
       if (orderSupplierId) {
         await this.updateOrderSupplierStatus(orderSupplierId, tx);
       }
+      if (existing.productionId) {
+        await syncProductionFromPurchaseOrders(tx, existing.productionId);
+      }
 
       if (userId) {
         const user = await tx.user.findUnique({
@@ -1993,6 +2060,7 @@ export class PurchaseOrdersService {
               code: true,
             },
           },
+          production: { select: { id: true, code: true } },
           supplier: true,
           branch: true,
           purchaseBy: { select: { id: true, name: true } },
@@ -2102,6 +2170,10 @@ export class PurchaseOrdersService {
       // gọi `updateOrderStatusByInvoices` khi cancel Invoice.
       if (orderSupplierId) {
         await this.updateOrderSupplierStatus(orderSupplierId, tx);
+      }
+      // PN từ phiếu Gửi sản xuất bị xóa → phiếu quay về Đã gửi.
+      if (purchaseOrder.productionId) {
+        await syncProductionFromPurchaseOrders(tx, purchaseOrder.productionId);
       }
 
       if (userId) {
@@ -2352,6 +2424,10 @@ export class PurchaseOrdersService {
       // Cập nhật trạng thái PDN nếu PN này thuộc PDN.
       if (purchaseOrder.orderSupplierId) {
         await this.updateOrderSupplierStatus(purchaseOrder.orderSupplierId, tx);
+      }
+      // PN từ phiếu Gửi sản xuất bị hủy → phiếu quay về Đã gửi.
+      if (purchaseOrder.productionId) {
+        await syncProductionFromPurchaseOrders(tx, purchaseOrder.productionId);
       }
 
       // Nếu PN sinh từ phiếu ghép xe: khi xe không còn PN active nào → đưa xe

@@ -100,6 +100,11 @@ export class CreatePurchaseOrderDto {
   @IsOptional()
   orderSupplierId?: number;
 
+  /** Nhận thành phẩm từ phiếu Gửi sản xuất (PN = phí sản xuất). */
+  @IsInt()
+  @IsOptional()
+  productionId?: number;
+
   @IsInt()
   supplierId: number;
 
