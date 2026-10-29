@@ -12,7 +12,8 @@ import {
   LARK_APPROVAL_SOURCE_TYPE,
 } from '../internal-finance/internal-finance.constants';
 import {
-  LARK_LEDGER_CUTOFF,
+  larkLedgerCutoff,
+  readPaymentVoucherDetails,
   summarizeLarkInstance,
   type ApprovalFormItem,
   type LarkFormKind,
@@ -273,10 +274,11 @@ export class LarkApprovalMirrorService {
       const fundRow = found?.status === 'POSTED' ? found : null;
       const completedAt =
         request.completedAt || mirror.completedAt || new Date();
-      // Sổ quỹ Lark đã ghi khoản này: trước ngày dùng POS, hoặc có dòng sổ trùng.
+      // Sổ quỹ Lark đã ghi khoản này: trước ngày dùng POS của chi nhánh, hoặc có
+      // dòng sổ trùng.
       const ledgerOnLark =
         !fundRow &&
-        (completedAt.getTime() < LARK_LEDGER_CUTOFF.getTime() ||
+        (completedAt.getTime() < larkLedgerCutoff(branchId).getTime() ||
           (await this.hasLedgerTwin(tx, {
             branchId,
             receipt: mirror.direction === 'RECEIPT',
@@ -300,6 +302,14 @@ export class LarkApprovalMirrorService {
           branchId,
           occurredAt,
         });
+        // PHIẾU CHI: giữ khoản mục, phòng ban, phương thức, tổng tiền / tiền
+        // mặt / chuyển khoản để hiện trên phiếu (không lưu mã Lark).
+        const details =
+          mirror.formKind === 'PHIEU_CHI'
+            ? readPaymentVoucherDetails(
+                voucherForm(request.formSnapshot, mirror.detailSnapshot),
+              )
+            : null;
         entry = await tx.internalFinanceEntry.create({
           data: {
             code,
@@ -314,8 +324,11 @@ export class LarkApprovalMirrorService {
             sourceSnapshot: {
               formKind: mirror.formKind,
               approvalRequestId: request.id,
+              ...(mirror.cashSource ? { cashSource: mirror.cashSource } : {}),
+              ...(details ? compactDetails(details) : {}),
               ...(ledgerRecorded ? { larkLedgerRecorded: true } : {}),
             },
+            expenseItem: details?.expenseItem ?? undefined,
             description: mirror.description,
             evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
             requiresEvidence: false,
@@ -395,6 +408,22 @@ export async function retryLark<T>(
       await new Promise((resolve) => setTimeout(resolve, wait));
     }
   }
+}
+
+/** Form của đơn: bản POS lưu lúc nhận, không có thì lấy từ bản sao chi tiết. */
+function voucherForm(formSnapshot: unknown, detailSnapshot: unknown) {
+  const own = parseForm((formSnapshot as { form?: unknown } | null)?.form);
+  if (own.length) return own;
+  return parseForm((detailSnapshot as { form?: unknown } | null)?.form);
+}
+
+/** Bỏ ô trống để snapshot gọn. */
+function compactDetails(details: object) {
+  return Object.fromEntries(
+    Object.entries(details).filter(
+      ([, value]) => value !== null && value !== undefined && value !== '',
+    ),
+  );
 }
 
 /** Dòng quỹ mà đơn Lark đã ghi, theo loại đơn. */

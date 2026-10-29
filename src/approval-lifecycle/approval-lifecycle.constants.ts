@@ -184,9 +184,8 @@ export const EXPENSE_VP_OPTIONS = {
   ]),
   branchCashSources: {
     4: 'ml657iu1-7mvb2xfgje6-0',
-    5: 'ml657iu1-7mvb2xfgje6-0',
     7: 'ml657iu1-n0lwb0zjbi-0',
-  },
+  } as Record<number, string>,
 } as const;
 
 export const APPROVAL_BRANCHES = {
@@ -215,6 +214,14 @@ export const PAYMENT_VOUCHER = {
     'Tiền Mặt Văn Phòng HN': 4,
     'Tiền Mặt Văn Phòng HCM': 7,
   } as Record<string, number>,
+  // Ô thông tin thêm của đơn, tìm theo tên ô (không có id cố định trong code).
+  detailFieldNames: {
+    expenseType: 'loai chi phi',
+    expenseItem: 'khoan muc chi phi',
+    department: 'chi phi thuoc phong ban',
+    supplier: 'ncu',
+    transferAmount: 'so tien chuyen khoan',
+  },
 } as const;
 
 export interface PaymentVoucherCash {
@@ -223,6 +230,63 @@ export interface PaymentVoucherCash {
   cashSource: string;
   method: string;
   description: string;
+}
+
+/** Thông tin thêm của đơn PHIẾU CHI để hiện trên phiếu (không có mã Lark). */
+export interface PaymentVoucherDetails {
+  method: string | null;
+  expenseType: string | null;
+  expenseItem: string | null;
+  department: string | null;
+  supplier: string | null;
+  totalAmount: number | null;
+  cashAmount: number | null;
+  transferAmount: number | null;
+}
+
+const normalizeLabel = (value: unknown) =>
+  String(value ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+/** Chữ hiển thị của một ô form: lựa chọn trả về chữ, ô nhập trả về giá trị. */
+function formItemText(item: ApprovalFormItem | undefined): string | null {
+  const raw = item?.value;
+  if (raw === undefined || raw === null) return null;
+  const text = Array.isArray(raw)
+    ? raw.map((part) => String(part ?? '')).join(', ')
+    : String(raw);
+  return text.trim() || null;
+}
+
+export function readPaymentVoucherDetails(
+  form: ApprovalFormItem[],
+): PaymentVoucherDetails {
+  const ids = PAYMENT_VOUCHER.fieldIds;
+  const byId = (id: string) => form.find((item) => item.id === id);
+  // Ô nhận dạng theo tên: so sánh bỏ dấu, bỏ dấu câu ("Lý do chi:" → "ly do chi").
+  const byName = (name: string) =>
+    form.find((item) => normalizeLabel(item.name) === name);
+  const number = (item: ApprovalFormItem | undefined) => {
+    const value = Number(item?.value ?? NaN);
+    return Number.isFinite(value) && value > 0 ? value : null;
+  };
+  const names = PAYMENT_VOUCHER.detailFieldNames;
+  const cash = readPaymentVoucherCash(form);
+  return {
+    method: formItemText(byId(ids.method)),
+    expenseType: formItemText(byName(names.expenseType)),
+    expenseItem: formItemText(byName(names.expenseItem)),
+    department: formItemText(byName(names.department)),
+    supplier: formItemText(byName(names.supplier)),
+    totalAmount: number(byId(ids.amount)),
+    cashAmount: cash?.amount ?? number(byId(ids.cashAmount)),
+    transferAmount: number(byName(names.transferAmount)),
+  };
 }
 
 /** Phần tiền mặt chi từ quỹ nội bộ của một đơn PHIẾU CHI; null nếu đơn không dùng quỹ. */
@@ -367,8 +431,12 @@ export const LARK_FORM_KINDS: LarkFormKind[] = [
   'PHIEU_CHI_KHO_SG',
 ];
 
-/** Kho HN (6) và Kho SG (1): đơn tiền mặt của hai quỹ này thành phiếu POS. */
-export const LARK_ENTRY_BRANCHES = [6, 1];
+/**
+ * Kho HN (6), Kho SG (1) và Văn phòng HN (4): đơn tiền mặt của các quỹ này
+ * thành phiếu POS. Văn phòng HN không có Approval tuần, mọi khoản chi / thu
+ * vẫn làm đơn trên Lark; POS nhận về và ghi quỹ. VPSG (7) làm sau.
+ */
+export const LARK_ENTRY_BRANCHES = [6, 1, 4];
 
 /**
  * Ngày dùng hệ thống tài chính nội bộ (14/10/2026): tới hết 13/10 kho ghi tiền
@@ -376,6 +444,17 @@ export const LARK_ENTRY_BRANCHES = [6, 1];
  * quỹ lần nữa (trùng DEPLOY_CUTOFF của ledger-deploy-cutoff).
  */
 export const LARK_LEDGER_CUTOFF = new Date('2026-10-14T00:00:00+07:00');
+
+/**
+ * Văn phòng HN chuyển sang POS muộn hơn: sổ quỹ Lark là số đúng tới hết
+ * 31/10/2026 (đã chép vào Quỹ nội bộ), POS tự ghi quỹ từ 01/11/2026.
+ */
+export const VPHN_LEDGER_CUTOFF = new Date('2026-11-01T00:00:00+07:00');
+
+/** Mốc mà từ đó đơn Lark duyệt mới trừ / cộng quỹ trên POS, theo chi nhánh. */
+export function larkLedgerCutoff(branchId: number | null | undefined) {
+  return branchId === 4 ? VPHN_LEDGER_CUTOFF : LARK_LEDGER_CUTOFF;
+}
 
 export interface LarkInstanceSummary {
   amount: number | null;

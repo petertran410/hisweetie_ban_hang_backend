@@ -102,6 +102,8 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
+/** Văn phòng HN (4), Văn phòng SG (7): không có báo đơn, xe, Approval tuần. */
+const OFFICE_BRANCH_IDS = [4, 7];
 
 /** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
 export const isoWeekOf = (dateKey: string) => {
@@ -692,10 +694,20 @@ export class InternalFinanceService {
     const conditions: any[] = [
       { direction: INTERNAL_FINANCE_DIRECTION.EXPENSE },
       { branchId: { in: branchIds } },
-      { category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] } },
+      {
+        OR: [
+          { category: { in: [...WAREHOUSE_EXPENSE_CATEGORIES] } },
+          // Văn phòng: khoản chi tiền mặt từ đơn PHIẾU CHI Lark là phiếu chi
+          // văn phòng (không có báo đơn, xe hay Approval tuần).
+          {
+            branchId: { in: OFFICE_BRANCH_IDS },
+            category: INTERNAL_FINANCE_CATEGORY.CASH_FUND_EXPENSE,
+          },
+        ],
+      },
       {
         NOT: {
-          branchId: { in: [4, 7] },
+          branchId: { in: OFFICE_BRANCH_IDS },
           category: { in: ['DELIVERY_FEE', 'FUEL', 'VEHICLE_CARE'] },
         },
       },

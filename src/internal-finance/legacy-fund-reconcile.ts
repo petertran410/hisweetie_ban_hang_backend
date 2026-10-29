@@ -92,7 +92,10 @@ export function readText(value: unknown): string {
     return raw
       .map((item) =>
         item && typeof item === 'object'
-          ? readText((item as { text?: unknown; name?: unknown }).text ?? (item as { name?: unknown }).name)
+          ? readText(
+              (item as { text?: unknown; name?: unknown }).text ??
+                (item as { name?: unknown }).name,
+            )
           : readText(item),
       )
       .join('');
@@ -120,8 +123,11 @@ export function readLinks(value: unknown): string[] {
         ? [item]
         : item && typeof item === 'object'
           ? [
-              ...(((item as { record_ids?: unknown[] }).record_ids || []) as string[]),
-              ...((item as { id?: string }).id ? [(item as { id: string }).id] : []),
+              ...(((item as { record_ids?: unknown[] }).record_ids ||
+                []) as string[]),
+              ...((item as { id?: string }).id
+                ? [(item as { id: string }).id]
+                : []),
             ]
           : [],
     );
@@ -144,10 +150,30 @@ export function warehouseBranch(label: string): number | null {
   return null;
 }
 
-/** Một dòng sổ quỹ Lark → 0, 1 hoặc 2 giao dịch (Thu và Chi tính riêng như công thức Lark). */
-export function mapLedgerRecord(record: LarkRecord): LedgerTx[] {
+export const VPHN = 4;
+export const VPSG = 7;
+
+/** Bốn quỹ tiền mặt có trên POS theo cột "Chi Nhánh" của sổ quỹ Lark. */
+export function ledgerBranch(label: string): number | null {
+  const warehouse = warehouseBranch(label);
+  if (warehouse) return warehouse;
+  const text = normalize(label);
+  if (!text.includes('van phong')) return null;
+  if (text.includes('ha noi')) return VPHN;
+  if (text.includes('sai gon')) return VPSG;
+  return null;
+}
+
+/**
+ * Một dòng sổ quỹ Lark → 0, 1 hoặc 2 giao dịch (Thu và Chi tính riêng như
+ * công thức Lark). `resolveBranch` chọn quỹ nào được nhận (mặc định hai kho).
+ */
+export function mapLedgerRecord(
+  record: LarkRecord,
+  resolveBranch: (label: string) => number | null = warehouseBranch,
+): LedgerTx[] {
   const fields = record.fields;
-  const branchId = warehouseBranch(readText(fields['Chi Nhánh']));
+  const branchId = resolveBranch(readText(fields['Chi Nhánh']));
   if (!branchId) return [];
   // Lark chỉ tính số dư theo "Ngày Giao Dịch": dòng thiếu ngày này vẫn giữ (theo
   // ngày tạo) để tra cứu nhưng không tính vào quỹ.
@@ -236,7 +262,7 @@ const fundSelect = {
 } as const;
 
 export async function planReconcile(db: Db, records: LarkRecord[]) {
-  const mapped = records.flatMap(mapLedgerRecord);
+  const mapped = records.flatMap((record) => mapLedgerRecord(record));
   const byKey = new Map(mapped.map((row) => [row.sourceKey, row]));
   const larkIds = new Set(records.map((record) => record.recordId));
   const posLedger: FundRow[] = await db.internalFundTransaction.findMany({
@@ -296,16 +322,17 @@ export async function planReconcile(db: Db, records: LarkRecord[]) {
     )
     .map((entry) => entry.id);
 
-  const entryPostings: Array<FundRow & { approvalRequestId: number | null; createdAt: Date }> =
-    await db.internalFundTransaction.findMany({
-      where: {
-        status: 'POSTED',
-        sourceType: 'INTERNAL_FINANCE_ENTRY',
-        branchId: { in: BRANCHES },
-        entry: { sourceType: 'LARK_IMPORT' },
-      },
-      select: { ...fundSelect, approvalRequestId: true, createdAt: true },
-    });
+  const entryPostings: Array<
+    FundRow & { approvalRequestId: number | null; createdAt: Date }
+  > = await db.internalFundTransaction.findMany({
+    where: {
+      status: 'POSTED',
+      sourceType: 'INTERNAL_FINANCE_ENTRY',
+      branchId: { in: BRANCHES },
+      entry: { sourceType: 'LARK_IMPORT' },
+    },
+    select: { ...fundSelect, approvalRequestId: true, createdAt: true },
+  });
   const taken = new Set<number>();
   // 2. Phiếu đã có dòng sổ quỹ Lark.
   const linkedIdSet = new Set(linkedEntryIds);
@@ -321,7 +348,9 @@ export async function planReconcile(db: Db, records: LarkRecord[]) {
       row.createdAt < IMPORT_POSTED_BEFORE,
   );
   const importPostings = importOnly.filter((row) => row.occurredAt < CUTOFF);
-  const importAfterCutoff = importOnly.filter((row) => row.occurredAt >= CUTOFF);
+  const importAfterCutoff = importOnly.filter(
+    (row) => row.occurredAt >= CUTOFF,
+  );
   importPostings.forEach((row) => taken.add(row.id));
   // 5. HN chưa đồng kiểm theo approval tuần đồng bộ.
   const uncheckedRows = await db.internalFundTransaction.findMany({
@@ -381,7 +410,11 @@ export async function planReconcile(db: Db, records: LarkRecord[]) {
       cashIssued: true,
       OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
     },
-    select: { id: true, amount: true, weeklyBatch: { select: { status: true } } },
+    select: {
+      id: true,
+      amount: true,
+      weeklyBatch: { select: { status: true } },
+    },
   });
   const revertIssued = issuedOutsideApproval.filter(
     (entry) =>
@@ -425,12 +458,14 @@ export async function planReconcile(db: Db, records: LarkRecord[]) {
 
   // Lark tính số dư chỉ theo cột "Ngày Giao Dịch": dòng thiếu ngày này không được
   // công thức Lark cộng vào — liệt kê để đối chiếu phần lệch còn lại.
-  const missingTradeDate = records.filter(
-    (record) =>
-      !readDate(record.fields['Ngày Giao Dịch']) &&
-      warehouseBranch(readText(record.fields['Chi Nhánh'])) !== null &&
-      normalize(readText(record.fields['Trạng Thái'])).trim() !== 'huy',
-  ).flatMap(mapLedgerRecord);
+  const missingTradeDate = records
+    .filter(
+      (record) =>
+        !readDate(record.fields['Ngày Giao Dịch']) &&
+        warehouseBranch(readText(record.fields['Chi Nhánh'])) !== null &&
+        normalize(readText(record.fields['Trạng Thái'])).trim() !== 'huy',
+    )
+    .flatMap((record) => mapLedgerRecord(record));
 
   const afterCutoff = mapped.filter((lark) => lark.occurredAt >= CUTOFF);
   return {
@@ -467,9 +502,13 @@ export function balanceDelta(plan: ReconcilePlan, until?: Date) {
   const delta = new Map(BRANCHES.map((id) => [id, new Prisma.Decimal(0)]));
   const inRange = (date: Date) => !until || date < until;
   const add = (branchId: number, value: Prisma.Decimal) =>
-    delta.set(branchId, (delta.get(branchId) || new Prisma.Decimal(0)).plus(value));
+    delta.set(
+      branchId,
+      (delta.get(branchId) || new Prisma.Decimal(0)).plus(value),
+    );
   for (const row of plan.add)
-    if (inRange(row.occurredAt)) add(row.branchId, signed(row.transactionType, row.amount));
+    if (inRange(row.occurredAt))
+      add(row.branchId, signed(row.transactionType, row.amount));
   for (const { pos, lark } of plan.update) {
     if (pos.status === 'POSTED' && inRange(pos.occurredAt))
       add(pos.branchId, signed(pos.transactionType, pos.amount).negated());
@@ -701,7 +740,9 @@ export async function applyReconcile(
           where: {
             branchId,
             closingDate: {
-              gte: new Date(new Date(Math.min(...dates)).toISOString().slice(0, 10)),
+              gte: new Date(
+                new Date(Math.min(...dates)).toISOString().slice(0, 10),
+              ),
             },
             closedAt: { not: null },
           },

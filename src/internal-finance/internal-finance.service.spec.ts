@@ -254,9 +254,20 @@ describe('InternalFinanceService', () => {
           AND: expect.arrayContaining([
             { branchId: { in: [6] } },
             {
-              category: {
-                in: ['DELIVERY_FEE', 'FUEL', 'VEHICLE_CARE', 'OTHER_EXPENSE'],
-              },
+              OR: [
+                {
+                  category: {
+                    in: [
+                      'DELIVERY_FEE',
+                      'FUEL',
+                      'VEHICLE_CARE',
+                      'OTHER_EXPENSE',
+                    ],
+                  },
+                },
+                // Văn phòng: khoản chi tiền mặt từ đơn PHIẾU CHI Lark.
+                { branchId: { in: [4, 7] }, category: 'CASH_FUND_EXPENSE' },
+              ],
             },
           ]),
         },

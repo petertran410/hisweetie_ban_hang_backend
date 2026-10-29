@@ -43,13 +43,25 @@ describe('summarizeLarkInstance', () => {
       skipReason: 'Không chi bằng tiền mặt quỹ nội bộ',
       amount: 500000,
     });
+    // Văn phòng HN đã lên POS; Văn phòng HCM chưa.
     expect(
       summarizeLarkInstance(
         'PHIEU_CHI',
         voucher('Tiền Mặt', 'Tiền Mặt Văn Phòng HN'),
         approvedAt,
       ),
-    ).toMatchObject({ inScope: false, branchId: 4 });
+    ).toMatchObject({ inScope: true, branchId: 4, skipReason: null });
+    expect(
+      summarizeLarkInstance(
+        'PHIEU_CHI',
+        voucher('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: 7,
+      skipReason: 'Chi từ quỹ văn phòng',
+    });
   });
 
   it('reads a cash receipt into Kho SG as an in-scope receipt', () => {
@@ -262,6 +274,78 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
       larkLedgerRecorded: true,
     });
     expect(f.prisma.internalFundTransaction.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps office voucher details on the entry and uses the VPHN ledger cutoff', async () => {
+    // Duyệt 20/10: sau mốc kho (14/10) nhưng trước mốc VPHN (01/11) → sổ Lark đã ghi.
+    const approvedOct20 = new Date('2026-10-20T03:00:00Z');
+    const form = [
+      ...voucher(
+        'Chuyển Khoản (Công Ty + Tiền Mặt)',
+        'Tiền Mặt Văn Phòng HN',
+        200000,
+      ),
+      {
+        id: 'w-loai',
+        name: 'Loại chi phí',
+        type: 'radioV2',
+        value: 'Mua hàng nội địa, CCDC, dịch vụ',
+      },
+      {
+        id: 'w-khoan',
+        name: 'Khoản mục chi phí',
+        type: 'radioV2',
+        value: 'Cước điện thoại di động',
+      },
+      {
+        id: 'w-pb',
+        name: 'Chi phí thuộc phòng ban',
+        type: 'radioV2',
+        value: 'Phòng Hành Chính - Nhân Sự',
+      },
+      { id: 'w-ncu', name: 'NCU', type: 'input', value: 'Viettel' },
+      {
+        id: 'w-ck',
+        name: 'Số tiền chuyển khoản',
+        type: 'amount',
+        value: 300000,
+      },
+    ];
+    const f = setup({
+      request: {
+        completedAt: approvedOct20,
+        formSnapshot: { version: 'lark', form },
+      },
+      mirror: {
+        branchId: 4,
+        amount: 500000,
+        cashAmount: 200000,
+        cashSource: 'Tiền Mặt Văn Phòng HN',
+        completedAt: approvedOct20,
+        occurredAt: approvedOct20,
+      },
+      fundRow: null,
+    });
+    await f.service.ensureEntry(50);
+    expect(f.entries).toHaveLength(1);
+    expect(f.entries[0]).toMatchObject({
+      branchId: 4,
+      amount: 200000,
+      expenseItem: 'Cước điện thoại di động',
+    });
+    expect(f.entries[0].sourceSnapshot).toMatchObject({
+      larkLedgerRecorded: true,
+      cashSource: 'Tiền Mặt Văn Phòng HN',
+      method: 'Chuyển Khoản (Công Ty + Tiền Mặt)',
+      expenseType: 'Mua hàng nội địa, CCDC, dịch vụ',
+      expenseItem: 'Cước điện thoại di động',
+      department: 'Phòng Hành Chính - Nhân Sự',
+      supplier: 'Viettel',
+      totalAmount: 500000,
+      cashAmount: 200000,
+      transferAmount: 300000,
+    });
+    expect(f.prisma.internalFundTransaction.findFirst).not.toHaveBeenCalled();
   });
 
   it('cancels the entry and the receipt fund row when Lark revokes an approved receipt', async () => {

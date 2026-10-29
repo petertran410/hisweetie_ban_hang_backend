@@ -20,7 +20,7 @@ import {
   APPROVAL_STATUS_ORDER,
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
-  LARK_LEDGER_CUTOFF,
+  larkLedgerCutoff,
   PAYMENT_VOUCHER,
   readFundReceipt,
   readPaymentVoucherCash,
@@ -885,7 +885,8 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     const fund =
       status !== 'APPROVED' || !fundEligible
         ? 'none'
-        : (completedAt && completedAt < LARK_LEDGER_CUTOFF) || ledgerTwin
+        : (completedAt && completedAt < larkLedgerCutoff(summary.branchId)) ||
+            ledgerTwin
           ? 'ledger'
           : existing?.status === status
             ? 'existing'
@@ -1242,6 +1243,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           sourceType: true,
           sourceId: true,
           clientUuid: true,
+          branchId: true,
         },
       });
       if (!current) return;
@@ -1277,13 +1279,15 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         ...(detail ? { detailSnapshot: detail } : {}),
       };
 
-      // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS,
-      // hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái, không ghi quỹ lần 2.
+      // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS
+      // của chi nhánh, hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái,
+      // không ghi quỹ lần 2.
       if (
         isLarkCreated(current.clientUuid) &&
         status === 'APPROVED' &&
         data.completedAt &&
-        (data.completedAt.getTime() < LARK_LEDGER_CUTOFF.getTime() ||
+        (data.completedAt.getTime() <
+          larkLedgerCutoff(current.branchId).getTime() ||
           (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
       ) {
         await tx.approvalRequest.update({ where: { id: requestId }, data });
@@ -1588,7 +1592,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         }
         if (
           branchId &&
-          (branchId === 4 || branchId === 5 || branchId === 7) &&
+          APPROVAL_BRANCHES.EXPENSE_VP.has(branchId) &&
           EXPENSE_VP_OPTIONS.branchCashSources[branchId] !== source
         ) {
           throw new BadRequestException(

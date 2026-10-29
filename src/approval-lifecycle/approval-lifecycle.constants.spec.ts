@@ -1,4 +1,10 @@
-import { readFundReceipt } from './approval-lifecycle.constants';
+import {
+  LARK_LEDGER_CUTOFF,
+  VPHN_LEDGER_CUTOFF,
+  larkLedgerCutoff,
+  readFundReceipt,
+  readPaymentVoucherDetails,
+} from './approval-lifecycle.constants';
 
 describe('readFundReceipt', () => {
   const pick = (id: string, key: string) => ({
@@ -106,5 +112,96 @@ describe('readFundReceipt', () => {
         amount,
       ]),
     ).toBeNull();
+  });
+});
+
+describe('larkLedgerCutoff', () => {
+  it('uses 14/10 for the warehouses and 01/11 for Văn phòng HN', () => {
+    expect(larkLedgerCutoff(6)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(1)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(4)).toEqual(VPHN_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(null)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(VPHN_LEDGER_CUTOFF.toISOString()).toBe('2026-10-31T17:00:00.000Z');
+  });
+});
+
+describe('readPaymentVoucherDetails', () => {
+  const base = [
+    { id: 'widget17321753417610001', type: 'radioV2', value: 'Tiền Mặt' },
+    {
+      id: 'widget17643292059530001',
+      type: 'radioV2',
+      value: 'Tiền Mặt Văn Phòng HN',
+    },
+    { id: 'widget17321752802850001', type: 'amount', value: 1306000 },
+    { id: 'widget17321750170610001', type: 'input', value: 'Cước đt T10' },
+  ];
+
+  it('finds the extra fields by their label, ignoring accents and punctuation', () => {
+    expect(
+      readPaymentVoucherDetails([
+        ...base,
+        {
+          id: 'a',
+          name: 'Loại chi phí',
+          type: 'radioV2',
+          value: 'Mua hàng nội địa, CCDC, dịch vụ',
+        },
+        {
+          id: 'b',
+          name: 'Khoản mục chi phí',
+          type: 'radioV2',
+          value: 'Cước điện thoại di động',
+        },
+        {
+          id: 'c',
+          name: 'Chi phí thuộc phòng ban',
+          type: 'radioV2',
+          value: 'Phòng Hành Chính - Nhân Sự',
+        },
+        { id: 'd', name: 'NCU', type: 'input', value: 'Viettel' },
+        { id: 'e', name: 'Số tiền chuyển khoản', type: 'amount', value: 0 },
+      ]),
+    ).toEqual({
+      method: 'Tiền Mặt',
+      expenseType: 'Mua hàng nội địa, CCDC, dịch vụ',
+      expenseItem: 'Cước điện thoại di động',
+      department: 'Phòng Hành Chính - Nhân Sự',
+      supplier: 'Viettel',
+      totalAmount: 1306000,
+      cashAmount: 1306000,
+      transferAmount: null,
+    });
+  });
+
+  it('takes the cash part for mixed payments and leaves unknown fields empty', () => {
+    expect(
+      readPaymentVoucherDetails([
+        {
+          id: 'widget17321753417610001',
+          type: 'radioV2',
+          value: 'Chuyển Khoản (Công Ty + Tiền Mặt)',
+        },
+        {
+          id: 'widget17643292059530001',
+          type: 'radioV2',
+          value: 'Tiền Mặt Văn Phòng HN',
+        },
+        { id: 'widget17321752802850001', type: 'amount', value: 51274630 },
+        { id: 'widget17643300136400001', type: 'amount', value: 43511590 },
+        {
+          id: 'e',
+          name: 'Số tiền chuyển khoản',
+          type: 'amount',
+          value: 7763040,
+        },
+      ]),
+    ).toMatchObject({
+      totalAmount: 51274630,
+      cashAmount: 43511590,
+      transferAmount: 7763040,
+      expenseItem: null,
+      department: null,
+    });
   });
 });
