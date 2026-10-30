@@ -17,6 +17,7 @@ setup-backup-dirs.sh
 nginx
 
 POSTGRES-STANDBY-SETUP.md
+/backup
 
 .codex
 .vscode
