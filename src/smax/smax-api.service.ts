@@ -231,14 +231,29 @@ export class SmaxApiService {
     };
   }
 
-  /** Hội thoại theo tid; null nếu chưa có trên Smax. */
+  /**
+   * Hội thoại theo tid; null nếu chưa có trên Smax. Partner API lỗi 500 với một số thread
+   * (Smax "Cannot read properties of undefined (reading 'id')") → đọc lại qua API nội bộ
+   * (cùng cấu trúc), không ghi log lỗi Partner mỗi lần tải tin.
+   */
   async getThread(pagePid: string, tid: string): Promise<SmaxThread | null> {
-    const body = await this.request(
-      'GET',
-      `/partner/bizs/${this.bizAlias}/threads/pages/${pagePid}/threads/${tid}`,
-      undefined,
-      { allow404: true },
-    );
+    let body: any;
+    try {
+      body = await this.request(
+        'GET',
+        `/partner/bizs/${this.bizAlias}/threads/pages/${pagePid}/threads/${tid}`,
+        undefined,
+        { allow404: true, silent: !!this.userToken },
+      );
+    } catch (error) {
+      if (!this.userToken) throw error;
+      body = await this.request(
+        'GET',
+        `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}`,
+        undefined,
+        { allow404: true, token: this.userToken },
+      );
+    }
     const t = body?.data ?? body;
     if (!t?.tid) return null;
     const members: Record<string, string> = {};
@@ -443,7 +458,12 @@ export class SmaxApiService {
     method: 'GET' | 'POST',
     path: string,
     data?: any,
-    opts: { allow404?: boolean; timeout?: number; token?: string } = {},
+    opts: {
+      allow404?: boolean;
+      timeout?: number;
+      token?: string;
+      silent?: boolean;
+    } = {},
   ): Promise<any> {
     if (!opts.token && !this.token) {
       throw new ServiceUnavailableException(
@@ -464,11 +484,13 @@ export class SmaxApiService {
     } catch (error: any) {
       const status = error?.response?.status;
       if (status === 404 && opts.allow404) return null;
-      this.logger.error(
-        `Smax ${method} ${path} lỗi ${status ?? ''}: ${JSON.stringify(
-          error?.response?.data ?? error?.message,
-        )}`,
-      );
+      if (!opts.silent) {
+        this.logger.error(
+          `Smax ${method} ${path} lỗi ${status ?? ''}: ${JSON.stringify(
+            error?.response?.data ?? error?.message,
+          )}`,
+        );
+      }
       // 400/422: Smax/Zalo từ chối có lý do rõ (vd khách chặn tin từ người lạ) → báo đúng lý do
       const smaxMessage = error?.response?.data?.message;
       if ((status === 400 || status === 422) && typeof smaxMessage === 'string' && smaxMessage) {
