@@ -81,6 +81,8 @@ const makeService = (env: Record<string, string> = {}) => {
     }),
     getMessages: jest.fn().mockResolvedValue([]),
     reactMessage: jest.fn().mockResolvedValue(undefined),
+    getMessageStates: jest.fn().mockResolvedValue(null),
+    messageAction: jest.fn().mockResolvedValue(undefined),
     listFriendAvatars: jest.fn().mockResolvedValue({ zlwX: 'https://ava/x-moi.jpg' }),
     canReact: true,
     sendZaloweb: jest.fn().mockResolvedValue({ ok: true }),
@@ -512,6 +514,45 @@ describe('SmaxChatService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
     await expect(
       service.reactMessage(actor, { pagePid: 'zlwOTHER', tid: 'zlw45460453502640815', pid: 'zlw8420215128116', reaction: 'LIKE', confirmed: true }),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('thu hồi / xoá tin: gộp trạng thái API nội bộ, ẩn tin đã xoá phía mình; gọi API + audit', async () => {
+    const { service, api, audit } = makeService();
+    const at = new Date().toISOString();
+    api.getMessages.mockResolvedValueOnce([
+      { pid: 'zlw1', sender_pid: PAGE, message: 'đã thu hồi', created_at: at },
+      { pid: 'zlw2', sender_pid: 'zlwX', message: 'đã xoá phía mình', created_at: at },
+      { pid: 'zlw3', sender_pid: 'zlwX', message: 'thường', created_at: at },
+    ]);
+    api.getMessageStates.mockResolvedValueOnce(
+      new Map([
+        ['zlw1', { status: 'deleted' }],
+        ['zlw2', { status: 'sent', deleted: { at } }],
+        ['zlw3', { status: 'sent' }],
+      ]),
+    );
+    const page = await service.getThreadMessages(1, PAGE, 'zlw45460453502640815', '2026-10-30T00:00:00.000Z');
+    expect(api.getMessageStates).toHaveBeenCalledWith(PAGE, 'zlw45460453502640815', '2026-10-30T00:00:00.000Z');
+    expect(page.messages.map((m) => [m.id, m.recalled])).toEqual([['zlw1', true], ['zlw3', false]]);
+    expect(page.hasMore).toBe(false);
+
+    // API nội bộ lỗi → vẫn trả tin như thường
+    api.getMessages.mockResolvedValueOnce([{ pid: 'zlw4', sender_pid: PAGE, message: 'x', created_at: at }]);
+    api.getMessageStates.mockRejectedValueOnce(new Error('401'));
+    const page2 = await service.getThreadMessages(1, PAGE, 'zlw45460453502640815');
+    expect(page2.messages.map((m) => [m.id, m.recalled])).toEqual([['zlw4', false]]);
+
+    await service.messageAction(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'zlw8420215128116', action: 'recall', confirmed: true });
+    expect(api.messageAction).toHaveBeenCalledWith(PAGE, 'zlw45460453502640815', 'zlw8420215128116', 'recall');
+    expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_CHAT_RECALL' });
+    await service.messageAction(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'zlw8420215128116', action: 'delete', confirmed: true });
+    expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_CHAT_DELETE' });
+    await expect(
+      service.messageAction(actor, { pagePid: PAGE, tid: 'zlw45460453502640815', pid: 'abc', action: 'recall', confirmed: true }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.messageAction(actor, { pagePid: 'zlwOTHER', tid: 'zlw45460453502640815', pid: 'zlw8420215128116', action: 'delete', confirmed: true }),
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 

@@ -88,6 +88,9 @@ export interface SmaxRawMessage {
   message?: string;
   sender_pid?: string;
   created_at: string;
+  // Chỉ API nội bộ Smax có (Partner API không trả): "deleted" = đã thu hồi; deleted.at = đã xoá phía mình
+  status?: string;
+  deleted?: { at?: string } | null;
   zaloweb?: {
     // Ảnh/video gửi cùng lượt (album) có chung mã này
     group_layout_id?: string;
@@ -155,6 +158,45 @@ export class SmaxApiService {
       { reaction },
       { token: this.userToken },
     );
+  }
+
+  /**
+   * Thu hồi (cả 2 phía, tin của kênh, trong 24 giờ) / xoá phía mình 1 tin Zalo
+   * qua API nội bộ của app Smax (Partner API không có).
+   */
+  async messageAction(pagePid: string, tid: string, pid: string, action: 'recall' | 'delete'): Promise<void> {
+    if (!this.userToken) {
+      throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa thu hồi / xoá tin được');
+    }
+    await this.request(
+      'POST',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages/${pid}/${action}`,
+      {},
+      { token: this.userToken },
+    );
+  }
+
+  /**
+   * Trạng thái thu hồi / xoá của đúng trang tin như getMessages (cùng 20 tin, `cusor` = `before`),
+   * lấy qua API nội bộ. Không có token → null.
+   */
+  async getMessageStates(
+    pagePid: string,
+    tid: string,
+    before?: string,
+  ): Promise<Map<string, Pick<SmaxRawMessage, 'status' | 'deleted'>> | null> {
+    if (!this.userToken) return null;
+    const qs = before
+      ? `?${new URLSearchParams({ limit: '20', sort: '-created_at', cusor: before })}`
+      : '';
+    const body = await this.request(
+      'GET',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages${qs}`,
+      undefined,
+      { allow404: true, token: this.userToken },
+    );
+    const rows: SmaxRawMessage[] = Array.isArray(body) ? body : (body?.data ?? []);
+    return new Map(rows.map((m) => [m.pid, { status: m.status, deleted: m.deleted }]));
   }
 
   async listPages(): Promise<SmaxPage[]> {

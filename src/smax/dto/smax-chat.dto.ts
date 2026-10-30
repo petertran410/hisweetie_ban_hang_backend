@@ -270,6 +270,29 @@ export class ReactMessageDto {
   confirmed?: boolean;
 }
 
+export class MessageActionDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  // pid tin nhắn ("zlw" + id Zalo)
+  @IsString()
+  @IsNotEmpty()
+  pid: string;
+
+  // recall = thu hồi cả 2 phía; delete = xoá phía mình
+  @IsIn(['recall', 'delete'])
+  action: 'recall' | 'delete';
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
 export class ThreadQueryDto {
   @IsString()
   @IsNotEmpty()

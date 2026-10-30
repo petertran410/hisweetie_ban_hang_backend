@@ -31,6 +31,7 @@ import {
   MediaQueryDto,
   CreateZaloContactDto,
   ReactMessageDto,
+  MessageActionDto,
   FriendActionDto,
   SendChatMessageDto,
   SendThreadMessageDto,
@@ -98,6 +99,13 @@ export class SmaxChatController {
   @RequirePermissions('smax_chat:send')
   react(@Body() dto: ReactMessageDto, @Req() req: any) {
     return this.service.reactMessage(this.actor(req), dto);
+  }
+
+  // Thu hồi / xoá phía mình 1 tin (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Post('threads/message-action')
+  @RequirePermissions('smax_chat:send')
+  messageAction(@Body() dto: MessageActionDto, @Req() req: any) {
+    return this.service.messageAction(this.actor(req), dto);
   }
 
   @Get('recent')

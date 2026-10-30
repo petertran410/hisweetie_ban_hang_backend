@@ -53,6 +53,8 @@ export interface ChatMessage {
   quote: { pid: string | null; text: string; senderName: string | null } | null;
   // Cảm xúc gộp theo icon; mine = kênh (tài khoản Zalo của mình) đã thả icon này
   reactions: { icon: string; count: number; mine: boolean; users: { name: string | null; avatar: string | null }[] }[];
+  // Tin đã thu hồi (kênh hoặc khách thu hồi) — vẫn giữ nội dung để nhân viên xem
+  recalled: boolean;
   createdAt: string;
 }
 
@@ -397,12 +399,15 @@ export class SmaxChatService {
   }
 
   private async loadThreadMessages(channel: SmaxPage, tid: string, before?: string) {
-    const [thread, raw] = await Promise.all([
+    const [thread, fetched, states] = await Promise.all([
       // Thông tin thread chỉ để lấy tên người gửi — Smax lỗi ở đây (đã gặp 500)
       // thì vẫn trả tin nhắn
       before ? null : this.smaxApi.getThread(channel.pid, tid).catch(() => null),
       this.smaxApi.getMessages(channel.pid, tid, before),
+      // Thu hồi / xoá chỉ API nội bộ Smax có; lỗi thì hiện tin như thường
+      this.smaxApi.getMessageStates(channel.pid, tid, before).catch(() => null),
     ]);
+    const raw = states ? fetched.map((m) => ({ ...m, ...states.get(m.pid) })) : fetched;
     const members = thread?.members ?? {};
     // Người gửi khác kênh: tên + avatar (tin cũ tải thêm dùng lại bảng này ở client)
     const senders: Record<string, { name: string | null; avatar: string | null }> = {};
@@ -420,7 +425,7 @@ export class SmaxChatService {
         ...(channel.picture ? { [channel.pid]: channel.picture } : {}),
       }),
       hasMore: raw.length >= 20,
-      // Thả cảm xúc cần SMAX_USER_TOKEN (API nội bộ Smax)
+      // Thả cảm xúc, thu hồi / xoá tin cần SMAX_USER_TOKEN (API nội bộ Smax)
       canReact: this.smaxApi.canReact,
     };
   }
@@ -472,6 +477,36 @@ export class SmaxChatService {
       userId: actor.id,
       userName: actor.name,
       metadata: { pagePid: channel.pid, tid, pid: dto.pid, reaction: dto.reaction },
+    });
+    return { ok: true };
+  }
+
+  /** Thu hồi (cả 2 phía) / xoá phía mình 1 tin Zalo, với tư cách tài khoản Zalo của kênh. */
+  async messageAction(
+    actor: ChatActor,
+    dto: { pagePid: string; tid: string; pid: string; action: 'recall' | 'delete'; confirmed?: boolean },
+  ) {
+    const tid = this.assertTid(dto.tid);
+    if (!/^zlw\d{3,25}$/.test(dto.pid)) throw new BadRequestException('Tin nhắn không hợp lệ');
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    if (channel.connectionError) {
+      throw new ConflictException(`Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước`);
+    }
+    const label = dto.action === 'recall' ? 'thu hồi' : 'xoá';
+    if (this.confirmBeforeSend && !dto.confirmed) {
+      throw new BadRequestException(`Môi trường thử nghiệm: cần xác nhận trước khi ${label} tin`);
+    }
+    this.checkRateLimit(actor.id);
+    await this.smaxApi.messageAction(channel.pid, tid, dto.pid, dto.action);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: dto.action === 'recall' ? 'SMAX_CHAT_RECALL' : 'SMAX_CHAT_DELETE',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `${dto.action === 'recall' ? 'Thu hồi' : 'Xoá (phía mình)'} tin Zalo qua kênh "${channel.name}"`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, pid: dto.pid, action: dto.action },
     });
     return { ok: true };
   }
@@ -1139,6 +1174,8 @@ export class SmaxChatService {
     const seen = new Set<string>();
     return raw
       .filter((m) => {
+        // Đã xoá phía mình → ẩn như trên Zalo
+        if (m.deleted?.at) return false;
         const key = m.pid || m.id;
         if (seen.has(key)) return false;
         seen.add(key);
@@ -1173,6 +1210,7 @@ export class SmaxChatService {
               }
             : null,
           reactions: groupReactions(m.zaloweb?.customer_reactions, pagePid, avatars),
+          recalled: m.status === 'deleted',
           createdAt: m.created_at,
         };
       })
