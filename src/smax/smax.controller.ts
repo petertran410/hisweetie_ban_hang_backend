@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Post,
   Put,
   Query,
   UseGuards,
@@ -25,6 +26,13 @@ export class SmaxController {
   @RequirePermissions('settings:update')
   getZaloChannels() {
     return this.service.getZaloChannels();
+  }
+
+  // Tải lại kênh từ Smax và cập nhật tên kênh đã lưu của các liên kết
+  @Post('zalo-channels/sync')
+  @RequirePermissions('settings:update')
+  sync() {
+    return this.service.syncZaloChannels();
   }
 
   @Put('zalo-channels/:pagePid')

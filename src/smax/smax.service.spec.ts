@@ -18,6 +18,7 @@ const makeService = (links: any[] = []) => {
       findUnique: jest.fn(),
       upsert: jest.fn((args) => Promise.resolve(args)),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     user: { findUnique: jest.fn().mockResolvedValue({ id: 7 }) },
   };
@@ -77,6 +78,23 @@ describe('SmaxService', () => {
     expect(prisma.smaxChannelUser.deleteMany).toHaveBeenLastCalledWith({ where: { pagePid: 'zlw2', userId: 8 } });
     await service.unlink('zlw2');
     expect(prisma.smaxChannelUser.deleteMany).toHaveBeenLastCalledWith({ where: { pagePid: 'zlw2' } });
+  });
+
+  it('sync: cập nhật tên/platform đã lưu khi kênh đổi trên Smax, bỏ qua kênh đã mất', async () => {
+    const { service, prisma } = makeService([
+      { pagePid: 'zlw2', pageName: 'Tên cũ', platform: 'zaloweb', user: { id: 7 } },
+      { pagePid: 'zlw2', pageName: 'Tên cũ', platform: 'zaloweb', user: { id: 8 } },
+      { pagePid: 'zl1', pageName: 'Lermao OA', platform: 'zalo', user: { id: 9 } },
+      { pagePid: 'zlw-gone', pageName: 'Kênh đã xoá', platform: 'zaloweb', user: { id: 7 } },
+    ]);
+    const res = await service.syncZaloChannels();
+    expect(res.updated).toBe(1);
+    expect(prisma.smaxChannelUser.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.smaxChannelUser.updateMany).toHaveBeenCalledWith({
+      where: { pagePid: 'zlw2' },
+      data: { pageName: 'Diệp Trà Cs', platform: 'zaloweb' },
+    });
+    expect(res.channels.find((c) => c.pagePid === 'zlw-gone')?.missing).toBe(true);
   });
 
   it('link: lưu snapshot tên/platform, chặn kênh lạ hoặc không phải Zalo', async () => {

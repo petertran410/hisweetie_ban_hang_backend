@@ -62,6 +62,35 @@ export class SmaxService {
     return channels;
   }
 
+  /**
+   * Đồng bộ kênh Zalo từ Smax: cập nhật tên / platform đã lưu của các liên kết
+   * (kênh đổi tên trên Smax), rồi trả danh sách kênh mới nhất.
+   */
+  async syncZaloChannels() {
+    const [pages, links] = await Promise.all([
+      this.smaxApi.listPages(),
+      this.prisma.smaxChannelUser.findMany({
+        select: { pagePid: true, pageName: true, platform: true },
+      }),
+    ]);
+    const byPid = new Map(
+      pages
+        .filter((p) => ZALO_PLATFORMS.includes(p.platform))
+        .map((p) => [p.pid, p]),
+    );
+    const stale = new Map<string, { pageName: string; platform: string }>();
+    for (const l of links) {
+      const p = byPid.get(l.pagePid);
+      if (p && (p.name !== l.pageName || p.platform !== l.platform)) {
+        stale.set(l.pagePid, { pageName: p.name, platform: p.platform });
+      }
+    }
+    for (const [pagePid, data] of stale) {
+      await this.prisma.smaxChannelUser.updateMany({ where: { pagePid }, data });
+    }
+    return { channels: await this.getZaloChannels(), updated: stale.size };
+  }
+
   async link(pagePid: string, userId: number) {
     const page = (await this.smaxApi.listPages()).find(
       (p) => p.pid === pagePid && ZALO_PLATFORMS.includes(p.platform),
