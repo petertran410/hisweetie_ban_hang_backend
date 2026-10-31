@@ -45,6 +45,7 @@ import { LarkSecurityNotificationService } from './services/lark-security-notifi
     LarkProductSyncService,
     LarkDebtNotificationService,
     LarkExpenseReviewNotificationService,
+    LarkUserDirectoryService,
   ],
 })
 export class LarkSyncModule {}

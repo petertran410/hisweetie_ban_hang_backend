@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -16,6 +17,7 @@ import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UploadService } from '../upload/upload.service';
+import { LarkUserDirectoryService } from '../lark-sync/services/lark-user-directory.service';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import {
   GROUP_SCAN_LIMIT,
@@ -152,12 +154,20 @@ export interface ChatAttachmentInput {
 // Kênh Zalo cá nhân: tid / pid hội thoại = "zlw" + ID Zalo (đã kiểm chứng 26/10).
 const ZALOWEB_PREFIX = 'zlw';
 
+// Người gửi đặt xe theo chi nhánh hóa đơn: nhân sự phòng ban Lark tương ứng + người thêm
+// (theo tên POS); chi nhánh khác → mọi nhân sự.
+const DELIVERY_SENDER_SCOPES: Record<string, { departments: string[]; users?: string[] }> = {
+  'Kho Hà Nội': { departments: ['Kho Hà Nội'], users: ['Nguyễn Huyền Trang'] },
+  'Kho Sài Gòn': { departments: ['Kho Sài Gòn'] },
+};
+
 /**
  * Sidebar chat Zalo trên POS: chat bằng kênh Zalo đã liên kết với CHÍNH người
  * dùng đang gọi (/cai-dat/smax) — không phụ thuộc Sale PIC.
  */
 @Injectable()
 export class SmaxChatService {
+  private readonly logger = new Logger(SmaxChatService.name);
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
@@ -182,6 +192,7 @@ export class SmaxChatService {
     private readonly auditLogs: AuditLogsService,
     private readonly uploads: UploadService,
     config: ConfigService,
+    private readonly larkDirectory: LarkUserDirectoryService,
   ) {
     const base = config.get<string>('SMAX_MEDIA_PUBLIC_URL')?.trim().replace(/\/+$/, '');
     this.mediaPublicUrl = base && /^https:\/\//.test(base) ? base : null;
@@ -268,7 +279,8 @@ export class SmaxChatService {
 
     const salePicId = customer.debtPolicy?.salePicId ?? null;
     const ownOnly = actor.canViewOtherStaffData === false;
-    const [salePic, channels, orders, invoices, packingSlips] = await Promise.all([
+    const groupZaloIds = customer.zaloContacts.filter((c) => c.kind === 'group').map((c) => c.zaloId);
+    const [salePic, channels, orders, invoices, packingSlips, shared] = await Promise.all([
       salePicId
         ? this.prisma.user.findUnique({
             where: { id: salePicId },
@@ -336,6 +348,16 @@ export class SmaxChatService {
             },
           })
         : null,
+      // Khách khác cùng gắn nhóm Zalo này (1 nhóm chung cho nhiều chi nhánh/khách)
+      groupZaloIds.length
+        ? this.prisma.customerZaloContact.findMany({
+            where: { kind: 'group', zaloId: { in: groupZaloIds }, customerId: { not: customerId } },
+            select: { id: true, zaloId: true, customer: { select: { id: true, code: true, name: true } } },
+            orderBy: { createdAt: 'asc' },
+          })
+        : Promise.resolve<{ id: number; zaloId: string; customer: { id: number; code: string | null; name: string } }[]>(
+            [],
+          ),
     ]);
 
     const contacts = customer.zaloContacts;
@@ -350,7 +372,14 @@ export class SmaxChatService {
       myChannels: channels,
       contacts: {
         user: contacts.find((c) => c.kind === 'user') ?? null,
-        groups: contacts.filter((c) => c.kind === 'group'),
+        groups: contacts
+          .filter((c) => c.kind === 'group')
+          .map((c) => ({
+            ...c,
+            sharedWith: shared
+              .filter((s) => s.zaloId === c.zaloId)
+              .map((s) => ({ ...s.customer, contactId: s.id })),
+          })),
       },
       debt: actor.canViewDebt ? Number(customer.totalDebt) : null,
       recentOrders: orders.map((o) => ({
@@ -819,6 +848,28 @@ export class SmaxChatService {
   }
 
   /**
+   * Nhân viên được chọn làm người gửi đặt xe cho chi nhánh (`null` = mọi nhân sự). Lark lỗi
+   * hoặc không khớp ai → `null` để không chặn việc đặt xe.
+   */
+  async deliveryBookingSenders(branchId: number): Promise<{ userIds: number[] | null }> {
+    const branch = await this.prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } });
+    const scope = branch ? DELIVERY_SENDER_SCOPES[branch.name.trim()] : undefined;
+    if (!scope) return { userIds: null };
+    let openIds: Set<string>;
+    try {
+      openIds = await this.larkDirectory.openIdsInDepartments(scope.departments);
+    } catch (error) {
+      this.logger.warn(`Không đọc được phòng ban Lark ${scope.departments.join(', ')}: ${(error as Error).message}`);
+      return { userIds: null };
+    }
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true, OR: [{ larkUserId: { in: [...openIds] } }, { name: { in: scope.users ?? [] } }] },
+      select: { id: true },
+    });
+    return { userIds: users.length ? users.map((u) => u.id) : null };
+  }
+
+  /**
    * Đặt xe giao hàng cho hóa đơn: gửi tin vào nhóm đặt xe qua kênh cố định — không cần
    * kênh liên kết với người bấm (quyền invoices:update), ghi nhật ký theo hóa đơn.
    */
@@ -1128,15 +1179,17 @@ export class SmaxChatService {
         select: { id: true, code: true, name: true },
       }),
     ]);
-    const contactByZalo = new Map<string, (typeof contacts)[number]>();
-    for (const c of contacts) if (!contactByZalo.has(c.zaloId)) contactByZalo.set(c.zaloId, c);
+    // 1 nhóm có thể gắn nhiều khách (vd nhóm chung các chi nhánh) → giữ tất cả, khách gắn trước đứng đầu
+    const contactsByZalo = new Map<string, (typeof contacts)[number][]>();
+    for (const c of contacts) contactsByZalo.set(c.zaloId, [...(contactsByZalo.get(c.zaloId) ?? []), c]);
     const customerByCode = new Map(byCode.map((c) => [c.code!.toUpperCase(), c]));
     const channelName = new Map(channels.map((c) => [c.pagePid, c.name]));
 
     return {
       items: threads.map((t) => {
         const zaloId = t.tid.slice(ZALOWEB_PREFIX.length);
-        const contact = contactByZalo.get(zaloId);
+        const linked = contactsByZalo.get(zaloId) ?? [];
+        const contact = linked[0];
         const codeMatch = contact
           ? undefined
           : (t.name.match(CUSTOMER_CODE_IN_NAME) ?? [])
@@ -1158,7 +1211,13 @@ export class SmaxChatService {
           smaxUrl: `https://smax.ai/bizs/${this.smaxApi.bizAlias}/chats/${t.pagePid}?tid=${t.tid}`,
           // linked: đã lưu ID Zalo → mở ngay; byCode: đoán theo mã khách trong tên nhóm
           match: contact
-            ? { type: 'linked' as const, customer: contact.customer, contactId: contact.id, kind: contact.kind }
+            ? {
+                type: 'linked' as const,
+                customer: contact.customer,
+                contactId: contact.id,
+                kind: contact.kind,
+                customers: linked.map((c) => ({ ...c.customer, contactId: c.id })),
+              }
             : codeMatch
               ? { type: 'byCode' as const, customer: codeMatch }
               : null,

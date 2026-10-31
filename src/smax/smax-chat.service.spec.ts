@@ -47,6 +47,22 @@ const makeService = (env: Record<string, string> = {}) => {
     invoice: {
       findUnique: jest.fn(({ where }) => Promise.resolve(where.id === 7 ? { id: 7, code: 'HD000007' } : null)),
     },
+    branch: {
+      findUnique: jest.fn(({ where }) =>
+        Promise.resolve({ 6: { name: 'Kho Hà Nội' }, 1: { name: 'Kho Sài Gòn' }, 4: { name: 'Văn phòng Hà Nội' } }[where.id] ?? null),
+      ),
+    },
+    user: {
+      findMany: jest.fn(({ where }) =>
+        Promise.resolve(
+          [
+            { id: 50, name: 'Kho HN', larkUserId: 'ou_hn' },
+            { id: 56, name: 'Kho SG', larkUserId: 'ou_sg' },
+            { id: 16, name: 'Nguyễn Huyền Trang', larkUserId: 'ou_kt' },
+          ].filter((u) => where.OR[0].larkUserId.in.includes(u.larkUserId) || where.OR[1].name.in.includes(u.name)),
+        ),
+      ),
+    },
     packingSlipImage: {
       findMany: jest.fn(({ where }) =>
         Promise.resolve(
@@ -103,10 +119,15 @@ const makeService = (env: Record<string, string> = {}) => {
   };
   const audit = { create: jest.fn().mockResolvedValue({}) };
   const config = { get: (k: string) => env[k] };
+  const departments: Record<string, string[]> = { 'Kho Hà Nội': ['ou_hn'], 'Kho Sài Gòn': ['ou_sg'] };
+  const lark = {
+    openIdsInDepartments: jest.fn(async (names: string[]) => new Set(names.flatMap((n) => departments[n] ?? []))),
+  };
   return {
-    service: new SmaxChatService(prisma as any, api as any, audit as any, {} as any, config as any),
+    service: new SmaxChatService(prisma as any, api as any, audit as any, {} as any, config as any, lark as any),
     api,
     audit,
+    lark,
   };
 };
 
@@ -316,6 +337,15 @@ describe('SmaxChatService', () => {
     expect(api.sendZaloweb).not.toHaveBeenCalled();
   });
 
+  it('đặt xe giao hàng: người gửi theo phòng ban Lark của chi nhánh, chi nhánh khác/Lark lỗi → mọi nhân sự', async () => {
+    const { service, lark } = makeService();
+    await expect(service.deliveryBookingSenders(6)).resolves.toEqual({ userIds: [50, 16] });
+    await expect(service.deliveryBookingSenders(1)).resolves.toEqual({ userIds: [56] });
+    await expect(service.deliveryBookingSenders(4)).resolves.toEqual({ userIds: null });
+    lark.openIdsInDepartments.mockRejectedValueOnce(new Error('Lark down'));
+    await expect(service.deliveryBookingSenders(1)).resolves.toEqual({ userIds: null });
+  });
+
   it('safeFileName: bỏ dấu, ký tự lạ, giữ đuôi', () => {
     expect(safeFileName('Báo giá tháng 10 (Đợt 2).pdf')).toBe('Bao-gia-thang-10-Dot-2.pdf');
     expect(safeFileName('../../.env')).toBe('env');
@@ -376,6 +406,7 @@ describe('SmaxChatService', () => {
     ]);
     (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
       { id: 11, kind: 'group', zaloId: '2395241168877084467', customer: { id: 5, code: 'TOANTEST', name: 'Toàn test' } },
+      { id: 13, kind: 'group', zaloId: '2395241168877084467', customer: { id: 6, code: 'KH6', name: 'Chi nhánh 2' } },
     ]);
     (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([
       { id: 77, code: 'KH005844', name: 'Mr Vũ' },
@@ -394,6 +425,13 @@ describe('SmaxChatService', () => {
       ['byCode', 77],
       [null, null],
     ]);
+    expect(items[0].match).toMatchObject({
+      contactId: 11,
+      customers: [
+        { id: 5, code: 'TOANTEST', name: 'Toàn test', contactId: 11 },
+        { id: 6, code: 'KH6', name: 'Chi nhánh 2', contactId: 13 },
+      ],
+    });
     expect(items[0]).toMatchObject({
       lastMessage: '[Tệp/ảnh]',
       channelName: 'Diệp Trà Cs',
@@ -402,6 +440,38 @@ describe('SmaxChatService', () => {
       smaxUrl: `https://smax.ai/bizs/dieptra/chats/${PAGE}?tid=zlw2395241168877084467`,
     });
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+  });
+
+  describe('nhóm Zalo gắn nhiều khách', () => {
+    const activityMocks = (prisma: any) => {
+      prisma.order = {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 1, code: 'DH1', customerId: 6, orderDate: new Date('2026-10-30'), grandTotal: 100, statusValue: 'ok', orderStatus: null },
+        ]),
+      };
+      prisma.invoice.findMany = jest.fn().mockResolvedValue([
+        { id: 2, code: 'HD2', customerId: 5, purchaseDate: new Date('2026-10-29'), grandTotal: 200, debtAmount: 50, statusValue: 'ok' },
+      ]);
+    };
+
+    it('getContext: nhóm kèm các khách khác cùng gắn (sharedWith)', async () => {
+      const { service } = makeService();
+      const prisma = (service as any).prisma;
+      activityMocks(prisma);
+      prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([]);
+      prisma.customer.findUnique = jest.fn().mockResolvedValue({
+        id: 5, code: 'TOANTEST', name: 'Toàn test', contactNumber: null, phone: null, totalDebt: 10, debtPolicy: null,
+        zaloContacts: [{ id: 11, customerId: 5, kind: 'group', zaloId: '2395241168877084467', name: 'Nhóm' }],
+      });
+      prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
+        { id: 13, zaloId: '2395241168877084467', customer: { id: 6, code: 'KH6', name: 'Chi nhánh 2' } },
+      ]);
+      const ctx = await service.getContext(5, actor);
+      expect(prisma.customerZaloContact.findMany.mock.calls[0][0].where).toEqual({
+        kind: 'group', zaloId: { in: ['2395241168877084467'] }, customerId: { not: 5 },
+      });
+      expect(ctx.contacts.groups[0].sharedWith).toEqual([{ id: 6, code: 'KH6', name: 'Chi nhánh 2', contactId: 13 }]);
+    });
   });
 
   it('recentChats tìm kiếm: gửi keyword cho Smax, chỉ giữ hội thoại khớp tên (không dấu, không phân biệt hoa thường)', async () => {

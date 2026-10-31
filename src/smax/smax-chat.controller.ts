@@ -116,6 +116,12 @@ export class SmaxChatController {
     return this.service.deliveryBookingTarget();
   }
 
+  @Get('delivery-booking/senders')
+  @RequirePermissions('invoices:update')
+  deliveryBookingSenders(@Query('branchId', ParseIntPipe) branchId: number) {
+    return this.service.deliveryBookingSenders(branchId);
+  }
+
   @Post('delivery-booking')
   @RequirePermissions('invoices:update')
   bookDelivery(@Body() dto: DeliveryBookingDto, @Req() req: any) {

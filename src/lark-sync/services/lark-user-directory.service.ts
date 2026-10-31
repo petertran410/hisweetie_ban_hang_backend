@@ -38,6 +38,88 @@ export class LarkUserDirectoryService {
     return cache.get(key) || null;
   }
 
+  /**
+   * open_id thành viên (trực tiếp) của các phòng ban Lark theo tên (vd "Kho Hà Nội").
+   * Cache 1h danh sách mọi phòng ban trong scope của bot; lỗi Lark → throw.
+   */
+  async openIdsInDepartments(names: string[]): Promise<Set<string>> {
+    if (
+      !this.departmentMembers ||
+      Date.now() - this.departmentMembersAt >= this.CACHE_TTL_MS
+    ) {
+      this.departmentMembers = await this.buildDepartmentMembers();
+      this.departmentMembersAt = Date.now();
+    }
+    const out = new Set<string>();
+    for (const name of names) {
+      for (const id of this.departmentMembers.get(this.normalize(name)) ?? []) {
+        out.add(id);
+      }
+    }
+    return out;
+  }
+
+  private departmentMembers: Map<string, string[]> | null = null;
+  private departmentMembersAt = 0;
+
+  private async buildDepartmentMembers(): Promise<Map<string, string[]>> {
+    const ok = (res: any, what: string) => {
+      if (res?.code) throw new Error(`${what} code=${res.code} msg=${res.msg}`);
+      return res?.data;
+    };
+    const departmentIds: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const data = ok(
+        await this.client.contact.scope.list({
+          params: {
+            user_id_type: 'open_id',
+            department_id_type: 'open_department_id',
+            page_size: 100,
+            ...(pageToken ? { page_token: pageToken } : {}),
+          },
+        }),
+        'contact.scope.list',
+      );
+      departmentIds.push(...(data?.department_ids || []));
+      pageToken = data?.has_more ? data.page_token : undefined;
+    } while (pageToken);
+
+    const entries = await Promise.all(
+      departmentIds.map(async (dept) => {
+        const info = ok(
+          await this.client.contact.department.get({
+            path: { department_id: dept },
+            params: { department_id_type: 'open_department_id' },
+          }),
+          `department.get ${dept}`,
+        );
+        const members: string[] = [];
+        let token: string | undefined;
+        do {
+          const data = ok(
+            await this.client.contact.user.findByDepartment({
+              params: {
+                user_id_type: 'open_id',
+                department_id_type: 'open_department_id',
+                department_id: dept,
+                page_size: 50,
+                ...(token ? { page_token: token } : {}),
+              },
+            }),
+            `findByDepartment ${dept}`,
+          );
+          for (const u of data?.items || []) {
+            if (typeof u?.open_id === 'string') members.push(u.open_id);
+          }
+          token = data?.has_more ? data.page_token : undefined;
+        } while (token);
+        return [this.normalize(info?.department?.name || ''), members] as const;
+      }),
+    );
+    return new Map(entries);
+  }
+
   /** Force refresh cache (gọi từ controller nếu cần). */
   async refresh(): Promise<void> {
     this.cache = null;
