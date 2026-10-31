@@ -36,6 +36,7 @@ import {
   getStatusLabel,
   ORDER_STATUS,
 } from '../orders/dto/order-status.constants';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class TransfersService {
@@ -608,7 +609,7 @@ export class TransfersService {
       include: {
         fromBranch: true,
         toBranch: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         details: {
           include: {
             product: true,
@@ -723,7 +724,7 @@ export class TransfersService {
         details: true,
         fromBranch: true,
         toBranch: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
       },
     });
 
@@ -1210,7 +1211,7 @@ export class TransfersService {
             details: true,
             fromBranch: true,
             toBranch: true,
-            creator: true,
+            creator: { select: USER_PUBLIC_SELECT },
           },
         });
         await resetDrafts();

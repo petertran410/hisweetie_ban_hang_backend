@@ -35,6 +35,7 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 const COMPLETE_PERMISSION = 'internal-use:complete';
@@ -178,8 +179,8 @@ export class InternalUseService {
           details: { include: { product: true } },
           purpose: true,
           branch: true,
-          user: true,
-          creator: true,
+          user: { select: USER_PUBLIC_SELECT },
+          creator: { select: USER_PUBLIC_SELECT },
         },
         orderBy: { createdAt: 'desc' },
         skip: currentItem,
@@ -414,8 +415,8 @@ export class InternalUseService {
         details: { include: { product: true } },
         purpose: true,
         branch: true,
-        user: true,
-        creator: true,
+        user: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
       },
     });
 
