@@ -317,3 +317,18 @@ export class MediaQueryDto {
   @MaxLength(1000)
   url: string;
 }
+
+export class DeliveryBookingDto {
+  @Type(() => Number)
+  @IsInt()
+  invoiceId: number;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  text: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}

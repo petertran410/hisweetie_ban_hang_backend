@@ -44,6 +44,9 @@ const makeService = (env: Record<string, string> = {}) => {
       ),
     },
     customer: { findUnique: jest.fn().mockResolvedValue({ code: 'TOANTEST', totalDebt: 1250000 }) },
+    invoice: {
+      findUnique: jest.fn(({ where }) => Promise.resolve(where.id === 7 ? { id: 7, code: 'HD000007' } : null)),
+    },
     packingSlipImage: {
       findMany: jest.fn(({ where }) =>
         Promise.resolve(
@@ -277,6 +280,40 @@ describe('SmaxChatService', () => {
       ).rejects.toThrow('SMAX_MEDIA_PUBLIC_URL');
       expect(api.sendZaloweb).not.toHaveBeenCalled();
     });
+  });
+
+  it('đặt xe giao hàng: gửi grid vào nhóm cố định qua kênh cố định (không cần kênh của người bấm), ghi audit hóa đơn', async () => {
+    const { service, api, audit } = makeService();
+    const staff = { id: 3, name: 'Kho', canViewDebt: false }; // không liên kết kênh nào
+    await expect(service.bookDelivery(staff, { invoiceId: 7, text: 'Đặt xe' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    await expect(
+      service.bookDelivery(staff, { invoiceId: 999, text: 'Đặt xe', confirmed: true }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(api.sendZaloweb).not.toHaveBeenCalled();
+
+    await service.bookDelivery(staff, { invoiceId: 7, text: ' Thông tin người gửi:\nKho ', confirmed: true });
+    expect(api.sendZaloweb).toHaveBeenCalledWith(
+      PAGE,
+      { grid: '612515329498631054' },
+      { message: 'Thông tin người gửi:\nKho' },
+    );
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ actionCode: 'SMAX_DELIVERY_BOOKING', entityType: 'invoices', entityCode: 'HD000007', userId: 3 }),
+    );
+    await expect(service.deliveryBookingTarget()).resolves.toMatchObject({
+      channelName: 'Diệp Trà Cs',
+      connectionError: false,
+    });
+  });
+
+  it('đặt xe giao hàng: kênh mất kết nối → 409, không gửi', async () => {
+    const { service, api } = makeService({ SMAX_DELIVERY_PAGE_PID: 'zlwBROKEN' });
+    await expect(
+      service.bookDelivery(actor, { invoiceId: 7, text: 'Đặt xe', confirmed: true }),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(api.sendZaloweb).not.toHaveBeenCalled();
   });
 
   it('safeFileName: bỏ dấu, ký tự lạ, giữ đuôi', () => {
