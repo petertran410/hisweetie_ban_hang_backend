@@ -171,6 +171,8 @@ export class SmaxChatService {
     { at: number; map: Record<string, string>; loading: boolean }
   >();
   private readonly confirmBeforeSend: boolean;
+  // Đặt xe giao hàng: kênh + nhóm Zalo cố định (mặc định kênh "Diệp Trà Cs", nhóm "Book hộ xe")
+  private readonly deliveryBooking: { pagePid: string; tid: string };
   // Domain công khai Smax tải được file đính kèm (localhost thì Smax không tới được)
   private readonly mediaPublicUrl: string | null;
 
@@ -188,6 +190,10 @@ export class SmaxChatService {
       flag !== undefined
         ? flag === 'true'
         : config.get<string>('NODE_ENV') !== 'production';
+    this.deliveryBooking = {
+      pagePid: config.get<string>('SMAX_DELIVERY_PAGE_PID')?.trim() || 'zlw693698651694262958',
+      tid: config.get<string>('SMAX_DELIVERY_GROUP_TID')?.trim() || 'zlw612515329498631054',
+    };
   }
 
   /** Tải ảnh/tệp Zalo (hoặc ảnh QR VietQR) qua backend (trình duyệt bị CORS + chặn hotlink). */
@@ -795,6 +801,66 @@ export class SmaxChatService {
     });
     if (failure) throw new HttpException(failure, HttpStatus.BAD_GATEWAY);
     return { ok: true, sentParts: sent };
+  }
+
+  /** Kênh + nhóm Zalo nhận tin đặt xe giao hàng (để hiện trong modal trước khi gửi). */
+  async deliveryBookingTarget() {
+    const { pagePid, tid } = this.deliveryBooking;
+    const [channel, thread] = await Promise.all([
+      this.deliveryBookingChannel(),
+      this.smaxApi.getThread(pagePid, tid).catch(() => null),
+    ]);
+    return {
+      channelName: channel.name,
+      groupName: thread?.name ?? null,
+      connectionError: !!channel.connectionError,
+      confirmBeforeSend: this.confirmBeforeSend,
+    };
+  }
+
+  /**
+   * Đặt xe giao hàng cho hóa đơn: gửi tin vào nhóm đặt xe qua kênh cố định — không cần
+   * kênh liên kết với người bấm (quyền invoices:update), ghi nhật ký theo hóa đơn.
+   */
+  async bookDelivery(actor: ChatActor, dto: { invoiceId: number; text: string; confirmed?: boolean }) {
+    const text = dto.text.trim();
+    if (!text) throw new BadRequestException('Nội dung tin nhắn trống');
+    const invoice = await this.prisma.invoice.findUnique({
+      where: { id: dto.invoiceId },
+      select: { id: true, code: true },
+    });
+    if (!invoice) throw new NotFoundException('Không tìm thấy hóa đơn');
+    const channel = await this.deliveryBookingChannel();
+    if (channel.connectionError) {
+      throw new ConflictException(
+        `Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước khi gửi`,
+      );
+    }
+    if (this.confirmBeforeSend && !dto.confirmed) {
+      throw new BadRequestException('Môi trường thử nghiệm: cần xác nhận trước khi gửi tin');
+    }
+    this.checkRateLimit(actor.id);
+
+    const { tid } = this.deliveryBooking;
+    await this.smaxApi.sendZaloweb(channel.pid, { grid: tid.slice(ZALOWEB_PREFIX.length) }, { message: text });
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: 'SMAX_DELIVERY_BOOKING',
+      entityType: 'invoices',
+      entityId: String(invoice.id),
+      entityCode: invoice.code,
+      message: `Đặt xe giao hàng hóa đơn ${invoice.code}: gửi tin Zalo qua kênh "${channel.name}" vào nhóm đặt xe`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, text },
+    });
+    return { ok: true };
+  }
+
+  private async deliveryBookingChannel(): Promise<SmaxPage> {
+    const page = (await this.smaxApi.listPages()).find((p) => p.pid === this.deliveryBooking.pagePid);
+    if (!page) throw new NotFoundException('Kênh Zalo đặt xe không còn trên Smax');
+    return page;
   }
 
   /**

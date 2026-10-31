@@ -28,6 +28,7 @@ import {
 } from './smax-chat.service';
 import {
   ChatMessagesQueryDto,
+  DeliveryBookingDto,
   MediaQueryDto,
   CreateZaloContactDto,
   ReactMessageDto,
@@ -106,6 +107,19 @@ export class SmaxChatController {
   @RequirePermissions('smax_chat:send')
   messageAction(@Body() dto: MessageActionDto, @Req() req: any) {
     return this.service.messageAction(this.actor(req), dto);
+  }
+
+  // Đặt xe giao hàng: gửi tin vào nhóm Zalo đặt xe qua kênh cố định
+  @Get('delivery-booking')
+  @RequirePermissions('invoices:update')
+  deliveryBookingTarget() {
+    return this.service.deliveryBookingTarget();
+  }
+
+  @Post('delivery-booking')
+  @RequirePermissions('invoices:update')
+  bookDelivery(@Body() dto: DeliveryBookingDto, @Req() req: any) {
+    return this.service.bookDelivery(this.actor(req), dto);
   }
 
   @Get('recent')
