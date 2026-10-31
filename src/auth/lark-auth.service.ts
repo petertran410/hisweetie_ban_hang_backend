@@ -9,7 +9,7 @@ import { SecurityAuditService } from '../audit-logs/security-audit.service';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { IncomingHttpHeaders } from 'http';
-import { createHash, timingSafeEqual } from 'crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import {
   deriveJwtSecret,
@@ -34,12 +34,24 @@ import {
 
 const SETUP_TYP = 'lark_setup';
 const STATE_TYP = 'lark_oauth_state';
+/** Mã một lần trả về app iOS sau khi Lark xác thực xong (đổi lấy token). */
+const MOBILE_CODE_TYP = 'lark_mobile_code';
+const MOBILE_CODE_TTL_SECONDS = 60;
+/** PKCE S256: base64url(sha256(verifier)) luôn dài 43 ký tự. */
+const CODE_CHALLENGE_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+/** RFC 7636: 43–128 ký tự không dấu. */
+const CODE_VERIFIER_PATTERN = /^[A-Za-z0-9._~-]{43,128}$/;
 const MIN_PASSWORD_LENGTH = 8;
 
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('base64url');
 
-/** Băm nonce trong state phải khớp cookie của trình duyệt (so sánh hằng thời gian). */
+type LarkLoginMode = 'setup' | 'session';
+
+/**
+ * Băm trong token phải khớp giá trị bí mật client đang giữ (so sánh hằng thời
+ * gian): nonce cookie của trình duyệt, hoặc code_verifier PKCE của app.
+ */
 function sameNonce(expectedHash?: string, nonce?: string): boolean {
   if (!expectedHash || !nonce) return false;
   const a = Buffer.from(expectedHash);
@@ -99,6 +111,181 @@ export class LarkAuthService {
     };
   }
 
+  /** Khoá riêng cho mã một lần của app (không thay được state/setup token). */
+  private mobileCodeSecret(): string {
+    this.mobileCodeTokenSecret ??= deriveJwtSecret(
+      'lark-mobile-code',
+      this.config,
+    );
+    return this.mobileCodeTokenSecret;
+  }
+  private mobileCodeTokenSecret?: string;
+
+  /**
+   * jti của mã một lần đã đổi → hết hạn lúc nào. Chỉ trong bộ nhớ (backend
+   * chạy 1 instance); mất khi deploy cũng không sao vì mã sống 60s và đổi mã
+   * vẫn bắt buộc có code_verifier PKCE.
+   */
+  private readonly usedMobileCodes = new Map<string, number>();
+
+  /** URI app được phép nhận mã (env `MOBILE_REDIRECT_URIS`, cách nhau dấu phẩy). */
+  isAllowedMobileRedirect(uri?: string): boolean {
+    if (!uri) return false;
+    return (this.config.get<string>('MOBILE_REDIRECT_URIS') || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .includes(uri);
+  }
+
+  /**
+   * Bắt đầu đăng nhập Lark từ app iOS (mở trong ASWebAuthenticationSession).
+   * State mang thêm URI trả về + code_challenge PKCE; nonce cookie vẫn gắn
+   * lượt đăng nhập với đúng phiên trình duyệt đó như bản web.
+   */
+  buildMobileAuthorizeUrl(
+    input: {
+      redirectUri?: string;
+      codeChallenge?: string;
+      codeChallengeMethod?: string;
+    },
+    nonce: string,
+  ): string {
+    const ru = (input.redirectUri || '').trim();
+    if (!this.isAllowedMobileRedirect(ru)) {
+      throw new BadRequestException('redirect_uri không được phép');
+    }
+    const cc = (input.codeChallenge || '').trim();
+    if (
+      (input.codeChallengeMethod || 'S256') !== 'S256' ||
+      !CODE_CHALLENGE_PATTERN.test(cc)
+    ) {
+      throw new BadRequestException('code_challenge không hợp lệ');
+    }
+    const oauth = this.getOAuthConfig();
+    const state = this.jwtService.sign(
+      {
+        typ: STATE_TYP,
+        returnTo: '/',
+        nh: sha256(nonce),
+        client: 'mobile',
+        ru,
+        cc,
+      },
+      { expiresIn: '10m', ...this.larkSignOptions() },
+    );
+    return buildAuthorizationUrl(oauth, state);
+  }
+
+  /**
+   * URI app trong state (chỉ giải mã, chưa kiểm chữ ký) — dùng để báo lỗi về
+   * app thay vì trang web. Luôn kiểm lại danh sách cho phép.
+   */
+  private mobileRedirectFromState(state?: string): string | undefined {
+    if (!state) return undefined;
+    try {
+      const decoded = this.jwtService.decode<{
+        client?: string;
+        ru?: string;
+      } | null>(state);
+      const ru = decoded?.client === 'mobile' ? decoded.ru : undefined;
+      return ru && this.isAllowedMobileRedirect(ru) ? ru : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private appRedirect(ru: string, params: Record<string, string>): string {
+    const url = new URL(ru);
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+    return url.toString();
+  }
+
+  private signMobileCode(uid: number, mode: LarkLoginMode, cc: string) {
+    return this.jwtService.sign(
+      { typ: MOBILE_CODE_TYP, uid, mode, cc, jti: randomUUID() },
+      {
+        expiresIn: MOBILE_CODE_TTL_SECONDS,
+        secret: this.mobileCodeSecret(),
+        issuer: JWT_ISSUER,
+        audience: LARK_TOKEN_AUDIENCE,
+      },
+    );
+  }
+
+  /**
+   * App đổi mã một lần (kèm code_verifier PKCE) lấy phiên đăng nhập, hoặc lấy
+   * setup token nếu user cần đặt mật khẩu lần đầu. Phiên được tạo với thông tin
+   * thiết bị của app (không phải trình duyệt đăng nhập Lark).
+   */
+  async exchangeMobileCode(
+    code: string,
+    codeVerifier: string,
+    ctx: SessionContext,
+  ): Promise<
+    | { setupToken: string }
+    | { session: Awaited<ReturnType<AuthService['issueAuthResponse']>> }
+  > {
+    let payload: {
+      typ?: string;
+      uid?: number;
+      mode?: LarkLoginMode;
+      cc?: string;
+      jti?: string;
+      exp?: number;
+    };
+    try {
+      payload = this.jwtService.verify(code, {
+        secret: this.mobileCodeSecret(),
+        algorithms: [JWT_ALGORITHM],
+        issuer: JWT_ISSUER,
+        audience: LARK_TOKEN_AUDIENCE,
+      });
+    } catch {
+      throw new UnauthorizedException(
+        'Mã đăng nhập Lark đã hết hạn. Vui lòng thử lại',
+      );
+    }
+    if (
+      payload.typ !== MOBILE_CODE_TYP ||
+      !payload.uid ||
+      !payload.jti ||
+      (payload.mode !== 'setup' && payload.mode !== 'session') ||
+      !CODE_VERIFIER_PATTERN.test(codeVerifier || '') ||
+      !sameNonce(payload.cc, codeVerifier)
+    ) {
+      throw new UnauthorizedException('Mã đăng nhập Lark không hợp lệ');
+    }
+    // Chỉ "đốt" mã sau khi PKCE đúng: người không có verifier không làm hỏng
+    // được lượt đăng nhập của app.
+    this.consumeMobileCode(payload.jti, payload.exp);
+
+    if (payload.mode === 'setup') {
+      return { setupToken: this.signSetupToken(payload.uid) };
+    }
+    const session = await this.authService.issueAuthResponse(
+      payload.uid,
+      undefined,
+      ctx,
+    );
+    this.authService.recordLogin?.(payload.uid, 'Lark', ctx);
+    return { session };
+  }
+
+  private consumeMobileCode(jti: string, exp?: number) {
+    const now = Date.now();
+    for (const [key, until] of this.usedMobileCodes) {
+      if (until < now) this.usedMobileCodes.delete(key);
+    }
+    if (this.usedMobileCodes.has(jti)) {
+      throw new UnauthorizedException('Mã đăng nhập Lark đã được sử dụng');
+    }
+    const until = exp ? exp * 1000 : now + MOBILE_CODE_TTL_SECONDS * 1000;
+    this.usedMobileCodes.set(jti, until + 1000);
+  }
+
   /**
    * `nonce` = giá trị cookie HttpOnly vừa đặt cho trình duyệt này; state chỉ
    * mang băm của nó. Callback phải nhận lại đúng cookie đó mới đăng nhập.
@@ -123,29 +310,61 @@ export class LarkAuthService {
     nonce?: string,
   ): Promise<{ url: string; refresh?: IssuedRefresh }> {
     const frontend = this.frontendLoginUrl();
+    // Lượt đăng nhập bắt đầu từ app iOS: mọi kết quả trả về URI của app.
+    const mobileRu = this.mobileRedirectFromState(state);
+    const fail = (message: string, returnTo?: string): { url: string } =>
+      mobileRu
+        ? { url: this.appRedirect(mobileRu, { error: message }) }
+        : this.redirectOnly(frontend, {
+            lark_error: message,
+            return_to: returnTo,
+          });
+
     if (!code || !state) {
-      return this.redirectOnly(frontend, {
-        lark_error: 'Thiếu mã xác thực Lark',
-      });
+      return fail('Thiếu mã xác thực Lark');
     }
 
     let returnTo = '/';
+    let codeChallenge: string | undefined;
     try {
       const payload = this.jwtService.verify<{
         typ?: string;
         returnTo?: string;
         nh?: string;
+        cc?: string;
       }>(state, this.larkVerifyOptions());
       if (payload.typ !== STATE_TYP || !sameNonce(payload.nh, nonce)) {
-        return this.redirectOnly(frontend, {
-          lark_error: 'Phiên đăng nhập Lark không hợp lệ. Vui lòng thử lại',
-        });
+        return fail('Phiên đăng nhập Lark không hợp lệ. Vui lòng thử lại');
       }
       returnTo = safeReturnTo(payload.returnTo);
+      codeChallenge = payload.cc;
     } catch {
-      return this.redirectOnly(frontend, {
-        lark_error: 'Phiên đăng nhập Lark đã hết hạn',
-      });
+      return fail('Phiên đăng nhập Lark đã hết hạn');
+    }
+
+    if (mobileRu) {
+      if (!codeChallenge) {
+        return fail('Phiên đăng nhập Lark không hợp lệ. Vui lòng thử lại');
+      }
+      try {
+        const { user } = await exchangeCode(this.getOAuthConfig(), code);
+        const resolved = await this.resolveLarkUser(user);
+        // Không tạo phiên ở trình duyệt đăng nhập: app đổi mã này (kèm PKCE)
+        // để phiên mang đúng thông tin thiết bị của app.
+        return {
+          url: this.appRedirect(mobileRu, {
+            code: this.signMobileCode(
+              resolved.userId,
+              resolved.mode,
+              codeChallenge,
+            ),
+          }),
+        };
+      } catch (err) {
+        const message = this.callbackErrorMessage(err);
+        this.logger.warn(`Lark mobile callback failed: ${message}`);
+        return fail(message);
+      }
     }
 
     try {
@@ -167,17 +386,17 @@ export class LarkAuthService {
         refresh: result.refresh,
       };
     } catch (err) {
-      const message =
-        err instanceof UnauthorizedException ||
-        err instanceof BadRequestException
-          ? err.message
-          : 'Đăng nhập Lark thất bại';
+      const message = this.callbackErrorMessage(err);
       this.logger.warn(`Lark callback failed: ${message}`);
-      return this.redirectOnly(frontend, {
-        lark_error: message,
-        return_to: returnTo,
-      });
+      return fail(message, returnTo);
     }
+  }
+
+  private callbackErrorMessage(err: unknown): string {
+    return err instanceof UnauthorizedException ||
+      err instanceof BadRequestException
+      ? err.message
+      : 'Đăng nhập Lark thất bại';
   }
 
   async setupPassword(
@@ -352,6 +571,27 @@ export class LarkAuthService {
     | { mode: 'setup'; token: string }
     | { mode: 'session'; refresh: IssuedRefresh }
   > {
+    const resolved = await this.resolveLarkUser(profile);
+    if (resolved.mode === 'setup') {
+      return { mode: 'setup', token: this.signSetupToken(resolved.userId) };
+    }
+    const session = await this.authService.issueAuthResponse(
+      resolved.userId,
+      undefined,
+      ctx,
+    );
+    this.authService.recordLogin?.(resolved.userId, 'Lark', ctx);
+    return { mode: 'session', refresh: session.refresh };
+  }
+
+  /**
+   * Tìm (hoặc tạo) user POS ứng với tài khoản Lark và cho biết bước tiếp theo:
+   * `setup` = phải đặt mật khẩu lần đầu, `session` = được đăng nhập luôn.
+   * Không tạo phiên — web và app tạo phiên ở chỗ khác nhau.
+   */
+  private async resolveLarkUser(
+    profile: LarkUserProfile,
+  ): Promise<{ mode: LarkLoginMode; userId: number }> {
     const openId = (profile.open_id || '').trim();
     if (!openId) {
       throw new UnauthorizedException('Lark không trả về mã người dùng');
@@ -372,7 +612,7 @@ export class LarkAuthService {
 
     if (!user) {
       user = await this.createUserFromQr(profile, openId);
-      return { mode: 'setup', token: this.signSetupToken(user.id) };
+      return { mode: 'setup', userId: user.id };
     }
 
     if (this.isOnboardingShell(user)) {
@@ -389,7 +629,7 @@ export class LarkAuthService {
           larkUserId: true,
         },
       });
-      return { mode: 'setup', token: this.signSetupToken(user.id) };
+      return { mode: 'setup', userId: user.id };
     }
 
     if (!user.isActive) {
@@ -397,16 +637,10 @@ export class LarkAuthService {
     }
 
     if (!user.password) {
-      return { mode: 'setup', token: this.signSetupToken(user.id) };
+      return { mode: 'setup', userId: user.id };
     }
 
-    const session = await this.authService.issueAuthResponse(
-      user.id,
-      undefined,
-      ctx,
-    );
-    this.authService.recordLogin?.(user.id, 'Lark', ctx);
-    return { mode: 'session', refresh: session.refresh };
+    return { mode: 'session', userId: user.id };
   }
 
   private async createUserFromQr(

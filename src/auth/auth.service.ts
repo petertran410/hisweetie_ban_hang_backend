@@ -9,6 +9,7 @@ import { isRetiredPermissionName } from '../permissions/permission-policy';
 import * as bcrypt from 'bcrypt';
 import {
   IssuedRefresh,
+  RotateOptions,
   SessionContext,
   SessionService,
 } from './session/session.service';
@@ -126,9 +127,9 @@ export class AuthService {
     return this.jwtService.decode<{ sid?: number } | null>(token);
   }
 
-  /** Đổi refresh token (cookie) lấy access token mới + refresh token mới. */
-  async refresh(raw: string, ctx: SessionContext) {
-    const rotated = await this.sessionService.rotate(raw, ctx);
+  /** Đổi refresh token (cookie / body của app) lấy access token + refresh token mới. */
+  async refresh(raw: string, ctx: SessionContext, opts?: RotateOptions) {
+    const rotated = await this.sessionService.rotate(raw, ctx, opts);
     return {
       ...this.signAccessToken(
         rotated.userId,

@@ -418,10 +418,95 @@ describe('describeUserAgent', () => {
       { browser: 'Cốc Cốc', os: 'Windows', deviceType: 'desktop' },
     ],
     [
+      'HiSweetiePOS/1.0 (iPhone; iOS 18.1)',
+      {
+        browser: 'Ứng dụng HiSweetie POS',
+        os: 'iOS',
+        deviceType: 'mobile',
+      },
+    ],
+    [
       null,
       { browser: 'Trình duyệt khác', os: 'Không rõ', deviceType: 'desktop' },
     ],
   ])('%s', (ua, expected) => {
     expect(describeUserAgent(ua)).toEqual(expected);
+  });
+});
+
+describe('SessionService — iOS app (refresh token in body)', () => {
+  afterEach(() => jest.useRealTimers());
+
+  const DEVICE = 'AbCdEfGhIjKlMnOpQrStUv';
+  const app = {
+    userAgent: 'HiSweetiePOS/1.0 (iPhone; iOS 18.1)',
+    deviceId: DEVICE,
+  };
+  const opts = { reissueOnGrace: true };
+  const setup = () => {
+    const f = fakePrisma({ id: 7, isActive: true, permissionVersion: 2 });
+    return { ...f, service: new SessionService(f.prisma) };
+  };
+
+  it('lost refresh response: retrying with the previous token returns a NEW token', async () => {
+    const { service, rows } = setup();
+    const first = await service.createSession(7, 2, app);
+    const lost = await service.rotate(first.token, app, opts); // app không nhận được
+    const retry = await service.rotate(first.token, app, opts);
+
+    expect(retry.refresh?.token).toBeDefined();
+    expect(retry.refresh!.token).not.toBe(lost.refresh!.token);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].tokenHash).toBe(sha(retry.refresh!.token));
+    // App dùng tiếp được token mới.
+    await expect(
+      service.rotate(retry.refresh!.token, app, opts),
+    ).resolves.toHaveProperty('refresh');
+    expect(rows[0].revokedAt).toBeNull();
+  });
+
+  it('reissue does not extend the grace window (old token after 30s → theft)', async () => {
+    jest.useFakeTimers();
+    const { service, rows } = setup();
+    const first = await service.createSession(7, 2, app);
+    await service.rotate(first.token, app, opts);
+    jest.advanceTimersByTime(20_000);
+    await service.rotate(first.token, app, opts); // vẫn trong ân hạn
+    jest.advanceTimersByTime(11_000); // 31s kể từ lần xoay đầu
+    await expect(service.rotate(first.token, app, opts)).rejects.toMatchObject({
+      response: { code: 'SESSION_INVALID' },
+    });
+    expect(rows[0].revokeReason).toBe('reuse');
+  });
+
+  it('reissue needs the same device id as the session', async () => {
+    const { service } = setup();
+    const first = await service.createSession(7, 2, app);
+    await service.rotate(first.token, app, opts);
+    const other = await service.rotate(
+      first.token,
+      { ...app, deviceId: 'ZZZZZZZZZZZZZZZZZZZZZZ' },
+      opts,
+    );
+    expect(other.refresh).toBeUndefined();
+  });
+
+  it('revokeOwnSession logs the app out (current or previous token) and emits an event', async () => {
+    const { service, rows } = setup();
+    const first = await service.createSession(7, 2, app);
+    const rotated = await service.rotate(first.token, app, opts);
+
+    const listener = jest.fn();
+    sessionEvents.on(SESSION_REVOKED, listener);
+    await expect(service.revokeOwnSession(first.token)).resolves.toBe(true);
+    sessionEvents.off(SESSION_REVOKED, listener);
+
+    expect(rows[0].revokeReason).toBe('logout');
+    expect(listener).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionIds: [rows[0].id], reason: 'logout' }),
+    );
+    expect(await service.isSessionUsable(rotated.sessionId)).toBe(false);
+    await expect(service.revokeOwnSession('unknown')).resolves.toBe(false);
+    await expect(service.revokeOwnSession(undefined)).resolves.toBe(false);
   });
 });

@@ -13,8 +13,8 @@ export const REFRESH_COOKIE = 'hs_rt';
 export const DEVICE_COOKIE = 'hs_did';
 /** Chỉ gửi tới các endpoint xác thực, không đi kèm mọi request API. */
 const AUTH_COOKIE_PATH = '/api/auth';
-/** 16 byte base64url = 22 ký tự. */
-const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+/** 16 byte base64url = 22 ký tự. App iOS gửi mã cùng định dạng qua header. */
+export const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 /** Chrome giới hạn hạn cookie tối đa 400 ngày. */
 const DEVICE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
 /** Mã vừa tạo trong request hiện tại (gọi nhiều lần không sinh mã khác). */

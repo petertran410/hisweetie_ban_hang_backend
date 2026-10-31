@@ -57,6 +57,16 @@ export interface RotateResult {
   refresh?: IssuedRefresh;
 }
 
+export interface RotateOptions {
+  /**
+   * Chỉ dùng cho app di động: app gửi lại token LIỀN TRƯỚC trong ân hạn vì
+   * phản hồi lần làm mới trước bị mất (mạng chập chờn) → cấp token mới thay vì
+   * không cấp gì (app không có cookie giữ sẵn token mới như trình duyệt).
+   * Chỉ khi mã thiết bị khớp dòng phiên; không kéo dài cửa sổ ân hạn.
+   */
+  reissueOnGrace?: boolean;
+}
+
 export interface ActiveSession {
   id: number;
   userAgent: string | null;
@@ -234,7 +244,11 @@ export class SessionService implements OnModuleInit {
    * Đổi refresh token cũ lấy token mới — cập nhật ngay trên dòng của phiên.
    * Ném 401 kèm `code` khi không hợp lệ.
    */
-  async rotate(raw: string, ctx: SessionContext = {}): Promise<RotateResult> {
+  async rotate(
+    raw: string,
+    ctx: SessionContext = {},
+    opts: RotateOptions = {},
+  ): Promise<RotateResult> {
     if (!raw) throw sessionError('SESSION_INVALID', 'Phiên không hợp lệ');
     const presented = hash(raw);
     let unboundDevice = false;
@@ -279,6 +293,40 @@ export class SessionService implements OnModuleInit {
         return revoke('permission');
       }
 
+      /** Ghi token mới lên dòng phiên; `extra` = cột xoay vòng (nếu có). */
+      const issue = async (
+        extra: Record<string, unknown>,
+      ): Promise<{ ok: RotateResult; error?: undefined }> => {
+        const token = newToken();
+        const expiresAt = new Date(
+          Math.min(
+            now.getTime() + sessionConfig.refreshIdleMs,
+            session.absoluteExpiresAt.getTime(),
+          ),
+        );
+        await tx.authSession.update({
+          where: { id: session.id },
+          data: {
+            ...extra,
+            tokenHash: hash(token),
+            expiresAt,
+            lastUsedAt: now,
+            ...(ctx.userAgent
+              ? { userAgent: ctx.userAgent.slice(0, 500) }
+              : {}),
+            ...(ctx.ip ? { ip: ctx.ip.slice(0, 100) } : {}),
+          },
+        });
+        return {
+          ok: {
+            userId: user.id,
+            permissionVersion: user.permissionVersion,
+            sessionId: session.id,
+            refresh: { sessionId: session.id, token, expiresAt },
+          } as RotateResult,
+        };
+      };
+
       // Trình duyệt gửi token LIỀN TRƯỚC.
       if (session.tokenHash !== presented) {
         const withinGrace =
@@ -286,6 +334,15 @@ export class SessionService implements OnModuleInit {
           now.getTime() - session.rotatedAt.getTime() <
             sessionConfig.rotationGraceMs;
         if (withinGrace) {
+          if (
+            opts.reissueOnGrace &&
+            session.deviceId &&
+            ctx.deviceId === session.deviceId
+          ) {
+            // App mất phản hồi lần trước: cấp token khác. Giữ nguyên
+            // previousTokenHash + rotatedAt → ân hạn không bị kéo dài.
+            return issue({});
+          }
           // Nhiều tab làm mới cùng lúc: cookie trình duyệt đã là token mới.
           return {
             ok: {
@@ -301,34 +358,7 @@ export class SessionService implements OnModuleInit {
         return revoke('reuse');
       }
 
-      const token = newToken();
-      const expiresAt = new Date(
-        Math.min(
-          now.getTime() + sessionConfig.refreshIdleMs,
-          session.absoluteExpiresAt.getTime(),
-        ),
-      );
-      await tx.authSession.update({
-        where: { id: session.id },
-        data: {
-          previousTokenHash: presented,
-          tokenHash: hash(token),
-          rotatedAt: now,
-          expiresAt,
-          lastUsedAt: now,
-          ...(ctx.userAgent ? { userAgent: ctx.userAgent.slice(0, 500) } : {}),
-          ...(ctx.ip ? { ip: ctx.ip.slice(0, 100) } : {}),
-        },
-      });
-
-      return {
-        ok: {
-          userId: user.id,
-          permissionVersion: user.permissionVersion,
-          sessionId: session.id,
-          refresh: { sessionId: session.id, token, expiresAt },
-        } as RotateResult,
-      };
+      return issue({ previousTokenHash: presented, rotatedAt: now });
     });
 
     if ('error' in outcome && outcome.error) {
@@ -381,6 +411,27 @@ export class SessionService implements OnModuleInit {
       data: { revokedAt: new Date(), revokeReason: reason },
     });
     if (count) this.sidCache.clear();
+  }
+
+  /**
+   * App di động đăng xuất bằng refresh token nó đang giữ (chấp nhận cả token
+   * liền trước, phòng app chưa kịp lưu token mới). Có phát sự kiện thu hồi.
+   */
+  async revokeOwnSession(
+    raw: string | undefined,
+    reason: RevokeReason = 'logout',
+  ): Promise<boolean> {
+    if (!raw) return false;
+    const presented = hash(raw);
+    const session = await this.prisma.authSession.findFirst({
+      where: {
+        revokedAt: null,
+        OR: [{ tokenHash: presented }, { previousTokenHash: presented }],
+      },
+      select: { id: true, userId: true },
+    });
+    if (!session) return false;
+    return this.revokeSession(session.userId, session.id, reason);
   }
 
   /** Thu hồi 1 phiên (thiết bị) của user. Trả false nếu không phải của user đó. */

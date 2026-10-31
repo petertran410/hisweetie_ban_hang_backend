@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller';
+import { MobileAuthController } from './mobile/mobile-auth.controller';
 import { AuthService } from './auth.service';
 import { LarkAuthService } from './lark-auth.service';
 import { FinanceAccessService } from './finance-access.service';
@@ -49,7 +50,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
       inject: [ConfigService],
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, MobileAuthController],
   providers: [
     AuthService,
     LarkAuthService,
