@@ -110,6 +110,8 @@ model User {
   transferTempQuantities                                    TransferTempQuantity[]
   bankAccountMapping                                        UserBankAccount?
   smaxChannels                                              SmaxChannelUser[]
+  cskhLeads                                                 Lead[]                            @relation("LeadCskh")
+  saleLeads                                                 Lead[]                            @relation("LeadSalePic")
   branchPermissions                                         UserBranchPermission[]
   userBranchRoles                                           UserBranchRole[]
   userBranches                                              UserBranch[]
@@ -1527,6 +1529,87 @@ model CustomerZaloContact {
   @@map("customer_zalo_contacts")
 }
 
+/// Khách tiềm năng (chưa có đơn) do CSKH quản lý, chuyển giao cho Sale PIC.
+model Lead {
+  id              Int                @id @default(autoincrement())
+  name            String
+  phone           String?
+  /// SĐT chuẩn 0xxxxxxxxx — tìm trùng với khách / lead khác
+  phoneNormalized String?            @map("phone_normalized")
+  /// SĐT Zalo cá nhân của khách (mặc định = phone); tra ra ID Zalo khi chuyển giao
+  zaloPhone       String?            @map("zalo_phone")
+  zaloUid         String?            @map("zalo_uid")
+  source          String // facebook | tiktok | shopee | zalo_oa | website
+  /// Kênh (page Smax) khách nhắn tới, vd Fanpage "LerMao - Sành Ăn Như Gấu"
+  channelPid      String?            @map("channel_pid")
+  channelName     String?            @map("channel_name")
+  category        String // cafe | chain | distributor | training
+  provinceCode    String?            @map("province_code")
+  provinceName    String?            @map("province_name")
+  wardCode        String?            @map("ward_code")
+  wardName        String?            @map("ward_name")
+  need            String?            @db.Text
+  status          String             @default("new") // new | caring | handed_over | converted | cancelled
+  cskhUserId      Int?               @map("cskh_user_id")
+  salePicId       Int?               @map("sale_pic_id")
+  cskhNote        String?            @map("cskh_note") @db.Text
+  customerId      Int?               @map("customer_id")
+  convertedAt     DateTime?          @map("converted_at")
+  createdById     Int                @map("created_by_id")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+  cskhUser        User?              @relation("LeadCskh", fields: [cskhUserId], references: [id])
+  salePic         User?              @relation("LeadSalePic", fields: [salePicId], references: [id])
+  conversations   LeadConversation[]
+  handovers       LeadHandover[]
+
+  @@index([status])
+  @@index([salePicId])
+  @@index([phoneNormalized])
+  @@index([createdAt])
+  @@map("leads")
+}
+
+/// Hội thoại Smax (Facebook, Tiktok, Zalo…) của lead.
+model LeadConversation {
+  id          Int      @id @default(autoincrement())
+  leadId      Int      @map("lead_id")
+  pagePid     String   @map("page_pid")
+  tid         String
+  platform    String
+  isGroup     Boolean  @default(false) @map("is_group")
+  name        String?
+  createdById Int?     @map("created_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([leadId, tid])
+  @@index([tid])
+  @@map("lead_conversations")
+}
+
+/// 1 lần chuyển giao lead cho Sale PIC: kết quả từng bước (Lark, kết bạn, tin chào) để gửi lại bước lỗi.
+model LeadHandover {
+  id            Int      @id @default(autoincrement())
+  leadId        Int      @map("lead_id")
+  salePicId     Int      @map("sale_pic_id")
+  pagePid       String   @map("page_pid")
+  note          String?  @db.Text
+  larkText      String   @map("lark_text") @db.Text
+  friendMessage String   @map("friend_message")
+  greeting      String   @db.Text
+  /// { lark|friend|greeting: { status: 'pending'|'ok'|'failed', at?, error? } }
+  steps         Json
+  status        String // done | partial
+  createdById   Int      @map("created_by_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  lead          Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId])
+  @@map("lead_handovers")
+}
+
 model PartnerDelivery {
   id                Int               @id @default(autoincrement())
   code              String            @unique
@@ -2147,6 +2230,10 @@ model Settings {
   contractDocumensoSyncCronEnabled Boolean  @default(true) @map("contract_documenso_sync_cron_enabled")
   /// Thời điểm chốt chuyển sổ tài chính nội bộ sang POS: khóa đồng bộ dữ liệu cũ.
   financeCutoverAt                 DateTime? @map("finance_cutover_at")
+  /// Mẫu tin chuyển giao lead (null = mẫu mặc định trong code); biến {tên khách}, {tên sale}…
+  leadGreetingTemplate             String?   @map("lead_greeting_template")
+  leadFriendTemplate               String?   @map("lead_friend_template")
+  leadLarkTemplate                 String?   @map("lead_lark_template")
 
   @@map("settings")
 }

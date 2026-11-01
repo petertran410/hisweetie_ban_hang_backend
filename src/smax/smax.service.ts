@@ -6,8 +6,6 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { SmaxApiService } from './smax-api.service';
 
-const ZALO_PLATFORMS = ['zalo', 'zaloweb'];
-
 @Injectable()
 export class SmaxService {
   constructor(
@@ -16,8 +14,9 @@ export class SmaxService {
   ) {}
 
   /**
-   * Kênh Zalo trên Smax (Zalo OA + Zalo cá nhân) kèm người dùng POS đã liên
-   * kết. Liên kết tới kênh không còn trên Smax vẫn trả về (missing) để gỡ.
+   * Mọi kênh của biz trên Smax (Zalo cá nhân, Zalo OA, Facebook, TikTok, Shopee,
+   * Website…) kèm người dùng POS đã liên kết. Chat trên POS hiện chỉ dùng Zalo cá
+   * nhân. Liên kết tới kênh không còn trên Smax vẫn trả về (missing) để gỡ.
    */
   async getZaloChannels() {
     const [pages, links] = await Promise.all([
@@ -32,9 +31,7 @@ export class SmaxService {
     // 1 kênh → nhiều người dùng POS
     const usersByPid = new Map<string, (typeof links)[number]['user'][]>();
     for (const l of links) usersByPid.set(l.pagePid, [...(usersByPid.get(l.pagePid) ?? []), l.user]);
-    const zaloPages = pages.filter((p) => ZALO_PLATFORMS.includes(p.platform));
-
-    const channels = zaloPages.map((p) => ({
+    const channels = pages.map((p) => ({
       pagePid: p.pid,
       name: p.name,
       platform: p.platform,
@@ -43,7 +40,7 @@ export class SmaxService {
       missing: false,
       users: usersByPid.get(p.pid) ?? [],
     }));
-    const onSmax = new Set(zaloPages.map((p) => p.pid));
+    const onSmax = new Set(pages.map((p) => p.pid));
     const missingAdded = new Set<string>();
     for (const l of links) {
       if (!onSmax.has(l.pagePid) && !missingAdded.has(l.pagePid)) {
@@ -63,7 +60,7 @@ export class SmaxService {
   }
 
   /**
-   * Đồng bộ kênh Zalo từ Smax: cập nhật tên / platform đã lưu của các liên kết
+   * Đồng bộ kênh từ Smax: cập nhật tên / platform đã lưu của các liên kết
    * (kênh đổi tên trên Smax), rồi trả danh sách kênh mới nhất.
    */
   async syncZaloChannels() {
@@ -73,11 +70,7 @@ export class SmaxService {
         select: { pagePid: true, pageName: true, platform: true },
       }),
     ]);
-    const byPid = new Map(
-      pages
-        .filter((p) => ZALO_PLATFORMS.includes(p.platform))
-        .map((p) => [p.pid, p]),
-    );
+    const byPid = new Map(pages.map((p) => [p.pid, p]));
     const stale = new Map<string, { pageName: string; platform: string }>();
     for (const l of links) {
       const p = byPid.get(l.pagePid);
@@ -92,11 +85,9 @@ export class SmaxService {
   }
 
   async link(pagePid: string, userId: number) {
-    const page = (await this.smaxApi.listPages()).find(
-      (p) => p.pid === pagePid && ZALO_PLATFORMS.includes(p.platform),
-    );
+    const page = (await this.smaxApi.listPages()).find((p) => p.pid === pagePid);
     if (!page) {
-      throw new BadRequestException('Kênh Zalo không tồn tại trên Smax');
+      throw new BadRequestException('Kênh không tồn tại trên Smax');
     }
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

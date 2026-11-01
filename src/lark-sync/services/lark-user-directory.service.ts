@@ -39,7 +39,7 @@ export class LarkUserDirectoryService {
   }
 
   /**
-   * open_id thành viên (trực tiếp) của các phòng ban Lark theo tên (vd "Kho Hà Nội").
+   * open_id thành viên của các phòng ban Lark theo tên (vd "Kho Hà Nội"), gồm cả phòng ban con.
    * Cache 1h danh sách mọi phòng ban trong scope của bot; lỗi Lark → throw.
    */
   async openIdsInDepartments(names: string[]): Promise<Set<string>> {
@@ -85,39 +85,91 @@ export class LarkUserDirectoryService {
       pageToken = data?.has_more ? data.page_token : undefined;
     } while (pageToken);
 
-    const entries = await Promise.all(
-      departmentIds.map(async (dept) => {
-        const info = ok(
-          await this.client.contact.department.get({
-            path: { department_id: dept },
-            params: { department_id_type: 'open_department_id' },
+    const membersOf = async (dept: string): Promise<string[]> => {
+      const members: string[] = [];
+      let token: string | undefined;
+      do {
+        const data = ok(
+          await this.client.contact.user.findByDepartment({
+            params: {
+              user_id_type: 'open_id',
+              department_id_type: 'open_department_id',
+              department_id: dept,
+              page_size: 50,
+              ...(token ? { page_token: token } : {}),
+            },
           }),
-          `department.get ${dept}`,
+          `findByDepartment ${dept}`,
         );
-        const members: string[] = [];
-        let token: string | undefined;
-        do {
-          const data = ok(
-            await this.client.contact.user.findByDepartment({
-              params: {
-                user_id_type: 'open_id',
-                department_id_type: 'open_department_id',
-                department_id: dept,
-                page_size: 50,
-                ...(token ? { page_token: token } : {}),
-              },
-            }),
-            `findByDepartment ${dept}`,
-          );
-          for (const u of data?.items || []) {
-            if (typeof u?.open_id === 'string') members.push(u.open_id);
+        for (const u of data?.items || []) {
+          if (typeof u?.open_id === 'string') members.push(u.open_id);
+        }
+        token = data?.has_more ? data.page_token : undefined;
+      } while (token);
+      return members;
+    };
+    // Mọi phòng ban con (đệ quy) — vd "Bộ Phận Sales" > "Phòng Kinh Doanh 1"
+    const descendantsOf = async (
+      dept: string,
+    ): Promise<{ id: string; name: string }[]> => {
+      const out: { id: string; name: string }[] = [];
+      let token: string | undefined;
+      do {
+        const data = ok(
+          await this.client.contact.department.children({
+            path: { department_id: dept },
+            params: {
+              department_id_type: 'open_department_id',
+              fetch_child: true,
+              page_size: 50,
+              ...(token ? { page_token: token } : {}),
+            },
+          }),
+          `department.children ${dept}`,
+        );
+        for (const d of data?.items || []) {
+          if (typeof d?.open_department_id === 'string') {
+            out.push({ id: d.open_department_id, name: d.name || '' });
           }
-          token = data?.has_more ? data.page_token : undefined;
-        } while (token);
-        return [this.normalize(info?.department?.name || ''), members] as const;
+        }
+        token = data?.has_more ? data.page_token : undefined;
+      } while (token);
+      return out;
+    };
+
+    const ownMembers = new Map<string, Promise<string[]>>();
+    const cachedMembersOf = (dept: string) => {
+      if (!ownMembers.has(dept)) ownMembers.set(dept, membersOf(dept));
+      return ownMembers.get(dept)!;
+    };
+    const result = new Map<string, Set<string>>();
+    const add = (name: string, ids: string[]) => {
+      const key = this.normalize(name);
+      if (!key) return;
+      const set = result.get(key) ?? new Set<string>();
+      ids.forEach((id) => set.add(id));
+      result.set(key, set);
+    };
+    await Promise.all(
+      departmentIds.map(async (dept) => {
+        const [info, children] = await Promise.all([
+          this.client.contact.department
+            .get({
+              path: { department_id: dept },
+              params: { department_id_type: 'open_department_id' },
+            })
+            .then((res) => ok(res, `department.get ${dept}`)),
+          descendantsOf(dept),
+        ]);
+        // Phòng ban = thành viên trực tiếp + thành viên mọi phòng ban con
+        const lists = await Promise.all(
+          [dept, ...children.map((c) => c.id)].map(cachedMembersOf),
+        );
+        add(info?.department?.name || '', lists.flat());
+        children.forEach((c, i) => add(c.name, lists[i + 1]));
       }),
     );
-    return new Map(entries);
+    return new Map([...result].map(([k, v]) => [k, [...v]]));
   }
 
   /** Force refresh cache (gọi từ controller nếu cần). */

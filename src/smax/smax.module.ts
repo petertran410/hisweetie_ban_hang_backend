@@ -14,6 +14,6 @@ import { SmaxChatService } from './smax-chat.service';
   imports: [PrismaModule, HttpModule, AuditLogsModule, UploadModule, LarkSyncModule],
   controllers: [SmaxController, SmaxChatController],
   providers: [SmaxService, SmaxApiService, SmaxChatService],
-  exports: [SmaxService, SmaxApiService],
+  exports: [SmaxService, SmaxApiService, SmaxChatService],
 })
 export class SmaxModule {}
