@@ -261,16 +261,57 @@ export class LarkAuthService {
     // Chỉ "đốt" mã sau khi PKCE đúng: người không có verifier không làm hỏng
     // được lượt đăng nhập của app.
     this.consumeMobileCode(payload.jti, payload.exp);
+    return this.finishMobileLogin(payload.uid, payload.mode, ctx);
+  }
 
-    if (payload.mode === 'setup') {
-      return { setupToken: this.signSetupToken(payload.uid) };
+  /**
+   * Đăng nhập bằng app Lark cài trên điện thoại (LarkSSOSDK): app nhận mã của
+   * Lark kèm code_verifier do SDK sinh, backend đổi trực tiếp với Lark. Mã
+   * Lark gắn PKCE nên ai chặn được mã mà không có verifier cũng không dùng được.
+   */
+  async exchangeLarkAppCode(
+    code: string,
+    codeVerifier: string,
+    ctx: SessionContext,
+  ): Promise<
+    | { setupToken: string }
+    | { session: Awaited<ReturnType<AuthService['issueAuthResponse']>> }
+  > {
+    if (!code || !CODE_VERIFIER_PATTERN.test(codeVerifier || '')) {
+      throw new UnauthorizedException('Mã đăng nhập Lark không hợp lệ');
+    }
+    let resolved: { mode: LarkLoginMode; userId: number };
+    try {
+      const { user } = await exchangeCode(this.getOAuthConfig(), code, {
+        codeVerifier,
+      });
+      resolved = await this.resolveLarkUser(user);
+    } catch (err) {
+      const message = this.callbackErrorMessage(err);
+      this.logger.warn(`Lark app login failed: ${message}`);
+      throw new UnauthorizedException(message);
+    }
+    return this.finishMobileLogin(resolved.userId, resolved.mode, ctx);
+  }
+
+  /** Phiên đăng nhập (kèm thông tin thiết bị của app), hoặc setup token lần đầu. */
+  private async finishMobileLogin(
+    uid: number,
+    mode: LarkLoginMode,
+    ctx: SessionContext,
+  ): Promise<
+    | { setupToken: string }
+    | { session: Awaited<ReturnType<AuthService['issueAuthResponse']>> }
+  > {
+    if (mode === 'setup') {
+      return { setupToken: this.signSetupToken(uid) };
     }
     const session = await this.authService.issueAuthResponse(
-      payload.uid,
+      uid,
       undefined,
       ctx,
     );
-    this.authService.recordLogin?.(payload.uid, 'Lark', ctx);
+    this.authService.recordLogin?.(uid, 'Lark', ctx);
     return { session };
   }
 

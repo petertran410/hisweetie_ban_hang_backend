@@ -129,6 +129,31 @@ export class MobileAuthController {
       : toMobileAuthBody(result.session);
   }
 
+  /**
+   * Đăng nhập bằng app Lark trên điện thoại: app gửi mã Lark trả về (kèm
+   * code_verifier của SDK), backend đổi với Lark bằng app secret.
+   */
+  @Public()
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @Post('lark/app')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'App: đăng nhập bằng app Lark (LarkSSOSDK)' })
+  async exchangeLarkAppCode(
+    @Body() data: MobileLarkExchangeDto,
+    @Req() req: Request,
+  ) {
+    // Kiểm mã thiết bị TRƯỚC khi đổi mã với Lark (mã chỉ dùng được 1 lần).
+    const ctx = mobileSessionContext(req);
+    const result = await this.larkAuthService.exchangeLarkAppCode(
+      data.code,
+      data.codeVerifier,
+      ctx,
+    );
+    return 'setupToken' in result
+      ? { setupToken: result.setupToken }
+      : toMobileAuthBody(result.session);
+  }
+
   @Public()
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @Post('lark/setup-password')

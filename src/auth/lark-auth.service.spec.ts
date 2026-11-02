@@ -298,3 +298,74 @@ describe('LarkAuthService — iOS app login (PKCE + one-time code)', () => {
     expect(refresh).toBeDefined();
   });
 });
+
+describe('LarkAuthService — login with the Lark app on the phone (LarkSSOSDK)', () => {
+  beforeEach(() => (exchangeCode as jest.Mock).mockReset());
+
+  const verifier = randomBytes(32).toString('base64url');
+  const ctx = { userAgent: 'HiSweetiePOS/1.0', deviceId: 'd'.repeat(22) };
+  const activeUser = {
+    id: 3,
+    password: 'hash',
+    googleId: null,
+    isActive: true,
+    larkUserId: 'ou_1',
+  };
+
+  it('exchanges the Lark code with the SDK verifier (no redirect_uri) and creates the app session', async () => {
+    const { service, authService } = setup(activeUser);
+    (exchangeCode as jest.Mock).mockResolvedValue({
+      user: { open_id: 'ou_1' },
+    });
+
+    const result = await service.exchangeLarkAppCode(
+      'lark-code',
+      verifier,
+      ctx,
+    );
+
+    expect(exchangeCode).toHaveBeenCalledWith(
+      expect.objectContaining({ appId: 'cli_test' }),
+      'lark-code',
+      { codeVerifier: verifier },
+    );
+    expect(result).toHaveProperty('session');
+    expect(authService.issueAuthResponse).toHaveBeenCalledWith(
+      3,
+      undefined,
+      ctx,
+    );
+  });
+
+  it('first Lark login → returns a setup token instead of a session', async () => {
+    const { service, authService } = setup({ ...activeUser, password: null });
+    (exchangeCode as jest.Mock).mockResolvedValue({
+      user: { open_id: 'ou_1' },
+    });
+    await expect(
+      service.exchangeLarkAppCode('lark-code', verifier, ctx),
+    ).resolves.toHaveProperty('setupToken');
+    expect(authService.issueAuthResponse).not.toHaveBeenCalled();
+  });
+
+  it('a malformed verifier is rejected before calling Lark', async () => {
+    const { service } = setup(activeUser);
+    await expect(
+      service.exchangeLarkAppCode('lark-code', 'short', ctx),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it('Lark refusing the code (wrong verifier, expired) → generic 401, no session', async () => {
+    const { service, authService } = setup(activeUser);
+    (exchangeCode as jest.Mock).mockRejectedValue(
+      new Error('Token exchange HTTP 400: invalid code_verifier'),
+    );
+    const err = await service
+      .exchangeLarkAppCode('lark-code', verifier, ctx)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(UnauthorizedException);
+    expect((err as Error).message).toBe('Đăng nhập Lark thất bại');
+    expect(authService.issueAuthResponse).not.toHaveBeenCalled();
+  });
+});

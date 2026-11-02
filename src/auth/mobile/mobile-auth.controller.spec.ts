@@ -47,6 +47,7 @@ describe('MobileAuthController (iOS app)', () => {
         .fn()
         .mockReturnValue('https://accounts.larksuite.com/authorize?x=1'),
       exchangeMobileCode: jest.fn(),
+      exchangeLarkAppCode: jest.fn(),
       setupPassword: jest.fn().mockResolvedValue({
         accessToken: 'at3',
         expiresIn: 900,
@@ -192,6 +193,47 @@ describe('MobileAuthController (iOS app)', () => {
     });
     await expect(
       controller.exchangeLarkCode({ code: 'c', codeVerifier: 'v' }, makeReq()),
+    ).resolves.toEqual({ setupToken: 'setup-jwt' });
+  });
+
+  it('Lark app login checks the device id first, then returns tokens or a setup token', async () => {
+    const { controller, larkAuthService } = setup();
+    const noDevice = makeReq();
+    delete noDevice.headers['x-device-id'];
+    await expect(
+      controller.exchangeLarkAppCode(
+        { code: 'c', codeVerifier: 'v' },
+        noDevice,
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(larkAuthService.exchangeLarkAppCode).not.toHaveBeenCalled();
+
+    larkAuthService.exchangeLarkAppCode.mockResolvedValueOnce({
+      session: { accessToken: 'at', expiresIn: 900, refresh, user: { id: 2 } },
+    });
+    await expect(
+      controller.exchangeLarkAppCode(
+        { code: 'c', codeVerifier: 'v' },
+        makeReq(),
+      ),
+    ).resolves.toMatchObject({
+      accessToken: 'at',
+      refreshToken: 'raw-refresh-token',
+    });
+    expect(larkAuthService.exchangeLarkAppCode).toHaveBeenCalledWith(
+      'c',
+      'v',
+      expect.objectContaining({ deviceId: DEVICE }),
+    );
+
+    larkAuthService.exchangeLarkAppCode.mockResolvedValueOnce({
+      setupToken: 'setup-jwt',
+    });
+    await expect(
+      controller.exchangeLarkAppCode(
+        { code: 'c', codeVerifier: 'v' },
+        makeReq(),
+      ),
     ).resolves.toEqual({ setupToken: 'setup-jwt' });
   });
 
