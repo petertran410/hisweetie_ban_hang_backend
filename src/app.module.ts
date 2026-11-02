@@ -83,6 +83,7 @@ import { HealthController } from './health/health.controller';
 import { SupplierReturnsModule } from './supplier-returns/supplier-returns.module';
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
 import { SmaxModule } from './smax/smax.module';
+import { LeadsModule } from './leads/leads.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -186,6 +187,7 @@ import { InternalFundModule } from './internal-fund/internal-fund.module';
     BankAccountsModule,
     UserBankAccountsModule,
     SmaxModule,
+    LeadsModule,
     ReturnOrdersModule,
     ConsignmentReturnsModule,
     InventoryChecksModule,

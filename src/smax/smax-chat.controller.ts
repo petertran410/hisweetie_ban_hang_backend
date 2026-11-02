@@ -33,6 +33,7 @@ import {
   CreateZaloContactDto,
   ReactMessageDto,
   MessageActionDto,
+  PassControlBizAIDto,
   FriendActionDto,
   SendChatMessageDto,
   SendThreadMessageDto,
@@ -102,6 +103,13 @@ export class SmaxChatController {
     return this.service.reactMessage(this.actor(req), dto);
   }
 
+  // Bật Meta Business AI trả lời hội thoại Messenger (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Post('threads/meta-ai')
+  @RequirePermissions('smax_chat:send')
+  passControlBizAI(@Body() dto: PassControlBizAIDto, @Req() req: any) {
+    return this.service.passControlBizAI(this.actor(req), dto);
+  }
+
   // Thu hồi / xoá phía mình 1 tin (API nội bộ Smax, cần SMAX_USER_TOKEN)
   @Post('threads/message-action')
   @RequirePermissions('smax_chat:send')
@@ -114,6 +122,12 @@ export class SmaxChatController {
   @RequirePermissions('invoices:update')
   deliveryBookingTarget() {
     return this.service.deliveryBookingTarget();
+  }
+
+  @Get('delivery-booking/senders')
+  @RequirePermissions('invoices:update')
+  deliveryBookingSenders(@Query('branchId', ParseIntPipe) branchId: number) {
+    return this.service.deliveryBookingSenders(branchId);
   }
 
   @Post('delivery-booking')
