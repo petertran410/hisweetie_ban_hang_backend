@@ -25,6 +25,7 @@ import {
   LEAD_CATEGORY_LABEL,
   renderLeadTemplate,
   StepResult,
+  ZALO_STRANGER_BLOCKED,
 } from './leads.constants';
 import {
   HandoverLeadDto,
@@ -801,23 +802,30 @@ export class LeadsService {
       fn: () => Promise<void>,
       label: string,
     ) => {
-      if (steps[step]?.status === 'ok') return;
+      if (steps[step]?.status === 'ok' || steps[step]?.status === 'skipped')
+        return;
       try {
         await fn();
         steps[step] = { status: 'ok', at: new Date().toISOString() };
       } catch (e) {
+        const error = (e as Error).message || 'Lỗi không xác định';
         steps[step] = {
-          status: 'failed',
+          // Khách chặn tin người lạ: vẫn hoàn tất chuyển giao, Sale nhắn sau khi khách đồng ý kết bạn
+          status:
+            step === 'greeting' && ZALO_STRANGER_BLOCKED.test(error)
+              ? 'skipped'
+              : 'failed',
           at: new Date().toISOString(),
-          error: (e as Error).message || 'Lỗi không xác định',
+          error,
         };
       }
       const ok = steps[step].status === 'ok';
+      const skipped = steps[step].status === 'skipped';
       await this.audit(
         actor,
         `LEAD_HANDOVER_${step.toUpperCase()}`,
         lead.id,
-        `${label} cho lead "${lead.name}" → Sale ${sale.name}: ${ok ? 'thành công' : `lỗi — ${steps[step].error}`}`,
+        `${label} cho lead "${lead.name}" → Sale ${sale.name}: ${ok ? 'thành công' : `${skipped ? 'bỏ qua' : 'lỗi'} — ${steps[step].error}`}`,
         {
           handoverId,
           step,
@@ -882,7 +890,9 @@ export class LeadsService {
       'Gửi tin chào Zalo',
     );
 
-    const done = HANDOVER_STEPS.every((s) => steps[s].status === 'ok');
+    const done = HANDOVER_STEPS.every(
+      (s) => steps[s].status === 'ok' || steps[s].status === 'skipped',
+    );
     const saved = await this.prisma.leadHandover.update({
       where: { id: handoverId },
       data: {
@@ -930,6 +940,8 @@ export class LeadsService {
       'tên sale': sale.name,
       sđt: lead.phone ?? '',
       'phân loại': LEAD_CATEGORY_LABEL[lead.category] ?? lead.category,
+      'tỉnh thành': lead.provinceName ?? '',
+      phường: lead.wardName ?? '',
       'nhu cầu': lead.need ?? '',
       'ghi chú': note?.trim() || lead.cskhNote || '',
       link: `${this.frontendUrl}/khach-hang/lead?id=${lead.id}`,

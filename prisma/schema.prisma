@@ -1539,7 +1539,7 @@ model Lead {
   /// SĐT Zalo cá nhân của khách (mặc định = phone); tra ra ID Zalo khi chuyển giao
   zaloPhone       String?            @map("zalo_phone")
   zaloUid         String?            @map("zalo_uid")
-  source          String // facebook | tiktok | shopee | zalo_oa | website | direct | other
+  source          String // facebook | tiktok | shopee | zalo_oa | zalo_user | website | direct | other
   /// Kênh (page Smax) khách nhắn tới, vd Fanpage "LerMao - Sành Ăn Như Gấu"
   channelPid      String?            @map("channel_pid")
   channelName     String?            @map("channel_name")
