@@ -75,6 +75,7 @@ const makeService = (
         .mockResolvedValue({ id: 9, name: 'Sale B', larkUserId: 'ou_sale' }),
       findMany: jest.fn().mockResolvedValue([]),
     },
+    customerDebtPolicy: { findMany: jest.fn().mockResolvedValue([]) },
     customer: {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
@@ -229,6 +230,63 @@ describe('LeadsService', () => {
     ]);
     expect(prisma.customerZaloContact.findMany.mock.calls[0][0].where).toEqual({
       zaloId: { in: ['fb2949', '4546'] },
+    });
+  });
+
+  it('Sale PIC: lead chưa có Sale mà đã gắn khách → lấy Sale PIC của khách (hiển thị + cron lưu)', async () => {
+    const { service, prisma } = makeService();
+    const leads = [
+      {
+        id: 1,
+        name: 'A',
+        createdById: 1,
+        salePicId: null,
+        customerId: 6,
+        conversations: [],
+      },
+      {
+        id: 2,
+        name: 'B',
+        createdById: 1,
+        salePicId: 4,
+        customerId: 6,
+        conversations: [],
+      },
+      {
+        id: 3,
+        name: 'C',
+        createdById: 1,
+        salePicId: null,
+        customerId: null,
+        conversations: [],
+      },
+    ];
+    prisma.lead.findMany.mockResolvedValue(leads);
+    prisma.customer.findMany.mockResolvedValue([
+      { id: 6, code: 'KH6', name: 'Khách' },
+    ]);
+    prisma.customerDebtPolicy.findMany.mockResolvedValue([
+      { customerId: 6, salePicId: 9 },
+    ]);
+    prisma.user.findMany.mockResolvedValue([{ id: 9, name: 'Sale B' }]);
+
+    const { data } = await service.list({}, CSKH);
+    expect(
+      data.map((l: any) => [l.id, l.salePicId, l.salePicFromCustomer]),
+    ).toEqual([
+      [1, 9, true],
+      [2, 4, false],
+      [3, null, false],
+    ]);
+
+    prisma.lead.findMany.mockResolvedValue([leads[0], leads[2]]);
+    expect(await service.syncSalePicFromCustomers()).toEqual({
+      checked: 2,
+      updated: 1,
+    });
+    expect(prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: { salePicId: 9 },
     });
   });
 

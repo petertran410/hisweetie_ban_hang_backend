@@ -6,10 +6,19 @@ import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { LeadsController } from './leads.controller';
 import { LeadsService } from './leads.service';
 import { LeadsCron } from './leads.cron';
+import {
+  LeadFormsController,
+  PublicLeadFormsController,
+} from './lead-forms.controller';
+import { LeadFormsService } from './lead-forms.service';
 
 @Module({
   imports: [PrismaModule, AuditLogsModule, SmaxModule, LarkSyncModule],
-  controllers: [LeadsController],
-  providers: [LeadsService, LeadsCron],
+  controllers: [
+    LeadsController,
+    LeadFormsController,
+    PublicLeadFormsController,
+  ],
+  providers: [LeadsService, LeadsCron, LeadFormsService],
 })
 export class LeadsModule {}
