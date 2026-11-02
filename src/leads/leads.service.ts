@@ -96,10 +96,12 @@ export class LeadsService {
     const term = q.q?.trim();
     if (term) {
       const phone = term.replace(/\D/g, '');
+      const code = term.match(/^lead0*(\d+)$/i); // mã LEAD000012
       and.push({
         OR: [
+          ...(code ? [{ id: Number(code[1]) }] : []),
           { name: { contains: term, mode: 'insensitive' } },
-          ...(phone.length >= 3
+          ...(!code && phone.length >= 3
             ? [{ phoneNormalized: { contains: phone.replace(/^84/, '0') } }]
             : []),
         ],
@@ -121,9 +123,12 @@ export class LeadsService {
       this.prisma.lead.count({ where }),
     ]);
     const customersOf = await this.linkedCustomers(data);
+    const salePicOf = await this.customerSalePics(
+      [...customersOf.values()].flat().map((c) => c.id),
+    );
     return {
       data: data.map(({ conversations, ...l }) => ({
-        ...l,
+        ...this.withCustomerSalePic(l, customersOf.get(l.id), salePicOf),
         conversationCount: conversations.length,
         customers: customersOf.get(l.id) ?? [],
       })),
@@ -202,6 +207,86 @@ export class LeadsService {
     return out;
   }
 
+  /** Sale PIC đã gán cho khách (chính sách công nợ): customerId → Sale. */
+  private async customerSalePics(customerIds: number[]) {
+    const policies = customerIds.length
+      ? await this.prisma.customerDebtPolicy.findMany({
+          where: { customerId: { in: customerIds }, salePicId: { not: null } },
+          select: { customerId: true, salePicId: true },
+        })
+      : [];
+    const users = policies.length
+      ? await this.prisma.user.findMany({
+          where: { id: { in: policies.map((p) => p.salePicId!) } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const out = new Map<number, { id: number; name: string }>();
+    for (const p of policies) {
+      const u = users.find((x) => x.id === p.salePicId);
+      if (u) out.set(p.customerId, u);
+    }
+    return out;
+  }
+
+  /** Lead chưa có Sale PIC mà đã gắn khách → lấy Sale PIC của khách (khách đầu tiên có Sale). */
+  private withCustomerSalePic<
+    T extends { salePicId: number | null; salePic: unknown },
+  >(
+    lead: T,
+    customers: { id: number }[] | undefined,
+    salePicOf: Map<number, { id: number; name: string }>,
+  ) {
+    if (lead.salePicId) return { ...lead, salePicFromCustomer: false };
+    const sale = customers?.map((c) => salePicOf.get(c.id)).find((v) => !!v);
+    return sale
+      ? {
+          ...lead,
+          salePicId: sale.id,
+          salePic: sale,
+          salePicFromCustomer: true,
+        }
+      : { ...lead, salePicFromCustomer: false };
+  }
+
+  /** Lưu Sale PIC lấy từ khách đã gắn cho lead chưa có Sale (cron) → lọc / phân quyền theo Sale đúng. */
+  async syncSalePicFromCustomers() {
+    const leads = await this.prisma.lead.findMany({
+      where: { salePicId: null, status: { not: 'cancelled' } },
+      select: {
+        id: true,
+        name: true,
+        createdById: true,
+        customerId: true,
+        conversations: { select: { tid: true, pagePid: true } },
+      },
+      take: 500,
+    });
+    const customersOf = await this.linkedCustomers(leads);
+    const salePicOf = await this.customerSalePics(
+      [...customersOf.values()].flat().map((c) => c.id),
+    );
+    let updated = 0;
+    for (const l of leads) {
+      const customer = customersOf.get(l.id)?.find((c) => salePicOf.has(c.id));
+      if (!customer) continue;
+      const sale = salePicOf.get(customer.id)!;
+      await this.prisma.lead.update({
+        where: { id: l.id },
+        data: { salePicId: sale.id },
+      });
+      await this.audit(
+        { id: l.createdById, name: 'Hệ thống' },
+        'LEAD_UPDATE',
+        l.id,
+        `Tự động: Sale PIC lead "${l.name}" = ${sale.name} (theo khách ${customer.code ?? customer.name})`,
+        { salePicId: sale.id, customerId: customer.id },
+      );
+      updated++;
+    }
+    return { checked: leads.length, updated };
+  }
+
   async get(id: number, actor: LeadActor) {
     const lead = await this.prisma.lead.findUnique({
       where: { id },
@@ -228,9 +313,14 @@ export class LeadsService {
       this.linkedCustomers([lead]),
     ]);
     const nameOf = new Map(users.map((u) => [u.id, u.name]));
+    const customers = linked.get(lead.id) ?? [];
     return {
-      ...lead,
-      customers: linked.get(lead.id) ?? [],
+      ...this.withCustomerSalePic(
+        lead,
+        customers,
+        await this.customerSalePics(customers.map((c) => c.id)),
+      ),
+      customers,
       handovers: lead.handovers.map((h) => ({
         ...h,
         salePicName: nameOf.get(h.salePicId) ?? null,
@@ -436,9 +526,17 @@ export class LeadsService {
       });
       copied++;
     }
+    const sale = lead.salePicId
+      ? undefined
+      : (await this.customerSalePics([customerId])).get(customerId);
     const updated = await this.prisma.lead.update({
       where: { id },
-      data: { customerId, status: 'converted', convertedAt: new Date() },
+      data: {
+        customerId,
+        status: 'converted',
+        convertedAt: new Date(),
+        ...(sale ? { salePicId: sale.id } : {}),
+      },
     });
     await this.audit(
       // Tự chuyển đổi (cron): ghi dưới tên người tạo lead
