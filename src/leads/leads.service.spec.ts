@@ -508,6 +508,24 @@ describe('LeadsService', () => {
     expect(smaxApi.requestFriend).toHaveBeenCalledTimes(2);
   });
 
+  it('handover: khách chặn tin từ người lạ → tin chào "bỏ qua", vẫn hoàn tất chuyển giao', async () => {
+    const { service, prisma, audit, smaxApi, getHandover } = makeService();
+    smaxApi.sendZaloweb.mockRejectedValueOnce(
+      new Error(
+        'Zalo: Bạn chưa thể gửi tin nhắn đến người này vì người này chặn không nhận tin nhắn từ người lạ.',
+      ),
+    );
+    const res = await service.handover(7, HANDOVER, CSKH);
+    expect(res.done).toBe(true);
+    expect(getHandover().status).toBe('done');
+    expect(getHandover().steps.greeting.status).toBe('skipped');
+    expect(audit.create.mock.calls.at(-1)[0].metadata.status).toBe('skipped');
+    expect(prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { status: 'handed_over', salePicId: 9 },
+    });
+  });
+
   it('handover: thiếu xác nhận → 400; không đủ điều kiện → 400 kèm lý do; vượt tần suất → 429', async () => {
     const { service, smaxChat, larkClient } = makeService();
     await expect(
@@ -564,6 +582,20 @@ describe('LeadsService', () => {
     expect(p.larkText).toContain(
       'https://pos.example.com/khach-hang/lead?id=7',
     );
+  });
+
+  it('handoverPreview: biến {khu vực} {phường} lấy tỉnh/phường của lead', async () => {
+    const { service, prisma } = makeService({
+      lead: {
+        provinceName: 'Thành phố Đà Nẵng',
+        wardName: 'Phường Hải Châu',
+      } as any,
+    });
+    prisma.settings.findFirst.mockResolvedValue({
+      leadLarkTemplate: 'Khu vực: {khu vực} - {phường}',
+    });
+    const p = await service.handoverPreview(7, 9);
+    expect(p.larkText).toBe('Khu vực: Thành phố Đà Nẵng - Phường Hải Châu');
   });
 
   it('autoConvert: lead có SĐT trùng khách đã có hóa đơn (không huỷ) → tự chuyển đổi', async () => {
