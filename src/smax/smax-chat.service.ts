@@ -964,17 +964,23 @@ export class SmaxChatService {
   }
 
   /**
-   * Đặt xe giao hàng cho hóa đơn: gửi tin vào nhóm đặt xe qua kênh cố định — không cần
-   * kênh liên kết với người bấm (quyền invoices:update), ghi nhật ký theo hóa đơn.
+   * Đặt xe giao hàng cho 1 hoặc nhiều hóa đơn (1 tin, nhiều người nhận): gửi tin vào nhóm
+   * đặt xe qua kênh cố định — không cần kênh liên kết với người bấm (quyền invoices:update),
+   * ghi nhật ký theo từng hóa đơn.
    */
-  async bookDelivery(actor: ChatActor, dto: { invoiceId: number; text: string; confirmed?: boolean }) {
+  async bookDelivery(
+    actor: ChatActor,
+    dto: { invoiceId?: number; invoiceIds?: number[]; text: string; confirmed?: boolean },
+  ) {
     const text = dto.text.trim();
     if (!text) throw new BadRequestException('Nội dung tin nhắn trống');
-    const invoice = await this.prisma.invoice.findUnique({
-      where: { id: dto.invoiceId },
+    const ids = [...new Set(dto.invoiceIds?.length ? dto.invoiceIds : dto.invoiceId ? [dto.invoiceId] : [])];
+    if (!ids.length) throw new BadRequestException('Chưa chọn hóa đơn');
+    const invoices = await this.prisma.invoice.findMany({
+      where: { id: { in: ids } },
       select: { id: true, code: true },
     });
-    if (!invoice) throw new NotFoundException('Không tìm thấy hóa đơn');
+    if (invoices.length !== ids.length) throw new NotFoundException('Không tìm thấy hóa đơn');
     const channel = await this.deliveryBookingChannel();
     if (channel.connectionError) {
       throw new ConflictException(
@@ -988,17 +994,23 @@ export class SmaxChatService {
 
     const { tid } = this.deliveryBooking;
     await this.smaxApi.sendZaloweb(channel.pid, { grid: tid.slice(ZALOWEB_PREFIX.length) }, { message: text });
-    await this.auditLogs.create({
-      actionType: 'POST',
-      actionCode: 'SMAX_DELIVERY_BOOKING',
-      entityType: 'invoices',
-      entityId: String(invoice.id),
-      entityCode: invoice.code,
-      message: `Đặt xe giao hàng hóa đơn ${invoice.code}: gửi tin Zalo qua kênh "${channel.name}" vào nhóm đặt xe`,
-      userId: actor.id,
-      userName: actor.name,
-      metadata: { pagePid: channel.pid, tid, text },
-    });
+    const codes = invoices.map((i) => i.code);
+    for (const invoice of invoices) {
+      const others = codes.filter((c) => c !== invoice.code);
+      await this.auditLogs.create({
+        actionType: 'POST',
+        actionCode: 'SMAX_DELIVERY_BOOKING',
+        entityType: 'invoices',
+        entityId: String(invoice.id),
+        entityCode: invoice.code,
+        message: `Đặt xe giao hàng hóa đơn ${invoice.code}${
+          others.length ? ` (gộp chung chuyến với ${others.join(', ')})` : ''
+        }: gửi tin Zalo qua kênh "${channel.name}" vào nhóm đặt xe`,
+        userId: actor.id,
+        userName: actor.name,
+        metadata: { pagePid: channel.pid, tid, text, invoiceCodes: codes },
+      });
+    }
     return { ok: true };
   }
 
