@@ -46,7 +46,11 @@ const makeService = (env: Record<string, string> = {}) => {
     },
     customer: { findUnique: jest.fn().mockResolvedValue({ code: 'TOANTEST', totalDebt: 1250000 }) },
     invoice: {
-      findUnique: jest.fn(({ where }) => Promise.resolve(where.id === 7 ? { id: 7, code: 'HD000007' } : null)),
+      findMany: jest.fn(({ where }) =>
+        Promise.resolve(
+          (where.id.in as number[]).filter((id) => id === 7 || id === 8).map((id) => ({ id, code: `HD00000${id}` })),
+        ),
+      ),
     },
     leadConversation: { findMany: jest.fn().mockResolvedValue([]) },
     branch: {
@@ -329,6 +333,27 @@ describe('SmaxChatService', () => {
       channelName: 'Diệp Trà Cs',
       connectionError: false,
     });
+  });
+
+  it('đặt xe giao hàng nhiều hóa đơn: 1 tin, ghi audit từng hóa đơn; thiếu hóa đơn → 404', async () => {
+    const { service, api, audit } = makeService();
+    await expect(
+      service.bookDelivery(actor, { invoiceIds: [7, 999], text: 'Đặt xe', confirmed: true }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.bookDelivery(actor, { text: 'Đặt xe', confirmed: true })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(api.sendZaloweb).not.toHaveBeenCalled();
+
+    await service.bookDelivery(actor, { invoiceIds: [8, 7, 8], text: 'Người nhận 1\nNgười nhận 2', confirmed: true });
+    expect(api.sendZaloweb).toHaveBeenCalledTimes(1);
+    expect(audit.create).toHaveBeenCalledTimes(2);
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityCode: 'HD000007',
+        message: expect.stringContaining('gộp chung chuyến với HD000008'),
+      }),
+    );
   });
 
   it('đặt xe giao hàng: kênh mất kết nối → 409, không gửi', async () => {

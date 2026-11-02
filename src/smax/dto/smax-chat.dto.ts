@@ -350,9 +350,18 @@ export class MediaQueryDto {
 }
 
 export class DeliveryBookingDto {
+  // 1 hóa đơn (cũ) hoặc nhiều hóa đơn gộp 1 tin (người nhận 1, 2…)
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
-  invoiceId: number;
+  invoiceId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  invoiceIds?: number[];
 
   @IsString()
   @IsNotEmpty()
