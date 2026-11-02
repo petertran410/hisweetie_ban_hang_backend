@@ -79,16 +79,21 @@ export class ProductReportsService {
         Prisma.sql`(d."productName" ILIKE ${kw} OR d."productCode" ILIKE ${kw})`,
       );
     }
-    if (query.categoryLevel && query.categoryValue) {
-      const col =
-        query.categoryLevel === 'parent'
-          ? Prisma.sql`p."parent_name"`
-          : query.categoryLevel === 'middle'
-            ? Prisma.sql`p."middle_name"`
-            : Prisma.sql`p."child_name"`;
-      conds.push(Prisma.sql`${col} = ${query.categoryValue}`);
-    }
+    const category = this.categoryCond(query);
+    if (category) conds.push(category);
     return Prisma.join(conds, ' AND ');
+  }
+
+  // Lọc theo nhóm hàng (cha/giữa/con) — cần `LEFT JOIN products p` trong query.
+  private categoryCond(query: ProductReportQueryDto): Prisma.Sql | null {
+    if (!query.categoryLevel || !query.categoryValue) return null;
+    const col =
+      query.categoryLevel === 'parent'
+        ? Prisma.sql`p."parent_name"`
+        : query.categoryLevel === 'middle'
+          ? Prisma.sql`p."middle_name"`
+          : Prisma.sql`p."child_name"`;
+    return Prisma.sql`${col} = ${query.categoryValue}`;
   }
 
   // Giá vốn theo dòng: inventories.cost khớp productId + branch của HĐ
@@ -218,7 +223,8 @@ export class ProductReportsService {
       JOIN invoices i ON i.id = d."invoiceId"
       LEFT JOIN products p ON p.id = d."productId"
       WHERE ${where}
-      GROUP BY name
+      -- GROUP BY 1 (cột nhóm), không dùng "name" vì Postgres hiểu là products.name
+      GROUP BY 1
       ORDER BY revenue DESC
     `;
     return rows.map((r) => ({
@@ -251,6 +257,7 @@ export class ProductReportsService {
         SUM(d."totalPrice")::float8 AS revenue
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
+      LEFT JOIN products p ON p.id = d."productId"
       ${join}
       WHERE ${where}
       GROUP BY dim_name, d."productName"
@@ -288,6 +295,7 @@ export class ProductReportsService {
         LIMIT 1
       ) last_po ON true
       LEFT JOIN suppliers sup ON sup.id = last_po."supplierId"
+      LEFT JOIN products p ON p.id = d."productId"
       WHERE ${where}
       GROUP BY d."productName", sup.name
       ORDER BY revenue DESC
@@ -317,6 +325,8 @@ export class ProductReportsService {
         Prisma.sql`(l."productName" ILIKE ${kw} OR l."productCode" ILIKE ${kw})`,
       );
     }
+    const category = this.categoryCond(query);
+    if (category) conds.push(category);
     const fromCond = query.fromDate
       ? Prisma.sql`AND l."transactionDate" >= ${new Date(query.fromDate)}`
       : Prisma.empty;
@@ -338,6 +348,7 @@ export class ProductReportsService {
         COALESCE(SUM(CASE WHEN l.quantity < 0 ${fromCond} ${toCond} THEN -l.quantity ELSE 0 END), 0)::float8 AS stock_out,
         COALESCE(SUM(CASE WHEN l.quantity < 0 ${fromCond} ${toCond} THEN -l.quantity * l."costPrice" ELSE 0 END), 0)::float8 AS stock_out_value
       FROM inventory_logs l
+      LEFT JOIN products p ON p.id = l."productId"
       WHERE 1=1 ${extra}
       GROUP BY l."productCode", l."productName"
       HAVING SUM(ABS(l.quantity)) > 0
@@ -390,6 +401,8 @@ export class ProductReportsService {
       );
     if (query.branchId)
       conds.push(Prisma.sql`de."branchId" = ${query.branchId}`);
+    const category = this.categoryCond(query);
+    if (category) conds.push(category);
     const where = Prisma.join(conds, ' AND ');
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
@@ -399,6 +412,7 @@ export class ProductReportsService {
         SUM(dd."totalValue")::float8 AS value
       FROM destruction_details dd
       JOIN destructions de ON de.id = dd."destructionId"
+      LEFT JOIN products p ON p.id = dd."productId"
       WHERE ${where}
       GROUP BY dd."productCode", dd."productName"
       ORDER BY value DESC
