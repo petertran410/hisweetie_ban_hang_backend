@@ -617,6 +617,11 @@ export class ProductReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async exportExcel(query: ProductReportQueryDto, res: Response) {
     const viewType: ProductViewType = query.viewType || 'ProductBySale';
+    if (viewType === 'ProductBySale') {
+      // Bán theo sản phẩm: xuất dạng pivot theo tháng, giống bảng trên màn hình.
+      const pivot = await this.buildSaleByMonthWorkbook(query);
+      return this.sendXlsx(pivot, res);
+    }
     // Export lấy toàn bộ theo filter, bỏ qua top 20 của chart.
     const rows = await this.getChart({ ...query, limit: 1000000 });
     const wb = new ExcelJS.Workbook();
@@ -693,6 +698,10 @@ export class ProductReportsService {
     }
 
     ws.getRow(1).font = { bold: true };
+    await this.sendXlsx(wb, res);
+  }
+
+  private async sendXlsx(wb: ExcelJS.Workbook, res: Response) {
     res.setHeader(
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -703,6 +712,179 @@ export class ProductReportsService {
     );
     await wb.xlsx.write(res);
     res.end();
+  }
+
+  // ── Excel "Bán theo sản phẩm": Nhóm hàng → Tên hàng × Năm → Tháng →
+  //    (Tổng tiền hàng, Số lượng bán), kèm Tổng năm, Tổng chung, tổng từng nhóm.
+  private async buildSaleByMonthWorkbook(
+    query: ProductReportQueryDto,
+  ): Promise<ExcelJS.Workbook> {
+    const { rows, months } = await this.previewSaleByMonth({
+      ...query,
+      limit: 1000000,
+    });
+    type Cell = { quantity: number; value: number };
+    type Cells = Record<string, Cell>;
+
+    const years: { year: string; months: string[] }[] = [];
+    for (const m of months) {
+      const y = m.slice(0, 4);
+      let entry = years.find((e) => e.year === y);
+      if (!entry) {
+        entry = { year: y, months: [] };
+        years.push(entry);
+      }
+      entry.months.push(m);
+    }
+
+    const sum = (cells: Cells | undefined, ms: string[]): Cell =>
+      ms.reduce(
+        (acc, m) => {
+          acc.quantity += cells?.[m]?.quantity || 0;
+          acc.value += cells?.[m]?.value || 0;
+          return acc;
+        },
+        { quantity: 0, value: 0 },
+      );
+    const addInto = (target: Cells, src?: Cells) => {
+      for (const [m, c] of Object.entries(src || {})) {
+        const t = target[m] || { quantity: 0, value: 0 };
+        t.quantity += c.quantity;
+        t.value += c.value;
+        target[m] = t;
+      }
+    };
+
+    // Gom theo nhóm; nhóm và SP trong nhóm sắp theo doanh thu giảm dần.
+    const grand: Cells = {};
+    const groupMap = new Map<
+      string,
+      { rows: ProductChartRow[]; cells: Cells }
+    >();
+    for (const r of rows) {
+      const name = r.group || 'Chưa phân nhóm';
+      if (!groupMap.has(name)) groupMap.set(name, { rows: [], cells: {} });
+      const g = groupMap.get(name)!;
+      g.rows.push(r);
+      addInto(g.cells, r.byMonth);
+      addInto(grand, r.byMonth);
+    }
+    const groups = Array.from(groupMap, ([name, g]) => ({
+      name,
+      rows: g.rows.sort((a, b) => b.value - a.value),
+      cells: g.cells,
+      total: sum(g.cells, months).value,
+    })).sort((a, b) => b.total - a.total);
+
+    // Các ô số của 1 dòng: [tiền, SL] từng tháng + Tổng năm, rồi Tổng chung.
+    const numbers = (cells: Cells | undefined): number[] => {
+      const out: number[] = [];
+      for (const y of years) {
+        for (const m of y.months) {
+          out.push(cells?.[m]?.value || 0, cells?.[m]?.quantity || 0);
+        }
+        const t = sum(cells, y.months);
+        out.push(t.value, t.quantity);
+      }
+      const all = sum(cells, months);
+      out.push(all.value, all.quantity);
+      return out;
+    };
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Ban theo san pham', {
+      views: [{ state: 'frozen', xSplit: 2, ySplit: 3 }],
+    });
+    const lastCol =
+      2 + years.reduce((n, y) => n + (y.months.length + 1) * 2, 0) + 2;
+
+    // ── Header 3 dòng ──
+    ws.mergeCells(1, 1, 3, 1);
+    ws.getCell(1, 1).value = 'Nhóm Hàng';
+    ws.mergeCells(1, 2, 3, 2);
+    ws.getCell(1, 2).value = 'Tên Hàng';
+    let col = 3;
+    for (const y of years) {
+      ws.mergeCells(1, col, 1, col + (y.months.length + 1) * 2 - 1);
+      ws.getCell(1, col).value = y.year;
+      for (const m of y.months) {
+        ws.mergeCells(2, col, 2, col + 1);
+        ws.getCell(2, col).value = `Tháng ${Number(m.slice(5, 7))}`;
+        col += 2;
+      }
+      ws.mergeCells(2, col, 2, col + 1);
+      ws.getCell(2, col).value = `Tổng ${y.year}`;
+      col += 2;
+    }
+    ws.mergeCells(1, col, 2, col + 1);
+    ws.getCell(1, col).value = 'Tổng';
+    for (let c = 3; c <= lastCol; c += 2) {
+      ws.getCell(3, c).value = 'Tổng Tiền Hàng';
+      ws.getCell(3, c + 1).value = 'Số Lượng Bán';
+    }
+
+    // ── Dữ liệu ──
+    const totalRows = new Set<number>();
+    const grandRow = ws.addRow(['Tổng cộng', null, ...numbers(grand)]);
+    ws.mergeCells(grandRow.number, 1, grandRow.number, 2);
+    for (const g of groups) {
+      const first = ws.rowCount + 1;
+      g.rows.forEach((r, i) =>
+        ws.addRow([i === 0 ? g.name : null, r.subject, ...numbers(r.byMonth)]),
+      );
+      if (g.rows.length > 1) ws.mergeCells(first, 1, ws.rowCount, 1);
+      const sub = ws.addRow([`Tổng ${g.name}`, null, ...numbers(g.cells)]);
+      ws.mergeCells(sub.number, 1, sub.number, 2);
+      totalRows.add(sub.number);
+    }
+
+    // ── Định dạng ──
+    const border: Partial<ExcelJS.Borders> = {
+      top: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      left: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+      right: { style: 'thin', color: { argb: 'FFD1D5DB' } },
+    };
+    const fill = (argb: string): ExcelJS.Fill => ({
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb },
+    });
+    ws.getColumn(1).width = 22;
+    ws.getColumn(2).width = 48;
+    for (let c = 3; c <= lastCol; c++) {
+      ws.getColumn(c).width = c % 2 === 1 ? 18 : 14;
+    }
+    for (let r = 1; r <= ws.rowCount; r++) {
+      const isHeader = r <= 3;
+      const isGrand = r === grandRow.number;
+      const isSubtotal = totalRows.has(r);
+      const row = ws.getRow(r);
+      for (let c = 1; c <= lastCol; c++) {
+        const cell = row.getCell(c);
+        cell.border = border;
+        if (isHeader) {
+          cell.font = { bold: true };
+          cell.fill = fill('FFE0F2FE');
+          cell.alignment = {
+            horizontal: c <= 2 ? 'left' : 'center',
+            vertical: c <= 2 ? 'bottom' : 'middle',
+            wrapText: true,
+          };
+          continue;
+        }
+        if (isGrand || isSubtotal) {
+          cell.font = { bold: true };
+          cell.fill = fill(isGrand ? 'FFFEF3C7' : 'FFF3F4F6');
+        }
+        if (c <= 2) cell.alignment = { vertical: 'top', wrapText: true };
+        else {
+          const v = Number(cell.value) || 0;
+          cell.numFmt = Number.isInteger(v) ? '#,##0' : '#,##0.00';
+        }
+      }
+    }
+    return wb;
   }
 
   // ── EXPORT CHI TIẾT: toàn bộ dòng hóa đơn theo bộ lọc ──
