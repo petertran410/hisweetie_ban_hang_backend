@@ -65,6 +65,7 @@
     "seed:invoices-report-delivered": "ts-node prisma/seeds/add-invoices-report-delivered-permission.ts",
     "seed:invoices-merge": "ts-node prisma/seeds/add-invoices-merge-permission.ts",
     "seed:invoices-update-finalized": "ts-node prisma/seeds/add-invoices-update-finalized-permission.ts",
+    "seed:customers-update-comments": "ts-node prisma/seeds/add-customers-update-comments-permission.ts",
     "seed:add-stock-condition-transfers": "ts-node prisma/seeds/add-stock-condition-transfers-permissions.ts",
     "seed:purchasing-planning": "ts-node prisma/seeds/add-purchasing-planning.ts",
     "seed:customer-demand-permissions": "ts-node prisma/seeds/add-customer-demand-permissions.ts",

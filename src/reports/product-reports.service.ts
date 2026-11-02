@@ -156,15 +156,16 @@ export class ProductReportsService {
     const where = this.buildDetailWhereSql(query);
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
-        d."productCode" AS code,
-        d."productName" AS name,
+        MAX(d."productCode") AS code,
+        -- Gom theo mã SP (đổi tên không tách dòng); hiện tên hiện tại của SP.
+        COALESCE(MAX(p.name), MAX(d."productName")) AS name,
         SUM(d.quantity)::float8 AS qty,
         SUM(d."totalPrice")::float8 AS revenue
       FROM invoice_details d
       JOIN invoices i ON i.id = d."invoiceId"
       LEFT JOIN products p ON p.id = d."productId"
       WHERE ${where}
-      GROUP BY d."productCode", d."productName"
+      GROUP BY COALESCE(NULLIF(d."productCode", ''), d."productName")
       ORDER BY revenue DESC
       LIMIT ${this.chartTop(query)}
     `;
@@ -484,6 +485,7 @@ export class ProductReportsService {
     // purchaseDate là timestamp (không tz) lưu UTC → đổi sang giờ VN trước khi lấy tháng.
     const raw = await this.prisma.$queryRaw<
       {
+        product_key: string;
         code: string | null;
         name: string;
         group_name: string | null;
@@ -493,8 +495,11 @@ export class ProductReportsService {
       }[]
     >`
       SELECT
-        d."productCode" AS code,
-        d."productName" AS name,
+        -- Gom theo mã SP (đổi tên không tách dòng); SP không có mã thì theo tên.
+        COALESCE(NULLIF(d."productCode", ''), d."productName") AS product_key,
+        MAX(d."productCode") AS code,
+        -- Tên hiện tại của SP; SP đã xóa thì lấy tên trên hóa đơn.
+        COALESCE(MAX(p.name), MAX(d."productName")) AS name,
         MAX(p."parent_name") AS group_name,
         to_char(
           i."purchaseDate" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh',
@@ -506,13 +511,13 @@ export class ProductReportsService {
       JOIN invoices i ON i.id = d."invoiceId"
       LEFT JOIN products p ON p.id = d."productId"
       WHERE ${where}
-      GROUP BY d."productCode", d."productName", ym
+      GROUP BY product_key, ym
     `;
 
     const byProduct = new Map<string, ProductChartRow>();
     const dataMonths = new Set<string>();
     for (const r of raw) {
-      const key = `${r.code ?? ''}|${r.name ?? ''}`;
+      const key = r.product_key;
       let row = byProduct.get(key);
       if (!row) {
         row = {

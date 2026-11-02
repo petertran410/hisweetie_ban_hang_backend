@@ -58,6 +58,7 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
     isDirectSale: 'Bán trực tiếp',
   },
   customers: {
+    comments: 'Ghi chú',
     totalPurchased: 'Tổng mua',
     totalDebt: 'Công nợ',
   },
