@@ -24,10 +24,19 @@ export interface SmaxPage {
   connectionError: { at: string; note: string | null } | null;
 }
 
-/** Hội thoại (thread) Zalo trên Smax — chỉ field POS cần. */
+/** Hội thoại (thread) trên Smax (mọi kênh) — chỉ field POS cần. */
 export interface SmaxThread {
   tid: string;
+  // zaloweb, zalo (OA), facebook, instagram, tiktokweb, shopee, custom (website)…
+  platform: string;
   name: string;
+  // Smax báo trả lời được qua API (can_reply_message); Facebook/Shopee hay là false
+  canReply: boolean;
+  // Bình luận bài viết (Facebook…): link bài viết, kèm comment_id để Facebook cuộn tới bình luận
+  isComment: boolean;
+  commentUrl: string | null;
+  // Ai đang trả lời hội thoại Messenger: META_AI (Meta Business AI), SMAXAI (Smax/nhân viên), OTHER…
+  controlledBy: string | null;
   chatType: 'private' | 'group' | string;
   /** pid → tên (thành viên nhóm / khách), để hiện người gửi. */
   members: Record<string, string>;
@@ -48,6 +57,16 @@ export interface ZalowebContent {
   stickerId?: string;
 }
 
+/** 1 phần tin gửi vào thread (mọi kênh) — URL công khai Smax tải được. */
+export interface ThreadMessagePart {
+  message?: string;
+  picture?: string;
+  video?: string;
+  file?: string;
+  // Messenger: HUMAN_AGENT = nhân viên trả lời → lấy lại quyền từ Meta Business AI
+  message_tag?: string;
+}
+
 export const GROUP_SCAN_LIMIT = 500;
 
 export interface SmaxGroupThread {
@@ -64,7 +83,15 @@ export interface SmaxGroupThread {
 export interface SmaxRecentThread {
   tid: string;
   pagePid: string;
+  platform: string;
+  // Hội thoại bình luận bài viết (Smax type "facebook_comment"…), khác tin nhắn (Messenger…)
+  isComment: boolean;
+  // Messenger: META_AI = Meta Business AI đang trả lời
+  controlledBy: string | null;
   name: string;
+  canReply: boolean;
+  // SĐT khách Smax thu được (Facebook…) — để gợi ý khách POS
+  phones: string[];
   isGroup: boolean;
   lastMessage: string;
   lastMessageAt: string | null;
@@ -85,6 +112,8 @@ export interface SmaxRawMessage {
   id: string;
   pid: string;
   type: string;
+  // zaloweb, zalo, facebook, shopee… — phần riêng của nền tảng nằm ở m[platform]
+  platform?: string;
   message?: string;
   sender_pid?: string;
   created_at: string;
@@ -156,6 +185,22 @@ export class SmaxApiService {
       'POST',
       `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages/${pid}/reaction`,
       { reaction },
+      { token: this.userToken },
+    );
+  }
+
+  /**
+   * Chuyển quyền trả lời hội thoại Messenger cho Meta Business AI, qua API nội bộ của app Smax
+   * (nút "Pass control to Meta Business AI"; Partner API không có).
+   */
+  async passControlBizAI(pagePid: string, tid: string): Promise<void> {
+    if (!this.userToken) {
+      throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa bật Meta Business AI được');
+    }
+    await this.request(
+      'POST',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/pass-control-biz-ai`,
+      {},
       { token: this.userToken },
     );
   }
@@ -256,6 +301,13 @@ export class SmaxApiService {
     }
     const t = body?.data ?? body;
     if (!t?.tid) return null;
+    const isComment = /_comment$/.test(t.type ?? '');
+    const postLink: string | null =
+      typeof t.facebook?.link === 'string' && /^https:\/\/(www\.)?facebook\.com\//.test(t.facebook.link)
+        ? t.facebook.link
+        : null;
+    // facebook.id của thread bình luận = "<post>_<comment>"
+    const commentId = /^\d+_(\d+)$/.exec(String(t.facebook?.id ?? ''))?.[1];
     const members: Record<string, string> = {};
     const memberAvatars: Record<string, string> = {};
     for (const c of t.customers ?? []) {
@@ -264,8 +316,18 @@ export class SmaxApiService {
     }
     return {
       tid: t.tid,
+      platform: t.platform ?? '',
       name: t.customer?.name ?? t.zaloweb?.name ?? '',
-      chatType: t.zaloweb?.chat_type ?? '',
+      canReply: t.can_reply_message !== false,
+      isComment,
+      controlledBy: typeof t.controlled_by === 'string' ? t.controlled_by : null,
+      commentUrl:
+        isComment && postLink
+          ? commentId
+            ? `${postLink}${postLink.includes('?') ? '&' : '?'}comment_id=${commentId}`
+            : postLink
+          : null,
+      chatType: t.zaloweb?.chat_type ?? t.zalo?.chat_type ?? '',
       members,
       memberAvatars,
       avatar: t.customer?.picture ?? t.customer?.zaloweb?.picture ?? null,
@@ -298,7 +360,7 @@ export class SmaxApiService {
       }));
   }
 
-  /** Hội thoại mới nhất của các kênh (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
+  /** Hội thoại mới nhất của các kênh, mọi nền tảng (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
   async listRecentThreads(pagePids: string[], limit = 30, keyword?: string): Promise<SmaxRecentThread[]> {
     const body = await this.request(
       'POST',
@@ -308,12 +370,20 @@ export class SmaxApiService {
       { timeout: 30000 },
     );
     return (body?.data ?? [])
-      .filter((t: any) => t?.tid?.startsWith('zlw'))
+      .filter((t: any) => t?.tid && t?.page_pid)
       .map((t: any) => ({
         tid: t.tid,
         pagePid: t.page_pid,
+        platform: t.platform ?? '',
+        isComment: /_comment$/.test(t.type ?? ''),
+        controlledBy: typeof t.controlled_by === 'string' ? t.controlled_by : null,
         name: t.customer?.name ?? t.customer?.zaloweb?.name ?? '',
-        isGroup: t.zaloweb?.chat_type === 'group' || t.customer?.zaloweb?.chat_type === 'group',
+        canReply: t.can_reply_message !== false,
+        phones: (t.phones ?? []).filter((p: unknown): p is string => typeof p === 'string'),
+        isGroup:
+          t.zaloweb?.chat_type === 'group' ||
+          t.customer?.zaloweb?.chat_type === 'group' ||
+          t.zalo?.chat_type === 'group',
         // Tin cuối: "attach" = tệp/ảnh
         lastMessage: typeof t.message === 'string' ? t.message : '',
         lastMessageAt: t.last_message_at ?? null,
@@ -357,18 +427,25 @@ export class SmaxApiService {
   }
 
   /**
-   * Gửi vào thread theo tid — dùng cho TRẢ LỜI (reply_to_pid = pid tin được trả lời);
-   * zaloweb-messages không có trường trích dẫn.
+   * Gửi vào thread theo tid (mọi kênh): Facebook, Zalo OA, Shopee… và TRẢ LỜI trên Zalo cá nhân
+   * (reply_to_pid = pid tin được trả lời; zaloweb-messages không có trường trích dẫn).
    */
   async sendThreadMessage(
     pagePid: string,
     tid: string,
-    body: { replyToPid?: string; message: string },
+    body: { replyToPid?: string; messages: ThreadMessagePart[] },
   ): Promise<any> {
-    return this.request('POST', `/partner/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages`, {
-      ...(body.replyToPid ? { reply_to_pid: body.replyToPid } : {}),
-      messages: [{ message: body.message }],
-    });
+    const media = body.messages.some((m) => m.picture || m.video || m.file);
+    return this.request(
+      'POST',
+      `/partner/bizs/${this.bizAlias}/pages/${pagePid}/threads/${tid}/messages`,
+      {
+        ...(body.replyToPid ? { reply_to_pid: body.replyToPid } : {}),
+        messages: body.messages,
+      },
+      // Smax tự tải media từ URL rồi đẩy lên nền tảng → lâu hơn tin chữ
+      { timeout: media ? 60000 : 15000 },
+    );
   }
 
   /** Trạng thái kết bạn giữa kênh và người dùng Zalo (uid). */
@@ -491,10 +568,10 @@ export class SmaxApiService {
           )}`,
         );
       }
-      // 400/422: Smax/Zalo từ chối có lý do rõ (vd khách chặn tin từ người lạ) → báo đúng lý do
+      // 400/422: Smax/nền tảng từ chối có lý do rõ (vd khách chặn tin từ người lạ, Facebook quá 24h) → báo đúng lý do
       const smaxMessage = error?.response?.data?.message;
       if ((status === 400 || status === 422) && typeof smaxMessage === 'string' && smaxMessage) {
-        throw new BadRequestException(`Zalo: ${smaxMessage.trim()}`);
+        throw new BadRequestException(`${/\/pages\/zlw/.test(path) ? 'Zalo' : 'Smax'}: ${smaxMessage.trim()}`);
       }
       const reason =
         status === 401

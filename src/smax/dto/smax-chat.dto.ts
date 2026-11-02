@@ -97,8 +97,13 @@ export class SendChatMessageDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(40)
+  @MaxLength(200)
   replyToPid?: string;
+
+  // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
+  @IsOptional()
+  @IsBoolean()
+  humanAgent?: boolean;
 
   @IsOptional()
   @IsArray()
@@ -116,9 +121,16 @@ export class CreateZaloContactDto {
   @IsIn(['user', 'group'])
   kind: 'user' | 'group';
 
+  // Số Zalo (Zalo cá nhân) hoặc tid hội thoại kênh khác (fb…, zl…, sp…) — khi đó cần pagePid
   @IsString()
   @IsNotEmpty()
+  @MaxLength(80)
   zaloId: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  pagePid?: string;
 
   @IsOptional()
   @IsString()
@@ -233,8 +245,13 @@ export class SendThreadMessageDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(40)
+  @MaxLength(200)
   replyToPid?: string;
+
+  // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
+  @IsOptional()
+  @IsBoolean()
+  humanAgent?: boolean;
 
   @IsOptional()
   @IsArray()
@@ -264,6 +281,20 @@ export class ReactMessageDto {
 
   @IsIn(['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'])
   reaction: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
+export class PassControlBizAIDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
 
   @IsOptional()
   @IsBoolean()

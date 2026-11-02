@@ -30,7 +30,7 @@ const makeService = (links: any[] = []) => {
 };
 
 describe('SmaxService', () => {
-  it('chỉ trả kênh Zalo (OA + cá nhân), ghép người dùng đã liên kết', async () => {
+  it('trả mọi kênh của biz (Zalo, Facebook…), ghép người dùng đã liên kết', async () => {
     const user = { id: 7, name: 'Sale A', email: 'a@x', phone: null };
     const { service } = makeService([
       { pagePid: 'zlw2', pageName: 'Diệp Trà Cs', platform: 'zaloweb', user },
@@ -38,7 +38,7 @@ describe('SmaxService', () => {
 
     const channels = await service.getZaloChannels();
 
-    expect(channels.map((c) => c.pagePid)).toEqual(['zl1', 'zlw2']);
+    expect(channels.map((c) => c.pagePid)).toEqual(['zl1', 'zlw2', 'fb3']);
     expect(channels[0].users).toEqual([]);
     expect(channels[1].users).toEqual([user]);
   });
@@ -97,7 +97,7 @@ describe('SmaxService', () => {
     expect(res.channels.find((c) => c.pagePid === 'zlw-gone')?.missing).toBe(true);
   });
 
-  it('link: lưu snapshot tên/platform, chặn kênh lạ hoặc không phải Zalo', async () => {
+  it('link: lưu snapshot tên/platform (mọi loại kênh), chặn kênh không có trên Smax', async () => {
     const { service, prisma } = makeService();
 
     await service.link('zlw2', 7);
@@ -115,13 +115,63 @@ describe('SmaxService', () => {
     await expect(service.link('zlw-x', 7)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(service.link('fb3', 7)).rejects.toBeInstanceOf(
-      BadRequestException,
+    await service.link('fb3', 7);
+    expect(prisma.smaxChannelUser.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ create: { pagePid: 'fb3', userId: 7, pageName: 'Fanpage', platform: 'facebook' } }),
     );
   });
 });
 
 describe('SmaxApiService', () => {
+  it('getThread: bình luận Facebook → link bài viết kèm comment_id; tin nhắn → không có link', async () => {
+    const { of } = require('rxjs');
+    const rows = [
+      {
+        tid: 'fb1222_fb2650', platform: 'facebook', type: 'facebook_comment', customer: { name: 'Mỹ Linh' },
+        facebook: { id: '122241220328355350_1911242473407263', link: 'https://www.facebook.com/reel/2298586507567306/' },
+      },
+      { tid: 'fb2949', platform: 'facebook', type: 'facebook_message', customer: { name: 'Thư' }, facebook: { link: '/365228306663549/inbox/1/' } },
+    ];
+    const http = { request: jest.fn(() => of({ data: { data: rows.shift() } })) };
+    const config = { get: (key: string, def?: string) => (key === 'SMAX_API_TOKEN' ? 'tok' : def) };
+    const api = new SmaxApiService(http as any, config as any);
+    expect(await api.getThread('fb3', 'fb1222_fb2650')).toMatchObject({
+      isComment: true,
+      commentUrl: 'https://www.facebook.com/reel/2298586507567306/?comment_id=1911242473407263',
+    });
+    expect(await api.getThread('fb3', 'fb2949')).toMatchObject({ isComment: false, commentUrl: null });
+  });
+
+  it('listRecentThreads: mọi nền tảng (Zalo cá nhân, Facebook, Shopee), tên/ảnh/SĐT/cờ trả lời', async () => {
+    const { of } = require('rxjs');
+    const http = {
+      request: jest.fn(() =>
+        of({
+          data: {
+            data: [
+              { tid: 'zlw777', page_pid: 'zlw1', platform: 'zaloweb', zaloweb: { chat_type: 'group' }, customer: { name: 'Nhóm A' }, message: 'attach', read: false, reply_count: 3 },
+              { tid: 'fb1222_fb2650', page_pid: 'fb3', platform: 'facebook', type: 'facebook_comment', customer: { name: 'Mỹ Linh' }, message: 'E muốn mua nguyên liệu ạ' },
+              { tid: 'fb2949', page_pid: 'fb3', platform: 'facebook', type: 'facebook_message', controlled_by: 'META_AI', can_reply_message: false, phones: ['0913597795'], customer: { name: 'Thư Trần', picture: 'https://cdn/x.jpg' }, message: 'Bên mình có hàng chưa ạ', read: true },
+              { tid: 'sp5089', page_pid: 'sp1', platform: 'shopee', customer: { name: 'ngoankim957', picture: '' }, message: 'Muốn trả hàng' },
+              { tid: null, page_pid: 'x' },
+            ],
+          },
+        }),
+      ),
+    };
+    const config = { get: (key: string, def?: string) => (key === 'SMAX_API_TOKEN' ? 'tok' : def) };
+    const api = new SmaxApiService(http as any, config as any);
+    const threads = await api.listRecentThreads(['zlw1', 'fb3', 'sp1']);
+    expect(threads.map((t) => [t.tid, t.platform, t.isComment, t.name, t.isGroup, t.canReply, t.phones])).toEqual([
+      ['zlw777', 'zaloweb', false, 'Nhóm A', true, true, []],
+      ['fb1222_fb2650', 'facebook', true, 'Mỹ Linh', false, true, []],
+      ['fb2949', 'facebook', false, 'Thư Trần', false, false, ['0913597795']],
+      ['sp5089', 'shopee', false, 'ngoankim957', false, true, []],
+    ]);
+    expect(threads[2].avatar).toBe('https://cdn/x.jpg');
+    expect(threads.map((t) => t.controlledBy)).toEqual([null, null, 'META_AI', null]);
+  });
+
   it('getFriendStatus: đọc is_friend / is_requested / is_requesting', async () => {
     const { of } = require('rxjs');
     const http = {

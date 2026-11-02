@@ -18,8 +18,9 @@ const pages = [
     connectionError: { note: 'token', at: null },
   },
   { pid: 'zlOA', name: 'Lermao OA', platform: 'zalo', connectionError: null },
+  { pid: 'fbPAGE', name: 'LerMao Fanpage', platform: 'facebook', connectionError: null },
 ];
-const links: Record<string, number> = { [PAGE]: 1, zlwBROKEN: 1, zlOA: 1, zlwOTHER: 2 };
+const links: Record<string, number> = { [PAGE]: 1, zlwBROKEN: 1, zlOA: 1, fbPAGE: 1, zlwOTHER: 2 };
 const contacts = [
   { id: 10, customerId: 5, kind: 'user', zaloId: '1239621715347596858' },
   { id: 11, customerId: 5, kind: 'group', zaloId: '2395241168877084467' },
@@ -46,6 +47,23 @@ const makeService = (env: Record<string, string> = {}) => {
     customer: { findUnique: jest.fn().mockResolvedValue({ code: 'TOANTEST', totalDebt: 1250000 }) },
     invoice: {
       findUnique: jest.fn(({ where }) => Promise.resolve(where.id === 7 ? { id: 7, code: 'HD000007' } : null)),
+    },
+    leadConversation: { findMany: jest.fn().mockResolvedValue([]) },
+    branch: {
+      findUnique: jest.fn(({ where }) =>
+        Promise.resolve({ 6: { name: 'Kho Hà Nội' }, 1: { name: 'Kho Sài Gòn' }, 4: { name: 'Văn phòng Hà Nội' } }[where.id] ?? null),
+      ),
+    },
+    user: {
+      findMany: jest.fn(({ where }) =>
+        Promise.resolve(
+          [
+            { id: 50, name: 'Kho HN', larkUserId: 'ou_hn' },
+            { id: 56, name: 'Kho SG', larkUserId: 'ou_sg' },
+            { id: 16, name: 'Nguyễn Huyền Trang', larkUserId: 'ou_kt' },
+          ].filter((u) => where.OR[0].larkUserId.in.includes(u.larkUserId) || where.OR[1].name.in.includes(u.name)),
+        ),
+      ),
     },
     packingSlipImage: {
       findMany: jest.fn(({ where }) =>
@@ -103,10 +121,15 @@ const makeService = (env: Record<string, string> = {}) => {
   };
   const audit = { create: jest.fn().mockResolvedValue({}) };
   const config = { get: (k: string) => env[k] };
+  const departments: Record<string, string[]> = { 'Kho Hà Nội': ['ou_hn'], 'Kho Sài Gòn': ['ou_sg'] };
+  const lark = {
+    openIdsInDepartments: jest.fn(async (names: string[]) => new Set(names.flatMap((n) => departments[n] ?? []))),
+  };
   return {
-    service: new SmaxChatService(prisma as any, api as any, audit as any, {} as any, config as any),
+    service: new SmaxChatService(prisma as any, api as any, audit as any, {} as any, config as any, lark as any),
     api,
     audit,
+    lark,
   };
 };
 
@@ -177,7 +200,7 @@ describe('SmaxChatService', () => {
     await expect(service.scanSharedGroups(7, 1, PAGE)).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('chặn kênh không thuộc người gọi, kênh OA, contact của khách khác', async () => {
+  it('chặn kênh không thuộc người gọi, ID Zalo cá nhân dùng với kênh OA, contact của khách khác', async () => {
     const { service } = makeService();
     await expect(service.getMessages(5, actor, 'zlwOTHER', 10)).rejects.toBeInstanceOf(ForbiddenException);
     await expect(service.getMessages(5, actor, 'zlwNOPE', 10)).rejects.toBeInstanceOf(ForbiddenException);
@@ -316,6 +339,15 @@ describe('SmaxChatService', () => {
     expect(api.sendZaloweb).not.toHaveBeenCalled();
   });
 
+  it('đặt xe giao hàng: người gửi theo phòng ban Lark của chi nhánh, chi nhánh khác/Lark lỗi → mọi nhân sự', async () => {
+    const { service, lark } = makeService();
+    await expect(service.deliveryBookingSenders(6)).resolves.toEqual({ userIds: [50, 16] });
+    await expect(service.deliveryBookingSenders(1)).resolves.toEqual({ userIds: [56] });
+    await expect(service.deliveryBookingSenders(4)).resolves.toEqual({ userIds: null });
+    lark.openIdsInDepartments.mockRejectedValueOnce(new Error('Lark down'));
+    await expect(service.deliveryBookingSenders(1)).resolves.toEqual({ userIds: null });
+  });
+
   it('safeFileName: bỏ dấu, ký tự lạ, giữ đuôi', () => {
     expect(safeFileName('Báo giá tháng 10 (Đợt 2).pdf')).toBe('Bao-gia-thang-10-Dot-2.pdf');
     expect(safeFileName('../../.env')).toBe('env');
@@ -376,6 +408,7 @@ describe('SmaxChatService', () => {
     ]);
     (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
       { id: 11, kind: 'group', zaloId: '2395241168877084467', customer: { id: 5, code: 'TOANTEST', name: 'Toàn test' } },
+      { id: 13, kind: 'group', zaloId: '2395241168877084467', customer: { id: 6, code: 'KH6', name: 'Chi nhánh 2' } },
     ]);
     (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([
       { id: 77, code: 'KH005844', name: 'Mr Vũ' },
@@ -394,6 +427,13 @@ describe('SmaxChatService', () => {
       ['byCode', 77],
       [null, null],
     ]);
+    expect(items[0].match).toMatchObject({
+      contactId: 11,
+      customers: [
+        { id: 5, code: 'TOANTEST', name: 'Toàn test', contactId: 11 },
+        { id: 6, code: 'KH6', name: 'Chi nhánh 2', contactId: 13 },
+      ],
+    });
     expect(items[0]).toMatchObject({
       lastMessage: '[Tệp/ảnh]',
       channelName: 'Diệp Trà Cs',
@@ -402,6 +442,205 @@ describe('SmaxChatService', () => {
       smaxUrl: `https://smax.ai/bizs/dieptra/chats/${PAGE}?tid=zlw2395241168877084467`,
     });
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+  });
+
+  describe('nhóm Zalo gắn nhiều khách', () => {
+    const activityMocks = (prisma: any) => {
+      prisma.order = {
+        findMany: jest.fn().mockResolvedValue([
+          { id: 1, code: 'DH1', customerId: 6, orderDate: new Date('2026-10-30'), grandTotal: 100, statusValue: 'ok', orderStatus: null },
+        ]),
+      };
+      prisma.invoice.findMany = jest.fn().mockResolvedValue([
+        { id: 2, code: 'HD2', customerId: 5, purchaseDate: new Date('2026-10-29'), grandTotal: 200, debtAmount: 50, statusValue: 'ok' },
+      ]);
+    };
+
+    it('getContext: nhóm kèm các khách khác cùng gắn (sharedWith)', async () => {
+      const { service } = makeService();
+      const prisma = (service as any).prisma;
+      activityMocks(prisma);
+      prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([]);
+      prisma.customer.findUnique = jest.fn().mockResolvedValue({
+        id: 5, code: 'TOANTEST', name: 'Toàn test', contactNumber: null, phone: null, totalDebt: 10, debtPolicy: null,
+        zaloContacts: [{ id: 11, customerId: 5, kind: 'group', zaloId: '2395241168877084467', name: 'Nhóm' }],
+      });
+      prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
+        { id: 13, zaloId: '2395241168877084467', customer: { id: 6, code: 'KH6', name: 'Chi nhánh 2' } },
+      ]);
+      const ctx = await service.getContext(5, actor);
+      expect(prisma.customerZaloContact.findMany.mock.calls[0][0].where).toEqual({
+        zaloId: { in: ['2395241168877084467'] }, customerId: { not: 5 },
+      });
+      expect(ctx.contacts.groups[0].sharedWith).toEqual([{ id: 6, code: 'KH6', name: 'Chi nhánh 2', contactId: 13 }]);
+    });
+  });
+
+  describe('kênh khác Zalo cá nhân (Zalo OA, Facebook, Shopee…)', () => {
+    const OA_TID = 'zl7844228381489578393';
+
+    it('đọc tin theo tid kênh khác, đính kèm ở m[platform]; không gọi API nội bộ thu hồi', async () => {
+      const { service, api } = makeService();
+      api.getMessages.mockResolvedValue([
+        {
+          id: 'x', pid: 'zld1a7', type: 'zalo_message', platform: 'zalo', sender_pid: OA_TID,
+          created_at: '2026-11-01T07:52:45Z',
+          zalo: { attachments: [{ url: 'https://zalo-api.zadn.vn/sticker.png', type: 'sticker' }] },
+        },
+      ]);
+      const res = await service.getThreadMessages(1, 'zlOA', OA_TID);
+      expect(api.getMessages).toHaveBeenCalledWith('zlOA', OA_TID, undefined);
+      expect(api.getMessageStates).not.toHaveBeenCalled();
+      expect(res.canReact).toBe(false);
+      expect(res.messages[0].attachments).toEqual([
+        { url: 'https://zalo-api.zadn.vn/sticker.png', thumbnail: null, title: '', type: 'sticker' },
+      ]);
+      await expect(service.getThreadMessages(1, 'zlOA', 'bad tid!')).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('gửi qua thread (không qua zaloweb-messages): chữ kèm trả lời, ảnh QR thành picture; chặn sticker', async () => {
+      const { service, api, audit } = makeService();
+      const qr = vietQrUrl({ bankCode: 'MB', accountNumber: '1', accountHolder: 'A' }, 5000, 'KH1');
+      await service.sendToThread(actor, {
+        pagePid: 'zlOA', tid: OA_TID, text: 'Dạ shop gửi ạ', replyToPid: 'zld1a7c64d20fe65a73ce8', qrImageUrl: qr, confirmed: true,
+      });
+      expect(api.sendZaloweb).not.toHaveBeenCalled();
+      expect(api.sendThreadMessage.mock.calls).toEqual([
+        ['zlOA', OA_TID, { replyToPid: 'zld1a7c64d20fe65a73ce8', messages: [{ message: 'Dạ shop gửi ạ' }] }],
+        ['zlOA', OA_TID, { messages: [{ picture: qr }] }],
+      ]);
+      expect(audit.create.mock.calls[0][0]).toMatchObject({ metadata: { platform: 'zalo', tid: OA_TID } });
+      await expect(
+        service.sendToThread(actor, { pagePid: 'zlOA', tid: OA_TID, stickerId: '21237', confirmed: true }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('thả cảm xúc, tra SĐT, quét nhóm chung chỉ có trên Zalo cá nhân', async () => {
+      const { service } = makeService();
+      await expect(
+        service.reactMessage(actor, { pagePid: 'zlOA', tid: OA_TID, pid: 'zlw123456', reaction: 'LIKE', confirmed: true }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.lookupByPhone(1, 'zlOA', '0901391300')).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.scanSharedGroups(5, 1, 'zlOA')).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('gắn hội thoại kênh khác cho khách: lưu tid + pagePid; thiếu kênh / kênh Zalo cá nhân → 400', async () => {
+      const { service } = makeService();
+      const prisma = (service as any).prisma;
+      prisma.customer.findUnique = jest.fn().mockResolvedValue({ id: 5 });
+      prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
+        { id: 10, customerId: 5, kind: 'user', zaloId: '1239621715347596858', pagePid: null },
+      ]);
+      prisma.customerZaloContact.create = jest.fn(({ data }) => Promise.resolve({ id: 99, ...data }));
+      prisma.customerZaloContact.update = jest.fn();
+      const saved = await service.createContact(5, 1, { kind: 'user', zaloId: OA_TID, pagePid: 'zlOA', name: 'Giang Ngô' });
+      // Không ghi đè ID Zalo cá nhân đã có
+      expect(prisma.customerZaloContact.update).not.toHaveBeenCalled();
+      expect(saved).toMatchObject({ zaloId: OA_TID, pagePid: 'zlOA', kind: 'user' });
+      await expect(service.createContact(5, 1, { kind: 'user', zaloId: OA_TID })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(
+        service.createContact(5, 1, { kind: 'user', zaloId: OA_TID, pagePid: PAGE }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('chat theo khách: hội thoại kênh khác chỉ dùng đúng kênh của nó', async () => {
+      const { service, api } = makeService();
+      const prisma = (service as any).prisma;
+      prisma.customerZaloContact.findUnique = jest.fn().mockResolvedValue({
+        id: 20, customerId: 5, kind: 'user', zaloId: OA_TID, pagePid: 'zlOA',
+      });
+      await service.getMessages(5, actor, 'zlOA', 20);
+      expect(api.getMessages).toHaveBeenCalledWith('zlOA', OA_TID, undefined);
+      await expect(service.getMessages(5, actor, PAGE, 20)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('recentChats theo kênh khác: khớp tid đã lưu đúng trang, gợi ý khách theo SĐT', async () => {
+      const { service, api } = makeService();
+      const prisma = (service as any).prisma;
+      prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+        { pagePid: 'zlOA', pageName: 'Lermao OA', platform: 'zalo', userId: 1 },
+      ]);
+      prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([
+        { id: 20, kind: 'user', zaloId: OA_TID, pagePid: 'zlOA', customer: { id: 5, code: 'TOANTEST', name: 'Toàn test' } },
+      ]);
+      prisma.customer.findMany = jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ id: 8, code: 'KH8', name: 'Chị Thư', contactNumber: '0913597795.1', phone: null }]);
+      (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+        { tid: OA_TID, pagePid: 'zlOA', platform: 'zalo', isComment: false, controlledBy: null, name: 'Giang Ngô', isGroup: false, canReply: true, phones: [], lastMessage: 'hi', lastMessageAt: null, unread: true, messageCount: 2, avatar: null, memberPreview: [] },
+        { tid: 'zl999', pagePid: 'zlOA', platform: 'zalo', isComment: false, controlledBy: null, name: 'Thư', isGroup: false, canReply: false, phones: ['+84913597795'], lastMessage: 'x', lastMessageAt: null, unread: false, messageCount: 1, avatar: null, memberPreview: [] },
+      ]);
+      const { items } = await service.recentChats(1, 'zlOA');
+      prisma.leadConversation.findMany.mockResolvedValueOnce([
+        { tid: 'zl999', pagePid: 'zlOA', lead: { id: 3, name: 'Thư', status: 'new' } },
+      ]);
+      prisma.customer.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+      const again = await service.recentChats(1, 'zlOA', 31);
+      expect(items.map((i) => [i.zaloId, i.match?.type, i.match?.customer.id, i.canReply])).toEqual([
+        [OA_TID, 'linked', 5, true],
+        ['zl999', 'byPhone', 8, false],
+      ]);
+      expect(again.items[1]).toMatchObject({ lead: { id: 3, name: 'Thư' }, phones: ['+84913597795'] });
+    });
+  });
+
+  it('recentChats Facebook: gợi ý khách theo SĐT khách gõ trong tin và SĐT của lead đã gắn', async () => {
+    const { service, api } = makeService();
+    const prisma = (service as any).prisma;
+    prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: 'fbPAGE', pageName: 'Fanpage', platform: 'facebook', userId: 1 },
+    ]);
+    prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+    prisma.leadConversation.findMany.mockResolvedValueOnce([
+      { tid: 'fb222', pagePid: 'fbPAGE', lead: { id: 4, name: 'Linh', status: 'new', phoneNormalized: '0941889555' } },
+    ]);
+    prisma.customer.findMany = jest
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        { id: 8, code: 'KH8', name: 'Thu Hiền', contactNumber: '0365692400', phone: null },
+        { id: 9, code: 'KH9', name: 'Linh', contactNumber: null, phone: '0941889555.1' },
+      ]);
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+      { tid: 'fb111', pagePid: 'fbPAGE', platform: 'facebook', isComment: false, name: 'Thu Hiền Ngô', isGroup: false, canReply: true, phones: [], lastMessage: 'sđt em 0365 692 400 nha', lastMessageAt: null, unread: true, messageCount: 1, avatar: null, memberPreview: [] },
+      { tid: 'fb222', pagePid: 'fbPAGE', platform: 'facebook', isComment: false, name: 'Linh', isGroup: false, canReply: true, phones: [], lastMessage: 'hi', lastMessageAt: null, unread: false, messageCount: 1, avatar: null, memberPreview: [] },
+      { tid: 'fb333', pagePid: 'fbPAGE', platform: 'facebook', isComment: false, name: 'Lạ', isGroup: false, canReply: true, phones: [], lastMessage: 'giá bao nhiêu', lastMessageAt: null, unread: false, messageCount: 1, avatar: null, memberPreview: [] },
+    ]);
+    const { items } = await service.recentChats(1, 'fbPAGE');
+    expect(items.map((i) => [i.tid, i.match?.type ?? null, i.match?.customer.code ?? null, i.lead?.id ?? null])).toEqual([
+      ['fb111', 'byPhone', 'KH8', null],
+      ['fb222', 'byPhone', 'KH9', 4],
+      ['fb333', null, null, null],
+    ]);
+  });
+
+  describe('Meta Business AI (Messenger)', () => {
+    const FB_TID = 'fb29490790703872140';
+
+    it('bật: gọi pass-control qua API nội bộ + audit; chặn hội thoại bình luận và kênh không phải Facebook', async () => {
+      const { service, api, audit } = makeService();
+      (api as any).passControlBizAI = jest.fn().mockResolvedValue(undefined);
+      api.getThread.mockResolvedValueOnce({ tid: FB_TID, name: 'Thư Trần', isComment: false, controlledBy: 'SMAXAI' });
+      await service.passControlBizAI(actor, { pagePid: 'fbPAGE', tid: FB_TID, confirmed: true });
+      expect((api as any).passControlBizAI).toHaveBeenCalledWith('fbPAGE', FB_TID);
+      expect(audit.create.mock.calls[0][0]).toMatchObject({ actionCode: 'SMAX_META_AI_ON', entityId: FB_TID });
+
+      api.getThread.mockResolvedValueOnce({ tid: 'fb1_fb2', name: 'x', isComment: true });
+      await expect(service.passControlBizAI(actor, { pagePid: 'fbPAGE', tid: 'fb1_fb2', confirmed: true })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.passControlBizAI(actor, { pagePid: 'zlOA', tid: 'zl123456', confirmed: true })).rejects.toBeInstanceOf(BadRequestException);
+      expect((api as any).passControlBizAI).toHaveBeenCalledTimes(1);
+    });
+
+    it('tắt: gửi tin Messenger kèm thẻ HUMAN_AGENT (chỉ fanpage Facebook)', async () => {
+      const { service, api } = makeService();
+      await service.sendToThread(actor, { pagePid: 'fbPAGE', tid: FB_TID, text: 'Dạ em hỗ trợ ạ', humanAgent: true, confirmed: true });
+      expect(api.sendThreadMessage).toHaveBeenCalledWith('fbPAGE', FB_TID, {
+        messages: [{ message: 'Dạ em hỗ trợ ạ', message_tag: 'HUMAN_AGENT' }],
+      });
+      await service.sendToThread(actor, { pagePid: 'zlOA', tid: 'zl123456', text: 'hi', humanAgent: true, confirmed: true });
+      expect(api.sendThreadMessage).toHaveBeenLastCalledWith('zlOA', 'zl123456', { messages: [{ message: 'hi' }] });
+    });
   });
 
   it('recentChats tìm kiếm: gửi keyword cho Smax, chỉ giữ hội thoại khớp tên (không dấu, không phân biệt hoa thường)', async () => {
@@ -466,7 +705,7 @@ describe('SmaxChatService', () => {
     });
     expect(api.sendThreadMessage).toHaveBeenCalledWith(PAGE, 'zlw1239621715347596858', {
       replyToPid: 'zlw8420175530134',
-      message: 'ok ạ',
+      messages: [{ message: 'ok ạ' }],
     });
     expect(api.sendZaloweb.mock.calls.map((c) => c[2])).toEqual([
       { images: ['https://photo-stal-35.zdn.vn/no/jpg/a/b.jpg'] },
