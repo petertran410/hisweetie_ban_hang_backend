@@ -26,6 +26,32 @@ export interface ProductChartRow {
   outValue?: number;
   closingQuantity?: number;
   closingValue?: number;
+  // ProductBySale preview: số liệu theo tháng, key "YYYY-MM" (giờ VN)
+  byMonth?: Record<string, { quantity: number; value: number }>;
+}
+
+// Giờ VN cố định UTC+7 (không có DST) — dùng để chia tháng.
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+// Mọi tháng "YYYY-MM" từ `from` đến `to` (giờ VN), kể cả tháng không có bán.
+function vnMonthsBetween(from: Date, to: Date): string[] {
+  const start = new Date(from.getTime() + VN_OFFSET_MS);
+  const end = new Date(to.getTime() + VN_OFFSET_MS);
+  let y = start.getUTCFullYear();
+  let m = start.getUTCMonth();
+  const endY = end.getUTCFullYear();
+  const endM = end.getUTCMonth();
+  const out: string[] = [];
+  // Chặn 120 tháng để tránh khoảng ngày lỗi sinh quá nhiều cột.
+  while ((y < endY || (y === endY && m <= endM)) && out.length < 120) {
+    out.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+    m += 1;
+    if (m > 11) {
+      m = 0;
+      y += 1;
+    }
+  }
+  return out;
 }
 
 @Injectable()
@@ -392,7 +418,13 @@ export class ProductReportsService {
   // ═══════════════════════════════════════════════════════════════════════════
   async getPreview(query: ProductReportQueryDto) {
     const viewType: ProductViewType = query.viewType || 'ProductBySale';
-    const rows = await this.getChart(query);
+    let rows: ProductChartRow[];
+    let months: string[] | undefined;
+    if (viewType === 'ProductBySale') {
+      ({ rows, months } = await this.previewSaleByMonth(query));
+    } else {
+      rows = await this.getChart(query);
+    }
     const summary = rows.reduce(
       (acc, r) => {
         acc.totalValue += r.value || 0;
@@ -411,7 +443,90 @@ export class ProductReportsService {
         totalCost: 0,
       },
     );
-    return { viewType, data: rows, total: rows.length, summary };
+    return {
+      viewType,
+      data: rows,
+      total: rows.length,
+      summary,
+      ...(months ? { months } : {}),
+    };
+  }
+
+  // ── ProductBySale (bảng Dữ liệu): SL + doanh thu theo SP × tháng, kèm nhóm cha ──
+  private async previewSaleByMonth(
+    query: ProductReportQueryDto,
+  ): Promise<{ rows: ProductChartRow[]; months: string[] }> {
+    const where = this.buildDetailWhereSql(query);
+    // purchaseDate là timestamp (không tz) lưu UTC → đổi sang giờ VN trước khi lấy tháng.
+    const raw = await this.prisma.$queryRaw<
+      {
+        code: string | null;
+        name: string;
+        group_name: string | null;
+        ym: string;
+        qty: number | null;
+        revenue: number | null;
+      }[]
+    >`
+      SELECT
+        d."productCode" AS code,
+        d."productName" AS name,
+        MAX(p."parent_name") AS group_name,
+        to_char(
+          i."purchaseDate" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh',
+          'YYYY-MM'
+        ) AS ym,
+        SUM(d.quantity)::float8 AS qty,
+        SUM(d."totalPrice")::float8 AS revenue
+      FROM invoice_details d
+      JOIN invoices i ON i.id = d."invoiceId"
+      LEFT JOIN products p ON p.id = d."productId"
+      WHERE ${where}
+      GROUP BY d."productCode", d."productName", ym
+    `;
+
+    const byProduct = new Map<string, ProductChartRow>();
+    const dataMonths = new Set<string>();
+    for (const r of raw) {
+      const key = `${r.code ?? ''}|${r.name ?? ''}`;
+      let row = byProduct.get(key);
+      if (!row) {
+        row = {
+          subject: r.name,
+          value: 0,
+          total: 0,
+          quantity: 0,
+          extra1: r.code || null,
+          group: null,
+          byMonth: {},
+        };
+        byProduct.set(key, row);
+      }
+      const qty = Number(r.qty) || 0;
+      const revenue = Number(r.revenue) || 0;
+      row.value += revenue;
+      row.total += revenue;
+      row.quantity = (row.quantity || 0) + qty;
+      if (!row.group && r.group_name) row.group = r.group_name;
+      const cell = row.byMonth![r.ym] || { quantity: 0, value: 0 };
+      cell.quantity += qty;
+      cell.value += revenue;
+      row.byMonth![r.ym] = cell;
+      dataMonths.add(r.ym);
+    }
+
+    const rows = Array.from(byProduct.values())
+      .map((row) => ({ ...row, group: row.group || 'Chưa phân nhóm' }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, this.chartTop(query));
+
+    const rangeMonths =
+      query.fromDate && query.toDate
+        ? vnMonthsBetween(new Date(query.fromDate), new Date(query.toDate))
+        : [];
+    const months = Array.from(new Set([...rangeMonths, ...dataMonths])).sort();
+
+    return { rows, months };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
