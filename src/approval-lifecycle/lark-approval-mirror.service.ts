@@ -9,10 +9,11 @@ import {
   INTERNAL_FINANCE_CATEGORY,
   INTERNAL_FINANCE_EVIDENCE_STATUS,
   INTERNAL_FINANCE_STATUS,
+  INTERNAL_FINANCE_SUBCATEGORY,
   LARK_APPROVAL_SOURCE_TYPE,
 } from '../internal-finance/internal-finance.constants';
 import {
-  larkLedgerCutoff,
+  larkFundCutoff,
   readPaymentVoucherDetails,
   summarizeLarkInstance,
   type ApprovalFormItem,
@@ -39,6 +40,8 @@ export interface LarkMirrorResult {
 @Injectable()
 export class LarkApprovalMirrorService {
   private readonly logger = new Logger(LarkApprovalMirrorService.name);
+  /** Tên người / phòng ban trong danh bạ Lark, nhớ trong phiên chạy. */
+  private readonly contactNames = new Map<string, Promise<string | null>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -109,27 +112,42 @@ export class LarkApprovalMirrorService {
   }) {
     const { summary, suspectDuplicateOfId } =
       input.inspected || (await this.inspect(input.kind, input.detail));
-    const detail = input.detail || {};
-    const requester = detail.open_id
+    const raw = input.detail || {};
+    const requester = raw.open_id
       ? await this.prisma.user.findFirst({
-          where: { larkUserId: String(detail.open_id) },
+          where: { larkUserId: String(raw.open_id) },
           select: { id: true, name: true },
         })
       : null;
+    // Tạm ứng lương: người ứng có thể chưa có tài khoản POS; tên và phòng ban
+    // lấy từ danh bạ Lark, lưu kèm bản sao để trang Tạm ứng lương hiện.
+    const salaryAdvance = input.kind === 'TAM_UNG_LUONG';
+    const requesterName =
+      requester?.name ??
+      (salaryAdvance ? await this.larkUserName(raw.open_id) : null);
+    const departmentName = salaryAdvance
+      ? await this.larkDepartmentName(raw.department_id)
+      : null;
+    const detail = salaryAdvance
+      ? { ...raw, posInfo: { requesterName, departmentName } }
+      : raw;
     const data = {
       approvalCode: input.approvalCode,
       formKind: input.kind,
       status: String(detail.status || 'PENDING').toUpperCase(),
       serialNumber: detail.serial_number ? String(detail.serial_number) : null,
       requesterId: requester?.id ?? null,
-      requesterName: requester?.name ?? null,
+      requesterName: requesterName ?? null,
       submittedAt: larkTime(detail.start_time),
       completedAt: larkTime(detail.end_time),
       amount: summary.amount,
       cashAmount: summary.cashAmount,
       method: summary.method,
       cashSource: summary.cashSource,
-      description: summary.description,
+      description:
+        salaryAdvance && requesterName
+          ? `Tạm ứng lương - ${requesterName}`
+          : summary.description,
       occurredAt: summary.occurredAt,
       branchId: summary.branchId,
       direction: summary.direction,
@@ -147,6 +165,57 @@ export class LarkApprovalMirrorService {
       create: { instanceCode: input.instanceCode, ...data },
       update: data,
     });
+  }
+
+  /** Tên một người trong danh bạ Lark (null nếu không đọc được). */
+  larkUserName(openId: unknown) {
+    return this.contactName(
+      `user:${openId}`,
+      async () => {
+        const res: any = await this.larkClient.request({
+          method: 'GET',
+          url: `/open-apis/contact/v3/users/${openId}`,
+          params: { user_id_type: 'open_id' },
+        });
+        return res?.data?.user?.name || null;
+      },
+      Boolean(openId),
+    );
+  }
+
+  /** Tên phòng ban trong danh bạ Lark theo department_id của đơn. */
+  larkDepartmentName(departmentId: unknown) {
+    return this.contactName(
+      `dept:${departmentId}`,
+      async () => {
+        const res: any = await this.larkClient.request({
+          method: 'GET',
+          url: `/open-apis/contact/v3/departments/${departmentId}`,
+          params: { department_id_type: 'department_id' },
+        });
+        return res?.data?.department?.name || null;
+      },
+      Boolean(departmentId) && departmentId !== '0',
+    );
+  }
+
+  private contactName(
+    key: string,
+    load: () => Promise<string | null>,
+    enabled: boolean,
+  ) {
+    if (!enabled) return Promise.resolve(null);
+    if (!this.contactNames.has(key))
+      this.contactNames.set(
+        key,
+        retryLark(load, 3).catch((error: any) => {
+          this.logger.warn(
+            `Không đọc được danh bạ Lark ${key}: ${error?.message}`,
+          );
+          return null;
+        }),
+      );
+    return this.contactNames.get(key)!;
   }
 
   /**
@@ -278,7 +347,8 @@ export class LarkApprovalMirrorService {
       // dòng sổ trùng.
       const ledgerOnLark =
         !fundRow &&
-        (completedAt.getTime() < larkLedgerCutoff(branchId).getTime() ||
+        (completedAt.getTime() <
+          larkFundCutoff(branchId, request.sourceType).getTime() ||
           (await this.hasLedgerTwin(tx, {
             branchId,
             receipt: mirror.direction === 'RECEIPT',
@@ -291,9 +361,20 @@ export class LarkApprovalMirrorService {
       if (!entry) {
         const direction = mirror.direction!;
         const isReceipt = direction === 'RECEIPT';
-        const category = isReceipt
-          ? INTERNAL_FINANCE_CATEGORY.CASH_FUND_RECEIPT
-          : INTERNAL_FINANCE_CATEGORY.CASH_FUND_EXPENSE;
+        const salaryAdvance = mirror.formKind === 'TAM_UNG_LUONG';
+        const category = salaryAdvance
+          ? INTERNAL_FINANCE_CATEGORY.SALARY_ADVANCE
+          : isReceipt
+            ? INTERNAL_FINANCE_CATEGORY.CASH_FUND_RECEIPT
+            : INTERNAL_FINANCE_CATEGORY.CASH_FUND_EXPENSE;
+        const posInfo = (
+          mirror.detailSnapshot as {
+            posInfo?: {
+              requesterName?: string | null;
+              departmentName?: string | null;
+            };
+          } | null
+        )?.posInfo;
         const occurredAt = mirror.occurredAt || completedAt;
         const ledgerRecorded = ledgerOnLark;
         const code = await this.codeService.nextCode(tx, {
@@ -315,6 +396,9 @@ export class LarkApprovalMirrorService {
             code,
             direction,
             category,
+            ...(salaryAdvance
+              ? { subCategory: INTERNAL_FINANCE_SUBCATEGORY.SALARY_ADVANCE }
+              : {}),
             branchId,
             amount,
             occurredAt,
@@ -326,6 +410,13 @@ export class LarkApprovalMirrorService {
               approvalRequestId: request.id,
               ...(mirror.cashSource ? { cashSource: mirror.cashSource } : {}),
               ...(details ? compactDetails(details) : {}),
+              ...(salaryAdvance
+                ? compactDetails({
+                    method: mirror.method,
+                    recipientName: posInfo?.requesterName,
+                    department: posInfo?.departmentName,
+                  })
+                : {}),
               ...(ledgerRecorded ? { larkLedgerRecorded: true } : {}),
             },
             expenseItem: details?.expenseItem ?? undefined,
@@ -338,7 +429,8 @@ export class LarkApprovalMirrorService {
             cashIssuedBy: request.createdById,
             cashIssuedReason: LARK_APPROVED_REASON,
             posManagedAt: new Date(),
-            payerId: isReceipt ? null : mirror.requesterId,
+            // Tạm ứng lương: người đề xuất là người nhận tiền, không phải người chi.
+            payerId: isReceipt || salaryAdvance ? null : mirror.requesterId,
             createdBy: request.createdById,
           },
         });
@@ -430,6 +522,8 @@ function compactDetails(details: object) {
 export function fundSourceKey(sourceType: string | null, requestId: number) {
   if (sourceType === 'LARK_PAYMENT_VOUCHER')
     return `PAYMENT_VOUCHER:${requestId}`;
+  if (sourceType === 'LARK_SALARY_ADVANCE')
+    return `SALARY_ADVANCE:${requestId}`;
   if (sourceType === 'INTERNAL_FUND_RECEIPT') return `RECEIPT:${requestId}`;
   return null;
 }

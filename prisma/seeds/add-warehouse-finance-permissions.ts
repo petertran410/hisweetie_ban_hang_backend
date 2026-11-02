@@ -38,6 +38,9 @@ const PERMISSIONS: PermissionSeed[] = [
   ...group('lark_approval', [
     ['view', 'Xem đơn PHIẾU THU / PHIẾU CHI / PHIẾU CHI KHO tạo trên Lark'],
   ]),
+  ...group('salary_advance', [
+    ['view', 'Xem đơn TẠM ỨNG LƯƠNG (toàn công ty)'],
+  ]),
   ...group('weekly_approval', [
     ['view', 'Xem Approval tuần'],
     ['prepare', 'Tổng hợp tuần và hủy batch tuần'],

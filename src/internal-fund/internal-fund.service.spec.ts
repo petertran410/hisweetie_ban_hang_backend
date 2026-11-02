@@ -388,6 +388,38 @@ describe('Internal fund ledger', () => {
     expect(f.transactions[0].status).toBe('CANCELLED');
   });
 
+  it('posts an approved cash salary advance under its own key and cancels it when reverted', async () => {
+    const f = fixture();
+    const request = {
+      id: 60,
+      status: 'APPROVED',
+      branchId: 1,
+      createdById: 7,
+      completedAt: new Date('2026-11-05T03:00:00Z'),
+      formSnapshot: {
+        metadata: {
+          amount: 3000000,
+          description: 'Tạm ứng lương - Bùi Tấn Thuận',
+        },
+      },
+    };
+    await f.ledger.applySalaryAdvance(f.prisma, request);
+    await f.ledger.applySalaryAdvance(f.prisma, request);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'EXPENSE',
+      sourceType: 'LARK_SALARY_ADVANCE',
+      sourceKey: 'SALARY_ADVANCE:60',
+      branchId: 1,
+      description: 'Tạm ứng lương - Bùi Tấn Thuận',
+    });
+    await f.ledger.applySalaryAdvance(f.prisma, {
+      ...request,
+      status: 'REVERTED',
+    });
+    expect(f.transactions[0].status).toBe('CANCELLED');
+  });
+
   it('writes a receipt automatically and replay is idempotent even after cancellation', async () => {
     const f = fixture();
     const request = {

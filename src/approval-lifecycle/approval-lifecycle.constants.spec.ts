@@ -1,9 +1,12 @@
 import {
   LARK_LEDGER_CUTOFF,
+  SALARY_ADVANCE_FUND_FROM,
   VPHN_LEDGER_CUTOFF,
+  larkFundCutoff,
   larkLedgerCutoff,
   readFundReceipt,
   readPaymentVoucherDetails,
+  readSalaryAdvance,
 } from './approval-lifecycle.constants';
 
 describe('readFundReceipt', () => {
@@ -203,5 +206,78 @@ describe('readPaymentVoucherDetails', () => {
       expenseItem: null,
       department: null,
     });
+  });
+});
+
+describe('readSalaryAdvance', () => {
+  const form = (method: string, source: string, amount = 3000000) => [
+    {
+      id: 'widget17321750020230001',
+      name: 'Ngày đề xuất',
+      type: 'date',
+      value: '2026-08-18T17:00:00Z',
+    },
+    {
+      id: 'widget17321753417610001',
+      name: 'Phương thức thanh toán',
+      type: 'radioV2',
+      value: method,
+    },
+    {
+      id: 'widget17642424767350001',
+      name: 'Nguồn Tiền',
+      type: 'radioV2',
+      value: source,
+    },
+    {
+      id: 'widget17321752802850001',
+      name: 'Số tiền',
+      type: 'amount',
+      value: amount,
+    },
+  ];
+
+  it('maps a cash advance to the fund it is paid from', () => {
+    expect(readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Kho SG'))).toEqual({
+      amount: 3000000,
+      method: 'Tiền Mặt',
+      cashSource: 'Tiền Mặt Kho SG',
+      branchId: 1,
+      requestDate: new Date('2026-08-18T17:00:00Z'),
+    });
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Văn Phòng HN'))?.branchId,
+    ).toBe(4);
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'))?.branchId,
+    ).toBe(7);
+  });
+
+  it('keeps company transfers and unknown sources out of the funds', () => {
+    expect(
+      readSalaryAdvance(form('Chuyển Khoản Công Ty', 'Chuyển Khoản Công Ty'))
+        ?.branchId,
+    ).toBeNull();
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt CHDT'))?.branchId,
+    ).toBeNull();
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Kho SG', 0)),
+    ).toBeNull();
+  });
+});
+
+describe('larkFundCutoff', () => {
+  it('books salary advances only from 02/11/2026, other forms keep the branch cutoff', () => {
+    expect(larkFundCutoff(6, 'LARK_SALARY_ADVANCE')).toEqual(
+      SALARY_ADVANCE_FUND_FROM,
+    );
+    expect(larkFundCutoff(4, 'LARK_SALARY_ADVANCE')).toEqual(
+      SALARY_ADVANCE_FUND_FROM,
+    );
+    expect(larkFundCutoff(6, 'LARK_PAYMENT_VOUCHER')).toEqual(
+      LARK_LEDGER_CUTOFF,
+    );
+    expect(larkFundCutoff(4, null)).toEqual(VPHN_LEDGER_CUTOFF);
   });
 });

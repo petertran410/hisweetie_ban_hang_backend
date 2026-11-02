@@ -320,6 +320,56 @@ export function readPaymentVoucherCash(
   };
 }
 
+// Đơn "TẠM ỨNG LƯƠNG" tạo trên Lark. Đơn tiền mặt từ một quỹ nội bộ được duyệt
+// thì trừ quỹ đó; đơn chuyển khoản công ty chỉ để theo dõi.
+export const SALARY_ADVANCE = {
+  kind: 'SALARY_ADVANCE',
+  sourceType: 'LARK_SALARY_ADVANCE',
+  approvalCode: '1B91D3C8-0684-4A06-8D7F-91435E62A1E4',
+  fieldIds: {
+    requestDate: 'widget17321750020230001',
+    method: 'widget17321753417610001',
+    cashSource: 'widget17642424767350001',
+    amount: 'widget17321752802850001',
+  },
+} as const;
+
+export interface SalaryAdvanceForm {
+  amount: number;
+  method: string | null;
+  cashSource: string | null;
+  /** Quỹ nội bộ chi tiền mặt; null: chuyển khoản / nguồn không thuộc POS. */
+  branchId: number | null;
+  requestDate: Date | null;
+}
+
+/** Đọc đơn TẠM ỨNG LƯƠNG; null nếu đơn không có số tiền. */
+export function readSalaryAdvance(
+  form: ApprovalFormItem[],
+): SalaryAdvanceForm | null {
+  const ids = SALARY_ADVANCE.fieldIds;
+  const item = (id: string) => form.find((row) => row.id === id);
+  const amount = Number(item(ids.amount)?.value ?? 0);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const method = formItemText(item(ids.method));
+  const cashSource = formItemText(item(ids.cashSource));
+  const cash =
+    (method || '').toLowerCase().includes('tiền mặt') &&
+    !(method || '').toLowerCase().includes('chuyển khoản');
+  const rawDate = formItemText(item(ids.requestDate));
+  const requestDate = rawDate ? new Date(rawDate) : null;
+  return {
+    amount,
+    method,
+    cashSource,
+    branchId: cash
+      ? (PAYMENT_VOUCHER.cashSourceBranches[cashSource || ''] ?? null)
+      : null,
+    requestDate:
+      requestDate && !Number.isNaN(requestDate.getTime()) ? requestDate : null,
+  };
+}
+
 /** Nguồn quỹ tiền mặt trên form PHIẾU THU ứng với quỹ của từng chi nhánh. */
 export const RECEIPT_CASH_SOURCE_BY_BRANCH: Record<number, string> = {
   6: 'mmix7h92-hukohb4on6-0',
@@ -422,13 +472,15 @@ export type LarkFormKind =
   | 'PHIEU_THU'
   | 'PHIEU_CHI'
   | 'PHIEU_CHI_KHO_HN'
-  | 'PHIEU_CHI_KHO_SG';
+  | 'PHIEU_CHI_KHO_SG'
+  | 'TAM_UNG_LUONG';
 
 export const LARK_FORM_KINDS: LarkFormKind[] = [
   'PHIEU_THU',
   'PHIEU_CHI',
   'PHIEU_CHI_KHO_HN',
   'PHIEU_CHI_KHO_SG',
+  'TAM_UNG_LUONG',
 ];
 
 /**
@@ -454,6 +506,24 @@ export const VPHN_LEDGER_CUTOFF = new Date('2026-11-01T00:00:00+07:00');
 /** Mốc mà từ đó đơn Lark duyệt mới trừ / cộng quỹ trên POS, theo chi nhánh. */
 export function larkLedgerCutoff(branchId: number | null | undefined) {
   return branchId === 4 ? VPHN_LEDGER_CUTOFF : LARK_LEDGER_CUTOFF;
+}
+
+/**
+ * TẠM ỨNG LƯƠNG lên POS từ 02/11/2026: đơn cũ chỉ để xem (sổ quỹ Lark đã ghi),
+ * đơn tiền mặt duyệt từ mốc này mới trừ quỹ trên POS.
+ */
+export const SALARY_ADVANCE_FUND_FROM = new Date('2026-11-02T00:00:00+07:00');
+
+/** Mốc ghi quỹ của một đơn Lark theo chi nhánh quỹ và loại đơn. */
+export function larkFundCutoff(
+  branchId: number | null | undefined,
+  sourceType?: string | null,
+) {
+  const branch = larkLedgerCutoff(branchId);
+  return sourceType === SALARY_ADVANCE.sourceType &&
+    SALARY_ADVANCE_FUND_FROM > branch
+    ? SALARY_ADVANCE_FUND_FROM
+    : branch;
 }
 
 export interface LarkInstanceSummary {
@@ -581,6 +651,35 @@ export function summarizeLarkInstance(
       inScope,
       skipReason: inScope ? null : 'Thu vào quỹ văn phòng',
       fundBranchIds: [receipt.branchId],
+    };
+  }
+
+  if (kind === 'TAM_UNG_LUONG') {
+    const advance = readSalaryAdvance(form);
+    const base = {
+      amount: advance?.amount ?? null,
+      cashAmount: advance?.branchId ? advance.amount : null,
+      method: advance?.method ?? null,
+      cashSource: advance?.cashSource ?? null,
+      description: 'Tạm ứng lương',
+      occurredAt: advance?.requestDate ?? fallbackDate,
+      direction: 'EXPENSE' as const,
+    };
+    if (!advance?.branchId)
+      return {
+        ...base,
+        branchId: null,
+        inScope: false,
+        skipReason: 'Chuyển khoản công ty, không chi quỹ tiền mặt',
+        fundBranchIds: [],
+      };
+    const inScope = LARK_ENTRY_BRANCHES.includes(advance.branchId);
+    return {
+      ...base,
+      branchId: advance.branchId,
+      inScope,
+      skipReason: inScope ? null : 'Chi từ quỹ văn phòng',
+      fundBranchIds: [advance.branchId],
     };
   }
 

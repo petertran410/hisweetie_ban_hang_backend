@@ -52,6 +52,7 @@ import {
   CreateWarehouseExpenseDto,
   InternalFinanceQueryDto,
   LarkApprovalQueryDto,
+  SalaryAdvanceQueryDto,
   MarkWarehouseExpenseIssuedDto,
   PostWarehouseReceiptDto,
   ConfirmWarehouseReceiptAmountDto,
@@ -5052,6 +5053,144 @@ export class InternalFinanceService {
       })),
       total: summary._count._all,
       totalAmount: Number(summary._sum.amount || 0),
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Trang Tạm ứng lương: đơn TẠM ỨNG LƯƠNG trên Lark (bản sao), cả chuyển
+   * khoản lẫn tiền mặt. Có quyền xem ở một chi nhánh là xem toàn công ty vì
+   * đơn chuyển khoản không thuộc quỹ nào.
+   */
+  async listSalaryAdvances(query: SalaryAdvanceQueryDto, user: FinanceActor) {
+    const allowed = await this.access.branchesFor(
+      user,
+      'salary_advance:view',
+      INTERNAL_FINANCE_BRANCH_IDS,
+    );
+    if (!allowed.length)
+      throw new ForbiddenException('Không có quyền xem tạm ứng lương');
+    const and: Prisma.LarkApprovalInstanceWhereInput[] = [
+      { formKind: 'TAM_UNG_LUONG' },
+    ];
+    if (query.branchIds?.length)
+      and.push({ branchId: { in: query.branchIds.map(Number) } });
+    if (query.method === 'CASH') and.push({ cashAmount: { not: null } });
+    if (query.method === 'TRANSFER') and.push({ cashAmount: null });
+    if (query.requester) and.push({ requesterName: query.requester });
+    if (query.fromDate || query.toDate)
+      and.push({
+        occurredAt: {
+          ...(query.fromDate ? { gte: fundDayStart(query.fromDate) } : {}),
+          ...(query.toDate
+            ? { lt: new Date(fundDayStart(query.toDate).getTime() + 86400000) }
+            : {}),
+        },
+      });
+    const search = query.search?.trim();
+    if (search)
+      and.push({
+        OR: [
+          { requesterName: { contains: search, mode: 'insensitive' } },
+          { description: { contains: search, mode: 'insensitive' } },
+        ],
+      });
+    // Tổng và "Theo người" chỉ tính đơn đã duyệt.
+    const approvedWhere: Prisma.LarkApprovalInstanceWhereInput = {
+      AND: [...and, { status: 'APPROVED' }],
+    };
+    if (query.status) and.push({ status: query.status });
+    const where: Prisma.LarkApprovalInstanceWhereInput = { AND: and };
+    const page = Math.max(1, query.page || 1);
+    const limit = Math.min(query.limit || 50, 200);
+    const [rows, count, approved, byPerson] = await Promise.all([
+      this.prisma.larkApprovalInstance.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.larkApprovalInstance.count({ where }),
+      this.prisma.larkApprovalInstance.aggregate({
+        where: approvedWhere,
+        _count: { _all: true },
+        _sum: { amount: true, cashAmount: true },
+      }),
+      this.prisma.larkApprovalInstance.groupBy({
+        by: ['requesterName'],
+        where: approvedWhere,
+        _count: { _all: true },
+        _sum: { amount: true, cashAmount: true },
+        _max: { occurredAt: true },
+      }),
+    ]);
+    const entryIds = rows
+      .map((row) => row.entryId)
+      .filter((id): id is number => typeof id === 'number');
+    const entries = entryIds.length
+      ? await this.prisma.internalFinanceEntry.findMany({
+          where: { id: { in: entryIds } },
+          select: {
+            id: true,
+            code: true,
+            status: true,
+            fundTransaction: { select: { code: true, status: true } },
+          },
+        })
+      : [];
+    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+    const branches = await this.prisma.branch.findMany({
+      where: { id: { in: [...INTERNAL_FINANCE_BRANCH_IDS] } },
+      select: { id: true, name: true },
+    });
+    const branchName = new Map(branches.map((row) => [row.id, row.name]));
+    const num = (value: Prisma.Decimal | null | undefined) =>
+      value === null || value === undefined ? null : Number(value);
+    return {
+      data: rows.map((row) => {
+        const posInfo = (
+          row.detailSnapshot as {
+            posInfo?: { departmentName?: string | null };
+          } | null
+        )?.posInfo;
+        return {
+          id: row.id,
+          status: row.status,
+          serialNumber: row.serialNumber,
+          requesterName: row.requesterName,
+          department: posInfo?.departmentName || null,
+          requestDate: row.occurredAt,
+          submittedAt: row.submittedAt,
+          completedAt: row.completedAt,
+          amount: num(row.amount),
+          cash: row.cashAmount !== null,
+          method: row.method,
+          cashSource: row.cashSource,
+          branchId: row.branchId,
+          branchName: row.branchId
+            ? branchName.get(row.branchId) || null
+            : null,
+          inScope: row.inScope,
+          skipReason: row.skipReason,
+          entry: row.entryId ? entryById.get(row.entryId) || null : null,
+        };
+      }),
+      total: count,
+      totals: {
+        approvedCount: approved._count._all,
+        approvedAmount: num(approved._sum.amount) || 0,
+        approvedCashAmount: num(approved._sum.cashAmount) || 0,
+      },
+      byPerson: byPerson
+        .map((row) => ({
+          requesterName: row.requesterName,
+          count: row._count._all,
+          amount: num(row._sum.amount) || 0,
+          cashAmount: num(row._sum.cashAmount) || 0,
+          lastRequestDate: row._max.occurredAt,
+        }))
+        .sort((a, b) => b.amount - a.amount),
       page,
       limit,
     };
