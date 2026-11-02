@@ -584,7 +584,7 @@ describe('LeadsService', () => {
     );
   });
 
-  it('handoverPreview: biến {khu vực} {phường} lấy tỉnh/phường của lead', async () => {
+  it('handoverPreview: biến {tỉnh thành} {phường} lấy tỉnh/phường của lead', async () => {
     const { service, prisma } = makeService({
       lead: {
         provinceName: 'Thành phố Đà Nẵng',
@@ -592,7 +592,7 @@ describe('LeadsService', () => {
       } as any,
     });
     prisma.settings.findFirst.mockResolvedValue({
-      leadLarkTemplate: 'Khu vực: {khu vực} - {phường}',
+      leadLarkTemplate: 'Khu vực: {tỉnh thành} - {phường}',
     });
     const p = await service.handoverPreview(7, 9);
     expect(p.larkText).toBe('Khu vực: Thành phố Đà Nẵng - Phường Hải Châu');

@@ -940,7 +940,7 @@ export class LeadsService {
       'tên sale': sale.name,
       sđt: lead.phone ?? '',
       'phân loại': LEAD_CATEGORY_LABEL[lead.category] ?? lead.category,
-      'khu vực': lead.provinceName ?? '',
+      'tỉnh thành': lead.provinceName ?? '',
       phường: lead.wardName ?? '',
       'nhu cầu': lead.need ?? '',
       'ghi chú': note?.trim() || lead.cskhNote || '',

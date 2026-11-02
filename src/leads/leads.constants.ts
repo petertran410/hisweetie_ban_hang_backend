@@ -40,7 +40,7 @@ export type StepResult = {
   error?: string;
 };
 
-// Mẫu mặc định (Cài đặt → Mẫu tin Lead ghi đè); biến: {tên khách} {tên sale} {sđt} {phân loại} {khu vực} {phường} {nhu cầu} {ghi chú} {link}
+// Mẫu mặc định (Cài đặt → Mẫu tin Lead ghi đè); biến: {tên khách} {tên sale} {sđt} {phân loại} {tỉnh thành} {phường} {nhu cầu} {ghi chú} {link}
 export const DEFAULT_LEAD_TEMPLATES = {
   greeting:
     'Dạ em chào {tên khách}, em là {tên sale} từ LerMao. Em đã nhận được thông tin của mình từ bạn CSKH, em kết bạn Zalo để tiện tư vấn sản phẩm và báo giá cho mình ạ.',
