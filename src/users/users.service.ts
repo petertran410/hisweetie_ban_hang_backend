@@ -15,6 +15,7 @@ import {
   renderAuditMessage,
 } from 'src/audit-logs/audit-templates';
 import { PermissionCacheService } from 'src/permission-cache/permission-cache.service';
+import { stripUserSecrets } from '../common/user-select.util';
 
 @Injectable()
 export class UsersService {
@@ -74,8 +75,9 @@ export class UsersService {
     ]);
 
     return {
+      // Không trả mật khẩu đã mã hóa ra API.
       data: data.map((user) => ({
-        ...user,
+        ...stripUserSecrets(user),
         roles: user.userRoles.map((ur) => ur.role),
       })),
       total,
@@ -149,7 +151,8 @@ export class UsersService {
       (user as any).userBranches?.map((ub: any) => ub.branch) || [];
 
     return {
-      ...user,
+      // Không trả mật khẩu đã mã hóa ra API.
+      ...stripUserSecrets(user),
       roles,
       rolePermissions,
       individualPermissions: grantPermissions,

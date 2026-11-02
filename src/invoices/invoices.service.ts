@@ -68,6 +68,7 @@ import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
 } from '../common/debt-delivery.util';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 const POS_PAYMENT_EPSILON = 1;
 
@@ -1317,8 +1318,8 @@ export class InvoicesService {
           },
         },
         branch: true,
-        soldBy: true,
-        creator: true,
+        soldBy: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
         details: {
           include: {
             product: { include: { inventories: true } },
@@ -2340,7 +2341,7 @@ export class InvoicesService {
             delivery: true,
             customer: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             priceBook: true,
           },
         });
@@ -2968,7 +2969,7 @@ export class InvoicesService {
           payments: true,
           delivery: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           order: true,
         },
       });
@@ -3299,7 +3300,7 @@ export class InvoicesService {
             customer: true,
             order: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             priceBook: true,
           },
         });
@@ -3490,7 +3491,7 @@ export class InvoicesService {
             delivery: true,
             customer: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             order: true,
             priceBook: true,
           },
@@ -4987,7 +4988,7 @@ export class InvoicesService {
           delivery: true,
           customer: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           order: { select: { code: true } },
         },
       });
@@ -5419,7 +5420,7 @@ export class InvoicesService {
           payments: true,
           customer: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           consignment: { select: { code: true } },
         },
       });
