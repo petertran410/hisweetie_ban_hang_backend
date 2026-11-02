@@ -79,21 +79,33 @@ export class ProductReportsService {
         Prisma.sql`(d."productName" ILIKE ${kw} OR d."productCode" ILIKE ${kw})`,
       );
     }
-    const category = this.categoryCond(query);
-    if (category) conds.push(category);
+    conds.push(...this.productConds(query));
     return Prisma.join(conds, ' AND ');
   }
 
-  // Lọc theo nhóm hàng (cha/giữa/con) — cần `LEFT JOIN products p` trong query.
-  private categoryCond(query: ProductReportQueryDto): Prisma.Sql | null {
-    if (!query.categoryLevel || !query.categoryValue) return null;
-    const col =
-      query.categoryLevel === 'parent'
-        ? Prisma.sql`p."parent_name"`
-        : query.categoryLevel === 'middle'
-          ? Prisma.sql`p."middle_name"`
-          : Prisma.sql`p."child_name"`;
-    return Prisma.sql`${col} = ${query.categoryValue}`;
+  // Lọc theo thuộc tính sản phẩm: nhóm hàng (cha/giữa/con, 1 hoặc nhiều nhóm)
+  // và thương hiệu — cần `LEFT JOIN products p` trong query.
+  private productConds(query: ProductReportQueryDto): Prisma.Sql[] {
+    const conds: Prisma.Sql[] = [];
+    const values = [
+      ...(query.categoryValues ?? []),
+      ...(query.categoryValue ? [query.categoryValue] : []),
+    ];
+    if (query.categoryLevel && values.length > 0) {
+      const col =
+        query.categoryLevel === 'parent'
+          ? Prisma.sql`p."parent_name"`
+          : query.categoryLevel === 'middle'
+            ? Prisma.sql`p."middle_name"`
+            : Prisma.sql`p."child_name"`;
+      conds.push(Prisma.sql`${col} IN (${Prisma.join(values)})`);
+    }
+    if (query.tradeMarkIds?.length) {
+      conds.push(
+        Prisma.sql`p."tradeMarkId" IN (${Prisma.join(query.tradeMarkIds)})`,
+      );
+    }
+    return conds;
   }
 
   // Giá vốn theo dòng: inventories.cost khớp productId + branch của HĐ
@@ -325,8 +337,7 @@ export class ProductReportsService {
         Prisma.sql`(l."productName" ILIKE ${kw} OR l."productCode" ILIKE ${kw})`,
       );
     }
-    const category = this.categoryCond(query);
-    if (category) conds.push(category);
+    conds.push(...this.productConds(query));
     const fromCond = query.fromDate
       ? Prisma.sql`AND l."transactionDate" >= ${new Date(query.fromDate)}`
       : Prisma.empty;
@@ -401,8 +412,7 @@ export class ProductReportsService {
       );
     if (query.branchId)
       conds.push(Prisma.sql`de."branchId" = ${query.branchId}`);
-    const category = this.categoryCond(query);
-    if (category) conds.push(category);
+    conds.push(...this.productConds(query));
     const where = Prisma.join(conds, ' AND ');
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT
