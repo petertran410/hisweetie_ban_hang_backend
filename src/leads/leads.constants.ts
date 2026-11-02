@@ -4,6 +4,8 @@ export const LEAD_SOURCES = [
   'shopee',
   'zalo_oa',
   'website',
+  'direct',
+  'other',
 ] as const;
 export const LEAD_CATEGORIES = [
   'cafe',

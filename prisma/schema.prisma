@@ -1539,7 +1539,7 @@ model Lead {
   /// SĐT Zalo cá nhân của khách (mặc định = phone); tra ra ID Zalo khi chuyển giao
   zaloPhone       String?            @map("zalo_phone")
   zaloUid         String?            @map("zalo_uid")
-  source          String // facebook | tiktok | shopee | zalo_oa | website
+  source          String // facebook | tiktok | shopee | zalo_oa | website | direct | other
   /// Kênh (page Smax) khách nhắn tới, vd Fanpage "LerMao - Sành Ăn Như Gấu"
   channelPid      String?            @map("channel_pid")
   channelName     String?            @map("channel_name")
@@ -1562,12 +1562,60 @@ model Lead {
   salePic         User?              @relation("LeadSalePic", fields: [salePicId], references: [id])
   conversations   LeadConversation[]
   handovers       LeadHandover[]
+  formSubmissions LeadFormSubmission[]
 
   @@index([status])
   @@index([salePicId])
   @@index([phoneNormalized])
   @@index([createdAt])
   @@map("leads")
+}
+
+/// Form công khai thu thập lead (link / nhúng iframe / QR); khách gửi → tạo lead hoặc gộp vào lead trùng SĐT.
+model LeadForm {
+  id             Int                  @id @default(autoincrement())
+  slug           String               @unique
+  /// Tên nội bộ
+  name           String
+  /// Tiêu đề hiển thị cho khách
+  title          String
+  description    String?              @db.Text
+  /// LeadFormField[]: trường Lead (bật/tắt, bắt buộc) + câu hỏi thêm
+  fields         Json
+  source         String
+  channelPid     String?              @map("channel_pid")
+  channelName    String?              @map("channel_name")
+  /// Phân loại mặc định khi form không hỏi
+  category       String?
+  cskhUserId     Int?                 @map("cskh_user_id")
+  successMessage String?              @map("success_message") @db.Text
+  isActive       Boolean              @default(true) @map("is_active")
+  createdById    Int                  @map("created_by_id")
+  createdAt      DateTime             @default(now()) @map("created_at")
+  updatedAt      DateTime             @updatedAt @map("updated_at")
+  submissions    LeadFormSubmission[]
+
+  @@map("lead_forms")
+}
+
+/// 1 lượt khách gửi form: câu trả lời (chụp nhãn lúc gửi) + lead được tạo / gộp.
+model LeadFormSubmission {
+  id        Int      @id @default(autoincrement())
+  formId    Int      @map("form_id")
+  leadId    Int?     @map("lead_id")
+  /// [{ key, label, value }]
+  answers   Json
+  /// Gộp vào lead đang mở trùng SĐT
+  merged    Boolean  @default(false)
+  ip        String?
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+  form      LeadForm @relation(fields: [formId], references: [id], onDelete: Cascade)
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+
+  @@index([formId, createdAt])
+  @@index([leadId])
+  @@map("lead_form_submissions")
 }
 
 /// Hội thoại Smax (Facebook, Tiktok, Zalo…) của lead.

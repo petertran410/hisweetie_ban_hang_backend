@@ -295,6 +295,16 @@ export class LeadsService {
         salePic: userBrief,
         conversations: { orderBy: { createdAt: 'asc' } },
         handovers: { orderBy: { createdAt: 'desc' } },
+        formSubmissions: {
+          orderBy: { createdAt: 'desc' },
+          select: {
+            id: true,
+            answers: true,
+            merged: true,
+            createdAt: true,
+            form: { select: { id: true, name: true } },
+          },
+        },
       },
     });
     if (!lead || (actor.ownOnly && lead.salePicId !== actor.id)) {
