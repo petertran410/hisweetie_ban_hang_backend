@@ -356,6 +356,11 @@ export class CreateProductDto {
   @IsString({ each: true })
   imageUrls?: string[];
 
+  /** URL ảnh chính, phải nằm trong imageUrls; không gửi → giữ ảnh chính cũ hoặc lấy ảnh đầu. */
+  @IsOptional()
+  @IsString()
+  primaryImageUrl?: string;
+
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
