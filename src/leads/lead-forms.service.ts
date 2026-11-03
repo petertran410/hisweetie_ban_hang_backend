@@ -15,7 +15,11 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
 import { normalizeVnPhone } from '../common/phone.util';
 import { slugifyVietnamese } from '../common/slug.util';
-import { LEAD_CATEGORIES, LEAD_CATEGORY_LABEL } from './leads.constants';
+import {
+  LEAD_CATEGORIES,
+  LEAD_CATEGORY_LABEL,
+  leadCode,
+} from './leads.constants';
 import {
   CUSTOM_FIELD_KEY,
   DEFAULT_LEAD_FORM_FIELDS,
@@ -303,7 +307,7 @@ export class LeadFormsService {
       [
         `📝 ${existing ? 'Khách gửi lại' : 'Lead mới từ'} form "${form.name}"`,
         ...v.answers.map((a) => `${a.label}: ${a.value}`),
-        `${this.frontendUrl}/khach-hang/lead?id=${lead.id}`,
+        `${this.frontendUrl}/khach-hang/lead?Code=${leadCode(lead.id)}`,
       ].join('\n'),
     );
     return { ok: true, message };

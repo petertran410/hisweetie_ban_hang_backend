@@ -580,7 +580,7 @@ describe('LeadsService', () => {
     expect(p.larkText).toContain('Phân loại: Khách quán');
     expect(p.larkText).toContain('Ghi chú CSKH: Gọi sau 5h');
     expect(p.larkText).toContain(
-      'https://pos.example.com/khach-hang/lead?id=7',
+      'https://pos.example.com/khach-hang/lead?Code=LEAD000007',
     );
   });
 
