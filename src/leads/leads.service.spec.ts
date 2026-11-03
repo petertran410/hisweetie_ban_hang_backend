@@ -746,6 +746,34 @@ describe('LeadsService', () => {
     });
   });
 
+  it('journey: khách cũ (có mã KH, đơn trước khi có lead) → nhãn "Khách cũ", mốc Đặt hàng "trước lead" chưa đạt', async () => {
+    const { prisma } = makeService();
+    const link = new LeadLinkService(prisma, { create: jest.fn() } as any);
+    prisma.lead.findMany.mockResolvedValue([{ id: 24 }]);
+    prisma.lead.findFirst.mockResolvedValue({
+      ...baseLead,
+      id: 24,
+      customerId: 5,
+      createdAt: new Date('2026-11-03T08:25:00Z'),
+      cskhUser: null,
+      salePic: null,
+      handovers: [],
+      formSubmissions: [],
+    });
+    prisma.customer.findUnique.mockResolvedValue({ id: 5, code: 'KH052066', name: 'A', createdAt: new Date('2026-10-30T06:46:00Z') });
+    prisma.order.findMany.mockResolvedValue([
+      { id: 1, code: 'DH126226', createdAt: new Date('2026-10-30T06:47:00Z'), status: 1, grandTotal: 100 },
+    ]);
+    const j = await link.journey({ customerId: 5 }, { canViewLeads: true, ownOnly: false, userId: 1 });
+    expect(j.milestones.find((m) => m.key === 'customer')).toMatchObject({ done: true, note: 'Khách cũ' });
+    expect(j.milestones.find((m) => m.key === 'order')).toMatchObject({
+      done: false,
+      warn: true,
+      ref: 'DH126226 · trước lead',
+    });
+    expect(j.milestones.find((m) => m.key === 'invoice')).toMatchObject({ done: false, warn: false });
+  });
+
   it('journey: Sale không phải PIC không thấy lead của khách; mốc đơn đầu bỏ qua đơn huỷ', async () => {
     const { prisma } = makeService();
     const link = new LeadLinkService(prisma, { create: jest.fn() } as any);

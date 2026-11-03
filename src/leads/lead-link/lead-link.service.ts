@@ -418,17 +418,38 @@ export class LeadLinkService {
 
     // Có lead: mốc đơn / hóa đơn đầu tính từ lúc tạo lead (khách cũ quay lại)
     const since = lead?.createdAt.getTime() ?? 0;
-    const firstOrder = orders.find((o) => o.status !== ORDER_STATUS.CANCELLED && o.createdAt.getTime() >= since) ?? null;
-    const firstInvoice =
-      invoices.find((i) => i.status !== INVOICE_STATUS.CANCELLED && i.createdAt.getTime() >= since) ?? null;
+    const live = <T extends { status: number; createdAt: Date }>(rows: T[], cancelled: number) =>
+      rows.filter((r) => r.status !== cancelled);
+    const liveOrders = live(orders, ORDER_STATUS.CANCELLED);
+    const liveInvoices = live(invoices, INVOICE_STATUS.CANCELLED);
+    const firstOrder = liveOrders.find((o) => o.createdAt.getTime() >= since) ?? null;
+    const firstInvoice = liveInvoices.find((i) => i.createdAt.getTime() >= since) ?? null;
+    // Khách cũ quay lại: có mã KH trước khi có lead → đơn / hóa đơn trước lead hiện cảnh báo, không tính chuyển đổi
+    const existing = !!lead && !!customer && customer.createdAt.getTime() < since;
+    const before = <T extends { code: string; createdAt: Date }>(rows: T[]) =>
+      lead ? (rows.filter((r) => r.createdAt.getTime() < since).at(-1) ?? null) : null;
     const handedOver = lead?.handovers.find((h) => h.status === 'done') ?? null;
+    const step = (
+      key: string,
+      label: string,
+      at: Date | null,
+      ref: string | null,
+      extra: { note?: string; warn?: boolean } = {},
+    ) => ({ key, label, at, ref, done: !!at, note: extra.note ?? null, warn: !!extra.warn });
+    // Mốc chưa đạt nhưng có đơn / hóa đơn trước khi có lead → ghi "trước lead" (cảnh báo)
+    const fromBefore = <T extends { code: string; createdAt: Date }>(key: string, label: string, first: T | null, rows: T[]) => {
+      const old = first ? null : before(rows);
+      return old
+        ? step(key, label, null, `${old.code} · trước lead`, { warn: true })
+        : step(key, label, first?.createdAt ?? null, first?.code ?? null);
+    };
     const milestones = [
-      ...(lead ? [{ key: 'lead', label: 'Tạo lead', at: lead.createdAt, ref: leadCode(lead.id) }] : []),
-      ...(lead ? [{ key: 'handover', label: 'Chuyển Sale', at: handedOver?.createdAt ?? null, ref: lead.salePic?.name ?? null }] : []),
-      { key: 'customer', label: 'Mã KH', at: customer?.createdAt ?? null, ref: customer?.code ?? null },
-      { key: 'order', label: 'Đặt hàng', at: firstOrder?.createdAt ?? null, ref: firstOrder?.code ?? null },
-      { key: 'invoice', label: 'Hóa đơn', at: firstInvoice?.createdAt ?? null, ref: firstInvoice?.code ?? null },
-    ].map((m) => ({ ...m, done: !!m.at }));
+      ...(lead ? [step('lead', 'Tạo lead', lead.createdAt, leadCode(lead.id))] : []),
+      ...(lead ? [step('handover', 'Chuyển Sale', handedOver?.createdAt ?? null, lead.salePic?.name ?? null)] : []),
+      step('customer', 'Mã KH', customer?.createdAt ?? null, customer?.code ?? null, existing ? { note: 'Khách cũ' } : {}),
+      fromBefore('order', 'Đặt hàng', firstOrder, liveOrders),
+      fromBefore('invoice', 'Hóa đơn', firstInvoice, liveInvoices),
+    ];
 
     type JourneyEvent = {
       at: Date;
