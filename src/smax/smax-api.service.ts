@@ -139,8 +139,14 @@ export interface SmaxRawMessage {
       thumbnail?: string;
       title?: string;
       type?: string;
+      // Facebook/Instagram: mime_type ("image", "image/png", "video/mp4"…), url_preview, name
+      mime_type?: string;
+      url_preview?: string;
+      name?: string;
     }[];
   };
+  // Facebook: tin sticker có URL ảnh sticker (kèm 1 attachment trùng ảnh đó)
+  facebook?: { sticker?: string };
 }
 
 /**

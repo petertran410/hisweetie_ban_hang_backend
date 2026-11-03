@@ -29,6 +29,9 @@ export const LEAD_CATEGORY_LABEL: Record<string, string> = {
   training: 'Đào tạo/Set up',
 };
 
+/** Mã lead hiển thị (khớp frontend), dùng cho link /khach-hang/lead?Code= */
+export const leadCode = (id: number) => `LEAD${String(id).padStart(6, '0')}`;
+
 export type HandoverStep = 'lark' | 'friend' | 'greeting';
 export const HANDOVER_STEPS: HandoverStep[] = ['lark', 'friend', 'greeting'];
 // Zalo từ chối tin chào vì khách chặn tin nhắn từ người lạ (chưa kết bạn)
