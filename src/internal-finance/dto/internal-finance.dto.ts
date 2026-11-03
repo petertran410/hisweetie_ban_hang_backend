@@ -876,7 +876,13 @@ export class BulkCheckWarehouseExpenseDto {
 /** Lọc trang "Đơn Lark Approval". */
 export class LarkApprovalQueryDto extends InternalFinanceQueryDto {
   @IsOptional()
-  @IsIn(['PHIEU_THU', 'PHIEU_CHI', 'PHIEU_CHI_KHO_HN', 'PHIEU_CHI_KHO_SG'])
+  @IsIn([
+    'PHIEU_THU',
+    'PHIEU_CHI',
+    'PHIEU_CHI_KHO_HN',
+    'PHIEU_CHI_KHO_SG',
+    'TAM_UNG_LUONG',
+  ])
   formKind?: string;
 
   /** IN: đã / sẽ thành phiếu POS; OUT: chỉ xem (ngoài phạm vi). */
@@ -887,6 +893,19 @@ export class LarkApprovalQueryDto extends InternalFinanceQueryDto {
   @IsOptional()
   @IsIn(['true', 'false'])
   suspect?: string;
+}
+
+/** Trang Tạm ứng lương: đơn TẠM ỨNG LƯƠNG trên Lark. */
+export class SalaryAdvanceQueryDto extends InternalFinanceQueryDto {
+  /** CASH: chi tiền mặt từ quỹ; TRANSFER: chuyển khoản công ty. */
+  @IsOptional()
+  @IsIn(['CASH', 'TRANSFER'])
+  method?: string;
+
+  /** Tên người ứng (đúng như danh sách "Theo người"). */
+  @IsOptional()
+  @IsString()
+  requester?: string;
 }
 
 /** Kế toán kho xác nhận số tiền mặt thực nhận của phiếu thu tiền mặt kho. */

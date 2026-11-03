@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -18,6 +19,7 @@ import { CustomersService } from './customers.service';
 import {
   CreateCustomerDto,
   UpdateCustomerDto,
+  UpdateCustomerCommentsDto,
   CustomerQueryDto,
   BulkCreateCustomerDto,
   BulkUpdateCustomerDto,
@@ -25,7 +27,10 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import {
+  RequirePermissions,
+  RequireAnyPermission,
+} from '../auth/decorators/permissions.decorator';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 import { AuthService } from '../auth/auth.service';
 
@@ -92,8 +97,29 @@ export class CustomersController {
   @Get('search')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Tìm kiếm khách hàng (dùng cho dropdown POS)' })
-  search(@Query('search') search?: string) {
-    return this.customersService.searchCustomers(search);
+  search(
+    @Req() req: { user?: { id?: number } },
+    @Query('search') search?: string,
+    @Query('priceBookId') priceBookId?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    // Có priceBookId (kể cả 0) → lọc khách theo bảng giá (POS). Không có → giữ
+    // nguyên hành vi cũ cho các màn khác.
+    const pbId =
+      priceBookId !== undefined && priceBookId !== ''
+        ? parseInt(priceBookId, 10)
+        : NaN;
+    const brId = branchId ? parseInt(branchId, 10) : NaN;
+    return this.customersService.searchCustomers(
+      search,
+      Number.isNaN(pbId)
+        ? undefined
+        : {
+            priceBookId: pbId,
+            branchId: Number.isNaN(brId) ? undefined : brId,
+            userId: req.user?.id,
+          },
+    );
   }
 
   @Get('totals')
@@ -289,6 +315,22 @@ export class CustomersController {
     await this.assertSalePicAccess(req, dto.salePicId);
     const userId = req.user?.id;
     return this.customersService.update(+id, dto, userId);
+  }
+
+  // Chỉ sửa ghi chú: người có quyền sửa khách hàng HOẶC quyền riêng sửa ghi chú.
+  @Patch(':id/comments')
+  @RequireAnyPermission('customers:update', 'customers:update_comments')
+  @ApiOperation({ summary: 'Sửa ghi chú khách hàng' })
+  async updateComments(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerCommentsDto,
+    @Req() req: any,
+  ) {
+    return this.customersService.updateComments(
+      +id,
+      dto.comments,
+      req.user?.id,
+    );
   }
 
   @Delete(':id')

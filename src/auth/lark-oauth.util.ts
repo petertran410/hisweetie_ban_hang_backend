@@ -115,9 +115,15 @@ function unwrapUserPayload(raw: Record<string, unknown>): LarkUserProfile {
   };
 }
 
+/**
+ * `appSdk`: mã lấy từ app Lark trên điện thoại (LarkSSOSDK, chế độ mã thử
+ * thách). Mã này không đi qua trang authorize nên không gửi `redirect_uri`,
+ * và Lark bắt buộc kèm `code_verifier` do SDK sinh ra.
+ */
 export async function exchangeCode(
   config: LarkOAuthConfig,
   code: string,
+  appSdk?: { codeVerifier: string },
 ): Promise<{ user: LarkUserProfile }> {
   const base = openApisBase(config.domain);
 
@@ -129,7 +135,9 @@ export async function exchangeCode(
       client_id: config.appId,
       client_secret: config.appSecret,
       code,
-      redirect_uri: config.redirectUri,
+      ...(appSdk
+        ? { code_verifier: appSdk.codeVerifier }
+        : { redirect_uri: config.redirectUri }),
     }),
   });
 

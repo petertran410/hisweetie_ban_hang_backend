@@ -22,6 +22,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { buildChanges, buildItemChanges } from '../audit-logs/audit-diff.utils';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 /**
  * Bảng nhãn status của OrderSupplier (PDN). Đối xứng `getStatusLabel` của
@@ -1237,8 +1238,8 @@ export class OrderSuppliersService {
         include: {
           supplier: true,
           branch: true,
-          user: true,
-          creator: true,
+          user: { select: USER_PUBLIC_SELECT },
+          creator: { select: USER_PUBLIC_SELECT },
           items: true,
         },
       });
@@ -1690,8 +1691,8 @@ export class OrderSuppliersService {
         include: {
           supplier: true,
           branch: true,
-          user: true,
-          creator: true,
+          user: { select: USER_PUBLIC_SELECT },
+          creator: { select: USER_PUBLIC_SELECT },
           items: { include: { product: { select: { name: true } } } },
           payments: true,
         },

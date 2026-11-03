@@ -137,6 +137,16 @@ export class ApplicablePriceBooksDto {
   @IsOptional()
   @IsString()
   date?: string;
+
+  // true → bỏ qua phạm vi khách, liệt kê mọi bảng giá chọn được (dropdown POS).
+  @IsOptional()
+  // Đọc giá trị gốc: implicit conversion sẽ biến chuỗi "false" thành true.
+  @Transform(
+    ({ obj }: { obj: Record<string, unknown> }) =>
+      obj.anyCustomer === true || obj.anyCustomer === 'true',
+  )
+  @IsBoolean()
+  anyCustomer?: boolean;
 }
 
 export class ProductPriceDto {

@@ -144,6 +144,64 @@ describe('summarizeLarkInstance', () => {
   });
 });
 
+describe('summarizeLarkInstance – TẠM ỨNG LƯƠNG', () => {
+  const advance = (method: string, source: string) => [
+    {
+      id: 'widget17321750020230001',
+      type: 'date',
+      value: '2026-11-03T17:00:00Z',
+    },
+    { id: 'widget17321753417610001', type: 'radioV2', value: method },
+    { id: 'widget17642424767350001', type: 'radioV2', value: source },
+    { id: 'widget17321752802850001', type: 'amount', value: 4000000 },
+  ];
+
+  it('takes in a cash advance from a POS fund, dated by the request date', () => {
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Tiền Mặt', 'Tiền Mặt Kho HN'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: true,
+      branchId: 6,
+      direction: 'EXPENSE',
+      amount: 4000000,
+      cashAmount: 4000000,
+      occurredAt: new Date('2026-11-03T17:00:00Z'),
+      fundBranchIds: [6],
+    });
+  });
+
+  it('only shows company transfers and VP HCM cash', () => {
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Chuyển Khoản Công Ty', 'Chuyển Khoản Công Ty'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: null,
+      cashAmount: null,
+      skipReason: 'Chuyển khoản công ty, không chi quỹ tiền mặt',
+      fundBranchIds: [],
+    });
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: 7,
+      skipReason: 'Chi từ quỹ văn phòng',
+    });
+  });
+});
+
 describe('LarkApprovalMirrorService.ensureEntry', () => {
   function setup(options: {
     request: Record<string, any>;
@@ -346,6 +404,55 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
       transferAmount: 300000,
     });
     expect(f.prisma.internalFundTransaction.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('turns an approved cash salary advance into a TUL entry with the recipient', async () => {
+    const approvedNov = new Date('2026-11-05T03:00:00Z');
+    const f = setup({
+      request: { sourceType: 'LARK_SALARY_ADVANCE', completedAt: approvedNov },
+      mirror: {
+        formKind: 'TAM_UNG_LUONG',
+        branchId: 1,
+        amount: 3000000,
+        cashAmount: 3000000,
+        method: 'Tiền Mặt',
+        cashSource: 'Tiền Mặt Kho SG',
+        description: 'Tạm ứng lương - Bùi Tấn Thuận',
+        completedAt: approvedNov,
+        occurredAt: approvedNov,
+        detailSnapshot: {
+          posInfo: {
+            requesterName: 'Bùi Tấn Thuận',
+            departmentName: 'Kho Sài Gòn',
+          },
+        },
+      },
+      fundRow: {
+        id: 73,
+        status: 'POSTED',
+        entryId: null,
+        branchId: 1,
+        occurredAt: approvedNov,
+        sourceKey: 'SALARY_ADVANCE:50',
+      },
+    });
+    await f.service.ensureEntry(50);
+    expect(f.entries).toHaveLength(1);
+    expect(f.entries[0]).toMatchObject({
+      category: 'SALARY_ADVANCE',
+      subCategory: 'SALARY_ADVANCE',
+      branchId: 1,
+      amount: 3000000,
+      payerId: null,
+      cashIssued: true,
+    });
+    expect(f.entries[0].sourceSnapshot).toMatchObject({
+      recipientName: 'Bùi Tấn Thuận',
+      department: 'Kho Sài Gòn',
+      method: 'Tiền Mặt',
+    });
+    expect(f.entries[0].sourceSnapshot.larkLedgerRecorded).toBeUndefined();
+    expect(f.fundRow!.entryId).toBe(900);
   });
 
   it('cancels the entry and the receipt fund row when Lark revokes an approved receipt', async () => {

@@ -224,6 +224,7 @@ describe('ApprovalLifecycleService', () => {
                       'INTERNAL_FUND_RECEIPT',
                       'INTERNAL_FUND_TRANSFER',
                       'LARK_PAYMENT_VOUCHER',
+                      'LARK_SALARY_ADVANCE',
                     ],
                   },
                 },
@@ -740,13 +741,11 @@ describe('ApprovalLifecycleService', () => {
     });
     const batchUpdate = jest.fn();
     (prisma as any).internalFinanceWeeklyBatch = {
-      findUnique: jest
-        .fn()
-        .mockResolvedValue({
-          branchId: 6,
-          createdBy: 9,
-          status: 'IN_APPROVAL',
-        }),
+      findUnique: jest.fn().mockResolvedValue({
+        branchId: 6,
+        createdBy: 9,
+        status: 'IN_APPROVAL',
+      }),
       update: batchUpdate,
       delete: jest.fn(),
     };

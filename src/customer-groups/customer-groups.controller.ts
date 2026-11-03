@@ -14,10 +14,13 @@ import {
   CreateCustomerGroupDto,
   UpdateCustomerGroupDto,
   ManageCustomersDto,
+  CancelCustomerGroupDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+
+type AuthReq = { user?: { id?: number } };
 
 @ApiTags('Customer Groups')
 @ApiBearerAuth()
@@ -33,6 +36,14 @@ export class CustomerGroupsController {
     return this.customerGroupsService.findAll();
   }
 
+  // Khai báo trước ':id' để không bị bắt nhầm thành id = "cancelled"
+  @Get('cancelled')
+  @RequirePermissions('customer_groups:view')
+  @ApiOperation({ summary: 'Danh sách nhóm khách hàng đã hủy' })
+  findCancelled() {
+    return this.customerGroupsService.findCancelled();
+  }
+
   @Get(':id')
   @RequirePermissions('customer_groups:view')
   @ApiOperation({ summary: 'Lấy chi tiết nhóm khách hàng' })
@@ -43,7 +54,7 @@ export class CustomerGroupsController {
   @Post()
   @RequirePermissions('customer_groups:create')
   @ApiOperation({ summary: 'Tạo mới nhóm khách hàng' })
-  create(@Body() dto: CreateCustomerGroupDto, @Req() req: any) {
+  create(@Body() dto: CreateCustomerGroupDto, @Req() req: AuthReq) {
     const userId = req.user?.id;
     return this.customerGroupsService.create(dto, userId);
   }
@@ -51,31 +62,71 @@ export class CustomerGroupsController {
   @Put(':id')
   @RequirePermissions('customer_groups:update')
   @ApiOperation({ summary: 'Cập nhật nhóm khách hàng' })
-  update(@Param('id') id: string, @Body() dto: UpdateCustomerGroupDto) {
-    return this.customerGroupsService.update(+id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerGroupDto,
+    @Req() req: AuthReq,
+  ) {
+    return this.customerGroupsService.update(+id, dto, req.user?.id);
   }
 
+  // Không xóa hẳn: DELETE giờ chỉ hủy nhóm (nhóm còn khách sẽ bị từ chối).
   @Delete(':id')
   @RequirePermissions('customer_groups:delete')
-  @ApiOperation({ summary: 'Xóa nhóm khách hàng' })
-  remove(@Param('id') id: string) {
-    return this.customerGroupsService.remove(+id);
+  @ApiOperation({ summary: 'Hủy nhóm khách hàng (không xóa dữ liệu)' })
+  remove(@Param('id') id: string, @Req() req: AuthReq) {
+    return this.customerGroupsService.cancel(+id, req.user?.id, false);
+  }
+
+  @Post(':id/cancel')
+  @RequirePermissions('customer_groups:delete')
+  @ApiOperation({ summary: 'Hủy nhóm khách hàng, có thể gỡ hết khách' })
+  cancel(
+    @Param('id') id: string,
+    @Body() dto: CancelCustomerGroupDto,
+    @Req() req: AuthReq,
+  ) {
+    return this.customerGroupsService.cancel(
+      +id,
+      req.user?.id,
+      dto.removeCustomers === true,
+    );
+  }
+
+  @Post(':id/restore')
+  @RequirePermissions('customer_groups:update')
+  @ApiOperation({ summary: 'Khôi phục nhóm khách hàng đã hủy' })
+  restore(@Param('id') id: string, @Req() req: AuthReq) {
+    return this.customerGroupsService.restore(+id, req.user?.id);
   }
 
   @Post(':id/add-customers')
   @RequirePermissions('customer_groups:update')
   @ApiOperation({ summary: 'Thêm khách hàng vào nhóm' })
-  addCustomers(@Param('id') id: string, @Body() dto: ManageCustomersDto) {
-    return this.customerGroupsService.addCustomersToGroup(+id, dto.customerIds);
+  addCustomers(
+    @Param('id') id: string,
+    @Body() dto: ManageCustomersDto,
+    @Req() req: AuthReq,
+  ) {
+    return this.customerGroupsService.addCustomersToGroup(
+      +id,
+      dto.customerIds,
+      req.user?.id,
+    );
   }
 
   @Post(':id/remove-customers')
   @RequirePermissions('customer_groups:update')
   @ApiOperation({ summary: 'Xóa khách hàng khỏi nhóm' })
-  removeCustomers(@Param('id') id: string, @Body() dto: ManageCustomersDto) {
+  removeCustomers(
+    @Param('id') id: string,
+    @Body() dto: ManageCustomersDto,
+    @Req() req: AuthReq,
+  ) {
     return this.customerGroupsService.removeCustomersFromGroup(
       +id,
       dto.customerIds,
+      req.user?.id,
     );
   }
 }

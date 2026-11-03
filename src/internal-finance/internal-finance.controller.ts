@@ -30,6 +30,7 @@ import {
   CreateWarehouseExpenseNoteDto,
   InternalFinanceQueryDto,
   LarkApprovalQueryDto,
+  SalaryAdvanceQueryDto,
   CheckWarehouseExpenseDto,
   AddWeeklyBatchEntriesDto,
   BulkCheckWarehouseExpenseDto,
@@ -190,6 +191,15 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.listWarehouseExpenseBatches(query, user);
+  }
+
+  @Get('salary-advances')
+  @ApiOperation({ summary: 'TẠM ỨNG LƯƠNG requests from Lark Approval' })
+  salaryAdvances(
+    @Query() query: SalaryAdvanceQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.listSalaryAdvances(query, user);
   }
 
   @Get('lark-approvals')
