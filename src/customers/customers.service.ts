@@ -22,6 +22,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { buildCustomerWhereForPriceBook } from '../price-books/price-book-customer-scope';
 import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
@@ -32,6 +33,23 @@ import { INVOICE_STATUS } from '../invoices/dto';
 function resolveGroupIds(groupId?: number, groupIds?: number[]): number[] {
   const ids = [...(groupIds ?? []), ...(groupId ? [groupId] : [])];
   return [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+/** Chặn gắn khách vào nhóm khách hàng đã hủy. */
+async function assertActiveGroups(
+  tx: Pick<PrismaService, 'customerGroup'>,
+  groupIds: number[],
+) {
+  if (groupIds.length === 0) return;
+  const cancelled = await tx.customerGroup.findMany({
+    where: { id: { in: groupIds }, isActive: false },
+    select: { name: true },
+  });
+  if (cancelled.length > 0) {
+    throw new BadRequestException(
+      `Nhóm khách hàng đã hủy: ${cancelled.map((g) => `"${g.name}"`).join(', ')}`,
+    );
+  }
 }
 
 @Injectable()
@@ -704,13 +722,34 @@ export class CustomersService {
     };
   }
 
-  async searchCustomers(search?: string) {
+  async searchCustomers(
+    search?: string,
+    priceBookScope?: {
+      priceBookId: number;
+      branchId?: number;
+      userId?: number;
+    },
+  ) {
     const where: any = { isActive: true };
 
     if (search) {
       const matchedIds = await searchCustomerIds(this.prisma, search);
       if (matchedIds.length === 0) return { data: [] };
       where.id = { in: matchedIds };
+    }
+
+    // POS: chỉ ra khách dùng được với bảng giá đang chọn (0 = Bảng giá chung).
+    if (priceBookScope) {
+      where.AND = [
+        await buildCustomerWhereForPriceBook(
+          this.prisma,
+          priceBookScope.priceBookId,
+          {
+            branchId: priceBookScope.branchId,
+            userId: priceBookScope.userId,
+          },
+        ),
+      ];
     }
 
     const data = await this.prisma.customer.findMany({
@@ -847,6 +886,7 @@ export class CustomersService {
       });
 
       if (groupIds && groupIds.length > 0) {
+        await assertActiveGroups(tx, groupIds);
         const customerGroups = await tx.customerGroup.findMany({
           where: { id: { in: groupIds } },
           select: { id: true, name: true },
@@ -990,6 +1030,7 @@ export class CustomersService {
         });
 
         if (groupIds.length > 0) {
+          await assertActiveGroups(tx, groupIds);
           const customerGroups = await tx.customerGroup.findMany({
             where: { id: { in: groupIds } },
             select: { id: true, name: true },
@@ -1591,8 +1632,9 @@ export class CustomersService {
       errors: [] as { row: number; name: string; message: string }[],
     };
 
-    // 1. Pre-load tất cả customer groups để map tên → id
+    // 1. Pre-load customer groups đang dùng để map tên → id (bỏ nhóm đã hủy)
     const allGroups = await this.prisma.customerGroup.findMany({
+      where: { isActive: true },
       select: { id: true, name: true },
     });
     const groupNameMap = new Map(

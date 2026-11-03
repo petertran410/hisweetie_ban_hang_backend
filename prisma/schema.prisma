@@ -444,6 +444,8 @@ model CustomerGroup {
   kiotVietId              Int?                     @unique @map("kiot_viet_id")
   lastSyncedAt            DateTime?                @map("last_synced_at")
   updatedAt               DateTime?                @updatedAt @map("updated_at")
+  /// false = nhóm đã hủy (giữ lại làm minh chứng; ai/lúc nào xem Lịch sử thao tác)
+  isActive                Boolean                  @default(true) @map("is_active")
   customerGroupDetails    CustomerGroupDetail[]
   creator                 User?                    @relation("CustomerGroupCreator", fields: [createdBy], references: [id])
   priceBookCustomerGroups PriceBookCustomerGroup[]
