@@ -156,6 +156,44 @@ describe('SmaxChatService', () => {
     expect(res.messages[1]).toMatchObject({ fromMe: true, senderName: null, albumId: null });
   });
 
+  it('normalize: ảnh/tệp/sticker Facebook (mime_type, url_preview, name, facebook.sticker)', () => {
+    const { service } = makeService();
+    const base = { type: 'facebook_message', platform: 'facebook', sender_pid: 'fbU', created_at: '2026-11-03T06:00:00Z' };
+    const [img, file, sticker] = service.normalize(
+      [
+        {
+          ...base,
+          id: '1',
+          pid: 'm1',
+          facebook: { attachments: [{ mime_type: 'image', url: 'https://cdn/a.png', url_preview: 'https://cdn/a-s.png' }] },
+        },
+        {
+          ...base,
+          id: '2',
+          pid: 'm2',
+          created_at: '2026-11-03T06:01:00Z',
+          facebook: { attachments: [{ mime_type: 'application/pdf', url: 'https://cdn/b.pdf', name: 'bao-gia.pdf' }] },
+        },
+        {
+          ...base,
+          id: '3',
+          pid: 'm3',
+          created_at: '2026-11-03T06:02:00Z',
+          facebook: {
+            sticker: 'https://fbcdn/s.png',
+            attachments: [{ name: 'sticker-1', mime_type: 'image/png', url: 'https://fbcdn/s.png' }],
+          },
+        },
+      ] as any,
+      'fbPAGE',
+      {},
+    );
+    expect(img.attachments).toEqual([{ url: 'https://cdn/a.png', thumbnail: 'https://cdn/a-s.png', title: '', type: 'image' }]);
+    expect(file.attachments).toEqual([{ url: 'https://cdn/b.pdf', thumbnail: null, title: 'bao-gia.pdf', type: 'file' }]);
+    expect(sticker.stickerImage).toBe('https://fbcdn/s.png');
+    expect(sticker.attachments).toEqual([]);
+  });
+
   it('getMessages: Smax lỗi khi lấy thread vẫn trả tin nhắn', async () => {
     const { service, api } = makeService();
     api.getThread.mockRejectedValue(new Error('Smax 500'));

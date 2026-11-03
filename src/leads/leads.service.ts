@@ -23,6 +23,7 @@ import {
   HANDOVER_STEPS,
   HandoverStep,
   LEAD_CATEGORY_LABEL,
+  leadCode,
   renderLeadTemplate,
   StepResult,
   ZALO_STRANGER_BLOCKED,
@@ -944,7 +945,7 @@ export class LeadsService {
       phường: lead.wardName ?? '',
       'nhu cầu': lead.need ?? '',
       'ghi chú': note?.trim() || lead.cskhNote || '',
-      link: `${this.frontendUrl}/khach-hang/lead?id=${lead.id}`,
+      link: `${this.frontendUrl}/khach-hang/lead?Code=${leadCode(lead.id)}`,
     };
     return {
       larkText: renderLeadTemplate(t.lark, vars),
