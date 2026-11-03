@@ -46,6 +46,8 @@ export interface SmaxThread {
   memberCount: number;
   // Tối đa 4 thành viên (theo thứ tự Smax) để ghép avatar nhóm kiểu Zalo
   memberPreview: { name: string | null; avatar: string | null }[];
+  // SĐT Smax thu được trong hội thoại
+  phones: string[];
 }
 
 /** Tin nhắn thô Smax trả về (Partner API). */
@@ -339,6 +341,7 @@ export class SmaxApiService {
       avatar: t.customer?.picture ?? t.customer?.zaloweb?.picture ?? null,
       memberCount: (t.customer_pids ?? []).filter((p: string) => p !== 'zlw0').length,
       memberPreview: memberPreview(t),
+      phones: (t.phones ?? []).filter((p: unknown): p is string => typeof p === 'string'),
     };
   }
 

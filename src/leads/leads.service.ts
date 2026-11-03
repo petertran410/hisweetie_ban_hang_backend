@@ -16,17 +16,17 @@ import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
 import { LarkUserDirectoryService } from '../lark-sync/services/lark-user-directory.service';
 import { SmaxApiService } from '../smax/smax-api.service';
 import { SmaxChatService } from '../smax/smax-chat.service';
-import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
+import { LeadLinkService } from './lead-link/lead-link.service';
 import { normalizeVnPhone } from '../common/phone.util';
 import {
   DEFAULT_LEAD_TEMPLATES,
   HANDOVER_STEPS,
   HandoverStep,
+  isAcceptableStepError,
   LEAD_CATEGORY_LABEL,
   leadCode,
   renderLeadTemplate,
   StepResult,
-  ZALO_STRANGER_BLOCKED,
 } from './leads.constants';
 import {
   HandoverLeadDto,
@@ -67,6 +67,7 @@ export class LeadsService {
     @Inject(LARK_CLIENT) private readonly larkClient: lark.Client,
     config: ConfigService,
     private readonly larkDirectory: LarkUserDirectoryService,
+    private readonly leadLink: LeadLinkService,
   ) {
     this.frontendUrl = (
       config.get<string>('FRONTEND_URL') || 'http://localhost:3050'
@@ -93,6 +94,8 @@ export class LeadsService {
     if (csv(q.statuses).length) and.push({ status: { in: csv(q.statuses) } });
     if (q.provinceCode) and.push({ provinceCode: q.provinceCode });
     if (q.salePicId) and.push({ salePicId: q.salePicId });
+    if (q.linked)
+      and.push({ customerId: q.linked === 'true' ? { not: null } : null });
     if (q.from) and.push({ createdAt: { gte: new Date(q.from) } });
     if (q.to) and.push({ createdAt: { lte: new Date(q.to) } });
     const term = q.q?.trim();
@@ -326,6 +329,13 @@ export class LeadsService {
     ]);
     const nameOf = new Map(users.map((u) => [u.id, u.name]));
     const customers = linked.get(lead.id) ?? [];
+    // Chưa gắn khách → gợi ý (ID Zalo / hội thoại / SĐT, kèm SĐT Smax thu được trong hội thoại)
+    const candidates = lead.customerId
+      ? []
+      : await this.leadLink.candidates(
+          lead,
+          await this.threadPhones(lead.conversations),
+        );
     return {
       ...this.withCustomerSalePic(
         lead,
@@ -333,6 +343,7 @@ export class LeadsService {
         await this.customerSalePics(customers.map((c) => c.id)),
       ),
       customers,
+      candidates,
       handovers: lead.handovers.map((h) => ({
         ...h,
         salePicName: nameOf.get(h.salePicId) ?? null,
@@ -497,105 +508,35 @@ export class LeadsService {
 
   // ───────────────────────────── thành khách hàng ─────────────────────────────
 
-  /** Gắn lead với khách POS (tạo mới từ lead hoặc khách trùng SĐT): chép hội thoại sang khách. */
-  async convert(id: number, customerId: number, actor: LeadActor | null) {
-    const lead = await this.prisma.lead.findUnique({
-      where: { id },
-      include: { conversations: true },
-    });
-    if (!lead) throw new NotFoundException('Không tìm thấy lead');
-    const customer = await this.prisma.customer.findUnique({
-      where: { id: customerId },
-      select: { id: true, code: true, name: true },
-    });
-    if (!customer) throw new NotFoundException('Không tìm thấy khách hàng');
-
-    // Quy ước customer_zalo_contacts: Zalo cá nhân lưu số Zalo; kênh khác lưu tid + page_pid
-    const existing = await this.prisma.customerZaloContact.findMany({
-      where: { customerId },
-    });
-    let copied = 0;
-    for (const c of lead.conversations) {
-      const zalo = ZALOWEB_TID.exec(c.tid);
-      const data = zalo
-        ? { kind: c.isGroup ? 'group' : 'user', zaloId: zalo[1], pagePid: null }
-        : { kind: 'user', zaloId: c.tid, pagePid: c.pagePid };
-      // Không ghi đè ID Zalo cá nhân / hội thoại cùng kênh khách đã có
-      const taken = existing.some((e) =>
-        data.kind === 'user'
-          ? e.kind === 'user' &&
-            (zalo ? /^\d+$/.test(e.zaloId) : e.pagePid === c.pagePid)
-          : e.kind === 'group' && e.zaloId === data.zaloId,
-      );
-      if (taken) continue;
-      await this.prisma.customerZaloContact.create({
-        data: {
-          customerId,
-          ...data,
-          name: c.name,
-          createdById: actor?.id ?? lead.createdById,
-        },
-      });
-      copied++;
-    }
-    const sale = lead.salePicId
-      ? undefined
-      : (await this.customerSalePics([customerId])).get(customerId);
-    const updated = await this.prisma.lead.update({
-      where: { id },
-      data: {
-        customerId,
-        status: 'converted',
-        convertedAt: new Date(),
-        ...(sale ? { salePicId: sale.id } : {}),
-      },
-    });
-    await this.audit(
-      // Tự chuyển đổi (cron): ghi dưới tên người tạo lead
-      actor ?? { id: lead.createdById, name: 'Hệ thống (tự chuyển đổi)' },
-      actor ? 'LEAD_CONVERT' : 'LEAD_AUTO_CONVERT',
-      id,
-      `${actor ? '' : 'Tự động: '}lead "${lead.name}" thành khách ${customer.code ?? customer.name}`,
-      { customerId, copiedConversations: copied },
-    );
-    return { lead: updated, customer, copiedConversations: copied };
+  /** Gắn lead với khách POS (gắn tay / vừa tạo khách từ lead). */
+  convert(
+    id: number,
+    customerId: number,
+    actor: LeadActor,
+    method: 'manual' | 'created' = 'manual',
+  ) {
+    return this.leadLink.link(id, customerId, method, actor);
   }
 
-  /** Lead có SĐT trùng khách đã phát sinh hóa đơn (không huỷ) → tự gắn và chuyển "Đã chuyển đổi". */
-  async autoConvert() {
-    const leads = await this.prisma.lead.findMany({
-      where: {
-        status: { notIn: ['converted', 'cancelled'] },
-        phoneNormalized: { not: null },
-      },
-      select: { id: true, phoneNormalized: true },
-      take: 500,
-    });
-    let converted = 0;
-    for (const l of leads) {
-      const p = l.phoneNormalized!;
-      const customer = await this.prisma.customer.findFirst({
-        where: {
-          OR: [
-            { contactNumber: { startsWith: p } },
-            { phone: { startsWith: p } },
-          ],
-          invoices: { some: { status: { not: INVOICE_STATUS.CANCELLED } } },
-        },
-        select: { id: true },
-        orderBy: { id: 'asc' },
-      });
-      if (!customer) continue;
-      try {
-        await this.convert(l.id, customer.id, null);
-        converted++;
-      } catch (e) {
-        this.logger.warn(
-          `Tự chuyển đổi lead ${l.id} lỗi: ${(e as Error).message}`,
-        );
-      }
-    }
-    return { checked: leads.length, converted };
+  unlink(id: number, actor: LeadActor) {
+    return this.leadLink.unlink(id, actor);
+  }
+
+  /** Cron: tự gắn lead với khách (ID Zalo / hội thoại / SĐT) + chuyển đổi khi khách có đơn đầu. */
+  autoConvert() {
+    return this.leadLink.sweep();
+  }
+
+  /** SĐT Smax thu được trong hội thoại của lead (tối đa 3 hội thoại; lỗi Smax → bỏ qua). */
+  private async threadPhones(conversations: { pagePid: string; tid: string }[]) {
+    const threads = await Promise.all(
+      conversations
+        .slice(0, 3)
+        .map((c) =>
+          this.smaxApi.getThread(c.pagePid, c.tid).catch(() => null),
+        ),
+    );
+    return threads.flatMap((t) => t?.phones ?? []);
   }
 
   /**
@@ -795,6 +736,11 @@ export class LeadsService {
       select: { id: true, name: true, larkUserId: true },
     });
     const steps = h.steps as unknown as Steps;
+    // Bước đã lỗi trước đây với lỗi nay được chấp nhận (vd "đã là bạn bè") → bỏ qua, không gửi lại
+    for (const s of HANDOVER_STEPS) {
+      if (steps[s]?.status === 'failed' && isAcceptableStepError(s, steps[s].error))
+        steps[s] = { ...steps[s], status: 'skipped' };
+    }
     // Mỗi lượt gửi tính vào giới hạn tần suất chung của người bấm
     this.smaxChat.assertSendRate(actor.id);
 
@@ -811,11 +757,8 @@ export class LeadsService {
       } catch (e) {
         const error = (e as Error).message || 'Lỗi không xác định';
         steps[step] = {
-          // Khách chặn tin người lạ: vẫn hoàn tất chuyển giao, Sale nhắn sau khi khách đồng ý kết bạn
-          status:
-            step === 'greeting' && ZALO_STRANGER_BLOCKED.test(error)
-              ? 'skipped'
-              : 'failed',
+          // Khách chặn tin người lạ / đã là bạn bè: vẫn hoàn tất chuyển giao
+          status: isAcceptableStepError(step, error) ? 'skipped' : 'failed',
           at: new Date().toISOString(),
           error,
         };
@@ -901,11 +844,39 @@ export class LeadsService {
         status: done ? 'done' : 'partial',
       },
     });
+    // Hội thoại Zalo của Sale với khách → kênh kết nối của lead (mở chat, gắn khách theo ID Zalo)
+    if (uid) {
+      await this.prisma.leadConversation.upsert({
+        where: { leadId_tid: { leadId: lead.id, tid: `zlw${uid}` } },
+        create: {
+          leadId: lead.id,
+          pagePid: h.pagePid,
+          tid: `zlw${uid}`,
+          platform: 'zaloweb',
+          isGroup: false,
+          name: lead.name,
+          createdById: actor.id,
+        },
+        update: {},
+      });
+    }
     if (done) {
       await this.prisma.lead.update({
         where: { id: lead.id },
-        data: { status: 'handed_over', salePicId: sale.id },
+        data: {
+          // Đã gắn khách / chuyển đổi trước đó thì giữ trạng thái
+          ...(lead.customerId ? {} : { status: 'handed_over' }),
+          salePicId: sale.id,
+        },
       });
+      // Sale đã có khách POS cùng ID Zalo → gắn luôn
+      await this.leadLink
+        .autoLink(lead.id, actor)
+        .catch((e) =>
+          this.logger.warn(
+            `Tự gắn lead ${lead.id} sau chuyển giao lỗi: ${(e as Error).message}`,
+          ),
+        );
     }
     return { handover: saved, done };
   }

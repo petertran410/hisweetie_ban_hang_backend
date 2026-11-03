@@ -17,6 +17,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { requestHasPermission } from '../auth/request-permissions';
 import { LeadActor, LeadsService } from './leads.service';
+import { JourneyViewer, LeadLinkService } from './lead-link/lead-link.service';
 import {
   ConvertLeadDto,
   HandoverCheckQueryDto,
@@ -33,7 +34,10 @@ import {
 @UseGuards(JwtAuthGuard)
 @Controller('leads')
 export class LeadsController {
-  constructor(private readonly service: LeadsService) {}
+  constructor(
+    private readonly service: LeadsService,
+    private readonly leadLink: LeadLinkService,
+  ) {}
 
   // Chỉ có leads:view (Sale) → chỉ thấy lead giao cho mình; leads:update (CSKH) → mọi lead
   private actor(req: any): LeadActor {
@@ -42,6 +46,11 @@ export class LeadsController {
       name: req.user.name,
       ownOnly: !requestHasPermission(req, 'leads:update'),
     };
+  }
+
+  private viewer(req: any): JourneyViewer {
+    const a = this.actor(req);
+    return { canViewLeads: true, ownOnly: a.ownOnly, userId: a.id };
   }
 
   @Get()
@@ -60,6 +69,16 @@ export class LeadsController {
       phone,
       excludeId ? Number(excludeId) : undefined,
     );
+  }
+
+  // Hành trình khách (tab "Hành trình" ở trang khách hàng): lead nguồn + mã KH + đơn / hóa đơn
+  @Get('by-customer/:customerId/journey')
+  @RequirePermissions('leads:view')
+  customerJourney(
+    @Param('customerId', ParseIntPipe) customerId: number,
+    @Req() req: any,
+  ) {
+    return this.leadLink.journey({ customerId }, this.viewer(req));
   }
 
   @Get('sales')
@@ -98,6 +117,12 @@ export class LeadsController {
       dto.confirmed,
       this.actor(req),
     );
+  }
+
+  @Get(':id/journey')
+  @RequirePermissions('leads:view')
+  journey(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
+    return this.leadLink.journey({ leadId: id }, this.viewer(req));
   }
 
   @Get(':id')
@@ -148,7 +173,18 @@ export class LeadsController {
     @Body() dto: ConvertLeadDto,
     @Req() req: any,
   ) {
-    return this.service.convert(id, dto.customerId, this.actor(req));
+    return this.service.convert(
+      id,
+      dto.customerId,
+      this.actor(req),
+      dto.method,
+    );
+  }
+
+  @Post(':id/unlink')
+  @RequirePermissions('leads:update')
+  unlink(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
+    return this.service.unlink(id, this.actor(req));
   }
 
   @Get(':id/handover-check')

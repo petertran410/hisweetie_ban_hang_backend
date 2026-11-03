@@ -1558,6 +1558,11 @@ model Lead {
   salePicId       Int?               @map("sale_pic_id")
   cskhNote        String?            @map("cskh_note") @db.Text
   customerId      Int?               @map("customer_id")
+  /// Cách gắn khách: zalo | conversation | phone | manual | created; "unlinked" = đã gỡ tay (không tự gắn lại)
+  linkMethod      String?            @map("link_method")
+  linkedAt        DateTime?          @map("linked_at")
+  linkedById      Int?               @map("linked_by_id")
+  /// Ngày đơn đặt hàng đầu (không huỷ) của khách đã gắn = chuyển đổi
   convertedAt     DateTime?          @map("converted_at")
   createdById     Int                @map("created_by_id")
   createdAt       DateTime           @default(now()) @map("created_at")
@@ -1571,6 +1576,7 @@ model Lead {
   @@index([status])
   @@index([salePicId])
   @@index([phoneNormalized])
+  @@index([customerId])
   @@index([createdAt])
   @@map("leads")
 }

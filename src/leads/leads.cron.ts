@@ -3,8 +3,8 @@ import { Cron } from '@nestjs/schedule';
 import { LeadsService } from './leads.service';
 
 /**
- * Mỗi 15 phút: lead có SĐT trùng khách đã phát sinh hóa đơn → tự chuyển "Đã chuyển đổi";
- * lead chưa có Sale PIC mà đã gắn khách → lấy Sale PIC của khách.
+ * Mỗi 15 phút: tự gắn lead với khách (trùng ID Zalo / hội thoại / SĐT), khách đã gắn có đơn đặt
+ * hàng đầu → "Đã chuyển đổi"; lead chưa có Sale PIC mà đã gắn khách → lấy Sale PIC của khách.
  */
 @Injectable()
 export class LeadsCron {
@@ -18,9 +18,11 @@ export class LeadsCron {
     if (this.running) return;
     this.running = true;
     try {
-      const { checked, converted } = await this.leads.autoConvert();
-      if (converted)
-        this.logger.log(`Tự chuyển đổi ${converted}/${checked} lead`);
+      const { checked, linked, converted } = await this.leads.autoConvert();
+      if (linked || converted)
+        this.logger.log(
+          `Tự gắn ${linked}/${checked} lead, chuyển đổi ${converted} lead`,
+        );
       const sale = await this.leads.syncSalePicFromCustomers();
       if (sale.updated)
         this.logger.log(`Lấy Sale PIC từ khách cho ${sale.updated} lead`);

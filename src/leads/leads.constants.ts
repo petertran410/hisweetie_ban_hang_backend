@@ -36,6 +36,13 @@ export type HandoverStep = 'lark' | 'friend' | 'greeting';
 export const HANDOVER_STEPS: HandoverStep[] = ['lark', 'friend', 'greeting'];
 // Zalo từ chối tin chào vì khách chặn tin nhắn từ người lạ (chưa kết bạn)
 export const ZALO_STRANGER_BLOCKED = /chặn không nhận tin nhắn từ người lạ/i;
+// Zalo từ chối lời mời kết bạn vì khách đã là bạn bè với kênh của Sale
+export const ZALO_ALREADY_FRIEND = /đã là bạn bè/i;
+/** Lỗi được chấp nhận của bước chuyển giao → "bỏ qua", không chặn hoàn tất. */
+export const isAcceptableStepError = (step: HandoverStep, error?: string) =>
+  !!error &&
+  ((step === 'greeting' && ZALO_STRANGER_BLOCKED.test(error)) ||
+    (step === 'friend' && ZALO_ALREADY_FRIEND.test(error)));
 // skipped: lỗi được chấp nhận, không chặn hoàn tất chuyển giao (vd khách chặn tin từ người lạ → Sale nhắn sau khi khách đồng ý kết bạn)
 export type StepResult = {
   status: 'pending' | 'ok' | 'failed' | 'skipped';

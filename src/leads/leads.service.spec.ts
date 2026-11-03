@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { LeadsService } from './leads.service';
+import { LeadLinkService } from './lead-link/lead-link.service';
 
 const CSKH = { id: 1, name: 'CSKH A', ownOnly: false };
 const SALE_VIEW = { id: 9, name: 'Sale B', ownOnly: true };
@@ -45,11 +46,13 @@ const makeService = (
       count: jest.fn().mockResolvedValue(0),
       findUnique: jest.fn().mockResolvedValue(lead),
       findUniqueOrThrow: jest.fn().mockResolvedValue(lead),
+      findFirst: jest.fn().mockResolvedValue(null),
       create: jest.fn(({ data }) => Promise.resolve({ id: 7, ...data })),
       update: jest.fn(({ data }) => Promise.resolve({ ...lead, ...data })),
     },
     leadConversation: {
       create: jest.fn(),
+      upsert: jest.fn(),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     leadHandover: {
@@ -75,7 +78,16 @@ const makeService = (
         .mockResolvedValue({ id: 9, name: 'Sale B', larkUserId: 'ou_sale' }),
       findMany: jest.fn().mockResolvedValue([]),
     },
-    customerDebtPolicy: { findMany: jest.fn().mockResolvedValue([]) },
+    customerDebtPolicy: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+    },
+    order: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      findMany: jest.fn().mockResolvedValue([]),
+    },
+    invoice: { findMany: jest.fn().mockResolvedValue([]) },
+    auditLog: { findMany: jest.fn().mockResolvedValue([]) },
     customer: {
       findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn(),
@@ -94,6 +106,7 @@ const makeService = (
       .mockResolvedValue({ uid: '4546', name: 'Thư' }),
     requestFriend: jest.fn().mockResolvedValue({}),
     sendZaloweb: jest.fn().mockResolvedValue({ ok: true }),
+    getThread: jest.fn().mockResolvedValue(null),
   };
   const smaxChat = {
     myChannels: jest.fn().mockResolvedValue([
@@ -135,6 +148,7 @@ const makeService = (
     larkClient as any,
     config as any,
     larkDirectory as any,
+    new LeadLinkService(prisma, audit as any),
   );
   return {
     service,
@@ -407,11 +421,51 @@ describe('LeadsService', () => {
         pagePid: 'fbPAGE',
       }),
     ]);
+    // Chưa có đơn đặt hàng → gắn khách nhưng chưa "Đã chuyển đổi"
     expect(prisma.lead.update.mock.calls[0][0].data).toMatchObject({
       customerId: 5,
-      status: 'converted',
+      linkMethod: 'manual',
     });
+    expect(prisma.lead.update.mock.calls[0][0].data.status).toBeUndefined();
     expect(res.copiedConversations).toBe(2);
+    expect(res.converted).toBe(false);
+  });
+
+  it('chuyển đổi = đơn đặt hàng đầu không huỷ: convertedAt = ngày tạo đơn, audit LEAD_CONVERTED', async () => {
+    const { service, prisma, audit } = makeService();
+    prisma.customer.findUnique.mockResolvedValue({ id: 5, code: 'KH5', name: 'Thư' });
+    const lead21CreatedAt = new Date('2026-11-03T06:48:31Z');
+    prisma.lead.findUnique
+      .mockResolvedValueOnce({ ...baseLead }) // link
+      .mockResolvedValueOnce({ ...baseLead, customerId: 5, createdAt: lead21CreatedAt }); // refreshConversion
+    const at = new Date('2026-11-03T06:58:16Z');
+    prisma.order.findFirst.mockResolvedValue({ id: 1, code: 'DH127001', createdAt: at });
+    const res = await service.convert(7, 5, CSKH, 'created');
+    // Chỉ tính đơn tạo từ lúc có lead (khách cũ quay lại không tính chuyển đổi)
+    expect(prisma.order.findFirst.mock.calls[0][0].where).toEqual({
+      customerId: 5,
+      status: { not: 4 },
+      createdAt: { gte: lead21CreatedAt },
+    });
+    expect(prisma.lead.update.mock.calls[1][0].data).toEqual({ status: 'converted', convertedAt: at });
+    expect(audit.create.mock.calls.map((c: any[]) => c[0].actionCode)).toEqual(['LEAD_LINK', 'LEAD_CONVERTED']);
+    expect(audit.create.mock.calls[0][0].metadata.method).toBe('created');
+    expect(res.converted).toBe(true);
+  });
+
+  it('unlink: gỡ khách, đánh dấu "unlinked" (không tự gắn lại), trả trạng thái về "Đã chuyển Sale"', async () => {
+    const { service, prisma, audit } = makeService({ lead: { salePicId: 9 } });
+    prisma.lead.findUnique.mockResolvedValue({ ...baseLead, salePicId: 9, customerId: 5, status: 'converted', linkMethod: 'zalo' });
+    await service.unlink(7, CSKH);
+    expect(prisma.lead.update.mock.calls[0][0].data).toEqual({
+      customerId: null,
+      linkMethod: 'unlinked',
+      linkedAt: null,
+      linkedById: null,
+      convertedAt: null,
+      status: 'handed_over',
+    });
+    expect(audit.create.mock.calls[0][0]).toMatchObject({ actionCode: 'LEAD_UNLINK', entityId: '7' });
   });
 
   it('handoverCheck: nêu đủ lý do khoá (thiếu Zalo, Sale thiếu Lark ID / kênh Zalo)', async () => {
@@ -526,6 +580,30 @@ describe('LeadsService', () => {
     });
   });
 
+  it('handover: khách đã là bạn bè → lời mời kết bạn "bỏ qua", vẫn hoàn tất chuyển giao', async () => {
+    const { service, smaxApi, getHandover } = makeService();
+    smaxApi.requestFriend.mockRejectedValueOnce(new Error('Zalo: User đã là bạn bè'));
+    const res = await service.handover(7, HANDOVER, CSKH);
+    expect(res.done).toBe(true);
+    expect(getHandover().steps.friend.status).toBe('skipped');
+    expect(smaxApi.sendZaloweb).toHaveBeenCalled();
+  });
+
+  it('gửi lại: bước đã lỗi "đã là bạn bè" (lưu trước đây) → bỏ qua, không gửi lại lời mời', async () => {
+    const { service, prisma, smaxApi, getHandover } = makeService();
+    await service.handover(7, HANDOVER, CSKH);
+    // Giả lập lần chuyển giao cũ: bước kết bạn lỗi "đã là bạn bè"
+    const h = getHandover();
+    h.status = 'partial';
+    h.steps.friend = { status: 'failed', error: 'Zalo: User đã là bạn bè' };
+    smaxApi.requestFriend.mockClear();
+    prisma.lead.update.mockClear();
+    const res = await service.retryHandover(50, true, CSKH);
+    expect(smaxApi.requestFriend).not.toHaveBeenCalled();
+    expect(res.done).toBe(true);
+    expect(getHandover().steps.friend.status).toBe('skipped');
+  });
+
   it('handover: thiếu xác nhận → 400; không đủ điều kiện → 400 kèm lý do; vượt tần suất → 429', async () => {
     const { service, smaxChat, larkClient } = makeService();
     await expect(
@@ -598,29 +676,89 @@ describe('LeadsService', () => {
     expect(p.larkText).toBe('Khu vực: Thành phố Đà Nẵng - Phường Hải Châu');
   });
 
-  it('autoConvert: lead có SĐT trùng khách đã có hóa đơn (không huỷ) → tự chuyển đổi', async () => {
+  it('autoConvert: SĐT khác nhưng trùng ID Zalo (đã tra khi chuyển giao) → tự gắn khách "zalo"', async () => {
     const { service, prisma, audit } = makeService();
-    prisma.lead.findMany.mockResolvedValue([
-      { id: 7, phoneNormalized: '0913597795' },
-    ]);
-    prisma.customer.findFirst.mockResolvedValue({ id: 5 });
-    prisma.customer.findUnique.mockResolvedValue({
-      id: 5,
-      code: 'KH5',
-      name: 'Thư',
-    });
+    const lead = { ...baseLead, zaloUid: '8676', customerId: null, linkMethod: null };
+    prisma.lead.findMany
+      .mockResolvedValueOnce([{ id: 7 }]) // lead chưa gắn
+      .mockResolvedValueOnce([]); // lead đã gắn chờ chuyển đổi
+    prisma.lead.findUnique.mockResolvedValue(lead);
+    // Khách gắn ID Zalo 8676; SĐT lead không trùng khách nào
+    prisma.customerZaloContact.findMany.mockImplementation((args: any) =>
+      Promise.resolve(
+        args.select?.customer && args.where.zaloId?.in?.includes('8676')
+          ? [{ customer: { id: 5, code: 'KH5', name: 'Ms Kim Duyên' } }]
+          : [],
+      ),
+    );
+    prisma.customer.findUnique.mockResolvedValue({ id: 5, code: 'KH5', name: 'Ms Kim Duyên' });
     const res = await service.autoConvert();
-    expect(prisma.customer.findFirst.mock.calls[0][0].where).toEqual({
-      OR: [
-        { contactNumber: { startsWith: '0913597795' } },
-        { phone: { startsWith: '0913597795' } },
-      ],
-      invoices: { some: { status: { not: 2 } } },
+    expect(prisma.lead.update.mock.calls[0][0].data).toMatchObject({ customerId: 5, linkMethod: 'zalo' });
+    expect(audit.create.mock.calls[0][0]).toMatchObject({ actionCode: 'LEAD_LINK', userId: 1 });
+    expect(res).toEqual({ checked: 1, linked: 1, converted: 0 });
+  });
+
+  it('candidates: khớp ≥ 2 khách → chỉ gợi ý; SĐT trong hội thoại Smax → gợi ý, không tự gắn', async () => {
+    const { prisma } = makeService();
+    const link = new LeadLinkService(prisma, { create: jest.fn() } as any);
+    prisma.customer.findMany.mockImplementation((args: any) =>
+      Promise.resolve(
+        JSON.stringify(args.where).includes('0913597795')
+          ? [
+              { id: 5, code: 'KH5', name: 'A' },
+              { id: 6, code: 'KH6', name: 'B' },
+            ]
+          : [{ id: 8, code: 'KH8', name: 'C' }],
+      ),
+    );
+    const out = await link.candidates(
+      { ...baseLead, conversations: [] },
+      ['0917527655'],
+    );
+    expect(out.map((c) => [c.id, c.reason, c.auto])).toEqual([
+      [5, 'phone', false],
+      [6, 'phone', false],
+      [8, 'thread_phone', false],
+    ]);
+  });
+
+  it('linkByContact: Sale gắn ID Zalo cho khách → lead chưa gắn cùng ID Zalo tự gắn vào khách', async () => {
+    const { prisma } = makeService();
+    const audit = { create: jest.fn() };
+    const link = new LeadLinkService(prisma, audit as any);
+    prisma.lead.findMany.mockResolvedValue([{ id: 21 }]);
+    prisma.customer.findUnique.mockResolvedValue({ id: 5, code: 'KH5', name: 'Ms Kim Duyên' });
+    const res = await link.linkByContact(5, { kind: 'user', zaloId: '8676', pagePid: null }, CSKH);
+    expect(JSON.stringify(prisma.lead.findMany.mock.calls[0][0].where)).toContain('"zaloUid":"8676"');
+    expect(prisma.lead.update.mock.calls[0][0].data).toMatchObject({ customerId: 5, linkMethod: 'zalo', linkedById: 1 });
+    expect(res).toEqual({ id: 21, code: 'LEAD000021' });
+    // Nhóm Zalo không gắn lead
+    expect(await link.linkByContact(5, { kind: 'group', zaloId: '1', pagePid: null }, CSKH)).toBeNull();
+  });
+
+  it('handover: lưu hội thoại Zalo của Sale với khách làm kênh kết nối của lead', async () => {
+    const { service, prisma } = makeService();
+    await service.handover(7, HANDOVER, CSKH);
+    expect(prisma.leadConversation.upsert).toHaveBeenCalledWith({
+      where: { leadId_tid: { leadId: 7, tid: 'zlw4546' } },
+      create: expect.objectContaining({ leadId: 7, pagePid: 'zlwSALE', tid: 'zlw4546', platform: 'zaloweb', isGroup: false }),
+      update: {},
     });
-    expect(res).toEqual({ checked: 1, converted: 1 });
-    expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({
-      actionCode: 'LEAD_AUTO_CONVERT',
-      userId: 1,
-    });
+  });
+
+  it('journey: Sale không phải PIC không thấy lead của khách; mốc đơn đầu bỏ qua đơn huỷ', async () => {
+    const { prisma } = makeService();
+    const link = new LeadLinkService(prisma, { create: jest.fn() } as any);
+    prisma.customer.findUnique.mockResolvedValue({ id: 5, code: 'KH5', name: 'A', createdAt: new Date('2026-11-03T06:57:00Z') });
+    prisma.order.findMany.mockResolvedValue([
+      { id: 1, code: 'DH1', createdAt: new Date('2026-11-03T06:58:00Z'), status: 4, grandTotal: 1 },
+      { id: 2, code: 'DH2', createdAt: new Date('2026-11-03T07:00:00Z'), status: 1, grandTotal: 135000 },
+    ]);
+    const j = await link.journey({ customerId: 5 }, { canViewLeads: true, ownOnly: true, userId: 9 });
+    expect(prisma.lead.findMany.mock.calls[0][0].where).toEqual({ customerId: 5, salePicId: 9 });
+    expect(j.lead).toBeNull();
+    expect(j.milestones.find((m) => m.key === 'order')).toMatchObject({ ref: 'DH2', done: true });
+    expect(j.milestones.find((m) => m.key === 'invoice')).toMatchObject({ done: false });
+    expect(j.events.map((e) => e.type)).toEqual(['customer', 'order', 'order']);
   });
 });

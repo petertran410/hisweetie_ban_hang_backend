@@ -18,6 +18,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UploadService } from '../upload/upload.service';
 import { LarkUserDirectoryService } from '../lark-sync/services/lark-user-directory.service';
+import { LeadLinkService } from '../leads/lead-link/lead-link.service';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import { normalizeVnPhone } from '../common/phone.util';
 import {
@@ -38,6 +39,8 @@ export interface ChatActor {
   canViewOtherStaffData?: boolean;
   canViewDebt: boolean;
   canViewPackingSlips?: boolean;
+  canViewLeads?: boolean;
+  leadsOwnOnly?: boolean;
 }
 
 export interface ChatMessage {
@@ -219,6 +222,7 @@ export class SmaxChatService {
     private readonly uploads: UploadService,
     config: ConfigService,
     private readonly larkDirectory: LarkUserDirectoryService,
+    private readonly leadLink?: LeadLinkService,
   ) {
     const base = config.get<string>('SMAX_MEDIA_PUBLIC_URL')?.trim().replace(/\/+$/, '');
     this.mediaPublicUrl = base && /^https:\/\//.test(base) ? base : null;
@@ -309,7 +313,7 @@ export class SmaxChatService {
     const otherContacts = customer.zaloContacts.filter((c) => !isZaloContact(c));
     const groupZaloIds = zaloContacts.filter((c) => c.kind === 'group').map((c) => c.zaloId);
     const sharedIds = [...groupZaloIds, ...otherContacts.map((c) => c.zaloId)];
-    const [salePic, channels, orders, invoices, packingSlips, shared] = await Promise.all([
+    const [salePic, channels, orders, invoices, packingSlips, shared, lead] = await Promise.all([
       salePicId
         ? this.prisma.user.findUnique({
             where: { id: salePicId },
@@ -387,6 +391,12 @@ export class SmaxChatService {
         : Promise.resolve<{ id: number; zaloId: string; customer: { id: number; code: string | null; name: string } }[]>(
             [],
           ),
+      // Lead nguồn của khách (cần leads:view; Sale chỉ thấy lead giao cho mình)
+      this.leadLink?.leadOfCustomer(customerId, {
+        canViewLeads: !!actor.canViewLeads,
+        ownOnly: actor.leadsOwnOnly !== false,
+        userId: actor.id,
+      }) ?? null,
     ]);
 
     const withShared = <T extends { zaloId: string }>(c: T) => ({
@@ -401,6 +411,7 @@ export class SmaxChatService {
         phone: customer.contactNumber || customer.phone || null,
       },
       salePic,
+      lead,
       myChannels: channels,
       contacts: {
         user: zaloContacts.find((c) => c.kind === 'user') ?? null,
@@ -1105,6 +1116,22 @@ export class SmaxChatService {
    * pagePid. Mỗi khách 1 ID Zalo cá nhân và 1 hội thoại trực tiếp mỗi kênh khác (gắn lại = thay).
    */
   async createContact(
+    customerId: number,
+    actor: { id: number; name: string },
+    dto: { kind: 'user' | 'group'; zaloId: string; name?: string; pagePid?: string },
+  ) {
+    const contact = await this.saveContact(customerId, actor.id, dto);
+    // Lead chưa gắn có cùng ID Zalo (tra khi chuyển giao) / cùng hội thoại → tự gắn vào khách
+    const linkedLead = await this.leadLink
+      ?.linkByContact(customerId, contact, actor)
+      .catch((e) => {
+        this.logger.warn(`Gắn lead theo ID Zalo khách ${customerId} lỗi: ${(e as Error).message}`);
+        return null;
+      });
+    return { ...contact, linkedLead: linkedLead ?? null };
+  }
+
+  private async saveContact(
     customerId: number,
     actorId: number,
     dto: { kind: 'user' | 'group'; zaloId: string; name?: string; pagePid?: string },

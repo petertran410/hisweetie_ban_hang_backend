@@ -166,12 +166,22 @@ export class LeadListQueryDto {
   @Type(() => Number)
   @IsInt()
   limit?: number;
+
+  // Đã gắn khách POS: "true" | "false"
+  @IsOptional()
+  @IsIn(['true', 'false'])
+  linked?: string;
 }
 
 export class ConvertLeadDto {
   @Type(() => Number)
   @IsInt()
   customerId: number;
+
+  // created = vừa tạo khách từ lead; mặc định gắn tay
+  @IsOptional()
+  @IsIn(['manual', 'created'])
+  method?: 'manual' | 'created';
 }
 
 export class HandoverLeadDto {

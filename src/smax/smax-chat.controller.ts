@@ -58,6 +58,9 @@ export class SmaxChatController {
       canViewOtherStaffData: req.user.canViewOtherStaffData,
       canViewDebt: requestHasPermission(req, 'customers:view_debt'),
       canViewPackingSlips: requestHasPermission(req, 'packing_slips:view'),
+      canViewLeads: requestHasPermission(req, 'leads:view'),
+      // Chỉ có leads:view (Sale) → chỉ thấy lead giao cho mình
+      leadsOwnOnly: !requestHasPermission(req, 'leads:update'),
     };
   }
 
@@ -239,7 +242,7 @@ export class SmaxChatController {
     @Body() dto: CreateZaloContactDto,
     @Req() req: any,
   ) {
-    return this.service.createContact(id, req.user.id, dto);
+    return this.service.createContact(id, this.actor(req), dto);
   }
 
   @Patch('customers/:id/contacts/:contactId')

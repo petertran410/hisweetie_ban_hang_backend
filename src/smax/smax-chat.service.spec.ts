@@ -596,13 +596,13 @@ describe('SmaxChatService', () => {
       ]);
       prisma.customerZaloContact.create = jest.fn(({ data }) => Promise.resolve({ id: 99, ...data }));
       prisma.customerZaloContact.update = jest.fn();
-      const saved = await service.createContact(5, 1, { kind: 'user', zaloId: OA_TID, pagePid: 'zlOA', name: 'Giang Ngô' });
+      const saved = await service.createContact(5, { id: 1, name: 'A' }, { kind: 'user', zaloId: OA_TID, pagePid: 'zlOA', name: 'Giang Ngô' });
       // Không ghi đè ID Zalo cá nhân đã có
       expect(prisma.customerZaloContact.update).not.toHaveBeenCalled();
       expect(saved).toMatchObject({ zaloId: OA_TID, pagePid: 'zlOA', kind: 'user' });
-      await expect(service.createContact(5, 1, { kind: 'user', zaloId: OA_TID })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(service.createContact(5, { id: 1, name: 'A' }, { kind: 'user', zaloId: OA_TID })).rejects.toBeInstanceOf(BadRequestException);
       await expect(
-        service.createContact(5, 1, { kind: 'user', zaloId: OA_TID, pagePid: PAGE }),
+        service.createContact(5, { id: 1, name: 'A' }, { kind: 'user', zaloId: OA_TID, pagePid: PAGE }),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
