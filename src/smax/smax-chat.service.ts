@@ -53,6 +53,8 @@ export interface ChatMessage {
   albumId: string | null;
   // Tin sticker Zalo
   stickerId: string | null;
+  // Tin sticker Facebook: URL ảnh sticker
+  stickerImage: string | null;
   // Tin trả lời: trích tin gốc (pid để cuộn tới tin gốc)
   quote: { pid: string | null; text: string; senderName: string | null } | null;
   // Cảm xúc gộp theo icon; mine = kênh (tài khoản Zalo của mình) đã thả icon này
@@ -1511,6 +1513,7 @@ export class SmaxChatService {
           (m as unknown as Record<string, { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] }>)[
             m.platform ?? ''
           ]) as { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] } | undefined;
+        const fbSticker = m.facebook?.sticker || null;
         return {
           id: m.pid || m.id,
           text: m.message ?? '',
@@ -1520,16 +1523,18 @@ export class SmaxChatService {
           senderName: fromMe
             ? null
             : (m.sender_pid && members[m.sender_pid]) || null,
-          attachments: (part?.attachments ?? [])
+          // Sticker Facebook đã hiện qua stickerImage → bỏ attachment trùng
+          attachments: (fbSticker ? [] : (part?.attachments ?? []))
             .filter((a) => a?.url)
             .map((a) => ({
               url: a.url as string,
-              thumbnail: a.thumbnail ?? null,
-              title: a.title ?? '',
-              type: a.type ?? 'file',
+              thumbnail: a.thumbnail ?? a.url_preview ?? null,
+              title: a.title ?? a.name ?? '',
+              type: a.type ?? mimeKind(a.mime_type),
             })),
           albumId: m.zaloweb?.group_layout_id ?? null,
           stickerId: m.zaloweb?.sticker_id ? String(m.zaloweb.sticker_id) : null,
+          stickerImage: fbSticker,
           quote: m.zaloweb?.quote
             ? {
                 pid: m.zaloweb.quote.global_msg_id ? `${ZALOWEB_PREFIX}${m.zaloweb.quote.global_msg_id}` : null,
@@ -1547,6 +1552,12 @@ export class SmaxChatService {
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
   }
+}
+
+/** Loại tệp theo mime_type Facebook ("image", "image/png", "video/mp4"…) → image | video | audio | file. */
+function mimeKind(mime?: string): string {
+  const kind = mime?.split('/')[0];
+  return kind === 'image' || kind === 'video' || kind === 'audio' ? kind : 'file';
 }
 
 /** Tên tệp an toàn cho URL: bỏ dấu tiếng Việt, ký tự lạ → "-", giữ đuôi. */
