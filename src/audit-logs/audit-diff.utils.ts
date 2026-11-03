@@ -65,6 +65,13 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
   suppliers: {
     totalDebt: 'Công nợ',
   },
+  customer_groups: {
+    discount: 'Giảm giá',
+    allowedUserIds: 'Người dùng được phép',
+    autoAddConditions: 'Điều kiện tự thêm',
+    autoUpdateMode: 'Chế độ cập nhật',
+    autoExecute: 'Tự động thêm',
+  },
   purchase_orders: {
     grandTotal: 'Tổng tiền',
     paidAmount: 'Đã thanh toán',

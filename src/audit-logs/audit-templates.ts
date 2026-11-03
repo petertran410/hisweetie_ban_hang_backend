@@ -137,6 +137,37 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  CUSTOMER_GROUP_CREATE: {
+    template: 'Tạo nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_UPDATE: {
+    template: 'Cập nhật nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_CANCEL: {
+    template: 'Hủy nhóm khách hàng {groupName} (gỡ {customerCount} khách)',
+    category: 'customer',
+    severity: 'warning',
+  },
+  CUSTOMER_GROUP_RESTORE: {
+    template: 'Khôi phục nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_ADD_CUSTOMERS: {
+    template: 'Thêm {customerCount} khách vào nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_REMOVE_CUSTOMERS: {
+    template: 'Gỡ {customerCount} khách khỏi nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'warning',
+  },
+
   SUPPLIER_CREATE: {
     template: 'Thêm nhà cung cấp {supplierName} (Mã: {supplierCode})',
     category: 'supplier',

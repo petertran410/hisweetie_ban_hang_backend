@@ -17,6 +17,10 @@ import {
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
 import { searchProductIds } from '../common/product-search.util';
 import {
+  filterPriceBooksForCustomer,
+  selectablePriceBookWhere,
+} from './price-book-customer-scope';
+import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
   renderAuditMessage,
@@ -230,8 +234,13 @@ export class PriceBooksService {
           dto.customerGroups.map(async (customerGroupId) => {
             const group = await tx.customerGroup.findUnique({
               where: { id: customerGroupId },
-              select: { name: true },
+              select: { name: true, isActive: true },
             });
+            if (group && !group.isActive) {
+              throw new BadRequestException(
+                `Nhóm khách hàng "${group.name}" đã hủy`,
+              );
+            }
             return {
               priceBookId: priceBook.id,
               customerGroupId,
@@ -428,6 +437,15 @@ export class PriceBooksService {
       }
 
       if (dto.customerGroups !== undefined) {
+        // Nhóm đã hủy mà bảng giá đang gắn sẵn thì giữ nguyên; chỉ chặn gắn mới.
+        const linkedGroupIds = new Set(
+          (
+            await tx.priceBookCustomerGroup.findMany({
+              where: { priceBookId: id },
+              select: { customerGroupId: true },
+            })
+          ).map((g) => g.customerGroupId),
+        );
         await tx.priceBookCustomerGroup.deleteMany({
           where: { priceBookId: id },
         });
@@ -437,8 +455,17 @@ export class PriceBooksService {
             dto.customerGroups.map(async (customerGroupId) => {
               const group = await tx.customerGroup.findUnique({
                 where: { id: customerGroupId },
-                select: { name: true },
+                select: { name: true, isActive: true },
               });
+              if (
+                group &&
+                !group.isActive &&
+                !linkedGroupIds.has(customerGroupId)
+              ) {
+                throw new BadRequestException(
+                  `Nhóm khách hàng "${group.name}" đã hủy`,
+                );
+              }
               return {
                 priceBookId: id,
                 customerGroupId,
@@ -570,69 +597,19 @@ export class PriceBooksService {
   }
 
   async getApplicablePriceBooks(params: ApplicablePriceBooksDto) {
-    const { branchId, customerId, userId, date } = params;
+    const { branchId, customerId, userId, date, anyCustomer } = params;
     const checkDate = date ? new Date(date) : new Date();
 
-    const where: any = {
-      isActive: true,
-      AND: [
-        { OR: [{ startDate: null }, { startDate: { lte: checkDate } }] },
-        { OR: [{ endDate: null }, { endDate: { gte: checkDate } }] },
-      ],
-    };
+    const where = selectablePriceBookWhere({
+      branchId,
+      userId,
+      date: checkDate,
+    });
 
-    // Branch scope
-    if (branchId) {
-      where.AND.push({
-        OR: [{ isGlobal: true }, { priceBookBranches: { some: { branchId } } }],
-      });
-    }
-
-    // Customer scope (gồm customer group + customer cụ thể)
-    if (customerId) {
-      const customer = await this.prisma.customer.findUnique({
-        where: { id: customerId },
-        include: {
-          customerGroupDetails: {
-            select: { customerGroupId: true },
-          },
-        },
-      });
-
-      if (customer) {
-        const groupIds = customer.customerGroupDetails.map(
-          (g) => g.customerGroupId,
-        );
-
-        // Customer group scope
-        const cgConditions: any[] = [{ forAllCusGroup: true }];
-        if (groupIds.length > 0) {
-          cgConditions.push({
-            priceBookCustomerGroups: {
-              some: { customerGroupId: { in: groupIds } },
-            },
-          });
-        }
-        where.AND.push({ OR: cgConditions });
-
-        // Customer cụ thể scope
-        where.AND.push({
-          OR: [
-            { forAllCustomer: true },
-            { priceBookCustomers: { some: { customerId } } },
-          ],
-        });
-      }
-    } else {
-      // Không có customerId → chỉ hiện bảng giá forAllCustomer=true
+    // Không có khách và không yêu cầu liệt kê đủ → chỉ bảng giá forAllCustomer
+    // (giữ hành vi cũ cho tự dò giá khi chưa có khách).
+    if (!customerId && !anyCustomer) {
       where.AND.push({ forAllCustomer: true });
-    }
-
-    // User scope
-    if (userId) {
-      where.AND.push({
-        OR: [{ forAllUser: true }, { priceBookUsers: { some: { userId } } }],
-      });
     }
 
     const priceBooks = await this.prisma.priceBook.findMany({
@@ -658,6 +635,19 @@ export class PriceBooksService {
       },
       orderBy: { priority: 'desc' },
     });
+
+    // Có khách → chỉ giữ bảng giá khách được dùng (xem price-book-customer-scope).
+    if (customerId && !anyCustomer) {
+      const groups = await this.prisma.customerGroupDetail.findMany({
+        where: { customerId },
+        select: { customerGroupId: true },
+      });
+      return filterPriceBooksForCustomer(
+        priceBooks,
+        customerId,
+        groups.map((g) => g.customerGroupId),
+      );
+    }
 
     return priceBooks;
   }

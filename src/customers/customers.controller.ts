@@ -97,8 +97,29 @@ export class CustomersController {
   @Get('search')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Tìm kiếm khách hàng (dùng cho dropdown POS)' })
-  search(@Query('search') search?: string) {
-    return this.customersService.searchCustomers(search);
+  search(
+    @Req() req: { user?: { id?: number } },
+    @Query('search') search?: string,
+    @Query('priceBookId') priceBookId?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    // Có priceBookId (kể cả 0) → lọc khách theo bảng giá (POS). Không có → giữ
+    // nguyên hành vi cũ cho các màn khác.
+    const pbId =
+      priceBookId !== undefined && priceBookId !== ''
+        ? parseInt(priceBookId, 10)
+        : NaN;
+    const brId = branchId ? parseInt(branchId, 10) : NaN;
+    return this.customersService.searchCustomers(
+      search,
+      Number.isNaN(pbId)
+        ? undefined
+        : {
+            priceBookId: pbId,
+            branchId: Number.isNaN(brId) ? undefined : brId,
+            userId: req.user?.id,
+          },
+    );
   }
 
   @Get('totals')
