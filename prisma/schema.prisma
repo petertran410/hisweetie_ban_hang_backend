@@ -939,6 +939,8 @@ model ProductImage {
   id        Int      @id @default(autoincrement())
   productId Int
   image     String
+  /// Ảnh chính của sản phẩm (mỗi sản phẩm có ảnh thì đúng 1 ảnh = true), dùng cho bảng giá
+  isPrimary Boolean  @default(false) @map("is_primary")
   createdAt DateTime @default(now())
   product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
