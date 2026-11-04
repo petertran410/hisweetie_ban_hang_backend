@@ -2241,6 +2241,23 @@ export class CashFlowsService {
       if (!customer) throw new Error('Không tìm thấy khách hàng');
       if (!dto.branchId) throw new Error('Vui lòng chọn chi nhánh');
 
+      // Tiền gắn hóa đơn không được vượt số tiền thu: nếu không, hóa đơn ghi
+      // đã thu nhiều hơn phiếu thu → nợ khách còn mà không hóa đơn nào chứa.
+      const invoiceAllocTotal = dto.allocateToInvoices
+        ? (dto.invoices || []).reduce(
+            (sum, item) => sum + Number(item.amount),
+            0,
+          )
+        : 0;
+      if (
+        Math.round(invoiceAllocTotal * 100) >
+        Math.round(Number(dto.totalAmount) * 100)
+      ) {
+        throw new BadRequestException(
+          `Tổng tiền gắn vào hóa đơn (${invoiceAllocTotal}) vượt số tiền thu (${dto.totalAmount})`,
+        );
+      }
+
       const user = await tx.user.findUnique({
         where: { id: userId },
         select: { id: true, name: true },
@@ -2549,7 +2566,20 @@ export class CashFlowsService {
             });
           }
         } else {
-          // Case mixed: invoice thuộc nhiều customer → tách cashflow per customer
+          // Case mixed: invoice thuộc nhiều customer → tách cashflow per customer.
+          // Phần tiền thu không gắn hóa đơn nào ghi vào phiếu thu của khách đứng
+          // thu (khách cha); trước đây phần này bị bỏ mất.
+          const allocated = [...amountPerCustomer.values()].reduce(
+            (sum, amount) => sum + amount,
+            0,
+          );
+          const unallocated = Number(dto.totalAmount) - allocated;
+          if (Math.round(unallocated * 100) > 0) {
+            amountPerCustomer.set(
+              dto.customerId,
+              (amountPerCustomer.get(dto.customerId) || 0) + unallocated,
+            );
+          }
           for (const [custId, custAmount] of amountPerCustomer) {
             const custData =
               custId === dto.customerId
