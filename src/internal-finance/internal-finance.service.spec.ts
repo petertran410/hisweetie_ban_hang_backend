@@ -278,6 +278,83 @@ describe('InternalFinanceService', () => {
     ).rejects.toThrow('Không có quyền xem phiếu chi của chi nhánh này');
   });
 
+  it('sums warehouse cash receipts (not cancelled) and sorts by difference with unconfirmed last', async () => {
+    const keys = [
+      { id: 1, amount: 100000, confirmedAmount: 100000 }, // khớp: 0
+      { id: 2, amount: 200000, confirmedAmount: null }, // chưa xác nhận
+      { id: 3, amount: 300000, confirmedAmount: 250000 }, // thiếu 50.000
+      { id: 4, amount: 100000, confirmedAmount: 120000 }, // dư 20.000
+    ];
+    const findMany = jest
+      .fn()
+      .mockResolvedValueOnce(keys)
+      .mockImplementationOnce(({ where }: any) =>
+        // Trả lệch thứ tự để kiểm tra service xếp lại theo id đã sắp.
+        [...where.id.in].reverse().map((id: number) => ({ id })),
+      );
+    const aggregate = jest
+      .fn()
+      .mockResolvedValueOnce({ _sum: { amount: 700000 } })
+      .mockResolvedValueOnce({
+        _sum: { amount: 500000, confirmedAmount: 470000 },
+      });
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findMany,
+        aggregate,
+        count: jest.fn().mockResolvedValue(4),
+      },
+    });
+
+    const result = await service.listWarehouseReceipts({
+      orderBy: 'difference',
+      orderDirection: 'desc',
+      page: 1,
+      limit: 3,
+    } as any);
+
+    expect(result.data.map((row: any) => row.id)).toEqual([3, 1, 4]);
+    expect(result.totals).toEqual({
+      amount: 700000,
+      confirmedAmount: 470000,
+      difference: 30000,
+    });
+    expect(aggregate.mock.calls[0][0].where.AND).toContainEqual({
+      status: { not: 'CANCELLED' },
+    });
+    expect(aggregate.mock.calls[1][0].where.AND).toContainEqual({
+      confirmedAmount: { not: null },
+    });
+  });
+
+  it('sorts warehouse cash receipts by confirmed amount with blanks last', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findMany,
+        aggregate: jest.fn().mockResolvedValue({ _sum: {} }),
+        count: jest.fn().mockResolvedValue(0),
+      },
+    });
+    await service.listWarehouseReceipts({
+      orderBy: 'confirmedAmount',
+      orderDirection: 'asc',
+      page: 2,
+      limit: 20,
+    } as any);
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [
+          { confirmedAmount: { sort: 'asc', nulls: 'last' } },
+          { occurredAt: 'desc' },
+          { id: 'desc' },
+        ],
+        skip: 20,
+        take: 20,
+      }),
+    );
+  });
+
   it('requires mark_issued permission before confirming a warehouse expense', async () => {
     const { service, prisma, authService, internalFund } = makeService({
       internalFinanceEntry: {

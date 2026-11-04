@@ -146,9 +146,10 @@ export class InternalFinanceQueryDto {
   @Type(() => Number)
   limit = 50;
 
+  /** `confirmedAmount`, `difference`: chỉ trang Tiền mặt kho dùng. */
   @IsOptional()
-  @IsIn(['occurredAt', 'amount'])
-  orderBy?: 'occurredAt' | 'amount';
+  @IsIn(['occurredAt', 'amount', 'confirmedAmount', 'difference'])
+  orderBy?: 'occurredAt' | 'amount' | 'confirmedAmount' | 'difference';
 
   @IsOptional()
   @IsIn(['asc', 'desc'])
