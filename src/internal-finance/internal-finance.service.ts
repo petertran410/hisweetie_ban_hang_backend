@@ -36,6 +36,7 @@ import {
   INTERNAL_FINANCE_BRANCH_IDS,
   LARK_APPROVAL_LOCK_REASON,
   LARK_APPROVAL_SOURCE_TYPE,
+  OFFICE_BRANCH_IDS,
   WAREHOUSE_CASH_BRANCH_IDS,
   WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
@@ -103,8 +104,6 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.VEHICLE_CARE,
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
-/** Văn phòng HN (4), Văn phòng SG (7): không có báo đơn, xe, Approval tuần. */
-const OFFICE_BRANCH_IDS = [4, 7];
 
 /** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
 export const isoWeekOf = (dateKey: string) => {
@@ -701,14 +700,14 @@ export class InternalFinanceService {
           // Văn phòng: khoản chi tiền mặt từ đơn PHIẾU CHI Lark là phiếu chi
           // văn phòng (không có báo đơn, xe hay Approval tuần).
           {
-            branchId: { in: OFFICE_BRANCH_IDS },
+            branchId: { in: [...OFFICE_BRANCH_IDS] },
             category: INTERNAL_FINANCE_CATEGORY.CASH_FUND_EXPENSE,
           },
         ],
       },
       {
         NOT: {
-          branchId: { in: OFFICE_BRANCH_IDS },
+          branchId: { in: [...OFFICE_BRANCH_IDS] },
           category: { in: ['DELIVERY_FEE', 'FUEL', 'VEHICLE_CARE'] },
         },
       },

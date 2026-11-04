@@ -106,6 +106,9 @@ export const INTERNAL_FINANCE_BRANCH_IDS = [1, 4, 6, 7] as const;
 
 export const WAREHOUSE_CASH_BRANCH_IDS = [6, 1] as const;
 
+/** Văn phòng HN (4), Văn phòng SG (7): không có báo đơn, xe, Approval tuần. */
+export const OFFICE_BRANCH_IDS = [4, 7] as const;
+
 export const DELIVERY_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.DELIVERY_FEE,
 ] as const;
