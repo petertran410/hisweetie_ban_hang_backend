@@ -189,6 +189,28 @@ const INVOICE_LIST_SELECT = {
   },
 } as const;
 
+/** Ghi chú thanh toán mới nhất của hóa đơn (lấy kèm khi chọn hóa đơn báo đơn). */
+const LATEST_PAYMENT_NOTE = {
+  orderBy: { createdAt: 'desc' as const },
+  take: 1,
+  select: { paymentType: true, amount: true },
+};
+
+/**
+ * Cách khách trả của hóa đơn (tiền mặt kèm số tiền cần thu / chuyển khoản),
+ * để phiếu giao hàng điền sẵn phần thanh toán.
+ */
+function latestPaymentNote(
+  notes?: { paymentType: string; amount: unknown }[] | null,
+): { paymentType: string; amount: number | null } | null {
+  const note = notes?.[0];
+  if (!note) return null;
+  return {
+    paymentType: note.paymentType,
+    amount: note.amount == null ? null : Number(note.amount),
+  };
+}
+
 @Injectable()
 export class InvoicesService {
   constructor(
@@ -220,6 +242,7 @@ export class InvoicesService {
     };
     const invoiceSelect = {
       ...baseSelect,
+      paymentNotes: LATEST_PAYMENT_NOTE,
       details: {
         where: { product: { cargoType: 'COLD' } },
         select: {
@@ -324,7 +347,16 @@ export class InvoicesService {
           : (resolved as any).consignDate,
       customer: resolved.customer,
       ...(parsed.kind === 'invoice'
-        ? mapColdCargoInvoice(resolved as any)
+        ? {
+            ...mapColdCargoInvoice(resolved as any),
+            paymentNote: latestPaymentNote(
+              (
+                resolved as {
+                  paymentNotes?: { paymentType: string; amount: unknown }[];
+                }
+              ).paymentNotes,
+            ),
+          }
         : {}),
     };
   }
@@ -5900,6 +5932,7 @@ export class InvoicesService {
         grandTotal: true,
         purchaseDate: true,
         customer: { select: { id: true, name: true } },
+        paymentNotes: LATEST_PAYMENT_NOTE,
         details: {
           where: { product: { cargoType: 'COLD' } },
           select: {
@@ -5964,6 +5997,8 @@ export class InvoicesService {
         ...(packingType
           ? { packingCount: packingCountByInvoiceId.get(invoice.id) ?? 0 }
           : {}),
+        paymentNote: latestPaymentNote(invoice.paymentNotes),
+        paymentNotes: undefined,
         details: undefined,
       })),
       total: data.length,
@@ -6072,6 +6107,7 @@ export class InvoicesService {
           grandTotal: true,
           createdAt: true,
           customer: { select: { id: true, name: true } },
+          paymentNotes: LATEST_PAYMENT_NOTE,
         },
         orderBy: { createdAt: 'desc' },
         skip: currentItem,
@@ -6081,7 +6117,10 @@ export class InvoicesService {
 
     return {
       stats: { total, delivered, pending },
-      data,
+      data: data.map(({ paymentNotes, ...invoice }) => ({
+        ...invoice,
+        paymentNote: latestPaymentNote(paymentNotes),
+      })),
       total: listTotal,
     };
   }

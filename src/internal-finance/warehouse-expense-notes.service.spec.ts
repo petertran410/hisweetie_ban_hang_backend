@@ -45,9 +45,9 @@ describe('WarehouseExpenseNotesService', () => {
       internalFinanceEntryNoteMention: { update: mentionUpdate },
       user: {
         findMany: jest.fn().mockResolvedValue([
-          { id: 11, name: 'C' },
-          { id: 12, name: 'D' },
-          { id: 13, name: 'E' },
+          { id: 11, name: 'C', larkUserId: 'ou_c' },
+          { id: 12, name: 'D', larkUserId: 'ou_d' },
+          { id: 13, name: 'E', larkUserId: null },
         ]),
       },
     };
@@ -128,6 +128,18 @@ describe('WarehouseExpenseNotesService', () => {
     expect(prisma.internalFinanceEntryNote.create).not.toHaveBeenCalled();
   });
 
+  it('refuses to tag users not linked to Lark', async () => {
+    const { service, prisma } = setup([11, 13]);
+    await expect(
+      service.create(9, { content: 'Xem lại', mentionUserIds: [13] }, user),
+    ).rejects.toThrow('chưa gắn Lark');
+    expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
+      isActive: true,
+      id: { in: [13] },
+    });
+    expect(prisma.internalFinanceEntryNote.create).not.toHaveBeenCalled();
+  });
+
   it('requires the request_review permission to add notes', async () => {
     const { service, access } = setup();
     access.can.mockResolvedValue(false);
@@ -136,14 +148,15 @@ describe('WarehouseExpenseNotesService', () => {
     ).rejects.toThrow('Không có quyền ghi chú');
   });
 
-  it('lists candidates that are active, linked to Lark and can view', async () => {
-    const { service, prisma } = setup([11]);
+  it('lists every active user with the reason they cannot be tagged', async () => {
+    const { service, prisma } = setup([11, 13]);
     expect(await service.mentionCandidates(9, user)).toEqual([
-      { id: 11, name: 'C' },
+      { id: 11, name: 'C', blockedReason: null },
+      { id: 12, name: 'D', blockedReason: 'Thiếu quyền xem phiếu chi kho' },
+      { id: 13, name: 'E', blockedReason: 'Chưa gắn Lark' },
     ]);
     expect(prisma.user.findMany.mock.calls[0][0].where).toEqual({
       isActive: true,
-      larkUserId: { not: null },
     });
   });
 });
