@@ -228,3 +228,148 @@ describe('CashFlowsService approval cashflows', () => {
     );
   });
 });
+
+describe('CashFlowsService.createCustomerPayment', () => {
+  const setup = () => {
+    type CreatedCashFlow = {
+      id: number;
+      code: string;
+      partnerId: number;
+      amount: number;
+    };
+    const createdCashFlows: CreatedCashFlow[] = [];
+    const customers: Record<number, any> = {
+      1: { id: 1, name: 'Khách cha', contactNumber: null, addresses: [] },
+      2: { id: 2, name: 'Khách con', contactNumber: null, addresses: [] },
+    };
+    const tx = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      customer: {
+        findUnique: jest
+          .fn()
+          .mockImplementation(({ where }: any) =>
+            Promise.resolve(customers[where.id] ?? null),
+          ),
+        findMany: jest.fn().mockResolvedValue([{ id: 2 }]),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      user: {
+        findUnique: jest.fn().mockResolvedValue({ id: 7, name: 'Thu ngân' }),
+      },
+      invoice: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 10,
+          code: 'HD000010',
+          customerId: 2,
+          debtAmount: 700000,
+          paidAmount: 0,
+          status: 3,
+          payments: [],
+        }),
+        update: jest.fn().mockResolvedValue({}),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { grandTotal: 0 } }),
+      },
+      invoicePayment: {
+        findMany: jest.fn().mockResolvedValue([]),
+        create: jest
+          .fn()
+          .mockImplementation(({ data }: any) =>
+            Promise.resolve({ id: 100, ...data }),
+          ),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      cashFlow: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest
+          .fn()
+          .mockImplementation(
+            ({ data }: { data: { partnerId: number; amount: number } }) => {
+              const cashFlow: CreatedCashFlow = {
+                id: createdCashFlows.length + 1,
+                code: `TT00000${createdCashFlows.length + 1}`,
+                partnerId: data.partnerId,
+                amount: data.amount,
+              };
+              createdCashFlows.push(cashFlow);
+              return Promise.resolve(cashFlow);
+            },
+          ),
+        update: jest.fn().mockResolvedValue({}),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { amount: 0 } }),
+      },
+      returnOrder: {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { refundAmount: 0 } }),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn((callback: (transaction: any) => unknown) =>
+        callback(tx),
+      ),
+    };
+    const service = new CashFlowsService(prisma as any, {} as any);
+    return { service, tx, createdCashFlows };
+  };
+
+  it('ghi phần tiền không gắn hóa đơn vào phiếu thu của khách cha khi trả hóa đơn của khách con', async () => {
+    const { service, createdCashFlows } = setup();
+
+    await service.createCustomerPayment(
+      {
+        customerId: 1,
+        totalAmount: 1000000,
+        branchId: 1,
+        method: 'cash',
+        allocateToInvoices: true,
+        invoices: [{ invoiceId: 10, amount: 700000 }],
+      },
+      7,
+    );
+
+    expect(createdCashFlows.map((cf) => [cf.partnerId, cf.amount])).toEqual([
+      [2, 700000],
+      [1, 300000],
+    ]);
+  });
+
+  it('không có phần dư thì chỉ lập phiếu thu cho khách con', async () => {
+    const { service, createdCashFlows } = setup();
+
+    await service.createCustomerPayment(
+      {
+        customerId: 1,
+        totalAmount: 700000,
+        branchId: 1,
+        method: 'cash',
+        allocateToInvoices: true,
+        invoices: [{ invoiceId: 10, amount: 700000 }],
+      },
+      7,
+    );
+
+    expect(createdCashFlows.map((cf) => [cf.partnerId, cf.amount])).toEqual([
+      [2, 700000],
+    ]);
+  });
+
+  it('từ chối khi tiền gắn hóa đơn vượt số tiền thu', async () => {
+    const { service, tx, createdCashFlows } = setup();
+
+    await expect(
+      service.createCustomerPayment(
+        {
+          customerId: 1,
+          totalAmount: 500000,
+          branchId: 1,
+          method: 'cash',
+          allocateToInvoices: true,
+          invoices: [{ invoiceId: 10, amount: 700000 }],
+        },
+        7,
+      ),
+    ).rejects.toThrow('vượt số tiền thu');
+    expect(tx.invoicePayment.create).not.toHaveBeenCalled();
+    expect(createdCashFlows).toHaveLength(0);
+  });
+});

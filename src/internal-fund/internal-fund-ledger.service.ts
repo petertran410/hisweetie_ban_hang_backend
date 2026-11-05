@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.constants';
+import { OFFICE_BRANCH_IDS } from '../internal-finance/internal-finance.constants';
 
 export function fundDateKey(value: Date | string): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -165,8 +166,12 @@ export class InternalFundLedgerService {
     }
 
     // Chi ngoài Approval tuần: bắt buộc có lý do, phiếu rời khỏi batch chưa gửi.
-    const reason = manualReason?.trim();
-    if (!reason) {
+    // Văn phòng không có Approval tuần: phiếu tay chi thẳng từ quỹ, lý do tùy ý.
+    const reason = manualReason?.trim() || undefined;
+    const office =
+      (OFFICE_BRANCH_IDS as readonly number[]).includes(current.branchId) &&
+      !current.weeklyBatch;
+    if (!reason && !office) {
       throw new BadRequestException(
         'Khoản chi chưa nằm trong Approval tuần đã duyệt; cần nhập lý do Đã chi',
       );

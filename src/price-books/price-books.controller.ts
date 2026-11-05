@@ -21,6 +21,7 @@ import {
   ApplicablePriceBooksDto,
   ProductPriceDto,
   ProductsWithPricesQueryDto,
+  LogCustomerSwitchDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
@@ -125,6 +126,18 @@ export class PriceBooksController {
   async create(@Body() dto: CreatePriceBookDto, @Req() req: any) {
     const result = await this.priceBooksService.create(dto, req.user?.id);
     return result;
+  }
+
+  // POS: ghi Lịch sử khi người dùng xác nhận chuyển khách sang bảng giá
+  // khách không thuộc. Cùng quyền với việc lấy danh sách bảng giá ở POS.
+  @Post('customer-switch-log')
+  @RequirePermissions('price_books:view')
+  @ApiOperation({ summary: 'Log switching a customer to another price book' })
+  logCustomerSwitch(
+    @Body() dto: LogCustomerSwitchDto,
+    @Req() req: { user: { id: number } },
+  ) {
+    return this.priceBooksService.logCustomerSwitch(dto, req.user.id);
   }
 
   @Post(':id/products')

@@ -228,6 +228,21 @@ describe('Internal fund ledger', () => {
     });
   });
 
+  it('issues an office manual expense without a reason (no weekly approval)', async () => {
+    const f = fixture();
+    f.entry.branchId = 4;
+    f.entry.status = 'PENDING_ACCOUNTANT';
+    f.entry.code = 'TCNB-CHI-2';
+    f.entry.weeklyBatch = null;
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.transactions[0]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      branchId: 4,
+      description: 'TCNB-CHI-2',
+    });
+    expect(f.entry.cashIssued).toBe(true);
+  });
+
   it('pulls an entry out of a not-yet-sent batch on manual issue and refuses a batch in approval', async () => {
     const f = fixture();
     f.entry.status = 'READY_FOR_WEEKLY_APPROVAL';

@@ -571,6 +571,14 @@ export const AUDIT_TEMPLATES: Record<
     category: 'setting',
     severity: 'info',
   },
+  // POS: đổi bảng giá của đơn đang lên sang bảng giá khách không thuộc (đã
+  // xác nhận). Chỉ áp cho đơn đó, không đổi Thiết lập giá.
+  PRICE_BOOK_CUSTOMER_SWITCH: {
+    template:
+      'Bán hàng: đổi bảng giá đơn đang lên cho khách hàng {customerName} từ "{fromPriceBookName}" sang "{toPriceBookName}" (khách không thuộc bảng giá này)',
+    category: 'customer',
+    severity: 'warning',
+  },
 
   SETTINGS_UPDATE: {
     template: 'Cập nhật cài đặt hệ thống',

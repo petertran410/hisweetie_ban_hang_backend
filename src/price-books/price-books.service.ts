@@ -13,11 +13,13 @@ import {
   ApplicablePriceBooksDto,
   ProductPriceDto,
   ProductsWithPricesQueryDto,
+  LogCustomerSwitchDto,
 } from './dto';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
 import { searchProductIds } from '../common/product-search.util';
 import {
   filterPriceBooksForCustomer,
+  isRestrictedPriceBook,
   selectablePriceBookWhere,
 } from './price-book-customer-scope';
 import {
@@ -650,6 +652,95 @@ export class PriceBooksService {
     }
 
     return priceBooks;
+  }
+
+  // POS: ghi Lịch sử khi người dùng xác nhận chuyển khách sang bảng giá khách
+  // không thuộc. Tên khách/bảng giá/chi nhánh đọc từ DB, không lấy từ client.
+  async logCustomerSwitch(dto: LogCustomerSwitchDto, userId: number) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: dto.customerId },
+      select: { id: true, code: true, name: true },
+    });
+    if (!customer) {
+      throw new NotFoundException(
+        `Không tìm thấy khách hàng ${dto.customerId}`,
+      );
+    }
+
+    const priceBookIds = [dto.fromPriceBookId, dto.toPriceBookId].filter(
+      (id): id is number => !!id && id > 0,
+    );
+    const [priceBooks, usable, branch, user] = await Promise.all([
+      this.prisma.priceBook.findMany({
+        where: { id: { in: priceBookIds } },
+        select: { id: true, name: true },
+      }),
+      // Bảng giá khách dùng được ở chi nhánh/người dùng này.
+      this.getApplicablePriceBooks({
+        branchId: dto.branchId,
+        userId,
+        customerId: customer.id,
+      }),
+      dto.branchId
+        ? this.prisma.branch.findUnique({
+            where: { id: dto.branchId },
+            select: { id: true, name: true },
+          })
+        : null,
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      }),
+    ]);
+
+    // 0 hoặc trống = Bảng giá chung. Bảng giá đã bị xóa (tab POS cũ) vẫn ghi
+    // log theo id, không chặn việc chuyển.
+    const priceBookOf = (id?: number) => {
+      if (!id) return { id: 0, name: 'Bảng giá chung' };
+      return (
+        priceBooks.find((p) => p.id === id) ?? { id, name: `Bảng giá #${id}` }
+      );
+    };
+    const fromPriceBook = priceBookOf(dto.fromPriceBookId);
+    const toPriceBook = priceBookOf(dto.toPriceBookId);
+    // Bảng giá riêng khách đang thuộc (theo khách hoặc nhóm khách).
+    const customerPriceBooks = usable
+      .filter(isRestrictedPriceBook)
+      .map((pb) => ({ id: pb.id, name: pb.name }));
+
+    const messageParams = {
+      customerName: customer.code
+        ? `${customer.code} - ${customer.name}`
+        : customer.name,
+      toPriceBookName: toPriceBook.name,
+      fromPriceBookName: fromPriceBook.name,
+    };
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PRICE_BOOK_CUSTOMER_SWITCH',
+      entityType: 'customers',
+      entityId: customer.id.toString(),
+      entityCode: customer.code ?? undefined,
+      category: getCategoryFromActionCode('PRICE_BOOK_CUSTOMER_SWITCH'),
+      severity: getSeverityFromActionCode('PRICE_BOOK_CUSTOMER_SWITCH'),
+      snapshot: {
+        customer,
+        customerPriceBooks,
+        fromPriceBook,
+        toPriceBook,
+        branch,
+      },
+      message: renderAuditMessage('PRICE_BOOK_CUSTOMER_SWITCH', messageParams),
+      messageTemplate: 'PRICE_BOOK_CUSTOMER_SWITCH',
+      messageParams,
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: branch?.id,
+      branchName: branch?.name,
+    });
+
+    return { success: true };
   }
 
   async getPriceForProduct(params: ProductPriceDto) {
