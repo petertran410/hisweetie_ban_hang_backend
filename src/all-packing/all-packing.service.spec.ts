@@ -23,6 +23,7 @@ describe('AllPackingService', () => {
       invoiceDetail: {
         findMany: jest.fn(),
       },
+      $queryRaw: jest.fn(),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -68,6 +69,62 @@ describe('AllPackingService', () => {
     expect(res.data[0].expenseFileCount).toBe(1);
     expect(res.data[0].images).toHaveLength(2);
     expect(res.data[0].expenseFiles).toHaveLength(1);
+  });
+
+  it('cashWarning chỉ lấy phiếu giao hàng có cảnh báo thu tiền mặt', async () => {
+    prisma.$queryRaw.mockResolvedValue([{ id: 7 }, { id: 9 }]);
+    prisma.packingSlip.findMany.mockResolvedValue([
+      {
+        id: 7,
+        code: 'PS007',
+        paymentMethod: 'transfer',
+        cashAmount: 0,
+        createdAt: new Date('2026-09-12T10:00:00Z'),
+        invoices: [
+          {
+            id: 1,
+            invoice: {
+              id: 70,
+              code: 'HD070',
+              paymentNotes: [{ paymentType: 'cash', amount: '450000' }],
+            },
+          },
+        ],
+        _count: { images: 0, expenseFiles: 0 },
+      },
+    ]);
+    prisma.packingSlip.count.mockResolvedValue(2);
+    prisma.invoiceDetail.findMany.mockResolvedValue([]);
+
+    const res = await service.findAll({
+      cashWarning: true,
+      branchIds: [1],
+      pageSize: 15,
+      currentItem: 0,
+    });
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.packingHang.count).not.toHaveBeenCalled();
+    expect(prisma.packingLoading.count).not.toHaveBeenCalled();
+    expect(prisma.packingSlip.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          branchId: { in: [1] },
+          id: { in: [7, 9] },
+        }),
+      }),
+    );
+    expect(res.total).toBe(2);
+    expect(res.data[0].cashWarning).toEqual({
+      kind: 'transfer',
+      invoiceCash: 450000,
+      slipCash: 0,
+      codes: ['HD070'],
+    });
+    expect(res.data[0].invoices[0].invoice.paymentNote).toEqual({
+      paymentType: 'cash',
+      amount: 450000,
+    });
   });
 
   it('combines keys and paginates across 3 tables when type is all', async () => {

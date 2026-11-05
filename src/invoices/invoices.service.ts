@@ -69,6 +69,10 @@ import {
   assertCanDeliverForCustomer,
 } from '../common/debt-delivery.util';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
+import {
+  LATEST_PAYMENT_NOTE,
+  latestPaymentNote,
+} from '../common/payment-note.util';
 
 const POS_PAYMENT_EPSILON = 1;
 
@@ -188,28 +192,6 @@ const INVOICE_LIST_SELECT = {
     select: INVOICE_PACKING_SLIP_CREATOR_SELECT,
   },
 } as const;
-
-/** Ghi chú thanh toán mới nhất của hóa đơn (lấy kèm khi chọn hóa đơn báo đơn). */
-const LATEST_PAYMENT_NOTE = {
-  orderBy: { createdAt: 'desc' as const },
-  take: 1,
-  select: { paymentType: true, amount: true },
-};
-
-/**
- * Cách khách trả của hóa đơn (tiền mặt kèm số tiền cần thu / chuyển khoản),
- * để phiếu giao hàng điền sẵn phần thanh toán.
- */
-function latestPaymentNote(
-  notes?: { paymentType: string; amount: unknown }[] | null,
-): { paymentType: string; amount: number | null } | null {
-  const note = notes?.[0];
-  if (!note) return null;
-  return {
-    paymentType: note.paymentType,
-    amount: note.amount == null ? null : Number(note.amount),
-  };
-}
 
 @Injectable()
 export class InvoicesService {

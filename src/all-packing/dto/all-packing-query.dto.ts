@@ -5,6 +5,7 @@ import {
   IsIn,
   IsArray,
   IsDateString,
+  IsBoolean,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 
@@ -48,6 +49,13 @@ export class AllPackingQueryDto {
   @IsOptional()
   @IsString()
   paymentMethod?: string;
+
+  // Chỉ phiếu giao hàng có tiền mặt cần thu lệch so với ghi chú thanh toán
+  // của hóa đơn (hoặc hóa đơn ghi tiền mặt mà phiếu chọn chuyển khoản).
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  cashWarning?: boolean;
 
   @IsOptional()
   @IsDateString()
