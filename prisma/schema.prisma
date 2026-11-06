@@ -5467,3 +5467,409 @@ model Unit {
 
   @@map("units")
 }
+
+// Gộp khách vào "khách cha" (chuỗi / khách buôn). Quy tắc khớp đầu tiên theo
+// priority tăng dần thắng; không khớp thì dùng tên khách.
+// matchType: "code" = mã khách trùng pattern (không phân biệt hoa thường),
+//            "name_contains" = tên khách chứa pattern (không phân biệt hoa thường).
+model AnalyticsCustomerParentRule {
+  id         Int      @id @default(autoincrement())
+  matchType  String   @map("match_type")
+  pattern    String
+  parentName String   @map("parent_name")
+  priority   Int      @default(0)
+  isActive   Boolean  @default(true) @map("is_active")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([isActive, priority])
+  @@map("analytics_customer_parent_rules")
+}
+
+// Team bán hàng dùng cho báo cáo. Chỉ team isSale = true được tính số liệu.
+model AnalyticsSaleTeam {
+  id        Int                        @id @default(autoincrement())
+  code      String                     @unique
+  name      String
+  isSale    Boolean                    @default(true) @map("is_sale")
+  sortOrder Int                        @default(0) @map("sort_order")
+  createdAt DateTime                   @default(now()) @map("created_at")
+  updatedAt DateTime                   @updatedAt @map("updated_at")
+  members   AnalyticsSaleTeamMember[]
+
+  @@map("analytics_sale_teams")
+}
+
+// Nhân viên thuộc team nào. Nhân viên không có ở đây không được tính.
+model AnalyticsSaleTeamMember {
+  id        Int               @id @default(autoincrement())
+  userId    Int               @unique @map("user_id")
+  teamId    Int               @map("team_id")
+  team      AnalyticsSaleTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  @@index([teamId])
+  @@map("analytics_sale_team_members")
+}
+
+// Nhóm hàng 2026 (Nhóm A–D, Chưa Phân Loại) theo mã sản phẩm.
+model AnalyticsProductGroup {
+  id          Int      @id @default(autoincrement())
+  productCode String   @unique @map("product_code")
+  groupName   String   @map("group_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([groupName])
+  @@map("analytics_product_groups")
+}
+
+// ===== Báo cáo Phân tích — bảng cấu hình / chỉ tiêu của từng báo cáo =====
+
+// --- dinh-ki.prisma ---
+// Chờ gộp vào schema.prisma — bảng cấu hình báo cáo Phân tích › Định Kì + Hằng Tuần
+// (khớp pbi-extract/seed/dinh-ki-tables.sql).
+
+// Chỉ tiêu tháng theo nhóm hàng: kind 'group2026' (Nhóm A–D) | 'visual' (1.Boduo, 2.Trong nước…).
+model AnalyticsDkGroupTarget {
+  id        Int      @id @default(autoincrement())
+  kind      String
+  groupName String   @map("group_name")
+  year      Int
+  month     Int
+  kpiValue  Float    @default(0) @map("kpi_value")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([kind, groupName, year, month])
+  @@map("analytics_dk_group_targets")
+}
+
+// Mã hàng mứt / siro → vị mứt + thương hiệu (Lermao | Boduo), trang Đối Thủ.
+model AnalyticsDkJamFlavor {
+  id          Int      @id @default(autoincrement())
+  productCode String   @unique @map("product_code")
+  jamFlavor   String   @map("jam_flavor")
+  brand       String
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_dk_jam_flavors")
+}
+
+// Nhân viên tính trong báo cáo Hằng Tuần + nhóm "Người Bán".
+model AnalyticsDkWeeklySeller {
+  id          Int      @id @default(autoincrement())
+  userId      Int      @unique @map("user_id")
+  sellerGroup String   @map("seller_group")
+  sortOrder   Int      @default(0) @map("sort_order")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_dk_weekly_sellers")
+}
+
+// --- khach-hang-dlcl.prisma ---
+// Chờ gộp vào schema.prisma — cấu hình trang ĐLCL của báo cáo Phân tích › Khách Hàng
+// (khớp pbi-extract/seed/khach-hang-dlcl-tables.sql).
+
+// Chương trình đại lý chiến lược: nhóm khách POS + ngành hàng / thương hiệu áp dụng.
+// code: lermao | mut-lermao | boduo | phuong-hoang | internal (khách nội bộ).
+model AnalyticsStrategicProgram {
+  id                Int      @id @default(autoincrement())
+  code              String   @unique
+  name              String
+  customerGroupName String?  @map("customer_group_name")
+  productType       String?  @map("product_type")
+  brand             String?
+  sortOrder         Int      @default(0) @map("sort_order")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_strategic_programs")
+}
+
+// Đại lý (cột) của một chương trình: các mã khách (so khớp "chứa"), matchAll = tất cả khách.
+model AnalyticsStrategicDistributor {
+  id            Int      @id @default(autoincrement())
+  programCode   String   @map("program_code")
+  name          String
+  customerCodes String[] @default([]) @map("customer_codes")
+  matchAll      Boolean  @default(false) @map("match_all")
+  sortOrder     Int      @default(0) @map("sort_order")
+  isActive      Boolean  @default(true) @map("is_active")
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([programCode, sortOrder])
+  @@map("analytics_strategic_distributors")
+}
+
+// --- khach-hang.prisma ---
+// Chờ gộp vào schema.prisma — bảng cấu hình báo cáo Phân tích › Khách Hàng
+// (khớp pbi-extract/seed/khach-hang-tables.sql).
+
+// Danh sách mã khách theo list_key: key_persale (Excel dim_customer_key), vip_layer2
+// (is_customer_vip), demand_maycha (is_customer_maycha). Khớp mã hoặc mã bỏ đuôi ".1".
+model AnalyticsCustomerList {
+  id           Int      @id @default(autoincrement())
+  listKey      String   @map("list_key")
+  customerCode String   @map("customer_code")
+  customerName String?  @map("customer_name")
+  note         String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([listKey, customerCode])
+  @@map("analytics_customer_lists")
+}
+
+// Nhóm khách POS đánh dấu sale phụ trách (dim_customers[sale_pic]) + team (group_sale_name).
+model AnalyticsCustomerSalePic {
+  id        Int      @id @default(autoincrement())
+  groupName String   @unique @map("group_name")
+  teamName  String?  @map("team_name")
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_customer_sale_pics")
+}
+
+// Quy tắc dim_customers[sale_rep]: sale_pic + loại khách + vùng (NULL = mọi giá trị) → sale đại diện.
+model AnalyticsCustomerSaleRepRule {
+  id           Int      @id @default(autoincrement())
+  salePic      String   @map("sale_pic")
+  customerType String?  @map("customer_type")
+  region       String?
+  saleRep      String   @map("sale_rep")
+  priority     Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([priority])
+  @@map("analytics_customer_sale_rep_rules")
+}
+
+// --- kinh-doanh.prisma ---
+// Model chờ gộp vào schema.prisma — báo cáo Phân tích › Kinh Doanh
+// (BC Định Kì, Khách Hàng, Sản Phẩm, Đối Thủ). Bảng đã tạo bằng
+// pbi-extract/seed/kinh-doanh-tables.sql; dữ liệu nạp bằng
+// prisma/seeds/seed-analytics-kinh-doanh.ts.
+
+/// Chỉ tiêu tháng theo nhóm hàng hiển thị (Power BI: kpi_product_group_2025)
+model AnalyticsKdVisualGroupTarget {
+  id                 Int      @id @default(autoincrement())
+  visualProductGroup String   @map("visual_product_group")
+  year               Int
+  month              Int
+  kpiValue           Float    @default(0) @map("kpi_value")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([visualProductGroup, year, month], map: "analytics_kd_visual_group_targets_group_year_month_key")
+  @@map("analytics_kd_visual_group_targets")
+}
+
+/// Khách KEY PerSale / VIP (Power BI: dim_customer_key — Excel SharePoint)
+model AnalyticsKdCustomerKey {
+  id           Int      @id @default(autoincrement())
+  customerCode String   @unique @map("customer_code")
+  isVip        Boolean  @default(false) @map("is_vip")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_kd_customer_keys")
+}
+
+/// Cột khách ĐLCL Lermao (Power BI: field parameter "KHCL Lermao")
+model AnalyticsKdDlclColumn {
+  id            Int      @id @default(autoincrement())
+  label         String
+  customerCodes String[] @default([]) @map("customer_codes")
+  sortOrder     Int      @default(0) @map("sort_order")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_kd_dlcl_columns")
+}
+
+/// Vị mứt Lermao / Boduo (Power BI: dim_boduo_lermao)
+model AnalyticsKdJamFlavor {
+  id          Int      @id @default(autoincrement())
+  productCode String   @unique @map("product_code")
+  brand       String
+  jamFlavor   String   @map("jam_flavor")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_kd_jam_flavors")
+}
+
+// --- kpi.prisma ---
+// Chờ gộp vào schema.prisma — bảng chỉ tiêu KPI (khớp pbi-extract/seed/kpi-tables.sql).
+
+// Chỉ tiêu doanh số theo sale / tháng (kpi_sale_by_revenue của KPI Sale).
+model AnalyticsKpiRevenueTarget {
+  id          Int      @id @default(autoincrement())
+  year        Int
+  month       Int
+  saleCode    String   @map("sale_code")
+  kpiValue    Float    @default(0) @map("kpi_value")
+  basicSalary Float    @default(0) @map("basic_salary")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([year, month, saleCode])
+  @@map("analytics_kpi_revenue_targets")
+}
+
+// Chỉ tiêu doanh số theo sale / nhóm hàng 2026 / tháng (kpi_sale_by_product của KPI Sale).
+model AnalyticsKpiProductTarget {
+  id           Int      @id @default(autoincrement())
+  year         Int
+  month        Int
+  saleCode     String   @map("sale_code")
+  productGroup String   @map("product_group")
+  kpiValue     Float    @default(0) @map("kpi_value")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([year, month, saleCode, productGroup])
+  @@map("analytics_kpi_product_targets")
+}
+
+// ── Cấu hình KPI Sale (khớp pbi-extract/seed/kpi-sale-tables.sql) ──────────
+
+// Người đại diện của khách (DAX dim_customers[sale_rep]); hiệu lực theo ngày mua.
+model AnalyticsKpiSaleRepRule {
+  id           Int       @id @default(autoincrement())
+  priority     Int       @default(0)
+  salePic      String    @map("sale_pic")
+  customerType String?   @map("customer_type")
+  region       String?
+  saleCode     String    @map("sale_code")
+  validFrom    DateTime? @map("valid_from") @db.Date
+  validTo      DateTime? @map("valid_to") @db.Date
+  isActive     Boolean   @default(true) @map("is_active")
+  note         String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@index([isActive, priority])
+  @@map("analytics_kpi_sale_rep_rules")
+}
+
+// Điều kiện "tính thu nhập" (DAX invoice_detail[check_logic]).
+model AnalyticsKpiIncomeRule {
+  id            Int      @id @default(autoincrement())
+  saleCode      String   @map("sale_code")
+  customerTypes String[] @default([]) @map("customer_types")
+  productTypes  String[] @default([]) @map("product_types")
+  productGroups String[] @default([]) @map("product_groups")
+  isActive      Boolean  @default(true) @map("is_active")
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([saleCode])
+  @@map("analytics_kpi_income_rules")
+}
+
+// Gộp mã hàng (mã AA / mã cũ → mã chính) trước khi lấy loại hàng, nhóm hàng 2026.
+model AnalyticsKpiProductCodeMap {
+  id        Int      @id @default(autoincrement())
+  fromCode  String   @unique @map("from_code")
+  toCode    String   @map("to_code")
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_kpi_product_code_maps")
+}
+
+// --- mua-hang.prisma ---
+// Chờ gộp vào schema.prisma — bảng cấu hình báo cáo Phân tích › Chuyển Kho + Thu Mua
+// (khớp pbi-extract/seed/mua-hang-tables.sql). Nguồn: dataset_purchasing của Power BI.
+
+// Gộp mã hàng khi tính số bán (CASE trong Power Query fact_invoice_item: mã AA → mã chính).
+model AnalyticsProductCodeMerge {
+  id        Int      @id @default(autoincrement())
+  fromCode  String   @unique @map("from_code")
+  toCode    String   @map("to_code")
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_product_code_merges")
+}
+
+// Nhân viên bị loại khỏi số bán của báo cáo Thu Mua (filter report sold_by_name).
+model AnalyticsPurchaseExcludedSeller {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @unique @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_purchase_excluded_sellers")
+}
+
+// Thông số mua hàng theo mã hàng (dim_manufactory + dim_minimum_inventory + dim_convert_box + dim_category_rd).
+model AnalyticsPurchaseProduct {
+  id              Int      @id @default(autoincrement())
+  productCode     String   @unique @map("product_code")
+  manufactory     String?
+  spec            String?
+  supplyType      String?  @map("supply_type")
+  minOrderBox     Int?     @map("min_order_box")
+  minStockHn      Int?     @map("min_stock_hn")
+  minStockSg      Int?     @map("min_stock_sg")
+  packDetail      String?  @map("pack_detail")
+  convertQuantity Int?     @map("convert_quantity")
+  subCateLv1      String?  @map("sub_cate_lv1")
+  subCateLv2      String?  @map("sub_cate_lv2")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("analytics_purchase_products")
+}
+
+// Chương trình rebate của nhà máy (dim_rebate).
+model AnalyticsPurchaseRebate {
+  id          Int      @id @default(autoincrement())
+  applyYear   Int      @map("apply_year")
+  manufactory String
+  rebateName  String   @map("rebate_name")
+  targetCny   Float?   @map("target_cny")
+  targetVnd   Float?   @map("target_vnd")
+  rebateType  String   @default("percent") @map("rebate_type")
+  mainValue   Float?   @map("main_value")
+  subValue    Float?   @map("sub_value")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@index([applyYear, manufactory])
+  @@map("analytics_purchase_rebates")
+}
+
+// --- quan-tri.prisma ---
+// Chờ gộp vào schema.prisma — cấu hình báo cáo Phân tích › Quản Trị
+// (khớp pbi-extract/seed/quan-tri-tables.sql).
+
+// Khách / nhân viên KHÔNG tính vào báo cáo Quản Trị.
+//   kind = 'customer': mã khách (thay dim_customers[is_include_from_report] = 0 của Power BI)
+//   kind = 'seller'  : users.id (thay bước lọc sold_by_id <> 2 trong Power Query)
+model AnalyticsManagementExclusion {
+  id        Int      @id @default(autoincrement())
+  kind      String
+  code      String
+  note      String?
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([kind, code])
+  @@map("analytics_management_exclusions")
+}

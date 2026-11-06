@@ -1,4 +1,17 @@
-import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  ParseIntPipe,
+  Patch,
+  Post,
+  Put,
+  Query,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { Response } from 'express';
 import { ReportsService } from './reports.service';
 import { SaleReportsService } from './sale-reports.service';
@@ -7,6 +20,8 @@ import { SupplierReportsService } from './supplier-reports.service';
 import { FinancialReportsService } from './financial-reports.service';
 import { EodReportsService } from './eod-reports.service';
 import { CustomerReportsService } from './customer-reports.service';
+import { AnalyticsReportsService } from './analytics-reports.service';
+import { AnalyticsConfigService } from './analytics-config.service';
 import {
   ReportQueryDto,
   SaleReportQueryDto,
@@ -15,6 +30,16 @@ import {
   FinancialReportQueryDto,
   EodReportQueryDto,
   CustomerReportQueryDto,
+  AnalyticsBusinessQueryDto,
+  AnalyticsConfigListQueryDto,
+  AnalyticsParentRuleDto,
+  AnalyticsParentRuleUpdateDto,
+  AnalyticsSaleTeamDto,
+  AnalyticsSaleTeamUpdateDto,
+  AnalyticsMemberUpdateDto,
+  AnalyticsProductGroupDto,
+  AnalyticsProductGroupUpdateDto,
+  AnalyticsPreviewParentQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ReportsPermissionGuard } from './reports-permission.guard';
@@ -34,6 +59,8 @@ export class ReportsController {
     private financialReportsService: FinancialReportsService,
     private eodReportsService: EodReportsService,
     private customerReportsService: CustomerReportsService,
+    private analyticsReportsService: AnalyticsReportsService,
+    private analyticsConfigService: AnalyticsConfigService,
   ) {}
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -510,5 +537,127 @@ export class ReportsController {
     );
     res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
     await this.reportsService.exportCustomerDebt(query, res);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // NHÓM PHÂN TÍCH (thay Power BI)
+  // ═══════════════════════════════════════════════════════════════════════════
+  @Get('analytics/business-overview')
+  @ReportPermission({ key: 'reports:analytics_business' })
+  @ApiOperation({
+    summary: 'Phân tích › Kinh Doanh › Tổng Quan (logic Power BI)',
+  })
+  getAnalyticsBusinessOverview(@Query() query: AnalyticsBusinessQueryDto) {
+    return this.analyticsReportsService.getBusinessOverview(query);
+  }
+
+  @Get('analytics/filter-options')
+  @ReportPermission({ key: 'reports:analytics_business' })
+  @ApiOperation({ summary: 'Danh sách cho bộ lọc báo cáo Phân tích' })
+  getAnalyticsFilterOptions() {
+    return this.analyticsReportsService.getFilterOptions();
+  }
+
+  // ── Cấu hình ──────────────────────────────────────────────────────────────
+  @Get('analytics/config/parent-rules')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  listAnalyticsParentRules(@Query() query: AnalyticsConfigListQueryDto) {
+    return this.analyticsConfigService.listParentRules(query);
+  }
+
+  @Get('analytics/config/parent-rules/preview')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  previewAnalyticsParent(@Query() query: AnalyticsPreviewParentQueryDto) {
+    return this.analyticsConfigService.previewParent(query.search);
+  }
+
+  @Post('analytics/config/parent-rules')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  createAnalyticsParentRule(@Body() dto: AnalyticsParentRuleDto) {
+    return this.analyticsConfigService.createParentRule(dto);
+  }
+
+  @Patch('analytics/config/parent-rules/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  updateAnalyticsParentRule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AnalyticsParentRuleUpdateDto,
+  ) {
+    return this.analyticsConfigService.updateParentRule(id, dto);
+  }
+
+  @Delete('analytics/config/parent-rules/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  deleteAnalyticsParentRule(@Param('id', ParseIntPipe) id: number) {
+    return this.analyticsConfigService.deleteParentRule(id);
+  }
+
+  @Get('analytics/config/sale-teams')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  listAnalyticsSaleTeams() {
+    return this.analyticsConfigService.listTeams();
+  }
+
+  @Post('analytics/config/sale-teams')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  createAnalyticsSaleTeam(@Body() dto: AnalyticsSaleTeamDto) {
+    return this.analyticsConfigService.createTeam(dto);
+  }
+
+  @Patch('analytics/config/sale-teams/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  updateAnalyticsSaleTeam(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AnalyticsSaleTeamUpdateDto,
+  ) {
+    return this.analyticsConfigService.updateTeam(id, dto);
+  }
+
+  @Delete('analytics/config/sale-teams/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  deleteAnalyticsSaleTeam(@Param('id', ParseIntPipe) id: number) {
+    return this.analyticsConfigService.deleteTeam(id);
+  }
+
+  @Get('analytics/config/sale-team-members')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  listAnalyticsTeamMembers(@Query() query: AnalyticsConfigListQueryDto) {
+    return this.analyticsConfigService.listMembers(query);
+  }
+
+  @Put('analytics/config/sale-team-members/:userId')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  setAnalyticsTeamMember(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() dto: AnalyticsMemberUpdateDto,
+  ) {
+    return this.analyticsConfigService.setMember(userId, dto.teamId ?? null);
+  }
+
+  @Get('analytics/config/product-groups')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  listAnalyticsProductGroups(@Query() query: AnalyticsConfigListQueryDto) {
+    return this.analyticsConfigService.listProductGroups(query);
+  }
+
+  @Post('analytics/config/product-groups')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  createAnalyticsProductGroup(@Body() dto: AnalyticsProductGroupDto) {
+    return this.analyticsConfigService.createProductGroup(dto);
+  }
+
+  @Patch('analytics/config/product-groups/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  updateAnalyticsProductGroup(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AnalyticsProductGroupUpdateDto,
+  ) {
+    return this.analyticsConfigService.updateProductGroup(id, dto);
+  }
+
+  @Delete('analytics/config/product-groups/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  deleteAnalyticsProductGroup(@Param('id', ParseIntPipe) id: number) {
+    return this.analyticsConfigService.deleteProductGroup(id);
   }
 }

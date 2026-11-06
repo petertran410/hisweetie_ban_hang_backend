@@ -29,6 +29,7 @@ import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { assertCanConfirmOrder } from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -1042,6 +1043,16 @@ export class OrdersService {
       }
 
       await this.calculateTotals(id, tx);
+
+      // Phiếu tạm → Đã xác nhận: khách phải đủ điều kiện ra hóa đơn (không
+      // có phiếu ngừng đi hàng, khách không công nợ phải trả đủ). Kiểm tra
+      // sau calculateTotals để dùng tổng tiền/thanh toán mới nhất.
+      if (
+        dto.orderStatus === 'confirmed' &&
+        existingOrder.status !== ORDER_STATUS.CONFIRMED
+      ) {
+        await assertCanConfirmOrder(tx, id);
+      }
 
       const updatedOrderBeforeCalc = await tx.order.findUnique({
         where: { id },

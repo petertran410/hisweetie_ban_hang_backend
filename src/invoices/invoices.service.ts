@@ -67,6 +67,7 @@ import { TiktokEventsOutboxService } from '../tiktok-events/tiktok-events-outbox
 import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
+  assertPrepaidPolicySatisfied,
 } from '../common/debt-delivery.util';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 import {
@@ -4131,30 +4132,6 @@ export class InvoicesService {
     await recalcCustomerDebt(tx, customerId, { syncTotalPurchased: true });
   }
 
-  /**
-   * Giữ tương thích với chính sách cũ: cờ này chỉ được dùng để thực thi
-   * quy tắc thanh toán đủ, không suy diễn lại từ debtForm/debtRuleType.
-   * Khách mới mặc định PREPAID + NONE và được tạo với cờ = true; khách cũ
-   * vẫn giữ nguyên giá trị đã lưu.
-   */
-  private requiresFullPaymentForInvoice(
-    policy:
-      | {
-          debtForm: string | null;
-          hasCreditLimit: boolean;
-          hasTermDays: boolean;
-          isActive: boolean;
-          requireFullPaymentForInvoice?: boolean;
-        }
-      | null
-      | undefined,
-  ) {
-    return !!(
-      policy?.isActive !== false &&
-      policy?.requireFullPaymentForInvoice === true
-    );
-  }
-
   private getPosPaymentAmount(
     dto: Pick<CreateInvoiceDto, 'paidAmount' | 'payments'>,
     fallback: number,
@@ -4183,25 +4160,17 @@ export class InvoicesService {
     mode: 'invoice' | 'order';
     paymentMethod?: 'cash' | 'transfer' | string;
   }) {
-    if (!this.requiresFullPaymentForInvoice(input.policy)) return;
-    if (input.paymentMethod === 'cash') return;
-    // Công nợ âm là tiền khách đã trả trước nhưng chưa phân bổ. Chỉ dùng
-    // giá trị này để so sánh điều kiện; tuyệt đối không ghi vào đơn/hóa đơn.
-    const advanceCredit = Math.max(0, -(input.currentCustomerDebt ?? 0));
-    const effectivePaid = input.paidAmount + advanceCredit;
-    if (effectivePaid + POS_PAYMENT_EPSILON < input.grandTotal) {
-      throw new BadRequestException(
-        `${
-          input.mode === 'order'
-            ? POS_PREPAID_ORDER_MESSAGE
-            : POS_PREPAID_INVOICE_MESSAGE
-        } Đã thanh toán: ${Math.round(input.paidAmount).toLocaleString(
-          'vi-VN',
-        )} đ (gồm trả trước chưa phân bổ: ${Math.round(advanceCredit).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(
-          input.grandTotal,
-        ).toLocaleString('vi-VN')} đ.`,
-      );
-    }
+    assertPrepaidPolicySatisfied({
+      policy: input.policy,
+      paidAmount: input.paidAmount,
+      grandTotal: input.grandTotal,
+      currentCustomerDebt: input.currentCustomerDebt,
+      paymentMethod: input.paymentMethod,
+      message:
+        input.mode === 'order'
+          ? POS_PREPAID_ORDER_MESSAGE
+          : POS_PREPAID_INVOICE_MESSAGE,
+    });
   }
 
   async createFromOrder(

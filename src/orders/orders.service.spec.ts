@@ -277,3 +277,140 @@ describe('OrdersService cancelOrder', () => {
     expect(auditLogs.create).not.toHaveBeenCalled();
   });
 });
+
+describe('OrdersService update — chặn xác nhận đơn theo công nợ', () => {
+  const PENDING = 1;
+  const CONFIRMED = 5;
+
+  const setup = (opts: {
+    currentStatus: number;
+    savedStatus: number;
+    requireFullPayment?: boolean;
+    stopDeliveryHold?: boolean;
+  }) => {
+    const baseOrder = {
+      id: 1,
+      code: 'DH000001',
+      branchId: 1,
+      customerId: 3,
+      statusValue: 'x',
+      grandTotal: 100000,
+      items: [],
+      customer: { id: 3, code: 'KH1', name: 'Khách' },
+    };
+    const tx: any = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      order: {
+        // assertCanConfirmOrder đọc bằng `select`, các lần khác bằng `include`.
+        findUnique: jest.fn().mockImplementation((args: any) => {
+          if (args.select) {
+            return Promise.resolve({
+              customerId: 3,
+              grandTotal: 100000,
+              payments: [],
+              paymentNotes: [],
+              customer: {
+                totalDebt: 0,
+                debtPolicy: {
+                  isActive: true,
+                  requireFullPaymentForInvoice: !!opts.requireFullPayment,
+                },
+              },
+            });
+          }
+          const isFirstRead = tx.order.findUnique.mock.calls.length === 1;
+          return Promise.resolve({
+            ...baseOrder,
+            status: isFirstRead ? opts.currentStatus : opts.savedStatus,
+          });
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      debtTicketCustomer: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValue(opts.stopDeliveryHold ? { id: 10 } : null),
+      },
+    };
+    const prisma = {
+      $transaction: jest.fn(async (cb: any) => cb(tx)),
+    };
+    const larkOrderNotification = { notifyOrderConfirmedAsync: jest.fn() };
+    const service = new OrdersService(
+      prisma as any,
+      {} as any,
+      { create: jest.fn() } as any,
+      {} as any,
+      larkOrderNotification as any,
+      {} as any,
+    );
+    jest.spyOn(service as any, 'calculateTotals').mockResolvedValue(undefined);
+    return { service, tx, larkOrderNotification };
+  };
+
+  it('chặn khách không công nợ chưa trả đủ, không gửi card Lark', async () => {
+    const { service, tx, larkOrderNotification } = setup({
+      currentStatus: PENDING,
+      savedStatus: CONFIRMED,
+      requireFullPayment: true,
+    });
+
+    await expect(
+      service.update(1, { orderStatus: 'confirmed' } as any, { id: 9 }),
+    ).rejects.toThrow('chưa được thanh toán đủ nên không thể xác nhận');
+    expect(tx.order.update).toHaveBeenCalled();
+    expect(
+      larkOrderNotification.notifyOrderConfirmedAsync,
+    ).not.toHaveBeenCalled();
+  });
+
+  it('chặn khách có phiếu ngừng đi hàng đang mở', async () => {
+    const { service } = setup({
+      currentStatus: PENDING,
+      savedStatus: CONFIRMED,
+      stopDeliveryHold: true,
+    });
+
+    await expect(
+      service.update(1, { orderStatus: 'confirmed' } as any, { id: 9 }),
+    ).rejects.toThrow('phiếu ngừng đi hàng');
+  });
+
+  it('cho xác nhận khi khách đủ điều kiện', async () => {
+    const { service, tx, larkOrderNotification } = setup({
+      currentStatus: PENDING,
+      savedStatus: CONFIRMED,
+    });
+
+    await service.update(1, { orderStatus: 'confirmed' } as any, { id: 9 });
+
+    expect(tx.debtTicketCustomer.findFirst).toHaveBeenCalled();
+    expect(
+      larkOrderNotification.notifyOrderConfirmedAsync,
+    ).toHaveBeenCalledWith(1);
+  });
+
+  it('không kiểm tra khi chỉ sửa ghi chú hoặc đơn đã xác nhận sẵn', async () => {
+    const pending = setup({
+      currentStatus: PENDING,
+      savedStatus: PENDING,
+      requireFullPayment: true,
+    });
+    await pending.service.update(1, { description: 'ghi chú' } as any, {
+      id: 9,
+    });
+    expect(pending.tx.debtTicketCustomer.findFirst).not.toHaveBeenCalled();
+
+    const confirmed = setup({
+      currentStatus: CONFIRMED,
+      savedStatus: CONFIRMED,
+      requireFullPayment: true,
+    });
+    await confirmed.service.update(
+      1,
+      { orderStatus: 'confirmed', description: 'ghi chú' } as any,
+      { id: 9 },
+    );
+    expect(confirmed.tx.debtTicketCustomer.findFirst).not.toHaveBeenCalled();
+  });
+});
