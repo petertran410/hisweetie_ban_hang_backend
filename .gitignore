@@ -25,6 +25,9 @@ AGENTS.md
 
 /uploads
 
+/prisma/scripts
+/prisma/seeds
+
 # Logs
 logs
 *.log
