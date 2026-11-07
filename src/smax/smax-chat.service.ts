@@ -153,6 +153,12 @@ export interface SendContent {
   confirmed?: boolean;
 }
 
+// Thư viện Smax (https://smax.ai/bizs/<biz>/storages): CDN có chữ ký, chỉ lấy tệp trong thư mục của biz
+const SMAX_LIBRARY_URL = /^https:\/\/cdn(-[a-z]+)?\.smax\.in\/[\w-]+\/smaxai\/bizs\/[a-f0-9]{24}\//;
+export const isSmaxLibraryUrl = (url: string) => SMAX_LIBRARY_URL.test(url || '');
+const LIBRARY_PAGE = 30;
+// id Mongo của Smax (tệp / album Thư viện)
+const SMAX_ID = /^[a-f0-9]{24}$/;
 // Máy chủ ảnh/tệp/sticker của Zalo — cho phép chuyển tiếp & tải qua backend
 const ZALO_MEDIA_HOST = /^https:\/\/([\w-]+\.)*(zdn\.vn|zadn\.vn|zalo\.me|dlfl\.vn|dlmd\.me)\//;
 export const isZaloMediaUrl = (url: string) => ZALO_MEDIA_HOST.test(url || '');
@@ -734,6 +740,112 @@ export class SmaxChatService {
         };
       }),
     );
+  }
+
+  /** Album Thư viện Smax. */
+  libraryAlbums() {
+    return this.smaxApi.listStorageAlbums();
+  }
+
+  /** Tệp Thư viện Smax (lọc album / tên / loại), mỗi trang LIBRARY_PAGE tệp. */
+  async libraryFiles(q: { albumId?: string; keyword?: string; type?: 'image' | 'video'; cursor?: number }) {
+    const rows = await this.smaxApi.listStorage({
+      groupId: q.albumId,
+      name: q.keyword?.trim(),
+      type: q.type,
+      cursor: q.cursor,
+      limit: LIBRARY_PAGE,
+    });
+    const files = rows
+      .filter((r) => typeof r?.url === 'string' && isSmaxLibraryUrl(r.url))
+      .map((r) => ({
+        id: String(r.id),
+        name: String(r.name ?? ''),
+        mime: String(r.mime ?? ''),
+        size: typeof r.size === 'number' ? r.size : null,
+        url: r.url as string,
+        createdAt: r.created_at as string,
+      }));
+    const last = rows.at(-1)?.created_at;
+    return {
+      files,
+      nextCursor: rows.length >= LIBRARY_PAGE && last ? new Date(last).getTime() : null,
+    };
+  }
+
+  /** Tải tệp lên Thư viện Smax (quyền smax_chat:manage_library), vào album đang xem nếu có. */
+  async libraryUpload(actor: ChatActor, files: Express.Multer.File[], albumId?: string) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần tải lên`);
+    }
+    if (albumId && !SMAX_ID.test(albumId)) throw new BadRequestException('Album không hợp lệ');
+    const items = files.map((f) => {
+      const name = repairUploadedFilename(f.originalname);
+      const mime = f.mimetype.toLowerCase();
+      if (!IMAGE_MIMES.has(mime) && !VIDEO_MIMES.has(mime) && !FILE_MIMES.has(mime)) {
+        throw new BadRequestException(`Không hỗ trợ loại tệp "${name}"`);
+      }
+      if (f.size > MAX_ATTACHMENT_BYTES) throw new BadRequestException(`"${name}" vượt quá 25MB`);
+      return { buffer: f.buffer, name, mime };
+    });
+    const saved = await this.smaxApi.uploadStorage(items, albumId);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: 'SMAX_LIBRARY_UPLOAD',
+      entityType: 'smax_library',
+      entityId: albumId ?? 'all',
+      message: `Tải ${items.length} tệp lên Thư viện Smax: ${items.map((i) => i.name).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { albumId: albumId ?? null, files: items.map((i) => ({ name: i.name, mime: i.mime, size: i.buffer.length })) },
+    });
+    return { uploaded: saved.length };
+  }
+
+  /** Xoá tệp khỏi Thư viện Smax (quyền smax_chat:manage_library) — xoá hẳn trên Smax. */
+  async libraryDelete(actor: ChatActor, files: { id: string; name?: string }[]) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.some((f) => !SMAX_ID.test(f.id))) throw new BadRequestException('Tệp không hợp lệ');
+    const ids = [...new Set(files.map((f) => f.id))];
+    await this.smaxApi.deleteStorage(ids);
+    await this.auditLogs.create({
+      actionType: 'DELETE',
+      actionCode: 'SMAX_LIBRARY_DELETE',
+      entityType: 'smax_library',
+      entityId: ids.join(',').slice(0, 190),
+      message: `Xoá ${ids.length} tệp khỏi Thư viện Smax: ${files.map((f) => f.name || f.id).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { files },
+    });
+    return { deleted: ids.length };
+  }
+
+  /**
+   * Lấy tệp đã chọn từ Thư viện Smax làm tệp đính kèm (tải về /uploads như tệp người dùng tải lên)
+   * → đi chung luồng gửi / xem trước / gửi lại. Chỉ nhận link CDN Thư viện Smax.
+   */
+  async importLibraryFiles(items: { url: string; name: string; mime?: string }[]) {
+    if (!items?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (items.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần gửi`);
+    }
+    if (items.some((i) => !isSmaxLibraryUrl(i.url))) {
+      throw new BadRequestException('Chỉ lấy được tệp trong Thư viện Smax');
+    }
+    const files = await Promise.all(
+      items.map(async (i) => {
+        const res = await fetch(i.url, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        if (!res?.ok) throw new BadGatewayException(`Không tải được "${i.name}" từ Thư viện Smax`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        // Smax ghi mime theo lúc tải lên (có khi lệch đuôi tệp) → ưu tiên mime của CDN
+        const cdnMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const mime = cdnMime && cdnMime !== 'application/octet-stream' ? cdnMime : (i.mime || '').toLowerCase();
+        return { buffer, originalname: i.name, mimetype: mime, size: buffer.length } as Express.Multer.File;
+      }),
+    );
+    return this.uploadAttachments(files);
   }
 
   /** Thông tin hội thoại (avatar, tên) + trạng thái kết bạn (chat trực tiếp Zalo cá nhân). */

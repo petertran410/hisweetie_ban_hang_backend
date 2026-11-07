@@ -387,3 +387,76 @@ export class DeliveryBookingDto {
   @IsBoolean()
   confirmed?: boolean;
 }
+
+export class LibraryFilesQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  albumId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
+  @IsOptional()
+  @IsIn(['image', 'video'])
+  type?: 'image' | 'video';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  cursor?: number;
+}
+
+export class LibraryImportItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  url: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  mime?: string;
+}
+
+export class LibraryImportDto {
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => LibraryImportItemDto)
+  items: LibraryImportItemDto[];
+}
+
+export class LibraryUploadDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  albumId?: string;
+}
+
+export class LibraryDeleteItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  id: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  name?: string;
+}
+
+export class LibraryDeleteDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => LibraryDeleteItemDto)
+  files: LibraryDeleteItemDto[];
+}

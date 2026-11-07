@@ -108,6 +108,9 @@ const makeService = (env: Record<string, string> = {}) => {
     reactMessage: jest.fn().mockResolvedValue(undefined),
     getZaloAliases: jest.fn().mockResolvedValue(new Map()),
     renameCustomer: jest.fn((_p: string, _c: string, name: string) => Promise.resolve(name)),
+    listStorage: jest.fn().mockResolvedValue([]),
+    uploadStorage: jest.fn().mockResolvedValue([{ id: 'x' }]),
+    deleteStorage: jest.fn().mockResolvedValue(undefined),
     getMessageStates: jest.fn().mockResolvedValue(null),
     messageAction: jest.fn().mockResolvedValue(undefined),
     listFriendAvatars: jest.fn().mockResolvedValue({ zlwX: 'https://ava/x-moi.jpg' }),
@@ -216,6 +219,61 @@ describe('SmaxChatService', () => {
     );
     expect(m.stickerImage).toBe(url);
     expect(m.attachments).toEqual([]);
+  });
+
+  describe('Thư viện Smax', () => {
+    const CDN = 'https://cdn-vn.smax.in/s04/smaxai/bizs/68bb9e0029a67b92c1bf71f3/gallery/1-a.png?expire=1&signature=x';
+    afterEach(() => jest.restoreAllMocks());
+
+    it('libraryFiles: map tệp, chỉ giữ link CDN Smax, cursor = created_at tệp cuối khi đủ trang', async () => {
+      const { service, api } = makeService();
+      const rows = Array.from({ length: 30 }, (_, i) => ({
+        id: `s${i}`, name: `a${i}.png`, mime: 'image/png', size: 10, url: CDN, created_at: `2026-11-07T09:00:${String(59 - i).padStart(2, '0')}Z`,
+      }));
+      rows[3].url = 'https://evil.example/x.png';
+      api.listStorage.mockResolvedValue(rows);
+      const res = await service.libraryFiles({ albumId: 'g1', keyword: ' cat ', type: 'image' });
+      expect(api.listStorage).toHaveBeenCalledWith({ groupId: 'g1', name: 'cat', type: 'image', cursor: undefined, limit: 30 });
+      expect(res.files).toHaveLength(29);
+      expect(res.files[0]).toEqual({ id: 's0', name: 'a0.png', mime: 'image/png', size: 10, url: CDN, createdAt: rows[0].created_at });
+      expect(res.nextCursor).toBe(new Date(rows[29].created_at).getTime());
+      api.listStorage.mockResolvedValue(rows.slice(0, 5));
+      expect((await service.libraryFiles({})).nextCursor).toBeNull();
+    });
+
+    const ACTOR = { id: 1, name: 'Admin' } as any;
+    const ALBUM = '698047d04657dc2d1fbf965e';
+    const file = (name: string, mimetype: string, size = 3) =>
+      ({ originalname: name, mimetype, size, buffer: Buffer.alloc(size) }) as Express.Multer.File;
+
+    it('libraryUpload: tải lên album đang xem, ghi audit; chặn loại tệp lạ / album sai', async () => {
+      const { service, api, audit } = makeService();
+      await expect(service.libraryUpload(ACTOR, [file('a.exe', 'application/x-msdownload')])).rejects.toThrow('Không hỗ trợ loại tệp');
+      await expect(service.libraryUpload(ACTOR, [file('a.png', 'image/png')], 'bad album')).rejects.toThrow('Album không hợp lệ');
+      expect(api.uploadStorage).not.toHaveBeenCalled();
+      await expect(service.libraryUpload(ACTOR, [file('Bảng giá.png', 'image/png')], ALBUM)).resolves.toEqual({ uploaded: 1 });
+      expect(api.uploadStorage).toHaveBeenCalledWith([{ buffer: expect.any(Buffer), name: 'Bảng giá.png', mime: 'image/png' }], ALBUM);
+      expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_LIBRARY_UPLOAD', entityType: 'smax_library', entityId: ALBUM });
+    });
+
+    it('libraryDelete: xoá theo id Smax, ghi audit kèm tên tệp; id sai → 400', async () => {
+      const { service, api, audit } = makeService();
+      await expect(service.libraryDelete(ACTOR, [{ id: '../x' }])).rejects.toBeInstanceOf(BadRequestException);
+      await service.libraryDelete(ACTOR, [{ id: ALBUM, name: 'a.png' }, { id: ALBUM }]);
+      expect(api.deleteStorage).toHaveBeenCalledWith([ALBUM]);
+      expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_LIBRARY_DELETE', actionType: 'DELETE' });
+    });
+
+    it('importLibraryFiles: chỉ nhận link Thư viện Smax; tải về rồi lưu như tệp tải lên', async () => {
+      const { service } = makeService();
+      await expect(service.importLibraryFiles([{ url: 'https://evil.example/a.png', name: 'a.png' }])).rejects.toBeInstanceOf(BadRequestException);
+      jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(Buffer.from('img'), { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+      const upload = jest.spyOn(service, 'uploadAttachments').mockResolvedValue([{ path: 'smax-chat/x.png' }] as any);
+      await expect(service.importLibraryFiles([{ url: CDN, name: 'catalogue.png', mime: 'image/jpeg' }])).resolves.toEqual([{ path: 'smax-chat/x.png' }]);
+      expect(upload.mock.calls[0][0][0]).toMatchObject({ originalname: 'catalogue.png', mimetype: 'image/png', size: 3 });
+    });
   });
 
   it('getMessages: Smax lỗi khi lấy thread vẫn trả tin nhắn', async () => {

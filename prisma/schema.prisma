@@ -1646,6 +1646,24 @@ model LeadConversation {
   @@map("lead_conversations")
 }
 
+/// Tin nhắn nhanh của sidechat (gõ # để chèn): chung cho mọi tài khoản (ownerId null, cần quyền
+/// smax_chat:manage_quick_replies để sửa) hoặc riêng của 1 tài khoản (chủ tự sửa).
+model ChatQuickReply {
+  id          Int      @id @default(autoincrement())
+  ownerId     Int?     @map("owner_id")
+  shortcut    String   @db.VarChar(50)
+  content     String
+  /// Ảnh/video/tệp gửi kèm: [{ path ("smax-chat/…" trong /uploads), kind, name, size }]
+  media       Json?
+  createdById Int      @map("created_by_id")
+  updatedById Int?     @map("updated_by_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([ownerId])
+  @@map("chat_quick_replies")
+}
+
 /// 1 lần chuyển giao lead cho Sale PIC: kết quả từng bước (Lark, kết bạn, tin chào) để gửi lại bước lỗi.
 model LeadHandover {
   id            Int      @id @default(autoincrement())
