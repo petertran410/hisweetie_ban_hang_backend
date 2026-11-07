@@ -10,6 +10,7 @@ import {
   Query,
   Request,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -35,6 +36,10 @@ import {
   AnalyticsKpiSaleService,
   KpiViewer,
 } from './analytics-kpi-sale.service';
+import {
+  AnalyticsCacheInterceptor,
+  AnalyticsCachePerUser,
+} from './analytics-cache';
 
 const CONFIG = { key: 'reports:analytics_config' };
 
@@ -44,6 +49,8 @@ const CONFIG = { key: 'reports:analytics_config' };
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
+@AnalyticsCachePerUser()
 @ReportPermission({ key: 'reports:analytics_kpi' })
 @Controller('reports/analytics/kpi-sale')
 export class AnalyticsKpiSaleController {

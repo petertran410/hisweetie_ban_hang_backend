@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -30,12 +31,14 @@ import {
   KdPivotQueryDto,
   KdQueryDto,
 } from './analytics-kinh-doanh.dto';
+import { AnalyticsCacheInterceptor } from './analytics-cache';
 
 // Phân tích › Kinh Doanh (các trang ngoài Tổng Quan). Quyền mặc định của cả controller: reports:analytics_business
 // (endpoint cấu hình riêng thì gắn @ReportPermission({ key: 'reports:analytics_config' })).
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @ReportPermission({ key: 'reports:analytics_business' })
 @Controller('reports/analytics/kinh-doanh')
 export class AnalyticsKinhDoanhController {

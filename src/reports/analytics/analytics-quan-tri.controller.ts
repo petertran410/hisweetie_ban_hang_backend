@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -21,12 +22,14 @@ import {
   QtProfitQueryDto,
   QtQueryDto,
 } from './analytics-quan-tri.dto';
+import { AnalyticsCacheInterceptor } from './analytics-cache';
 
 // Phân tích › Quản Trị. Quyền mặc định của cả controller: reports:analytics_management
 // (endpoint cấu hình riêng thì gắn @ReportPermission({ key: 'reports:analytics_config' })).
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @ReportPermission({ key: 'reports:analytics_management' })
 @Controller('reports/analytics/quan-tri')
 export class AnalyticsQuanTriController {

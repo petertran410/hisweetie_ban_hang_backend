@@ -26,6 +26,10 @@ import { AnalyticsMuaHangService } from './analytics/analytics-mua-hang.service'
 import { AnalyticsKpiSaleController } from './analytics/analytics-kpi-sale.controller';
 import { AnalyticsKpiSaleService } from './analytics/analytics-kpi-sale.service';
 import { ReportsPermissionGuard } from './reports-permission.guard';
+import {
+  AnalyticsCacheInterceptor,
+  AnalyticsCacheService,
+} from './analytics/analytics-cache';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -61,6 +65,8 @@ import { AuthModule } from '../auth/auth.module';
     AnalyticsMuaHangService,
     AnalyticsKpiSaleService,
     ReportsPermissionGuard,
+    AnalyticsCacheService,
+    AnalyticsCacheInterceptor,
   ],
 })
 export class ReportsModule {}

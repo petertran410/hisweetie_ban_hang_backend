@@ -11,6 +11,7 @@ import {
   Query,
   Res,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { ReportsService } from './reports.service';
@@ -45,10 +46,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ReportsPermissionGuard } from './reports-permission.guard';
 import { ReportPermission } from '../auth/decorators/report-permission.decorator';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { AnalyticsCacheInterceptor } from './analytics/analytics-cache';
 
 @ApiTags('Reports')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @Controller('reports')
 export class ReportsController {
   constructor(
@@ -558,6 +561,17 @@ export class ReportsController {
     return this.analyticsReportsService.getFilterOptions();
   }
 
+  /**
+   * Nút "Làm mới" của báo cáo Phân tích: xoá số liệu lưu tạm (cache 5 phút).
+   * Interceptor tự xoá cache sau mọi POST dưới /reports/analytics/.
+   * Không gắn quyền riêng: chỉ xoá cache, không trả dữ liệu.
+   */
+  @Post('analytics/refresh')
+  @ApiOperation({ summary: 'Xoá số liệu lưu tạm của báo cáo Phân tích' })
+  refreshAnalyticsCache() {
+    return { success: true };
+  }
+
   // ── Cấu hình ──────────────────────────────────────────────────────────────
   @Get('analytics/config/parent-rules')
   @ReportPermission({ key: 'reports:analytics_config' })
@@ -573,23 +587,29 @@ export class ReportsController {
 
   @Post('analytics/config/parent-rules')
   @ReportPermission({ key: 'reports:analytics_config' })
-  createAnalyticsParentRule(@Body() dto: AnalyticsParentRuleDto) {
-    return this.analyticsConfigService.createParentRule(dto);
+  async createAnalyticsParentRule(@Body() dto: AnalyticsParentRuleDto) {
+    const r = await this.analyticsConfigService.createParentRule(dto);
+    this.analyticsReportsService.invalidateParentMap();
+    return r;
   }
 
   @Patch('analytics/config/parent-rules/:id')
   @ReportPermission({ key: 'reports:analytics_config' })
-  updateAnalyticsParentRule(
+  async updateAnalyticsParentRule(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: AnalyticsParentRuleUpdateDto,
   ) {
-    return this.analyticsConfigService.updateParentRule(id, dto);
+    const r = await this.analyticsConfigService.updateParentRule(id, dto);
+    this.analyticsReportsService.invalidateParentMap();
+    return r;
   }
 
   @Delete('analytics/config/parent-rules/:id')
   @ReportPermission({ key: 'reports:analytics_config' })
-  deleteAnalyticsParentRule(@Param('id', ParseIntPipe) id: number) {
-    return this.analyticsConfigService.deleteParentRule(id);
+  async deleteAnalyticsParentRule(@Param('id', ParseIntPipe) id: number) {
+    const r = await this.analyticsConfigService.deleteParentRule(id);
+    this.analyticsReportsService.invalidateParentMap();
+    return r;
   }
 
   @Get('analytics/config/sale-teams')

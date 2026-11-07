@@ -1,6 +1,12 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  Optional,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { AnalyticsCacheService } from './analytics/analytics-cache';
 import { AnalyticsAxis, AnalyticsBusinessQueryDto } from './dto';
 import {
   CALENDAR_START,
@@ -37,6 +43,23 @@ const VIP_GROUP_NAME = 'Khách VIP Cty';
 const CUSTOMER_TYPE_GROUPS = ['Khách chuỗi', 'Khách lẻ', 'Khách buôn'];
 /** Giá trị đại diện cho "trống" khi đếm khách (DISTINCTCOUNT của DAX tính BLANK là 1 giá trị). */
 const BLANK_KEY = '__blank__';
+/**
+ * Đánh dấu trong SQL: lọc theo vùng / nhóm khách / loại khách làm Postgres đoán còn rất
+ * ít hoá đơn rồi chọn ghép từng dòng giữa các CTE (vd. 32k × 68k dòng → 1–3 phút).
+ * Câu có dấu này chạy với enable_nestloop = off (chỉ trong transaction của câu đó).
+ */
+export const NESTLOOP_OFF_MARK = '/* analytics:nestloop-off */';
+
+/** Thiết lập cho 1 câu SQL báo cáo: tắt JIT, bộ nhớ sắp xếp 32MB, tắt nested loop nếu có dấu. */
+export function analyticsSettings(sql: Prisma.Sql): Prisma.Sql {
+  return sql.text.includes(NESTLOOP_OFF_MARK)
+    ? Prisma.sql`SELECT set_config('jit', 'off', true), set_config('work_mem', '32MB', true),
+        set_config('enable_nestloop', 'off', true)`
+    : Prisma.sql`SELECT set_config('jit', 'off', true), set_config('work_mem', '32MB', true)`;
+}
+
+/** Danh sách khách cha trong bộ nhớ được tính lại sau 10 phút. */
+const PARENT_MAP_TTL = 10 * 60_000;
 
 export const VISUAL_PRODUCT_GROUPS = [
   '1.Boduo',
@@ -87,10 +110,27 @@ export interface CardValue {
  * KHÔNG đổi chữ ký các hàm này khi làm báo cáo khác — viết CTE riêng nối thêm nếu cần.
  */
 @Injectable()
-export class AnalyticsReportsService {
+export class AnalyticsReportsService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(AnalyticsReportsService.name);
   private hasDataLake?: boolean;
+  /**
+   * Khách được quy tắc gộp vào khách cha KHÁC tên mình (vài trăm khách) — giữ trong
+   * bộ nhớ, tính lại 10 phút/lần hoặc khi sửa quy tắc. maxId: khách tạo sau lần tính
+   * (id lớn hơn) thì vẫn so quy tắc trực tiếp.
+   */
+  private parentMap?: {
+    at: number;
+    maxId: number;
+    ids: number[];
+    names: string[];
+  };
+  private parentMapPending?: Promise<void>;
+  private parentMapGen = 0;
 
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    @Optional() private cache?: AnalyticsCacheService,
+  ) {}
 
   // ─────────────────────────────────────────────────────────────────────────
   // Trang Kinh Doanh › Tổng Quan
@@ -266,6 +306,10 @@ export class AnalyticsReportsService {
   // ─────────────────────────────────────────────────────────────────────────
   // SQL
   // ─────────────────────────────────────────────────────────────────────────
+  /**
+   * Kiểm tra (1 lần) bảng data_lake (hoá đơn cũ) và nạp danh sách khách cha.
+   * Phải gọi trước custCte() / baseCtes().
+   */
   async dataLakeReady(): Promise<boolean> {
     if (this.hasDataLake === undefined) {
       const r = await this.prisma.$queryRaw<{ ok: boolean }[]>`
@@ -274,19 +318,119 @@ export class AnalyticsReportsService {
            AND to_regclass('data_lake.new_province') IS NOT NULL AS ok`;
       this.hasDataLake = !!r[0]?.ok;
     }
+    await this.ensureParentMap();
     return this.hasDataLake;
+  }
+
+  /** Chạy 1 câu SQL báo cáo với analyticsSettings (tắt JIT, sort không tràn ra đĩa…). */
+  async q<T>(sql: Prisma.Sql): Promise<T> {
+    const [, rows] = await this.prisma.$transaction([
+      this.prisma.$queryRaw(analyticsSettings(sql)),
+      this.prisma.$queryRaw<T>(sql),
+    ]);
+    return rows as T;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Danh sách khách cha (trong bộ nhớ)
+  // ─────────────────────────────────────────────────────────────────────────
+  onApplicationBootstrap() {
+    // Nạp sẵn để lần mở báo cáo đầu tiên không phải chờ; lỗi chỉ ghi log.
+    setTimeout(() => void this.loadParentMap(), 5_000);
+  }
+
+  /** Gọi sau khi thêm / sửa / xoá quy tắc khách cha. */
+  invalidateParentMap() {
+    this.parentMapGen++;
+    this.parentMap = undefined;
+    this.parentMapPending = undefined;
+  }
+
+  /** Lần đầu: chờ nạp. Quá 10 phút: dùng bản cũ, nạp lại ở nền. */
+  private async ensureParentMap(): Promise<void> {
+    const m = this.parentMap;
+    if (m && Date.now() - m.at < PARENT_MAP_TTL) return;
+    const p = this.loadParentMap();
+    if (!m) await p;
+  }
+
+  private loadParentMap(): Promise<void> {
+    if (this.parentMapPending) return this.parentMapPending;
+    const p: Promise<void> = this.fetchParentMap(this.parentMapGen).finally(
+      () => {
+        if (this.parentMapPending === p) this.parentMapPending = undefined;
+      },
+    );
+    this.parentMapPending = p;
+    return p;
+  }
+
+  private async fetchParentMap(gen: number): Promise<void> {
+    try {
+      const t = Date.now();
+      // Đúng công thức khách cha của custCte, chỉ giữ khách có khách cha khác tên mình.
+      const rows = await this.q<
+        { id: number; parent_name: string; max_id: number }[]
+      >(Prisma.sql`
+          WITH rules AS (
+            SELECT id, match_type, lower(pattern) AS pat, parent_name, priority
+            FROM analytics_customer_parent_rules WHERE is_active
+          ),
+          cb AS (
+            SELECT DISTINCT ON (c.code) c.id, c.code, c.name
+            FROM customers c ORDER BY c.code, c.id
+          ),
+          m AS (
+            SELECT cb.id, cb.name, (
+              SELECT r.parent_name FROM rules r
+              WHERE (r.match_type = 'code' AND lower(cb.code) = r.pat)
+                 OR (r.match_type = 'name_contains' AND strpos(lower(cb.name), r.pat) > 0)
+              ORDER BY r.priority, r.id LIMIT 1
+            ) AS parent_name
+            FROM cb
+          )
+          SELECT m.id, m.parent_name, (SELECT COALESCE(MAX(id), 0) FROM customers)::int AS max_id
+          FROM m WHERE m.parent_name IS NOT NULL AND m.parent_name IS DISTINCT FROM m.name
+          UNION ALL
+          SELECT NULL, NULL, (SELECT COALESCE(MAX(id), 0) FROM customers)::int`);
+      if (gen !== this.parentMapGen) return; // quy tắc vừa đổi → lần sau nạp lại
+      const list = rows.filter((r) => r.id != null);
+      this.parentMap = {
+        at: Date.now(),
+        maxId: Number(rows[0]?.max_id ?? 0),
+        ids: list.map((r) => Number(r.id)),
+        names: list.map((r) => r.parent_name),
+      };
+      this.logger.log(
+        `Nạp ${list.length} khách cha theo quy tắc: ${Date.now() - t} ms`,
+      );
+    } catch (e) {
+      this.logger.warn(
+        `Không nạp được danh sách khách cha: ${(e as Error).message}`,
+      );
+    }
   }
 
   /**
    * Khách: khách cha (quy tắc), loại khách, VIP, vùng — tương đương dim_customers.
-   * scope: điều kiện trên customers c để chỉ tính những khách cần (bảng địa chỉ
-   * không có index theo khách nên lấy địa chỉ mới nhất của mọi khách một lần).
+   * scope: điều kiện trên customers c để chỉ tính những khách cần.
+   * Khách cha lấy từ danh sách trong bộ nhớ (xem parentMap) thay vì so 125 quy tắc
+   * với từng khách. Giữ nguyên tên các CTE phụ (rules, addr_new, addr_old, ctype,
+   * vip, cust_base) vì scope / báo cáo khác có thể dùng tới.
    */
   custCte(scope: Prisma.Sql): Prisma.Sql {
-    const region = this.hasDataLake
-      ? Prisma.sql`(SELECT p.region FROM data_lake.new_province p
-                    WHERE lower(p.name) = lower(COALESCE(na."newCityName", oa."cityName")) LIMIT 1)`
-      : Prisma.sql`NULL::text`;
+    return Prisma.sql`
+      ${this.custHelperCtes()},
+      cust_base AS (
+        SELECT DISTINCT ON (c.code) c.id, c.code, c.name
+        FROM customers c WHERE ${scope}
+        ORDER BY c.code, c.id
+      ),
+      cust AS (${this.custSelect()})`;
+  }
+
+  /** Các CTE phụ của custCte (chỉ chạy khi được dùng tới). */
+  private custHelperCtes(): Prisma.Sql {
     return Prisma.sql`
       rules AS (
         SELECT id, match_type, lower(pattern) AS pat, parent_name, priority
@@ -313,28 +457,44 @@ export class AnalyticsReportsService {
         FROM customer_group_details g JOIN customer_groups cg ON cg.id = g."customerGroupId"
         WHERE cg.name = ${VIP_GROUP_NAME}
       ),
-      cust_base AS (
-        SELECT DISTINCT ON (c.code) c.id, c.code, c.name
-        FROM customers c WHERE ${scope}
-        ORDER BY c.code, c.id
-      ),
-      cust AS (
-        SELECT cb.id, cb.code,
-          COALESCE((
-            SELECT r.parent_name FROM rules r
-            WHERE (r.match_type = 'code' AND lower(cb.code) = r.pat)
-               OR (r.match_type = 'name_contains' AND strpos(lower(cb.name), r.pat) > 0)
-            ORDER BY r.priority, r.id LIMIT 1
-          ), cb.name) AS parent_name,
-          ct.name AS customer_type,
-          (v."customerId" IS NOT NULL) AS is_vip,
-          ${region} AS region
-        FROM cust_base cb
-        LEFT JOIN addr_new na ON na."customerId" = cb.id
-        LEFT JOIN addr_old oa ON oa."customerId" = cb.id
-        LEFT JOIN ctype ct ON ct."customerId" = cb.id
-        LEFT JOIN vip v ON v."customerId" = cb.id
+      parent_map AS (
+        SELECT * FROM unnest(${this.parentMap?.ids ?? []}::int[], ${this.parentMap?.names ?? []}::text[])
+          AS t(customer_id, parent_name)
       )`;
+  }
+
+  /**
+   * Khách cha = quy tắc đầu tiên khớp (theo priority), không khớp thì chính tên khách.
+   * Có danh sách trong bộ nhớ → tra parent_map; chỉ khách tạo sau lần nạp mới so quy tắc.
+   */
+  private custSelect(): Prisma.Sql {
+    const live = Prisma.sql`COALESCE((
+          SELECT r.parent_name FROM rules r
+          WHERE (r.match_type = 'code' AND lower(cb.code) = r.pat)
+             OR (r.match_type = 'name_contains' AND strpos(lower(cb.name), r.pat) > 0)
+          ORDER BY r.priority, r.id LIMIT 1
+        ), cb.name)`;
+    const pm = this.parentMap;
+    const parent = pm
+      ? Prisma.sql`CASE WHEN cb.id > ${pm.maxId}::int THEN ${live}
+          ELSE COALESCE(pm.parent_name, cb.name) END`
+      : live;
+    const region = this.hasDataLake
+      ? Prisma.sql`(SELECT p.region FROM data_lake.new_province p
+                    WHERE lower(p.name) = lower(COALESCE(na."newCityName", oa."cityName")) LIMIT 1)`
+      : Prisma.sql`NULL::text`;
+    return Prisma.sql`
+      SELECT cb.id, cb.code,
+        ${parent} AS parent_name,
+        ct.name AS customer_type,
+        (v."customerId" IS NOT NULL) AS is_vip,
+        ${region} AS region
+      FROM cust_base cb
+      LEFT JOIN parent_map pm ON pm.customer_id = cb.id
+      LEFT JOIN addr_new na ON na."customerId" = cb.id
+      LEFT JOIN addr_old oa ON oa."customerId" = cb.id
+      LEFT JOIN ctype ct ON ct."customerId" = cb.id
+      LEFT JOIN vip v ON v."customerId" = cb.id`;
   }
 
   /** Sản phẩm: ngành hàng, thương hiệu, danh mục, nhóm hiển thị, nhóm 2026 — dim_product. */
@@ -432,7 +592,14 @@ export class AnalyticsReportsService {
         JOIN invx x ON NOT x.is_new AND x.code = od."invoiceCode"`
       : Prisma.empty;
 
+    const q2 = q as { region?: string; customerType?: string };
+    const mark =
+      q2.region || q.customerGroupId || q2.customerType
+        ? Prisma.raw(NESTLOOP_OFF_MARK)
+        : Prisma.empty;
+
     return Prisma.sql`
+      ${mark}
       ${this.prodCte()},
       seller AS (
         SELECT u.id AS user_id, u.kiot_viet_id
@@ -501,7 +668,7 @@ export class AnalyticsReportsService {
     dateCond: Prisma.Sql,
     axisExpr: Prisma.Sql,
   ) {
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, dateCond)}
       SELECT
         CASE WHEN GROUPING(x.y) = 0 THEN 'year' WHEN GROUPING(x.k) = 0 THEN 'period'
@@ -514,7 +681,7 @@ export class AnalyticsReportsService {
                CASE WHEN x.is_vip THEN x.parent_name END AS vip_parent
         FROM invx x
       ) x
-      GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type))`;
+      GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type))`);
     return this.toDimMap<InvAgg>(rows);
   }
 
@@ -524,7 +691,7 @@ export class AnalyticsReportsService {
     dateCond: Prisma.Sql,
     axisExpr: Prisma.Sql,
   ) {
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, dateCond)}
       SELECT
         CASE WHEN GROUPING(x.y) = 0 THEN 'year' WHEN GROUPING(x.k) = 0 THEN 'period'
@@ -539,7 +706,7 @@ export class AnalyticsReportsService {
         FROM line x
       ) x
       GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type),
-                              (x.product_type), (x.brand), (x.category))`;
+                              (x.product_type), (x.brand), (x.category))`);
     return this.toDimMap<LineAgg>(rows);
   }
 
@@ -547,9 +714,9 @@ export class AnalyticsReportsService {
     q: AnalyticsBusinessQueryDto,
     dateCond: Prisma.Sql,
   ): Promise<InvAgg> {
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, dateCond)}
-      SELECT ${this.invMetrics()} FROM invx x`;
+      SELECT ${this.invMetrics()} FROM invx x`);
     return this.num(rows[0]) as InvAgg;
   }
 
@@ -557,9 +724,9 @@ export class AnalyticsReportsService {
     q: AnalyticsBusinessQueryDto,
     dateCond: Prisma.Sql,
   ): Promise<LineAgg> {
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, dateCond)}
-      SELECT ${this.lineMetrics()} FROM line x`;
+      SELECT ${this.lineMetrics()} FROM line x`);
     return this.num(rows[0]) as LineAgg;
   }
 
@@ -567,22 +734,22 @@ export class AnalyticsReportsService {
   async invoiceByRanges(q: AnalyticsBusinessQueryDto, ranges: Range[]) {
     if (!ranges.length) return new Map<string, InvAgg>();
     const { values, cond } = this.rangeSql(ranges);
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, cond)}
       SELECT r.k::text AS key, ${this.invMetrics()}
       FROM invx x JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t
-      GROUP BY r.k`;
+      GROUP BY r.k`);
     return new Map(rows.map((r) => [String(r.key), this.num(r) as InvAgg]));
   }
 
   async lineByRanges(q: AnalyticsBusinessQueryDto, ranges: Range[]) {
     if (!ranges.length) return new Map<string, LineAgg>();
     const { values, cond } = this.rangeSql(ranges);
-    const rows = await this.prisma.$queryRaw<AggRow[]>`
+    const rows = await this.q<AggRow[]>(Prisma.sql`
       WITH ${await this.baseCtes(q, cond)}
       SELECT r.k::text AS key, ${this.lineMetrics()}
       FROM line x JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t
-      GROUP BY r.k`;
+      GROUP BY r.k`);
     return new Map(rows.map((r) => [String(r.key), this.num(r) as LineAgg]));
   }
 

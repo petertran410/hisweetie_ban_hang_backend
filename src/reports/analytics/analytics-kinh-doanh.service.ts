@@ -5,7 +5,10 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
-import { AnalyticsReportsService } from '../analytics-reports.service';
+import {
+  AnalyticsReportsService,
+  analyticsSettings,
+} from '../analytics-reports.service';
 import {
   CurrentPeriod,
   IsoDate,
@@ -190,7 +193,7 @@ export class AnalyticsKinhDoanhService {
   ): Promise<T> {
     const sql = Prisma.sql(strings, ...(values as Prisma.Sql[]));
     const [, rows] = await this.prisma.$transaction([
-      this.prisma.$executeRaw`SET LOCAL jit = off`,
+      this.prisma.$queryRaw(analyticsSettings(sql)),
       this.prisma.$queryRaw<T>(sql),
     ]);
     return rows;
@@ -403,28 +406,16 @@ export class AnalyticsKinhDoanhService {
           FROM data_lake.invoice o WHERE o.status <> 2 AND o."customerCode" IS NOT NULL`
         : Prisma.empty;
       const rows = await this.qr<{ p: string; d: string }[]>`
-        WITH rules AS (
-          SELECT id, match_type, lower(pattern) AS pat, parent_name, priority
-          FROM analytics_customer_parent_rules WHERE is_active
-        ),
-        allinv AS (
+        WITH allinv AS (
           SELECT c.code, MIN((i."purchaseDate" + interval '7 hour')::date) AS d
           FROM invoices i JOIN customers c ON c.id = i."customerId"
           WHERE i.status <> 2 GROUP BY c.code
           ${old}
         ),
         firsts AS (SELECT code, MIN(d) AS d FROM allinv GROUP BY code),
-        allcust AS (
-          SELECT DISTINCT ON (c.code) c.code, c.name FROM customers c
-          WHERE c.code IN (SELECT code FROM firsts) ORDER BY c.code, c.id
-        )
-        SELECT COALESCE((
-            SELECT r.parent_name FROM rules r
-            WHERE (r.match_type = 'code' AND lower(ac.code) = r.pat)
-               OR (r.match_type = 'name_contains' AND strpos(lower(ac.name), r.pat) > 0)
-            ORDER BY r.priority, r.id LIMIT 1
-          ), ac.name) AS p, MIN(f.d)::text AS d
-        FROM allcust ac JOIN firsts f ON f.code = ac.code
+        ${this.base.custCte(Prisma.sql`c.code IN (SELECT code FROM firsts)`)}
+        SELECT cu.parent_name AS p, MIN(f.d)::text AS d
+        FROM cust cu JOIN firsts f ON f.code = cu.code
         GROUP BY 1`;
       const data: Record<string, string> = {};
       for (const r of rows) if (r.p) data[r.p] = r.d;

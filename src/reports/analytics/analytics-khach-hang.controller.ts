@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -26,6 +27,7 @@ import {
   KhachHangQueryDto,
   KhachHangWeeklyQueryDto,
 } from './analytics-khach-hang.dto';
+import { AnalyticsCacheInterceptor } from './analytics-cache';
 
 const CONFIG = 'reports:analytics_config';
 
@@ -34,6 +36,7 @@ const CONFIG = 'reports:analytics_config';
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @ReportPermission({ key: 'reports:analytics_customer' })
 @Controller('reports/analytics/khach-hang')
 export class AnalyticsKhachHangController {
