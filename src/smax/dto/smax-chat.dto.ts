@@ -287,6 +287,21 @@ export class ReactMessageDto {
   confirmed?: boolean;
 }
 
+export class RenameThreadDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  name: string;
+}
+
 export class PassControlBizAIDto {
   @IsString()
   @IsNotEmpty()

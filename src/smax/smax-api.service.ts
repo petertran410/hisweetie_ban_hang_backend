@@ -230,6 +230,43 @@ export class SmaxApiService {
   }
 
   /**
+   * Đổi tên khách / nhóm trên Smax (= tên hội thoại, nút sửa tên trong Smax) qua API nội bộ
+   * (Partner API không có). Zalo cá nhân: customer pid = tid; Smax lưu luôn làm tên gợi nhớ của kênh.
+   */
+  async renameCustomer(pagePid: string, customerPid: string, name: string): Promise<string> {
+    if (!this.userToken) {
+      throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa đổi tên được');
+    }
+    const body = await this.request(
+      'PUT',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/customers/${customerPid}/info`,
+      { name },
+      { token: this.userToken },
+    );
+    return body?.data?.name ?? name;
+  }
+
+  /**
+   * Tên gợi nhớ Sale đặt trên app Zalo của kênh (Smax tự đồng bộ từ Zalo): customer pid → tên.
+   * Không có token → rỗng.
+   */
+  async getZaloAliases(pagePid: string): Promise<Map<string, string>> {
+    if (!this.userToken) return new Map();
+    const body = await this.request(
+      'GET',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/zaloweb-alias`,
+      undefined,
+      { allow404: true, token: this.userToken },
+    );
+    const rows: any[] = Array.isArray(body) ? body : (body?.data ?? []);
+    return new Map(
+      rows
+        .filter((r) => typeof r?.customer_pid === 'string' && typeof r?.name === 'string' && r.name.trim())
+        .map((r) => [r.customer_pid, r.name.trim()]),
+    );
+  }
+
+  /**
    * Trạng thái thu hồi / xoá của đúng trang tin như getMessages (cùng 20 tin, `cusor` = `before`),
    * lấy qua API nội bộ. Không có token → null.
    */
@@ -541,7 +578,7 @@ export class SmaxApiService {
   }
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT',
     path: string,
     data?: any,
     opts: {

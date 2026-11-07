@@ -94,6 +94,9 @@ const REACTIONS = ['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'];
 const SEND_LIMIT_PER_MINUTE = 20;
 const GROUP_INDEX_TTL_MS = 10 * 60_000;
 const RECENT_TTL_MS = 30_000;
+// Tên gợi nhớ Zalo theo kênh (Smax đồng bộ từ app Zalo) — đổi trên Zalo sẽ hiện sau tối đa 1 phút
+const ALIAS_TTL_MS = 60_000;
+const THREAD_NAME_MAX = 100;
 // So khớp tên không phân biệt hoa thường / dấu tiếng Việt
 const foldVi = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
@@ -200,6 +203,7 @@ export class SmaxChatService {
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
+  private readonly aliasCache = new Map<string, { at: number; map: Promise<Map<string, string>> }>();
   private readonly groupIndex = new Map<
     string,
     { at: number; groups: Promise<SmaxGroupThread[]> }
@@ -557,6 +561,56 @@ export class SmaxChatService {
   }
 
   /**
+   * Đổi tên hội thoại Zalo cá nhân (1-1 hoặc nhóm) trên Smax — tên hiện trên Smax & POS;
+   * Smax lưu luôn làm tên gợi nhớ của kênh. Tên nhóm thật trên Zalo không đổi.
+   */
+  async renameThread(actor: ChatActor, dto: { pagePid: string; tid: string; name: string }) {
+    const tid = this.assertTid(dto.tid);
+    const name = (dto.name ?? '').replace(/\s+/g, ' ').trim();
+    if (!name) throw new BadRequestException('Tên không được để trống');
+    if (name.length > THREAD_NAME_MAX) throw new BadRequestException(`Tên tối đa ${THREAD_NAME_MAX} ký tự`);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
+    const thread = await this.smaxApi.getThread(channel.pid, tid);
+    if (!thread) throw new NotFoundException('Hội thoại không còn trên Smax');
+    // Tên đang hiện = tên gợi nhớ (nếu có) hoặc tên Smax
+    const shown = (await this.zaloAliases(channel.pid)).get(tid) ?? thread.name;
+    if (shown === name) return { name, alias: shown === thread.name ? null : shown };
+    this.checkRateLimit(actor.id);
+    const saved = await this.smaxApi.renameCustomer(channel.pid, tid, name);
+    // Smax lưu luôn tên mới làm tên gợi nhớ của kênh → đọc lại danh sách tên gợi nhớ
+    this.aliasCache.delete(channel.pid);
+    // Danh sách gần đây đọc lại tên mới; chỉ mục nhóm (quét lâu) chỉ sửa tên tại chỗ
+    this.recentCache.clear();
+    void this.groupIndex
+      .get(channel.pid)
+      ?.groups.then((gs) => gs.forEach((g) => `${ZALOWEB_PREFIX}${g.zaloId}` === tid && (g.name = saved)))
+      .catch(() => undefined);
+    await this.auditLogs.create({
+      actionType: 'PUT',
+      actionCode: 'SMAX_THREAD_RENAME',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `Đổi tên hội thoại Zalo "${shown}" → "${saved}" (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, from: shown, to: saved },
+    });
+    return { name: saved, alias: (await this.zaloAliases(channel.pid)).get(tid) ?? null };
+  }
+
+  /** Tên gợi nhớ Zalo của 1 kênh (cache 1 phút; lỗi → rỗng, không chặn tải hội thoại). */
+  private zaloAliases(pagePid: string): Promise<Map<string, string>> {
+    const hit = this.aliasCache.get(pagePid);
+    if (hit && Date.now() - hit.at < ALIAS_TTL_MS) return hit.map;
+    const map = this.smaxApi.getZaloAliases(pagePid).catch((e) => {
+      this.logger.warn(`Không tải được tên gợi nhớ Zalo kênh ${pagePid}: ${(e as Error).message}`);
+      return new Map<string, string>();
+    });
+    this.aliasCache.set(pagePid, { at: Date.now(), map });
+    return map;
+  }
+
+  /**
    * Bật Meta Business AI trả lời hội thoại Messenger (Smax "Pass control to Meta Business AI").
    * Tắt = nhân viên gửi tin kèm humanAgent (thẻ HUMAN_AGENT), Smax không có API riêng.
    */
@@ -704,12 +758,14 @@ export class SmaxChatService {
     const zaloweb = channel.platform === 'zaloweb';
     // Zalo cá nhân: ID Zalo (bỏ "zlw"); kênh khác: tid
     const zaloId = zaloweb ? tid.slice(ZALOWEB_PREFIX.length) : tid;
-    const [thread, friend] = await Promise.all([
+    const [thread, friend, aliases] = await Promise.all([
       this.smaxApi.getThread(channel.pid, tid).catch(() => null),
       zaloweb && kind === 'user'
         ? this.smaxApi.getFriendStatus(channel.pid, zaloId).catch(() => null)
         : Promise.resolve(null),
+      zaloweb && kind === 'user' ? this.zaloAliases(channel.pid) : Promise.resolve(null),
     ]);
+    const alias = aliases?.get(tid) ?? null;
     return {
       kind,
       zaloId,
@@ -722,7 +778,12 @@ export class SmaxChatService {
       controlledBy: thread?.controlledBy ?? null,
       canPassControlAI: channel.platform === 'facebook' && !!thread && !thread.isComment && this.smaxApi.canReact,
       commentUrl: thread?.commentUrl ?? null,
-      name: thread?.name || fallbackName || null,
+      // Như Smax: tên gợi nhớ trên Zalo của kênh được ưu tiên hơn tên hội thoại trên Smax
+      name: alias || thread?.name || fallbackName || null,
+      // Tên trên Smax (sửa được từ POS) + tên gợi nhớ Zalo — để hộp đổi tên giải thích tên đang hiện
+      smaxName: thread?.name || null,
+      alias,
+      canRename: zaloweb && !!thread && this.smaxApi.canReact,
       avatar: thread?.avatar ?? null,
       memberCount: kind === 'group' ? thread?.memberCount ?? null : null,
       memberPreview: kind === 'group' ? thread?.memberPreview ?? [] : [],
@@ -1309,6 +1370,15 @@ export class SmaxChatService {
       cached.threads.catch(() => this.recentCache.delete(key));
     }
     let threads = await cached.threads;
+    // Tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (như app Smax); không sửa mảng trong cache
+    const zalowebPages = [...new Set(threads.filter((t) => !t.isGroup && /^zlw\d+$/.test(t.tid)).map((t) => t.pagePid))];
+    const aliasByPage = new Map(
+      await Promise.all(zalowebPages.map(async (pid) => [pid, await this.zaloAliases(pid)] as const)),
+    );
+    threads = threads.map((t) => {
+      const alias = t.isGroup ? undefined : aliasByPage.get(t.pagePid)?.get(t.tid);
+      return alias ? { ...t, name: alias } : t;
+    });
     // Smax khớp cả thành viên nhóm & nội dung tin → chỉ giữ hội thoại khớp tên Zalo / tên nhóm
     if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 

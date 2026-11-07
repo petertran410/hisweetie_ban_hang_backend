@@ -106,6 +106,8 @@ const makeService = (env: Record<string, string> = {}) => {
     }),
     getMessages: jest.fn().mockResolvedValue([]),
     reactMessage: jest.fn().mockResolvedValue(undefined),
+    getZaloAliases: jest.fn().mockResolvedValue(new Map()),
+    renameCustomer: jest.fn((_p: string, _c: string, name: string) => Promise.resolve(name)),
     getMessageStates: jest.fn().mockResolvedValue(null),
     messageAction: jest.fn().mockResolvedValue(undefined),
     listFriendAvatars: jest.fn().mockResolvedValue({ zlwX: 'https://ava/x-moi.jpg' }),
@@ -724,6 +726,46 @@ describe('SmaxChatService', () => {
 
     expect(items.map((i) => i.tid)).toEqual(['zlw1', 'zlw3']);
     expect((api as any).listRecentThreads).toHaveBeenCalledWith([PAGE], 50, 'thúy');
+  });
+
+  it('recentChats: tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (chỉ 1-1), tìm được theo tên gợi nhớ', async () => {
+    const { service, api } = makeService();
+    (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+    (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+    (api as any).getZaloAliases = jest.fn().mockResolvedValue(new Map([['zlw3', 'Hải RT - Lermao HP'], ['zlw1', 'không áp cho nhóm']]));
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+      { tid: 'zlw1', pagePid: PAGE, name: 'Báo đơn', isGroup: true, lastMessage: 'a', lastMessageAt: null, unread: false },
+      { tid: 'zlw3', pagePid: PAGE, name: 'Hải RT', isGroup: false, lastMessage: 'b', lastMessageAt: null, unread: false },
+    ]);
+
+    const { items } = await service.recentChats(1);
+    expect(items.map((i) => i.name)).toEqual(['Báo đơn', 'Hải RT - Lermao HP']);
+    const found = await service.recentChats(1, undefined, 30, 'lermao');
+    expect(found.items.map((i) => i.tid)).toEqual(['zlw3']);
+    // Tên gợi nhớ cache theo kênh
+    expect((api as any).getZaloAliases).toHaveBeenCalledTimes(1);
+  });
+
+  it('renameThread: đổi tên trên Smax (customer pid = tid), ghi audit; chặn tên rỗng / kênh không phải Zalo cá nhân', async () => {
+    const { service, api, audit } = makeService();
+    const tid = 'zlw2395241168877084467';
+    const res = await service.renameThread(actor, { pagePid: PAGE, tid, name: '  Báo   đơn HN ' });
+    expect(api.renameCustomer).toHaveBeenCalledWith(PAGE, tid, 'Báo đơn HN');
+    expect(res).toEqual({ name: 'Báo đơn HN', alias: null });
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ actionCode: 'SMAX_THREAD_RENAME', entityId: tid, metadata: expect.objectContaining({ from: 'Nguyễn Toàn test group', to: 'Báo đơn HN' }) }),
+    );
+    await expect(service.renameThread(actor, { pagePid: PAGE, tid, name: '   ' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.renameThread(actor, { pagePid: 'zlOA', tid: 'zl123456', name: 'X' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(api.renameCustomer).toHaveBeenCalledTimes(1);
+    // Trùng tên đang hiện (tên gợi nhớ) → không gọi Smax
+    (api as any).getZaloAliases = jest.fn().mockResolvedValue(new Map([[tid, 'Báo đơn Kho HN']]));
+    (service as any).aliasCache.clear();
+    expect(await service.renameThread(actor, { pagePid: PAGE, tid, name: 'Báo đơn Kho HN' })).toEqual({ name: 'Báo đơn Kho HN', alias: 'Báo đơn Kho HN' });
+    expect(api.renameCustomer).toHaveBeenCalledTimes(1);
   });
 
   it('friendAction: đồng ý = gửi lời mời lại, thu hồi = undo; chỉ cho Zalo cá nhân; ghi audit', async () => {

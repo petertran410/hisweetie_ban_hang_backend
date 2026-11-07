@@ -32,6 +32,7 @@ import {
   MediaQueryDto,
   CreateZaloContactDto,
   ReactMessageDto,
+  RenameThreadDto,
   MessageActionDto,
   PassControlBizAIDto,
   FriendActionDto,
@@ -104,6 +105,13 @@ export class SmaxChatController {
   @RequirePermissions('smax_chat:send')
   react(@Body() dto: ReactMessageDto, @Req() req: any) {
     return this.service.reactMessage(this.actor(req), dto);
+  }
+
+  // Đổi tên hội thoại Zalo cá nhân (1-1 / nhóm) trên Smax (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Patch('threads/name')
+  @RequirePermissions('smax_chat:send')
+  renameThread(@Body() dto: RenameThreadDto, @Req() req: any) {
+    return this.service.renameThread(this.actor(req), dto);
   }
 
   // Bật Meta Business AI trả lời hội thoại Messenger (API nội bộ Smax, cần SMAX_USER_TOKEN)
