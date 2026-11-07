@@ -23,6 +23,7 @@ import {
   HANDOVER_STEPS,
   HandoverStep,
   isAcceptableStepError,
+  ZALO_PHONE_NOT_FOUND,
   LEAD_CATEGORY_LABEL,
   leadCode,
   renderLeadTemplate,
@@ -834,6 +835,62 @@ export class LeadsService {
       'Gửi tin chào Zalo',
     );
 
+    return this.finishHandover(h, lead, steps, uid, actor);
+  }
+
+  /**
+   * Không tìm thấy Zalo theo SĐT: người chuyển giao xác nhận SĐT khách là đúng → bước kết bạn
+   * + tin chào coi như hoàn tất (Sale liên hệ khách qua SĐT), đủ điều kiện "Đã chuyển Sale".
+   */
+  async confirmHandoverPhone(
+    handoverId: number,
+    confirmed: boolean | undefined,
+    actor: LeadActor,
+  ) {
+    if (!confirmed)
+      throw new BadRequestException('Cần xác nhận SĐT khách là đúng');
+    const h = await this.prisma.leadHandover.findUnique({
+      where: { id: handoverId },
+    });
+    if (!h) throw new NotFoundException('Không tìm thấy lần chuyển giao');
+    if (h.status === 'done')
+      throw new BadRequestException('Lần chuyển giao này đã hoàn tất');
+    const steps = h.steps as unknown as Steps;
+    const targets = (['friend', 'greeting'] as const).filter(
+      (s) =>
+        steps[s]?.status === 'failed' &&
+        ZALO_PHONE_NOT_FOUND.test(steps[s].error ?? ''),
+    );
+    if (!targets.includes('friend'))
+      throw new BadRequestException(
+        'Chỉ xác nhận SĐT khi bước kết bạn lỗi "Không tìm thấy Zalo"',
+      );
+    const lead = await this.prisma.lead.findUniqueOrThrow({
+      where: { id: h.leadId },
+      include: { conversations: true },
+    });
+    const at = new Date().toISOString();
+    for (const s of targets)
+      steps[s] = { ...steps[s], status: 'skipped', at, confirmedBy: actor.name };
+    await this.audit(
+      actor,
+      'LEAD_HANDOVER_PHONE_CONFIRMED',
+      lead.id,
+      `Xác nhận đúng SĐT khách (không tìm thấy Zalo) cho lead "${lead.name}"`,
+      { handoverId, steps: targets, error: steps.friend.error },
+    );
+    return this.finishHandover(h, lead, steps, null, actor);
+  }
+
+  /** Lưu kết quả các bước; đủ bước → lead "Đã chuyển Sale" + gắn Sale PIC. */
+  private async finishHandover(
+    h: { id: number; pagePid: string; salePicId: number },
+    lead: { id: number; name: string; customerId: number | null },
+    steps: Steps,
+    uid: string | null,
+    actor: LeadActor,
+  ) {
+    const handoverId = h.id;
     const done = HANDOVER_STEPS.every(
       (s) => steps[s].status === 'ok' || steps[s].status === 'skipped',
     );
@@ -866,7 +923,7 @@ export class LeadsService {
         data: {
           // Đã gắn khách / chuyển đổi trước đó thì giữ trạng thái
           ...(lead.customerId ? {} : { status: 'handed_over' }),
-          salePicId: sale.id,
+          salePicId: h.salePicId,
         },
       });
       // Sale đã có khách POS cùng ID Zalo → gắn luôn

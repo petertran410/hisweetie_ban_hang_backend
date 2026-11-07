@@ -604,6 +604,53 @@ describe('LeadsService', () => {
     expect(getHandover().steps.friend.status).toBe('skipped');
   });
 
+  it('không tìm thấy Zalo theo SĐT → xác nhận đúng SĐT: kết bạn + tin chào coi như xong, lead "Đã chuyển Sale"', async () => {
+    const { service, prisma, audit, smaxApi, getHandover } = makeService();
+    smaxApi.findFriendByPhone.mockResolvedValue(null);
+    const first = await service.handover(7, HANDOVER, CSKH);
+    expect(first.done).toBe(false);
+    expect(getHandover().steps.friend).toMatchObject({
+      status: 'failed',
+      error: 'Không tìm thấy Zalo của SĐT 0913597795',
+    });
+    expect(prisma.lead.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'handed_over' }) }),
+    );
+    // Thiếu xác nhận → 400
+    await expect(
+      service.confirmHandoverPhone(50, false, CSKH),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    const res = await service.confirmHandoverPhone(50, true, CSKH);
+    expect(res.done).toBe(true);
+    expect(getHandover().status).toBe('done');
+    expect(getHandover().steps).toMatchObject({
+      friend: { status: 'skipped', confirmedBy: CSKH.name },
+      greeting: { status: 'skipped', confirmedBy: CSKH.name },
+    });
+    expect(audit.create.mock.calls.at(-1)[0].actionCode).toBe(
+      'LEAD_HANDOVER_PHONE_CONFIRMED',
+    );
+    expect(prisma.lead.update).toHaveBeenCalledWith({
+      where: { id: 7 },
+      data: { status: 'handed_over', salePicId: 9 },
+    });
+    expect(smaxApi.requestFriend).not.toHaveBeenCalled();
+    // Đã hoàn tất → không xác nhận lại
+    await expect(
+      service.confirmHandoverPhone(50, true, CSKH),
+    ).rejects.toThrow('đã hoàn tất');
+  });
+
+  it('xác nhận SĐT: bước kết bạn lỗi khác (không phải "không tìm thấy Zalo") → 400', async () => {
+    const { service, smaxApi } = makeService();
+    smaxApi.requestFriend.mockRejectedValueOnce(new Error('Zalo: lỗi mạng'));
+    await service.handover(7, HANDOVER, CSKH);
+    await expect(
+      service.confirmHandoverPhone(50, true, CSKH),
+    ).rejects.toThrow('Không tìm thấy Zalo');
+  });
+
   it('handover: thiếu xác nhận → 400; không đủ điều kiện → 400 kèm lý do; vượt tần suất → 429', async () => {
     const { service, smaxChat, larkClient } = makeService();
     await expect(

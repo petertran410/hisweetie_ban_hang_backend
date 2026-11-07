@@ -38,6 +38,8 @@ export const HANDOVER_STEPS: HandoverStep[] = ['lark', 'friend', 'greeting'];
 export const ZALO_STRANGER_BLOCKED = /chặn không nhận tin nhắn từ người lạ/i;
 // Zalo từ chối lời mời kết bạn vì khách đã là bạn bè với kênh của Sale
 export const ZALO_ALREADY_FRIEND = /đã là bạn bè/i;
+// Tra ID Zalo theo SĐT không ra (khách tắt tìm kiếm qua SĐT / chưa có Zalo) → người chuyển giao xác nhận đúng SĐT
+export const ZALO_PHONE_NOT_FOUND = /Không tìm thấy Zalo của SĐT/i;
 /** Lỗi được chấp nhận của bước chuyển giao → "bỏ qua", không chặn hoàn tất. */
 export const isAcceptableStepError = (step: HandoverStep, error?: string) =>
   !!error &&
@@ -48,6 +50,8 @@ export type StepResult = {
   status: 'pending' | 'ok' | 'failed' | 'skipped';
   at?: string;
   error?: string;
+  /** Người xác nhận đúng SĐT khách khi không tìm thấy Zalo (bước được tính hoàn tất) */
+  confirmedBy?: string;
 };
 
 // Mẫu mặc định (Cài đặt → Mẫu tin Lead ghi đè); biến: {tên khách} {tên sale} {sđt} {phân loại} {tỉnh thành} {phường} {nhu cầu} {ghi chú} {link}
